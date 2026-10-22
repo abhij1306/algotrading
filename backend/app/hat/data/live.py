@@ -195,6 +195,7 @@ class LiveData:
         self._instrument_ids = instrument_ids
         self._last_volume: dict[str, tuple[date, int]] = {}
         self._bar_listeners: list[BarListener] = []
+        self._tick_listeners: list[Callable[[Tick], None]] = []
         self._unsaved: list[Bar] = []
         self._detach: Callable[[], None] | None = None
 
@@ -212,6 +213,23 @@ class LiveData:
         """Called with each final bar, in order (the trigger monitor of PR 15)."""
         self._bar_listeners.append(listener)
 
+    def restore(self, day: date) -> int:
+        """A restart mid-session: the day's final bars already stored give the bar builder back
+        its opening ranges and day volumes (blocking: reads the store). Returns the bars read."""
+        if self._store is None:
+            return 0
+        symbols = {str(i): s for s, i in self._instrument_ids().items()}
+        bars = [
+            Bar(symbol, row.bar_start, row.open, row.high, row.low, row.close, row.volume)
+            for row in self._store.read(day)
+            if (symbol := symbols.get(row.instrument_id)) is not None
+        ]
+        return self.builder.restore(bars)
+
+    def add_tick_listener(self, listener: Callable[[Tick], None]) -> None:
+        """Called with each tick that has a symbol and a positive price (the last-price book)."""
+        self._tick_listeners.append(listener)
+
     def on_tick(self, payload: dict[str, Any]) -> None:
         now = self._clock.now()
         self.staleness.on_tick(now)
@@ -219,6 +237,8 @@ class LiveData:
         tick = tick_from_payload(payload, now, self._last_volume)
         if tick is not None:
             self.builder.on_tick(tick, now)
+            for listener in self._tick_listeners:
+                run_listener_call(lambda fn=listener: fn(tick), "tick listener")
 
     def step(self) -> list[Bar]:
         """One timer step: finalise bars, notify bar listeners in order, re-check staleness."""

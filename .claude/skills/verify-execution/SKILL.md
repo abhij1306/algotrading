@@ -113,6 +113,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `TLA ApprovalToken!SingleDecision` A card is decided at most once. Harm: a double tap places two orders.
 - `TLA ApprovalToken!CardsDecided` Every sent card is eventually decided (liveness). Harm: an undecided card waits forever.
 - `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement) allow it and otherwise no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
+- `PBT router.entry_needs_live_session` An accepted auto entry is placed only when its broker account has a live `hat_broker_session` for the placement's trade date (written by the runtime's session watch); a missing, expired or unknown session, or a live one of another day, sends nothing and ends the signal Rejected with `broker_session_not_live`. Harm: an entry goes out on an account nobody logged in today (HAT-OPS-023).
 - `PBT router.refused_entry_is_not_sent` An auto entry whose bot became manage-only (account, bot, manual or health kill, or a pause) after the signal committed sends nothing: an unsent reserved order is cancelled and the signal ends Rejected with the kill or pause reason; an order that may be at the broker (unconfirmed) is left to reconciliation, neither placed again nor rejected. Harm: a bot buys after its kill switch, or a refusal re-sends an order the broker may hold.
 - `PBT router.take_rechecks_max_chase` A Take before expiry places exactly when the live conditions allow an entry and the price is within max-chase; otherwise it records the decision, ends Rejected with the reason and places nothing; a Take at or after expiry expires the card into its veto trade; a second Take does nothing. Harm: a Take buys late, blind or past the plan's price.
 - `PBT router.skip_and_expiry_become_one_veto_trade` Any mix of Skips, sweeps and late Takes ends a card Cancelled or Expired with exactly one virtual veto trade at the card's quantity and stop, no broker call, replays that match, no slot held and a stop-out that is not the bot's. Harm: a skip is scored twice or never, or blocks the bot's next entries.
@@ -137,6 +138,10 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.a_keyless_book_never_reads_as_absent` An unconfirmed order whose order-book read answers ok without its list is not sent again (the lookup raises `BrokerUnavailableError`). Harm: a keyless reply reads as "not found" and the order is placed twice.
 - `PBT router.non_live_sleeve_routes_as_shadow` For every lifecycle state, queued mode and GTT capability, `bot_mode` answers shadow unless the state routes live, and the router places no real order for a non-Live sleeve. Harm: a Probation or Retired sleeve keeps trading real money.
 - `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
+- `PBT router.routine_reconcile_keeps_gate` A routine reconciliation (the periodic pass) of an account already reconciled leaves the gate open: an entry placed during or after it is not refused as not reconciled; only the first reconciliation of the process or of a new trade date starts a new session. Harm: entries are refused while a routine pass runs, or wait on a pass that already succeeded.
+- `PBT router.resumed_entry_waits_for_feed` An entry left Triggered by the previous process is placed after a restart only once the feed has heard a fresh tick and the account is reconciled, at most once, and never on a later trade date than its own (`signal_expired`). Harm: an entry goes out on a stale price, twice, or a day late.
+- `PBT router.desk_calls_serialised` Every broker call of an account's desk goes through its session owner, so no two overlap, and a session check reads `session_status` once and records that same status. Harm: concurrent sends race the reconciliation gate, and the recorded session status disagrees with the one that raised the alert.
+- `PBT router.one_login_per_broker` Two active accounts of one broker refuse the start with `HatConfigError`; one per broker builds. Harm: two accounts share one login and the same funds count twice in the allocation equity.
 
 ## Run
 
@@ -266,7 +271,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `000a52b86dc4752649320aab0352efa71e55a7d24ee976118474181e31a49c2f`
+Covered digest: `3c090abad57f56096665149f69e2cf8d97f92f45f5969604b93a422746a7742f`
 
 ## Scope changes
 
@@ -1433,6 +1438,15 @@ E   Failing test case: test_routes_by_mode(
 E       mode='confirm',
 ```
 
+### PBT router.entry_needs_live_session
+
+Break: `_preflight` drops the live-session refusal (`_session_refusal`).
+
+```
+FAILED tests/hat/properties/test_router.py::test_entry_needs_live_session
+AssertionError: assert 1 == 0
+```
+
 ### PBT router.refused_entry_is_not_sent
 
 Break: `place_entry` drops the kill and pause re-check (`_kill_refusal`).
@@ -1891,4 +1905,61 @@ Break: `_gtt_row` keeps an OCO.
 ```
 E   AssertionError: assert [BrokerGtt(gt...imal('0.05'))] == [BrokerGtt(gt...imal('0.05'))]
 E     Left contains one more item: BrokerGtt(gtt_id='G1', symbol='SBIN', side=<Side.SELL: 'sell'>, qty=1, trigger_price=Decimal('0.05'))
+
+### PBT router.routine_reconcile_keeps_gate
+
+Break: `ReconciliationService.run` calls `guard.begin_session()` again at its top (the code before the fix).
+
+```
+E   AssertionError: assert {'not_reconciled'} == {None}
+```
+
+### PBT router.resumed_entry_waits_for_feed
+
+Break: `daily/live.py:stale_feed` returns the cached `staleness.stale` flag, which is false until the first check after a start.
+
+```
+E   AssertionError: assert [{'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}] == []
+E     Left contains one more item: {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}
+    assert rig.places() == []  # no tick heard since the start
+```
+
+Break: `ExecutionRouter._preflight` skips the trade-date check (`if signal.trade_date != trade_date_of(now):` to `if False:`).
+
+```
+E   AssertionError: assert [{'symbol': 'NSE:SBIN-EQ', ... 'type': 'LIMIT', ...}] == []
+E   Failing test case: test_resumed_entry_waits_for_feed(
+E       earlier=True,
+```
+
+Break: `Desks.resume_entries` does not wait for the reconciliation (`if not desk.guard.reconciled:` to `if False:`).
+
+```
+E   AssertionError: assert [{'symbol': 'NSE:SBIN-EQ', ... 'type': 'LIMIT', ...}] == []
+    assert rig.places() == []  # the account has not reconciled yet
+```
+
+### PBT router.desk_calls_serialised
+
+Break: `OwnedBroker` calls the adapter directly (`return attribute(*args, **kwargs)`, no `owner.call`).
+
+```
+E   assert 4 == 1
+E    +  where 4 = <test_router.OverlapSpy object at 0x...>.most
+```
+
+Break: `AccountDesk.check_session` drops `status=status`, so `record_session` reads the status a second time.
+
+```
+E   AssertionError: assert ['session_status', 'session_status'] == ['session_status']
+```
+
+### PBT router.one_login_per_broker
+
+Break: `production.one_login_each` never refuses (`if account.broker in built:` to `if False:`).
+
+```
+E   Failed: DID NOT RAISE <class 'app.hat.errors.HatConfigError'>
+E   Falsifying example: test_one_login_per_broker(
+E       brokers=['fyers', 'fyers'],
 ```

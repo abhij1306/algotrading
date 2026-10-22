@@ -46,7 +46,7 @@ __all__ = [
 # Spec 03 §6 "Event types (MVP)", verbatim (the Portfolio group is PR 9's).
 # `CONF events.catalogue` compares this with the spec.
 EVENT_GROUPS: dict[str, tuple[str, ...]] = {
-    "Data": ("ingest.completed", "ingest.failed", "quality.failed"),
+    "Data": ("ingest.completed", "ingest.failed", "quality.failed", "gapscan.completed"),
     "Signals": (
         "watchlist.published",
         "signal.triggered",

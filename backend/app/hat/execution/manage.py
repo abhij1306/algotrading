@@ -188,6 +188,12 @@ class TradeManager:
         self._sale_locks: dict[uuid.UUID, threading.Lock] = {}
         self._sale_locks_guard = threading.Lock()
 
+    def use_calendar(self, calendar: SessionCalendar | None) -> None:
+        """The trading calendar read again (a refresh, a new year's rows), for the manager and its
+        stop desk."""
+        self._calendar = calendar
+        self._desk.use_calendar(calendar)
+
     def _sale_lock(self, position_id: uuid.UUID) -> threading.Lock:
         with self._sale_locks_guard:
             return self._sale_locks.setdefault(position_id, threading.Lock())

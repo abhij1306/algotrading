@@ -20,7 +20,9 @@ injected. Stable error codes only ever leave this module (HAT-DATA-035).
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -632,48 +634,99 @@ def run_ingest(deps: IngestDeps, trade_date: date, run_id: uuid.UUID) -> IngestR
     report.universe = len(members)
     symbols = request_symbols(members)
     report.requested = len(symbols)
-    by_sym = by_symbol(members)
     csv_first = False
-
-    existing = deps.store.partition_files(DATASET_BARS, trade_date)
-    if existing:
-        report.reused = True
-        report.source = str(deps.store.read_bars(trade_date)["source"][0])
-        report.stored = deps.store.read_bars(trade_date).height
+    if deps.store.partition_files(DATASET_BARS, trade_date):
+        _reuse_partition(deps, trade_date, report)
     else:
-        outcome = wait_for_data(
-            lambda: _probe(deps, trade_date), trade_date, deps.clock, deps.sleep
-        )
-        report.probes = len(outcome.probes)
-        if outcome.ready:
-            report.source = SOURCE_MCP
-            accepted = _fetch_mcp(deps, trade_date, symbols, report)
-            traded: dict[str, Decimal | None] = {}
-        else:
-            csv_first = True
-            report.source = SOURCE_BHAVCOPY
-            parsed = deps.fallback(trade_date) if deps.fallback is not None else None
-            if parsed is None or not parsed.rows:
-                raise JobError(CODE_NO_DATA)
-            accepted, traded, report.violations = _bhav_candidates(parsed, members)
-        if not accepted:
-            raise JobError(CODE_NO_ROWS)
-        report.stored = len(accepted)
-        stored = previous_closes(deps.store, trade_date)
-        flagged = flagged_instruments(accepted, by_sym, stored, deps.rss_symbols(trade_date))
-        report.flagged = len(flagged)
-        report.actions_created, report.lookups_failed = _lookup_actions(
-            deps, trade_date, flagged, by_sym
-        )
-        rows = [
-            _bar(by_sym[s], c, report.source, run_id, traded.get(s))
-            for s, c in sorted(accepted.items())
-            if s in by_sym
-        ]
-        write_raw_once(deps.store, trade_date, rows)
+        csv_first = _fetch_and_write(deps, trade_date, members, symbols, run_id, report)
     _store_indices(deps, trade_date, report, csv_first=csv_first)
     _store_breadth(deps, trade_date, report)
     return report
+
+
+def _reuse_partition(deps: IngestDeps, trade_date: date, report: IngestReport) -> None:
+    """A retry after the day's raw partition was written: report what it holds."""
+    report.reused = True
+    bars = deps.store.read_bars(trade_date)
+    report.source = str(bars["source"][0])
+    report.stored = bars.height
+    _restore_checks(deps.store, trade_date, report)
+
+
+def _fetch_and_write(
+    deps: IngestDeps,
+    trade_date: date,
+    members: list[Member],
+    symbols: Sequence[str],
+    run_id: uuid.UUID,
+    report: IngestReport,
+) -> bool:
+    """Fetch the day (MCP, else the bhavcopy fallback), look up flagged actions and write the raw
+    partition, its row-check counts first. True when the rows came from the bhavcopy CSV."""
+    by_sym = by_symbol(members)
+    outcome = wait_for_data(lambda: _probe(deps, trade_date), trade_date, deps.clock, deps.sleep)
+    report.probes = len(outcome.probes)
+    traded: dict[str, Decimal | None] = {}
+    if outcome.ready:
+        report.source = SOURCE_MCP
+        accepted = _fetch_mcp(deps, trade_date, symbols, report)
+    else:
+        report.source = SOURCE_BHAVCOPY
+        parsed = deps.fallback(trade_date) if deps.fallback is not None else None
+        if parsed is None or not parsed.rows:
+            raise JobError(CODE_NO_DATA)
+        accepted, traded, report.violations = _bhav_candidates(parsed, members)
+    if not accepted:
+        raise JobError(CODE_NO_ROWS)
+    report.stored = len(accepted)
+    stored = previous_closes(deps.store, trade_date)
+    flagged = flagged_instruments(accepted, by_sym, stored, deps.rss_symbols(trade_date))
+    report.flagged = len(flagged)
+    report.actions_created, report.lookups_failed = _lookup_actions(
+        deps, trade_date, flagged, by_sym
+    )
+    rows = [
+        _bar(by_sym[s], c, report.source, run_id, traded.get(s))
+        for s, c in sorted(accepted.items())
+        if s in by_sym
+    ]
+    if rows and not deps.store.partition_files(DATASET_BARS, trade_date):
+        _keep_checks(deps.store, trade_date, report)  # first: ingest's partition has its counts
+    write_raw_once(deps.store, trade_date, rows)
+    return not outcome.ready
+
+
+# The row-check counts of the run that wrote a day's raw partition. A retry that finds the
+# partition (a run that failed later, on the indices say) reads them back, so the quality gate
+# of the retry still sees the rows the first run dropped (PR 17).
+CHECKS_FILE = "ingest-checks.json"
+_CHECK_COUNTS = ("violations", "mismatched", "missing")
+
+
+def _keep_checks(store: DataStore, trade_date: date, report: IngestReport) -> None:
+    """Written before the partition and atomically (a temporary file renamed over), so a crash
+    leaves either no partition or a partition with its counts."""
+    folder = store.partition_dir(DATASET_BARS, trade_date)
+    folder.mkdir(parents=True, exist_ok=True)
+    counts = {name: getattr(report, name) for name in _CHECK_COUNTS}
+    temporary = folder / f".{CHECKS_FILE}.tmp"
+    temporary.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, folder / CHECKS_FILE)
+
+
+def _restore_checks(store: DataStore, trade_date: date, report: IngestReport) -> None:
+    path = store.partition_dir(DATASET_BARS, trade_date) / CHECKS_FILE
+    try:
+        counts = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # Ingest writes the counts before its partition, so the partition came from another
+        # writer (the history build): its rows were not checked here and the counts stay 0.
+        logger.warning("ingest checks absent for %s; counts taken as 0", trade_date)
+        return
+    for name in _CHECK_COUNTS:
+        value = counts.get(name) if isinstance(counts, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            setattr(report, name, value)
 
 
 def _probe(deps: IngestDeps, trade_date: date) -> date | None:

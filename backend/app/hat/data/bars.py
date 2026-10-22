@@ -20,10 +20,13 @@ Rules (02-data §11, "Bar builder rules"):
 - Volume pace is cumulative day volume over the fraction of the session elapsed. The day volume
   counts every in-session tick, late ones included (the tape did trade them); bars exclude late
   ticks (they are immutable).
+- A restart mid-session `restore`s the day's stored final bars: their opening ranges and their
+  volume, for each symbol the builder has not seen that day (PR 17).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -192,6 +195,26 @@ class BarBuilder:
             if bar.start == self.session_start(day):
                 self._opening.setdefault((bar.symbol, day), (bar.high, bar.low))
         return finals
+
+    def restore(self, bars: Iterable[Bar]) -> int:
+        """Seed the opening range and the day volume from final bars stored before a restart,
+        for each (symbol, day) with no state yet (a second restore, or one after that symbol's
+        first tick, changes nothing). Returns the bars applied."""
+        bars = list(bars)
+        known = set(self._days)
+        applied = 0
+        for bar in bars:
+            day = require_aware(bar.start).astimezone(IST).date()
+            key = (bar.symbol, day)
+            if key in known:
+                continue
+            state = self._days.setdefault(key, _DayState())
+            state.volume += bar.volume
+            state.ticks += 1
+            if bar.start == self.session_start(day):
+                self._opening.setdefault(key, (bar.high, bar.low))
+            applied += 1
+        return applied
 
     def opening_range(self, symbol: str, day: date) -> tuple[Decimal, Decimal] | None:
         """(high, low) of the session's first bar once it is final; None before that, and for

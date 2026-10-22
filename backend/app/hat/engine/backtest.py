@@ -93,10 +93,8 @@ from . import exits, lifecycle, trades, watchlist
 from .portfolio.universe import Interval
 from .regime_gate import regime_allows_longs
 from .scan import EP_PLAYBOOK, ScanInputs
-from .stops import SKIP_BAD_INPUT, StopInputs, check_width, plan_stop
+from .stops import SKIP_BAD_INPUT, StopInputs, check_width, mean_true_range, plan_stop
 from .strategy.config import (
-    ExitCloseBelowSma,
-    ExitTrailingSwingLow,
     Playbook,
     StopAtrMultiple,
     StopBelowFinalContractionLow,
@@ -513,15 +511,10 @@ class _Run:
 
     def _atr(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The mean true range of the `length` sessions up to `day`."""
-        bars = self._bars_through(instrument_id, day)
-        if len(bars) < length + 1:
-            return None
-        window = bars[-(length + 1) :]
-        ranges = [
-            max(b.high, a.close) - min(b.low, a.close)
-            for a, b in zip(window, window[1:], strict=False)
-        ]
-        return sum(ranges, _ZERO) / length
+        window = self._bars_through(instrument_id, day)[-(length + 1) :]
+        return mean_true_range(
+            [b.high for b in window], [b.low for b in window], [b.close for b in window], length
+        )
 
     def _window(self, as_of: date) -> pl.DataFrame:
         first = self.days[max(0, self.index[as_of] - LOOKBACK_SESSIONS)]
@@ -814,19 +807,13 @@ class _Run:
 
     def _close_view(self, position: HatPosition, bar: _Bar, day: date) -> exits.ExitView:
         held = self.held[position.id]
-        sma: dict[int, Decimal] = {}
-        swing: dict[int, Decimal] = {}
-        for rule in self.config.exits:
-            if isinstance(rule, ExitCloseBelowSma):
-                level = self._sma(held.instrument_id, day, rule.sma)
-                if level is not None:
-                    sma[rule.sma] = level
-            if isinstance(rule, ExitTrailingSwingLow):
-                low = self._swing_low(held.instrument_id, day, rule.lookback_days)
-                if low is not None:
-                    swing[rule.lookback_days] = low
-        held_days = self.index[day] - self.index[held.entry_day]
-        return exits.ExitView(bar.close, days_held=held_days, sma=sma, swing_low=swing)
+        return exits.view_from_rules(
+            bar.close,
+            self.config.exits,
+            self.index[day] - self.index[held.entry_day],
+            lambda length: self._sma(held.instrument_id, day, length),
+            lambda lookback: self._swing_low(held.instrument_id, day, lookback),
+        )
 
     def _close_phase(self, day: date) -> None:
         for position in self._open_positions():

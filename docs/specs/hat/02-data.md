@@ -121,9 +121,10 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
 #### HAT-DATA-027: Trading calendar drives market hours
 - **Statement:** NSE holidays load into `hat_trading_calendar` (yearly + on change, broker holiday API as fallback) and HAT's `MarketHoursPolicy` (`app/hat/data/sessions.py`) is built from the loaded calendar (`MarketCalendar.policy`). Nothing is installed process-wide and there is no `DEV_MODE` bypass. [Changed in K1; it fed the legacy `market_hours.DEFAULT_POLICY`.]
 - **Source:** DS "Source map" and "Reference data"; SCH (`hat_trading_calendar`); PLAN C7.
-- **PR:** 4
-- **Verification:** PBT `calendar.holiday_closed`
+- **PR:** 4, 17
+- **Verification:** PBT `calendar.holiday_closed`, PBT `calendar.weekday_rows`
 - **Acceptance:**
+  - Property (PR 17): `calendar.refresh` stores a row for every weekday of the years the holiday list covers: a listed day as listed, every other weekday as a trading day with the market's default session, and no weekend. Harm: the scheduler and the risk checks, which read a session only from a stored row, treat every ordinary weekday as closed.
   - Property: for every date with `is_trading = false` in `hat_trading_calendar`, `MarketHoursPolicy` reports the market closed at every instant of that date, so every HAT order path refuses it; for every date with `is_trading = true`, the session is `open_at`–`close_at`. Harm: orders are attempted on an exchange holiday, or the scheduler runs scans for a day with no data.
   - Property: for every calendar, the scheduler's set of trading days equals the set of dates with `is_trading = true`. Harm: jobs run on holidays or skip trading days.
 
@@ -231,10 +232,11 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
 #### HAT-DATA-043: Raw bars are written once per date
 - **Statement:** Accepted rows are written to `bars_daily_raw/date=<trade_date>` with `traded_value` null (MCP), `source` and `ingest_run_id`; once committed, a date's raw partition is never rewritten.
 - **Source:** DS "Nightly ingest" step 6; SCH "Parquet datasets" ("Raw files are never rewritten").
-- **PR:** 7
-- **Verification:** PBT `ingest.raw_write_once`, TLA `JobScheduler!AtMostOnceSuccess`
+- **PR:** 7, 17
+- **Verification:** PBT `ingest.raw_write_once`, TLA `JobScheduler!AtMostOnceSuccess`, PBT `ingest.checks_kept_for_retry`
 - **Acceptance:**
   - Property: for every sequence of ingest runs, retries and fallbacks for one trade date, at most one committed raw partition exists for that date and its content never changes after commit. Harm: history mutates under backtests and adjusted prices can no longer be reproduced.
+  - Property: the run that writes the partition first writes its row-check counts beside it (`ingest-checks.json`, atomically), so a retry that reuses the partition, after a later failure or a crash right after the write, reports the counts of the run that wrote it. Harm: a retry's quality gate reads 0 dropped rows and passes a day the first run's checks would fail.
 
 #### HAT-DATA-044: Index snapshot and breadth are stored nightly
 - **Statement:** The nightly ingest stores the `get_index_snapshot` levels (including NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX) to `index_daily` and the `get_market_breadth` advance/decline record to `market_breadth/date=d` (counted from our own bars, `source = derived`, when the MCP has none) for the regime engine.
@@ -393,12 +395,12 @@ The nightly data-quality gate (I14) blocks scans when the day's data is not trus
 #### HAT-DATA-065: A failed gate blocks scans but never exits
 - **Statement:** A FAIL blocks that date's scans, puts bots manage-only through the data-health kill state (automatic re-arm when healthy) and sends a Telegram alert; exits and stops continue.
 - **Source:** DS "Nightly ingest" step 7; BL "Kill switches" ("Data or broker health check fails → affected bots manage-only; re-arm automatic when healthy"); MA "Failure handling".
-- **PR:** 7, 10
-- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`
+- **PR:** 7, 10, 17
+- **Verification:** TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `quality_gate.rows_written`
 - **Acceptance:**
   - Property: in every reachable state where the gate for d is FAIL, no `watchlist.published` event exists for d and no entry order is created until a later gate passes, while exit and stop actions remain enabled. Harm: bad data creates entries, or a data failure leaves open positions unmanaged.
   - Property: in every reachable state, the data-health kill state clears automatically when the next gate passes, and only then. Harm: bots stay idle forever after one bad night, or resume on a still-failing feed.
-  - Property: every FAIL produces exactly one health alert through the `Notifier` protocol. Harm: the owner does not learn that the bots stopped entering.
+  - Property: every FAIL produces exactly one health alert through the `Notifier` protocol, and a retry that fails the same checks for the same date records no second `quality.failed` and sends no second alert. Harm: the owner does not learn that the bots stopped entering, or is alerted every 10 minutes until morning.
 
 ## §7 Features
 
@@ -753,9 +755,10 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
 - **Statement:** The opening-range high and low are the high and low of the 09:15–09:20 bar, fixed when it becomes final.
 - **Source:** DS "Live data" (09:20 row); MA "Daily cycle" step 4; B9.
 - **PR:** 14
-- **Verification:** PBT `bars.opening_range_fixed`
+- **Verification:** PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`
 - **Acceptance:**
   - Property: for every tick sequence, from 09:20:02 onward the opening-range high and low equal the first bar's high and low and never change for the rest of the day. Harm: the ORB trigger level drifts upward and entries are late or never fire.
+  - Property: after a restart mid-session, a bar builder given the day's stored final bars (`BarBuilder.restore`) and then the rest of the ticks has the same opening ranges and day volumes as one that saw every tick, and a restored bar never replaces a live one. Harm: after a restart the opening range is lost and no ORB entry fires for the rest of the day.
 
 #### HAT-DATA-115: Volume pace
 - **Statement:** Volume pace = cumulative day volume ÷ fraction of session elapsed, compared with the criterion's average-volume baseline.

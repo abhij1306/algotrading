@@ -49,6 +49,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `CONF telegram__no_webhook_no_listener` HAT-TG-010: the package binds no socket, imports no server and names no setWebhook; the client refuses any method but the four outbound ones before a request. Harm: an exposed port on the trading box.
 - `CONF telegram__no_order_import_in_text_path` HAT-TG-031: no module of the text path reaches the router, submission, the trade manager, the adapter, trades, approvals or the risk authority. Harm: free text reaches an order.
 - `CONF auto_mode_single_user` HAT-OVR-061: no API route reaches the mode code, and `/mode auto` (and its Confirm) is refused for a bot whose account is not `HAT_USER_ID`'s. Harm: orders for someone else's account without SEBI empanelment.
+- `PBT telegram.watchlist_digest_once` A `watchlist.digest` retry after a partial send failure sends only the digests not yet sent for the day's latest publish. Harm: the owner gets the same digest on every retry.
 
 ## Run
 
@@ -116,7 +117,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `e15391b242c746e4ff6927480ca99b6c9e38239cf3eff4b5c17ed6374c1f1a46`
+Covered digest: `6c48bbdfc76086cf2de21e49c167227d0bd4f394d4bbbbd5f9058daa19b9164f`
 
 ## Scope changes
 
@@ -573,4 +574,12 @@ Break: the owner check in `commands.py:_mode_refusal` removed.
 E   AssertionError: assert None == 'auto_not_owner'
 E    +  where None = Reply(accepted=True, reason=None, text='Mode auto for s-a16b4a4b-1258-44fd-9a2e-2665dabe2eb5 from 2026-10-22T03:45:00+00:00', buttons=()).r
 E    +    where Reply(accepted=True, reason=None, text='Mode auto for s-a16b4a4b-1258-44fd-9a2e-2665dabe2eb5 from 2026-10-22T03:45:00+00:00', buttons=()) = Hand
+```
+
+### PBT telegram.watchlist_digest_once
+
+Break: `send_watchlist_digest` ignores the digests already sent (`if bot is None or _digest_sent(session, bot_id, day):` to `if bot is None:`).
+
+```
+E   AssertionError: assert 2 == (0 + 1)
 ```

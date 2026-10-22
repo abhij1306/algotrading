@@ -1,0 +1,392 @@
+"""The nightly and housekeeping job bodies of the daily cycle (10-ops §3, PR 17).
+
+Each body is the PR's job logic called with its real inputs: the ingest polls the NSE MCP from
+18:00 and falls back to the bhavcopy at 22:00 (PR 7), then `quality.gate` → `ca.adjust` →
+`features` → `regime` → `allocate` → `scan` → `watchlist.digest` run one after the other through
+the scheduler's `after` chain (HAT-OPS-021), each for the same trade date. `snapshot.bots` follows
+`allocate` (the drawdown kills read it, and the 15:40 report reads the latest snapshot), and the
+gaps between the 15:25 exits and the official closes are recorded once the ingest has the day's
+closes (HAT-OPS-034). Housekeeping (calendar, reference data, bands, event partitions, the chat
+log purge) runs on its own schedule.
+
+The bodies take everything outside themselves through `NightlyDeps`, so the simulated day runs
+them over fixture data, a recorded MCP transport and fake text sources.
+"""
+
+from __future__ import annotations
+
+import copy
+import logging
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
+
+import polars as pl
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from ..clock import Clock
+from ..data import ingest as nightly_ingest
+from ..data.bhavcopy import Fetcher
+from ..data.calendar import session_calendar
+from ..data.corporate_actions import stored_factors
+from ..data.features import features_job
+from ..data.mcp_client import McpClient
+from ..data.quality import JOB_QUALITY, excluded_for, gate_body
+from ..data.reference_jobs import (
+    CircuitSource,
+    TextSource,
+    bands_nightly,
+    calendar_refresh,
+    reference_weekly,
+)
+from ..data.renames import renames_from_bars
+from ..data.store import ActionFactor, DataStore
+from ..data.symbols import symbol_master
+from ..engine.live_trades import record_close_gaps
+from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
+from ..engine.portfolio.service import policy_at
+from ..engine.scan import ScanInputs
+from ..engine.strategy.config import parse_config
+from ..engine.watchlist import scan_and_publish
+from ..models import HatBot, HatStrategyVersion
+from ..notify import LogNotifier, Notifier
+from ..ops.jobs import JobError, JobResult, SessionFactory
+from ..ops.partitions import events_partitions
+from ..ops.retention import purge_job
+from ..ops.scheduler import Days, ScheduledJob
+from ..risk.controls import evaluate_drawdown_kills, snapshot_bots
+from ..time import utc_now
+from .market import official_closes, scan_inputs
+
+__all__ = [
+    "BANDS_NIGHTLY",
+    "CALENDAR_REFRESH",
+    "CA_ADJUST",
+    "CLOSE_GAPS",
+    "EVENTS_PARTITIONS",
+    "FEATURES",
+    "INGEST_NIGHTLY",
+    "NIGHTLY_CHAIN",
+    "NightlyDeps",
+    "REFERENCE_WEEKLY",
+    "RETENTION_PURGE",
+    "SCAN",
+    "SNAPSHOT_BOTS",
+    "TextSources",
+    "WATCHLIST_DIGEST",
+    "next_session",
+    "nightly_jobs",
+]
+
+INGEST_NIGHTLY = nightly_ingest.JOB_INGEST
+CA_ADJUST = "ca.adjust"
+FEATURES = "features"
+SCAN = "scan"
+WATCHLIST_DIGEST = "watchlist.digest"
+SNAPSHOT_BOTS = "snapshot.bots"
+CLOSE_GAPS = "exits.close_gaps"
+CALENDAR_REFRESH = "calendar.refresh"
+REFERENCE_WEEKLY = "reference.weekly"
+BANDS_NIGHTLY = "bands.nightly"
+EVENTS_PARTITIONS = "events.partitions"
+RETENTION_PURGE = "retention.purge"
+
+# The pipeline of HAT-OPS-021, in order: each job starts once the one before it succeeded.
+NIGHTLY_CHAIN = (
+    INGEST_NIGHTLY,
+    JOB_QUALITY,
+    CA_ADJUST,
+    FEATURES,
+    REGIME_JOB,
+    ALLOCATE_JOB,
+    SCAN,
+    WATCHLIST_DIGEST,
+)
+
+logger = logging.getLogger(__name__)
+
+INGEST_AT = time(18, 0)  # the first probe (HAT-OPS-022); the body waits until 22:00 at most
+CALENDAR_AT = time(7, 0)  # daily: a changed holiday list is picked up the same morning
+BANDS_AT = time(7, 45)  # before the pre-open: the bands in force today
+REFERENCE_AT = time(9, 0)
+REFERENCE_WEEKDAY = 5  # Saturday: the market is shut and the instrument master is quiet
+PARTITIONS_AT = time(0, 30)
+PURGE_AT = time(1, 0)
+INGEST_RETRY = timedelta(minutes=10)
+
+
+@dataclass(frozen=True)
+class TextSources:
+    """Where the reference files come from: NSE downloads in production, fixtures in checks."""
+
+    equity_list: TextSource
+    holidays: TextSource
+    price_bands: Callable[[date], TextSource]
+    industry_list: TextSource | None = None
+    circuit_limits: CircuitSource | None = None
+
+
+@dataclass
+class NightlyDeps:
+    store: DataStore
+    session_factory: SessionFactory
+    clock: Clock
+    user_id: uuid.UUID
+    mcp: Callable[[], McpClient | None]  # a fresh client per run, so its call count is the run's
+    bhavcopy: Callable[[], Fetcher]  # the 22:00 fallback's downloader
+    sources: TextSources
+    total_equity: Callable[[date], Decimal]  # [OWNER-PENDING] HAT-PORT-052: broker funds
+    sleep: Callable[[float], None]  # the ingest's wait; the runtime's raises when HAT stops
+    notifier: Notifier = field(default_factory=LogNotifier)
+    digest: Callable[[uuid.UUID, date], None] | None = None  # Reports.send_watchlist_digest
+    on_loaded: Callable[[], None] = lambda: None  # new daily bars: drop the cached daily view
+
+
+def next_session(session: Session, day: date) -> date | None:
+    """The first trading day of the calendar after `day`; None when the calendar holds none."""
+    calendar = session_calendar(session)
+    return None if calendar is None else calendar.next_trading_day(day)
+
+
+def _mcp(deps: NightlyDeps) -> McpClient:
+    client = deps.mcp()
+    if client is None:
+        raise JobError("mcp_not_configured")
+    return client
+
+
+def _active_bots(session: Session) -> list[HatBot]:
+    return list(
+        session.scalars(
+            select(HatBot)
+            .where(HatBot.status == "active", HatBot.live_version_id.is_not(None))
+            .order_by(HatBot.id)
+        )
+    )
+
+
+def _index_of(session: Session, bot: HatBot) -> str | None:
+    version = session.get(HatStrategyVersion, bot.live_version_id)
+    return None if version is None else parse_config(version.config).regime.index
+
+
+class Nightly:
+    """The job bodies over one `NightlyDeps`. Each takes the trade date the run is kept under."""
+
+    def __init__(self, deps: NightlyDeps) -> None:
+        self.deps = deps
+        self._ingest_reports: dict[date, dict[str, nightly_ingest.IngestReport]] = {}
+
+    def _now(self) -> datetime:
+        return utc_now(self.deps.clock)
+
+    # --- the pipeline -----------------------------------------------------------------------
+
+    def ingest(self, day: date) -> JobResult:
+        deps = self.deps
+        holder = self._ingest_reports.setdefault(day, {})
+        body = nightly_ingest.ingest_body(
+            nightly_ingest.IngestDeps(
+                client=_mcp(deps),
+                store=deps.store,
+                session_factory=deps.session_factory,
+                clock=deps.clock,
+                sleep=deps.sleep,
+                fallback=lambda d: nightly_ingest.bhavcopy_day(deps.store, deps.bhavcopy(), d),
+                notifier=deps.notifier,
+            ),
+            day,
+            holder,
+        )
+        result = body()
+        deps.on_loaded()
+        return result
+
+    def ingest_finished(self, day: date) -> nightly_ingest.OnFinish:
+        """`ingest.completed` or `ingest.failed`, in the transaction that records the run."""
+        return nightly_ingest.outcome_recorder(
+            self._ingest_reports.setdefault(day, {}), day, self.deps.clock
+        )
+
+    def quality_gate(self, day: date) -> JobResult:
+        deps = self.deps
+        return gate_body(
+            session_factory=deps.session_factory,
+            store=deps.store,
+            trade_date=day,
+            notifier=deps.notifier,
+            clock=deps.clock,
+        )()
+
+    def ca_adjust(self, _day: date) -> JobResult:
+        """Corporate actions adjust prices at read time (`bars_daily` over the stored factors);
+        this step checks the factors load into the adjusted view before the features read it."""
+        with self.deps.session_factory() as session:
+            factors = stored_factors(session)
+        with self.deps.store.connect(factors):
+            logger.info("adjusted view loads with %d factors", len(factors))
+        return JobResult(rows=len(factors))
+
+    def features(self, day: date) -> JobResult:
+        def actions() -> list[ActionFactor]:
+            with self.deps.session_factory() as session:
+                return stored_factors(session)
+
+        return features_job(self.deps.store, actions, through=day)()
+
+    def regime(self, day: date) -> JobResult:
+        with self.deps.session_factory() as session:
+            result = regime_job(session, self.deps.store, day)
+            session.commit()
+        return result
+
+    def allocate(self, day: date) -> JobResult:
+        with self.deps.session_factory() as session:
+            result = allocate_job(
+                session,
+                day,
+                user_id=self.deps.user_id,
+                total_equity=lambda: self.deps.total_equity(day),
+            )
+            session.commit()
+        return result
+
+    def snapshot(self, day: date) -> JobResult:
+        """Each bot's equity, peak and open risk for `day`, then the drawdown kills on them."""
+        with self.deps.session_factory() as session:
+            result = snapshot_bots(session, day)
+            evaluate_drawdown_kills(
+                session, policy_at(session, self.deps.user_id, day), self._now()
+            )
+            session.commit()
+        return result
+
+    def scan(self, day: date) -> JobResult:
+        """Each active bot's watchlist for the next session from the bars of `day`, without the
+        instruments the quality gate excluded (HAT-DATA-064)."""
+        rows = 0
+        with self.deps.session_factory() as session:
+            target = next_session(session, day)
+            if target is None:
+                raise JobError("scan_no_next_session")
+            excluded = excluded_for(session, day)
+            inputs: dict[str, ScanInputs] = {}
+            for bot in _active_bots(session):
+                index = _index_of(session, bot)
+                if index is None:
+                    continue
+                if index not in inputs:
+                    found = scan_inputs(self.deps.store, session, day, index)
+                    if excluded and found.bars.height:
+                        found = _without(found, excluded)
+                    inputs[index] = found
+                published = scan_and_publish(session, bot.id, inputs[index], target, self._now())
+                session.commit()
+                rows += published.rows
+        return JobResult(rows=rows)
+
+    def watchlist_digest(self, day: date) -> JobResult:
+        send = self.deps.digest
+        with self.deps.session_factory() as session:
+            target = next_session(session, day)
+            bots = [b.id for b in _active_bots(session)]
+        if target is None:
+            raise JobError("scan_no_next_session")
+        if send is not None:
+            for bot_id in bots:
+                send(bot_id, target)
+        return JobResult(rows=len(bots))
+
+    def close_gaps(self, day: date) -> JobResult:
+        closes = official_closes(self.deps.store, day)
+        with self.deps.session_factory() as session:
+            recorded = record_close_gaps(session, day, closes, self._now())
+            session.commit()
+        return JobResult(rows=recorded)
+
+    # --- housekeeping -----------------------------------------------------------------------
+
+    def calendar(self, _day: date) -> JobResult:
+        deps = self.deps
+        return calendar_refresh(
+            holiday_list=deps.sources.holidays, session_factory=deps.session_factory
+        )()
+
+    def reference(self, day: date) -> JobResult:
+        deps = self.deps
+        return reference_weekly(
+            client=_mcp(deps),
+            equity_list=deps.sources.equity_list,
+            industry_list=deps.sources.industry_list,
+            session_factory=deps.session_factory,
+            master=symbol_master,
+            today=day,
+            renames=lambda: renames_from_bars(deps.store),
+        )()
+
+    def bands(self, day: date) -> JobResult:
+        deps = self.deps
+        return bands_nightly(
+            price_band_file=deps.sources.price_bands(day),
+            circuit_limits=deps.sources.circuit_limits,
+            session_factory=deps.session_factory,
+            effective=day,
+        )()
+
+    def partitions(self, day: date) -> JobResult:
+        with self.deps.session_factory() as session:
+            bind = session.get_bind()
+        return events_partitions(bind, day, self.deps.notifier)
+
+    def purge(self, day: date) -> JobResult:
+        with self.deps.session_factory() as session:
+            return purge_job(session, day)
+
+
+def _without(inputs: ScanInputs, excluded: set[str]) -> ScanInputs:
+    keep = ~pl.col("instrument_id").cast(pl.String).is_in(sorted(excluded))
+    return copy.replace(inputs, bars=inputs.bars.filter(keep))
+
+
+def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
+    """The nightly pipeline and the housekeeping jobs at their 10-ops §3 times (IST)."""
+    n = Nightly(deps)
+    chain = (
+        (JOB_QUALITY, n.quality_gate),
+        (CA_ADJUST, n.ca_adjust),
+        (FEATURES, n.features),
+        (REGIME_JOB, n.regime),
+        (ALLOCATE_JOB, n.allocate),
+        (SCAN, n.scan),
+        (WATCHLIST_DIGEST, n.watchlist_digest),
+    )
+    pipeline = tuple(
+        ScheduledJob(name, INGEST_AT, body, after=(NIGHTLY_CHAIN[i],))
+        for i, (name, body) in enumerate(chain)
+    )
+    return (
+        ScheduledJob(
+            INGEST_NIGHTLY,
+            INGEST_AT,
+            n.ingest,
+            retry_after=INGEST_RETRY,
+            on_finish=n.ingest_finished,
+        ),
+        *pipeline,
+        ScheduledJob(SNAPSHOT_BOTS, INGEST_AT, n.snapshot, after=(ALLOCATE_JOB,)),
+        ScheduledJob(CLOSE_GAPS, INGEST_AT, n.close_gaps, after=(INGEST_NIGHTLY,)),
+        ScheduledJob(CALENDAR_REFRESH, CALENDAR_AT, n.calendar, days=Days.EVERY),
+        ScheduledJob(
+            REFERENCE_WEEKLY,
+            REFERENCE_AT,
+            n.reference,
+            days=Days.EVERY,
+            weekday=REFERENCE_WEEKDAY,
+        ),
+        ScheduledJob(BANDS_NIGHTLY, BANDS_AT, n.bands),
+        ScheduledJob(EVENTS_PARTITIONS, PARTITIONS_AT, n.partitions, days=Days.EVERY),
+        ScheduledJob(RETENTION_PURGE, PURGE_AT, n.purge, days=Days.EVERY),
+    )

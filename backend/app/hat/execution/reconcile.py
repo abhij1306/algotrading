@@ -174,9 +174,11 @@ class ReconciliationService:
         self._alerted: set[tuple[str, str, uuid.UUID | None]] = set()
 
     def run(self, session: Session, account_id: uuid.UUID) -> ReconcileReport:
-        """Reconcile one broker account. Raises BrokerUnavailableError (leaving the guard
-        unreconciled, so nothing is placed) when the broker cannot be read."""
-        self._guard.begin_session()
+        """Reconcile one broker account. Raises BrokerUnavailableError when the broker cannot be
+        read, leaving the guard as it was: a session not yet reconciled places nothing, and a
+        routine re-run never closes the gate under orders on other threads (a reconciliation
+        succeeded in this process lifetime, `OrderReconciliation`). A start or a new session
+        clears the guard first (`ExecutionGuard.begin_session`)."""
         orders = self._broker.orders()
         quantities = broker_quantities(self._broker.positions(), self._broker.holdings())
         by_tag = {o.tag: o for o in orders if is_hat_tag(o.tag)}

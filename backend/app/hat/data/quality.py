@@ -141,10 +141,12 @@ def evaluate(
 
 def persist(
     session: Session, run_id: uuid.UUID, result: GateResult, trade_date: date, clock: Clock | None
-) -> None:
+) -> bool:
     """Write the gate's rows and its consequences in the caller's transaction (HAT-DATA-064,
     065): one row per check, then `quality.failed` and the health kill on a FAIL, or the health
-    kill's clearing on a pass."""
+    kill's clearing on a pass. A retry of the day's gate (the same `hat_job_run`) that fails the
+    same checks again records no second `quality.failed`. True when this FAIL is news (the
+    caller alerts then)."""
     session.execute(delete(HatQualityCheck).where(HatQualityCheck.job_run_id == run_id))
     for check in result.checks:
         session.add(
@@ -158,7 +160,15 @@ def persist(
         sync_health(
             session, scope="account", bot_id=None, failing=False, reason="data_health", now=now
         )
-        return
+        return False
+    sync_health(session, scope="account", bot_id=None, failing=True, reason="data_health", now=now)
+    earlier = session.scalars(
+        select(HatEvent.payload).where(
+            HatEvent.aggregate_id == run_id, HatEvent.event_type == "quality.failed"
+        )
+    ).all()
+    if any(payload.get("failed") == result.failed_names for payload in earlier):
+        return False
     record(
         session,
         aggregate_type="ingest",
@@ -168,7 +178,7 @@ def persist(
         payload={"trade_date": trade_date.isoformat(), "failed": result.failed_names},
         occurred_at=now,
     )
-    sync_health(session, scope="account", bot_id=None, failing=True, reason="data_health", now=now)
+    return True
 
 
 def _run_id(session: Session, job: str, trade_date: date) -> uuid.UUID | None:
@@ -240,10 +250,11 @@ def gate_body(
             if summary is None or not store.partition_files(DATASET_BARS, trade_date):
                 raise JobError(CODE_NO_INGEST)
             result = evaluate(excluded=skipped, **gate_inputs(session, store, trade_date, summary))
-            persist(session, run_id, result, trade_date, clock)
+            news = persist(session, run_id, result, trade_date, clock)
             session.commit()
         if not result.passed:
-            sink.alert(CODE_FAILED, trade_date, {"failed": ",".join(result.failed_names)})
+            if news:  # a retry failing the same checks again is not alerted again
+                sink.alert(CODE_FAILED, trade_date, {"failed": ",".join(result.failed_names)})
             raise JobError(CODE_FAILED)
         return JobResult(rows=len(result.checks))
 

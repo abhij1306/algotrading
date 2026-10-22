@@ -32,13 +32,17 @@ configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`
 1. Get the event loop.
 2. Create the database schema (`init_db`). If the database is down, one log line says so and the
    app keeps serving (requests answer 503) unless `HAT_ENABLED` is true, which refuses to start.
-3. Only when `HAT_ENABLED` is true: start the HAT scheduler (`app/hat/ops/scheduler.py`), check
-   the Fyers token (warn only), then start the live feed (`app/hat/data/feed.py`, the one Fyers
-   data socket). HAT's Telegram bot (`app/hat/telegram/`, PR 16) is built but not wired into
-   startup yet; PR 17 starts its poller, relay and jobs.
+3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
+   (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
+   database that is not PostgreSQL and a bad Telegram configuration, reconciles every broker
+   account before anything is placed, then starts the scheduler with the daily cycle
+   (`daily_jobs`, the 10-ops §3 job table), the live feed (`app/hat/data/feed.py`, the one Fyers
+   data socket, built in `main.py`), the periodic loop (session watch, fill sync, approval expiry,
+   reconciliation, live exits, announcements) and the Telegram poller and relay.
 
 With `HAT_ENABLED` unset or false (the default) no HAT task runs: the app serves only the routes
-below. Shutdown stops the feed, the scheduler and the database engine, each even if another failed.
+below. Shutdown stops the HAT runtime (tasks, scheduler, feed, broker sessions), then the database
+engine, each even if the other failed.
 
 ### Routes
 
@@ -48,8 +52,11 @@ below. Shutdown stops the feed, the scheduler and the database engine, each even
   token and save it) and `POST /disconnect`. Fyers redirects to the registered `REDIRECT_URI`;
   the backend serves no callback, so paste the `auth_code` from the redirected URL into the login
   dialog in the app header. The token file is owned by `app/hat/execution/fyers_tokens.py`.
-
-`/api/hat/*` read routes and the dashboard arrive with PR 15 and PR 17.
+- The read-only dashboard, `app/hat/api/dashboard.py`, under `/api/hat` (GET only, HAT-DEC-T3;
+  kill, re-arm, mode and flatten are Telegram commands): `/status`, `/bots`, `/watchlist`,
+  `/signals`, `/positions`, `/allocations`, `/regime` and `/events` (`signals`, `regime` and
+  `events` take `limit`, 1..200, default 50). Money and weights are decimal strings. The
+  frontend page `frontend/app/hat/page.tsx` polls them every 15 s.
 
 ---
 

@@ -4,32 +4,44 @@ Fyers adapter and `FakeBroker` beneath it. Nothing reaches a real broker."""
 
 from __future__ import annotations
 
+import threading
+import time as time_module
 import uuid
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
+from unittest import mock
 
+import pytest
 from hat.fakes.broker import FakeBroker, accepted, rejected
 from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
-from hat_exec_support import SYMBOLS, live_session
+from hat_exec_support import SYMBOLS, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.hat.daily.accounts import Desks
+from app.hat.daily.live import stale_feed
+from app.hat.daily.production import one_login_each
+from app.hat.data.staleness import StalenessMonitor
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.engine.portfolio import lifecycle as sleeves
+from app.hat.errors import HatConfigError
 from app.hat.execution import modes
-from app.hat.execution.broker import OrderType, Side
+from app.hat.execution.broker import BrokerUnavailableError, OrderType, Side
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.guard import ExecutionGuard
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
 from app.hat.execution.router import (
     ALERT_ENTRY_NOT_PLACED,
     ALERT_ORDER_REJECTED,
+    SESSION_NOT_LIVE,
+    SIGNAL_EXPIRED,
     ExecutionRouter,
     PlacementCheck,
 )
@@ -39,6 +51,7 @@ from app.hat.models import (
     HatApproval,
     HatBot,
     HatBrokerAccount,
+    HatBrokerSession,
     HatEvent,
     HatInstrument,
     HatMarket,
@@ -50,6 +63,8 @@ from app.hat.models import (
 from app.hat.notify import RecordingNotifier
 from app.hat.risk import controls
 from app.hat.risk.modes import ModeChangeError
+from app.hat.risk.sessions import SessionState
+from app.hat.time import IST
 
 D = Decimal
 MODE = st.sampled_from(modes.MODES)
@@ -98,10 +113,12 @@ class Rig:
                     active=True,
                 )
             )
+        seed_live_sessions(session, self.account_id)
         session.commit()
         self.fake = fake if fake is not None else FakeBroker()
         broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
+        self.broker = broker
         self.guard = ExecutionGuard(reconciled=reconciled)
         self.notifier = RecordingNotifier()
         reconciler = ReconciliationService(broker, self.guard, notifier_sink(self.notifier))
@@ -452,6 +469,227 @@ def test_reconcile_before_first_order(foreign_ht: bool, unreadable: bool) -> Non
             assert signal.state == lifecycle.ENTRY_PLACED
 
 
+class GuardSpy:
+    """The adapter, recording what the order gate answers while each book read is in flight
+    (another thread's order would read the same gate at that moment)."""
+
+    def __init__(self, broker: FyersHatBroker, guard: ExecutionGuard, bot_id: uuid.UUID) -> None:
+        self._broker = broker
+        self._guard = guard
+        self._bot_id = bot_id
+        self.seen: list[str | None] = []
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._broker, name)
+
+    def _read(self, name: str) -> object:
+        self.seen.append(self._guard.refusal(self._bot_id, uuid.uuid4(), is_entry=False))
+        return getattr(self._broker, name)()
+
+    def orders(self) -> object:
+        return self._read("orders")
+
+    def positions(self) -> object:
+        return self._read("positions")
+
+    def holdings(self) -> object:
+        return self._read("holdings")
+
+
+@settings(max_examples=20, deadline=None)
+@given(st.integers(min_value=1, max_value=3), st.booleans())
+def test_routine_reconcile_keeps_gate(runs: int, unreadable: bool) -> None:
+    """HAT-BRK-110, `OrderReconciliation` (`reconciled`: a reconciliation succeeded in this
+    process lifetime): once the session reconciled, the periodic re-runs, readable or not, never
+    close the order gate while they read the book, and a run that cannot read the book leaves it
+    open. Harm: an entry or a sale on another thread lands inside the five-minutely read, is
+    refused `not_reconciled`, and the entry is lost or the position is left without its stop."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        spy = GuardSpy(rig.broker, rig.guard, rig.world.bot_id)
+        reconciler = ReconciliationService(spy, rig.guard)  # type: ignore[arg-type]
+        if unreadable:
+            rig.fake.orders = ConnectionError("down")
+        for _ in range(runs):
+            try:
+                reconciler.run(session, rig.account_id)
+            except BrokerUnavailableError:
+                pass
+        assert spy.seen
+        assert set(spy.seen) == {None}
+        assert rig.guard.reconciled
+
+
+class _NoHealth:
+    def feed_stale(self, now: datetime, silent_for: timedelta | None) -> None:
+        del now, silent_for
+
+    def feed_recovered(self, now: datetime) -> None:
+        del now
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    st.booleans(),
+    st.booleans(),
+    st.booleans(),
+    st.integers(min_value=0, max_value=29),
+)
+def test_resumed_entry_waits_for_feed(earlier: bool, late: bool, heard: bool, ago: int) -> None:
+    """HAT-OPS-003, HAT-DATA-116 (audit H1, M2): after a restart, an auto entry a crash left in
+    Triggered is placed only once the live feed has been heard from (within 30 s) and its account
+    has reconciled (at the start or `late`, by a later reconciliation), once; one of an earlier
+    session is never placed and ends Rejected `signal_expired`. Harm: a restart during a feed
+    outage buys on no market data, or buys today at a price, size and risk decision fixed on an
+    earlier day."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        with mock.patch.object(ExecutionRouter, "place_entry", return_value=None):
+            signal_id = rig.route().signal_id  # the process dies before the entry is sent
+        assert rig.signal(signal_id).state == lifecycle.TRIGGERED
+        day = CALENDAR.next_trading_day(TRADE_DAY) if earlier else TRADE_DAY
+        assert day is not None
+        now = datetime.combine(day, AT.astimezone(IST).time(), tzinfo=IST)
+        monitor = StalenessMonitor(_NoHealth(), lambda t: CALENDAR.state(t) is SessionState.OPEN)
+
+        def check(_s: Session, _bot: uuid.UUID, at: datetime) -> PlacementCheck:
+            return replace(LIVE, feed_stale=stale_feed(monitor, at))
+
+        books = rig.fake.orders
+        if late:
+            rig.fake.orders = ConnectionError("down")  # the start's reconciliation fails
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: rig.broker,
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        desks.recover(now)
+        desks.resume_entries(now, check, lambda: stale_feed(monitor, now))
+        assert rig.places() == []  # no tick heard since the start: the feed reads as stale
+        if heard:
+            monitor.on_tick(now - timedelta(seconds=ago))
+        rig.fake.orders = books
+        if late:
+            desks.resume_entries(now, check, lambda: stale_feed(monitor, now))
+            assert rig.places() == []  # the account has not reconciled yet
+            desks.reconcile_all(now)
+        for _ in range(2):  # a second pass places nothing more
+            desks.resume_entries(now, check, lambda: stale_feed(monitor, now))
+        signal = rig.signal(signal_id)
+        desks.release()
+        if not heard:
+            assert rig.places() == []
+            assert signal.state == lifecycle.TRIGGERED
+        elif earlier:
+            assert rig.places() == []
+            assert signal.state == lifecycle.REJECTED
+            assert _rejected_reason(session, signal_id) == SIGNAL_EXPIRED
+        else:
+            assert len(rig.places()) == 1
+            assert signal.state == lifecycle.ENTRY_PLACED
+
+
+class OverlapSpy:
+    """The adapter, counting the broker calls in flight at once."""
+
+    def __init__(self, broker: FyersHatBroker) -> None:
+        self._broker = broker
+        self._lock = threading.Lock()
+        self._active = 0
+        self.most = 0
+        self.calls: list[str] = []
+
+    def __getattr__(self, name: str) -> object:
+        attribute = getattr(self._broker, name)
+        if not callable(attribute):
+            return attribute
+
+        def call(*args: object, **kwargs: object) -> object:
+            with self._lock:
+                self._active += 1
+                self.most = max(self.most, self._active)
+                self.calls.append(name)
+            try:
+                time_module.sleep(0.002)
+                return attribute(*args, **kwargs)
+            finally:
+                with self._lock:
+                    self._active -= 1
+
+        return call
+
+
+@settings(max_examples=5, deadline=None)
+@given(st.integers(min_value=2, max_value=4))
+def test_desk_calls_serialised(rounds: int) -> None:
+    """Trading-safety rule 9: the reconciliation, the fill sync, the session watch and the funds
+    reads of one account, run from different threads (the periodic loop, the scheduler's jobs,
+    the trigger executor), never call its broker at once: every part of the desk goes through
+    the account's session owner. Harm: a reconciliation reads the book half way through a send
+    on another thread and acts on a book that is neither before nor after it."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        spy = OverlapSpy(rig.broker)
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: spy,  # type: ignore[arg-type,return-value]
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        desk = desks.by_account[rig.account_id]
+        work = (
+            lambda: desks.reconcile_all(AT),
+            lambda: desks.sync_all(AT),
+            lambda: desks.watch_sessions(AT),
+            lambda: desk.broker.funds(),
+        )
+
+        def repeat(step: Callable[[], object]) -> None:
+            for _ in range(rounds):
+                step()
+
+        threads = [threading.Thread(target=repeat, args=(step,)) for step in work]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        spy.calls.clear()
+        desks.watch_sessions(AT)
+        desks.release()
+    assert spy.most == 1
+    assert spy.calls == ["session_status"]  # the row and the outage watch see one read
+
+
+@settings(max_examples=40, deadline=None)
+@given(st.lists(st.sampled_from(("fyers", "other", "unknown")), min_size=1, max_size=5))
+def test_one_login_per_broker(brokers: list[str]) -> None:
+    """Trading-safety rule 9 (audit L2): the production adapters log in once per broker, so the
+    desks get at most one adapter per broker; a second active account of a broker refuses the
+    start, and a broker without an adapter gets no desk. Harm: two accounts trade and reconcile
+    through one login, and the allocation counts the same funds twice."""
+    built: list[str] = []
+    broker_for = one_login_each(
+        {name: lambda n=name: built.append(n) for name in ("fyers", "other")}
+    )
+    seen: set[str] = set()
+    for name in brokers:
+        account = HatBrokerAccount(id=uuid.uuid4(), broker=name)
+        if name in seen and name != "unknown":
+            with pytest.raises(HatConfigError):
+                broker_for(account)
+            break
+        broker_for(account)
+        seen.add(name)
+    assert sorted(built) == sorted(seen - {"unknown"})
+
+
 EVENING = datetime(2026, 10, 20, 14, 0, tzinfo=UTC)  # 19:30 IST, the day before the session
 PRE_OPEN = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)  # 08:30 IST, before the session opens
 
@@ -605,3 +843,32 @@ def test_non_live_sleeve_routes_as_shadow(state: str, mode: str, gtt: bool) -> N
         if expected != modes.AUTO:
             assert rig.places() == []
             assert rig.fake.calls == []
+
+
+@settings(max_examples=30, deadline=None)
+@given(st.sampled_from(("missing", "expired", "unknown", "live")), st.integers(-3, 3))
+def test_entry_needs_live_session(status: str, offset: int) -> None:
+    """HAT-OPS-023: an accepted auto entry is placed only when its broker account has a live
+    `hat_broker_session` for the trade date of the placement; otherwise nothing is sent and the
+    signal ends Rejected with `broker_session_not_live`. A live session of another day does not
+    count. Harm: an entry goes out on an account nobody logged in today, or whose session
+    dropped."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        session.execute(delete(HatBrokerSession))
+        day = TRADE_DAY + timedelta(days=offset)
+        if status != "missing":
+            session.add(
+                HatBrokerSession(broker_account_id=rig.account_id, trade_date=day, status=status)
+            )
+        session.commit()
+        outcome = trades.open_entry(
+            session, request_for(rig.world, rig.world.instruments[0]), mode=modes.AUTO
+        )
+        session.commit()
+        rig.router.place_entry(session, outcome.signal_id, now=AT, check=LIVE)
+        signal = rig.signal(outcome.signal_id)
+        allowed = status == "live" and day == TRADE_DAY
+        assert len(rig.places()) == int(allowed)
+        if not allowed:
+            assert _rejected_reason(session, signal.id) == SESSION_NOT_LIVE

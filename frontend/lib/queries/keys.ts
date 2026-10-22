@@ -4,4 +4,12 @@ export const queryKeys = {
     all: ["auth"] as const,
     fyersStatus: () => ["auth", "fyers", "status"] as const,
   },
+  hat: {
+    all: ["hat"] as const,
+    status: () => ["hat", "status"] as const,
+    allocations: () => ["hat", "allocations"] as const,
+    watchlist: () => ["hat", "watchlist"] as const,
+    positions: () => ["hat", "positions"] as const,
+    events: (limit: number) => ["hat", "events", limit] as const,
+  },
 };

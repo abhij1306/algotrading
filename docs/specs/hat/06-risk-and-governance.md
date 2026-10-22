@@ -215,7 +215,7 @@ The strategy-level gate (stage 2 of the bot config, see 04) is binary. The portf
 
 | Trigger | Effect | Re-arm |
 | --- | --- | --- |
-| Account equity ≥ 15% below its peak | All bots manage-only | Manual, via dashboard or `/arm` |
+| Account equity ≥ 15% below its peak | All bots manage-only | Manual, via `/arm` in Telegram (second confirmation) |
 | Bot equity ≥ 10% below its peak [A] | That bot manage-only | Manual |
 | `/kill` in Telegram | All bots manage-only; pending approvals cancelled | Manual |
 | Data or broker health check fails | Affected bots manage-only | Automatic when healthy |
@@ -251,13 +251,15 @@ Manage-only = no new entries; stops and exits keep running. Drawdown source: `ha
 #### HAT-RISK-063: Health kill
 - **Statement:** A failed data quality gate, stale feed or lost broker session makes the affected bots manage-only, and the state clears automatically when the check is healthy again.
 - **Source:** BL "Kill switches"; MA "Failure handling"; DS "Bar builder rules".
-- **PR:** 10, 14
-- **Verification:** TLA `KillSwitch!HealthAutoRearm`
+- **PR:** 10, 14, 17
+- **Verification:** TLA `KillSwitch!HealthAutoRearm`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `kill.kill_service_matches_model`
 - **Acceptance:**
   - Property: in every reachable state, while any health check for a bot is failing that bot accepts no entry, and once all its checks are healthy its health kill is cleared without user action. Harm: entries on bad data, or a bot left disabled after a transient fault.
+  - Property: each health check trips and clears only its own reason (`data_health` for the quality gate and ingest, `feed_health` for the live feed, `broker_health`): a check turning healthy never clears another check's trip. Harm: the feed recovering at 09:15 clears a failed gate, and entries run on data the gate rejected.
+- **Design (PR 17):** the reasons were one `health` channel, so `DataHealthKill(False)` re-armed the gate's trip. Each health reason is now its own stream of the kill key (`risk/kill.py:stream_of`); the feed writes `feed_health`.
 
 #### HAT-RISK-064: Manual re-arm with second confirm
-- **Statement:** Drawdown and manual kills re-arm only through the dashboard or `/arm` with a second confirmation; nothing re-arms them automatically.
+- **Statement:** Drawdown and manual kills re-arm only through the Telegram command `/arm` with a second confirmation; the dashboard is read-only (HAT-DEC-T3) and nothing re-arms them automatically.
 - **Source:** BL "Kill switches"; DS "Telegram / Commands" (`/arm` second confirm).
 - **PR:** 10, 16
 - **Verification:** TLA `KillSwitch!NoAutoRearm`
@@ -420,8 +422,8 @@ The invariants live in the risk manager, outside every config, so no edit can re
 #### HAT-GOV-091: Increase waits 7 days and passes the evidence gate
 - **Statement:** An increase takes effect no earlier than `requested_at + 7 days` [A] and only with gate evidence of ≥ 50 live trades with expectancy within tolerance.
 - **Source:** BL "Governance"; SCH CHECK `direction <> 'increase' or effective_from >= requested_at + interval '7 days'`.
-- **PR:** 2, 10, 12
-- **Verification:** DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`
+- **PR:** 2, 10, 12, 17
+- **Verification:** DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused`
 - **Acceptance:**
   - Property: the database rejects every insert with direction = increase and effective_from < requested_at + 7 days. Harm: risk rises on impulse.
   - Property: for every evidence set, an increase is accepted only when it records ≥ 50 live (non-virtual) closed trades and expectancy within tolerance in `gate_evidence`. Harm: risk rises without evidence.
@@ -429,6 +431,7 @@ The invariants live in the risk manager, outside every config, so no edit can re
 - **[A]** cooling-off 7 days: validated by review after the first increase.
 - **[OWNER-PENDING]** "expectancy within tolerance": the docs give no number; default = live expectancy (R) ≥ 0 and its 90% confidence interval overlapping the discounted backtest expectancy; owner to confirm.
 - **Design (PR 12):** the evidence source is `app.hat.backtest.runs.gate_evidence` (09 HAT-BT-060); the discount is the lifecycle's (05 HAT-PORT-065).
+- **Design (PR 17):** `request_policy_change` reads the evidence itself (`policy_service.backtest_evidence`, over `runs.gate_evidence`); a caller cannot hand it evidence. Property: with no completed backtest run, every increase is refused with `GateError` and writes nothing. Harm: an increase passes on evidence the caller made up.
 
 #### HAT-GOV-092: Policy versions are immutable
 - **Statement:** A published risk-policy version can never be updated or deleted except to set `superseded_at`.

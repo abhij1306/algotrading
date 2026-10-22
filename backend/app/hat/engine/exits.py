@@ -48,6 +48,7 @@ __all__ = [
     "is_partial_rule",
     "r_multiple",
     "rule_id",
+    "view_from_rules",
 ]
 
 Phase = Literal["live", "close", "nightly"]
@@ -110,6 +111,30 @@ class Evaluation:
     new_stop: Decimal | None = None  # a higher stop, or None for unchanged
     fired: tuple[str, ...] = ()  # ids newly marked fired, in stack order
     ignored: tuple[tuple[str, str], ...] = ()  # (rule id, reason), logged by the caller
+
+
+def view_from_rules(
+    price: Decimal | None,
+    rules: Sequence[ExitRule],
+    days_held: int,
+    sma_of: Callable[[int], Decimal | None],
+    swing_low_of: Callable[[int], Decimal | None],
+) -> ExitView:
+    """The view of a position at `price` with the SMA and swing-low levels its `rules` read
+    (`sma_of(length)`, `swing_low_of(lookback)`; a level left out makes its rule not fire). The
+    live close phase and the backtest both build their views here, so the rules read the same
+    inputs in both."""
+    sma: dict[int, Decimal] = {}
+    swing: dict[int, Decimal] = {}
+    for rule in rules:
+        if isinstance(rule, ExitCloseBelowSma) and (level := sma_of(rule.sma)) is not None:
+            sma[rule.sma] = level
+        elif (
+            isinstance(rule, ExitTrailingSwingLow)
+            and (low := swing_low_of(rule.lookback_days)) is not None
+        ):
+            swing[rule.lookback_days] = low
+    return ExitView(price, days_held=days_held, sma=sma, swing_low=swing)
 
 
 def rule_id(index: int, rule: ExitRule) -> str:

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 from ..execution.manage import EXITS_CLOSE_FROM, EXITS_CLOSE_UNTIL, TradeManager, ViewSource
 from ..execution.protect import SWAP_AT
@@ -56,7 +56,7 @@ def trade_jobs(
 ) -> tuple[ScheduledJob, ...]:
     """The three jobs of one broker account, at their 10-ops §3 times."""
 
-    def close() -> JobResult:
+    def close(_day: date) -> JobResult:
         with session_factory() as session:
             report = manager.close_exits(session, account_id, views, clock())
         if report.refused is not None:
@@ -65,14 +65,14 @@ def trade_jobs(
             raise JobError("exits_close_incomplete")
         return JobResult(calls=report.sales, rows=report.recorded)
 
-    def swap() -> JobResult:
+    def swap(_day: date) -> JobResult:
         with session_factory() as session:
             report = manager.swap_stops(session, account_id, clock())
         if report.failed:
             raise JobError("gtt_swap_incomplete")
         return JobResult(rows=report.done)
 
-    def verify() -> JobResult:
+    def verify(_day: date) -> JobResult:
         with session_factory() as session:
             report = manager.verify_stops(session, account_id, clock())
         if report.failed:

@@ -121,7 +121,11 @@ class Nse:
             if self.fail_bulk and len(arguments["symbols"]) > 1:
                 raise McpTransportError()
             data_day = self.day if self.ready() else self.day - timedelta(days=1)
-            rows = [self.quotes.get(s, self.default).row(s, data_day) for s in arguments["symbols"]]
+            rows = [
+                self.quotes.get(s, self.default).row(s, data_day)
+                for s in arguments["symbols"]
+                if s not in self.drop
+            ]
             return {"count": len(rows), "quotes": rows}
         if tool == "get_index_snapshot":
             if self.index_rows is None:

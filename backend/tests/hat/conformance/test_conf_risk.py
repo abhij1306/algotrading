@@ -317,8 +317,10 @@ SAFETY_DIGESTS = {
     "test_only_an_explicit_error_is_a_rejection": (
         "930aab8d75d7762a6a2accc373f9526881a90bb4b67b8c68d51cbdddb31e25d2"
     ),
+    # Re-pinned in PR 17 (stronger, not weaker): the account's health ops gained a source (the
+    # gate's data_health, the feed's feed_health) and the model checks each source apart.
     "test_kill_service_matches_model": (
-        "10bee712f18c3fcabc98f4e7054736301de710af7199266409d60f69dd9c2da9"
+        "367eacedc535ee25ce0975b4d47c75c1c49fe5fde7af762f7775c58ad99b250d"
     ),
     "test_risk_bounded": ("ee5c00eacc3a558352a78b9ae96ded119423710cae4aed194e7ac76b62dca76b"),
 }

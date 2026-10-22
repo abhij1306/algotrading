@@ -141,8 +141,11 @@ Commit(t) ==
     /\ lock' = IF BrokenMode = "no_lock" THEN lock ELSE 0
     /\ UNCHANGED <<virt, snap, exitDue, partials, result, liveVer, rulesRead>>
 
-\* code: backend/app/hat/engine/trades.py:expire_watchlist  (the session ends; the broken variant
-\* "state_without_event" changes the state and writes no event)
+\* code: backend/app/hat/engine/trades.py:expire_watchlist  (the session ends, the `watchlist.expire`
+\* job at 15:30. A trade that never triggered has no signal and so no hat_event: its record is the
+\* hat_watchlist_entry row, and this step is that row's status change, which the code writes
+\* through lifecycle.next_state; no `watchlist.expired` event row exists. The broken variant
+\* "state_without_event" changes the state without the step)
 Expire(t) ==
     /\ st[t] = "Watchlisted"
     /\ phase[t] = "idle"

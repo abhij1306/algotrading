@@ -65,6 +65,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); no legacy copy is left (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`, K5b the legacy `LiveMarketService`; a class named `RiskManager` or `LiveMarketService` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 - `PBT bars.trigger_only_on_final_bars` With prints arriving late or out of order through the real bar builder, a pivot breakout fires once, at the final instant (end + 2 s) of the first final bar in [09:20, 15:20] whose high is above the pivot, never from a print in a bar still open or a late print the bar never took, and never at an instant before the bar was handed over; the elapsed share of the session is read at that same final instant, where the day volume is read; and (`test_failed_signal_write_retries`) a failed signal write releases the key so the next final bar fires again, while a stored signal closes it for the day. Harm: an entry fires on a print the 5-minute bar later disowns, or before the bar that justifies it exists.
 - `PBT bars.stale_feed_trips_health_kill` Wired as in production (staleness monitor, `EventFeedHealth`, `DataHealthKill`), the account's data-health kill is tripped exactly while the feed is stale and clears by itself when ticks resume, even when the trip and the recovery fall on one instant and (`test_health_kill_writes_out_of_order`) whatever order the worker threads write the changes in; a trigger fired while stale is stored Rejected with `stale_feed` and opens nothing, one on a live feed opens its virtual position. Harm: entries keep being taken on prices that stopped updating, or the account stays manage-only after the feed is back.
+- `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and then the rest of the ticks has the same opening ranges and day volumes as one that saw every tick, and a restored bar never replaces a live one. Harm: after a restart the opening range is lost and no ORB entry fires that day.
 
 ## Run
 
@@ -137,7 +138,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `9a007eef3a9292198248083b7dc57cf6487dfaeaaffb38cf661bd7ec8f11c27a`
+Covered digest: `25d43bef5cc38cc53f2a48b1b6c5078c7a733c6df7addad5a891b5b4d4370cbd`
 
 ## Scope changes
 
@@ -1029,4 +1030,20 @@ E    +  where True = exists()
 E    +    where exists = (PosixPath('/tmp/tmpirbze0gm') / 'other').exists
 E   Failing test case: test_minute_history_aggregates_to_5m(
 E       raw=[[1_792_554_300, 1.0, 1.0, 1.0, 1.0, 0]],
+```
+
+### PBT bars.restore_matches_live
+
+Break: `BarBuilder.restore` skips the known-key guard (`if key in known:` to `if False:`).
+
+```
+E   AssertionError: assert 1 == 0
+E    +  where 1 = restore([Bar(symbol='AAA', start=datetime.datetime(2026, 10, 21, 9, 15, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')), open=Decimal('0.0001'), ...)])
+```
+
+Break: `BarBuilder.restore` does not seed the opening range (`self._opening.setdefault(...)` to `pass`).
+
+```
+E   AssertionError: assert None == (Decimal('0.0001'), Decimal('0.0001'))
+E    +  where None = opening_range('AAA', datetime.date(2026, 10, 21))
 ```

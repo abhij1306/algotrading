@@ -72,9 +72,10 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Statement:** Each broker account's session is owned by one async service that serialises its broker calls.
 - **Source:** MA "Recommended options" (T8).
 - **PR:** 13
-- **Verification:** TLA `OrderReconciliation!OneSessionOwner`
+- **Verification:** TLA `OrderReconciliation!OneSessionOwner`, PBT `router.desk_calls_serialised`
 - **Acceptance:**
   - Property: in every reachable state, at most one session service holds a live session for a given broker account. Harm: two sessions race on the same account and invalidate each other's token mid-order. Detail: 07 §9.
+  - Property: every broker call of an account's desk (the reconciler, the router, the stop desk, fill sync, the trade manager and the session check) runs through the account's owner, so no two overlap, and a session check reads the status once and records that same status. Harm: concurrent sends on one account race the reconciliation gate, and the recorded session status disagrees with the one that raised the alert.
 
 #### HAT-DEC-T9: Self-hosted machine
 - **Statement:** HAT runs on one always-on self-hosted machine with an ISP static IP registered with the broker, a UPS and a backup internet link used for alerts and manual login only.

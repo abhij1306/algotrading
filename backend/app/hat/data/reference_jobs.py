@@ -161,7 +161,8 @@ def bands_nightly(
 def calendar_refresh(
     *, holiday_list: TextSource, session_factory: SessionFactory
 ) -> Callable[[], JobResult]:
-    """Yearly and on change: load holidays into `hat_trading_calendar`."""
+    """Yearly and on change: load holidays into `hat_trading_calendar`, with a row for every
+    other weekday of the years the list covers (`calendar.with_weekdays`)."""
 
     def body() -> JobResult:
         try:
@@ -171,9 +172,11 @@ def calendar_refresh(
         if not days:
             raise JobError("calendar_empty")
         with session_factory() as session:
-            changed = hat_calendar.upsert_calendar(
-                session, _market_id(session), days, replace_span=True
-            )
+            market = session.scalar(select(HatMarket).where(HatMarket.code == "NSE"))
+            if market is None:
+                raise JobError("reference_no_market")
+            full = hat_calendar.with_weekdays(days, market.session_open, market.session_close)
+            changed = hat_calendar.upsert_calendar(session, market.id, full, replace_span=True)
             session.commit()
         return JobResult(rows=changed)
 

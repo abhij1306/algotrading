@@ -26,6 +26,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT ingest.probe_schedule` The nightly ingest probes from the later of its start and 18:00, every 10 minutes, never at or after 22:00, stops at the first probe that matches the trade date, and is ready exactly when one matched. Harm: the fallback runs early, or never, or the MCP is hammered.
 - `PBT ingest.fetch_covers_universe` The symbols fetched are exactly the active instruments with series EQ or BE, each once; an empty universe fails before any fetch. Harm: part of the market has no bar for the day.
 - `PBT ingest.row_checks` A fetched row is accepted iff its date is the trade date, prices are above zero, low <= open <= high, low <= close <= high, prev_close is null or above zero and volume is a whole number of at least zero. Harm: a corrupt row becomes a stored bar.
+- `PBT ingest.checks_kept_for_retry` When the first attempt at a date writes the raw partition and then fails (no index rows) or is killed right after the write, every retry, dropping other symbols, reports the row-check counts of the first attempt. Harm: a retry's quality gate reads 0 dropped rows and passes a bad day.
 - `PBT ingest.raw_write_once` For any sequence of attempts at one date (MCP or fallback, failing or not) exactly one raw partition exists, its bytes never change after the first, and the fallback runs at most once. Harm: a re-run rewrites history or splits one day across sources.
 - `PBT ingest.outcome_event` Each ingest run that reaches a final status leaves exactly one `ingest.completed` or `ingest.failed` event in the same transaction, a crash leaves none, and the data-health kill is tripped iff some run failed. Harm: a night with no data scans as if healthy.
 - `PBT ingest.call_budget` A run makes at most ceil(N/50) bulk calls, its probes, one index call, one breadth call and one lookup per flagged symbol. Harm: the nightly job exhausts the MCP quota.
@@ -37,7 +38,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT quality_gate.ohlc_zero_tolerance` One fetched row that broke a row check fails the ohlc check. Harm: bad prices reach the scans.
 - `PBT quality_gate.big_moves_explained` The big-moves check fails iff a mover over 20% has neither a corporate action on the day nor a place on the exclusion list; scans never see an excluded instrument. Harm: an unadjusted split triggers signals.
 - `PBT quality_gate.index_snapshot_present` The index check passes iff NIFTY 500 and India VIX are both stored. Harm: the regime runs without its inputs.
-- `PBT quality_gate.rows_written` The gate writes exactly four check rows, PASS iff all pass; a FAIL writes one `quality.failed`, one alert, fails the job and leaves the data-health kill tripped; only a passing gate clears it. Harm: bots trade on a bad day, or stay blocked after a good one.
+- `PBT quality_gate.rows_written` The gate writes exactly four check rows, PASS iff all pass; a FAIL writes one `quality.failed` and one alert (a retry failing the same checks writes and sends no second one), fails the job and leaves the data-health kill tripped; only a passing gate clears it. Harm: bots trade on a bad day, or stay blocked after a good one.
 - `PBT bhavcopy.format_by_date` Every weekday from 2010-01-01 to today (boundaries 5 and 8 Jul 2024 included) maps to the old URL up to 5 Jul 2024 and the UDiFF URL from 8 Jul 2024; weekends have none. Harm: the backfill requests files that do not exist.
 - `PBT bhavcopy.missing_file_is_holiday_candidate` For whatever NSE answers on each weekday, a missing file that the calendar lists is a holiday candidate, an unlisted one is a gap; both are reported. Harm: real gaps pass as holidays.
 - `PBT bhavcopy.resume_skips_done` After a run interrupted at any request, `--resume` never requests a day already stored. Harm: a restart re-downloads years of files.
@@ -142,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `e58531dd9688d167c424c5dab1691cbeb2a14080736690f790e7cc4c6eecad55`
+Covered digest: `3602f51a9b1b588bc1b4e1d47935c0f50823830d8ba84fcee5e61c8a806d3335`
 
 ## Scope changes
 
@@ -893,6 +894,16 @@ E       h=5,
 E       low=2,
 ```
 
+### PBT ingest.checks_kept_for_retry
+
+Break: the old order in `run_ingest`: `write_raw_once` first, then `_keep_checks` when it wrote (a kill between them loses the counts).
+
+```
+tests/hat/properties/test_ingest.py:590: in test_checks_kept_for_retry
+E   assert [0] == [1]
+E     At index 0 diff: 0 != 1
+```
+
 ### PBT ingest.raw_write_once
 
 Break: a re-run ignores the stored partition and writes the day again.
@@ -1065,4 +1076,20 @@ E   Failing explicit example: test_rows_written(
 E       kind='good',
 E       tripped_before=True,
 E   )
+```
+
+Break (audit L4): a retry failing the same checks records again and alerts again (`persist`'s same-failure check to `if False:`, `gate_body`'s `if news:` to `if True:`).
+
+```
+E   assert 3 == 1
+E    +  where 3 = len(failed_events)
+E   Failing test case: test_rows_written(
+E       retries=2,
+```
+
+Break: only `gate_body` alerts on every retry (`if news:` to `if True:`).
+
+```
+E   AssertionError: assert 3 == 1
+E    +  where 3 = len(alerts)
 ```

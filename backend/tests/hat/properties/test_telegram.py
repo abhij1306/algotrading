@@ -35,7 +35,7 @@ from hat_telegram_support import (
 )
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import ColumnElement, select
+from sqlalchemy import ColumnElement, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
@@ -848,6 +848,7 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
                 )
             )
         session.flush()
+        session.execute(delete(HatBrokerSession))  # the rig's live sessions: this test sets its own
         for account, status in zip(accounts, statuses, strict=True):
             if status != "missing":
                 session.add(
@@ -862,7 +863,7 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
         run_job(
             "telegram.login_prompt",
             day,
-            jobs["telegram.login_prompt"].fn,
+            lambda: jobs["telegram.login_prompt"].fn(day),
             session_factory=rig.factory,
         )
     first = list(rig.transport.texts())
@@ -870,7 +871,7 @@ def test_login_prompt_links(offset: int, statuses: list[str], inactive: bool) ->
     run_job(
         "telegram.login_reprompt",
         day,
-        jobs["telegram.login_reprompt"].fn,
+        lambda: jobs["telegram.login_reprompt"].fn(day),
         session_factory=rig.factory,
     )
     second = rig.transport.texts()[len(first) :]
@@ -948,6 +949,34 @@ def test_watchlist_digest_content(yesterday: dict[str, int], today: dict[str, in
     assert all(D(today[symbol]) / 1000 == D(score) for symbol, score in top)
     rest = [D(v) / 1000 for s, v in today.items() if s not in {sym for sym, _ in top}]
     assert all(r <= min(scores) for r in rest) if scores else not rest
+
+
+@SLOW
+@given(st.lists(st.integers(min_value=1, max_value=3), min_size=1, max_size=3))
+def test_watchlist_digest_once(sends: list[int]) -> None:
+    """HAT-TG-022 (audit L7): each night's digest of a bot goes out once, however often the
+    nightly job sends it (a retry after a later bot's send failed); the next night's watchlist
+    gets its own. Harm: every retry repeats the digests already delivered."""
+    rig = TgRig()
+    reports = Reports(rig.client, rig.factory)
+    bot = rig.world.bot_id
+    for night, repeats in enumerate(sends):
+        day = TRADE_DAY + timedelta(days=night)
+        with rig.factory() as session:
+            record(
+                session,
+                aggregate_type="bot",
+                aggregate_id=bot,
+                event_type="watchlist.published",
+                actor="engine",
+                payload={"trade_date": day.isoformat()},
+                bot_id=bot,
+                occurred_at=utc_now(),  # the night's scan, before its sends
+            )
+            session.commit()
+        for _ in range(repeats):
+            reports.send_watchlist_digest(bot, day)
+        assert len(rig.transport.texts()) == night + 1
 
 
 # --- HAT-TG-023: the card is the signal ---------------------------------------------------------

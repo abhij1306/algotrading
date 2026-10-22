@@ -24,11 +24,13 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..data.calendar import session_calendar
 from ..engine import approvals
-from ..models import HatBot, HatEvent, HatJobRun, HatPosition
+from ..engine.watchlist import EVENT_PUBLISHED
+from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatTelegramMessage
 from ..ops.jobs import JobError, JobResult
 from ..ops.scheduler import ScheduledJob
-from ..risk.sessions import SessionCalendar
+from ..risk.sessions import SessionCalendar, is_trading_day
 from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from . import reads, render, store
 from .client import BotClient, TelegramError
@@ -41,7 +43,6 @@ __all__ = [
     "VETO_DIGEST_AT",
     "Reports",
     "is_week_end",
-    "previous_trading_day",
     "telegram_jobs",
 ]
 
@@ -53,20 +54,14 @@ VETO_DIGEST_AT = time(15, 45)
 SESSION_CLOSE = time(15, 30)
 GTT_VERIFY_JOB = "gtt.verify"
 SEND_FAILED = "telegram_send_failed"
-
-
-def previous_trading_day(calendar: SessionCalendar | None, day: date) -> date | None:
-    if calendar is None:
-        return None
-    earlier = [d for d, s in calendar.days.items() if d < day and s.is_trading]
-    return max(earlier) if earlier else None
+WATCHLIST_KIND = "watchlist"
 
 
 def is_week_end(calendar: SessionCalendar | None, day: date) -> bool:
     """`day` is a trading day and no later weekday of its week can be one: each is a known
     non-trading day of the calendar. A weekday the calendar does not have yet counts as a
     trading day, so a calendar that runs out does not make every day a week end."""
-    if not reads.is_trading_day(calendar, day) or calendar is None:
+    if not is_trading_day(calendar, day) or calendar is None:
         return False
     for offset in range(1, 5 - day.weekday()):
         row = calendar.days.get(day + timedelta(days=offset))
@@ -117,7 +112,7 @@ class Reports:
         now = self._clock()
         day = trade_date_of(now)
         with self._factory() as session:
-            if not reads.is_trading_day(reads.session_calendar(session), day):
+            if not is_trading_day(session_calendar(session), day):
                 return JobResult(rows=0)
             accounts = reads.logged_out(session, day) if repeat else reads.accounts(session)
             if not accounts:
@@ -135,7 +130,7 @@ class Reports:
     def rejection_digest(self) -> JobResult:
         day = trade_date_of(self._clock())
         with self._factory() as session:
-            if not reads.is_trading_day(reads.session_calendar(session), day):
+            if not is_trading_day(session_calendar(session), day):
                 return JobResult(rows=0)
             rows = reads.rejection_rows(session, day)
             self._send(session, "rejections", None, render.rejection_digest_text(day, rows))
@@ -194,10 +189,10 @@ class Reports:
         price at 15:25 against the official close) recorded for the previous trading day."""
         day = trade_date_of(self._clock())
         with self._factory() as session:
-            calendar = reads.session_calendar(session)
-            if not reads.is_trading_day(calendar, day):
+            calendar = session_calendar(session)
+            if not is_trading_day(calendar, day):
                 return JobResult(rows=0)
-            night = previous_trading_day(calendar, day)
+            night = calendar.previous_trading_day(day) if calendar is not None else None
             bots = reads.daily_bots(session, day)
             text = render.daily_report_text(
                 day,
@@ -213,7 +208,7 @@ class Reports:
         trades (HAT-EXEC-130) and, after 50 decisions, the verdict (HAT-EXEC-131)."""
         day = trade_date_of(self._clock())
         with self._factory() as session:
-            if not is_week_end(reads.session_calendar(session), day):
+            if not is_week_end(session_calendar(session), day):
                 return JobResult(rows=0)
             monday = day - timedelta(days=day.weekday())
             score = approvals.veto_score(
@@ -238,13 +233,39 @@ class Reports:
     # --- after the nightly scan (HAT-TG-022) ---------------------------------------------------
 
     def send_watchlist_digest(self, bot_id: uuid.UUID, day: date) -> None:
-        """The digest of one bot's watchlist for `day` against its previous one."""
+        """The digest of one bot's watchlist for `day` against its previous one, sent once: a
+        retry of the nightly job (a later bot's send failed) skips a bot whose digest already
+        went out after its watchlist for `day` was published."""
         with self._factory() as session:
             bot = session.get(HatBot, bot_id)
-            if bot is None:
+            if bot is None or _digest_sent(session, bot_id, day):
                 return
             digest = reads.watchlist_digest(session, bot, day)
-            self._send(session, "watchlist", bot_id, render.watchlist_digest_text(digest))
+            self._send(session, WATCHLIST_KIND, bot_id, render.watchlist_digest_text(digest))
+
+
+def _digest_sent(session: Session, bot_id: uuid.UUID, day: date) -> bool:
+    published = [
+        at
+        for at, payload in session.execute(
+            select(HatEvent.occurred_at, HatEvent.payload).where(
+                HatEvent.bot_id == bot_id, HatEvent.event_type == EVENT_PUBLISHED
+            )
+        )
+        if payload.get("trade_date") == day.isoformat()
+    ]
+    if not published:
+        return False
+    sent = session.scalar(
+        select(func.count())
+        .select_from(HatTelegramMessage)
+        .where(
+            HatTelegramMessage.kind == WATCHLIST_KIND,
+            HatTelegramMessage.ref_id == bot_id,
+            HatTelegramMessage.sent_at >= max(published),
+        )
+    )
+    return bool(sent)
 
 
 def telegram_jobs(reports: Reports) -> tuple[ScheduledJob, ...]:
@@ -253,16 +274,16 @@ def telegram_jobs(reports: Reports) -> tuple[ScheduledJob, ...]:
         ScheduledJob(
             "telegram.login_prompt",
             LOGIN_PROMPT_AT,
-            lambda: reports.login_prompt(repeat=False),
+            lambda _day: reports.login_prompt(repeat=False),
             until=LOGIN_REPROMPT_AT,
         ),
         ScheduledJob(
             "telegram.login_reprompt",
             LOGIN_REPROMPT_AT,
-            lambda: reports.login_prompt(repeat=True),
+            lambda _day: reports.login_prompt(repeat=True),
             until=SESSION_CLOSE,
         ),
-        ScheduledJob("telegram.rejections", REJECTIONS_AT, reports.rejection_digest),
-        ScheduledJob("telegram.daily_report", DAILY_REPORT_AT, reports.daily_report),
-        ScheduledJob("telegram.veto_digest", VETO_DIGEST_AT, reports.veto_digest),
+        ScheduledJob("telegram.rejections", REJECTIONS_AT, lambda _day: reports.rejection_digest()),
+        ScheduledJob("telegram.daily_report", DAILY_REPORT_AT, lambda _day: reports.daily_report()),
+        ScheduledJob("telegram.veto_digest", VETO_DIGEST_AT, lambda _day: reports.veto_digest()),
     )

@@ -131,11 +131,14 @@ def record_session(
     *,
     lost_alert: bool = False,
     now: datetime | None = None,
+    status: SessionStatus | None = None,
 ) -> SessionStatus:
-    """Write today's `hat_broker_session` row from the adapter's status and commit. A first
-    login of the day records `broker.logged_in`; `lost_alert` (from `SessionWatch`) records
-    `broker.session_lost`."""
-    status = broker.session_status()
+    """Write today's `hat_broker_session` row from the adapter's status (`status` when the
+    caller has just read it, so the row and the caller's `SessionWatch` see one read) and
+    commit. A first login of the day records `broker.logged_in`; `lost_alert` (from
+    `SessionWatch`) records `broker.session_lost`."""
+    if status is None:
+        status = broker.session_status()
     instant = now or utc_now()
     row = session.get(HatBrokerSession, (account_id, trade_date))
     first_login = status is SessionStatus.LIVE and (row is None or row.logged_in_at is None)

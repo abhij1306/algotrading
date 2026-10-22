@@ -20,6 +20,7 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from ..data.calendar import session_calendar
 from ..errors import HatError
 from ..execution.modes import (
     AUTO,
@@ -307,7 +308,7 @@ def queue_modes(
 ) -> Reply:
     """Queue `to_mode` for every bot from the next session open, all or none. Refused, with
     nothing written, inside market hours, for an unknown mode, or for an account without GTT."""
-    calendar = reads.session_calendar(session)
+    calendar = session_calendar(session)
     if calendar is None:
         return refused("no_calendar")
     refusal = _mode_refusal(session, bots, to_mode, now, calendar)
@@ -342,7 +343,7 @@ def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
         return refused("unknown_bot")
     if to_mode != AUTO:
         return queue_modes(session, bots, to_mode, ctx.now, ctx.chat_id)
-    calendar = reads.session_calendar(session)
+    calendar = session_calendar(session)
     if calendar is None:
         return refused("no_calendar")
     refusal = _mode_refusal(session, bots, to_mode, ctx.now, calendar)
