@@ -204,7 +204,7 @@ class FillSync:
             gtt = gtts.of(order)
             if gtt is None:
                 continue
-            if self._unfilled_trigger(order):
+            if self._unfilled_trigger(order, gtt):
                 self._gtt_unfilled(session, gtt, order, now, report)
             elif self._resting_trigger(session, order, gtt):
                 self._gtt_resting(session, gtt, order, now, report)
@@ -438,10 +438,13 @@ class FillSync:
     # --- 5. a GTT that triggered without a fill -------------------------------------------------
 
     @staticmethod
-    def _unfilled_trigger(order: BrokerOrder) -> bool:
-        """A GTT's sale (`_WorkingGtts.of` found its GTT) that ended short of its quantity."""
+    def _unfilled_trigger(order: BrokerOrder, gtt: HatOrder) -> bool:
+        """A GTT's sale (`_WorkingGtts.of` found its GTT) that ended short of its quantity; an
+        untagged one only at the GTT's quantity, so another sale on the symbol that ended never
+        ends the GTT."""
         return (
             order.side is Side.SELL
+            and (order.gtt_tag is not None or order.qty == gtt.qty)
             and order.status in _ENDED_SHORT
             and order.filled_qty < order.qty
         )

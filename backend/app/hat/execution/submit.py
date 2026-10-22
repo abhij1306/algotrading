@@ -344,9 +344,9 @@ def find_gtt(
     gtts: list[BrokerGtt], row: HatOrder, symbol: str, claimed: set[str]
 ) -> BrokerGtt | None:
     """The broker GTT a stop_gtt row whose answer was lost became, among those no other HAT row
-    holds: the one under the row's tag on its symbol; else one shown without a HAT tag (placed
-    before GTTs were tagged) on the row's symbol for its quantity and trigger; never one under
-    another HAT tag. None when the book has none."""
+    holds: the one under the row's tag on its symbol; else one shown untagged (placed before GTTs
+    were tagged) on the row's symbol for its quantity and trigger; never one under another tag,
+    HAT's or foreign. None when the book has none."""
     free = [gtt for gtt in gtts if gtt.gtt_id not in claimed and gtt.symbol == symbol]
     tagged = next((gtt for gtt in free if gtt.tag == row.tag), None)
     if tagged is not None:
@@ -357,6 +357,7 @@ def find_gtt(
             gtt
             for gtt in free
             if gtt.tag is None
+            and not gtt.foreign
             and gtt.side is Side.SELL
             and gtt.qty == row.qty
             and gtt.trigger_price == trigger

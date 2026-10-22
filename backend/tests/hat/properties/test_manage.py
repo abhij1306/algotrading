@@ -639,14 +639,22 @@ def _child_tag(gtt: HatOrder, shape: str | None) -> str | None:
 
 
 @settings(max_examples=20, deadline=None)
-@given(part=st.floats(min_value=0.1, max_value=0.9), ended=st.booleans(), child=CHILD_TAGS)
-def test_gtt_trigger_handled(part: float, ended: bool, child: str | None) -> None:
+@given(
+    part=st.floats(min_value=0.1, max_value=0.9),
+    ended=st.booleans(),
+    child=CHILD_TAGS,
+    stray=st.booleans(),
+)
+@example(part=0.5, ended=True, child="bare", stray=True)
+def test_gtt_trigger_handled(part: float, ended: bool, child: str | None, stray: bool) -> None:
     """HAT-EXEC-062, -066, HAT-DEC-B17: a GTT that triggered and filled only in part is not
     resized or doubled while its sale may still sell the rest (the only write is asking that sale
     to go at the market); once that sale ends short, `gtt.unfilled` is raised and the shares left
     get a new stop for exactly their quantity. The sale is the GTT's whether it carries the GTT's
-    tag (bare or as Fyers shows a GTT's) or none. Harm: a second stop under a sale still working
-    sells the shares twice, or the rest stays unprotected."""
+    tag (bare or as Fyers shows a GTT's) or none; another untagged sale on the symbol that ended
+    (`stray`, not at the GTT's quantity) changes nothing. Harm: a second stop under a sale still
+    working sells the shares twice, the rest stays unprotected, or an unrelated cancelled sale
+    ends the GTT and a second stop is placed while it still rests."""
     with Session(memory_engine()) as session:
         rig = ManageRig(session)
         position = _opened(rig, at(16, 0))
@@ -665,7 +673,9 @@ def test_gtt_trigger_handled(part: float, ended: bool, child: str | None) -> Non
             "type": 1,
             "limitPrice": float(gtt.price),
         }
-        rig.fake.orders = [order]
+        # someone else's untagged sale on the symbol, cancelled unfilled
+        other = {**order, "id": "X-9", "orderTag": None, "qty": gtt.qty + 1, "filledQty": 0}
+        rig.fake.orders = [order, {**other, "status": 1}] if stray else [order]
         rig.fake.tradebook = [
             *rig.fake.tradebook,  # type: ignore[misc]
             {

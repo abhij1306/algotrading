@@ -1106,27 +1106,37 @@ def gtt_books(draw: st.DrawFn) -> tuple[SimpleNamespace, list[BrokerGtt], set[st
     book = [
         BrokerGtt(
             f"G{i}",
-            draw(st.sampled_from(["SBIN", "SBIN", "RELIANCE"])),
+            draw(st.sampled_from(["SBIN", "SBIN", "SBIN", "RELIANCE"])),
             draw(st.sampled_from([Side.SELL, Side.SELL, Side.BUY])),
-            draw(st.integers(1, 3)),
+            draw(st.sampled_from([row.qty, row.qty, 1, 2, 3])),
             draw(st.sampled_from([Decimal("100"), Decimal("100"), Decimal("99.95")])),
-            draw(st.sampled_from([tag, other, None])),
+            draw(st.sampled_from([tag, other, None, None])),
+            draw(st.booleans()),  # foreign: shown under a tag that is not a HAT GTT's
         )
         for i in range(draw(st.integers(0, 6)))
     ]
-    claimed = {gtt.gtt_id for gtt in book if draw(st.booleans())}
+    book = [replace(g, foreign=g.foreign and g.tag is None) for g in book]
+    claimed = {gtt.gtt_id for gtt in book if draw(st.sampled_from([False, False, True]))}
     return row, book, claimed
 
 
+_LOST = SimpleNamespace(tag=encode_tag(uuid.UUID(int=1), "stop_gtt", 0), qty=1)
+_LOST.trigger_price = Decimal("100")
+
+
 @given(gtt_books())
+@example(  # a foreign GTT of exactly the row's shape, alone on the symbol: never adopted
+    (_LOST, [BrokerGtt("G0", "SBIN", Side.SELL, 1, Decimal("100"), None, True)], set())
+)
 def test_a_lost_gtt_is_found_by_its_tag(
     book: tuple[SimpleNamespace, list[BrokerGtt], set[str]],
 ) -> None:
     """HAT-EXEC-065, HAT-BRK-090: the GTT a lost stop_gtt answer settles to is one no other row
     holds on the row's symbol: the one under the row's own tag when the book shows one (at any
     quantity or trigger), else one shown untagged of exactly the row's side, quantity and
-    trigger; never one under another HAT GTT's tag. Harm: another position's stop is adopted
-    (and later cancelled or moved), leaving that position unprotected."""
+    trigger; never one under another HAT GTT's tag or a foreign one. Harm: another position's
+    stop, or a GTT HAT did not place, is adopted (and later cancelled or moved), leaving that
+    position unprotected."""
     row, gtts, claimed = book
     found = find_gtt(gtts, row, "SBIN", claimed)  # type: ignore[arg-type]
     free = [g for g in gtts if g.gtt_id not in claimed and g.symbol == "SBIN"]
@@ -1135,6 +1145,7 @@ def test_a_lost_gtt_is_found_by_its_tag(
         g
         for g in free
         if g.tag is None
+        and not g.foreign
         and g.side is Side.SELL
         and g.qty == row.qty
         and g.trigger_price == row.trigger_price
@@ -1366,8 +1377,8 @@ def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
                 (hat_tag, hat_tag),
                 ("2:GTTUntagged", None),
                 (None, None),
-                ("1:GTTMYSTOP", None),
-                (f"1:GTT{encode_tag(uuid.UUID(int=3), 'entry', 0)}", None),
+                ("1:GTTMYSTOP", "foreign"),
+                (f"1:GTT{encode_tag(uuid.UUID(int=3), 'entry', 0)}", "foreign"),
             ]
         )
     )
@@ -1389,7 +1400,11 @@ def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
     else:
         row.update(leg1=leg, **({"leg2": dict(leg)} if oco else {}))
     resting = status in (None, 2, 4, 6) and not oco and product == "CNC"
-    expected = BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger, tag) if resting else None
+    foreign = tag == "foreign"
+    shown_tag = None if foreign else tag
+    expected = (
+        BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger, shown_tag, foreign) if resting else None
+    )
     return row, expected
 
 

@@ -219,9 +219,9 @@ class OrderBook(list[BrokerOrder]):
 @dataclass(frozen=True)
 class BrokerGtt:
     """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. `tag` is the
-    HT tag it was placed with, None for a GTT without one (placed untagged, or a foreign tag):
-    HAT tells its own by the tag, and an untagged one by the symbol, side, quantity and
-    trigger it sent."""
+    HT tag of one of HAT's GTTs it was placed with, else None; `foreign` marks one shown under
+    some other tag (manual, or another purpose's): HAT tells its own by the tag, an untagged one
+    by the symbol, side, quantity and trigger it sent, and never adopts a foreign one."""
 
     gtt_id: str
     symbol: str  # database symbol
@@ -229,6 +229,7 @@ class BrokerGtt:
     qty: int
     trigger_price: Decimal
     tag: str | None = None
+    foreign: bool = False
 
 
 @dataclass(frozen=True)

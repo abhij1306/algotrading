@@ -508,11 +508,11 @@ class FyersHatBroker:
         6 pending, or no status) or triggered (2) is kept: a lost answer whose GTT has since
         triggered is adopted, so the fill sync attributes its sale. The book's keys are the ones
         recorded live on 2026-10-22: `tran_side`, `product_type`, `ordertag` ("<n>:GTT<tag>",
-        read as the HT tag of one of HAT's GTTs or None) and the flat `price_trigger`/`qty`; the
-        shape a GTT is placed with is read too (`side`, `productType`, the single leg in
-        `orderInfo.leg1` / `leg1`) [verify on a live account]. A single-leg CNC row with a
-        status code it does not know, or whose side, trigger or quantity cannot be read, raises,
-        so the read fails instead of missing a GTT."""
+        read as the HT tag of one of HAT's GTTs, else None and `foreign` unless untagged) and the
+        flat `price_trigger`/`qty`; the shape a GTT is placed with is read too (`side`,
+        `productType`, the single leg in `orderInfo.leg1` / `leg1`) [verify on a live account].
+        A single-leg CNC row with a status code it does not know, or whose side, trigger or
+        quantity cannot be read, raises, so the read fails instead of missing a GTT."""
         info = row.get("orderInfo") or {}
         oco = _whole_number(row.get("gtt_oco_ind")) == _GTT_OCO
         if oco or row.get("leg2") or info.get("leg2"):
@@ -534,13 +534,16 @@ class FyersHatBroker:
         whole = _whole_number(qty)
         if whole is None:
             raise ValueError("gtt qty")
+        tag = _gtt_tag(row.get("ordertag"))
+        shown = _clean_tag(row.get("ordertag"))
         return BrokerGtt(
             gtt_id=str(row["id"]),
             symbol=symbol_master.to_db(str(row["symbol"])),
             side=self._side(row["tran_side"] if "tran_side" in row else row["side"]),
             qty=whole,
             trigger_price=_positive_price(trigger),
-            tag=_gtt_tag(row.get("ordertag")),
+            tag=tag,
+            foreign=tag is None and shown not in (None, _GTT_UNTAGGED),
         )
 
     def gtts(self) -> list[BrokerGtt]:
