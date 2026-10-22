@@ -387,13 +387,15 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: no live-data source exists other than `LiveFeed` tick listeners. Harm: a second source disagrees on prices and triggers fire twice or not at all. Detail: 00 HAT-OVR-006.
 
 #### HAT-DEC-I4: Broker minute history for EP backtests
-- **Statement:** EP backtests may use Fyers historical minute data through an optional loader; without it, EP is not backtested on intraday data.
-- **Source:** MA (I4); DS "Source map"; PLAN Q4.
-- **PR:** 12
-- **Verification:** PBT `bars.minute_history_aggregates_to_5m`
+- **Statement:** EP backtests may use Fyers historical minute data through an optional loader; without it, EP is not backtested on intraday data. On the Fyers Standard plan the loader serves the last 365 days only (100 days a call, 50 calls a minute, 5,000 a day); older intraday history is to come from an NSE source later.
+- **Source:** MA (I4); DS "Source map"; PLAN Q4; owner decision D131 of 2026-10-22 (the 1-year download runs on the Standard plan; audit 2026-10-22 live checks, "Fyers history depth": intraday from exactly 365 days back, older ranges refused with -50 for the plan).
+- **PR:** 12, 41
+- **Verification:** PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_plan_clamp`
 - **Acceptance:**
   - Property: for every minute-bar history loaded, the derived 5-minute bars equal the aggregation the live bar builder produces for the same ticks. Harm: EP backtests use different bars from live and overstate results. Detail: 09 §1.
+  - Property: for every period reaching before the plan's depth, a refusal for the depth clamps the start to the first date the plan serves and the run loads every symbol from there; any other refusal is a failure, never a clamp. Harm: the download crashes on its first call, or silently skips history it could have had.
 - **[OWNER-PENDING]** Daily-bar trigger proxy when minute history is absent: PLAN Q4 default; owner to confirm.
+- **[OWNER-PENDING]** Intraday history older than 365 days: from an NSE source (owner, D131); not built.
 
 #### HAT-DEC-I5: Fundamentals later via XBRL
 - **Statement:** Fundamentals come in P2 from NSE/BSE XBRL filings stamped with filing time; `hat_fundamental` exists empty in the MVP.

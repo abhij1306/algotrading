@@ -135,7 +135,7 @@ to an artefact that exists.
 | HAT-DEC-I1 | [01](01-decisions.md) | 4, 7 | TLA `NightlyPipeline!FallbackAt2200`, PBT `ingest.batches_of_50` |
 | HAT-DEC-I2 | [01](01-decisions.md) | 5 | PBT `bhavcopy.parsers_agree` |
 | HAT-DEC-I3 | [01](01-decisions.md) | 14 | CONF `single_feed_import_rule` |
-| HAT-DEC-I4 | [01](01-decisions.md) | 12 | PBT `bars.minute_history_aggregates_to_5m` |
+| HAT-DEC-I4 | [01](01-decisions.md) | 12, 41 | PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_plan_clamp` |
 | HAT-DEC-I5 | [01](01-decisions.md) | 2 | PBT `criteria.fundamentals_point_in_time` |
 | HAT-DEC-I6 | [01](01-decisions.md) | 14 | PBT `announcements.dedupe` |
 | HAT-DEC-I7 | [01](01-decisions.md) | 13 | CONF `broker_interface_methods` |
@@ -234,7 +234,7 @@ to an artefact that exists.
 | HAT-DATA-116 | [02](02-data.md) | 14, 15 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
 | HAT-DATA-118 | [02](02-data.md) | 14 | PBT `bars.gap_pct` |
-| HAT-DATA-119 | [02](02-data.md) | 12 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m` |
+| HAT-DATA-119 | [02](02-data.md) | 12, 41 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_budget`, PBT `bars.minute_history_resume`, PBT `bars.minute_history_plan_clamp` |
 | HAT-DATA-120 | [02](02-data.md) | 14 | PBT `gapscan.covers_universe` |
 | HAT-DATA-121 | [02](02-data.md) | 14 | PBT `gapscan.filter` |
 | HAT-DATA-122 | [02](02-data.md) | 14 | PBT `gapscan.timing_recorded`, OPS `gapscan.latency_observed` |
