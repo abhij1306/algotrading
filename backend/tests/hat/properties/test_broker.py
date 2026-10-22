@@ -13,6 +13,7 @@ from hat_fyers_support import LIVE_REPLIES
 from hat_support import memory_engine
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from app.hat.execution.accounts import (
@@ -267,6 +268,7 @@ CHECKS = st.lists(
     st.tuples(
         st.sampled_from([SessionStatus.LIVE, SessionStatus.EXPIRED]),
         st.sampled_from(["gtt", "no_gtt", "fails"]),
+        st.booleans(),  # the refresh's own write fails
     ),
     min_size=1,
     max_size=6,
@@ -279,14 +281,15 @@ def test_session_check_refreshes_capabilities(stored: str, checks: list) -> None
     """HAT-BRK-092, HAT-EXEC-012: every session check rewrites the account's stored
     capabilities to the adapter's (a local value: the session need not be live), each rewrite
     that changes them records one `broker.capabilities_changed` naming the GTT value before and
-    after and the changed keys, and an adapter that fails to answer leaves the stored value and
-    never undoes the session row. Harm: a flip of the adapter's GTT value never reaches an
-    existing account, a revoked one keeps routing real orders from a stale row, or a failed
-    refresh loses the day's login."""
+    after and the changed keys, and a refresh that fails (the adapter's answer or its own
+    write) leaves the stored value and never undoes the session row. Harm: a flip of the
+    adapter's GTT value never reaches an existing account, a revoked one keeps routing real
+    orders from a stale row, or a failed refresh loses the day's login."""
     from datetime import date
 
     from hat_exec_support import GTT_READY
 
+    from app.hat.execution import session as session_module
     from app.hat.execution.session import record_session
 
     engine = memory_engine(HatBrokerSession, HatEvent, HatBrokerAccount)
@@ -314,20 +317,35 @@ def test_session_check_refreshes_capabilities(stored: str, checks: list) -> None
                 raise RuntimeError("adapter down")
             return replace(GTT_READY, gtt_delivery=self.answer == "gtt")
 
+    real_record = session_module.record
+    failing = [False]
+
+    def record(db: object, **fields: object) -> object:
+        if failing[0] and fields["event_type"] == "broker.capabilities_changed":
+            raise RuntimeError("database down")
+        return real_record(db, **fields)  # type: ignore[arg-type]
+
     broker = Broker()
     expected, changes = start, []
-    for n, (status, answer) in enumerate(checks):
-        broker.status, broker.answer = status, answer
-        day = date(2026, 10, 21 + n % 2)
-        record_session(session, broker, account.id, day)  # type: ignore[arg-type]
-        assert session.get(HatBrokerSession, (account.id, day)).status == status.value
-        if answer != "fails":
-            current = broker.capabilities().to_json()
-            if current != expected:
+    session_module.record = record  # type: ignore[assignment]
+    try:
+        for n, (status, answer, write_fails) in enumerate(checks):
+            broker.status, broker.answer, failing[0] = status, answer, write_fails
+            day = date(2026, 10, 21 + n % 2)
+            record_session(session, broker, account.id, day)  # type: ignore[arg-type]
+            assert session.get(HatBrokerSession, (account.id, day)).status == status.value
+            current = None if answer == "fails" else broker.capabilities().to_json()
+            if current is not None and current != expected and not write_fails:
                 changes.append((current.get("gtt_delivery") is True, expected))
-            expected = current
-        session.refresh(account)
-        assert account.capabilities == expected
+                expected = current
+            # a query, not `refresh`: it flushes first, so a change a failed refresh left
+            # pending (not rolled back) shows, as the next commit would store it
+            stored_now = session.scalar(
+                select(HatBrokerAccount.capabilities).where(HatBrokerAccount.id == account.id)
+            )
+            assert stored_now == expected
+    finally:
+        session_module.record = real_record
     events = [e for e in session.query(HatEvent) if e.event_type == "broker.capabilities_changed"]
     assert len(events) == len(changes)
     for event, (gtt, before) in zip(events, changes, strict=True):

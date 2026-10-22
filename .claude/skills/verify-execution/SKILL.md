@@ -28,7 +28,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.status_mapping_total` `map_fyers_status` maps every input (any code, any quantity type) to one of the order statuses, unknown or fractional codes to `unconfirmed`. Harm: an unexpected Fyers status crashes the poller or is read as filled.
 - `PBT tags.idempotent_submission` On the real `reserve_order` and `send_order`, random calls, lost answers, simulated crashes and restarts leave at most one broker order per tag, never call the broker for an ended row, look up before a retry, never send an entry of unknown outcome again (even while the book lags), never retry a GTT after a lost answer and do not read an unreachable broker as a rejection, and leave no attempt marker on a GTT that was never sent. Harm: a retry or restart double-places an entry or stop.
 - `PBT router.a_stored_capability_never_enables_a_real_entry` An auto entry reaches the broker only when the stored capabilities and the adapter's both report GTT; a stored `true` the adapter does not report is refused at placement before any order is reserved and ends Rejected `no_gtt_delivery`. Harm: a hand-written or stale account row buys real shares with no overnight stop.
-- `PBT broker.session_check_refreshes_capabilities` Every session check, live or not, rewrites the stored capabilities to the adapter's after committing its session row, with one `broker.capabilities_changed` per change (GTT before and after, the changed keys); a failing adapter leaves them and never undoes the row. Harm: a flip of the adapter's GTT value never reaches an existing account, or a failed refresh loses the day's login.
+- `PBT broker.session_check_refreshes_capabilities` Every session check, live or not, rewrites the stored capabilities to the adapter's after committing its session row, with one `broker.capabilities_changed` per change (GTT before and after, the changed keys); a refresh that fails (the adapter's answer, or its own event write) leaves them, also at the next commit, and never undoes the row. Harm: a flip of the adapter's GTT value never reaches an existing account, or a failed refresh loses the day's login.
 - `PBT router.desks_start_with_the_adapters_capabilities` Building the desks rewrites each account's capabilities to its adapter's before any routing, so the first signal routes auto only when the adapter reports GTT; a capability read never waits behind a broker call holding the session owner. Harm: a stale row sends cards or entries the placement then refuses.
 - `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an entry on an unreconciled trade date or for a blocked bot (a stop or a sale passes both, D118), an entry that is not a buy, an exit that is not a sell, an entry with the session not live, or an entry without GTT for delivery in both the stored capabilities and the adapter's own (a stop or a sale is never refused for it, HAT-EXEC-012) is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
 - `PBT stops.gtt_limit_offset` `gtt_limit_price` is the trigger times 0.99 rounded down to the tick, never above the trigger, never off the tick grid, and raises when the result is not positive. Harm: a stop with a limit above its trigger or off the tick grid is rejected by the exchange, or fills badly.
@@ -293,7 +293,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `12cb285f9a59aed9a1f7723ffd083fe0280fcf43ec6bbdb07a58d4e4abfcb171`
+Covered digest: `040650460b7f9182591878c2ec25269b8d9f17cde3023eaf185662c931786cfe`
 
 ## Scope changes
 
@@ -708,6 +708,12 @@ Break: the refresh runs before the session row's commit, so its rollback undoes 
 ```
 E   AttributeError: 'NoneType' object has no attribute 'status'
 E   Failing test case: test_session_check_refreshes_capabilities(
+```
+
+Break: a refresh whose event write fails is not rolled back, so the next commit stores the new capabilities without their event (PR 29, CodeAnt review). The property reads the stored value with a query, which flushes first; `session.refresh` would discard the pending change and hide this break.
+
+```
+E   AssertionError: assert {'gtt_deliver... 'SL-M'], ...} == {}
 ```
 
 ### PBT router.desks_start_with_the_adapters_capabilities
