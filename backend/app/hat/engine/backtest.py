@@ -62,7 +62,7 @@ import math
 import uuid
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
@@ -1358,7 +1358,9 @@ def with_cooldown(policy: PolicyVersion, sessions: int) -> PolicyVersion:
         changed = parse_policy({**policy.policy.to_json(), "cooldown_sessions": sessions})
     except PolicyError:
         raise BacktestError("backtest_bad_cooldown") from None
-    return replace(policy, policy=changed)
+    return PolicyVersion(
+        policy.version_id, policy.version, policy.effective_from, policy.superseded_at, changed
+    )
 
 
 def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:

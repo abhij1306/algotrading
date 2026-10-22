@@ -450,8 +450,9 @@ def test_cooldown_applied(paths: dict, n: int, pct: int) -> None:
     """With `cooldown_sessions` N, a trigger of an instrument the bot closed by `hard_stop` on
     that session or one of the N before it is Rejected `cooldown` and buys nothing, and no entry
     opens within N sessions after a hard stop of its instrument; N = 0 refuses nothing for this
-    reason. Tight stops make hard stops and re-triggers common. Harm: the knob the cooldown sweep
-    turns does nothing, or the backtest refuses entries live takes."""
+    reason, and no signal is refused for a missing stop history. Tight stops make hard stops and
+    re-triggers common. Harm: the knob the cooldown sweep turns does nothing, or the backtest
+    refuses entries live takes."""
     data = s.market(paths, DAYS)
     cfg = s.config(stop={"rule": "pct_below_entry", "pct": pct}, chase=30.0)
     policy = with_cooldown(s.policy_version(), n)
@@ -470,6 +471,7 @@ def test_cooldown_applied(paths: dict, n: int, pct: int) -> None:
 
     for signal in result.signals:
         day, iid = signal.trade_date, signal.instrument_id
+        assert signal.reason not in ("missing_input", "invalid_input")  # the history is passed
         if signal.reason == "cooldown":
             assert cooling(iid, day, same_day=True)
             assert (signal.state, signal.qty) == ("Rejected", 0)

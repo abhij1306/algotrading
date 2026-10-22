@@ -24,7 +24,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.adtr_filter_applied` With an `adtr_filter`, a trigger whose stop is wider than max_multiple x ADTR(20) as of the session before (or with no ADTR, blanked at some closes) is Rejected `adtr_filter` and buys nothing; one within it is never refused for that reason (HAT-BT-025, PR 61). Harm: the backtest takes wide-stop entries live refuses.
 - `PBT backtest.upper_circuit_inferred` An entry price that is the day's high, above the previous close and within one tick of the upper price of an NSE band (2, 5, 10, 20%) above the previous close is locked; one below the high, at or below the previous close, or between bands is not; no previous close or tick is unknown (HAT-BT-025, PR 61). Harm: the backtest buys a stock locked at its upper band.
 - `PBT backtest.upper_circuit_skip` In a run with sessions at an upper band (pinned all day, or opened at the band and faded), a trigger entering at the band is Rejected `max_chase` and buys nothing, and with a 30% chase no other trigger is (HAT-BT-025, PR 61). Harm: the backtest buys locked gap-ups live never gets.
-- `PBT backtest.cooldown_applied` In a run whose policy has `cooldown_sessions` N in [0, 4] (`with_cooldown`), with tight stops so hard stops and re-triggers are common, every trigger Rejected `cooldown` follows a hard stop of its instrument within N sessions and buys nothing, no entry opens within N sessions after one, and the run records N (HAT-RISK-036, PR 58). Harm: the knob the cooldown sweep turns does nothing, or the backtest refuses entries live takes.
+- `PBT backtest.cooldown_applied` In a run whose policy has `cooldown_sessions` N in [0, 4] (`with_cooldown`), with tight stops so hard stops and re-triggers are common, every trigger Rejected `cooldown` follows a hard stop of its instrument within N sessions and buys nothing, no entry opens within N sessions after one, no signal is refused for a missing or invalid input (the stop history is passed when N > 0), and the run records N (HAT-RISK-036, PR 58). Harm: the knob the cooldown sweep turns does nothing, or the backtest refuses entries live takes.
 - `PBT backtest.exit_fill_proxy` A stop fills at min(open, stop) when the day reaches it and is never better than the stop; a day above it does not fill (HAT-BT-021). Harm: gap-down losses are understated.
 - `PBT backtest.exit_fill_proxy_close` A trade closed by a close-based rule sold at that day's official close, and `close_exits_at_official_close` is a recorded known gap. Harm: close exits are priced at a better point of the day than the rule could see.
 - `PBT backtest.decimal_money` Quantities are whole and at least 1, money is Decimal, and the trades' net P&L sums exactly to the change in equity (HAT-BT-024). Harm: float drift makes equity and the trades disagree.
@@ -52,7 +52,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.trial_counting` A family's trial count is the number of runs recorded for it, failed ones included; it never falls and other families never change it (HAT-BT-030). Harm: discarded variants are forgotten and the DSR under-corrects for luck.
 - `PBT dsr.family_key` Two runs share a family key iff they share strategy and universe, whatever their version or period (HAT-BT-031). Harm: a new version escapes the trial penalty.
 - `PBT dsr.evidence_current_trials` The lifecycle's evidence is the newest completed run of the live version with the DSR deflated by the family's trials and Sharpe variance now, later failed runs and other versions counted; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the gate on a stale trial count.
-- `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force: a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: Research to Backtested is gated on a run of a rule that is not live.
+- `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force when it is read (now for the lifecycle, the request's instant for the risk-increase gate): a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: a gate is passed on a run of a rule that is not live.
 - `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
 
 ## Run
@@ -113,7 +113,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `d12b2ce03de42a528d9cc2658be1cace180cf9276a828ff9479f328e192400c0`
+Covered digest: `87ecb721a998a1fe910f0fd74a9737ba4db631996c214b537a5644cf277f866f`
 
 ## Scope changes
 
@@ -439,9 +439,18 @@ Break: (PR 58) in `backend/app/hat/engine/trades.py`: `open_entry` passes an emp
 
 ```
 tests/hat/properties/test_backtest.py F
-tests/hat/properties/test_backtest.py:478: in test_cooldown_applied
+tests/hat/properties/test_backtest.py:480: in test_cooldown_applied
     assert not cooling(iid, day, same_day=False)
 E   AssertionError: assert not True
+```
+
+Break: (PR 58) in `backend/app/hat/engine/trades.py`: `open_entry` reads the hard-stop history only when the cooldown is off, so every entry under one is refused for a missing input.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:474: in test_cooldown_applied
+    assert signal.reason not in ("missing_input", "invalid_input")  # the history is passed
+E   AssertionError: assert 'missing_input' not in ('missing_input', 'invalid_input')
 ```
 
 ### PBT backtest.exit_fill_proxy
@@ -837,18 +846,35 @@ Break: (PR 58) in `backend/app/hat/backtest/runs.py`: the newest completed run i
 
 ```
 tests/hat/properties/test_dsr.py F
-tests/hat/properties/test_dsr.py:286: in test_evidence_cooldown_in_force
+tests/hat/properties/test_dsr.py:304: in test_evidence_cooldown_in_force
     assert facts.trades == (want[-1] if want else 0)
 E   AssertionError: assert 2 == 1
+E    +  where 2 = BacktestFacts(dsr_prob=Decimal('0.778222'), trades=2, expectancy=Decimal('2'), trials=2).trades
 ```
 
 Break: (PR 58) in `backend/app/hat/backtest/runs.py`: a run without `cooldown_sessions` does not read as 0.
 
 ```
 tests/hat/properties/test_dsr.py F
-tests/hat/properties/test_dsr.py:286: in test_evidence_cooldown_in_force
-    assert facts.trades == (want[-1] if want else 0)
+tests/hat/properties/test_dsr.py:304: in test_evidence_cooldown_in_force
 E   assert 0 == 1
+E    +  where 0 = BacktestFacts(dsr_prob=None, trades=0, expectancy=None, trials=0).trades
+E   Failing test case: test_evidence_cooldown_in_force(
+E       in_force=None,
+E       later=None,  # or any other generated value
+E       made=[None],
+E   )
+```
+
+Break: (PR 58) in `backend/app/hat/backtest/runs.py`: `gate_evidence` picks each sleeve's run by the cooldown in force now, not at the request.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:312: in test_evidence_cooldown_in_force
+    assert _numbers(got) == _numbers(build_gate_evidence([], benchmark))
+E   AssertionError: assert {'live_trades [cut]cimal('0.84')} == {'live_trades [cut]cimal('0.42')}
+E     Differing items:
+E     {'backtest_expectancy_r': Decimal('0.84')} != {'backtest_expectancy_r': Decimal('0.42')}
 ```
 
 ### PBT dsr.gate_evidence

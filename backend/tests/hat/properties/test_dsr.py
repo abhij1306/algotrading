@@ -25,7 +25,7 @@ from app.hat.backtest.dsr import (
     return_stats,
 )
 from app.hat.engine.backtest import BacktestResult
-from app.hat.engine.portfolio.lifecycle import discounted_benchmark
+from app.hat.engine.portfolio.lifecycle import DEFAULT_DISCOUNT, discounted_benchmark
 from app.hat.models import (
     HatBacktestRun,
     HatBot,
@@ -253,15 +253,19 @@ def _result(
 COOLDOWNS = st.sampled_from([None, 0, 3, 5])  # None: a run or a user without the field
 
 
-@given(COOLDOWNS, st.lists(COOLDOWNS, max_size=5))
+@given(COOLDOWNS, COOLDOWNS, st.lists(COOLDOWNS, max_size=5))
 @settings(max_examples=30, deadline=None)
-@example(0, [0, 3])  # a sweep run newer than the run under the policy in force
-@example(3, [3, 0])  # a run made before the cooldown was raised to 3
-def test_evidence_cooldown_in_force(in_force: int | None, made: list[int | None]) -> None:
-    """The sleeve's evidence is its newest completed run made under the cooldown in force
-    (HAT-RISK-036): a `--cooldown-sessions` sweep run, or one made before the cooldown changed,
-    is skipped, and a run or a policy without the field counts as 0. With no such run there is
-    no evidence. Harm: Research to Backtested is gated on a run of a rule that is not live."""
+@example(0, None, [0, 3])  # a sweep run newer than the run under the policy in force
+@example(3, None, [3, 0])  # a run made before the cooldown was raised to 3
+@example(0, 3, [0, 3])  # the cooldown was raised after the increase was requested
+def test_evidence_cooldown_in_force(
+    in_force: int | None, later: int | None, made: list[int | None]
+) -> None:
+    """The sleeve's evidence is its newest completed run made under the cooldown in force when
+    it is read (HAT-RISK-036): now for the lifecycle, the request's instant for the
+    risk-increase gate. A `--cooldown-sessions` sweep run, or one made before the cooldown
+    changed, is skipped, and a run or a policy without the field counts as 0. With no such run
+    there is no evidence. Harm: a gate is passed on a run of a rule that is not live."""
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         strategies, universes = _world(session, 1, 1)
@@ -273,18 +277,40 @@ def test_evidence_cooldown_in_force(in_force: int | None, made: list[int | None]
         session.add(uv)
         session.flush()
         user = uuid.uuid4()
+        now_cooldown = in_force
         if in_force is not None:
             row = seed_initial_policy(session, user, datetime(2026, 1, 1, tzinfo=UTC))
             row.policy = {**row.policy, "cooldown_sessions": in_force}
+            if later is not None:  # in force from 2026-02-01, after the request below
+                now_cooldown = later
+                session.add(
+                    HatRiskPolicyVersion(
+                        user_id=user,
+                        version=2,
+                        policy={**row.policy, "cooldown_sessions": later},
+                        direction="increase",
+                        requested_at=datetime(2026, 1, 20, tzinfo=UTC),
+                        effective_from=datetime(2026, 2, 1, tzinfo=UTC),
+                    )
+                )
             session.flush()
         bot = _sleeve_bot(session, user, strategy, live.id, uv)
         for n, cooldown in enumerate(made):
             run = _start(session, live, universe)
-            runs.complete_run(session, run, _result(0.1, 60, n + 1, "0.5", cooldown), root=root)
-        want = [n + 1 for n, c in enumerate(made) if (c or 0) == (in_force or 0)]
+            result = _result(0.1, 60, n + 1, str(n + 1), cooldown)
+            runs.complete_run(session, run, result, root=root)
+        want = [n + 1 for n, c in enumerate(made) if (c or 0) == (now_cooldown or 0)]
         facts = runs.backtest_evidence(session, bot)
         assert facts.trades == (want[-1] if want else 0)
         assert (facts.dsr_prob is None) == (not want)
+        then = [n + 1 for n, c in enumerate(made) if (c or 0) == (in_force or 0)]
+        got = runs.gate_evidence(session, user, datetime(2026, 1, 15, tzinfo=UTC))
+        if not then:
+            assert got is None
+        else:
+            benchmark = discounted_benchmark(Decimal(then[-1]), DEFAULT_DISCOUNT)
+            assert _numbers(got) == _numbers(build_gate_evidence([], benchmark))
+        session.rollback()
 
 
 @given(st.lists(st.tuples(SR, st.booleans()), min_size=1, max_size=6), st.integers(30, 600))

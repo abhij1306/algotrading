@@ -555,9 +555,12 @@ def open_entry(
         open_positions=slots,
         entries_today=entries,
         stopouts_today=stopouts,
+        # read only when a cooldown is on (`decide` reads it under the same version)
         hard_stop_days=last_hard_stop(
             session, request.bot_id, request.instrument_id, request.triggered_at
-        ),
+        )
+        if policy.policy.cooldown_sessions > 0
+        else None,
     )
     if request.skip_reason is not None:
         decision = _skip_decision(request.skip_reason)
