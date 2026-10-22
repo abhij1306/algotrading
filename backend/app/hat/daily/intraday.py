@@ -193,7 +193,7 @@ class Intraday:
         """Record the gappers with their opens from the feed's pre-open record (a restart
         rebuilds the candidates from them: the record is gone by then), then add the EP
         candidates."""
-        gaps = self._live.gaps.records()
+        gaps = self._live.gaps.records(day)
         opens = {symbol: gaps[symbol].open for symbol in found if symbol in gaps}
         with self._session_factory() as session:
             _record_gappers(session, day, found, opens, self._now())

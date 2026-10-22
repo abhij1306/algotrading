@@ -255,10 +255,10 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
   - Property: for every final contraction low L > 0, entry P > 0 and buffer b, the stop equals L × (1 − b/100) rounded down to the tick, and the result is SKIP exactly when (P − stop)/P > max_pct/100. Harm: stops wider than the playbook allows are accepted, or valid trades are dropped.
 
 #### HAT-EXEC-051: low_of_day
-- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid.
+- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid. The day's low exists only for a session watched from the open with no feed gap (HAT-DATA-114); without it the entry skips with `stop_input_missing`.
 - **Source:** BL "Stop rules"; BL "Qullamaggie-style bot" (`stop: {rule: low_of_day}`).
-- **PR:** 11
-- **Verification:** PBT `stops.low_of_day`
+- **PR:** 11, 22
+- **Verification:** PBT `stops.low_of_day`, PBT `bars.trigger_never_uses_a_partial_session`
 - **Acceptance:**
   - Property: for every intraday bar sequence up to the entry bar and every tick size, the stop equals min(low of all bars that day up to and including entry) − buffer_ticks × tick, and is strictly below the entry price. Harm: a stop above the session low triggers on normal noise.
 

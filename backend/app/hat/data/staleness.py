@@ -50,6 +50,15 @@ class StalenessMonitor:
         self._stale = False
 
     @property
+    def last_tick(self) -> datetime | None:
+        """The arrival instant of the latest tick, None before the first."""
+        return self._last_tick
+
+    @property
+    def stale_after(self) -> timedelta:
+        return self._stale_after
+
+    @property
     def stale(self) -> bool:
         """The state at the last `check` or `on_tick`."""
         return self._stale

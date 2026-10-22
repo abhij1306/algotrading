@@ -24,7 +24,9 @@ Rules:
 - At the trigger the initial stop is computed with the instrument's real tick (HAT-EXEC-053),
   then the entry filters run in their configured order; `max_chase` always runs, with the
   playbook's last configured percentage, even when the config deleted or disabled it
-  (HAT-CRIT-122). The first failure names the skip reason (HAT-EXEC-122).
+  (HAT-CRIT-122). The first failure names the skip reason (HAT-EXEC-122). The day low comes from
+  the bar view, which has none for a session not watched from the open or with a feed gap, so a
+  `low_of_day` stop then skips with `stop_input_missing` (PR 22).
 - One (bot, playbook, instrument, trade date) has at most one signal. A fired key is pending
   until its signal write reports back: `confirm` closes it for the day, `release` (a failed
   write) lets the next final bar evaluate it again, so a lost write never loses the day.
@@ -88,6 +90,8 @@ class BarView(Protocol):
     def opening_range(self, symbol: str, day: date) -> tuple[Decimal, Decimal] | None: ...
 
     def day_volume(self, symbol: str, day: date) -> int: ...
+
+    def day_low(self, symbol: str, day: date) -> Decimal | None: ...
 
 
 @dataclass(frozen=True)
@@ -428,7 +432,6 @@ class TriggerMonitor:
         self._fired: set[tuple[uuid.UUID, str, uuid.UUID, date]] = set()
         self._pending: set[tuple[uuid.UUID, str, uuid.UUID, date]] = set()
         self._lock = threading.Lock()
-        self._day_lows: dict[tuple[str, date], list[Decimal]] = {}
 
     def add(self, candidate: Candidate) -> None:
         """Watch `candidate` (a second add of the same key replaces the first)."""
@@ -492,7 +495,6 @@ class TriggerMonitor:
     def on_bar(self, bar: Bar) -> list[Trigger]:
         """Evaluate every unfired candidate of the bar's symbol; return the triggers fired."""
         day = bar.start.astimezone(IST).date()
-        self._day_lows.setdefault((bar.symbol, day), []).append(bar.low)
         if not in_window(bar.final_at):
             return []
         fired: list[Trigger] = []
@@ -507,7 +509,7 @@ class TriggerMonitor:
             )
             if not evaluation.fired or not self._claim(key):
                 continue
-            lows = self._day_lows[(bar.symbol, day)]
-            plan = plan_entry(candidate, ctx, evaluation.level, lows)
+            low = self._view.day_low(bar.symbol, day)
+            plan = plan_entry(candidate, ctx, evaluation.level, () if low is None else (low,))
             fired.append(Trigger(candidate, bar.final_at, evaluation, plan, ctx))
         return fired

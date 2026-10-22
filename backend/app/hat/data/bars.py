@@ -16,12 +16,19 @@ Rules (02-data §11, "Bar builder rules"):
   breaks ties), so the bar does not depend on arrival order.
 - A window with no tick produces no bar.
 - The opening range is the high and low of the first bar of a session, fixed when that bar is
-  final and never changed afterwards.
+  final and never changed afterwards. It is published only for a symbol watched from the open:
+  its first tick that day arrived at or before the session open, and no feed gap began before
+  the first bar ended. Otherwise prints the builder never saw may hold the real range, so there
+  is none (PR 22).
+- The day low is the lowest low of the day's final bars, published on the same terms and only
+  while no feed gap has been marked that day: a late subscription, a restart or a gap may have
+  missed the low, and a stop under a partial low is too tight and oversized (PR 22).
 - Volume pace is cumulative day volume over the fraction of the session elapsed. The day volume
   counts every in-session tick, late ones included (the tape did trade them); bars exclude late
   ticks (they are immutable).
-- A restart mid-session `restore`s the day's stored final bars: their opening ranges and their
-  volume, for each symbol the builder has not seen that day (PR 17).
+- A restart mid-session `restore`s the day's stored final bars: their volume, and the opening
+  ranges of the symbols the stored coverage says were watched from the open, for each symbol the
+  builder has not seen that day (PR 17). The restart itself is a feed gap (PR 22).
 """
 
 from __future__ import annotations
@@ -130,6 +137,9 @@ class BarBuilder:
     _open_bars: dict[tuple[str, datetime], _OpenBar] = field(default_factory=dict)
     _opening: dict[tuple[str, date], tuple[Decimal, Decimal]] = field(default_factory=dict)
     _days: dict[tuple[str, date], _DayState] = field(default_factory=dict)
+    _lows: dict[tuple[str, date], Decimal] = field(default_factory=dict)
+    _watched: dict[tuple[str, date], datetime] = field(default_factory=dict)
+    _gap_from: dict[date, datetime] = field(default_factory=dict)
     _seq: int = 0
 
     def __post_init__(self) -> None:
@@ -153,6 +163,7 @@ class BarBuilder:
     def on_tick(self, tick: Tick, now: datetime) -> TickOutcome:
         """Apply `tick`, which arrived at `now`. Never changes a bar that is already final."""
         require_aware(now)
+        self._watched.setdefault((tick.symbol, now.astimezone(IST).date()), now)
         start = self.bar_start(tick.at)
         if start is None:
             return TickOutcome.OUTSIDE_SESSION
@@ -192,15 +203,49 @@ class BarBuilder:
             bar = Bar(key[0], raw.start, raw.open, raw.high, raw.low, raw.close, raw.volume)
             finals.append(bar)
             day = bar.start.date()
+            self._note_low(bar, day)
             if bar.start == self.session_start(day):
                 self._opening.setdefault((bar.symbol, day), (bar.high, bar.low))
         return finals
 
-    def restore(self, bars: Iterable[Bar]) -> int:
-        """Seed the opening range and the day volume from final bars stored before a restart,
-        for each (symbol, day) with no state yet (a second restore, or one after that symbol's
-        first tick, changes nothing). Returns the bars applied."""
+    def _note_low(self, bar: Bar, day: date) -> None:
+        low = self._lows.get((bar.symbol, day))
+        if low is None or bar.low < low:
+            self._lows[(bar.symbol, day)] = bar.low
+
+    def mark_gap(self, since: datetime) -> None:
+        """Prints from `since` on may be missing (a feed gap, a restart): for the rest of that
+        day no day low is published, nor an opening range if `since` is before the first bar's
+        end."""
+        day = require_aware(since).astimezone(IST).date()
+        gap = self._gap_from.get(day)
+        if gap is None or since < gap:
+            self._gap_from[day] = since
+
+    def from_open(self, symbol: str, day: date) -> bool:
+        """Whether the symbol's first tick that day arrived at or before the session open."""
+        first = self._watched.get((symbol, day))
+        return first is not None and first <= self.session_start(day)
+
+    def coverage(self, day: date) -> tuple[frozenset[str], datetime | None]:
+        """The symbols watched from the open of `day` and the start of its first feed gap."""
+        watched = frozenset(s for (s, d) in self._watched if d == day and self.from_open(s, d))
+        return watched, self._gap_from.get(day)
+
+    def restore(
+        self,
+        bars: Iterable[Bar],
+        from_open: Iterable[str] = (),
+        gap_from: datetime | None = None,
+    ) -> int:
+        """Seed the day volume, the lows and (for the `from_open` symbols, which the process
+        that stored the bars watched from the open) the opening range from final bars stored
+        before a restart, for each (symbol, day) with no state yet (a second restore, or one
+        after that symbol's first tick, changes nothing). `gap_from` is the stored first feed
+        gap; the restart is a gap from the end of the last stored bar. Returns the bars
+        applied."""
         bars = list(bars)
+        watched = set(from_open)
         known = set(self._days)
         applied = 0
         for bar in bars:
@@ -211,15 +256,38 @@ class BarBuilder:
             state = self._days.setdefault(key, _DayState())
             state.volume += bar.volume
             state.ticks += 1
+            self._note_low(bar, day)
+            if bar.symbol in watched:
+                self._watched.setdefault(key, self.session_start(day))
             if bar.start == self.session_start(day):
                 self._opening.setdefault(key, (bar.high, bar.low))
             applied += 1
+        if gap_from is not None:
+            self.mark_gap(gap_from)
+        if bars:
+            self.mark_gap(max(bar.end for bar in bars))
         return applied
 
+    def _complete(self, symbol: str, day: date, until: datetime | None) -> bool:
+        """Watched from the open with no feed gap before `until` (None: none at all that day)."""
+        gap = self._gap_from.get(day)
+        clean = gap is None or (until is not None and gap >= until)
+        return clean and self.from_open(symbol, day)
+
     def opening_range(self, symbol: str, day: date) -> tuple[Decimal, Decimal] | None:
-        """(high, low) of the session's first bar once it is final; None before that, and for
-        a symbol that had no tick in the first bar."""
+        """(high, low) of the session's first bar once it is final; None before that, for a
+        symbol that had no tick in the first bar, and for one not watched from the open or with
+        a feed gap before the first bar's end (fail closed)."""
+        if not self._complete(symbol, day, self.session_start(day) + BAR_WIDTH):
+            return None
         return self._opening.get((symbol, day))
+
+    def day_low(self, symbol: str, day: date) -> Decimal | None:
+        """The lowest low of the day's final bars; None unless the symbol was watched from the
+        open and no feed gap was marked that day (fail closed)."""
+        if not self._complete(symbol, day, None):
+            return None
+        return self._lows.get((symbol, day))
 
     def day_volume(self, symbol: str, day: date) -> int:
         state = self._days.get((symbol, day))

@@ -28,7 +28,7 @@ from app.hat.clock import SYSTEM_CLOCK, Clock
 from ..events import record
 from ..time import trade_date_of
 from .bars import Bar, BarBuilder, Tick
-from .bars_store import BarStore
+from .bars_store import BarStore, Coverage
 from .preopen import PreopenGaps
 from .staleness import FeedHealth, StalenessMonitor
 
@@ -197,6 +197,9 @@ class LiveData:
         self._bar_listeners: list[BarListener] = []
         self._tick_listeners: list[Callable[[Tick], None]] = []
         self._unsaved: list[Bar] = []
+        # per day, the builder's coverage at the last step, taken on the loop thread for
+        # `persist` (a worker thread); replaced whole, never mutated in place
+        self._coverage: dict[date, tuple[frozenset[str], datetime | None]] = {}
         self._detach: Callable[[], None] | None = None
 
     def attach(self, feed: TickFeed) -> None:
@@ -214,8 +217,9 @@ class LiveData:
         self._bar_listeners.append(listener)
 
     def restore(self, day: date) -> int:
-        """A restart mid-session: the day's final bars already stored give the bar builder back
-        its opening ranges and day volumes (blocking: reads the store). Returns the bars read."""
+        """A restart mid-session: the day's final bars and coverage already stored give the bar
+        builder back its day volumes and, for the symbols watched from the open, its opening
+        ranges (blocking: reads the store). Returns the bars read."""
         if self._store is None:
             return 0
         symbols = {str(i): s for s, i in self._instrument_ids().items()}
@@ -224,7 +228,9 @@ class LiveData:
             for row in self._store.read(day)
             if (symbol := symbols.get(row.instrument_id)) is not None
         ]
-        return self.builder.restore(bars)
+        coverage = self._store.read_coverage(day)
+        from_open = [symbols[i] for i in coverage.from_open if i in symbols]
+        return self.builder.restore(bars, from_open, coverage.gap_from)
 
     def add_tick_listener(self, listener: Callable[[Tick], None]) -> None:
         """Called with each tick that has a symbol and a positive price (the last-price book)."""
@@ -232,6 +238,7 @@ class LiveData:
 
     def on_tick(self, payload: dict[str, Any]) -> None:
         now = self._clock.now()
+        self._note_gap(now)
         self.staleness.on_tick(now)
         self.gaps.observe(payload, now)
         tick = tick_from_payload(payload, now, self._last_volume)
@@ -244,13 +251,30 @@ class LiveData:
         """One timer step: finalise bars, notify bar listeners in order, re-check staleness."""
         now = self._clock.now()
         self.staleness.check(now)
+        self._note_gap(now)
         finals = self.builder.advance(now)
         for bar in finals:
             for listener in self._bar_listeners:
                 run_listener_call(lambda b=bar, fn=listener: fn(b), "bar listener")
         if self._store is not None:  # without a store nothing would ever clear the list
+            days = {trade_date_of(bar.start) for bar in finals}
+            if days:
+                self._coverage = self._coverage | {d: self.builder.coverage(d) for d in days}
             self._unsaved.extend(finals)
         return finals
+
+    def _note_gap(self, now: datetime) -> None:
+        """A stale feed inside the session is a gap from its last tick (or the open): prints may
+        be missing from then on, so the builder stops publishing the day low (PR 22). Before
+        this process's first tick nothing was watched, so there is no gap to mark: a symbol
+        first seen after the open is not watched from it, and a restart is marked by
+        `restore`."""
+        last = self.staleness.last_tick
+        if last is None or not self.staleness.is_stale(now):
+            return
+        since = max(last, self.builder.session_start(trade_date_of(now)))
+        if now - since >= self.staleness.stale_after:
+            self.builder.mark_gap(since)
 
     @property
     def pending_bars(self) -> int:
@@ -263,8 +287,14 @@ class LiveData:
         if self._store is None or not self._unsaved:
             return 0
         pending = list(self._unsaved)
+        ids = self._instrument_ids()
         try:
-            written = self._store.write(pending, self._instrument_ids())
+            written = self._store.write(pending, ids)
+            coverage = self._coverage
+            for day in sorted({trade_date_of(bar.start) for bar in pending}):
+                watched, gap = coverage.get(day, (frozenset(), None))
+                found = frozenset(str(ids[s]) for s in watched if s in ids)
+                self._store.write_coverage(day, Coverage(found, gap))
         except Exception:
             logger.exception("bars_5m write failed; will retry")
             return 0
