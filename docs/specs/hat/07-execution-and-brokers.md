@@ -175,7 +175,7 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 
 How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `execution/fills.py`):
 
-- The entry's first fill moves EntryPlaced to Open; a later fill of the same order adds to the position at the weighted average price. The entry is a DAY limit order: a remainder still unfilled at the close expires at the broker and the filled part is kept as the position. Only an entry order that ended with nothing filled drives EntryPlaced → Cancelled; an `order.cancelled` of a stop or a sale moves no state. **[OWNER-PENDING]** (partial-entry policy; this is the default).
+- The entry's first fill moves EntryPlaced to Open; a later fill of the same order adds to the position at the weighted average price. The entry is a DAY limit order: a remainder still unfilled at the close expires at the broker and the filled part is kept as the position. Once the position holds no shares (a stop fill, an exit or a flatten sold them), or before a sale of every share, HAT asks the broker to cancel the remainder (`StopDesk.cancel_entry`, once per entry, again only after the broker could not be reached); the sale never waits for it. A position its sales emptied stays open at quantity 0 (ExitPending) until the broker's book shows the entry ended (an entry sent on an earlier trade date counts as ended: its DAY limit expired at that close), then closes at its last sale's price, rule and time (`live_trades.close_if_emptied`); a part of the remainder that fills first adds to it (the average entry weighted by the shares bought), is protected like any entry fill, and fires again the rules of the exit sale that emptied it, so the next evaluation sells it too (audit 2026-10-22 F2). Only an entry order that ended with nothing filled drives EntryPlaced → Cancelled; an `order.cancelled` of a stop or a sale moves no state. **[OWNER-PENDING]** (partial-entry policy; this is the default).
 - No sale is placed for a broker stop: the first fill of a stop (or any fill that empties a position no full exit order was placed for) carries `exit_triggered: true` on its `order.filled`, which stands for the "exit order placed" step (ExitPending) on replay.
 - An entry the exchange rejects after the broker took it (nothing filled) records a final `order.rejected` and ends its signal Rejected.
 - An entry HAT may have sent (pending or unconfirmed) that the broker's book does not hold at the session end, after a good reconciliation, ends its signal Rejected with reason `entry_not_found`; one sent less than the settle wait ago (HAT-EXEC-065) is left for the next run, since it may still be on its way. An entry first found by its tag already cancelled, expired or rejected with nothing filled (its signal never reached EntryPlaced) records a non-final `order.rejected` carrying the broker status, and its signal ends Rejected with reason `entry_not_filled` when it is adopted; one adopted while its signal is in EntryPlaced ends as a broker update would end it (Cancelled, or Rejected by a final `order.rejected`). One that filled in part before it ended is adopted as placed, and its fills open the position.
@@ -299,12 +299,13 @@ Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` 
 - Nothing in stop placement checks a kill switch or pause (06 §6).
 
 #### HAT-EXEC-060: Stop at the broker on every real fill
-- **Statement:** Every real entry fill is followed by an intraday stop order (purpose `stop_day`) at the position's stop price.
-- **Source:** BL "Stop placement at the broker (B17)" step 1; MA "Execution modes" ("Protective stops sit at the broker on every real fill"); B17.
-- **PR:** 15
-- **Verification:** TLA `StopPlacement!StopAfterFill`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`
+- **Statement:** Every real entry fill is followed by an intraday stop order (purpose `stop_day`) at the position's stop price, including a fill of the entry's remainder after the position's sales emptied it.
+- **Source:** BL "Stop placement at the broker (B17)" step 1; MA "Execution modes" ("Protective stops sit at the broker on every real fill"); B17; audit 2026-10-22 tests-hat F2.
+- **PR:** 15, 20
+- **Verification:** TLA `StopPlacement!StopAfterFill`, TLA `StopPlacement!SharesTracked`, TLA `StopPlacement!RestCancelledOnExit`, TLA `StopPlacement!EmptiedCloses`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`, PBT `manage.entry_remainder_tracked`
 - **Acceptance:**
   - Property: in every behaviour, after a real entry fill, a working broker stop for the open quantity exists before any other action on that position, and from then on there is always a working stop (day or GTT) while qty_open > 0. Harm: a position sits unprotected if the machine dies.
+  - Property: in every interleaving of part fills of the entry with stop fills, exits and flattens, HAT's open quantity equals the shares the broker holds and its live stops cover them; once a sale empties the position the entry's remainder is asked to be cancelled, and the position closes only when no entry order still works. Harm: shares the broker bought after HAT closed the position sit untracked and unprotected.
 
 #### HAT-EXEC-061: Intraday stop swapped to GTT at ~15:25
 - **Statement:** At ~15:25 each intraday stop is replaced by a GTT stop (purpose `stop_gtt`) for overnight protection, without a gap in coverage.
@@ -333,12 +334,13 @@ Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` 
   - Property: in every behaviour, after the nightly `gtt.verify` job, every open real position either has a broker GTT whose trigger equals `current_stop`, or a health alert was raised and a re-placement attempted. Harm: a missing GTT goes unnoticed for days.
 
 #### HAT-EXEC-064: Stop moves follow the stop
-- **Statement:** When `current_stop` rises, the working broker stop (day or GTT) is modified to the new price; it is never modified downward.
-- **Source:** BL "Invariants" 1; SCH `stop.moved`; DS "Broker interface" (`modify_order`, `modify_gtt`).
-- **PR:** 15
-- **Verification:** TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens`
+- **Statement:** When `current_stop` rises, the working broker stop (day or GTT) is modified to the new price; it is never modified downward, by a follow or by the nightly verify (a tick that coarsened since the stop last moved leaves the resting trigger and limit where they are; a refused refresh of such a GTT is alerted `gtt.unverified` and nothing is placed, since a new GTT would rest lower).
+- **Source:** BL "Invariants" 1; SCH `stop.moved`; DS "Broker interface" (`modify_order`, `modify_gtt`); audit 2026-10-22 tests-hat F24.
+- **PR:** 15, 20
+- **Verification:** TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens`, PBT `manage.verify_covers`
 - **Acceptance:**
   - Property: in every reachable state, the broker stop price for an open position is ≤ `current_stop` and eventually equals it, and the sequence of broker stop prices is non-decreasing. Harm: the broker stop lags a raised stop and gives back profit, or is lowered.
+  - Property: for every pair of ticks, a GTT the nightly verify refreshes keeps a trigger at least the one it rested at. Harm: a coarser tick lowers the stop by less than a tick each night.
 
 #### HAT-EXEC-065: A lost broker answer never freezes a position
 - **Statement:** A stop or sale whose placement answer was lost is settled against the broker's books (GTT book or tag) and adopted or ended, so an open real position always ends with a working stop or a sale it can send.

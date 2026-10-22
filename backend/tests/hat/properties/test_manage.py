@@ -143,6 +143,128 @@ def test_real_fill_protected(
 
 
 # ---------------------------------------------------------------------------------------
+# HAT-EXEC-060, HAT-DEC-B17 (F2): the rest of a part-filled entry is cancelled once the
+# position is sold, and any share of it that still fills is held and protected
+# ---------------------------------------------------------------------------------------
+
+WORKING_AT_BROKER = 6  # Fyers orderbook status of a pending order
+EXPIRED_AT_BROKER = 7
+STEPS = st.one_of(
+    st.tuples(st.just("entry"), st.integers(min_value=1, max_value=3)),
+    st.just(("stop", 0)),
+    st.just(("flatten", 0)),
+)
+
+
+def _broker_holds(rig: ManageRig) -> int:
+    """The shares the broker holds for the account: its trade book, buys less sales."""
+    return sum(row["side"] * row["tradedQty"] for row in rig.fake.tradebook)  # type: ignore[union-attr]
+
+
+def _book_row(rig: ManageRig, row: HatOrder) -> dict[str, Any]:
+    [found] = [book for book in rig.fake.book if book["orderTag"] == row.tag]
+    return found
+
+
+def _sell_all(rig: ManageRig, step: str, when: datetime, position: HatPosition) -> None:
+    """The broker sells the position: its resting day stop triggers, or HAT flattens it."""
+    if step == "stop":
+        for stop in rig.stops(position.id, *LIVE):
+            if stop.broker_order_id:
+                rig.fill(stop, stop.qty, D(stop.trigger_price))
+        return
+    rig.manager.flatten(rig.session, rig.account_id, when)
+    for sale in rig.session.scalars(
+        select(HatOrder).where(
+            HatOrder.position_id == position.id,
+            HatOrder.purpose == "flatten",
+            HatOrder.status.in_(LIVE),
+        )
+    ):
+        rig.fill(sale, sale.qty, D(100))
+
+
+def _held_is_protected(rig: ManageRig, signal_id: object, entry: HatOrder) -> None:
+    position = rig.position(signal_id)  # type: ignore[arg-type]
+    assert position is not None
+    held = _broker_holds(rig)
+    if position.closed_at is not None:
+        assert held == 0, "closed while the broker holds shares"
+        assert _book_row(rig, entry)["status"] != WORKING_AT_BROKER
+        return
+    assert position.qty_open == held
+    assert sum(stop.qty for stop in rig.stops(position.id, *LIVE)) == held
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    first=st.integers(min_value=1, max_value=3),
+    steps=st.lists(STEPS, min_size=1, max_size=6),
+    cancel_lands=st.booleans(),
+)
+@example(first=1, steps=[("stop", 0), ("entry", 3)], cancel_lands=False)
+@example(first=1, steps=[("flatten", 0), ("entry", 2)], cancel_lands=True)
+def test_entry_remainder_tracked(
+    first: int, steps: list[tuple[str, int]], cancel_lands: bool
+) -> None:
+    """HAT-EXEC-060, HAT-DEC-B17 (F2): an entry fills in chunks while its stop fills and HAT
+    flattens. Once the position is sold, the unfilled rest of the entry is cancelled at the
+    broker; a chunk that fills first (the cancel refused or too late) adds to the position, which
+    stays open until the broker shows the entry ended, and gets a stop for it. After every sync
+    HAT's open quantity equals the shares the broker holds, its live stops cover exactly those,
+    and a closed position leaves no share and no working entry at the broker. Harm: shares the
+    broker bought after HAT closed the position sit untracked and unprotected."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        outcome = rig.enter(at(10, 30))
+        entry = rig.entry_row(outcome.signal_id)
+        assert entry is not None
+        assert entry.broker_order_id
+        refused: list[str] = []
+        cancel = rig.fake.cancel_order
+
+        def cancel_order(order_id: str) -> Any:  # noqa: ANN401
+            if order_id == entry.broker_order_id and not cancel_lands:
+                refused.append(order_id)  # the remainder filled or was in transit
+                return {"s": "error", "message": "Order already traded"}
+            return cancel(order_id)
+
+        rig.fake.cancel_order = cancel_order  # type: ignore[method-assign]
+        unit = max(1, entry.qty // 10)
+        filled = 0
+        when = at(10, 40)
+        for n, (step, chunk) in enumerate([("entry", first), *steps]):
+            when = at(10, 40) + timedelta(minutes=5 * n)
+            position = rig.position(outcome.signal_id)
+            if step == "entry":
+                qty = min(unit * chunk, entry.qty - filled)
+                if qty <= 0 or _book_row(rig, entry)["status"] != WORKING_AT_BROKER:
+                    continue
+                rig.fill(entry, qty, D(entry.price))
+                filled += qty
+            elif position is None or position.closed_at is not None or position.qty_open == 0:
+                continue
+            else:
+                _sell_all(rig, step, when, position)
+            rig.sync(when)
+            _held_is_protected(rig, outcome.signal_id, entry)
+            position = rig.position(outcome.signal_id)
+            assert position is not None
+            if position.qty_open == 0 and position.closed_at is None:
+                # sold while the entry worked: its rest was asked to be cancelled
+                entry_id = entry.broker_order_id
+                assert entry_id in refused or entry_id in rig.fake.calls_named("cancel_order")
+        row = _book_row(rig, entry)
+        if row["status"] == WORKING_AT_BROKER:
+            row["status"] = EXPIRED_AT_BROKER  # a DAY limit's rest expires at the close
+        rig.sync(when)
+        _held_is_protected(rig, outcome.signal_id, entry)
+        position = rig.position(outcome.signal_id)
+        assert position is not None
+        assert (position.closed_at is not None) == (position.qty_open == 0)
+
+
+# ---------------------------------------------------------------------------------------
 # HAT-EXEC-064, HAT-RISK-070: the broker stop follows the stop up, never down
 # ---------------------------------------------------------------------------------------
 
@@ -253,49 +375,67 @@ def test_swap_leaves_no_gap(first: str, second: str, cancel_refused: bool) -> No
 # ---------------------------------------------------------------------------------------
 
 
+TICKS = st.sampled_from([D("0.01"), D("0.05"), D("0.10")])
+
+
 @settings(max_examples=30, deadline=None)
 @given(
     reply=st.sampled_from(["ok", "not_found", "stuck", "unavailable", "unread"]),
     raised=st.decimals(min_value=0, max_value=3, places=2),
+    ticks=st.tuples(TICKS, TICKS),
 )
-def test_verify_covers(reply: str, raised: Decimal) -> None:
-    """HAT-EXEC-063, HAT-OPS-024: each night every open real position's GTT is refreshed to the
-    current stop (`gtt.refreshed`). A GTT whose refresh the broker refuses is cancelled, alerted
-    (`gtt.missing`) and placed again; when the broker cannot be reached, the refused GTT cannot
-    be cancelled or the fills cannot be read, the position is alerted (`gtt.unverified`) and no
-    GTT is modified or placed, since the old GTT may still rest there and a second one would
+@example(reply="ok", raised=D("0.03"), ticks=(D("0.01"), D("0.05")))
+@example(reply="not_found", raised=D("0.03"), ticks=(D("0.01"), D("0.05")))
+def test_verify_covers(reply: str, raised: Decimal, ticks: tuple[Decimal, Decimal]) -> None:
+    """HAT-EXEC-063, HAT-OPS-024, HAT-EXEC-064: each night every open real position's GTT is
+    refreshed to the current stop (`gtt.refreshed`), never below the trigger it rests at: when
+    the instrument's tick changed since the GTT last moved, a coarser tick that floors the stop
+    lower leaves the trigger where it is. A GTT whose refresh the broker refuses is cancelled,
+    alerted (`gtt.missing`) and placed again; when the broker cannot be reached, the refused GTT
+    cannot be cancelled, it was kept above the new tick's floor (a new one would be lower) or the
+    fills cannot be read, the position is alerted (`gtt.unverified`) and no GTT is modified or
+    placed, since the old GTT may still rest there and a second one would
     sell the shares twice. Harm: a GTT that triggered, expired or was never placed goes
-    unnoticed and the position opens the next day without a stop."""
+    unnoticed and the position opens the next day without a stop; a verify that lowers a stop
+    loosens it."""
     with Session(memory_engine()) as session:
         rig = ManageRig(session)
+        rig.tick = ticks[0]
         position = _opened(rig, at(16, 0))
-        [old] = rig.stops(position.id)
         if raised > 0:
             position.current_stop = D(position.current_stop) + raised
             session.commit()
+            rig.desk.follow(session, position.id, at(16, 5))
+        [old] = rig.stops(position.id)
+        resting = D(old.trigger_price)
+        refreshed = _event_count(session, old, "gtt.refreshed")
+        rig.tick = ticks[1]  # the tick the verify reads (a tick-size change overnight)
         if reply != "ok":
             rig.fake.script("modify_gtt", UNAVAILABLE if reply == "unavailable" else NOT_FOUND)
         if reply == "stuck":
             rig.fake.script("cancel_gtt", NOT_FOUND)
         if reply == "unread":  # the trade book cannot be read: the open quantity may be stale
             rig.fake.script("fetch_tradebook", BrokerUnavailableError("Fyers tradebook failed"))
-        places = rig.fake.count("place_gtt")
+        places, modifies = rig.fake.count("place_gtt"), rig.fake.count("modify_gtt")
         rig.manager.verify_stops(session, rig.account_id, at(23, 0))
-        goal = broker_trigger(D(position.current_stop), TICK)
+        goal = broker_trigger(D(position.current_stop), ticks[1])
         stops = rig.stops(position.id)
-        if reply in ("unavailable", "stuck", "unread"):
+        kept = goal < resting
+        if reply in ("unavailable", "stuck", "unread") or (reply == "not_found" and kept):
             assert ALERT_GTT_UNVERIFIED in rig.codes()
             assert rig.fake.count("place_gtt") == places
-            assert reply != "unread" or rig.fake.count("modify_gtt") == 0
+            assert reply != "unread" or rig.fake.count("modify_gtt") == modifies
             assert [row.id for row in stops] == [old.id]
             return
         [gtt] = stops
         assert gtt.purpose == STOP_GTT
-        assert D(gtt.trigger_price) == goal
+        assert D(gtt.trigger_price) <= D(position.current_stop)
         if reply == "ok":
+            assert D(gtt.trigger_price) == max(goal, resting)
             assert gtt.id == old.id
-            assert _event_count(session, gtt, "gtt.refreshed") == 1
-        else:
+            assert _event_count(session, gtt, "gtt.refreshed") == refreshed + 1
+        else:  # the old GTT is gone: the new one is placed at the current stop
+            assert D(gtt.trigger_price) == goal
             assert ALERT_GTT_MISSING in rig.codes()
             assert gtt.id != old.id
             assert rig.fake.count("place_gtt") == places + 1
