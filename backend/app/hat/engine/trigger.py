@@ -39,7 +39,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from fractions import Fraction
 from typing import Protocol
 
@@ -69,7 +69,9 @@ __all__ = [
     "entry_filter_instances",
     "evaluate_trigger",
     "last_configured_chase",
+    "locked_lower_circuit",
     "locked_upper_circuit",
+    "lower_circuit_price",
     "plan_entry",
     "upper_circuit_price",
 ]
@@ -273,6 +275,29 @@ def locked_upper_circuit(price: Decimal, daily: DailyInputs) -> bool | None:
         return False
     upper = upper_circuit_price(daily)
     return None if upper is None else price >= upper
+
+
+def lower_circuit_price(daily: DailyInputs) -> Decimal | None:
+    """The lower band price: previous close x (1 - band/100), up to the tick grid when the tick
+    is known (PR 51). None without a band (an F&O name) or a previous close."""
+    prev, band = daily.prev_close, daily.band_pct
+    if prev is None or band is None or prev <= 0:
+        return None
+    raw = prev * (_HUNDRED - band) / _HUNDRED
+    if daily.tick is None or daily.tick <= 0:
+        return raw
+    return (raw / daily.tick).to_integral_value(rounding=ROUND_CEILING) * daily.tick
+
+
+def locked_lower_circuit(price: Decimal, daily: DailyInputs) -> bool | None:
+    """Whether `price` is at the lower circuit, read from the stored band as the upper one is:
+    False for an F&O name, None when the band or the previous close is unknown (PR 51)."""
+    if not daily.band_known:
+        return None
+    if daily.band_pct is None:
+        return False
+    lower = lower_circuit_price(daily)
+    return None if lower is None else price <= lower
 
 
 def last_configured_chase(configs: Sequence[StrategyConfig], playbook: str) -> Decimal | None:

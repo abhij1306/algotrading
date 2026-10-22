@@ -14,12 +14,12 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import hat_trigger_support as trigger_support
 import pyarrow.parquet as pq
-from hat_engine_support import seed_engine_world
-from hat_risk_support import valid_ctx, version_of
+from hat_engine_support import open_trade, seed_engine_world
+from hat_risk_support import CALENDAR, TRADE_DAY, valid_ctx, version_of
 from hat_support import event_engine, memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
@@ -27,9 +27,19 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
+from app.hat.daily.live import ExitViews, LivePrices, LiveRoute, PriceBook, band_bounds
 from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
 from app.hat.data.bars_store import SCHEMA, BarStore, row_from_bar
-from app.hat.data.live import EventFeedHealth, LiveData, tick_from_payload
+from app.hat.data.live import (
+    PRICE_OUT_OF_BAND,
+    PRICE_STALE,
+    PRICE_UNKNOWN,
+    EventFeedHealth,
+    LiveData,
+    Quote,
+    tick_from_payload,
+    usable_price,
+)
 from app.hat.data.minute_history import (
     CHUNK_DAYS,
     CallPacer,
@@ -50,9 +60,17 @@ from app.hat.data.subscriptions import (
     SubscriptionRegistry,
     load_inputs,
 )
+from app.hat.engine.exits import ExitView
 from app.hat.engine.live_entry import DataHealthKill, TriggerService
 from app.hat.engine.stops import floor_to_tick
-from app.hat.engine.trigger import DailyInputs, TriggerMonitor
+from app.hat.engine.trigger import (
+    DailyInputs,
+    TriggerMonitor,
+    locked_lower_circuit,
+    lower_circuit_price,
+    upper_circuit_price,
+)
+from app.hat.execution.router import placement_refusal
 from app.hat.models import HatEvent, HatInstrument, HatPosition, HatSignal, HatWatchlistEntry
 from app.hat.risk import controls
 from app.hat.risk.policy import seed_policy
@@ -1888,3 +1906,245 @@ def test_minute_history_plan_clamp(raw: list[list[Any]], late: int, back: int, o
             key=lambda r: (r.bar_start, r.instrument_id),
         )
         assert _stored(store, start, end) == want
+
+
+# --- the dated live price (PR 51; ME-F6, ME-F7, MX-F11) ---------------------------------------
+
+LIVE_AT = datetime.combine(DAY, time(11, 0), tzinfo=IST)
+BAND_PCTS = st.sampled_from([None, *(Decimal(b) for b in (2, 5, 10, 20))])
+TICKS = st.sampled_from([None, Decimal("0.01"), Decimal("0.05"), Decimal(1)])
+
+
+def _paise(n: int) -> Decimal:
+    return Decimal(n) / 100
+
+
+def _instrument_rows(session: Session, ids: list[UUID]) -> dict[UUID, str]:
+    """`HatInstrument` rows for the engine world's instrument ids (it seeds none)."""
+    symbols = {}
+    for n, iid in enumerate(ids):
+        symbols[iid] = f"LIVE{n}"
+        session.add(
+            HatInstrument(
+                id=iid,
+                market_id=uuid4(),
+                isin=f"INE9{n:08d}",
+                series="EQ",
+                symbol=symbols[iid],
+                name="n",
+                face_value=Decimal(10),
+                active=True,
+            )
+        )
+    session.flush()
+    return symbols
+
+
+@settings(max_examples=300)
+@given(
+    price=st.integers(1, 10**7),
+    age_ms=st.integers(-120_000, 120_000),  # negative: stamped ahead of now
+    lower=st.one_of(st.none(), st.integers(1, 10**7)),
+    upper=st.one_of(st.none(), st.integers(1, 10**7)),
+    known=st.booleans(),
+)
+@example(price=100, age_ms=30_000, lower=None, upper=None, known=True)  # exactly 30 s: stale
+@example(price=100, age_ms=29_999, lower=None, upper=None, known=True)
+@example(price=100, age_ms=-30_000, lower=None, upper=None, known=True)
+@example(price=100, age_ms=0, lower=100, upper=100, known=True)  # at both bounds: usable
+def test_usable_price(
+    price: int, age_ms: int, lower: int | None, upper: int | None, known: bool
+) -> None:
+    """PR 51 (ME-F6, ME-F7, HAT-DATA-116): a Take, a placement or an exit acts only on a price
+    whose tick is less than the stale threshold old (30 s; one exactly 30 s old, or stamped 30 s
+    or more ahead, is stale), inside the day's band where a bound is known; otherwise no price
+    and a fixed reason (`price_unknown` without a tick). Harm: a 13:40 print drives a 15:21
+    MARKET SELL, or a confirm Taken after a failed breakout buys under its own stop."""
+    quote = Quote(_paise(price), LIVE_AT - timedelta(milliseconds=age_ms)) if known else None
+    low, high = (None if b is None else _paise(b) for b in (lower, upper))
+    got = usable_price(quote, LIVE_AT, lower=low, upper=high)
+    if not known:
+        assert got == (None, PRICE_UNKNOWN)
+    elif abs(age_ms) >= STALE_AFTER.total_seconds() * 1000:
+        assert got == (None, PRICE_STALE)
+    elif (lower is not None and price < lower) or (upper is not None and price > upper):
+        assert got == (None, PRICE_OUT_OF_BAND)
+    else:
+        assert got == (_paise(price), None)
+
+
+@settings(max_examples=100, deadline=None)
+@given(
+    ticks=st.lists(
+        st.tuples(
+            st.integers(0, 2),  # which instrument
+            st.integers(1, 10**6),  # price in paise
+            st.one_of(st.none(), st.integers(-5, 0)),  # exchange time, seconds before arrival
+            st.integers(0, 3),  # seconds since the previous arrival
+        ),
+        max_size=25,
+    )
+)
+def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]]) -> None:
+    """PR 51: the price book keeps, per instrument, the last tick's price and its exchange time
+    (`exch_feed_time`), else the time it arrived, so every price HAT acts on carries the time it
+    traded. Harm: a price that has not traded for an hour reads as current."""
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, instruments=3)
+        symbols = _instrument_rows(session, world.instruments)
+        book = PriceBook()
+        book.track_session(session, set(world.instruments))
+    clock = FixedClock(LIVE_AT)
+    live = LiveData(health=QuietHealth(), is_open=lambda _t: True, clock=clock)
+    live.add_tick_listener(book.on_tick)
+    expected: dict[UUID, Quote] = {}
+    now = LIVE_AT
+    for index, paise, exch, gap in ticks:
+        now += timedelta(seconds=gap)
+        clock.set(now)
+        iid = world.instruments[index]
+        payload: dict[str, object] = {"symbol": symbols[iid], "ltp": str(_paise(paise))}
+        if exch is not None:
+            payload["exch_feed_time"] = int(now.timestamp()) + exch
+        live.on_tick(payload)
+        at = now if exch is None else datetime.fromtimestamp(int(now.timestamp()) + exch, UTC)
+        expected[iid] = Quote(_paise(paise), at)
+    for iid in world.instruments:
+        assert book.quote(iid) == expected.get(iid)
+        assert book.price(iid) == (expected[iid].price if iid in expected else None)
+
+
+@settings(max_examples=300)
+@given(
+    prev=st.integers(100, 10**7),
+    band=BAND_PCTS,
+    tick=TICKS,
+    known=st.booleans(),
+    offset=st.integers(-5, 5),  # ticks from a band price
+)
+@example(prev=10_000, band=Decimal(5), tick=Decimal("0.05"), known=True, offset=0)
+def test_circuit_locks_read_the_band(
+    prev: int, band: Decimal | None, tick: Decimal | None, known: bool, offset: int
+) -> None:
+    """PR 51 (MX-F11, 02 §2): the lower and upper circuit locks read the stored band of the
+    day: the lower band price is the previous close less the band, up to the tick grid; a price
+    at or below it is locked at the lower circuit; no band row tells nothing (None) and an F&O
+    name (no band) is never locked. The prices a live price may take are the band's, one tick
+    wider each way for the exchange's own rounding. Harm: a sale or an entry is judged against
+    a placeholder band, or a real print at the circuit is refused as impossible."""
+    daily = DailyInputs(
+        prev_close=_paise(prev), tick=tick, band_known=known, band_pct=band if known else None
+    )
+    step = tick if tick is not None else Decimal("0.01")
+    lower, upper = lower_circuit_price(daily), upper_circuit_price(daily)
+    low_bound, high_bound = band_bounds(daily)
+    if not known:
+        assert locked_lower_circuit(_paise(prev), daily) is None
+        assert (low_bound, high_bound) == (None, None)
+        return
+    if band is None:
+        assert lower is None
+        assert upper is None
+        assert locked_lower_circuit(_paise(prev), daily) is False
+        assert (low_bound, high_bound) == (None, None)
+        return
+    assert lower is not None
+    assert upper is not None
+    raw = _paise(prev) * (100 - band) / 100
+    if tick is not None:
+        assert lower % tick == 0
+        assert raw <= lower < raw + tick
+    else:
+        assert lower == raw
+    price = lower + offset * step
+    if price > 0:
+        assert locked_lower_circuit(price, daily) is (price <= lower)
+    slack = tick if tick is not None else Decimal(0)
+    assert (low_bound, high_bound) == (lower - slack, upper + slack)
+    for bound in (lower, upper):  # a print at either band price is a real price
+        assert usable_price(Quote(bound, LIVE_AT), LIVE_AT, lower=low_bound, upper=high_bound)[0]
+    beyond = upper + slack + step
+    assert usable_price(Quote(beyond, LIVE_AT), LIVE_AT, lower=low_bound, upper=high_bound) == (
+        None,
+        PRICE_OUT_OF_BAND,
+    )
+
+
+class _LevelsBook:
+    """The day's levels: a 10% band around 100 and an exit view at any price."""
+
+    DAILY = DailyInputs(
+        prev_close=Decimal(100), tick=Decimal("0.05"), band_known=True, band_pct=Decimal(10)
+    )
+
+    def day(self, _day: date) -> "_LevelsBook":
+        return self
+
+    def daily(self, _session: Session, _iid: object) -> DailyInputs:
+        return self.DAILY
+
+    def exit_view(self, _iid: object, price: Decimal, _rules: object, held: int) -> ExitView:
+        return ExitView(price=price, days_held=held, sma={10: price})
+
+
+class _OpenGates:
+    def quality_failed(self, *_args: object) -> bool:
+        return False
+
+    def gate_on(self, *_args: object) -> bool:
+        return True
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    price=st.one_of(st.none(), st.integers(8_000, 12_500)),  # paise x 100: 80.00 .. 125.00
+    age_s=st.integers(-40, 90),
+)
+@example(price=11_000, age_s=29)  # the upper band price, 29 s old: acted on
+@example(price=11_005, age_s=0)  # the upper band price plus its tick of slack: acted on
+@example(price=8_995, age_s=0)  # the lower band price less its tick of slack: acted on
+@example(price=11_006, age_s=0)  # beyond the band and its tick of slack
+@example(price=10_000, age_s=30)
+def test_exits_and_placement_read_the_checked_price(price: int | None, age_s: int) -> None:
+    """PR 51 (ME-F6, ME-F7): the exits' view and the placement check (used at a Take, an auto
+    entry and a resumed one) carry the live price only when it is fresh and inside the band;
+    otherwise the exits get no view (no rule fires; the broker stop still rests) and the
+    placement check carries no price and the refusal's code, so no entry is placed. Harm: a
+    stale or impossible print sells a whole position or places an entry."""
+    clock = FixedClock(datetime.combine(TRADE_DAY, time(11, 0), tzinfo=IST))
+    now = clock.now()
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, instruments=1)
+        trade = open_trade(session, world)
+        position = session.get(HatPosition, trade.outcome.position_id)
+        assert position is not None
+        iid = position.instrument_id
+        symbol = _instrument_rows(session, [iid])[iid]
+        quotes = PriceBook()
+        quotes.track_session(session, {iid})
+        if price is not None:
+            quotes.on_tick(Tick(symbol, now - timedelta(seconds=age_s), _paise(price)))
+        book = _LevelsBook()
+        prices = LivePrices(quotes, book, clock)  # type: ignore[arg-type]
+        # prev 100, a 10% band on a 0.05 tick: 90.00 .. 110.00, a tick wider each way
+        lower, upper = Decimal("89.95"), Decimal("110.05")
+        assert band_bounds(book.DAILY) == (lower, upper)
+        quote = quotes.quote(iid)
+        usable, why = usable_price(quote, now, lower=lower, upper=upper)
+        views = ExitViews(book, prices.price, clock, lambda: CALENDAR)  # type: ignore[arg-type]
+        view = views(session, position)
+        assert (view is None) == (usable is None)
+        if view is not None:
+            assert view.price == usable
+        route = LiveRoute(
+            lambda _a: None,
+            _OpenGates(),  # type: ignore[arg-type]
+            lambda: False,
+            clock,
+            lambda: CALENDAR,
+            prices,
+        )
+        check = route.check(session, world.bot_id, iid, now)
+        assert (check.ltp, check.ltp_refusal) == (usable, why)
+        refusal = placement_refusal(check, now)
+        assert (refusal is None) == (usable is not None)

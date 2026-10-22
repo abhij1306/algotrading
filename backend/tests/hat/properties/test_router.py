@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.hat.daily.accounts import RECONCILE_FAILED, Desks
 from app.hat.daily.live import stale_feed
 from app.hat.daily.production import one_login_each
+from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE
 from app.hat.data.staleness import StalenessMonitor
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.engine.portfolio import lifecycle as sleeves
@@ -58,6 +59,7 @@ from app.hat.execution.router import (
     ALERT_ENTRY_NOT_PLACED,
     ALERT_ENTRY_UNRESOLVED,
     ALERT_ORDER_REJECTED,
+    PRICE_AT_OR_BELOW_STOP,
     SESSION_NOT_LIVE,
     SIGNAL_EXPIRED,
     ExecutionRouter,
@@ -87,7 +89,8 @@ from app.hat.time import IST, trade_date_of
 
 D = Decimal
 MODE = st.sampled_from(modes.MODES)
-LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True)
+LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here (PR 51)
+LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True, ltp=LIVE_LTP)
 _TICKERS = tuple(SYMBOLS)
 
 
@@ -217,6 +220,13 @@ CONDITIONS = st.one_of(
             ("stale_feed", replace(LIVE, feed_stale=None)),
             ("quality_failed", replace(LIVE, quality_failed=True)),
             ("regime_gate", replace(LIVE, gate_on=False)),
+            # PR 51: the live price read at placement (the rig's stop is 95)
+            ("price_unknown", replace(LIVE, ltp=None)),
+            (PRICE_STALE, replace(LIVE, ltp=None, ltp_refusal=PRICE_STALE)),
+            (PRICE_OUT_OF_BAND, replace(LIVE, ltp=None, ltp_refusal=PRICE_OUT_OF_BAND)),
+            (PRICE_AT_OR_BELOW_STOP, replace(LIVE, ltp=D(95))),
+            (PRICE_AT_OR_BELOW_STOP, replace(LIVE, ltp=D("61.4"))),
+            ("live", replace(LIVE, ltp=D("95.05"))),
         )
     ),
 )
@@ -293,6 +303,7 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
 )
 @example(chase_bp=1000, after_s=60, conditions=LIVE_CASE)  # 10% past the level, inside the window
 @example(chase_bp=0, after_s=299, conditions=LIVE_CASE)  # the last second of the window
+@example(chase_bp=0, after_s=60, conditions=(PRICE_AT_OR_BELOW_STOP, replace(LIVE, ltp=D(95))))
 def test_take_rechecks_max_chase(
     chase_bp: int, after_s: int, conditions: tuple[str, PlacementCheck]
 ) -> None:
@@ -739,7 +750,7 @@ def test_resumed_entry_waits_for_feed(earlier: bool, late: bool, heard: bool, ag
         now = datetime.combine(day, AT.astimezone(IST).time(), tzinfo=IST)
         monitor = StalenessMonitor(_NoHealth(), lambda t: CALENDAR.state(t) is SessionState.OPEN)
 
-        def check(_s: Session, _bot: uuid.UUID, at: datetime) -> PlacementCheck:
+        def check(_s: Session, _bot: uuid.UUID, _iid: uuid.UUID, at: datetime) -> PlacementCheck:
             return replace(LIVE, feed_stale=stale_feed(monitor, at))
 
         books = rig.fake.orders

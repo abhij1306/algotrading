@@ -16,8 +16,10 @@ writes what the mode needs in one transaction:
 
 **Placing a real entry** (`place_entry`) first re-reads the live conditions (`PlacementCheck`):
 no entry outside the calendar session, on a stale or unknown feed, on a day whose data failed
-the quality gate, or while the regime gate is off (HAT-EXEC-022, HAT-RISK-074, -075, -050), and
-none once the account no longer reports GTT for delivery (HAT-EXEC-012). The risk check ran
+the quality gate, or while the regime gate is off (HAT-EXEC-022, HAT-RISK-074, -075, -050),
+none without a live price that is fresh and inside the day's band, or at or below the entry's
+stop (PR 51: a failed breakout Taken late must not buy under its own stop), and none once the
+account no longer reports GTT for delivery (HAT-EXEC-012). The risk check ran
 them at the trigger; a Take minutes later, or an auto entry resumed after a crash, reads them
 again. The entry then goes only through `submit.reserve_order` and
 `submit.send_order` (the one path to the broker, trading-safety rule 1). Before the session's
@@ -43,6 +45,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..data.live import PRICE_UNKNOWN
 from ..engine import approvals, lifecycle, trades
 from ..models import (
     HatBot,
@@ -54,7 +57,7 @@ from ..models import (
 )
 from ..notify import LogNotifier, Notifier
 from ..risk import controls
-from ..risk.decision import Reason, SignalContext
+from ..risk.decision import Reason
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of
@@ -76,6 +79,7 @@ __all__ = [
     "ALERT_ENTRY_UNRESOLVED",
     "ALERT_ORDER_REJECTED",
     "MAX_ENTRY_REJECTIONS",
+    "PRICE_AT_OR_BELOW_STOP",
     "ExecutionRouter",
     "PlacementCheck",
     "placement_refusal",
@@ -91,6 +95,7 @@ ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
 ALERT_ENTRY_UNRESOLVED = "entry.unresolved"  # HAT-BRK-102: never sent again, left to the sync
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
+PRICE_AT_OR_BELOW_STOP = "price_at_or_below_stop"  # the live price is through the entry's stop
 _OPEN_STATUSES = ("pending", "unconfirmed", "placed", "partially_filled", "filled")
 _ROUTABLE = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL)
 
@@ -104,15 +109,17 @@ class PlacementCheck:
     feed_stale: bool | None
     quality_failed: bool | None
     gate_on: bool | None
+    # the symbol's live price, already refused when stale or outside the day's band
+    # (`data.live.usable_price`, PR 51), and why it is None
+    ltp: Decimal | None
+    ltp_refusal: str | None = None
 
-    @classmethod
-    def of(cls, ctx: SignalContext) -> PlacementCheck:
-        """The conditions a trigger's own context carries."""
-        return cls(ctx.calendar, ctx.feed_stale, ctx.quality_failed, ctx.gate_on)
 
-
-def placement_refusal(check: PlacementCheck, now: datetime) -> str | None:
-    """Why no real entry may be placed at `now` (the risk check's own reason code), or None."""
+def placement_refusal(
+    check: PlacementCheck, now: datetime, stop: Decimal | None = None
+) -> str | None:
+    """Why no real entry may be placed at `now` (the risk check's own reason code, or the live
+    price's), or None. With the entry's `stop`, a live price at or below it refuses too."""
     if check.calendar is None or check.calendar.state(now) is not SessionState.OPEN:
         return Reason.MARKET_CLOSED.value
     if check.feed_stale is not False:
@@ -121,7 +128,15 @@ def placement_refusal(check: PlacementCheck, now: datetime) -> str | None:
         return Reason.QUALITY_FAILED.value
     if check.gate_on is not True:
         return Reason.REGIME_GATE.value
+    if check.ltp is None:
+        return check.ltp_refusal or PRICE_UNKNOWN
+    if stop is not None and check.ltp <= stop:
+        return PRICE_AT_OR_BELOW_STOP
     return None
+
+
+def _stop_of(signal: HatSignal | None) -> Decimal | None:
+    return None if signal is None or signal.stop_price is None else Decimal(signal.stop_price)
 
 
 def _kill_refusal(session: Session, bot_id: uuid.UUID) -> str | None:
@@ -236,6 +251,7 @@ class ExecutionRouter:
     ) -> approvals.ApprovalDecision:
         """The user's Take: the decision commits first; a Take that passed the live conditions
         and the max-chase re-check is then placed as a real entry."""
+        stop = _stop_of(session.get(HatSignal, signal_id))
         decision = approvals.take(
             session,
             signal_id,
@@ -243,7 +259,7 @@ class ExecutionRouter:
             locked_upper_circuit=locked_upper_circuit,
             now=now,
             chat_id=chat_id,
-            refusal=placement_refusal(check, now),
+            refusal=placement_refusal(check, now, stop),
         )
         session.commit()
         if decision.place:
@@ -313,7 +329,7 @@ class ExecutionRouter:
         if signal.trade_date != trade_date_of(now):
             return SIGNAL_EXPIRED  # its price, size and risk decision were for that session
         refusal = (
-            placement_refusal(check, now)
+            placement_refusal(check, now, _stop_of(signal))
             or _kill_refusal(session, signal.bot_id)
             or _gtt_refusal(session, account_id, self._broker)
             or _session_refusal(session, account_id, now)

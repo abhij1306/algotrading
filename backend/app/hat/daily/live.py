@@ -1,7 +1,10 @@
 """The live trading day (10-ops §3 steps 1-6, PR 17): what the trigger, the router, the exits and
 the Telegram commands read while the market is open.
 
-- `PriceBook`: the feed's last trade per instrument (a `LiveData` tick listener, loop thread).
+- `PriceBook`: the feed's last trade per instrument with its exchange time (a `LiveData` tick
+  listener, loop thread).
+- `LivePrices`: the price a Take, a placement or an exit acts on: the last trade, refused when
+  the stale threshold old or outside the day's price band (`data.live.usable_price`, PR 51).
 - `stale_feed`: whether the feed is stale now; before a first tick in an open session it is.
 - `GateBoard`: each bot's regime gate, evaluated at or after 09:20 IST of the trade date and kept
   for the day; before 09:20 it is unknown, so no entry is accepted (HAT-RISK-051). It also tells
@@ -11,7 +14,8 @@ the Telegram commands read while the market is open.
 - `LiveRoute`: the `Route` of the trigger service. A bot whose broker account has a desk goes
   through that account's `ExecutionRouter` with a `PlacementCheck` read at placement time;
   any other bot through `route_by_mode` (shadow only).
-- `ExitViews`: the `ViewSource` of the exits (live price, days held, SMA and swing lows).
+- `ExitViews`: the `ViewSource` of the exits (checked live price, days held, SMA and swing
+  lows).
 - `ShadowExits`: the live exit rules of every virtual position (a `TradeManager` runs the live
   rules of real positions only), and the 15:20-15:25 rules of the virtual positions of bots whose
   account has no `TradeManager` (its `exits.close` covers its virtual positions too).
@@ -36,6 +40,7 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..data.bars import Tick
 from ..data.instruments import current_industry
+from ..data.live import Quote, usable_price
 from ..data.quality import JOB_QUALITY
 from ..data.staleness import StalenessMonitor
 from ..data.store import DataStore
@@ -46,6 +51,7 @@ from ..engine.live_trades import record_close_evaluation
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.rescale import manage_only
 from ..engine.strategy.config import parse_config
+from ..engine.trigger import DailyInputs, lower_circuit_price, upper_circuit_price
 from ..execution.manage import in_close_window
 from ..execution.modes import SHADOW, bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
@@ -74,9 +80,11 @@ __all__ = [
     "ExitViews",
     "GateBoard",
     "LiveContexts",
+    "LivePrices",
     "LiveRoute",
     "PriceBook",
     "ShadowExits",
+    "band_bounds",
 ]
 
 logger = logging.getLogger(__name__)
@@ -88,16 +96,17 @@ FundsFor = Callable[[uuid.UUID], Decimal | None]
 
 
 class PriceBook:
-    """The last traded price per instrument from the feed. `on_tick` runs on the loop thread
-    with ticks `LiveData` already parsed (a symbol and a finite positive price); `price` may be
-    read from any thread (a dict read of an immutable value)."""
+    """The last traded price per instrument from the feed, with the exchange time of its tick.
+    `on_tick` runs on the loop thread with ticks `LiveData` already parsed (a symbol and a
+    finite positive price); `quote` and `price` may be read from any thread (a dict read of an
+    immutable value)."""
 
     def __init__(self) -> None:
-        self._prices: dict[str, Decimal] = {}
+        self._prices: dict[str, Quote] = {}
         self._symbols: dict[uuid.UUID, str] = {}
 
     def on_tick(self, tick: Tick) -> None:
-        self._prices[tick.symbol] = tick.price
+        self._prices[tick.symbol] = Quote(tick.price, tick.at)
 
     def track_session(self, session: Session, instrument_ids: set[uuid.UUID]) -> None:
         """The instruments whose prices are read by id (the day's subscriptions)."""
@@ -107,15 +116,60 @@ class PriceBook:
                     HatInstrument.id.in_(instrument_ids)
                 )
             )
-            self._symbols = {**self._symbols, **dict(found.tuples().all())}
+            self._symbols = {**self._symbols, **dict(found.all())}
 
     def reset(self) -> None:
         """A new trading day: yesterday's prices are not today's."""
         self._prices = {}
 
-    def price(self, instrument_id: uuid.UUID) -> Decimal | None:
+    def quote(self, instrument_id: uuid.UUID) -> Quote | None:
         symbol = self._symbols.get(instrument_id)
         return None if symbol is None else self._prices.get(symbol)
+
+    def price(self, instrument_id: uuid.UUID) -> Decimal | None:
+        """The last traded price, unchecked: for display only (`/positions`)."""
+        quote = self.quote(instrument_id)
+        return None if quote is None else quote.price
+
+
+def band_bounds(daily: DailyInputs) -> tuple[Decimal | None, Decimal | None]:
+    """The lowest and highest price the day's band lets trade (02 §2), a tick wider each way
+    for the exchange's own rounding of the band; None for a bound not known (no band row, an
+    F&O name, no previous close)."""
+    slack = daily.tick if daily.tick is not None and daily.tick > 0 else Decimal(0)
+    lower, upper = lower_circuit_price(daily), upper_circuit_price(daily)
+    return (
+        None if lower is None else lower - slack,
+        None if upper is None else upper + slack,
+    )
+
+
+class LivePrices:
+    """The live price a Take, a placement or an exit acts on (PR 51): the instrument's last
+    trade from the feed, refused when it is the stale threshold old (HAT-DATA-116) or outside
+    the day's price band. `checked` gives the price or None and the refusal's fixed code."""
+
+    def __init__(self, quotes: PriceBook, book: DailyBook, clock: Clock) -> None:
+        self._quotes = quotes
+        self._book = book
+        self._clock = clock
+
+    def checked(
+        self, session: Session, instrument_id: uuid.UUID, now: datetime | None = None
+    ) -> tuple[Decimal | None, str | None]:
+        at = utc_now(self._clock) if now is None else now
+        quote = self._quotes.quote(instrument_id)
+        lower = upper = None
+        if quote is not None:
+            daily = self._book.day(trade_date_of(at)).daily(session, instrument_id)
+            lower, upper = band_bounds(daily)
+        price, refusal = usable_price(quote, at, lower=lower, upper=upper)
+        if refusal is not None:
+            logger.debug("live price of %s refused: %s", instrument_id, refusal)
+        return price, refusal
+
+    def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
+        return self.checked(session, instrument_id)[0]
 
 
 # The trading calendar the runtime keeps (read again every 10 minutes), None while unknown.
@@ -304,20 +358,27 @@ class LiveRoute:
         feed_stale: Callable[[], bool | None],
         clock: Clock,
         calendar: CalendarSource,
+        prices: LivePrices,
     ) -> None:
         self._routers = routers
         self._gates = gates
         self._feed_stale = feed_stale
         self._clock = clock
         self._calendar = calendar
+        self._prices = prices
 
-    def check(self, session: Session, bot_id: uuid.UUID, now: datetime) -> PlacementCheck:
+    def check(
+        self, session: Session, bot_id: uuid.UUID, instrument_id: uuid.UUID, now: datetime
+    ) -> PlacementCheck:
         calendar = self._calendar()
+        ltp, refusal = self._prices.checked(session, instrument_id, now)
         return PlacementCheck(
             calendar=calendar,
             feed_stale=self._feed_stale(),
             quality_failed=self._gates.quality_failed(session, trade_date_of(now), calendar),
             gate_on=self._gates.gate_on(session, bot_id, now),
+            ltp=ltp,
+            ltp_refusal=refusal,
         )
 
     def __call__(
@@ -334,7 +395,11 @@ class LiveRoute:
             return route_by_mode(session, request, decide=decide)
         now = utc_now(self._clock)
         return router.route(
-            session, request, now=now, check=self.check(session, request.bot_id, now), decide=decide
+            session,
+            request,
+            now=now,
+            check=self.check(session, request.bot_id, request.instrument_id, now),
+            decide=decide,
         )
 
 
@@ -346,12 +411,13 @@ class ExitViews:
     consolidation, a rights issue, a demerger): it is manage-only until the owner resolves it
     (HAT-EXEC-144); nor while its instrument has moved to another series (EQ to BE): its prices
     stopped with the old series, so it is manage-only until the owner resolves it
-    (HAT-EXEC-146)."""
+    (HAT-EXEC-146). The price is `LivePrices.price`: one the stale threshold old or outside the
+    day's band gives no view, so no exit fires on it (PR 51; the broker stop still rests)."""
 
     def __init__(
         self,
         book: DailyBook,
-        prices: Callable[[uuid.UUID], Decimal | None],
+        prices: Callable[[Session, uuid.UUID], Decimal | None],
         clock: Clock,
         calendar: CalendarSource,
     ) -> None:
@@ -361,7 +427,7 @@ class ExitViews:
         self._calendar = calendar
 
     def __call__(self, session: Session, position: HatPosition) -> ExitView | None:
-        price = self._prices(position.instrument_id)
+        price = self._prices(session, position.instrument_id)
         if price is None:
             return None
         today = trade_date_of(utc_now(self._clock))

@@ -130,10 +130,10 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `TLA ApprovalToken!ChaseRecheckOnTake` No Take places an order at a price past the max-chase level. Harm: the user approves an entry that already ran away.
 - `TLA ApprovalToken!SingleDecision` A card is decided at most once. Harm: a double tap places two orders.
 - `TLA ApprovalToken!CardsDecided` Every sent card is eventually decided (liveness). Harm: an undecided card waits forever.
-- `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement) allow it and otherwise no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
+- `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement, with the dated live price since PR 51: none, stale, out of band or at or below the stop refuses) allow it and otherwise no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
 - `PBT router.entry_needs_live_session` An accepted auto entry is placed only when its broker account has a live `hat_broker_session` for the placement's trade date (written by the runtime's session watch); a missing, expired or unknown session, or a live one of another day, sends nothing and ends the signal Rejected with `broker_session_not_live`. Harm: an entry goes out on an account nobody logged in today (HAT-OPS-023).
 - `PBT router.refused_entry_is_not_sent` An auto entry whose bot became manage-only (account, bot, manual or health kill, or a pause) after the signal committed sends nothing: an unsent reserved order is cancelled and the signal ends Rejected with the kill or pause reason; an order that may be at the broker (unconfirmed) is left to reconciliation, neither placed again nor rejected. Harm: a bot buys after its kill switch, or a refusal re-sends an order the broker may hold.
-- `PBT router.take_rechecks_max_chase` A Take before expiry places exactly when the live conditions allow an entry and the price is within max-chase; otherwise it records the decision, ends Rejected with the reason and places nothing; a Take at or after expiry expires the card into its veto trade; a second Take does nothing. Harm: a Take buys late, blind or past the plan's price.
+- `PBT router.take_rechecks_max_chase` A Take before expiry places exactly when the live conditions allow an entry (the dated live price included, PR 51) and the price is within max-chase; otherwise it records the decision, ends Rejected with the reason and places nothing; a Take at or after expiry expires the card into its veto trade; a second Take does nothing. Harm: a Take buys late, blind or past the plan's price.
 - `PBT router.skip_and_expiry_become_one_veto_trade` Any mix of Skips, sweeps and late Takes ends a card Cancelled or Expired with exactly one virtual veto trade at the card's quantity and stop, no broker call, replays that match, no slot held and a stop-out that is not the bot's. Harm: a skip is scored twice or never, or blocks the bot's next entries.
 - `PBT router.rejected_entry_is_retried_once` A rejected auto entry is alerted and retried once under the next tag; a second rejection ends Rejected with one `entry.not_placed` alert and no third order. Harm: a retry storm or a silent failure.
 - `PBT router.reconcile_before_first_order` The first real entry of a session reconciles first; an unreadable broker or an unknown HT order places nothing and ends the entry Rejected with an alert. Harm: an order on top of an unmatched book.
@@ -329,12 +329,13 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `e683311fa08af7c675e015972086170d9343f7bf521c7ce36a8a047102366e28`
+Covered digest: `fcba6eae2df8b6cb33b1fb935cf5e584f470dbee2cbb8cd443f1d84c278f83c3`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
 - PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
 - K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
 - K4 deleted the legacy `FyersBroker` plugin and `app/brokers`, the `services/fyers/token_store.py` re-export and the DEV_MODE switch (HAT never honoured it), and trimmed `FakeBroker` to the methods the adapter calls (the lenient reads, the tag lookup, `ltp` and `working` state went). `ops.one_login_one_token_store` now asserts the deleted modules stay deleted.
@@ -2039,6 +2040,23 @@ Back to state 9: <PriceMove line 108, col 5 to line 109, col 72 of module Approv
 
 ### PBT router.routes_by_mode
 
+Break: (PR 51) in `backend/app/hat/execution/router.py`: `placement_refusal` ignores the signal's stop (`if stop is not None and check.ltp <= stop:` became `if False:`), so an auto entry is placed at or below its stop.
+
+```
+E   AssertionError: assert [{'symbol': '...'LIMIT', ...}] == []
+E     Left contains one more item: {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'BUY', 'type': 'LIMIT', ...}
+```
+
+Break: (PR 51) in `backend/app/hat/execution/router.py`: `placement_refusal` lets an entry through with no price (`if check.ltp is None:` became `if False:`).
+
+```
+E   TypeError: '<=' not supported between instances of 'NoneType' and 'decimal.Decimal'
+E   Failing test case: test_routes_by_mode(
+E       mode='auto',
+E       gtt=True,
+E       conditions=('price_unknown',
+```
+
 Break: `effective_mode` drops the GTT gate, so confirm and auto run on an account without GTT for delivery.
 
 ```
@@ -2093,6 +2111,16 @@ Failing test case: test_refused_entry_is_not_sent(kill='drawdown_account', reser
 ```
 
 ### PBT router.take_rechecks_max_chase
+
+Break: (PR 51) in `backend/app/hat/execution/router.py`: `take` does not pass the signal's stop (`stop = None`), so a Take at or below the stop is approved.
+
+```
+E   AssertionError: assert 'approved' == 'price_at_or_below_stop'
+E   Failing explicit example: test_take_rechecks_max_chase(
+E       chase_bp=0,
+E       after_s=60,
+E       conditions=('price_at_or_below_stop',
+```
 
 Break: `approvals.take` ignores the max-chase re-check, so a Take past the level is placed. (the first draft of the property, without its `@example`s, passed this break; it was strengthened and now fails). Second break: `ExecutionRouter.take` passes no live-condition refusal, and `place_entry` ignores the check (second break).
 

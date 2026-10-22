@@ -74,6 +74,10 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and coverage has the same opening ranges and day volumes as one that saw every tick, a restored bar never replaces a live one, and it has no day low (the restart is a gap); the opening range comes back only when the stopped process saw the feed past the first bar (`coverage.json` `seen_until`). Harm: after a restart the opening range is lost and no ORB entry fires that day.
 - `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
 - `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
+- `PBT bars.usable_price` For every quote, clock and band, the price a Take, a placement or an exit may act on is the quote's price exactly when it is under 30 seconds from the clock either way (by exchange time) and inside the known bounds, else none with `price_unknown`, `stale_price` or `price_out_of_band`; a tick exactly 30 seconds old no longer counts (PR 51, HAT-DATA-116). Harm: one quiet symbol's hours-old print prices a Take while the feed as a whole is live.
+- `PBT bars.price_book_dates_each_tick` Through `LiveData` and its tick listener, the price book keeps per instrument the last tick's price with its exchange time (`exch_feed_time`), else its arrival. Harm: a price that has not traded for an hour reads as current.
+- `PBT bars.circuit_locks_read_the_band` For every previous close, band and tick, the upper circuit price is the band's top rounded down to the tick grid and the lower one its bottom rounded up; a price is locked at a circuit exactly when it is at or beyond it, neither lock holds without a band (F&O) and both are unknown without a band row or a previous close. Harm: an entry is taken into a frozen upper circuit, or a lower-circuit print is treated as sellable.
+- `PBT bars.exits_and_placement_read_the_checked_price` Wired as the runtime wires them, `LivePrices` over the price book and the stored band (widened by one tick) gives the exit views a view exactly when the price is usable, `LiveRoute.check` fills `ltp` and `ltp_refusal` with exactly that price and reason, and `placement_refusal` passes exactly then. Harm: a stale or impossible print fires a target exit or prices an entry.
 
 ## Run
 
@@ -114,8 +118,9 @@ Code under check:
 - `backend/app/hat/data/preopen.py`: `PreopenGaps`, `gap_pct`, `meets_gap`
 - `backend/app/hat/data/gapscan.py`: `scan_rows`, `select_gappers`, `run_gap_scan`
 - `backend/app/hat/data/announcements.py`: `parse_feed`, `store_items`, `attached_announcements`, `catalyst_attached`, `next_poll_at`, `poll_feed`
-- `backend/app/hat/data/live.py`: `LiveData`, `EventFeedHealth`, `tick_from_payload`
-- `backend/app/hat/engine/trigger.py`: `TriggerMonitor`, `in_window`
+- `backend/app/hat/data/live.py`: `LiveData`, `EventFeedHealth`, `tick_from_payload`, `Quote`, `usable_price`
+- `backend/app/hat/engine/trigger.py`: `TriggerMonitor`, `in_window`, `upper_circuit_price`, `lower_circuit_price`, `locked_upper_circuit`, `locked_lower_circuit`
+- `backend/app/hat/daily/live.py`: `PriceBook`, `band_bounds`, `LivePrices`, the price read of `ExitViews` and `LiveRoute.check` (PR 51; the rest of the file is `verify-execution`'s)
 - `backend/app/hat/engine/live_entry.py`: `TriggerService`, `DataHealthKill`
 - `backend/app/hat/data/sessions.py`: `MarketHoursPolicy`
 - `backend/app/hat/clock.py`: `FixedClock`, `require_aware`
@@ -148,7 +153,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `78b713d392416f04f2df77a2e8bd966c4d92dbe77bd92b1aae2075dcf249a73d`
+Covered digest: `ba3510fa60ddc7a164114296db3a38dd14aae06a1b0bcd94c0783ac5b35c61ef`
 
 ## Scope changes
 
@@ -156,6 +161,7 @@ Covered digest: `78b713d392416f04f2df77a2e8bd966c4d92dbe77bd92b1aae2075dcf249a73
 - PR 43 (PR 41 follow-ups 1 and 7): the command line takes its root from `operator_settings()` (loads `.env` first) and appends its coverage report to `minute_history/report-YYYY-MM-DD.txt` under that root. `minute_history_cli.root_and_report` drives `main` in its own file, because `main` reads the wall clock (the period ends yesterday; the report is named by the day) and `test_bars.py` promises no property reads one; the report is matched by pattern. Name lookups and sockets are blocked and recorded. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). Nothing was narrowed.
 - PR 41 (owner decision D131) made the download runnable on the Fyers Standard plan: per-symbol writes replace PR 12's all-or-nothing (the old CodeAnt break below is retired with it), with a call pacer, resumable progress and the plan-limit clamp; `BarStore.write` now carries the untouched rows of a day as Arrow data (`bars.persisted_equals_live` guards it). The plan's refusal text is from the audit 2026-10-22 live checks ("Fyers history depth"); a recording of the exact response is a follow-up.
 - PR 25 (HAT-BRK-082): Fyers -360 stops a minute-history run (`_FYERS_RATE_LIMITED`, `history_rate_limited` in `_RUN_STOPS`). The -360 reply was not recorded live; the code is matched on `code` alone. Nothing was narrowed.
+- PR 51 (ME-F5/F6/F7, MX-F11): the live price is dated. There is one quote loop, the feed's tick listener into `daily/live.py:PriceBook`; HAT makes no REST quote call, so no quote spends the broker call budget (PR 50). A Take, a placement and an exit read `LivePrices`, which refuses a price 30 seconds old (the feed's stale threshold, HAT-DATA-116) or outside the day's band widened by one tick (the exchange's own rounding of the band); the circuit locks read the stored band (02 §2). The decision-time `price_band_ok` of `engine/live_entry.py` still compares the planned entry with itself (MX-F11) and is the engine lane's follow-up; the placement check now refuses an out-of-band price either way. A symbol with no tick in 30 seconds gets no exit view (no rule fires; its broker stop still rests). Nothing was narrowed.
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
@@ -1369,3 +1375,122 @@ Break: `PreopenGaps.records` ignores the trade date (records keyed by symbol onl
 E   AssertionError: assert datetime.date(2026, 10, 21) == datetime.date(2026, 10, 22)
 ```
 
+### PBT bars.usable_price
+
+Break: (PR 51) in `backend/app/hat/data/live.py`: `usable_price` drops the age check (`now - quote.at >= stale_after or …` became `quote.at - now >= stale_after`).
+
+```
+E   AssertionError: assert (Decimal('1'), None) == (None, 'stale_price')
+E   Failing explicit example: test_usable_price(
+E       price=100,
+E       age_ms=30000,
+```
+
+Break: (PR 51) in `backend/app/hat/data/live.py`: a quote exactly 30 s old still counts (`>=` became `>`).
+
+```
+E   AssertionError: assert (Decimal('1'), None) == (None, 'stale_price')
+E   Failing explicit example: test_usable_price(
+E       price=100,
+E       age_ms=30000,
+```
+
+Break: (PR 51) in `backend/app/hat/data/live.py`: a quote stamped 30 s or more ahead of the clock is accepted (the future-skew half removed).
+
+```
+E   AssertionError: assert (Decimal('1'), None) == (None, 'stale_price')
+E   Failing explicit example: test_usable_price(
+E       price=100,
+E       age_ms=-30000,
+```
+
+Break: (PR 51) in `backend/app/hat/data/live.py`: the band check is removed (`if False:`).
+
+```
+E   AssertionError: assert (Decimal('0.02'), None) == (None, 'price_out_of_band')
+E   Failing test case: test_usable_price(
+E       price=2,
+E       age_ms=0,
+```
+
+### PBT bars.price_book_dates_each_tick
+
+Break: (PR 51) in `backend/app/hat/data/live.py`: `tick_from_payload` dates every tick by its arrival (`when = arrival`), ignoring `exch_feed_time`.
+
+```
+E   AssertionError: assert Quote(price=D...ia/Kolkata'))) == Quote(price=D...timezone.utc))
+E     Differing attributes:
+E     ['at']
+E       at: datetime.datetime(2026, 10, 21, 11, 0, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) != datetime.datetime(2026, 10, 21, 5, 29, 59, tzinfo=datetime.timezone.utc)
+```
+
+### PBT bars.circuit_locks_read_the_band
+
+Break: (PR 51) in `backend/app/hat/engine/trigger.py`: `lower_circuit_price` rounds down to the tick grid (`floor_to_tick`) instead of up.
+
+```
+E   AssertionError: assert Decimal('0.98') <= Decimal('0.95')
+E   Failing test case: test_circuit_locks_read_the_band(
+E       prev=100,
+E       band=Decimal('2'),
+E       tick=Decimal('0.05'),
+```
+
+Break: (PR 51) in `backend/app/hat/engine/trigger.py`: `locked_lower_circuit` is strict (`price <= lower` became `price < lower`).
+
+```
+E   AssertionError: assert False is (Decimal('95.00') <= Decimal('95'))
+E   Failing explicit example: test_circuit_locks_read_the_band(
+E       prev=10000,
+E       band=Decimal('5'),
+```
+
+Break: (PR 51) in `backend/app/hat/engine/trigger.py`: `locked_lower_circuit` ignores `band_known` (an unknown band reads as F&O).
+
+```
+E   AssertionError: assert False is None
+E    +  where False = locked_lower_circuit(Decimal('1'), DailyInputs(prev_close=Decimal('1'), avg50_volume=None, adv20=None, adtr20=None, tick=None, band_known=False, band_pct=None, atr=None, swing_lows=()))
+```
+
+### PBT bars.exits_and_placement_read_the_checked_price
+
+Break: (PR 51) in `backend/app/hat/daily/live.py`: `band_bounds` has no tick of slack (`slack = Decimal(0)`).
+
+```
+E   AssertionError: assert (Decimal('90'...ecimal('110')) == (Decimal('89....mal('110.05'))
+E     At index 0 diff: Decimal('90') != Decimal('89.95')
+```
+
+Break: (PR 51) in `backend/app/hat/daily/live.py`: `LivePrices.checked` ignores the band (`usable_price(quote, at)`).
+
+```
+E   AssertionError: assert (ExitView(price=Decimal('110.06'), days_held=0, sma={10: Decimal('110.06')}, swing_low={}, regime_off=False) is None) == (None is None)
+E   Failing explicit example: test_exits_and_placement_read_the_checked_price(
+E       price=11006,
+E       age_s=0,
+```
+
+Break: (PR 51) in `backend/app/hat/daily/live.py`: `LivePrices.price` (the exits' price) returns the book's raw last price, unchecked.
+
+```
+E   AssertionError: assert (ExitView(price=Decimal('110.06'), days_held=0, sma={10: Decimal('110.06')}, swing_low={}, regime_off=False) is None) == (None is None)
+E   Failing explicit example: test_exits_and_placement_read_the_checked_price(
+E       price=11006,
+E       age_s=0,
+```
+
+Break: (PR 51) in `backend/app/hat/daily/live.py`: `LiveRoute.check` drops the refusal (`ltp_refusal=None`).
+
+```
+E   AssertionError: assert (None, None) == (None, 'price_out_of_band')
+E     At index 1 diff: None != 'price_out_of_band'
+```
+
+Break: (PR 51) in `backend/app/hat/execution/router.py`: `placement_refusal` lets an entry through with no price (`if check.ltp is None:` became `if False:`).
+
+```
+E   assert (None is None) == (None is not None)
+E   Failing explicit example: test_exits_and_placement_read_the_checked_price(
+E       price=11006,
+E       age_s=0,
+```

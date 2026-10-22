@@ -7,6 +7,11 @@ until then nothing constructs `LiveData`. The hook runs on the event-loop thread
 here that touches state runs on that thread; the periodic `run` loop is a task on the same loop,
 and the blocking work (the Parquet write, the event insert) is handed to a worker thread.
 
+Every LTP HAT acts on comes from this one tick input, dated with its exchange time (`Quote`,
+PR 51): a Take, a placement or an exit uses it only through `usable_price`, which refuses a price
+the stale threshold old (HAT-DATA-116) or outside the day's price band. No quote is ever read
+from the broker's REST API, so the loop spends none of the call budget (HAT-BRK-082).
+
 Nothing here runs unless HAT is enabled: the wiring (PR 17) builds a `LiveData` only when
 `HAT_ENABLED` is true, so with HAT off the feed has no listener and behaves exactly as before.
 """
@@ -17,6 +22,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Protocol
@@ -30,16 +36,21 @@ from ..time import trade_date_of
 from .bars import Bar, BarBuilder, Tick
 from .bars_store import BarStore, Coverage
 from .preopen import PreopenGaps
-from .staleness import FeedHealth, StalenessMonitor
+from .staleness import STALE_AFTER, FeedHealth, StalenessMonitor
 
 __all__ = [
+    "PRICE_OUT_OF_BAND",
+    "PRICE_STALE",
+    "PRICE_UNKNOWN",
     "EventFeedHealth",
     "LiveData",
+    "Quote",
     "TickFeed",
     "SymbolProvider",
     "run_listener_call",
     "threadsafe_provider",
     "tick_from_payload",
+    "usable_price",
 ]
 
 logger = logging.getLogger(__name__)
@@ -49,6 +60,42 @@ STEP_SECONDS = 1.0
 EVENT_WRITE_ATTEMPTS = 3
 
 BarListener = Callable[[Bar], None]
+
+PRICE_UNKNOWN = "price_unknown"  # no tick of the symbol yet
+PRICE_STALE = "stale_price"  # its last tick is the stale threshold old
+PRICE_OUT_OF_BAND = "price_out_of_band"  # outside the day's price band: not a real print
+
+
+@dataclass(frozen=True)
+class Quote:
+    """A symbol's last traded price and the exchange time it traded at (the tick's own time,
+    else its arrival)."""
+
+    price: Decimal
+    at: datetime
+
+
+def usable_price(
+    quote: Quote | None,
+    now: datetime,
+    *,
+    lower: Decimal | None = None,
+    upper: Decimal | None = None,
+    stale_after: timedelta = STALE_AFTER,
+) -> tuple[Decimal | None, str | None]:
+    """The price a Take, a placement or an exit may act on at `now`, or None and why (PR 51).
+
+    A quote at least `stale_after` old is stale, as a feed with no tick in that time is
+    (HAT-DATA-116); so is one stamped that far ahead of `now` (a bad exchange time). A price
+    below the day's lower band price or above its upper one cannot have traded and is refused;
+    a bound that is not known (no band row, an F&O name) is not checked."""
+    if quote is None:
+        return None, PRICE_UNKNOWN
+    if now - quote.at >= stale_after or quote.at - now >= stale_after:
+        return None, PRICE_STALE
+    if (lower is not None and quote.price < lower) or (upper is not None and quote.price > upper):
+        return None, PRICE_OUT_OF_BAND
+    return quote.price, None
 
 
 class TickFeed(Protocol):
