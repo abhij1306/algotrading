@@ -76,7 +76,7 @@ from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, as_utc, trade_date_of, utc_now
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
-from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
+from .fills import ALERT_SALE_UNFILLED, RESTING_AFTER, FillSync, SaleBand, SyncReport
 from .guard import ExecutionGuard
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
@@ -775,7 +775,8 @@ class TradeManager:
     ) -> None:
         """Cancel a market sale resting unfilled (market price protection) so it is sent again
         fresh, unless its instrument is locked at the lower circuit (alerted once, left in the
-        queue); the owner is paged at the `page_after`th miss."""
+        queue) or the re-send, a sync later, would fall after the order cutoff (left resting);
+        the owner is paged at the `page_after`th miss."""
         row = session.get(HatOrder, row_id)
         if row is None or row.position_id is None or row.broker_order_id is None:
             return
@@ -792,6 +793,8 @@ class TradeManager:
             session.refresh(row)
             if row.status not in LIVE:
                 return
+            if not self._orders_allowed(now + RESTING_AFTER):
+                return  # no re-send could follow before the cutoff: the sale keeps resting
             if self._fills.locked(session, position.instrument_id, now):
                 self._fills.alert_locked(row.tag, detail, now)
                 return

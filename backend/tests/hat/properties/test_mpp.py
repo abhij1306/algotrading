@@ -264,6 +264,36 @@ def test_lower_circuit_lock_holds_the_sale(locks: list[bool | None], shape: str)
         assert len(_alerts(rig, LOWER_CIRCUIT_LOCKED)) == (1 if locked_first else 0)
 
 
+@settings(max_examples=25, deadline=None)
+@given(seconds=st.integers(min_value=0, max_value=150), shape=st.sampled_from(sorted(SHAPES)))
+@example(seconds=59, shape="market_protected")
+@example(seconds=60, shape="market_protected")
+def test_no_cancel_without_a_resend(seconds: int, shape: str) -> None:
+    """PR 48 (CodeAnt): a resting market sale is cancelled only when its re-send, a sync (a
+    minute) later, still falls before the 15:30 order cutoff; from then on it is left resting.
+    Harm: a sale cancelled at 15:29:30 cannot be sent again, and the exit is lost for the
+    session."""
+    clock = [at(15, 27)]
+    with (
+        Session(memory_engine()) as session,
+        patch("app.hat.execution.submit.utc_now", side_effect=lambda: clock[0].astimezone(UTC)),
+    ):
+        rig = ManageRig(
+            session, exits=exit_stack("partials"), band=_Band(), resend=True, page_after=PAGE_AFTER
+        )
+        position = _opened(rig)
+        view = _view(position)
+        rig.manager.on_price(session, position.id, view, at(15, 27))
+        [row] = _sales(rig, position)
+        _shaped(rig, row, shape, D(view.price))
+        now = at(15, 28) + timedelta(seconds=seconds)
+        clock[0] = now
+        start = len(rig.fake.calls)
+        rig.sync(now)
+        allowed = now + timedelta(minutes=1) < at(15, 30)
+        assert _cancels(rig, start) == ([row.broker_order_id] if allowed else [])
+
+
 # ---------------------------------------------------------------------------------------
 # HAT-EXEC-075 (G22): a sale refused twice goes as a limit at the lower band
 # ---------------------------------------------------------------------------------------

@@ -153,7 +153,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT mpp.resting_market_sale_resent` (PR 48, HAT-EXEC-075) For every assumed order-book shape of a protected market sale (`fixtures/fyers_mpp_sale_assumed.json`), number of misses (1 to 4), part fills and `resend` on or off, the fill sync records the book's price on the sale's row; with `resend` on a market sale still resting a minute after its send (not before) is cancelled with `order.cancelled` (code `sale_resend`, the book's type and price), and once the book shows it ended one fresh market sale of what is open goes out under the next tag; no miss records `order.rejected`, raises `exit.not_placed` or counts in `rejected_sales`; URGENT `sale.unfilled` (`sale_resting`) is raised once, at the `page_after`th miss; with `resend` off nothing is cancelled. Harm: a stop-loss sale sits below a stale protection band all session, or a re-send sells the shares twice.
 - `PBT mpp.lower_circuit_lock_holds_the_sale` (PR 48, HAT-EXEC-075) For every run of lower-circuit lock readings and book shape, a resting market sale is not cancelled while the band reads locked, `sale.unfilled` (`lower_circuit_locked`) is raised once, and it is cancelled at the first reading that is not a lock. Harm: a locked sale loses its place in the queue every minute, or the owner is not told.
 - `PBT mpp.rejected_twice_goes_at_the_band` (PR 48, HAT-EXEC-075) For a sale refused twice (at once, or by the broker after it took it), with the lower band known or not, and the band sale accepted or refused, exactly one LIMIT SELL at the band for the open quantity follows when the band is known, with one `sale.unfilled` (`band_limit`); after it nothing more goes that session; without a band nothing follows. Harm: a stop-loss sale refused twice leaves the position unsold all session.
-- `PBT mpp.gtt_market_sale_asked_again` (PR 48, HAT-EXEC-066) For every number of syncs and lock readings, a triggered GTT's sale the book already shows at the market but still resting is asked `{order_type: MARKET}` again at each sync it is not locked when `resend` is on (paged once at the `page_after`th ask, a lock alerted once), and not at all when off. Harm: the triggered stop's sale sits below a stale protection band all session.
+- `PBT mpp.gtt_market_sale_asked_again` (PR 48, HAT-EXEC-066) For every number of syncs and lock readings, a triggered GTT's sale the book already shows at the market but still resting is asked `{order_type: MARKET}` again at each sync it is not locked when `resend` is on (paged once at the `page_after`th ask the broker accepts; a refused ask is not counted, a lock alerted once), and not at all when off. Harm: the triggered stop's sale sits below a stale protection band all session.
+- `PBT mpp.no_cancel_without_a_resend` (PR 48, HAT-EXEC-075, CodeAnt) For every sync time from 15:28 to 15:30:30, a resting market sale is cancelled only when its re-send a minute later still falls before the 15:30 order cutoff. Harm: a sale cancelled at 15:29:30 cannot be sent again and the exit is lost for the session.
 - `PBT mpp.resend_flag_parsed` (PR 48) `HAT_MPP_RESEND` is on exactly for a true value, and `HAT_MPP_PAGE_AFTER` is a positive whole number, else 3. Harm: the re-send of an unconfirmed book shape is on by default, or a typo never pages.
 - `PBT fyers_broker.budget_windows_hold` (PR 50, HAT-BRK-082) For every per-second, per-minute and per-day limit and every sequence of reads, writes, 429 pauses and day changes on a fake clock, `CallBudget.take` grants no more calls than each limit in any window, grants a read only within `READ_SHARE` of each window (at least one call) and of the day (no minimum: a day cap of 1 is a write's), grants nothing inside a pause (at most `MAX_PAUSE`), refuses only for one of those reasons, and grants a refused call asked again after the wait it was told (none once the day is spent). Harm: a burst of syncs and the 15:25 swap exceed Fyers' limits and every write, stops included, is refused.
 - `PBT fyers_broker.throttled_call_not_sent` (PR 50, HAT-BRK-082) For every adapter operation (an SL-M stop, GTT place, modify and cancel, the order and GTT books), a call the budget cannot grant is not sent, and one Fyers answers HTTP 429 (JSON body or not, any `Retry-After`) is sent once: a read fails closed and a write is refused with `broker_rate_limited`, the breaker counts nothing, and a 429 pauses the budget for its Retry-After (`THROTTLE_PAUSE` when absent or unreadable). Harm: a throttled stop reads as a rejection and burns its tag's sequence, or a busy broker opens the circuit.
@@ -337,7 +338,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `f77ad37efeef9a0321b29b120fa9d1f0c93d770b42ee57d8172bd84cfef388bd`
+Covered digest: `dfb8c6e6b97affbf37d297ff10ee47c676b01bd11fc90aafc5c0c1aa070936c2`
 
 ## Scope changes
 
@@ -3705,4 +3706,24 @@ E    +  where 3 = HatSettings(enabled=False, user_id=UUID('00000000-0000-7000-80
 E   Failing test case: test_resend_flag_parsed(
 E       resend=None,  # or any other generated value
 E       page='1',
+```
+
+### PBT mpp.no_cancel_without_a_resend
+
+Break: (PR 48, CodeAnt) in `backend/app/hat/execution/manage.py`, `_cancel_resting` ignores the order cutoff (`if not self._orders_allowed(now + RESTING_AFTER):` became `if False:`).
+
+```
+E   AssertionError: assert ['B-3'] == []
+E   Failing explicit example: test_no_cancel_without_a_resend(
+E       seconds=60,
+E       shape='market_protected',
+```
+
+Break: (PR 48, CodeAnt) `_cancel_resting` checks the cutoff at the sync, not at the re-send a minute later.
+
+```
+E   AssertionError: assert ['B-3'] == []
+E   Failing explicit example: test_no_cancel_without_a_resend(
+E       seconds=60,
+E       shape='market_protected',
 ```
