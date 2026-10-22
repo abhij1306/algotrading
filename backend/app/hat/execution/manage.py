@@ -53,7 +53,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 from time import monotonic
@@ -505,7 +505,19 @@ class TradeManager:
                 "code": BAND_LIMIT,
             },
         )
-        limit: OrderRequest = replace(request, order_type=OrderType.LIMIT, price=floor)
+        limit = OrderRequest(
+            bot_id=request.bot_id,
+            signal_id=request.signal_id,
+            broker_account_id=request.broker_account_id,
+            purpose=request.purpose,
+            side=request.side,
+            qty=request.qty,
+            order_type=OrderType.LIMIT,
+            symbol=request.symbol,
+            position_id=request.position_id,
+            price=floor,
+            rule_ids=request.rule_ids,
+        )
         return self._send_sale(
             session, signal, position, limit, request.rule_ids, rule, now, attempts=1
         )
@@ -766,7 +778,7 @@ class TradeManager:
         sold = sum(session.scalars(select(HatFill.qty).where(HatFill.order_id == row.id)).all())
         qty = position.qty_open if row.purpose != EXIT_PARTIAL else row.qty - sold
         rule_ids = tuple(row.rule_ids or ())
-        rule = (rule_ids[0].partition(":")[2] if rule_ids else "") or row.purpose
+        rule = next((rid.partition(":")[2] for rid in rule_ids), "") or row.purpose
         sending = self._sending_clock(now)
         self._sell_qty(session, position, row.purpose, qty, rule, rule_ids, now, sending)
 
