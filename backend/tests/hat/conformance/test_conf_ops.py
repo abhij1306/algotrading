@@ -146,6 +146,8 @@ ADMIN_IMPORTS = {
     "app.hat.engine.portfolio",
     "app.hat.engine.portfolio.service",
     "app.hat.engine.strategy",
+    "app.hat.engine.strategy.config",
+    "app.hat.engine.strategy.yamlio",
     "app.hat.errors",
     "app.hat.execution.accounts",
     "app.hat.execution.broker",

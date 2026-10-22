@@ -9,7 +9,7 @@ they apply are the pure ones in this package.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -89,25 +89,42 @@ def universe_named(
 
 
 def resolve_symbols(
-    session: Session, market_id: uuid.UUID, symbols: Collection[str], on: date
+    session: Session,
+    market_id: uuid.UUID,
+    symbols: Collection[str],
+    on: date,
+    isins: Mapping[str, str] | None = None,
 ) -> tuple[frozenset[uuid.UUID], tuple[str, ...]]:
-    """The instruments the symbols name on `on`, and the symbols that name none (sorted)."""
+    """The instruments the symbols name on `on`, and the symbols that name none (sorted). When
+    `isins` gives a symbol's ISIN (an index CSV does), an instrument with another ISIN does not
+    count: the symbol is reported as `SYMBOL(ISIN)` rather than resolved to another security."""
     found: set[uuid.UUID] = set()
     unknown: list[str] = []
     for symbol in sorted({s.strip().upper() for s in symbols if s.strip()}):
         instrument = resolve_symbol(session, market_id, symbol, on)
+        isin = (isins or {}).get(symbol, "").strip().upper()
         if instrument is None:
             unknown.append(symbol)
+        elif isin and instrument.isin.upper() != isin:
+            unknown.append(f"{symbol}({isin})")
         else:
             found.add(instrument.id)
     return frozenset(found), tuple(unknown)
 
 
 def assign_universe(
-    session: Session, *, bot_id: uuid.UUID, universe_version_id: uuid.UUID
+    session: Session,
+    *,
+    bot_id: uuid.UUID,
+    universe_version_id: uuid.UUID,
+    calendar: SessionCalendar,
+    now: datetime,
 ) -> HatBot:
     """Point a sleeve at a live universe version (its scans, backtests and evidence read the
-    universe it belongs to). A draft or retired version is refused."""
+    universe it belongs to), outside market hours only, so a session's scans never change under
+    it. A draft or retired version is refused."""
+    if calendar.state(now) is not SessionState.CLOSED:
+        raise PortfolioError("market_hours")
     bot = session.get(HatBot, bot_id, with_for_update=True)
     if bot is None:
         raise PortfolioError("bot_unknown")

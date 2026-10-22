@@ -560,11 +560,12 @@ refuse inside a session (`market_hours`).
    cause and run it again.
 4. `$ADMIN seed-strategies`, then `$ADMIN seed-bots --account <broker_account_id>`: the two
    strategies with version 1 as a draft, and one sleeve per strategy in Research, in shadow mode.
+   An account that is not `active` takes no sleeve (`account_not_active`).
 5. `$ADMIN publish-universe --constituents <ind_nifty500list.csv> --as-of <date>` (add
    `--include SYMBOL` or `--exclude SYMBOL` as often as needed): a universe version from NSE's
    index CSV, made live and given to every sleeve (`--bot ID` to name some). Every symbol must
-   name an instrument on that date; otherwise the command lists the unknown ones and writes
-   nothing.
+   name an instrument on that date with the CSV's ISIN; otherwise the command lists the unknown
+   ones (`SYMBOL(ISIN)` for an ISIN that differs) and writes nothing.
 6. For each sleeve: backtest its strategy's version 1,
    `$COMPOSE exec -w /app/backend backend python -m app.hat.engine.backtest --bot <bot> --version
    <version> --from 2010-01-01 --to <last trading day>` (09 §7); note `run_id`.
@@ -580,7 +581,9 @@ refuse inside a session (`market_hours`).
    with `version_not_live` before the version is promoted). The sleeve now has weight, but its
    orders stay virtual until the account's mode changes (`/mode`, HAT-GOV-084), which needs GTT
    delivery (HAT-EXEC-012).
-10. A new version of a running strategy: save it as a draft, then steps 6, 7 (publish only: a
+10. A new version of a running strategy: `$ADMIN save-draft --strategy <strategy> --config
+    <file.yaml>` (an exported or edited config; refused inside a session, and an invalid config
+    prints the paths and codes of its problems), then steps 6, 7 (publish only: a
     Live sleeve takes only a live version) and `shadow-version`; after 20 sessions,
     `promote-version` moves the sleeves of the version it replaces onto it (their open trades keep
     their entry version, HAT-BOT-083).
@@ -861,7 +864,7 @@ After any change to `.env` (HAT-OPS-050):
   - Property: every `OPS` verification name used anywhere in `docs/specs/hat/` and every bullet of §4 has a matching procedure heading in this section. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
 
 #### HAT-OPS-091: The owner's admin command line
-- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves, publish a universe, publish, assign, shadow and promote a strategy version, move a sleeve along a lifecycle edge) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`promote`, `promote-version`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded.
+- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves on an active account, publish a universe whose symbols and ISINs all match instruments, save a draft, publish, assign, shadow and promote a strategy version, move a sleeve along a lifecycle edge) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`promote`, `promote-version`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded.
 - **Source:** Design review 2026-10-22 item 8 (no production caller for the forward lifecycle edges, `onboard_account`, `publish_version`, the seeds and the universe publish; nothing set `hat_bot.live_version_id`, so a fresh deploy never scanned); item 14 (keep the portfolio layer and wire it through this command line).
 - **PR:** 35
 - **Verification:** PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services`

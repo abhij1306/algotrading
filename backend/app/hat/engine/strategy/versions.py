@@ -282,7 +282,8 @@ def assign_version(session: Session, *, bot_id: uuid.UUID, version_id: uuid.UUID
     bot = session.get(HatBot, bot_id, with_for_update=True)
     if bot is None:
         raise VersionError("unknown_bot")
-    row = session.get(HatStrategyVersion, version_id)
+    # locked, so a promotion that retires it waits and then moves this sleeve too
+    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
     if row is None or row.strategy_id != bot.strategy_id:
         raise VersionError("unknown_version")
     if row.status in ("draft", "retired"):

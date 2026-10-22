@@ -14,10 +14,12 @@ Commands, in first-deploy order:
     seed-policy                               risk-policy version 1 (06 §1)
     onboard-account --account-ref REF         capability check of the broker account (HAT-BRK-092)
     seed-strategies                           the two strategies, version 1 as a draft
-    seed-bots --account ID                    one shadow sleeve per strategy on that account
+    seed-bots --account ID                    one shadow sleeve per strategy on an active account
     publish-universe --constituents CSV --as-of DATE [--name N] [--include S]... [--exclude S]...
                      [--bot ID]...            a universe version from an NSE index CSV, made live
                                               and given to the sleeves (default: all of them)
+    save-draft --strategy ID --config YAML    a new draft version, outside market hours
+                                              (HAT-BOT-084)
     publish-version --version ID --run ID     draft -> backtested on a completed run (HAT-BT-061)
     assign-version --bot ID --version ID      the version a sleeve scans and trades with
     shadow-version --version ID               backtested -> shadow; starts the 20 sessions
@@ -51,8 +53,15 @@ from .engine.portfolio import lifecycle
 from .engine.portfolio import service as portfolio
 from .engine.portfolio.service import BacktestEvidence
 from .engine.strategy import versions
+from .engine.strategy.config import ConfigError
+from .engine.strategy.yamlio import import_yaml
 from .errors import HatConfigError, HatError
-from .execution.accounts import ADAPTER_FACTORIES, onboard_account
+from .execution.accounts import (
+    ADAPTER_FACTORIES,
+    OnboardingError,
+    onboard_account,
+    require_active_account,
+)
 from .execution.broker import HatBroker
 from .risk.policy import RiskPolicy, effective_version
 from .risk.policy_service import load_versions, seed_initial_policy
@@ -121,6 +130,9 @@ def _parser() -> argparse.ArgumentParser:
     universe.add_argument("--include", action="append", default=[])
     universe.add_argument("--exclude", action="append", default=[])
     universe.add_argument("--bot", type=uuid.UUID, action="append", default=[])
+    draft = commands.add_parser("save-draft")
+    draft.add_argument("--strategy", type=uuid.UUID, required=True)
+    draft.add_argument("--config", type=Path, required=True)
     publish = commands.add_parser("publish-version")
     publish.add_argument("--version", type=uuid.UUID, required=True)
     publish.add_argument("--run", type=uuid.UUID, required=True)
@@ -150,18 +162,28 @@ def _policy(session: Session, user_id: uuid.UUID, now: datetime) -> RiskPolicy:
     return version.policy
 
 
+def _read(path: Path, code: str) -> str:
+    try:
+        return path.read_text("utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise AdminError(code) from None
+
+
 def _publish_universe(
     session: Session, args: argparse.Namespace, user_id: uuid.UUID, now: datetime
 ) -> dict[str, Any]:
-    try:
-        content = args.constituents.read_text("utf-8")
-    except OSError:
-        raise AdminError("constituents_unreadable") from None
-    symbols = [row.symbol for row in parse_industry_csv(content)]
-    if not symbols:
+    calendar = _calendar(session)
+    rows = parse_industry_csv(_read(args.constituents, "constituents_unreadable"))
+    if not rows:
         raise AdminError("constituents_empty")
     market_id = portfolio.market_id_of(session)
-    constituents, unknown = portfolio.resolve_symbols(session, market_id, symbols, args.as_of)
+    constituents, unknown = portfolio.resolve_symbols(
+        session,
+        market_id,
+        [row.symbol for row in rows],
+        args.as_of,
+        {row.symbol: row.isin for row in rows},
+    )
     include, unknown_in = portfolio.resolve_symbols(session, market_id, args.include, args.as_of)
     exclude, unknown_ex = portfolio.resolve_symbols(session, market_id, args.exclude, args.as_of)
     missing = sorted({*unknown, *unknown_in, *unknown_ex})
@@ -182,7 +204,9 @@ def _publish_universe(
         uuid.UUID(b["id"]) for b in versions.release_overview(session, user_id)["bots"]
     ]
     for bot_id in bot_ids:
-        portfolio.assign_universe(session, bot_id=bot_id, universe_version_id=live.id)
+        portfolio.assign_universe(
+            session, bot_id=bot_id, universe_version_id=live.id, calendar=calendar, now=now
+        )
     return {
         "universe_id": str(named.id),
         "universe_version_id": str(live.id),
@@ -213,10 +237,21 @@ def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[st
         rows = versions.seed_default_strategies(session, user_id)
         return {"strategies": {s.name: str(s.id) for s in rows}}
     if command == "seed-bots":
+        require_active_account(session, args.account)
         bots = versions.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
         return {"bots": [str(b.id) for b in bots]}
     if command == "publish-universe":
         return _publish_universe(session, args, user_id, now)
+    if command == "save-draft":
+        config = import_yaml(_read(args.config, "config_unreadable"))
+        row = versions.save_draft(
+            session,
+            strategy_id=args.strategy,
+            config=config,
+            calendar=_calendar(session),
+            now=now,
+        )
+        return {"version_id": str(row.id), "version": row.version, "status": row.status}
     if command == "publish-version":
         row = versions.publish_version(session, args.version, backtest_run_id=args.run)
         return {"version_id": str(row.id), "status": row.status}
@@ -252,6 +287,10 @@ def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[st
 
 
 def _code(exc: HatError) -> str:
+    if isinstance(exc, ConfigError):  # the paths and codes, never the submitted values
+        return "invalid_config: " + " ".join(sorted(f"{p}:{c}" for p, c in exc.problems))
+    if isinstance(exc, OnboardingError):
+        return str(exc).replace(" ", "_")
     code = getattr(exc, "code", None)
     return code if isinstance(code, str) else type(exc).__name__
 

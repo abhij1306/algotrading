@@ -31,6 +31,7 @@ from app.base import Base
 from app.hat.admin import AdminDeps, main
 from app.hat.data.sessions import IST
 from app.hat.engine.portfolio import lifecycle
+from app.hat.engine.strategy.versions import seed_text
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.models import (
     HatBacktestRun,
@@ -125,15 +126,22 @@ def new_world(tmp: Path) -> World:
                     close_at=as_utc(row.close_at) if row.close_at else None,
                 )
             )
-        for n, symbol in enumerate(SYMBOLS):
-            add_instrument(session, market_id, symbol, f"INE00000{n}A01")
+        for symbol in SYMBOLS:
+            add_instrument(session, market_id, symbol, isin_of(symbol))
         session.commit()
     return World(engine, tmp)
 
 
-def constituents_csv(tmp: Path, symbols: tuple[str, ...]) -> Path:
+def isin_of(symbol: str) -> str:
+    return f"INE00000{SYMBOLS.index(symbol)}A01" if symbol in SYMBOLS else "INE999999A01"
+
+
+def constituents_csv(
+    tmp: Path, symbols: tuple[str, ...], isins: dict[str, str] | None = None
+) -> Path:
     path = tmp / f"nifty-{uuid.uuid4().hex}.csv"
-    rows = "".join(f"{s} Ltd,Finance,{s},EQ,INE{s}\n" for s in symbols)
+    isin = {s: isin_of(s) for s in symbols} | (isins or {})
+    rows = "".join(f"{s} Ltd,Finance,{s},EQ,{isin[s]}\n" for s in symbols)
     path.write_text("Company Name,Industry,Symbol,Series,ISIN Code\n" + rows, "utf-8")
     return path
 
@@ -214,6 +222,12 @@ def test_first_deploy(tmp_path: Path, waited: int) -> None:
     assert code == 0, err
     assert result["status"] == "live"
     assert world.ok("promote", "--bot", bot, "--to", "live")["lifecycle_state"] == "live"
+    config = world.tmp / "next.yaml"
+    config.write_text(seed_text("stage2-contraction-breakout"), "utf-8")
+    with world.scope() as session:
+        strategy_id = session.get(HatStrategyVersion, uuid.UUID(version)).strategy_id  # type: ignore[union-attr]
+    draft = world.ok("save-draft", "--strategy", str(strategy_id), "--config", str(config))
+    assert (draft["version"], draft["status"]) == (2, "draft")
     with world.scope() as session:
         owner_events = session.scalars(
             select(HatEvent).where(
@@ -248,6 +262,11 @@ REFUSALS = {
     "publish_other_run": "run_not_for_version",
     "promote_in_hours": "market_hours",
     "universe_unknown_bot": "bot_unknown",
+    "universe_in_hours": "market_hours",
+    "isin_mismatch": "unknown_symbols: BBB(INE123456A01)",
+    "bots_on_unknown_account": "account_not_active",
+    "draft_in_hours": "market_hours",
+    "draft_bad_utf8": "config_unreadable",
 }
 
 
@@ -296,6 +315,23 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
     elif case == "promote_in_hours":
         world.now = at(START + timedelta(days=1), 11)
         argv = ("promote", "--bot", bot, "--to", "probation")
+    elif case == "universe_in_hours":
+        world.now = at(START + timedelta(days=1), 11)
+        csv = constituents_csv(world.tmp, SYMBOLS)
+        argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
+    elif case == "isin_mismatch":
+        csv = constituents_csv(world.tmp, SYMBOLS, {"BBB": "INE123456A01"})
+        argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
+    elif case == "bots_on_unknown_account":
+        argv = ("seed-bots", "--account", str(uuid.uuid4()))
+    elif case in ("draft_in_hours", "draft_bad_utf8"):
+        config = world.tmp / f"draft-{uuid.uuid4().hex}.yaml"
+        config.write_text(seed_text("stage2-contraction-breakout"), "utf-8")
+        if case == "draft_in_hours":
+            world.now = at(START + timedelta(days=1), 11)
+        else:
+            config.write_bytes(b"bot: \xff\xfe\n")
+        argv = ("save-draft", "--strategy", str(strategy_id), "--config", str(config))
     elif case == "universe_unknown_bot":
         csv = constituents_csv(world.tmp, SYMBOLS)
         argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
