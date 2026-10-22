@@ -41,7 +41,7 @@ from fractions import Fraction
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.corporate_actions import TYPE_BONUS, TYPE_SPLIT
+from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
 from ..events import record
 from ..models import HatCorporateAction, HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
 from ..notify import Notifier
@@ -189,7 +189,8 @@ def unhandled_actions(
 ) -> list[HatCorporateAction]:
     """The stored actions of the position's instrument the rescale cannot handle (`other`, or a
     consolidation: factor 1 or above), ex-date after the day it opened and on or before `day`,
-    oldest first. None for a closed position (HAT-EXEC-144)."""
+    oldest first. A price-neutral row (a dividend, PR 47) is no such action. None for a closed
+    position (HAT-EXEC-144)."""
     if position.closed_at is not None:
         return []
     opened = trade_date_of(as_utc(position.opened_at))
@@ -199,6 +200,7 @@ def unhandled_actions(
             HatCorporateAction.instrument_id == position.instrument_id,
             HatCorporateAction.ex_date > opened,
             HatCorporateAction.ex_date <= day,
+            HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES),
         )
         .order_by(HatCorporateAction.ex_date, HatCorporateAction.action_type)
     )

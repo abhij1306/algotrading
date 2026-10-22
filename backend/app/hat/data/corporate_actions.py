@@ -5,6 +5,11 @@ A factor multiplies prices before the ex-date (a 1:2 split is 0.5). Sources, in 
 win on a conflict: the MCP's structured `adjustmentFactor`, then NSE's archive CSV text parsed
 with HAT's own text helpers (`app.hat.data.ratios`). A stored action is never
 changed by a later load: a different factor for a stored key is reported as a conflict.
+
+An MCP action that changes no price (factor 1: a dividend, an AGM) is stored too, as
+`dividend` or `notice` (PR 47, HAT-DATA-052): Fyers cancels a resting GTT before any ex-date,
+so the morning GTT check needs every ex-date of a held name (HAT-EXEC-145). Such a row is never
+a price factor (`stored_factors`) and never an action the rescale handles or flags.
 """
 
 from __future__ import annotations
@@ -30,6 +35,9 @@ SOURCE_ARCHIVE = "archive"
 TYPE_SPLIT = "split"
 TYPE_BONUS = "bonus"
 TYPE_OTHER = "other"
+TYPE_DIVIDEND = "dividend"
+TYPE_NOTICE = "notice"  # any other action the MCP gives factor 1: no price changes
+PRICE_NEUTRAL_TYPES = (TYPE_DIVIDEND, TYPE_NOTICE)
 STORED_PLACES = 12  # a factor such as 2/3 is stored rounded to 12 places
 
 _MCP_TYPES = {"SPLIT": TYPE_SPLIT, "BONUS": TYPE_BONUS}
@@ -85,7 +93,7 @@ class ActionRecord:
 class Normalised:
     records: list[ActionRecord] = field(default_factory=list)
     unparsed: list[str] = field(default_factory=list)  # price-affecting text with no factor
-    ignored: int = 0  # dividends and other actions that do not change prices
+    ignored: int = 0  # archive dividends and other texts that do not change prices
 
 
 def _iso(raw: object) -> date | None:
@@ -97,7 +105,8 @@ def _iso(raw: object) -> date | None:
 
 def from_mcp(instrument_id: object, rows: Iterable[dict]) -> Normalised:
     """`get_corporate_actions` rows of one instrument. Splits and bonuses keep the MCP factor;
-    other types with a factor other than 1 are stored as `other`; dividends are ignored."""
+    other types with a factor other than 1 are stored as `other`; an action of factor 1 is
+    stored price-neutral, as `dividend` or `notice` (its ex-date is what HAT needs)."""
     out = Normalised()
     for row in rows:
         ex = _iso(row.get("exDate"))
@@ -112,8 +121,8 @@ def from_mcp(instrument_id: object, rows: Iterable[dict]) -> Normalised:
             out.unparsed.append(text)
             continue
         if factor == 1:
-            out.ignored += 1
-            continue
+            raw_type = str(row.get("actionType") or "").upper()
+            kind = TYPE_DIVIDEND if raw_type == "DIVIDEND" else TYPE_NOTICE
         out.records.append(ActionRecord(instrument_id, ex, kind, factor, text, SOURCE_MCP))
     return out
 
@@ -211,8 +220,13 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
 
 
 def stored_factors(session: Session) -> list[ActionFactor]:
-    """Every stored action as the view needs it."""
+    """Every stored action that changes prices, as the view needs it (a price-neutral row is
+    left out: its factor is 1)."""
     return [
         ActionFactor(row.instrument_id, row.ex_date, Decimal(row.adjustment_factor))
-        for row in session.scalars(select(HatCorporateAction))
+        for row in session.scalars(
+            select(HatCorporateAction).where(
+                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES)
+            )
+        )
     ]

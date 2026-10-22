@@ -144,6 +144,10 @@ table.
 | `watchlist.digest` | trading | 18:00 | | `scan` | 16 |
 | `gtt.verify:<account>` | trading | 23:00 | | | 15c |
 
+`gtt.ex_date:<account>` (08:40, trading days, retried every minute; PR 47, HAT-EXEC-145) is not in
+the table: it is registered only when `HAT_EXDATE_GTT_CHECK` is on (default off), until the O2(b)
+live check confirms how Fyers shows a GTT it cancelled before an ex-date.
+
 Periodic steps of the runtime (not `hat_job_run` jobs; each step logs and survives its own
 failure): the broker-session check and approval expiry every minute, the fill sync every minute
 and every 5 seconds while a real entry of the day works or a stop's answer is not in yet
@@ -756,13 +760,27 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### GTT missing
 
 1. Alerts: `gtt.missing`, `gtt.unverified`, `gtt.swap_failed` or `stop.not_placed`. `gtt.verify`
-   at 23:00 refreshes and re-places GTTs; `gtt.swap` at 15:25 retries every minute and keeps the
-   intraday stop until the GTT is confirmed.
+   at 23:00 refreshes and re-places GTTs (and renews one 300 days old); `gtt.swap` at 15:25
+   retries every minute and keeps the intraday stop until the GTT is confirmed. With
+   `HAT_EXDATE_GTT_CHECK` on, `gtt.ex_date` at 08:40 re-places a GTT the broker cancelled before
+   an ex-date (code `gtt_cancelled_by_broker`); a refused one is covered by the intraday stop from
+   09:15.
 2. Check the Fyers GTT page against `/positions`: every open real position needs one GTT at its
    current stop.
 3. If the broker keeps refusing: check the session (log in again), the price band and the
    quantity. A position that stays unprotected overnight is an incident: decide whether to
    `/flatten` it the next morning.
+
+### Series change
+
+1. Alert: URGENT `position.series_changed` (symbol, old and new series, Fyers symbol or
+   `unmapped`), at 08:40 (with `HAT_EXDATE_GTT_CHECK` on) and at every 23:00 `gtt.verify`.
+2. The position is manage-only: no exit rule runs on it, and its broker stops go out under the new
+   series' Fyers symbol (a GTT still under the old symbol is cancelled and placed again).
+   `unmapped` means no Fyers symbol is stored for the new series (BZ has none): no stop is sent
+   (`stop.not_placed`, code `series_unmapped`) and a GTT under the old symbol is left as it is.
+3. Decide whether to keep it at Fyers yourself or `/flatten` it. The alert repeats until it is
+   closed.
 
 ### Failed nightly job
 

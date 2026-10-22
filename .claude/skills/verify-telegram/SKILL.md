@@ -118,7 +118,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `d37fd19abd11194806cd4b269e6b217bd15b951e8dcf3e8a055f5c5bc62b3726`
+Covered digest: `5c410c02b4a27fa3a3b804fa2ce80a97b755b73c1d34768ba3c9a99733918b56`
 
 ## Scope changes
 
@@ -137,6 +137,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `TgRig` uses `OpenFlattener` (no positions, session open) instead of an empty `ManagerFlattener`; the real `ManagerFlattener` over `TradeManager` runs in `telegram.flatten_logged`.
 - `/cmd@other_bot` (found by a CodeAnt nitpick on PR #113): the `@bot` suffix was dropped without checking it, so in a group `/kill@another_bot` ran here. The client now also calls `getMe`; the service asks it once, when the first suffixed command arrives, and keeps the username. `telegram.other_bot_ignored` was added, and the method-allowlist CONF check now lists five methods.
 - Sonar round (PR #113): `COMMANDS` is now `tuple(_ARITY)`, so the command set is written once; the token decoder catches `ValueError` alone (`binascii.Error` is one). Behaviour is unchanged and every check here passed again. The `logging.exception` suggestions were declined: a traceback can carry broker or database text, so failures log only the exception type (HAT-TG-014).
+- PR 47 (HAT-EXEC-146): `render.URGENT_ALERTS` gains `position.series_changed`; its break is recorded under `manage.series_change_remapped` in `verify-execution`. Nothing was narrowed.
 
 ## Scratch breaks
 

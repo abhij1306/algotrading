@@ -59,7 +59,7 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
 | Index levels | index name, date, OHLC | Nightly | Regime gate and RS benchmark (§8 `index_daily`) |
 
 #### HAT-DATA-020: Instrument identity is (market, ISIN, series)
-- **Statement:** An instrument is identified by (market_id, isin, series); its NSE symbol and broker symbols are mutable attributes.
+- **Statement:** An instrument is identified by (market_id, isin, series); its NSE symbol and broker symbols are mutable attributes. A series change (EQ to BE or BZ) therefore lists the stock as a new instrument; an open position on the old one is handled by HAT-EXEC-146 (PR 47).
 - **Source:** DS "Reference data"; SCH "Reference and market data" (`hat_instrument` unique (market_id, isin, series)).
 - **PR:** 4
 - **Verification:** PBT `reference.instrument_identity_stable`, DB `reference.instrument_unique`
@@ -306,10 +306,10 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
   - Property: for every night, the set of symbols passed to `get_corporate_actions` equals the flagged set. Harm: the call budget explodes, or a flagged symbol is never adjusted.
 
 #### HAT-DATA-052: Corporate actions are stored idempotently
-- **Statement:** Actions are stored in `hat_corporate_action`, unique (instrument_id, ex_date, action_type), with `adjustment_factor`, `raw_text` and `source`.
-- **Source:** SCH "Reference and market data" (`hat_corporate_action`); DS "Nightly ingest" step 6.
-- **PR:** 5, 7
-- **Verification:** PBT `corporate_actions.upsert_idempotent`, DB `reference.corporate_action_unique`
+- **Statement:** Actions are stored in `hat_corporate_action`, unique (instrument_id, ex_date, action_type), with `adjustment_factor`, `raw_text` and `source`. Every MCP action is stored, one that changes no price included (PR 47): factor 1 is stored as `dividend` (MCP type DIVIDEND) or `notice` (any other), price-neutral, never a factor of the adjusted view (HAT-DATA-053), never rescaled or flagged (HAT-EXEC-144) and never an explanation of a big move (HAT-DATA-062); it is kept for its ex-date, on which Fyers cancels a resting GTT (HAT-EXEC-145).
+- **Source:** SCH "Reference and market data" (`hat_corporate_action`); DS "Nightly ingest" step 6; research G01 (PR 47).
+- **PR:** 5, 7, 47
+- **Verification:** PBT `corporate_actions.upsert_idempotent`, DB `reference.corporate_action_unique`, PBT `rescale.price_neutral_changes_nothing`
 - **Acceptance:**
   - Property: for every sequence of loads (MCP, RSS-triggered, archive fallback) containing repeated actions, the stored set equals the set of distinct (instrument_id, ex_date, action_type) keys and reloading never changes a stored factor without a new source row. Harm: a split applied twice halves prices a second time.
 
@@ -376,6 +376,7 @@ The nightly data-quality gate (I14) blocks scans when the day's data is not trus
 - **Source:** DS "Nightly ingest" step 7; design review 2026-10-22 item 12 (one unexplained mover must not fail the day).
 - **PR:** 7, 33
 - **Verification:** PBT `quality_gate.big_moves_explained`, `quality_gate.quarantine_one_mover`, `quality_gate.quarantine_cap`, `quality_gate.quarantine_release`, `quality_gate.quarantine_lookup`
+- **Changed (PR 47):** a stored price-neutral action (`dividend`, `notice`, HAT-DATA-052) explains no move and releases no quarantine: a 20% move on a dividend's ex-date is still unexplained.
 - **Acceptance:**
   - Property: for every set of movers, stored corporate actions, prior exclusions and universe size N, the unexplained are the movers with no `hat_corporate_action` row with ex_date = trade date that are not excluded; the `big_moves` check is FAIL if and only if 100 × |unexplained| > N; on a pass the day's exclusion list is the prior exclusions plus the unexplained, and on a FAIL it is the prior exclusions only. Harm: an unadjusted split creates a fake breakout or a fake crash in the watchlist, or one odd stock blocks the whole market's scans.
   - Property: for every day with unexplained movers within the cap, a passing gate quarantines each from that day and alerts it exactly once; while another check fails, and above the cap, none is quarantined or alerted. Harm: a data error quarantines a tenth of the market, or the owner is never told a stock left the scans.

@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `8401049de3407ee5c06414e93db5ea09f1b0926f52f8ce3117ccf2dc2cab66e8`
+Covered digest: `3613fe9a9e9340f4af6c16e33688f0716cca58c78b1de32ed5bce68853f5145e`
 
 ## Scope changes
 
@@ -113,6 +113,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 16 added `time.day_bounds` (the UTC window of an IST trade date), now used by `engine/trades.py` and the Telegram reads and reports instead of three copies; no check was narrowed.
 - PR 33 added the `hat_quality_quarantine` table (`models/ops.py`; 03 §7, HAT-SCH-070): `schema.backtest_ops_columns` now covers nine ops tables and `schema.sqlite_create_all` expects 43 tables. Its `released_by` CHECK is new; the quarantine itself is checked by `verify-data`. Nothing was narrowed.
 - PR 34 (design review item 8a, HAT-PORT-050): `hat_allocation_daily` gains the nullable `virtual_capital` and `virtual_risk_pct` (03 §portfolio); an existing Postgres database gets them from `ensure_hat_columns`. Checked by `verify-portfolio`'s allocator properties. Nothing was narrowed.
+- PR 47: `HatSettings.exdate_gtt_check` (`HAT_EXDATE_GTT_CHECK`, default off); its break is recorded under `ops.ex_date_job_behind_flag` in `verify-scheduler`. Nothing was narrowed.
 
 ## Scratch breaks
 

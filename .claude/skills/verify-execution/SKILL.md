@@ -146,6 +146,10 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.swap_leaves_no_gap` Whatever the broker answers to the GTT (and its retry), `gtt.swap` cancels the intraday stop only after a confirmed GTT; otherwise the intraday stop keeps working, `gtt.swap_failed` is raised and the job fails to be retried; a day stop the broker will not cancel fails the swap too. Harm: the day stop is cancelled first and the position spends the night unprotected.
 - `PBT manage.entry_remainder_tracked` An entry fills in chunks, interleaved with its day stop filling and a flatten, with the broker taking or refusing the cancel of the entry's rest. Once a sale empties the position the rest of the entry is asked to be cancelled (once); a chunk that fills first adds to the still-open position and gets a stop; after every sync HAT's open quantity equals the shares in the broker's trade book and its live stops cover exactly those, and the position closes only with no share held and no entry working at the broker (audit 2026-10-22 F2). Harm: shares the broker bought after HAT closed the position sit untracked and unprotected.
 - `PBT manage.verify_covers` The nightly verify refreshes a GTT the broker confirms to the current stop (`gtt.refreshed`), never below the trigger it rests at when the instrument's tick changed since (a coarser tick floors the stop lower; audit F24), and a refused refresh of a GTT so kept is alerted `gtt.unverified` with nothing placed; one it does not confirm is alerted (`gtt.missing`), cancelled at the broker and in HAT's book, and placed again; when the cancel fails, the broker is unreachable, the fills cannot be read or HAT's GTT row was never confirmed, `gtt.unverified` is raised and no GTT is modified or placed. Harm: a GTT that triggered or expired goes unnoticed and the position opens the next day without a stop.
+- `PBT manage.verify_renews_old_gtt` (PR 47, HAT-EXEC-063) For every GTT age around 300 days and cancel reply, the nightly verify cancels a GTT placed 300 days ago or more and places it again at the current stop (`gtt.missing` never raised), and refreshes in place a younger one or one whose cancel is refused. Harm: the broker expires the GTT a year after placement and the position has no stop.
+- `PBT manage.ex_date_gtt_replaced` (PR 47, HAT-EXEC-145) For every stored action (dividend, notice, split) with ex-date around the check day, every assumed book shape of a broker-cancelled GTT (`fixtures/fyers_gtt_ex_date_assumed.json`) and a GTT accepted or refused, `check_ex_date_gtts` ends a GTT the book no longer holds (`gtt.missing`, `gtt_cancelled_by_broker`) and places it again (a refusal does not fail the run: the intraday stop goes out from 09:15), leaves a resting one alone, fails with `gtt.unverified` and sends nothing on an unreadable book, waits for a split's rescale, and reads no position without an action today or the next session. Harm: Fyers cancels the GTT before a dividend and the position opens the ex-date unprotected.
+- `PBT manage.ex_date_check_serialised` (PR 47, HAT-EXEC-145) For both assumed shapes of a cancelled GTT, the fill sync's protect or the nightly verify reaching the position on another thread between the check ending the old GTT and placing the new waits on the position's stop lock: exactly one GTT is placed. Harm: two GTT sales over the same shares.
+- `PBT manage.series_change_remapped` (PR 47, HAT-EXEC-146) For every successor (none, BE mapped or unmapped, renamed, another ISIN), a series change gives no exit view, one URGENT `position.series_changed` at the morning check and at the nightly verify, and a re-placed GTT under the successor's Fyers symbol: one the broker cancelled, and one still listed under the old symbol, cancelled first (at the morning check, or at the nightly verify when the check is off; a refused cancel at the check fails the run with `gtt.unverified`, at the verify it is refreshed); a GTT placed after the change is left resting; an unmapped successor gets no stop sent (`series_unmapped`) and its old GTT left; otherwise nothing. Harm: every order under the old `-EQ` symbol is refused and exit rules run on stopped prices.
 - `PBT manage.real_exits_never_blocked` A real position's live exits come from the shared exit stack and go out as MARKET SELL CNC orders, identical with and without an account or bot kill or a pause, and whatever the reconciliation state (none today, only yesterday's, a failed run, a mismatch; the new fill's stop is placed in each, D118); HAT sends nothing at the hard stop while the broker stop rests, and every sale is preceded by the broker stop's cancel or its resize to the shares left. Harm: a kill switch traps a position its exits should sell, or HAT and the broker both sell at the stop.
 - `PBT manage.no_sale_after_close` A run that starts at 15:2x and reaches a sale some minutes later sends it only before 15:30 (the time sent is the run's start plus the monotonic time taken, with no clock injected); otherwise `exit.not_placed` is raised and the broker stop keeps resting. Harm: a slow close run sends market orders after the close.
 - `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) when the sync adopts it; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
@@ -311,13 +315,15 @@ Live trade management (PR 15c):
 - `backend/app/hat/engine/live_trades.py`
 - `backend/tests/hat/hat_manage_support.py`
 - `backend/tests/hat/properties/test_manage.py`
+- `backend/app/hat/execution/series.py`
+- `backend/tests/hat/fixtures/fyers_gtt_ex_date_assumed.json`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `952f6a3111c25103db6bc40dcd6cee939043fcb09e37aa043d44325809f57f93`
+Covered digest: `b066c295c64f3203545fc585abe5014fee0eae61ae508c425befde195cf374ce`
 
 ## Scope changes
 
@@ -369,6 +375,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 25 (Fyers live write test 2026-10-22, HAT-BRK-081, -082, -090, -091, -093, -103, HAT-EXEC-012, -065, -066; the brief assigns these `execution/` files to this PR, overriding "revfix owns execution"): `fyers_ipv4.py` installs a urllib3 hook so Fyers HTTP leaves over IPv4 and is the one importer of `fyersModel` (`fyers_adapter_wraps_existing`'s `SDK_IMPORTERS` is now a map of file to allowed submodule). Fyers -360 is `FyersRateLimitedError` (a `FyersUnavailableError`, so reads still fail closed) and the adapter's `broker_rate_limited`. A GTT carries its HT tag (`GttRequest.tag`, sent as `orderTag`); the GTT book reads the live keys (`tran_side`, `product_type`, `ordertag`: the old `side` and `productType` made every non-empty live book unreadable); an order or trade row tagged with a stop_gtt tag (bare or `GTT`-prefixed) is that GTT's child (`gtt_tag`). `find_gtt` matches by tag first; the fill sync attributes a child by `gtt_tag`, else the untagged shape. `FakeBroker`'s GTT rows take the live shape with `ordertag`. `gtt_delivery` is now true (`broker.the_fyers_adapter_never_unlocks_confirm_or_auto` became `the_fyers_adapter_unlocks_modes_on_an_active_account`; `brk__fyers_capabilities` asserts true). `tags.status_mapping_total` found that `'¹'` passed `str.isdigit()` and crashed `int()` (`_whole_number` now matches ASCII digits; `@example`s added). `fyers_broker.only_explicit_error_rejects` (pinned) is unchanged; the recorded rejection with an id is a new property. `manage.gtt_trigger_handled` and `gtt_resting_marketed` draw the child's tag (none, `GTTUntagged`, bare, `GTT`-prefixed); nothing was narrowed. Review round (/code-review): a -360 write is not sent, like an unavailable broker (`broker.CODES_NOT_SENT`: `send_order` leaves the order pending and burns no retry; `StopDesk` retries an entry-remainder cancel and does not cancel a GTT whose resize was refused for it); `tags.an_unreachable_broker_is_not_a_rejection` became a property over circuit, client and -360. The two `StopDesk` branches have no property of their own (no rig drives a rate-limited cancel or GTT modify). The GTT book also reads the placement keys `side` and `productType`, and `GTTUntagged` on an order or trade row is no tag. Declined: a quantity check on a tagged child (the tag is the GTT's, which identifies it; a partial child keeps the GTT's quantity), and importing `rate_limited` into `minute_history` (it keeps its own -360 constant as it keeps -50). CodeAnt round: a GTT shown under a foreign tag (not `GTTUntagged`, not one of HAT's GTT tags) is `BrokerGtt.foreign` and never matched by shape; an untagged sale that ended ends a GTT only at the GTT's quantity (`_unfilled_trigger`). `tags.a_lost_gtt_is_found_by_its_tag` missed its break in 100 draws (about 1 book in 75 had a foreign GTT first in the shape match), so `gtt_books` now draws the row's quantity, SBIN and unclaimed GTTs more often (about 1 in 10) and has an `@example`. Declined: the claim that the IPv4 hook misses connections once `requests` is imported (urllib3 2.x looks `create_connection` up on its module at each connect, and `fyers_ipv4.fyers_http_leaves_over_ipv4` imports `requests` first); an untagged SELL trade on a symbol whose one GTT is working is still attributed to it (a trade carries no order quantity to compare).
 - PR 33 edited `test_ops.py` (covered here): `ops.chain_carries_past_midnight` also draws an unchained job marked `carry` (`snapshot.bots`); its checks are `verify-scheduler`'s, and the property runs in this skill's command too. Nothing was narrowed.
 - PR 45 (HAT-GOV-085, HAT-EXEC-014): the DDPI and base-weights gates and the high-confidence rule are proved on the real code (`router.mode_gates_hold_bots_in_shadow`, `router.open_settles_mode_changes`, `router.auto_places_only_high_confidence`); `ExecutionRouter.tla` models only the GTT gate and was not extended. No live caller passes a confidence label yet (PR 71), so every auto signal goes to approval. Nothing was narrowed.
+- PR 47 (research G01, G17, G24; HAT-EXEC-063, -145, -146): `TradeManager.check_ex_date_gtts` (job `gtt.ex_date`, behind `HAT_EXDATE_GTT_CHECK`, default off) and `StopDesk.check_gtt`; `StopDesk._renewed` (300-day renewal in `verify`); `execution/series.py` (successor by market and ISIN). The broker-cancelled GTT's book shape is ASSUMED (`fyers_gtt_ex_date_assumed.json`, three shapes) until the O2(b) live check; the property draws all three. ASM and GSM are not detectable (no source) and are not checked. A BZ successor has no Fyers symbol (`fyers_symbol` maps only BE) and is alerted `unmapped`; its re-place is refused by the adapter, which the property does not draw separately. `manage.verify_covers` passes unchanged. CodeAnt round: a GTT placed on or before the old row's `delisted_on` went out under the old symbol (`StopDesk._old_series`): the check and the verify cancel it and place it again (the weekly refresh runs on Saturday, so the boundary day has no GTT; one placed that day is counted old and re-placed once at worst). An unmapped successor (`_Target.unmapped`) gets no stop: the adapter would fall back to the old `-EQ` symbol. `StopDesk.protect`, `swap`, `check_gtt` and `verify` hold a per-position re-entrant lock (`_serialised`), since the fill sync and the trade jobs share one desk on separate threads; `manage.ex_date_check_serialised` interleaves deterministically (the second path starts at the check's tick read, between ending the old GTT and reserving the new), with a second session on the same in-memory engine. Moves (`make_room`, `follow`, `rescaled`) are not locked: they modify existing stops and place none. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -3068,4 +3075,175 @@ E   AssertionError: assert 1 == 0
 E    +  where 0 = int('shadow' != 'shadow')
 E   Failing explicit example: test_open_settles_mode_changes(
 E       start='shadow',
+```
+
+### PBT manage.verify_renews_old_gtt
+
+Break: (PR 47) in `backend/app/hat/execution/protect.py`, `verify` never calls `_renewed` (main before PR 47).
+
+```
+E   AssertionError: assert 'placed' == 'cancelled'
+E     - cancelled
+E     + placed
+```
+
+Break: (PR 47) `_renewed` places the new GTT without cancelling the old one.
+
+```
+E   ValueError: too many values to unpack (expected 1, got 2)
+E   Failing explicit example: test_verify_renews_old_gtt(
+E       age=300,
+```
+
+Break: (PR 47) `GTT_RENEW_AFTER` is 365 days.
+
+```
+E   AssertionError: assert 'placed' == 'cancelled'
+E     - cancelled
+E     + placed
+```
+
+### PBT manage.ex_date_gtt_replaced
+
+Break: (PR 47) in `backend/app/hat/execution/manage.py`, `_near_ex_date` takes today only (not the next session).
+
+```
+E   AssertionError: assert 'placed' == 'cancelled'
+E     - cancelled
+E     + placed
+```
+
+Break: (PR 47) `StopDesk.check_gtt` trusts HAT's own book (a live row counts as resting without the broker's book).
+
+```
+======================= 1 failed, 20 deselected in 1.05s =======================
+```
+
+Break: (PR 47) `check_gtt` does not wait for a pending rescale.
+
+```
+E   AssertionError: assert ([('place_gtt...', ...})], []) == ([], [UUID('0...33958d4f95')])
+E     At index 0 diff: [('place_gtt', {'symbol': 'NSE:SBIN-EQ', 'quantity': 500, 'side': 'SELL', 'product': 'CNC', 'trigger_price': 95.0, 'price': 94.05, 'order_tag': 'HTG1EWNRPW5QNGNZ1SRE'})] != []
+```
+
+Break: (PR 47) an unreadable GTT book does not fail the run.
+
+```
+E   AssertionError: assert [] == [UUID('01a164...ecaa14ad32f')]
+E     Right contains one more item: UUID('01a164ce-c79b-73cf-91d5-4ecaa14ad32f')
+```
+
+Break: (PR 47) a refused GTT fails the run.
+
+```
+E   AssertionError: assert [UUID('01a164...0c502d3de4c')] == []
+E     Left contains one more item: UUID('01a164ce-d1c1-72f7-803a-30c502d3de4c')
+```
+
+Break: (PR 47) a GTT gone from the book is not ended `cancelled`.
+
+```
+E   AssertionError: assert 'placed' == 'cancelled'
+E     - cancelled
+E     + placed
+```
+
+### PBT manage.series_change_remapped
+
+Break: (PR 47) in `backend/app/hat/daily/live.py`, `ExitViews` ignores the series change.
+
+```
+E   assert (<object object at 0x7f2ff5d71420> is None) == True
+E    +  where <object object at 0x7f2ff5d71420> = <app.hat.daily.live.ExitViews object at 0x7f2ff5971450>(...)
+E   Failing explicit example: test_series_change_remapped(
+```
+
+Break: (PR 47) `StopDesk._target` keeps the old instrument's symbol.
+
+```
+E   AssertionError: assert 'NSE:SBIN-EQ' == 'NSE:SBINBE-BE'
+E     - NSE:SBINBE-BE
+E     ?         ^ ^^^
+```
+
+Break: (PR 47) `series.successor` takes an active instrument of any ISIN.
+
+```
+E   AssertionError: assert [{'bot_id': '...': 'EQ', ...}] == []
+E     Left contains one more item: {'bot_id': '3da1d362-351e-43fc-b6e5-d5c369f06058', 'position_id': '01a164cf-3758-7550-a0c9-2970007b2135', 'symbol': 'SBIN', 'from': 'EQ', ...}
+```
+
+Break: (PR 47) `verify_stops` does not alert the series change.
+
+```
+E   assert 0 == 1
+E    +  where 0 = len([])
+E   Failing explicit example: test_series_change_remapped(
+```
+
+Break: (PR 47) in `backend/app/hat/telegram/render.py`, `position.series_changed` is not in `URGENT_ALERTS`.
+
+```
+E   AssertionError: assert 'position.series_changed' in frozenset({'corporate_action.unhandled', 'fill.excess', 'gtt.unfilled', 'gtt.unverified'})
+E   Failing explicit example: test_series_change_remapped(
+E       successor='mapped',
+```
+
+Break: (PR 47, CodeAnt) `check_gtt` takes no GTT as under the old series (`stale = []`): a resting `-EQ` GTT is left as it is.
+
+```
+    | ValueError: list.index(x): x not in list
+    | AssertionError: assert 'gtt.unverified' in ['position.series_changed']
+```
+
+Break: (PR 47, CodeAnt) a refused cancel of the old-series GTT at the check goes on to place a new one.
+
+```
+E   AssertionError: assert [{'symbol': '...: 'CNC', ...}] == []
+E     Left contains one more item: {'symbol': 'NSE:SBIN-BE', 'quantity': 500, 'side': 'SELL', 'product': 'CNC', ...}
+```
+
+Break: (PR 47, CodeAnt) the nightly verify never re-maps an old-series GTT (`and False`).
+
+```
+E   ValueError: list.index(x): x not in list
+E   Failing explicit example: test_series_change_remapped(
+E       successor='mapped',
+E       shape='resting',
+```
+
+Break: (PR 47, CodeAnt) `_old_series` counts every GTT old, so the new one is placed again each night.
+
+```
+E   AssertionError: assert 'place_gtt' not in ['fetch_orderbook', 'fetch_tradebook', 'cancel_gtt', 'place_gtt']
+E   Failing explicit example: test_series_change_remapped(
+E       successor='mapped',
+E       shape='resting',
+```
+
+Break: (PR 47, CodeAnt) `_target` never marks an unmapped successor: the stop goes out under the converted `-EQ` symbol.
+
+```
+    | AssertionError: assert [{'symbol': '...: 'CNC', ...}] == []
+```
+
+Break: (PR 47, CodeAnt) `_old_series` ignores `unmapped`: the old GTT is cancelled with nothing to replace it.
+
+```
+E   AssertionError: assert 'cancel_gtt' not in ['fetch_orderbook', 'fetch_tradebook', 'fetch_gtt_orders', 'cancel_gtt']
+E   Failing test case: test_series_change_remapped(
+E       successor='unmapped',
+E       shape='resting',
+```
+
+### PBT manage.ex_date_check_serialised
+
+Break: (PR 47, CodeAnt) `_serialised` calls the method without the position's stop lock.
+
+```
+E   AssertionError: assert 2 == 1
+E    +  where 2 = len(['place_gtt', 'place_gtt'])
+E   Failing explicit example: test_ex_date_check_serialised(
+E       shape='cancelled',
+E       other='protect',
 ```

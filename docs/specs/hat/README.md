@@ -188,7 +188,7 @@ to an artefact that exists.
 | HAT-DATA-049 | [02](02-data.md) | 7 | PBT `ingest.renames_from_nse_data` |
 | HAT-DATA-050 | [02](02-data.md) | 7 | PBT `corporate_actions.flag_rule` |
 | HAT-DATA-051 | [02](02-data.md) | 7 | PBT `corporate_actions.lookup_only_flagged` |
-| HAT-DATA-052 | [02](02-data.md) | 5, 7 | PBT `corporate_actions.upsert_idempotent`, DB `reference.corporate_action_unique` |
+| HAT-DATA-052 | [02](02-data.md) | 5, 7, 47 | PBT `corporate_actions.upsert_idempotent`, DB `reference.corporate_action_unique`, PBT `rescale.price_neutral_changes_nothing` |
 | HAT-DATA-053 | [02](02-data.md) | 5 | PBT `corporate_actions.adjusted_view` |
 | HAT-DATA-054 | [02](02-data.md) | 5 | PBT `corporate_actions.adjusted_volume` |
 | HAT-DATA-055 | [02](02-data.md) | 5, 31 | PBT `corporate_actions.factor_parse`, PBT `history_build.archive_unparsed_reported` |
@@ -458,7 +458,7 @@ to an artefact that exists.
 | HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15, 20, 26 | TLA `StopPlacement!StopAfterFill`, TLA `StopPlacement!SharesTracked`, TLA `StopPlacement!RestCancelledOnExit`, TLA `StopPlacement!EmptiedCloses`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`, PBT `manage.entry_remainder_tracked`, PBT `router.fill_sync_cadence` |
 | HAT-EXEC-061 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NoUnprotectedGap`, PBT `manage.swap_leaves_no_gap` |
 | HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
-| HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers` |
+| HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15, 47 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers`, PBT `manage.verify_renews_old_gtt` |
 | HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15, 20 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens`, PBT `manage.verify_covers` |
 | HAT-EXEC-065 | [07](07-execution-and-brokers.md) | 18, 25 | TLA `StopPlacement!LostGttSettled`, TLA `StopPlacement!LostNeverBlocksSale`, PBT `manage.lost_answers_never_freeze`, PBT `manage.a_settled_answer_never_sells_twice`, PBT `manage.the_close_ends_only_settled_answers`, PBT `tags.the_gtt_book_reads_only_resting_stops`, PBT `tags.a_reserved_tag_is_sent_by_one_sender`, PBT `tags.a_lost_gtt_is_found_by_its_tag` |
 | HAT-EXEC-066 | [07](07-execution-and-brokers.md) | 25, 27 | TLA `StopPlacement!RestingSold`, PBT `manage.gtt_resting_marketed` |
@@ -491,7 +491,9 @@ to an artefact that exists.
 | HAT-EXEC-141 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.preserves_position`, PBT `rescale.applied_once`, PBT `rescale.factor_exact`, DB `governance.rescale_moves_stop` |
 | HAT-EXEC-142 | [07](07-execution-and-brokers.md) | 21, 31 | PBT `rescale.pending_is_manage_only` |
 | HAT-EXEC-143 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.broker_stop_follows` |
-| HAT-EXEC-144 | [07](07-execution-and-brokers.md) | 31 | PBT `rescale.unhandled_is_manage_only`, PBT `manage.flatten_capped_at_holdings`, PBT `corporate_actions.factor_parse_unparseable_is_reported` |
+| HAT-EXEC-144 | [07](07-execution-and-brokers.md) | 31 | PBT `rescale.unhandled_is_manage_only`, PBT `manage.flatten_capped_at_holdings`, PBT `corporate_actions.factor_parse_unparseable_is_reported`, PBT `rescale.price_neutral_changes_nothing` |
+| HAT-EXEC-145 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.ex_date_gtt_replaced`, PBT `ops.ex_date_job_behind_flag`, PBT `manage.ex_date_check_serialised` |
+| HAT-EXEC-146 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.series_change_remapped` |
 | HAT-TG-005 | [08](08-telegram.md) | 16 | PBT `telegram.unknown_chat_has_no_effect` |
 | HAT-TG-010 | [08](08-telegram.md) | 16 | CONF `telegram.no_webhook_no_listener` |
 | HAT-TG-011 | [08](08-telegram.md) | 16, 32 | PBT `telegram.offset_commits_with_update` |

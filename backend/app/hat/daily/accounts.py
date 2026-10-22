@@ -394,13 +394,23 @@ def _left_triggered(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
 
 
 def account_jobs(
-    desks: Desks, session_factory: SessionFactory, views: ViewSource, clock: Clock
+    desks: Desks,
+    session_factory: SessionFactory,
+    views: ViewSource,
+    clock: Clock,
+    *,
+    exdate_check: bool = False,
 ) -> tuple[ScheduledJob, ...]:
-    """Each account's `exits.close`, `gtt.swap`, `gtt.verify` and `trade.end_session` jobs; the
-    names carry the account id, so two accounts never share a `hat_job_run` row."""
+    """Each account's `exits.close`, `gtt.swap`, `gtt.verify` and `trade.end_session` jobs, and
+    `gtt.ex_date` with `exdate_check` (PR 47); the names carry the account id, so two accounts
+    never share a `hat_job_run` row."""
     jobs: list[ScheduledJob] = []
     for account_id, manager in desks.managers():
-        jobs.extend(trade_jobs(manager, session_factory, account_id, views, clock.now))
+        jobs.extend(
+            trade_jobs(
+                manager, session_factory, account_id, views, clock.now, exdate_check=exdate_check
+            )
+        )
 
         def end(_day: date, m: TradeManager = manager, a: uuid.UUID = account_id) -> JobResult:
             with session_factory() as session:

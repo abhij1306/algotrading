@@ -96,7 +96,7 @@ measured".
 | Approval card (confirm) | On trigger | Same + catalyst headline/PDF; Take / Skip buttons (size, stop and price are fixed); expiry time |
 | Fill / exit / stop moved | On event | Price, qty, R so far |
 | Rejection digest | 15:35 | Signals rejected by risk, with reasons |
-| Health alert | On failure or change | Data gate, feed stale, broker session, order rejected; broker capabilities changed in either direction (HAT-BRK-092); URGENT when a position spans a corporate action the rescale cannot handle (HAT-EXEC-144) |
+| Health alert | On failure or change | Data gate, feed stale, broker session, order rejected; broker capabilities changed in either direction (HAT-BRK-092); URGENT when a position spans a corporate action the rescale cannot handle (HAT-EXEC-144) or its instrument changed series (`position.series_changed`, HAT-EXEC-146) |
 | Daily P&L | 15:40 | Per bot: open risk, realised R, equity vs peak (latest `hat_daily_bot_snapshot`); last night's GTT check; close gaps |
 | Weekly veto digest | Weekly | R the user's skips avoided and R they missed (skips tracked as shadow trades) |
 

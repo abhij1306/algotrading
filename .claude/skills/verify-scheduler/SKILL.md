@@ -60,6 +60,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `PBT ops.stop_names_abandoned_jobs` `stop` waits up to its grace for running bodies and returns (and logs) the name of each one still running. Harm: a close or swap cut off by a shutdown leaves no trace of which job was abandoned.
 - `PBT ops.stop_after_failed_start` After a start that failed part way, `stop` runs each step on what exists and stops the feed exactly once with no tick listener left, even when a step raises. Harm: a failed start leaves the provider socket and login hooks behind.
 - `PBT ops.daily_tick_matches_reference` `DailyData.tick` reads only the two closes `reference_close` can pick (each date's from its newest ingest run) and gives the tick `tick_for_date` gives over every close of the window. Harm: a stop or limit off the exchange's tick grid is rejected.
+- `PBT ops.ex_date_job_behind_flag` (PR 47, HAT-EXEC-145) For every value of `HAT_EXDATE_GTT_CHECK`, `gtt.ex_date:<account>` (08:40, retried every minute) is registered exactly when it is a true value, and every other job of the account is unchanged. Harm: the check runs on an unconfirmed broker behaviour, or the switch turns it on without a job.
 
 ## Run
 
@@ -146,7 +147,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `400ea210d58b5b13ed3d38c3f487d83bd364e03000f0da328b5808fc6e69de85`
+Covered digest: `71074b6b4050c60ac36223a1e292494d777cad92cc8e33f5c4541241b1f6e094`
 
 ## Scope changes
 
@@ -181,6 +182,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33 (review) added `ScheduledJob.carry`: a job with no `after` and no window marked `carry` (`snapshot.bots`) carries past midnight as a chained one does. `ops.chain_carries_past_midnight` draws the kind (chained, carry, plain) and checks that a plain unchained job does not carry. This makes the `WF_vars(Snapshot)` of `NightlyPipeline` hold for a restart before 08:30; a process down until after 08:30 still misses the night.
 - PR 33 updated `test_conf_verification.py`: `MERGED_PRS` now includes 33; `KNOWN_GAPS` unchanged.
 - PR 44 updated `test_conf_verification.py`: `MERGED_PRS` now includes 44; `KNOWN_GAPS` unchanged.
+- PR 47: `trade_jobs` registers `gtt.ex_date` only with `exdate_check` (`HatSettings.exdate_gtt_check`, passed through `daily_jobs` and `account_jobs`); 10-ops' job table holds the default registration, so the job is a note below it (CONF `ops.job_registry` unchanged). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -941,4 +943,18 @@ Break: each date's close from its oldest ingest run (`ORDER BY ingest_run_id DES
 ```
 E   AssertionError: assert Decimal('0.01') == Decimal('0.05')
 E    +  where Decimal('0.01') = tick(UUID('00000000-0000-0000-0000-000000000001'))
+```
+
+### PBT ops.ex_date_job_behind_flag
+
+Break: (PR 47) in `backend/app/hat/settings.py`, `exdate_gtt_check` ignores `HAT_EXDATE_GTT_CHECK`.
+
+```
+E   AssertionError: assert False == (('1' is not None and '1' in frozenset({'1', 'on', 'true', 'yes'})))
+```
+
+Break: (PR 47) in `backend/app/hat/ops/trade_jobs.py`, `gtt.ex_date` is registered whatever `exdate_check` says.
+
+```
+======================= 1 failed, 20 deselected in 2.19s =======================
 ```

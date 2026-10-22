@@ -27,6 +27,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT rescale.unhandled_is_manage_only` For every action the rescale cannot handle (`other`, or a split or bonus with factor 1 or above) and ex-date around the entry day, with or without a split beside it, over repeated `ca.rescale` runs (`Nightly.rescale`): the action is never applied, a position it spans gets no exit view and is manage-only, its instrument awaits a rescale, and one `corporate_action.unhandled` names the (position, action); the split beside it is applied once. Harm: a consolidation keeps ten times the shares on an old-scale stop, or a rights issue's old stop sells at the open.
 - `PBT rescale.broker_stop_follows` After a rescale, the next sync moves every live broker stop (GTT or day stop) down to the rescaled trigger first and then to the rescaled quantity, never larger than the old size at the old trigger; while the broker refuses the larger size the stop rests at the new trigger for the old size; with no rescale nothing moves. Harm: the old GTT fires on the ex-date open.
 - `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup (or one with an unreadable row) once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
+- `PBT rescale.price_neutral_changes_nothing` (PR 47) For every set of positions and actions, adding price-neutral rows (`dividend`, `notice`, factor 1) on any ex-date leaves the manage-only set, the pending set, the rescale, the `corporate_action.unhandled` flags and the adjusted view's factors as they were without them. Harm: every dividend of a held stock makes the position manage-only with an URGENT alert, or enters the adjusted view.
 - `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
 - `TLA StopPlacement!StopAfterFill` After a real entry fill, its broker stop is placed (or resized) before any other HAT action on the position. Harm: a raised stop, a sale or a swap runs on a position the broker does not yet protect.
 - `TLA StopPlacement!AlwaysProtected` A held real position always has a working broker stop, except while a fill's stop work has not run yet, after a failure that raised an alert, or while a GTT that triggered without a fill is still unseen. Harm: a gap-down or a machine outage hits an unprotected position and nobody is told.
@@ -119,7 +120,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `17fe91365b321d5775735f528433534f90f1afddf686c27d76a5be43c2e2ab6a`
+Covered digest: `2a9b841d67a151e85b4e21a679dcc575430f75a09805038648bf7b3f37ad8d8e`
 
 ## Scope changes
 
@@ -138,6 +139,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 54 (plan audit G28) added `min_pct` to `below_final_contraction_low` (default 0, off) and the skip `stop_too_narrow`; the backtest's re-check at the fill price (`check_width`) applies it too. `final_contraction_low` draws a low near a 100.00 entry as well, so `min_pct` decides often. The scan's overnight plan at the pivot leaves `min_pct` to the entry (`plan_stop_at_pivot`), since a higher fill only widens a contraction stop. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 - PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
+- PR 47 (research G01, HAT-DATA-052): price-neutral actions (`dividend`, `notice`) are stored for their ex-dates; `rescale.unhandled_actions` excludes them (`PRICE_NEUTRAL_TYPES`). `StopDesk.verify` renews a GTT 300 days old (`_renewed`, `manage.verify_renews_old_gtt`), and `check_gtt` backs the 08:40 ex-date check; their properties are in `verify-execution` (`test_manage.py`). `StopPlacement` is unchanged: a renewal is a cancel and a place of the same stop while the market is shut, and a broker cancel is the model's existing GTT loss. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -727,3 +729,18 @@ Back to state 16: <Protect ...>
 
 Break: `Spec` without `WF_vars(SeeResting)` (the sync never looks) also violates it.
 
+### PBT rescale.price_neutral_changes_nothing
+
+Break: (PR 47) in `backend/app/hat/engine/rescale.py`, `unhandled_actions` no longer excludes `PRICE_NEUTRAL_TYPES` (a dividend is an unhandled action).
+
+```
+E   AssertionError: assert (500, [], Tru...vidend'], ...) == (500, [], Fal...alse, [], ...)
+E     At index 2 diff: True != False
+```
+
+Break: (PR 47) in `backend/app/hat/data/corporate_actions.py`, `stored_factors` keeps the price-neutral rows.
+
+```
+E   AssertionError: assert (500, [], Fal...alse, [], ...) == (500, [], Fal...alse, [], ...)
+E     At index 6 diff: [(datetime.date(2026, 10, 22), Decimal('1.0000000000'))] != []
+```

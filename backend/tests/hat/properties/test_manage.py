@@ -4,9 +4,12 @@ adapter over `FakeBroker`. Nothing reaches a real broker."""
 
 from __future__ import annotations
 
+import json
+import threading
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -15,12 +18,17 @@ from hat.fakes.broker import accepted, rejected, unconfirmed
 from hat_engine_support import TRADE_DAY, exit_stack
 from hat_exec_support import SYMBOLS
 from hat_manage_support import TICK, ManageRig, at
+from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hat.clock import FixedClock
+from app.hat.daily.live import ExitViews
+from app.hat.data.corporate_actions import TYPE_DIVIDEND, TYPE_NOTICE, TYPE_SPLIT
+from app.hat.data.instruments import fyers_instruments
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
 from app.hat.execution.fills import ALERT_FILL_EXCESS, NOT_MARKETED, RESTING
@@ -32,15 +40,27 @@ from app.hat.execution.protect import (
     ALERT_GTT_UNVERIFIED,
     ALERT_STOP_NOT_MOVED,
     ALERT_STOP_NOT_PLACED,
+    CODE_SERIES_UNMAPPED,
     EVENT_GTT_TRIGGERED,
     LIVE,
     STOP_DAY,
     STOP_GTT,
     broker_trigger,
 )
+from app.hat.execution.series import ALERT_SERIES_CHANGED
 from app.hat.execution.tags import encode_tag
-from app.hat.models import HatCorporateAction, HatEvent, HatOrder, HatPosition, HatSignal
+from app.hat.models import (
+    HatBrokerSymbol,
+    HatCorporateAction,
+    HatEvent,
+    HatInstrument,
+    HatOrder,
+    HatPosition,
+    HatSignal,
+)
 from app.hat.risk import controls
+from app.hat.telegram.render import URGENT_ALERTS
+from app.hat.time import IST, trade_date_of
 
 D = Decimal
 WRITES = ("place_order", "modify_order", "cancel_order", "place_gtt", "modify_gtt", "cancel_gtt")
@@ -1345,3 +1365,391 @@ def test_flatten_capped_at_holdings(
             assert sold == min(total, held)
         else:
             assert sold == total
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-EXEC-145, -146, -063 (PR 47): GTTs around an ex-date, a series change, an old GTT
+# ---------------------------------------------------------------------------------------
+
+# How the GTT book shows a GTT the broker cancelled: ASSUMED until the O2(b) live check.
+ASSUMED_SHAPES = json.loads(
+    (Path(__file__).parents[1] / "fixtures" / "fyers_gtt_ex_date_assumed.json").read_text("utf-8")
+)["shapes"]
+DAYS = [d for d in CALENDAR.trading_days() if d > TRADE_DAY][:3]
+CHECK_DAY = DAYS[0]  # the trading day after the entry
+
+
+def _on(day: date, hour: int, minute: int) -> datetime:
+    return datetime.combine(day, time(hour, minute), tzinfo=IST)
+
+
+def _book_shape(rig: ManageRig, row: HatOrder, shape: str) -> None:
+    """The broker's GTT book after the night: the GTT resting, or one assumed shape of a GTT the
+    broker cancelled (`fyers_gtt_ex_date_assumed.json`)."""
+    if shape == "resting":
+        return
+    patch_row = ASSUMED_SHAPES[shape]
+    if patch_row is None:
+        rig.fake.gtts = [g for g in rig.fake.gtts if g["id"] != row.broker_order_id]
+        return
+    for gtt in rig.fake.gtts:
+        if gtt["id"] == row.broker_order_id:
+            gtt.update(patch_row)
+
+
+def _read_book(rig: ManageRig, start: int) -> bool:
+    return any(name == "fetch_gtt_orders" for name, _ in rig.fake.calls[start:])
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    ex=st.sampled_from([None, -1, 0, 1, 2]),  # the action's ex-date, in trading days from today
+    kind=st.sampled_from([TYPE_DIVIDEND, TYPE_NOTICE, TYPE_SPLIT]),
+    shape=st.sampled_from(["resting", "cancelled", "dropped", "unknown_status"]),
+    refused=st.booleans(),  # the broker refuses a GTT before the open
+)
+@example(ex=0, kind=TYPE_DIVIDEND, shape="cancelled", refused=False)
+@example(ex=1, kind=TYPE_DIVIDEND, shape="dropped", refused=True)
+@example(ex=0, kind=TYPE_SPLIT, shape="cancelled", refused=False)
+@example(ex=2, kind=TYPE_DIVIDEND, shape="cancelled", refused=False)
+def test_ex_date_gtt_replaced(ex: int | None, kind: str, shape: str, refused: bool) -> None:
+    """HAT-EXEC-145 (PR 47, research G01): at 08:40 every open real position with a stored action
+    (a dividend's too) of ex-date today or the next session has its GTT checked against the
+    broker's GTT book. One the book no longer holds (cancelled, or gone) is ended `cancelled`,
+    alerted `gtt.missing` and placed again at the current stop; a GTT the broker refuses before
+    the open is alerted (`stop.not_placed`), does not fail the run, and the fill sync places
+    the intraday stop from 09:15. A GTT still resting is left alone; a book that cannot be read
+    is alerted `gtt.unverified`, nothing is placed and the run fails (tried again); a position
+    still awaiting a split's rescale gets nothing until it is rescaled; a position with no
+    action that near is never looked at. Harm: Fyers cancels the GTT the night before a
+    dividend and the position opens the ex-date with no stop at the broker."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        [old] = rig.stops(position.id)
+        if ex is not None:
+            ex_day = TRADE_DAY if ex == -1 else DAYS[ex]
+            factor = D("0.5") if kind == TYPE_SPLIT else D(1)
+            session.add(
+                HatCorporateAction(
+                    instrument_id=position.instrument_id,
+                    ex_date=ex_day,
+                    action_type=kind,
+                    adjustment_factor=factor,
+                    raw_text="fixture",
+                    source="mcp",
+                )
+            )
+            session.commit()
+        _book_shape(rig, old, shape)
+        if refused:
+            rig.fake.script("place_gtt", rejected("GTT refused"), rejected("GTT refused"))
+        start, alerts = len(rig.fake.calls), len(rig.codes())
+        report = rig.manager.check_ex_date_gtts(session, rig.account_id, _on(CHECK_DAY, 8, 40))
+        new_alerts = rig.codes()[alerts:]
+        writes = _writes_since(rig, start)
+        near = ex in (0, 1)
+        if not near:
+            assert not _read_book(rig, start)
+            assert (writes, report.done, report.failed, new_alerts) == ([], 0, [], [])
+            return
+        session.refresh(old)
+        if shape == "resting":
+            assert (writes, report.done, report.failed) == ([], 1, [])
+            assert old.status in LIVE
+            return
+        if shape == "unknown_status":  # the book cannot be read: nothing placed, tried again
+            assert writes == []
+            assert ALERT_GTT_UNVERIFIED in new_alerts
+            assert report.failed == [position.id]
+            assert old.status in LIVE
+            return
+        if kind == TYPE_SPLIT and ex == 0:  # awaits its rescale: nothing at the old scale
+            assert (writes, report.failed) == ([], [position.id])
+            return
+        assert old.status == "cancelled"
+        assert ALERT_GTT_MISSING in new_alerts
+        assert report.failed == []
+        live = rig.stops(position.id, *LIVE)
+        if not refused:
+            [gtt] = live
+            assert gtt.purpose == STOP_GTT
+            assert gtt.id != old.id
+            assert D(gtt.trigger_price) == broker_trigger(D(position.current_stop), TICK)
+            assert gtt.qty == position.qty_open
+            assert report.done == 1
+            return
+        assert live == []
+        assert ALERT_STOP_NOT_PLACED in new_alerts
+        rig.sync(_on(CHECK_DAY, 9, 16))  # the session is open: the fill sync protects it
+        [day_stop] = rig.stops(position.id, *LIVE)
+        assert day_stop.purpose == STOP_DAY
+        assert D(day_stop.trigger_price) == broker_trigger(D(position.current_stop), TICK)
+
+
+@settings(max_examples=12, deadline=None)
+@given(
+    shape=st.sampled_from(["cancelled", "dropped"]),
+    other=st.sampled_from(["protect", "verify"]),  # the fill sync's step, or the nightly verify
+)
+@example(shape="cancelled", other="protect")
+def test_ex_date_check_serialised(shape: str, other: str) -> None:
+    """HAT-EXEC-145 (PR 47, CodeAnt): the 08:40 check runs on the job's thread while the fill
+    sync runs on its own over the same desk. When the other path reaches the position between
+    the check ending the broker-cancelled GTT and placing its new one, it waits on the
+    position's stop lock and then finds the new GTT: exactly one GTT is placed. Harm: two GTT
+    sales rest over the same shares, and the second trigger sells shares HAT no longer holds."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        [old] = rig.stops(position.id)
+        session.add(
+            HatCorporateAction(
+                instrument_id=position.instrument_id,
+                ex_date=CHECK_DAY,
+                action_type=TYPE_DIVIDEND,
+                adjustment_factor=D(1),
+                raw_text="fixture",
+                source="mcp",
+            )
+        )
+        session.commit()
+        _book_shape(rig, old, shape)
+        now = _on(CHECK_DAY, 8, 40)
+        desk = rig.desk
+        tick_for = desk._tick_for  # noqa: SLF001
+        threads: list[threading.Thread] = []
+
+        def other_path() -> None:
+            with Session(session.get_bind()) as second:
+                if other == "protect":
+                    desk.protect(second, position.id, now)
+                else:
+                    desk.verify(second, position.id, now)
+
+        def tick_then_race(s: Session, p: HatPosition) -> Decimal | None:
+            # the check's first tick read comes after the old GTT was ended, before the new one
+            # is reserved: the other path starts there and gets a moment to run
+            if not threads:
+                threads.append(threading.Thread(target=other_path))
+                threads[0].start()
+                threads[0].join(timeout=0.5)
+            return tick_for(s, p)
+
+        desk._tick_for = tick_then_race  # type: ignore[method-assign]  # noqa: SLF001
+        start = len(rig.fake.calls)
+        rig.manager.check_ex_date_gtts(session, rig.account_id, now)
+        assert threads, "the check never placed a stop"
+        threads[0].join(timeout=10)
+        assert not threads[0].is_alive()
+        placed = [name for name, _ in rig.fake.calls[start:] if name == "place_gtt"]
+        assert len(placed) == 1
+        session.expire_all()
+        assert len([row for row in rig.stops(position.id, *LIVE) if row.purpose == STOP_GTT]) == 1
+
+
+class _Book:
+    """Exit levels for any instrument: a view is always there to give."""
+
+    def day(self, _day: date) -> _Book:
+        return self
+
+    def exit_view(self, *_args: object) -> object:
+        return object()
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    successor=st.sampled_from(["none", "mapped", "unmapped", "other_isin"]),
+    shape=st.sampled_from(["resting", "cancelled", "dropped"]),
+    renamed=st.booleans(),  # the new series also took a new NSE symbol
+    cancel_ok=st.booleans(),
+    morning=st.booleans(),  # the 08:40 check runs (its switch on), else the nightly verify alone
+)
+@example(successor="mapped", shape="cancelled", renamed=False, cancel_ok=True, morning=True)
+@example(successor="mapped", shape="cancelled", renamed=True, cancel_ok=True, morning=True)
+@example(successor="other_isin", shape="cancelled", renamed=False, cancel_ok=True, morning=True)
+@example(successor="mapped", shape="resting", renamed=False, cancel_ok=True, morning=True)
+@example(successor="mapped", shape="resting", renamed=False, cancel_ok=False, morning=True)
+@example(successor="mapped", shape="resting", renamed=False, cancel_ok=True, morning=False)
+def test_series_change_remapped(
+    successor: str, shape: str, renamed: bool, cancel_ok: bool, morning: bool
+) -> None:
+    """HAT-EXEC-146 (PR 47, research G17): when the instrument of an open real position leaves
+    the listing and the same ISIN trades on under another series (EQ to BE), the position is
+    manage-only (no exit view), alerted URGENT `position.series_changed` naming the new series
+    and its Fyers symbol (or `unmapped`) by the morning check and every nightly verify, and its
+    GTT is checked against the book: one the broker cancelled is placed again under the
+    successor's Fyers symbol, under its NSE symbol when it took a new one; one still listed
+    under the old symbol (which takes no order) is cancelled first, and a refused cancel is
+    alerted `gtt.unverified` with nothing placed and the run failed. The nightly verify does the
+    same for a GTT still under the old symbol (a refused cancel leaves it refreshed). A delisted
+    row with
+    no such successor, or none delisted, is no
+    series change. Harm: the old `-EQ` GTT is gone, every order under it is refused, and exit
+    rules run on prices that stopped."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        rig.broker._instruments = lambda: fyers_instruments(session)  # noqa: SLF001
+        old_instrument = session.get(HatInstrument, rig.world.instruments[0])
+        assert old_instrument is not None
+        session.add(
+            HatBrokerSymbol(
+                instrument_id=old_instrument.id, broker="fyers", broker_symbol=SYMBOLS["SBIN"]
+            )
+        )
+        session.commit()
+        position = _opened(rig, at(16, 0))
+        [old] = rig.stops(position.id)
+        be_symbol = "NSE:SBINBE-BE" if renamed else "NSE:SBIN-BE"
+        # the old GTT went out two days before the refresh that delisted the old row
+        old.placed_at = rig.wall() - timedelta(days=2)
+        if successor != "none":
+            old_instrument.active = False
+            old_instrument.delisted_on = trade_date_of(rig.wall()) - timedelta(days=1)
+            moved = HatInstrument(
+                market_id=old_instrument.market_id,
+                isin="INE999999999" if successor == "other_isin" else old_instrument.isin,
+                series="BE",
+                symbol="SBINBE" if renamed else "SBIN",
+                name="SBIN",
+                face_value=D(1),
+                active=True,
+            )
+            session.add(moved)
+            session.flush()
+            if successor == "mapped":
+                session.add(
+                    HatBrokerSymbol(instrument_id=moved.id, broker="fyers", broker_symbol=be_symbol)
+                )
+            session.commit()
+        _book_shape(rig, old, shape)
+        if not cancel_ok:
+            rig.fake.script("cancel_gtt", NOT_FOUND)
+        changed = successor in ("mapped", "unmapped")
+        assert ALERT_SERIES_CHANGED in URGENT_ALERTS
+        if morning:
+            _check_series_morning(rig, position, old, successor, shape, cancel_ok, be_symbol)
+        views = ExitViews(
+            _Book(),  # type: ignore[arg-type]
+            lambda _iid: D(100),
+            FixedClock(_on(CHECK_DAY, 9, 16)),
+            lambda: CALENDAR,
+        )
+        session.refresh(position)
+        assert (views(session, position) is None) == changed
+        start, alerts = len(rig.fake.calls), len(rig.notifier.alerts)
+        rig.manager.verify_stops(session, rig.account_id, _on(CHECK_DAY, 23, 0))
+        nightly = [c for c, _, _ in rig.notifier.alerts[alerts:] if c == ALERT_SERIES_CHANGED]
+        assert len(nightly) == (1 if changed else 0)
+        if morning and successor == "mapped" and (shape != "resting" or cancel_ok):
+            # the GTT the morning placed under the new symbol is left resting
+            assert "place_gtt" not in [name for name, _ in rig.fake.calls[start:]]
+        if successor == "unmapped":
+            assert "place_gtt" not in [name for name, _ in rig.fake.calls[start:]]
+        elif not morning and changed and shape == "resting":
+            placed = [args for name, args in rig.fake.calls[start:] if name == "place_gtt"]
+            names = [name for name, _ in rig.fake.calls[start:]]
+            if not cancel_ok:
+                assert placed == []  # refreshed in place; the next night tries again
+            else:
+                assert names.index("cancel_gtt") < names.index("place_gtt")
+                [gtt] = placed
+                if successor == "mapped":
+                    assert gtt["symbol"] == be_symbol  # type: ignore[index]
+
+
+def _alert_codes(rig: ManageRig, since: int) -> list[tuple[str, object]]:
+    """(alert, its payload's code) of every alert after the first `since`."""
+    return [(c, p.get("code")) for c, _, p in rig.notifier.alerts[since:]]
+
+
+def _check_series_morning(
+    rig: ManageRig,
+    position: HatPosition,
+    old: HatOrder,
+    successor: str,
+    shape: str,
+    cancel_ok: bool,
+    be_symbol: str,
+) -> None:
+    """The 08:40 check of `test_series_change_remapped`."""
+    session = rig.session
+    changed = successor in ("mapped", "unmapped")
+    start, alerts = len(rig.fake.calls), len(rig.notifier.alerts)
+    report = rig.manager.check_ex_date_gtts(session, rig.account_id, _on(CHECK_DAY, 8, 40))
+    flagged = [p for c, _, p in rig.notifier.alerts[alerts:] if c == ALERT_SERIES_CHANGED]
+    if not changed:
+        assert flagged == []
+        assert not _read_book(rig, start)
+        assert _writes_since(rig, start) == []
+    else:
+        [payload] = flagged
+        assert (payload["from"], payload["to"]) == ("EQ", "BE")
+        assert payload["broker_symbol"] == (be_symbol if successor == "mapped" else "unmapped")
+        placed = [args for name, args in rig.fake.calls[start:] if name == "place_gtt"]
+        names = [name for name, _ in rig.fake.calls[start:]]
+        if successor == "unmapped":
+            # no Fyers symbol for BE: nothing goes out under the old `-EQ` one, and a GTT still
+            # listed is left for the owner
+            assert placed == []
+            assert "cancel_gtt" not in names
+            if shape != "resting":
+                assert (ALERT_STOP_NOT_PLACED, CODE_SERIES_UNMAPPED) in _alert_codes(rig, alerts)
+        elif shape == "resting" and not cancel_ok:
+            assert placed == []
+            assert ALERT_GTT_UNVERIFIED in rig.codes()
+            assert report.failed == [position.id]
+        else:
+            if shape == "resting":
+                assert names.index("cancel_gtt") < names.index("place_gtt")
+            session.refresh(old)
+            assert old.status == "cancelled"
+            [gtt] = placed
+            if successor == "mapped":
+                assert gtt["symbol"] == be_symbol  # type: ignore[index]
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    age=st.integers(0, 400),  # days since the GTT was placed
+    cancel_ok=st.booleans(),
+    raised=st.decimals(min_value=0, max_value=2, places=2),
+)
+@example(age=300, cancel_ok=True, raised=D(0))
+@example(age=299, cancel_ok=True, raised=D(0))
+@example(age=365, cancel_ok=False, raised=D("0.50"))
+def test_verify_renews_old_gtt(age: int, cancel_ok: bool, raised: Decimal) -> None:
+    """HAT-EXEC-063 (PR 47, research G24): the nightly verify cancels a GTT placed 300 days ago
+    or more and places it again at the current stop (cancel first: the market is shut, and two
+    GTTs must never rest together), with no `gtt.missing` alarm; a younger GTT, or one whose
+    cancel the broker refuses, is refreshed in place as before and tried again the next night.
+    Harm: Fyers expires a GTT a year after it was placed and the position is left without a
+    stop (a modify may not reset that clock)."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        [old] = rig.stops(position.id)
+        old.placed_at = rig.wall() - timedelta(days=age)
+        position.current_stop = D(position.current_stop) + raised
+        session.commit()
+        resting = D(old.trigger_price)
+        if not cancel_ok:
+            rig.fake.script("cancel_gtt", NOT_FOUND)
+        start, alerts = len(rig.fake.calls), len(rig.codes())
+        rig.manager.verify_stops(session, rig.account_id, _on(CHECK_DAY, 23, 0))
+        goal = broker_trigger(D(position.current_stop), TICK)
+        [gtt] = rig.stops(position.id)
+        names = [name for name, _ in rig.fake.calls[start:]]
+        assert ALERT_GTT_MISSING not in rig.codes()[alerts:]
+        if age >= 300 and cancel_ok:
+            session.refresh(old)
+            assert old.status == "cancelled"
+            assert gtt.id != old.id
+            assert D(gtt.trigger_price) == goal
+            assert names.index("cancel_gtt") < names.index("place_gtt")
+            assert "modify_gtt" not in names
+        else:
+            assert gtt.id == old.id
+            assert D(gtt.trigger_price) == max(goal, resting)
+            assert "place_gtt" not in names

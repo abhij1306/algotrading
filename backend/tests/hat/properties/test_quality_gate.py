@@ -125,15 +125,16 @@ def test_ohlc_zero_tolerance(bad: set[int], n: int) -> None:
         assert (_rows(world)["ohlc"] == "FAIL") == bool(bad)
 
 
-def _action(world: World, symbol: str, day: date) -> None:
+def _action(world: World, symbol: str, day: date, kind: str = "split") -> None:
+    """A stored action of the instrument; a `dividend` changes no price (factor 1)."""
     with world.factory() as session:
         session.add(
             HatCorporateAction(
                 instrument_id=world.ids[f"{symbol}:EQ"],
                 ex_date=day,
-                action_type="split",
-                adjustment_factor=Decimal("0.5"),
-                raw_text="split",
+                action_type=kind,
+                adjustment_factor=Decimal(1) if kind == "dividend" else Decimal("0.5"),
+                raw_text=kind,
                 source="nse_mcp",
             )
         )
@@ -201,23 +202,28 @@ def test_big_moves_explained(
     movers=st.sets(st.integers(0, 4)),
     explained=st.sets(st.integers(0, 4)),
     excluded=st.sets(st.integers(0, 6)),
+    dividends=st.sets(st.integers(0, 4)),
 )
-@example(size=100, movers={0}, explained=set(), excluded=set())
-@example(size=100, movers={0, 1}, explained=set(), excluded=set())
-@example(size=200, movers={0, 1}, explained=set(), excluded={5})
+@example(size=100, movers={0}, explained=set(), excluded=set(), dividends=set())
+@example(size=100, movers={0, 1}, explained=set(), excluded=set(), dividends=set())
+@example(size=200, movers={0, 1}, explained=set(), excluded={5}, dividends=set())
+@example(size=100, movers={0, 1}, explained=set(), excluded=set(), dividends={0, 1})
 def test_big_moves_end_to_end(
-    size: int, movers: set[int], explained: set[int], excluded: set[int]
+    size: int, movers: set[int], explained: set[int], excluded: set[int], dividends: set[int]
 ) -> None:
     """The same rule over stored bars and corporate actions: for every universe of 100 to 250
-    instruments, the gate's big_moves check fails iff the movers with no corporate action on the
-    trade date that are not excluded are more than 1% of it, and the day's scans exclude the
-    given instruments plus, on a pass, those movers."""
+    instruments, the gate's big_moves check fails iff the movers with no price-changing
+    corporate action on the trade date that are not excluded are more than 1% of it (a dividend
+    on the day explains nothing, PR 47), and the day's scans exclude the given instruments plus,
+    on a pass, those movers."""
     names = [s for s, _, _ in symbols_of(size)]
     with tempfile.TemporaryDirectory() as tmp:
         world = make_world(tmp, symbols_of(size))
         _night(world, size, movers)
         for i in explained:
             _action(world, names[i], TRADE_DAY)
+        for i in dividends:
+            _action(world, names[i], TRADE_DAY, "dividend")
         ids = [str(world.ids[f"{names[i]}:EQ"]) for i in range(size)]
         _ingest(world)
         _gate(world, tuple(ids[i] for i in sorted(excluded)))
@@ -464,18 +470,21 @@ def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
     quarantined=st.dictionaries(st.integers(0, 3), st.integers(1, 3), max_size=4),
     found=st.sets(st.integers(0, 4)),
     unreadable=st.sets(st.integers(0, 4)),
+    dividend=st.sets(st.integers(0, 4)),
 )
-@example(quarantined={0: 2}, found={0}, unreadable=set())
-@example(quarantined={0: 2, 1: 2}, found={1}, unreadable={0})
+@example(quarantined={0: 2}, found={0}, unreadable=set(), dividend=set())
+@example(quarantined={0: 2, 1: 2}, found={1}, unreadable={0}, dividend=set())
+@example(quarantined={0: 2}, found=set(), unreadable=set(), dividend={0})
 def test_quarantine_lookup(
-    quarantined: dict[int, int], found: set[int], unreadable: set[int]
+    quarantined: dict[int, int], found: set[int], unreadable: set[int], dividend: set[int]
 ) -> None:
     """HAT-DATA-062 (PR 33): each night `ca.adjust` asks the MCP again for the actions of every
     open quarantine's instrument on its `since` date, and only those; an action it stores
     releases that quarantine at the next gate read, while an unreadable answer or none leaves
-    it standing, and nothing is alerted for it (the quarantine was alerted already). Harm: a
+    it standing, and nothing is alerted for it (the quarantine was alerted already). A
+    price-neutral action (a dividend of factor 1, stored since PR 47) releases nothing. Harm: a
     split whose lookup failed on its day keeps the stock out of the scans until someone
-    notices."""
+    notices, or a dividend on the day of an unexplained price jump lets bad data back in."""
     names = [s for s, _, _ in symbols_of(5)]
     with tempfile.TemporaryDirectory() as tmp:
         world = make_world(tmp, symbols_of(5))
@@ -489,6 +498,15 @@ def test_quarantine_lookup(
             if i in unreadable:  # no factor: unreadable, so the lookup counts as failed
                 world.nse.actions[names[i]] = [
                     {"exDate": day, "actionType": "BONUS", "purpose": "Bonus"}
+                ]
+            elif i in dividend and i not in found:
+                world.nse.actions[names[i]] = [
+                    {
+                        "exDate": day,
+                        "actionType": "DIVIDEND",
+                        "purpose": "Dividend - Rs 2 Per Share",
+                        "adjustmentFactor": 1.0,
+                    }
                 ]
             elif i in found:
                 world.nse.actions[names[i]] = [
