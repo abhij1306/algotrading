@@ -25,7 +25,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..data.store import DataStore, atomic_replace
-from ..engine.backtest import BacktestError, BacktestResult, MarketData, RunSpec, run_backtest
+from ..engine.backtest import (
+    BacktestError,
+    BacktestResult,
+    MarketData,
+    RunSpec,
+    run_backtest,
+    with_cooldown,
+)
 from ..engine.backtest import trades_parquet as encode_trades
 from ..engine.portfolio.lifecycle import DEFAULT_DISCOUNT, BacktestFacts, discounted_benchmark
 from ..engine.strategy.config import parse_config
@@ -241,11 +248,13 @@ def backtest_bot(
     slippage_bps: Decimal = Decimal(0),
     cost_model: str = DEFAULT_COST_MODEL,
     version_id: uuid.UUID | None = None,
+    cooldown_sessions: int | None = None,
 ) -> HatBacktestRun:
     """Backtest a sleeve's strategy version (its live one unless `version_id` names another of
     the same strategy) on the sleeve's universe under the risk policy in force now, over the
-    Parquet store. The command line's body. Refusals before the run is recorded raise
-    `RunError` and record nothing; a refusal of the engine is a failed trial."""
+    Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58).
+    The command line's body. Refusals before the run is recorded raise `RunError` and record
+    nothing; a refusal of the engine is a failed trial."""
     bot = session.get(HatBot, bot_id)
     if bot is None:
         raise RunError("backtest_unknown_bot")
@@ -258,6 +267,11 @@ def backtest_bot(
     policy = effective_version(load_versions(session, bot.user_id), utc_now())
     if policy is None:
         raise RunError("backtest_no_policy")
+    if cooldown_sessions is not None:
+        try:
+            policy = with_cooldown(policy, cooldown_sessions)
+        except BacktestError as exc:
+            raise RunError(exc.code) from None
     config = parse_config(version.config)
     try:
         fills = BacktestFills(load_cost_model(cost_model), check_slippage(slippage_bps))
@@ -292,12 +306,22 @@ def _universe_of(session: Session, bot: HatBot) -> uuid.UUID | None:
     return None if version is None else version.universe_id
 
 
+def _cooldown_in_force(session: Session, bot: HatBot) -> int:
+    """The `cooldown_sessions` of the owner's policy in force now (0 without one)."""
+    policy = effective_version(load_versions(session, bot.user_id), utc_now())
+    return 0 if policy is None else policy.policy.cooldown_sessions
+
+
 def _latest_run(session: Session, bot: HatBot) -> HatBacktestRun | None:
-    """The newest completed run of the bot's live version on the bot's universe."""
+    """The newest completed run of the bot's live version on the bot's universe that ran under
+    the cooldown in force (HAT-RISK-036): a `--cooldown-sessions` sweep run, or one made before
+    the cooldown changed, traded another rule and is not the sleeve's evidence. A run recorded
+    before the field existed ran with none (0)."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
-    return session.scalars(
+    cooldown = _cooldown_in_force(session, bot)
+    candidates = session.scalars(
         select(HatBacktestRun)
         .where(
             HatBacktestRun.strategy_version_id == bot.live_version_id,
@@ -305,8 +329,11 @@ def _latest_run(session: Session, bot: HatBot) -> HatBacktestRun | None:
             HatBacktestRun.status == COMPLETED,
         )
         .order_by(HatBacktestRun.id.desc())
-        .limit(1)
-    ).first()
+    )
+    return next(
+        (run for run in candidates if (run.metrics or {}).get("cooldown_sessions", 0) == cooldown),
+        None,
+    )
 
 
 def _expectancy(metrics: Mapping[str, Any]) -> Decimal | None:

@@ -19,6 +19,7 @@ The policy is a JSONB document on `hat_risk_policy_version` (schema in 03-schema
 | `max_positions_per_industry` | Per bot | 2 [A] | BL "Caps" |
 | `max_entries_per_day` | Per bot | 3 [A] | BL "Caps" |
 | `max_stopouts_per_day` | Per bot | 3 [A] | BL "Caps" |
+| `cooldown_sessions` | Per bot and instrument: sessions an instrument is refused after the bot closed it by `hard_stop`; 0 is off, at most 250. A stored document without it reads as 0 | 0 | plan audit 2026-10-22 G29, §6 item 7 (PR 58) |
 | `exposure_ladder` | L1 2 pos / 0.5x, L2 4 pos / 1.0x, L3 6 pos / 1.0x; up after 2 consecutive winners, down after 2 consecutive losers | see §4 [A] | BL "Progressive exposure"; B16 |
 | `kill.account_drawdown_pct` | Account equity below peak that trips the account kill | 0.10 | BL "Kill switches"; B26; D128 (was 0.15) |
 | `kill.bot_drawdown_pct` | Bot equity below peak that trips the bot kill | 0.10 | BL "Kill switches"; D128 |
@@ -97,6 +98,7 @@ E = bot equity (allocation + realised P&L) · r = risk per trade = the sleeve's 
 | Max positions per industry | 2 [A] | Per bot | New entry rejected |
 | Max new entries per day | 3 [A] | Per bot | Further triggers rejected |
 | Stop-outs per day | 3 [A] | Per bot | No more entries that day |
+| Cooldown after a hard stop | 0 sessions (off) | Per bot and instrument | That instrument's entries rejected for the stop's session and the N after it |
 
 Caps can only shrink or reject an entry; they never apply to exits.
 
@@ -152,6 +154,20 @@ Caps can only shrink or reject an entry; they never apply to exits.
 - **Verification:** PBT `caps.exits_never_blocked`
 - **Acceptance:**
   - Property: for every risk state, `evaluate_signal` or the exit path returns ACCEPT for every exit and protective-stop action. Harm: a position is left unprotected because a limit was hit.
+
+#### HAT-RISK-036: Per-instrument cooldown after a hard stop
+- **Statement:** With `cooldown_sessions` N > 0, a bot's entry in an instrument it closed by `hard_stop` is rejected with reason `cooldown` on the stop's session and on the N trading sessions after it; the first session it may enter again is the (N+1)th after the stop. N = 0 (the seed) refuses nothing. The stop counted is the bot's latest `hard_stop` close of that instrument at or before the trigger, a veto trade's excluded (as for HAT-RISK-034); another bot's stop or another exit reason never counts. The backtest reads the same rule through `trades.open_entry` and may replace N for a sweep.
+- **Source:** plan audit 2026-10-22 G29 and §6 item 7 (default 0 live; PR 78 sweeps 0/3/5/10); research report 2026-10-22 G29 (no per-symbol cooldown).
+- **PR:** 58
+- **Verification:** PBT `caps.cooldown`, PBT `caps.cooldown_input_fails_closed`, PBT `caps.cooldown_shortening_is_increase`, PBT `trades.last_hard_stop`, PBT `backtest.cooldown_applied`, PBT `dsr.evidence_cooldown_in_force`
+- **Acceptance:**
+  - Property: for every N in [0, 12] and every set of hard-stop dates of the instrument, an otherwise accepted entry is REJECT with reason `cooldown` exactly when N > 0 and the latest stop at or before the trade date is at most N trading sessions before it; a stop dated after the trade date is ignored. Harm: a stopped-out base re-fires the next morning against the owner's pause, or a name stays barred longer than the policy says.
+  - Property: with N > 0, a missing or malformed hard-stop history is REJECT `missing_input`; with N = 0 it is not read. Harm: an unreadable history lets a stopped-out name straight back in.
+  - Property: a proposed policy with a shorter cooldown is an `increase` (cooling-off and the evidence gate apply), a longer or equal one a `decrease`; a value outside [0, 250] or not a whole number is refused. Harm: the cooldown is switched off at once, outside the governance gate.
+  - Property: through `open_entry` and the exit stack, the history read is the trade date of the bot's latest `hard_stop` close of the instrument at or before the trigger; other reasons, other bots, other instruments and later closes are not. Harm: the cooldown bars the wrong name or misses the stop that should bar it.
+  - Property: in a backtest run with N in [0, 4], every trigger rejected `cooldown` follows a hard stop of its instrument within N sessions and buys nothing, and no entry opens within N sessions after one. Harm: the knob the cooldown sweep turns does nothing.
+  - Property: a sleeve's backtest evidence (HAT-BT-060) is its newest completed run made under the cooldown in force; a sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0. Harm: Research to Backtested is gated on a run of a rule that is not live.
+- **Design (PR 58):** the check is the last of the per-bot caps (after `stopout_cap`), so an entry refused for a position, the daily caps or the stop-out cap keeps that reason. The history is `SignalContext.hard_stop_days`, filled by `trades.open_entry` (`trades.last_hard_stop`), and sessions are counted on the context's trading calendar. A stored policy written before the field existed reads as 0, so the change alters nothing until the owner sets it. The backtest's `--cooldown-sessions` (`engine.backtest.with_cooldown`) replaces N in the run's copy of the policy and every run records the value used (`metrics.cooldown_sessions`); `runs.backtest_evidence` reads only runs whose value equals the cooldown in force.
 
 ## §4 Progressive exposure
 

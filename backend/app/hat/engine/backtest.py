@@ -40,6 +40,10 @@ them (`trigger.evaluate_entry_filters`): `adtr_filter` on the planned stop and A
 session before, and `max_chase` with the upper-circuit state, inferred from a bar pinned at an NSE
 band all day (`upper_circuit_locked`). A failing filter is a Rejected signal, as live writes it.
 
+The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown_sessions`, which
+`evaluate_signal` reads through `trades.open_entry` from the ledger's hard-stop closes, as live
+does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records the value used.
+
 Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, 09 §7 HAT-BT-070) and
 measured in shadow (PLAN Q4): among them, the trigger is the break of the level alone
 (`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the episodic-pivot playbook
@@ -58,7 +62,7 @@ import math
 import uuid
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
@@ -97,7 +101,7 @@ from ..models import (
 from ..risk.decision import SignalContext
 from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
-from ..risk.policy import PolicyVersion
+from ..risk.policy import PolicyError, PolicyVersion, parse_policy
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import as_utc, trade_date_of
 from . import exits, lifecycle, trades, trigger, watchlist
@@ -1295,6 +1299,7 @@ def compute_metrics(
         "slippage_bps": str(spec.fills.slippage_bps),
         "strategy_version_id": str(spec.strategy_version_id),
         "risk_policy_version_id": str(spec.policy.version_id),
+        "cooldown_sessions": spec.policy.policy.cooldown_sessions,
         "known_gaps": list(KNOWN_GAPS),
         "entry_day_low": ENTRY_DAY_LOW,
     }
@@ -1345,6 +1350,17 @@ def trades_parquet(trades_: Sequence[TradeRow]) -> bytes:
 # --- entry point ------------------------------------------------------------------------------
 
 
+def with_cooldown(policy: PolicyVersion, sessions: int) -> PolicyVersion:
+    """`policy` with its `cooldown_sessions` set to `sessions`, the backtest's sweep of the
+    per-instrument cooldown (HAT-RISK-036, PR 58). The run records the value it used; a value
+    the policy schema refuses raises `BacktestError`."""
+    try:
+        changed = parse_policy({**policy.policy.to_json(), "cooldown_sessions": sessions})
+    except PolicyError:
+        raise BacktestError("backtest_bad_cooldown") from None
+    return replace(policy, policy=changed)
+
+
 def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
     """Run `spec` over `data` and return its trades, equity curve and metrics."""
     if spec.start > spec.end:
@@ -1359,7 +1375,7 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD
-    [--version <id>] [--slippage-bps N] [--cost-model NAME]
+    [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe over the
     Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
@@ -1382,9 +1398,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--version", type=uuid.UUID, default=None)
     parser.add_argument("--slippage-bps", type=Decimal, default=Decimal(0))
     parser.add_argument("--cost-model", default=None)
+    parser.add_argument("--cooldown-sessions", type=int, default=None)
     args = parser.parse_args(argv)
     settings = operator_settings()
-    extra = {} if args.cost_model is None else {"cost_model": args.cost_model}
+    extra: dict[str, Any] = {} if args.cost_model is None else {"cost_model": args.cost_model}
+    if args.cooldown_sessions is not None:
+        extra["cooldown_sessions"] = args.cooldown_sessions
     refused: str | None = None
     summary: dict[str, Any] = {}
     # A refusal is caught inside the session, so a run the engine refused commits as a failed

@@ -95,12 +95,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `8be0ef9c9b49621b5bf97f2e5ddaa8125aaa1dc78ed15151c9b2df4e5279be60`
+Covered digest: `50dadb424c4c0b4f7cf56c7afc79fb5bb4b0659d9d139953605e6fc94d4c4d90`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 58: `backtest/runs.py:backtest_bot` takes `cooldown_sessions` (the cooldown sweep, HAT-RISK-036) and refuses a bad one with `backtest_bad_cooldown` before the run is recorded; the lifecycle's evidence (`backtest_evidence`) skips any run not made under the cooldown in force (PBT `dsr.evidence_cooldown_in_force`, verify-backtest).
 - PR 55 (plan audit N7, §6 item 10): the fast/slow regime rule's `rising_days` defaults to 3 (was an `[OWNER-PENDING]` 1) and `sma_fast_above_slow_both_rising` takes it without a default. A stored version keeps the value it was saved with (the config stores every parameter), so an S2 version saved before PR 55 keeps 1 until a new version is published. The S2 seed and its spec YAML state `rising_days: 3`, and the config generator (`hat_config_support.REGIMES`) draws it or leaves it out. Nothing was narrowed; `regime.strategy_rules` now draws the lookback for both rules.
 
 - `SleeveLifecycle` models one sleeve and scales the thresholds (2 shadow sessions, 2 probation periods): the real thresholds are properties of the pure guards (`lifecycle.shadow_days`, `lifecycle.retire_gate`), not of the state machine. The three evidence flags (backtest gate, health 0 and expectancy trigger, probation failure) are free environment inputs.

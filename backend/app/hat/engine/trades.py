@@ -316,6 +316,28 @@ def _day_counts(session: Session, bot_id: uuid.UUID, trade_date: date) -> tuple[
     return int(entries or 0), int(stopouts or 0)
 
 
+def last_hard_stop(
+    session: Session, bot_id: uuid.UUID, instrument_id: uuid.UUID, at: datetime
+) -> tuple[date, ...]:
+    """The trade date of the bot's latest `hard_stop` close of the instrument at or before `at`,
+    as the cooldown reads it (HAT-RISK-036); empty when there is none. A veto trade's stop-out is
+    not the bot's, as for the daily stop-out count."""
+    closed = session.scalar(
+        select(func.max(HatPosition.closed_at))
+        .select_from(HatTradeResult)
+        .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
+        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
+        .where(
+            HatPosition.bot_id == bot_id,
+            HatPosition.instrument_id == instrument_id,
+            HatPosition.closed_at <= at,
+            HatTradeResult.exit_reason == HARD_STOP,
+            _NOT_VETO,
+        )
+    )
+    return () if closed is None else (trade_date_of(as_utc(closed)),)
+
+
 def risk_inputs(session: Session, bot_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, object]:
     """The fields of a `SignalContext` that the database holds: the kill state, the exposure
     ladder and the risk-policy versions."""
@@ -533,6 +555,9 @@ def open_entry(
         open_positions=slots,
         entries_today=entries,
         stopouts_today=stopouts,
+        hard_stop_days=last_hard_stop(
+            session, request.bot_id, request.instrument_id, request.triggered_at
+        ),
     )
     if request.skip_reason is not None:
         decision = _skip_decision(request.skip_reason)

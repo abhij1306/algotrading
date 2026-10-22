@@ -158,11 +158,12 @@ def spec(
     slippage: Decimal = ZERO,
     start: int = WARM_UP,
     fills: BacktestFills | None = None,
+    policy: PolicyVersion | None = None,
 ) -> RunSpec:
     return RunSpec(
         config=cfg,
         strategy_version_id=VERSION,
-        policy=policy_version(),
+        policy=policy or policy_version(),
         start=days[min(start, len(days) - 1)],
         end=days[-1],
         fills=fills or BacktestFills(load_cost_model(), slippage),

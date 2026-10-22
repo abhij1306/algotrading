@@ -74,6 +74,19 @@ def _count(value: object, name: str) -> int:
     return value
 
 
+# The longest cooldown a policy may hold: about a year of sessions (HAT-RISK-036).
+MAX_COOLDOWN_SESSIONS = 250
+
+
+def _sessions(value: object, name: str) -> int:
+    """A count of sessions in [0, MAX_COOLDOWN_SESSIONS]; 0 is off."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise PolicyError(f"{name}: not a whole number")
+    if not 0 <= value <= MAX_COOLDOWN_SESSIONS:
+        raise PolicyError(f"{name}: outside [0, {MAX_COOLDOWN_SESSIONS}]")
+    return value
+
+
 def _ratio(value: object, name: str, *, zero_ok: bool = False) -> Decimal:
     result = to_decimal(value, name)
     if result < 0 or result > 1 or (result == 0 and not zero_ok):
@@ -112,6 +125,8 @@ class RiskPolicy:
     health_zero_dd: Decimal
     health_full_mult: Decimal
     health_half_mult: Decimal
+    # Sessions an instrument is refused after a bot's hard stop of it (HAT-RISK-036); 0 is off.
+    cooldown_sessions: int = 0
     # The owner has set `base_weight` and `cluster_cap` as real numbers (06 §1, 06:47): until
     # then no bot runs confirm or auto (HAT-GOV-085). Not a risk number: it sizes nothing.
     weights_confirmed: bool = False
@@ -127,6 +142,7 @@ class RiskPolicy:
             "max_positions_per_industry": self.max_positions_per_industry,
             "max_entries_per_day": self.max_entries_per_day,
             "max_stopouts_per_day": self.max_stopouts_per_day,
+            "cooldown_sessions": self.cooldown_sessions,
             "exposure_ladder": {
                 **{
                     level: {"max_positions": row.max_positions, "risk_mult": str(row.risk_mult)}
@@ -163,6 +179,7 @@ POLICY_FIELDS = (
     "max_positions_per_industry",
     "max_entries_per_day",
     "max_stopouts_per_day",
+    "cooldown_sessions",
     "exposure_ladder",
     "kill",
     "base_weight",
@@ -172,8 +189,9 @@ POLICY_FIELDS = (
     "weights_confirmed",
 )
 # Fields a stored document may lack, with the value a missing one reads as. A document written
-# before the field existed reads as unconfirmed, which keeps every bot in shadow (fail closed).
-OPTIONAL_FIELDS: Mapping[str, object] = {"weights_confirmed": False}
+# before the field existed reads as unconfirmed, which keeps every bot in shadow (fail closed),
+# and as no cooldown, the value every policy had before PR 58.
+OPTIONAL_FIELDS: Mapping[str, object] = {"weights_confirmed": False, "cooldown_sessions": 0}
 
 # The initial seed (version 1, direction "initial"): the 06 §1 seed column.
 SEED_POLICY: dict[str, Any] = {
@@ -185,6 +203,7 @@ SEED_POLICY: dict[str, Any] = {
     "max_positions_per_industry": 2,
     "max_entries_per_day": 3,
     "max_stopouts_per_day": 3,
+    "cooldown_sessions": 0,
     "exposure_ladder": {
         "L1": {"max_positions": 2, "risk_mult": "0.5"},
         "L2": {"max_positions": 4, "risk_mult": "1.0"},
@@ -203,9 +222,10 @@ SEED_POLICY: dict[str, Any] = {
 
 # The PR 10 seed, which D128 withdrew (account kill 15%, global open risk 3%, Probation band
 # 12%) and which left the weights unconfirmed. A policy in force equal to it is replaced at
-# startup by the seed above (`policy_service.supersede_old_seed`, HAT-RISK-011).
+# startup by the seed above (`policy_service.supersede_old_seed`, HAT-RISK-011). It predates
+# `cooldown_sessions`, which a stored copy lacks and reads as 0.
 OLD_SEED_POLICY: dict[str, Any] = {
-    **SEED_POLICY,
+    **{k: v for k, v in SEED_POLICY.items() if k != "cooldown_sessions"},
     "global_open_risk_pct": "0.03",
     "kill": {"account_drawdown_pct": "0.15", "bot_drawdown_pct": "0.10"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.12", "full_mult": "1.0", "half_mult": "0.5"},
@@ -261,6 +281,7 @@ def parse_policy(doc: object) -> RiskPolicy:
         ),
         max_entries_per_day=_count(top["max_entries_per_day"], "max_entries_per_day"),
         max_stopouts_per_day=_count(top["max_stopouts_per_day"], "max_stopouts_per_day"),
+        cooldown_sessions=_sessions(top["cooldown_sessions"], "cooldown_sessions"),
         ladder=ladder,
         up_after_wins=_count(ladder_doc["up_after_wins"], "up_after_wins"),
         down_after_losses=_count(ladder_doc["down_after_losses"], "down_after_losses"),
@@ -333,6 +354,7 @@ def _permissive_fields(policy: RiskPolicy) -> dict[str, tuple[Decimal, bool]]:
         "max_positions_per_industry": (Decimal(policy.max_positions_per_industry), True),
         "max_entries_per_day": (Decimal(policy.max_entries_per_day), True),
         "max_stopouts_per_day": (Decimal(policy.max_stopouts_per_day), True),
+        "cooldown_sessions": (Decimal(policy.cooldown_sessions), False),
         "up_after_wins": (Decimal(policy.up_after_wins), False),
         "down_after_losses": (Decimal(policy.down_after_losses), True),
         "kill.account_drawdown_pct": (policy.account_drawdown_pct, True),

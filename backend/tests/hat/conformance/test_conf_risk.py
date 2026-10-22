@@ -80,7 +80,7 @@ def test_risk__policy_schema_fields() -> None:
             continue
         with pytest.raises(PolicyError):
             parse_policy(without)
-    assert OPTIONAL_FIELDS == {"weights_confirmed": False}
+    assert OPTIONAL_FIELDS == {"weights_confirmed": False, "cooldown_sessions": 0}
 
 
 def test_risk__no_risk_keys_in_strategy_schema() -> None:
@@ -114,6 +114,7 @@ def test_risk__initial_seed_equals_spec() -> None:
         "max_positions_per_industry",
         "max_entries_per_day",
         "max_stopouts_per_day",
+        "cooldown_sessions",
     ):
         assert doc[name] == int(_number(row(name))), name
     assert Decimal(doc["kill"]["account_drawdown_pct"]) == _number(row("kill.account_drawdown_pct"))

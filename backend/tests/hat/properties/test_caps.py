@@ -6,7 +6,7 @@ import dataclasses
 import inspect
 import os
 import uuid
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from unittest import mock
 
@@ -27,6 +27,7 @@ from hat_risk_support import (
     policy_with,
     position,
     valid_ctx,
+    version_of,
 )
 from hat_support import memory_engine
 from hypothesis import given, settings
@@ -43,6 +44,7 @@ from app.hat.risk.kill import EquityPoint, KillRow, KillState
 from app.hat.risk.policy import (
     MIN_LIVE_TRADES,
     GateError,
+    PolicyError,
     TradeOutcome,
     build_gate_evidence,
     classify_direction,
@@ -182,6 +184,69 @@ def test_daily_stopouts(stopouts: int) -> None:
         assert decision.reason == Reason.STOPOUT_CAP
     else:
         assert decision.accepted
+
+
+# --- HAT-RISK-036: per-instrument cooldown after a hard stop (PR 58) ---
+
+COOLDOWN_CALENDAR = calendar_around(TRADE_DAY, span=40)
+
+
+def weekday_sessions_after(stop: date, day: date) -> int:
+    """Weekdays in (stop, day], written out from the calendar's rule (weekdays trade)."""
+    return sum(1 for k in range(1, (day - stop).days + 1) if (stop + timedelta(k)).weekday() < 5)
+
+
+@given(
+    st.integers(0, 12),
+    st.lists(st.integers(-35, 3), max_size=4).map(
+        lambda offs: [TRADE_DAY + timedelta(days=o) for o in offs]
+    ),
+)
+def test_cooldown(n: int, stops: list[date]) -> None:
+    """With `cooldown_sessions` N > 0, an entry in an instrument the bot closed by `hard_stop`
+    is rejected with `cooldown` on the stop's session and the N sessions after it, counted on
+    the trading calendar, and accepted after them; a stop dated after the signal's trade date
+    is ignored, and N = 0 refuses nothing. Harm: a stopped-out base re-fires the next morning
+    when the owner asked for a pause, or a name stays barred longer than the policy says."""
+    ctx = valid_ctx(
+        policy_versions=[version_of(policy_with(cooldown_sessions=n))],
+        calendar=COOLDOWN_CALENDAR,
+        hard_stop_days=stops,
+    )
+    decision = decide(ctx)
+    past = [d for d in stops if d <= TRADE_DAY]
+    cooling = n > 0 and bool(past) and weekday_sessions_after(max(past), TRADE_DAY) <= n
+    if cooling:
+        assert (decision.accepted, decision.reason) == (False, Reason.COOLDOWN)
+    else:
+        assert decision.accepted
+
+
+@given(st.integers(1, 12), st.sampled_from([None, "2026-10-20", 3, [datetime(2026, 10, 20)]]))
+def test_cooldown_input_fails_closed(n: int, junk_days: object) -> None:
+    """With the cooldown on, a missing or malformed hard-stop history is `missing_input`, never
+    "no stop"; with it off (N = 0) the history is not read. Harm: an unreadable history lets
+    a stopped-out name straight back in."""
+    on = valid_ctx(
+        policy_versions=[version_of(policy_with(cooldown_sessions=n))], hard_stop_days=junk_days
+    )
+    assert decide(on).reason == Reason.MISSING_INPUT
+    off = valid_ctx(hard_stop_days=junk_days)
+    assert decide(off).accepted
+
+
+@given(st.integers(0, 250), st.integers(0, 250))
+def test_cooldown_shortening_is_increase(current: int, proposed: int) -> None:
+    """A shorter cooldown is a risk increase (the 7-day cooling-off and the evidence gate apply);
+    a longer or equal one is a decrease. Values outside [0, 250], or not whole numbers, are
+    refused. Harm: the cooldown is switched off at once, outside the governance gate."""
+    direction = classify_direction(
+        policy_with(cooldown_sessions=current), policy_with(cooldown_sessions=proposed)
+    )
+    assert direction == ("increase" if proposed < current else "decrease")
+    for bad in (-1, 251, True, 1.0, "3", None):
+        with pytest.raises(PolicyError):
+            policy_with(cooldown_sessions=bad)
 
 
 # --- HAT-RISK-035: exits are never blocked ---

@@ -24,6 +24,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.adtr_filter_applied` With an `adtr_filter`, a trigger whose stop is wider than max_multiple x ADTR(20) as of the session before (or with no ADTR, blanked at some closes) is Rejected `adtr_filter` and buys nothing; one within it is never refused for that reason (HAT-BT-025, PR 61). Harm: the backtest takes wide-stop entries live refuses.
 - `PBT backtest.upper_circuit_inferred` An entry price that is the day's high, above the previous close and within one tick of the upper price of an NSE band (2, 5, 10, 20%) above the previous close is locked; one below the high, at or below the previous close, or between bands is not; no previous close or tick is unknown (HAT-BT-025, PR 61). Harm: the backtest buys a stock locked at its upper band.
 - `PBT backtest.upper_circuit_skip` In a run with sessions at an upper band (pinned all day, or opened at the band and faded), a trigger entering at the band is Rejected `max_chase` and buys nothing, and with a 30% chase no other trigger is (HAT-BT-025, PR 61). Harm: the backtest buys locked gap-ups live never gets.
+- `PBT backtest.cooldown_applied` In a run whose policy has `cooldown_sessions` N in [0, 4] (`with_cooldown`), with tight stops so hard stops and re-triggers are common, every trigger Rejected `cooldown` follows a hard stop of its instrument within N sessions and buys nothing, no entry opens within N sessions after one, and the run records N (HAT-RISK-036, PR 58). Harm: the knob the cooldown sweep turns does nothing, or the backtest refuses entries live takes.
 - `PBT backtest.exit_fill_proxy` A stop fills at min(open, stop) when the day reaches it and is never better than the stop; a day above it does not fill (HAT-BT-021). Harm: gap-down losses are understated.
 - `PBT backtest.exit_fill_proxy_close` A trade closed by a close-based rule sold at that day's official close, and `close_exits_at_official_close` is a recorded known gap. Harm: close exits are priced at a better point of the day than the rule could see.
 - `PBT backtest.decimal_money` Quantities are whole and at least 1, money is Decimal, and the trades' net P&L sums exactly to the change in equity (HAT-BT-024). Harm: float drift makes equity and the trades disagree.
@@ -51,6 +52,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.trial_counting` A family's trial count is the number of runs recorded for it, failed ones included; it never falls and other families never change it (HAT-BT-030). Harm: discarded variants are forgotten and the DSR under-corrects for luck.
 - `PBT dsr.family_key` Two runs share a family key iff they share strategy and universe, whatever their version or period (HAT-BT-031). Harm: a new version escapes the trial penalty.
 - `PBT dsr.evidence_current_trials` The lifecycle's evidence is the newest completed run of the live version with the DSR deflated by the family's trials and Sharpe variance now, later failed runs and other versions counted; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the gate on a stale trial count.
+- `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force: a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: Research to Backtested is gated on a run of a rule that is not live.
 - `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
 
 ## Run
@@ -111,10 +113,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `e1c69afa95f59329100fd89d9ef1b3083257be5de75d0d60c57b419489059cf8`
+Covered digest: `d12b2ce03de42a528d9cc2658be1cace180cf9276a828ff9479f328e192400c0`
 
 ## Scope changes
 
+- PR 58: the loop reads the per-instrument cooldown (HAT-RISK-036) through `trades.open_entry`, as live does; `engine.backtest.with_cooldown` and `--cooldown-sessions` (`runs.backtest_bot(cooldown_sessions=)`) replace N in the run's copy of the policy, refused as `backtest_bad_cooldown` outside [0, 250], and every run records `metrics.cooldown_sessions`; `runs.backtest_evidence` (`_latest_run`) reads only runs made under the cooldown in force (code review of PR 58: a sweep run must not become the sleeve's evidence). The golden gained that key (0) only; no trade changed.
 - PR 61: the loop runs the playbook's entry filters at each trigger through `trigger.evaluate_entry_filters` (moved out of `trigger.plan_entry`, behaviour unchanged): `adtr_filter` on the planned stop with ADTR(20) as of the session before, and `max_chase` with the upper circuit inferred from the entry price and the bar (`upper_circuit_locked`: the day's high, above the previous close, within a tick of an NSE band's upper price); a failure is a Rejected signal with the filter's type, counted in `metrics.rejections`. `KNOWN_GAPS` grew from 4 to 11 codes (09 §7, HAT-BT-070). The golden was regenerated: S2's 2025-07-08 trade (entry 639.09, stop 612.60, width 26.49 against 1.0 x ADTR 24.92) is now Rejected `adtr_filter`, so S2 has one trade fewer (`net_pnl` -4358.17 to -3047.66, `avg_loss_r` -1.165 to -1.222); S1 and S2 gain the seven new gap codes and S2 `rejections: {adtr_filter: 1}`.
 - PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`; an adr20 of 0 is a value, not a gap), the low after the break can stop the trade out on the entry day (recorded at 09:45, after the 09:30 entry) and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
 - PR 54: the loop's re-check of a contraction stop at the fill price (`check_width`) also applies the rule's `min_pct` (`stop_too_narrow`, default 0 = off; property in `verify-stops`). The seeds' golden replay is unchanged by the S1 `close_vs_pivot` criterion.
@@ -428,6 +431,17 @@ tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:524: in test_upper_circuit_skip
     assert (signal.reason == "max_chase") == locked
 E   AssertionError: assert (None == 'max_chase') == True
+```
+
+### PBT backtest.cooldown_applied
+
+Break: (PR 58) in `backend/app/hat/engine/trades.py`: `open_entry` passes an empty hard-stop history, so the policy's cooldown never bites.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:478: in test_cooldown_applied
+    assert not cooling(iid, day, same_day=False)
+E   AssertionError: assert not True
 ```
 
 ### PBT backtest.exit_fill_proxy
@@ -815,6 +829,26 @@ tests/hat/properties/test_dsr.py:248: in test_evidence_current_trials
 tests/hat/properties/test_dsr.py:290: in test_evidence_current_trials
     assert facts.trials == runs.trial_count(session, family) == 1 + len(later)
 E   AssertionError: assert 1 == 2
+```
+
+### PBT dsr.evidence_cooldown_in_force
+
+Break: (PR 58) in `backend/app/hat/backtest/runs.py`: the newest completed run is the evidence whatever its cooldown.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:286: in test_evidence_cooldown_in_force
+    assert facts.trades == (want[-1] if want else 0)
+E   AssertionError: assert 2 == 1
+```
+
+Break: (PR 58) in `backend/app/hat/backtest/runs.py`: a run without `cooldown_sessions` does not read as 0.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:286: in test_evidence_cooldown_in_force
+    assert facts.trades == (want[-1] if want else 0)
+E   assert 0 == 1
 ```
 
 ### PBT dsr.gate_evidence

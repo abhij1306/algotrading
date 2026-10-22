@@ -99,6 +99,7 @@ Covered digest: `abde9d4cc6c858318b5ae45cd16e5ea27fe669ce5094358884729eacc320eca
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 48: `HatSettings` gains `mpp_resend` (`HAT_MPP_RESEND`, default off) and `mpp_page_after` (`HAT_MPP_PAGE_AFTER`, default 3); their parse is checked by `verify-execution`'s `mpp.resend_flag_parsed`. No governance check changed.
+- PR 58: `risk/policy.py` gained `cooldown_sessions` (06 §1, HAT-RISK-036): a whole number in [0, 250], seed 0, optional in a stored document (reads as 0), and less permissive when higher. `OLD_SEED_POLICY` (the PR 10 seed) leaves it out, as that seed had none. The cooling-off functions are untouched; the properties are in verify-risk.
 - PR 10 extended `risk/policy.py` (the policy record, direction classification and the evidence gate) without touching `cooling_off_satisfied` or `require_cooling_off`; the new rules are checked by `verify-risk`.
 - The cooling-off CHECK in the database uses `interval '168 hours'` instead of `'7 days'`: a day interval depends on the session time zone around daylight-saving changes, 168 hours does not. The property is unchanged (seven days).
 - The strategy and universe version triggers also forbid moving a published version back to `draft`, and forbid changing `config_hash` or `definition`: without this, config immutability could be bypassed by flipping status first. This widens the check.

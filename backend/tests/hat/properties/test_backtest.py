@@ -46,6 +46,7 @@ from app.hat.engine.backtest import (
     run_backtest,
     trades_parquet,
     upper_circuit_locked,
+    with_cooldown,
 )
 from app.hat.engine.portfolio.universe import Interval
 from app.hat.engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, floor_to_tick, low_of_day
@@ -438,6 +439,43 @@ def test_adtr_filter_applied(paths: dict, multiple: float, blank: set[date]) -> 
         if wide:
             assert (signal.state, signal.qty) == ("Rejected", 0)
             assert (day, iid) not in bought
+
+
+# --- HAT-RISK-036: the per-instrument cooldown (PR 58) -----------------------------------------
+
+
+@given(s.paths(SESSIONS), st.integers(0, 4), st.sampled_from([1, 2]))
+@RUNS
+def test_cooldown_applied(paths: dict, n: int, pct: int) -> None:
+    """With `cooldown_sessions` N, a trigger of an instrument the bot closed by `hard_stop` on
+    that session or one of the N before it is Rejected `cooldown` and buys nothing, and no entry
+    opens within N sessions after a hard stop of its instrument; N = 0 refuses nothing for this
+    reason. Tight stops make hard stops and re-triggers common. Harm: the knob the cooldown sweep
+    turns does nothing, or the backtest refuses entries live takes."""
+    data = s.market(paths, DAYS)
+    cfg = s.config(stop={"rule": "pct_below_entry", "pct": pct}, chase=30.0)
+    policy = with_cooldown(s.policy_version(), n)
+    result = run_backtest(s.spec(cfg, DAYS, fills=s.zero_fills(), policy=policy), data)
+    assert result.metrics["cooldown_sessions"] == n
+    stops: dict[str, list[date]] = {}
+    for trade in result.trades:
+        if trade.exit_reason == "hard_stop":
+            stops.setdefault(trade.instrument_id, []).append(trade.exit_date)
+    bought = {(f.day, f.instrument_id) for f in result.fills if f.purpose == "entry"}
+
+    def cooling(iid: str, day: date, *, same_day: bool) -> bool:
+        """A hard stop of `iid` within N sessions before `day` (on `day` too if `same_day`)."""
+        gap = [DAYS.index(day) - DAYS.index(d) for d in stops.get(iid, [])]
+        return n > 0 and any((0 if same_day else 1) <= g <= n for g in gap)
+
+    for signal in result.signals:
+        day, iid = signal.trade_date, signal.instrument_id
+        if signal.reason == "cooldown":
+            assert cooling(iid, day, same_day=True)
+            assert (signal.state, signal.qty) == ("Rejected", 0)
+            assert (day, iid) not in bought
+        if signal.state != "Rejected":
+            assert not cooling(iid, day, same_day=False)
 
 
 TICKS = st.sampled_from([D("0.01"), D("0.05"), D("0.10")])

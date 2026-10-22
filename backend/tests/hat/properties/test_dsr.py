@@ -237,13 +237,54 @@ def test_family_key(a: tuple[int, int, int, bool], b: tuple[int, int, int, bool]
         session.rollback()
 
 
-def _result(sr: float, t: int, trades: int, expectancy: str) -> BacktestResult:
-    metrics = {
+def _result(
+    sr: float, t: int, trades: int, expectancy: str, cooldown: int | None = None
+) -> BacktestResult:
+    metrics: dict[str, object] = {
         "trades": trades,
         "expectancy_r": expectancy,
         "returns": {"sr": sr, "t": t, "skew": 0.0, "kurtosis": 3.0},
     }
+    if cooldown is not None:
+        metrics["cooldown_sessions"] = cooldown
     return BacktestResult((), (), (), (), (), {}, metrics)
+
+
+COOLDOWNS = st.sampled_from([None, 0, 3, 5])  # None: a run or a user without the field
+
+
+@given(COOLDOWNS, st.lists(COOLDOWNS, max_size=5))
+@settings(max_examples=30, deadline=None)
+@example(0, [0, 3])  # a sweep run newer than the run under the policy in force
+@example(3, [3, 0])  # a run made before the cooldown was raised to 3
+def test_evidence_cooldown_in_force(in_force: int | None, made: list[int | None]) -> None:
+    """The sleeve's evidence is its newest completed run made under the cooldown in force
+    (HAT-RISK-036): a `--cooldown-sessions` sweep run, or one made before the cooldown changed,
+    is skipped, and a run or a policy without the field counts as 0. With no such run there is
+    no evidence. Harm: Research to Backtested is gated on a run of a rule that is not live."""
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        strategies, universes = _world(session, 1, 1)
+        strategy, (live, _) = strategies[0]
+        universe = universes[0]
+        uv = HatUniverseVersion(
+            universe_id=universe.id, version=1, status="live", definition={}, config_hash="h"
+        )
+        session.add(uv)
+        session.flush()
+        user = uuid.uuid4()
+        if in_force is not None:
+            row = seed_initial_policy(session, user, datetime(2026, 1, 1, tzinfo=UTC))
+            row.policy = {**row.policy, "cooldown_sessions": in_force}
+            session.flush()
+        bot = _sleeve_bot(session, user, strategy, live.id, uv)
+        for n, cooldown in enumerate(made):
+            run = _start(session, live, universe)
+            runs.complete_run(session, run, _result(0.1, 60, n + 1, "0.5", cooldown), root=root)
+        want = [n + 1 for n, c in enumerate(made) if (c or 0) == (in_force or 0)]
+        facts = runs.backtest_evidence(session, bot)
+        assert facts.trades == (want[-1] if want else 0)
+        assert (facts.dsr_prob is None) == (not want)
 
 
 @given(st.lists(st.tuples(SR, st.booleans()), min_size=1, max_size=6), st.integers(30, 600))
