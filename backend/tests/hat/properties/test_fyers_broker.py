@@ -381,6 +381,10 @@ def _read_cap(limit: int) -> int:
     return max(1, math.floor(limit * READ_SHARE))
 
 
+def _read_day_cap(limit: int) -> int:
+    return math.floor(limit * READ_SHARE)  # no minimum: the day's last call is a write's
+
+
 @settings(max_examples=150, deadline=None)
 @given(
     per_second=st.integers(1, 10),
@@ -399,6 +403,13 @@ def _read_cap(limit: int) -> int:
 @example(per_second=8, per_minute=180, per_day=5000, steps=[(WRITE, 0.0, 0.0)] * 10)
 @example(per_second=2, per_minute=3, per_day=None, steps=[(READ, 0.0, 0.0)] * 4)
 @example(per_second=10, per_minute=40, per_day=2, steps=[(WRITE, 1.0, 0.0)] * 3)
+@example(per_second=10, per_minute=40, per_day=1, steps=[(READ, 1.0, 0.0), (WRITE, 1.0, 0.0)])
+@example(  # a wait whose float sum lands a hair inside the minute (found by the search)
+    per_second=2,
+    per_minute=3,
+    per_day=None,
+    steps=[("pause", 0.0, 1.805155854092929)] + [(READ, 0.0, 0.0)] * 3 + [(WRITE, 0.0, 0.0)],
+)
 @example(  # a pause longer than the second's wait
     per_second=1, per_minute=40, per_day=None, steps=[(WRITE, 0.0, 0.0), ("pause", 0.0, 5.0)] * 2
 )
@@ -433,7 +444,7 @@ def test_budget_windows_hold(
         write = kind == WRITE
         sec = per_second if write else _read_cap(per_second)
         minute = per_minute if write else _read_cap(per_minute)
-        day_cap = None if per_day is None else (per_day if write else _read_cap(per_day))
+        day_cap = None if per_day is None else (per_day if write else _read_day_cap(per_day))
         reasons = (
             now < paused_until,
             in_window(now, 1.0) >= sec,
@@ -516,6 +527,68 @@ def test_throttled_call_not_sent(op: str, source: str, retry_after: str | None) 
         expected = min(float(retry_after), MAX_PAUSE)
     assert budget.take(WRITE, clock() + expected - 0.01, BUDGET_DAY) > 0
     assert budget.take(WRITE, clock() + expected, BUDGET_DAY) == 0
+
+
+@settings(max_examples=3, deadline=None)
+@given(retry_after=st.sampled_from([None, "2", "30"]))
+def test_late_429_still_pauses(retry_after: str | None) -> None:
+    """HAT-BRK-082 (PR 50, CodeAnt): a write Fyers answers HTTP 429 only after the guard gave up
+    waiting is an unknown outcome for its caller (`SUBMIT_UNCONFIRMED`, one breaker failure, as
+    any timeout), and the 429 still pauses the budget for its Retry-After when it lands. Harm:
+    a slow broker's 429 is lost and HAT keeps calling into the limit."""
+    clock = Tick()
+    budget = CallBudget(CallLimits(8, 180, None), clock=clock, day=lambda: BUDGET_DAY)
+    landed = threading.Event()
+
+    class SlowHttp429Sdk(Http429Sdk):
+        def _answer(self, name: str, data: object) -> object:
+            time.sleep(1.7)  # past the write's 1.5 s guard
+            try:
+                return super()._answer(name, data)
+            finally:
+                landed.set()
+
+    sdk = SlowHttp429Sdk(raw=False, retry_after=retry_after)
+    breaker = CircuitBreaker()
+    broker = FyersBroker(lambda: sdk, breaker=breaker, budget=budget)
+    reply = broker.place_order(dict(ORDER))
+    assert reply["status"] == SUBMIT_UNCONFIRMED
+    assert breaker.failures == 1
+    assert landed.wait(5)
+    time.sleep(0.05)  # the worker pauses the budget right after the answer
+    expected = THROTTLE_PAUSE if retry_after is None else float(retry_after)
+    assert budget.take(WRITE, clock() + expected - 0.01, BUDGET_DAY) > 0
+    assert budget.take(WRITE, clock() + expected, BUDGET_DAY) == 0
+
+
+@settings(max_examples=12, deadline=None)
+@given(
+    op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"])
+)
+def test_breaker_opened_while_waiting_sends_nothing(op: str) -> None:
+    """HAT-BRK-082 (PR 50, CodeAnt): a call that waited for the budget while another call opened
+    the circuit sends nothing: a read fails closed and a write is answered as when the circuit
+    was open before it asked. Harm: calls queued behind the budget reach a broker the breaker
+    has just declared down."""
+    breaker = CircuitBreaker()
+
+    class OpeningBudget(CallBudget):
+        def acquire(self, kind: str, max_wait: float) -> bool:
+            for _ in range(breaker.threshold):
+                breaker.record_failure()
+            return True
+
+    sdk = RecordingSdk()
+    adapter = _adapter_over(
+        FyersBroker(lambda: sdk, breaker=breaker, budget=OpeningBudget(CallLimits()))
+    )
+    if op in ("orders", "gtts"):
+        with pytest.raises(BrokerUnavailableError):
+            BUDGET_OPS[op](adapter)
+    else:
+        result = BUDGET_OPS[op](adapter)
+        assert getattr(result, "ok", False) is False
+    assert sdk.calls == []
 
 
 @settings(max_examples=12, deadline=None)

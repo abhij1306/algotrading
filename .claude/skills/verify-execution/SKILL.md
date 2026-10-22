@@ -150,10 +150,12 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.ex_date_gtt_replaced` (PR 47, HAT-EXEC-145) For every stored action (dividend, notice, split) with ex-date around the check day, every assumed book shape of a broker-cancelled GTT (`fixtures/fyers_gtt_ex_date_assumed.json`) and a GTT accepted or refused, `check_ex_date_gtts` ends a GTT the book no longer holds (`gtt.missing`, `gtt_cancelled_by_broker`) and places it again (a refusal does not fail the run: the intraday stop goes out from 09:15), leaves a resting one alone, fails with `gtt.unverified` and sends nothing on an unreadable book, waits for a split's rescale, and reads no position without an action today or the next session. Harm: Fyers cancels the GTT before a dividend and the position opens the ex-date unprotected.
 - `PBT manage.ex_date_check_serialised` (PR 47, HAT-EXEC-145) For both assumed shapes of a cancelled GTT, the fill sync's protect or the nightly verify reaching the position on another thread between the check ending the old GTT and placing the new waits on the position's stop lock: exactly one GTT is placed. Harm: two GTT sales over the same shares.
 - `PBT manage.series_change_remapped` (PR 47, HAT-EXEC-146) For every successor (none, BE mapped or unmapped, renamed, another ISIN), a series change gives no exit view, one URGENT `position.series_changed` at the morning check and at the nightly verify, and a re-placed GTT under the successor's Fyers symbol: one the broker cancelled, and one still listed under the old symbol, cancelled first (at the morning check, or at the nightly verify when the check is off; a refused cancel at the check fails the run with `gtt.unverified`, at the verify it is refreshed); a GTT placed after the change is left resting; an unmapped successor gets no stop sent (`series_unmapped`) and its old GTT left; otherwise nothing. Harm: every order under the old `-EQ` symbol is refused and exit rules run on stopped prices.
-- `PBT fyers_broker.budget_windows_hold` (PR 50, HAT-BRK-082) For every per-second, per-minute and per-day limit and every sequence of reads, writes, 429 pauses and day changes on a fake clock, `CallBudget.take` grants no more calls than each limit in any window, grants a read only within `READ_SHARE` of each window and of the day, grants nothing inside a pause (at most `MAX_PAUSE`), refuses only for one of those reasons, and grants a refused call asked again after the wait it was told (none once the day is spent). Harm: a burst of syncs and the 15:25 swap exceed Fyers' limits and every write, stops included, is refused.
+- `PBT fyers_broker.budget_windows_hold` (PR 50, HAT-BRK-082) For every per-second, per-minute and per-day limit and every sequence of reads, writes, 429 pauses and day changes on a fake clock, `CallBudget.take` grants no more calls than each limit in any window, grants a read only within `READ_SHARE` of each window (at least one call) and of the day (no minimum: a day cap of 1 is a write's), grants nothing inside a pause (at most `MAX_PAUSE`), refuses only for one of those reasons, and grants a refused call asked again after the wait it was told (none once the day is spent). Harm: a burst of syncs and the 15:25 swap exceed Fyers' limits and every write, stops included, is refused.
 - `PBT fyers_broker.throttled_call_not_sent` (PR 50, HAT-BRK-082) For every adapter operation (an SL-M stop, GTT place, modify and cancel, the order and GTT books), a call the budget cannot grant is not sent, and one Fyers answers HTTP 429 (JSON body or not, any `Retry-After`) is sent once: a read fails closed and a write is refused with `broker_rate_limited`, the breaker counts nothing, and a 429 pauses the budget for its Retry-After (`THROTTLE_PAUSE` when absent or unreadable). Harm: a throttled stop reads as a rejection and burns its tag's sequence, or a busy broker opens the circuit.
 - `PBT fyers_broker.writes_go_ahead_of_reads` (PR 50, HAT-BRK-082) For every adapter operation, once reads have spent their share of the minute a write is still sent and a read is refused unsent; and while a write waits for a call (`acquire`), a read is not granted the call the window frees. Harm: the fill sync's reads take the calls a stop placement waits for.
 - `PBT fyers_broker.limits_from_settings` (PR 50, HAT-BRK-082) For every value of `HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE` and `_PER_DAY`, `limits_from` takes a positive whole number as given, the default (8, 180, 5,000) for anything unset, unreadable or not positive, and `0` or `off` lifts the day cap only. Harm: Fyers Prime's limits need a code change, or a typo removes the limit.
+- `PBT fyers_broker.late_429_still_pauses` (PR 50, CodeAnt) A write Fyers answers HTTP 429 only after the 1.5 s guard gave up is `SUBMIT_UNCONFIRMED` with one breaker failure (a timeout), and the worker still pauses the budget for the 429's Retry-After when it lands. Harm: a slow 429 is lost and HAT keeps calling into the limit.
+- `PBT fyers_broker.breaker_opened_while_waiting_sends_nothing` (PR 50, CodeAnt) For every adapter operation, a call whose budget wait ended with the circuit open (another call opened it) sends nothing: a read fails closed, a write is not accepted. Harm: calls queued behind the budget reach a broker declared down.
 - `PBT manage.real_exits_never_blocked` A real position's live exits come from the shared exit stack and go out as MARKET SELL CNC orders, identical with and without an account or bot kill or a pause, and whatever the reconciliation state (none today, only yesterday's, a failed run, a mismatch; the new fill's stop is placed in each, D118); HAT sends nothing at the hard stop while the broker stop rests, and every sale is preceded by the broker stop's cancel or its resize to the shares left. Harm: a kill switch traps a position its exits should sell, or HAT and the broker both sell at the stop.
 - `PBT manage.no_sale_after_close` A run that starts at 15:2x and reaches a sale some minutes later sends it only before 15:30 (the time sent is the run's start plus the monotonic time taken, with no clock injected); otherwise `exit.not_placed` is raised and the broker stop keeps resting. Harm: a slow close run sends market orders after the close.
 - `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) when the sync adopts it; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
@@ -327,7 +329,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `1fe2f3ede20b83764db2fdfbf4f33701f069df3096bd7bcbc4266b267488345f`
+Covered digest: `e683311fa08af7c675e015972086170d9343f7bf521c7ce36a8a047102366e28`
 
 ## Scope changes
 
@@ -380,7 +382,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33 edited `test_ops.py` (covered here): `ops.chain_carries_past_midnight` also draws an unchained job marked `carry` (`snapshot.bots`); its checks are `verify-scheduler`'s, and the property runs in this skill's command too. Nothing was narrowed.
 - PR 45 (HAT-GOV-085, HAT-EXEC-014): the DDPI and base-weights gates and the high-confidence rule are proved on the real code (`router.mode_gates_hold_bots_in_shadow`, `router.open_settles_mode_changes`, `router.auto_places_only_high_confidence`); `ExecutionRouter.tla` models only the GTT gate and was not extended. No live caller passes a confidence label yet (PR 71), so every auto signal goes to approval. Nothing was narrowed.
 - PR 47 (research G01, G17, G24; HAT-EXEC-063, -145, -146): `TradeManager.check_ex_date_gtts` (job `gtt.ex_date`, behind `HAT_EXDATE_GTT_CHECK`, default off) and `StopDesk.check_gtt`; `StopDesk._renewed` (300-day renewal in `verify`); `execution/series.py` (successor by market and ISIN). The broker-cancelled GTT's book shape is ASSUMED (`fyers_gtt_ex_date_assumed.json`, three shapes) until the O2(b) live check; the property draws all three. ASM and GSM are not detectable (no source) and are not checked. A BZ successor has no Fyers symbol (`fyers_symbol` maps only BE) and is alerted `unmapped`; its re-place is refused by the adapter, which the property does not draw separately. `manage.verify_covers` passes unchanged. CodeAnt round: a GTT placed on or before the old row's `delisted_on` went out under the old symbol (`StopDesk._old_series`): the check and the verify cancel it and place it again (the weekly refresh runs on Saturday, so the boundary day has no GTT; one placed that day is counted old and re-placed once at worst). An unmapped successor (`_Target.unmapped`) gets no stop: the adapter would fall back to the old `-EQ` symbol. `StopDesk.protect`, `swap`, `check_gtt` and `verify` hold a per-position re-entrant lock (`_serialised`), since the fill sync and the trade jobs share one desk on separate threads; `manage.ex_date_check_serialised` interleaves deterministically (the second path starts at the check's tick read, between ending the old GTT and reserving the new), with a second session on the same in-memory engine. Moves (`make_room`, `follow`, `rescaled`) are not locked: they modify existing stops and place none. Nothing was narrowed.
-- PR 50 (HAT-BRK-082, HAT-EXEC-060; research O3, D154): one process-wide `CallBudget` in `fyers_broker.py` (limits from `HAT_BROKER_CALLS_PER_*` in `settings.py`, wired by `fyers_adapter.py` as `process_budget()`), writes ahead of reads (`READ_SHARE`, waiting writers gate reads), HTTP 429 caught through a `requests` response hook on the SDK's session (`_watch_responses`; it relies on `fyers_apiv3`'s `model.service.session`, which `Http429Sdk` imitates) and mapped to `broker_rate_limited` like -360. `writes_go_ahead_of_reads` reads `CallBudget._writers` and `_cond` to interleave deterministically. The budget's day count is per process and restarts at zero on a restart; `minute_history`'s SDK calls do not go through the budget (left for a later PR). `router.fill_sync_cadence` scripts the throttled read as `FyersRateLimitedError` on odd `down` passes: a `BrokerUnavailableError` from the inner broker is re-coded `broker_unavailable` by the adapter. The window property found a pause shortened by the per-second wait (fixed). Nothing was narrowed.
+- PR 50 (HAT-BRK-082, HAT-EXEC-060; research O3, D154): one process-wide `CallBudget` in `fyers_broker.py` (limits from `HAT_BROKER_CALLS_PER_*` in `settings.py`, wired by `fyers_adapter.py` as `process_budget()`), writes ahead of reads (`READ_SHARE`, waiting writers gate reads), HTTP 429 caught through a `requests` response hook on the SDK's session (`_watch_responses`; it relies on `fyers_apiv3`'s `model.service.session`, which `Http429Sdk` imitates) and mapped to `broker_rate_limited` like -360. `writes_go_ahead_of_reads` reads `CallBudget._writers` and `_cond` to interleave deterministically. The budget's day count is per process and restarts at zero on a restart; `minute_history`'s SDK calls do not go through the budget (left for a later PR). `router.fill_sync_cadence` scripts the throttled read as `FyersRateLimitedError` on odd `down` passes: a `BrokerUnavailableError` from the inner broker is re-coded `broker_unavailable` by the adapter. The window property found a pause shortened by the per-second wait (fixed). Nothing was narrowed. CodeAnt round: a read's day share has no minimum of one (a day cap of 1 is a write's); the breaker is checked again after the budget wait; the 429 pause moved into the worker, so a 429 landing after its caller timed out still pauses; the response hook is installed in `FyersBroker.client`, so every model a call resolves is hooked; and the window property found a float-rounding edge (a wait that lands a hair inside the minute), fixed with `_WAIT_SLACK` (1 µs).
 
 ## Scratch breaks
 
@@ -3327,6 +3329,29 @@ Break: (PR 50) the day count is never reset on a new day.
     | AssertionError: assert False
 ```
 
+Break: (PR 50, CodeAnt) a read's day share keeps a minimum of one (`budget_windows_hold`).
+
+```
+E   assert not True
+E    +  where True = any((False, False, False, True))
+E   Failing explicit example: test_budget_windows_hold(
+E       per_second=10,
+E       per_minute=40,
+E       per_day=1,
+```
+
+Break: (PR 50, CodeAnt) no `_WAIT_SLACK` (`budget_windows_hold`).
+
+```
+E   assert not True
+E    +  where True = any((False, False, True, False))
+E   Failing explicit example: test_budget_windows_hold(
+E       per_second=2,
+E       per_minute=3,
+E       per_day=None,
+E       steps=[('pause', 0.0, 1.805155854092929),
+```
+
 ### PBT fyers_broker.throttled_call_not_sent
 
 Break: (PR 50) `rate_limited` matches -360 only, not 429.
@@ -3373,6 +3398,16 @@ E       op='place_gtt',
 E       source='budget',
 ```
 
+Break: (PR 50, CodeAnt) the response hook not installed in `FyersBroker.client` (`throttled_call_not_sent`).
+
+```
+E   AssertionError: assert 0.0 > 0
+E    +  where 0.0 = take('write', ((100.0 + 2.0) - 0.01), datetime.date(2026, 10, 23))
+E   Failing explicit example: test_throttled_call_not_sent(
+E       op='orders',
+E       source='http429_json',
+```
+
 ### PBT fyers_broker.writes_go_ahead_of_reads
 
 Break: (PR 50) `acquire` lets a read through while a write waits.
@@ -3412,4 +3447,25 @@ E   assert 5000 is None
 E    +  where 5000 = CallLimits(per_second=8, per_minute=180, per_day=5000).per_day
 E   Failing test case: test_limits_from_settings(
 E       per_day='0',
+```
+
+### PBT fyers_broker.late_429_still_pauses
+
+Break: (PR 50, CodeAnt) the 429 pause back in the caller only (the worker does not pause).
+
+```
+E   AssertionError: assert 0.0 > 0
+E    +  where 0.0 = take('write', ((100.0 + 1.0) - 0.01), datetime.date(2026, 10, 23))
+E   Failing test case: test_late_429_still_pauses(
+E       retry_after=None,  # or any other generated value
+```
+
+### PBT fyers_broker.breaker_opened_while_waiting_sends_nothing
+
+Break: (PR 50, CodeAnt) no breaker check after the budget wait.
+
+```
+    | Failed: DID NOT RAISE BrokerUnavailableError
+    | AssertionError: assert True is False
+    | AssertionError: assert [('place_orde...e': -1, ...})] == []
 ```

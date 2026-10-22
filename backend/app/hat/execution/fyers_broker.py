@@ -266,6 +266,7 @@ WRITE_WAIT = 3.0  # seconds a write waits for a call before it is refused, not s
 THROTTLE_PAUSE = 1.0  # seconds the budget pauses after a 429 without a usable Retry-After
 MAX_PAUSE = 60.0  # a Retry-After longer than this is read as this
 _WRITER_POLL = 0.05  # how often a read waiting behind a write looks again
+_WAIT_SLACK = 1e-6  # seconds added to a wait, against float rounding at the window edge
 
 
 @dataclass(frozen=True)
@@ -278,7 +279,15 @@ class CallLimits:
 
 
 def _read_limit(limit: int) -> int:
+    """A read's share of a second or minute window: at least one call, so reads still run (the
+    window frees within a minute)."""
     return max(1, math.floor(limit * READ_SHARE))
+
+
+def _read_day_limit(limit: int) -> int:
+    """A read's share of the day: no minimum, so reads never spend the day's last write (a day
+    cap of 1 is a write's alone)."""
+    return math.floor(limit * READ_SHARE)
 
 
 class CallBudget:
@@ -317,7 +326,7 @@ class CallBudget:
         if today != self._day_of:
             self._day_of, self._day_count = today, 0
         if limits.per_day is not None:
-            day_limit = limits.per_day if write else _read_limit(limits.per_day)
+            day_limit = limits.per_day if write else _read_day_limit(limits.per_day)
             if self._day_count >= day_limit:
                 return math.inf
         while self._sent and self._sent[0] <= now - 60.0:
@@ -332,7 +341,9 @@ class CallBudget:
         if len(self._sent) >= per_minute:
             wait = max(wait, self._sent[len(self._sent) - per_minute] + 60.0 - now)
         if wait > 0:
-            return wait
+            # a microsecond over, so the call at `now + wait` is past the window's edge whatever
+            # the float rounding of `now + wait`
+            return wait + _WAIT_SLACK
         self._sent.append(now)
         self._day_count += 1
         return 0.0
@@ -427,11 +438,8 @@ def _watch_responses(model: Any) -> None:  # noqa: ANN401 - the untyped fyers_ap
 _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fyers-broker")
 
 
-@dataclass(frozen=True)
 class _Throttled:
-    """A call Fyers answered with HTTP 429, and its Retry-After header."""
-
-    retry_after: object
+    """A call Fyers answered with HTTP 429 (the budget is already paused)."""
 
 
 class FyersBroker:
@@ -457,10 +465,12 @@ class FyersBroker:
     def client(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
         """Current Fyers SDK model, or None when there is no usable session."""
         try:
-            return self._client_source()
+            model = self._client_source()
         except Exception as error:
             logger.warning("Fyers broker not connected (%s)", type(error).__name__)
             return None
+        _watch_responses(model)  # every model a call resolves sees its 429s
+        return model
 
     def _call_with_guard(
         self,
@@ -485,7 +495,15 @@ class FyersBroker:
             kind, WRITE_WAIT if kind == WRITE else READ_WAIT
         ):
             return _throttled(operation)
-        _watch_responses(self.client)
+        if self.breaker.is_open():  # opened by another call while this one waited
+            return fallback if not_sent is None else not_sent
+
+        def throttled() -> _Throttled:
+            # paused here, not by the caller: a 429 that lands after the caller timed out still
+            # slows every later call
+            if budget is not None:
+                budget.pause(_retry_after(_HTTP.retry_after))
+            return _Throttled()
 
         def watched() -> object:
             _HTTP.status = _HTTP.retry_after = None
@@ -493,10 +511,10 @@ class FyersBroker:
                 result = fn()
             except Exception:
                 if _HTTP.status == HTTP_TOO_MANY_REQUESTS:
-                    return _Throttled(_HTTP.retry_after)
+                    return throttled()
                 raise
             if _HTTP.status == HTTP_TOO_MANY_REQUESTS:
-                return _Throttled(_HTTP.retry_after)
+                return throttled()
             return result
 
         future = _EXECUTOR.submit(watched)
@@ -504,8 +522,6 @@ class FyersBroker:
             result = future.result(timeout=timeout_sec)
             if isinstance(result, _Throttled):
                 logger.warning("Fyers operation %s rate limited (HTTP 429)", operation)
-                if budget is not None:
-                    budget.pause(_retry_after(result.retry_after))
                 return _throttled(operation)
             self.breaker.record_success()
             return result
