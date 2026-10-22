@@ -1,17 +1,18 @@
 {
  "momentum-breakout-ep": {
   "metrics": {
-   "avg_loss_r": "-0.816219",
-   "avg_mae_r": "-0.992811",
-   "avg_mfe_r": "0.908236",
+   "avg_loss_r": "-1.165252",
+   "avg_mae_r": "-1.254301",
+   "avg_mfe_r": "0.644535",
    "avg_win_r": null,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
    },
-   "expectancy_r": "-0.816219",
-   "fees": "538.9300",
-   "final_equity": "996945.5800",
+   "entry_day_low": "bars_5m_else_max_low_min_open_level_less_adr20",
+   "expectancy_r": "-1.165252",
+   "fees": "556.0700",
+   "final_equity": "995641.8300",
    "initial_equity": "1000000",
    "known_gaps": [
     "trigger_is_level_break_only",
@@ -19,24 +20,24 @@
     "close_exits_at_official_close",
     "kill_switches_not_simulated"
    ],
-   "max_drawdown": 0.003054420000000002,
-   "net_pnl": "-3054.4200",
+   "max_drawdown": 0.00435817000000005,
+   "net_pnl": "-4358.1700",
    "rejections": {},
    "returns": {
-    "kurtosis": 23.638344996496564,
-    "skew": -3.6806645798285573,
-    "sr": -0.19843967199686008,
+    "kurtosis": 27.968160534069163,
+    "skew": -4.912246088127568,
+    "sr": -0.22764752027565335,
     "t": 100
    },
    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2",
    "sessions": 100,
-   "sharpe_annual": -3.1501321341175195,
+   "sharpe_annual": -3.613792351379477,
    "signals": 3,
    "skips": {},
    "slippage_bps": "0",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
-   "sum_r": "-2.448658",
-   "total_return": -0.003054420000000002,
+   "sum_r": "-3.495757",
+   "total_return": -0.00435817000000005,
    "trades": 3,
    "win_rate": 0.0
   },
@@ -79,18 +80,18 @@
    {
     "entry_date": "2025-07-08",
     "entry_price": "639.0900",
-    "exit_date": "2025-07-14",
+    "exit_date": "2025-07-08",
     "exit_reason": "hard_stop",
-    "fees": "48.3400",
-    "holding_days": "6",
-    "initial_stop": "602.9000",
+    "fees": "65.4800",
+    "holding_days": "0",
+    "initial_stop": "612.6000",
     "instrument_id": "00000000-0000-0000-0000-000000002009",
-    "mae_r": "-0.2155290000",
-    "mfe_r": "0.7911030000",
+    "mae_r": "-1.0000000000",
+    "mfe_r": "0E-10",
     "playbook": "breakout",
-    "qty": "34",
-    "r_multiple": "-0.0054940000",
-    "realized_pnl": "-6.7600",
+    "qty": "47",
+    "r_multiple": "-1.0525930000",
+    "realized_pnl": "-1310.5100",
     "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
    }
   ],
@@ -106,6 +107,7 @@
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
    },
+   "entry_day_low": "bars_5m_else_max_low_min_open_level_less_adr20",
    "expectancy_r": "8.003568",
    "fees": "74.2300",
    "final_equity": "1009938.5100",

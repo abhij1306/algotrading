@@ -26,6 +26,15 @@ hit on the way down, a profit rule fires at the first tick price on the way up a
 `exits.evaluate` acts, and the close rules see the official close. Fills go through the cost
 model (`app.hat.backtest.costs`): slippage against the trade, then statutory charges.
 
+The entry day (PR 60, HAT-BT-020): an entry breaks its level after the day's pre-break low, read
+from the session's 5-minute bars when the run has them and otherwise estimated as
+max(day low, min(open, level x (1 - adr20 / 100))) with `adr20` as of the session before; a low-of-
+day stop is planned from it, as live plans it from the bars up to the trigger. Whatever of the
+day's low lies below the pre-break low came after the break, and is taken before the high (the
+adverse order): a stop it reaches fills that day, and it seeds the trade's MAE. A gap-over entry
+with a low-of-day stop needs the opening range's low, so without 5-minute bars it is skipped
+(`gap_over_no_intraday`). The rule is recorded in every run's metrics (`entry_day_low`).
+
 Known gaps, recorded in every run's metrics and measured in shadow (PLAN Q4):
 - the trigger is the break of the level alone: `volume_pace`, `adtr_filter` and the opening range
   need intraday bars (HAT-DEC-I4) and are not modelled, and the episodic-pivot playbook, which is
@@ -93,7 +102,14 @@ from . import exits, lifecycle, trades, watchlist
 from .portfolio.universe import Interval
 from .regime_gate import regime_allows_longs
 from .scan import EP_PLAYBOOK, ScanInputs
-from .stops import SKIP_BAD_INPUT, StopInputs, check_width, mean_true_range, plan_stop
+from .stops import (
+    SKIP_BAD_INPUT,
+    SKIP_TOO_WIDE,
+    StopInputs,
+    check_width,
+    mean_true_range,
+    plan_stop,
+)
 from .strategy.config import (
     Playbook,
     StopAtrMultiple,
@@ -118,6 +134,7 @@ __all__ = [
     "WatchRow",
     "compute_metrics",
     "first_trigger",
+    "pre_break_low",
     "run_backtest",
     "trades_parquet",
 ]
@@ -135,6 +152,9 @@ KNOWN_GAPS = (
 END_OF_PERIOD = "end_of_period"
 DELISTED = "delisted"
 SKIP_NO_LEVEL = "no_trigger_level"
+SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
+# How the loop reads the entry day's low before and after the break (HAT-BT-020, PR 60).
+ENTRY_DAY_LOW = "bars_5m_else_max_low_min_open_level_less_adr20"
 _SANDBOX_USER = uuid.UUID(int=1)
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
@@ -182,6 +202,12 @@ class MarketData:
     industries: Mapping[str, str | Sequence[tuple[date, str]]] = field(default_factory=dict)
     series: Mapping[str, str] = field(default_factory=dict)
     last_traded: Mapping[str, date] = field(default_factory=dict)
+    # 5-minute bars of a session, keyed (instrument_id, date): (high, low) per bar in time order,
+    # the 09:15 bar first, on the daily bars' (adjusted) scale. A session without them uses the
+    # daily estimate (PR 60).
+    intraday: Mapping[tuple[str, date], Sequence[tuple[Decimal, Decimal]]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -657,7 +683,8 @@ class _Run:
         if isinstance(rule, StopBelowFinalContractionLow):
             # The contraction stop does not move with the entry; only its width is checked again.
             if row.planned_stop is None:
-                return None, SKIP_BAD_INPUT
+                # The scan leaves the plan empty when the stop at the pivot is too wide.
+                return None, SKIP_TOO_WIDE
             plan = check_width(
                 entry,
                 Decimal(row.planned_stop),
@@ -742,16 +769,45 @@ class _Run:
             price = entry_fill(bar.open, bar.high, level)
             if price is None:
                 continue  # the level did not break: the row expires at the session end
-            gapped = price == bar.open
-            # On the path open -> low -> high, a break from below comes after the day's low; a
-            # gap over enters at the open, before it.
-            before = bar.open if gapped else bar.low
             playbook = self.config.playbook(row.playbook)
+            lows = self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
+            if isinstance(lows, str):
+                self._skip(lows)
+                continue
+            before, dip = lows
             stop, skip = self._stop(playbook, row, price, before, prev)
             if stop is None:
                 self._skip(skip or SKIP_BAD_INPUT)
                 continue
-            self._enter(row, bar, price, stop, prev, _at(day, _AT_ENTRY, n), gapped=gapped)
+            self._enter(row, bar, price, stop, prev, _at(day, _AT_ENTRY, n), dip=dip)
+
+    def _entry_lows(
+        self,
+        playbook: Playbook,
+        instrument_id: str,
+        bar: _Bar,
+        level: Decimal,
+        price: Decimal,
+        days: tuple[date, date],
+    ) -> tuple[Decimal, Decimal | None] | str:
+        """(the entry day's low before the break, its low after the entry or None), or the skip
+        reason when a low-of-day stop cannot know the low before the break (HAT-BT-020, PR 60)."""
+        day, prev = days
+        intraday = self.data.intraday.get((instrument_id, day), ())
+        adr20 = self._feature(prev, instrument_id, "adr20")
+        low_of_day = isinstance(playbook.stop, StopLowOfDay)
+        gapped = price == bar.open
+        if low_of_day and not intraday:
+            if gapped:
+                # A gap over enters at the open: its stop needs the opening range's low.
+                return SKIP_GAP_NO_INTRADAY
+            if adr20 is None or adr20 <= 0:
+                return SKIP_BAD_INPUT  # the whole day's low would be read before the break
+        before, after = pre_break_low(bar.open, bar.low, level, adr20, intraday)
+        if gapped and not low_of_day:
+            # A gap over enters at the open and then sees the whole day's way down.
+            return before, bar.low
+        return before, after
 
     def _enter(
         self,
@@ -762,8 +818,10 @@ class _Run:
         prev: date,
         at: datetime,
         *,
-        gapped: bool,
+        dip: Decimal | None,
     ) -> None:
+        """Open the entry; `dip` is the day's low after the entry (None: none below the break's),
+        taken before the high, so a stop it reaches fills that day and it seeds the MAE."""
         instrument_id = str(row.instrument_id)
         held_prices = {
             uuid.UUID(h.instrument_id): self.last_close[h.instrument_id]
@@ -804,8 +862,9 @@ class _Run:
             return
         day = row.trade_date
         self.held[position.id] = _Held(instrument_id, day, price, price)
-        if gapped:
-            self._down_leg(position, bar, day)
+        if dip is not None and dip < price:
+            # From the entry down to the low: a stop it reaches fills at min(entry, stop).
+            self._down_leg(position, _Bar(price, bar.high, dip, bar.close), day)
         self._up_leg(position, price, bar.high, day)
 
     # --- the close, delistings, the period end ------------------------------------------------
@@ -1028,6 +1087,34 @@ def _acts(rules: Sequence[Any], state: exits.PositionState, price: Decimal) -> b
     return bool(result.actions or result.new_stop is not None or result.fired)
 
 
+def pre_break_low(
+    bar_open: Decimal,
+    bar_low: Decimal,
+    level: Decimal,
+    adr20: Decimal | None,
+    intraday: Sequence[tuple[Decimal, Decimal]] = (),
+) -> tuple[Decimal, Decimal | None]:
+    """(the day's low before an entry at `level` broke, its low after the break or None) on an
+    entry day (HAT-BT-020, PR 60). With the session's 5-minute bars: the lowest low of the bars
+    up to and including the first one whose high reaches the level, as live reads it, and the
+    lowest low of the bars after that one (or the day low, when the bars miss it). Without
+    them: max(day low, min(open, level x (1 - adr20 / 100))), and the day low as the low after
+    the break when it is below that; with no `adr20` the whole day's low comes before the
+    break."""
+    if intraday:
+        lows = [low for _, low in intraday]
+        at = next((i for i, (high, _) in enumerate(intraday) if high >= level), len(lows) - 1)
+        # The trigger bar's low counts before the break (the stop is planned from it); a day low
+        # the bars miss is taken as after it.
+        later = [*lows[at + 1 :], *([bar_low] if bar_low < min(lows) else [])]
+        return min(lows[: at + 1]), (min(later) if later else None)
+    if adr20 is None or adr20 <= 0:
+        return bar_low, None
+    estimate = min(bar_open, level * (1 - adr20 / 100))
+    before = max(bar_low, estimate)
+    return before, (bar_low if bar_low < before else None)
+
+
 def first_trigger(
     rules: Sequence[Any],
     state: exits.PositionState,
@@ -1119,6 +1206,7 @@ def compute_metrics(
         "strategy_version_id": str(spec.strategy_version_id),
         "risk_policy_version_id": str(spec.policy.version_id),
         "known_gaps": list(KNOWN_GAPS),
+        "entry_day_low": ENTRY_DAY_LOW,
     }
 
 

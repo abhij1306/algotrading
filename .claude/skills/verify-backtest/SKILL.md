@@ -18,6 +18,9 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.entry_fill_proxy` An entry fills at the level when the open is at or below it and the high reaches it, at the open on a gap over, and not at all when the high stays below (HAT-BT-020). Harm: the backtest buys a gap at the level, a price the market never offered.
 - `PBT backtest.entry_fill_proxy_chase` In a run, every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at the proxy price of that level and within max chase of it, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses.
 - `PBT backtest.stop_on_instrument_tick` Every opened entry's stop is entry x 0.95 rounded down to the instrument's NSE tick of the trade date (`data.ticks.tick_for_date` on the closes before it), with prices scaled into the 0.01 and the 0.10 slab (HAT-BT-020 design, HAT-EXEC-053). Harm: backtest stops sit on a grid the live trigger never uses, so backtest and live risk differ.
+- `PBT backtest.pre_break_low` The entry day's low before the break is the lowest low of the 5-minute bars up to the first one that reaches the level, and the low after it the lowest of the later bars (or a day low they miss); without them it is max(day low, min(open, level x (1 - adr20/100))), with the day low after the break only when lower (HAT-BT-020 design, PR 60). Harm: a low-of-day stop reads a low made after the entry.
+- `PBT backtest.entry_day_stop` Under a low-of-day stop, with and without generated 5-minute bars, every entry's stop is the live plan from the low before the break, a gap over without 5-minute bars is skipped and counted as `gap_over_no_intraday`, an entry without them needs adr20 (generated markets blank it on some dates), and an entry-day low at or below the stop exits that day at -1 R (MAE -1), while a higher one bounds the MAE (HAT-BT-020 design, PR 60). Harm: an S2 entry's stop sits at a low made after the entry, and the entry day's loss is never seen.
+- `PBT backtest.contraction_stop_too_wide` A contraction stop the scan left empty skips the trigger as `stop_too_wide`, never `stop_input_missing` (HAT-BT-020 design, PR 60). Harm: skip counts blame missing data for a stop the plan refused as too wide.
 - `PBT backtest.exit_fill_proxy` A stop fills at min(open, stop) when the day reaches it and is never better than the stop; a day above it does not fill (HAT-BT-021). Harm: gap-down losses are understated.
 - `PBT backtest.exit_fill_proxy_close` A trade closed by a close-based rule sold at that day's official close, and `close_exits_at_official_close` is a recorded known gap. Harm: close exits are priced at a better point of the day than the rule could see.
 - `PBT backtest.decimal_money` Quantities are whole and at least 1, money is Decimal, and the trades' net P&L sums exactly to the change in equity (HAT-BT-024). Harm: float drift makes equity and the trades disagree.
@@ -104,10 +107,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `840428f9ed522ff89c666f949772602d8633db22a7455405c205a77a824143fb`
+Covered digest: `961d82b10b84f56cdf7366de0c814f97851a45e52a2fb18f2596559f41f8eb9f`
 
 ## Scope changes
 
+- PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`), the low after the break can stop the trade out on the entry day and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
 - PR 54: the loop's re-check of a contraction stop at the fill price (`check_width`) also applies the rule's `min_pct` (`stop_too_narrow`, default 0 = off; property in `verify-stops`). The seeds' golden replay is unchanged by the S1 `close_vs_pivot` criterion.
 - Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
 
@@ -272,6 +276,93 @@ tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:241: in test_stop_on_instrument_tick
     assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
 E   AssertionError: assert Decimal('2282.2800') == Decimal('2282.20')
+```
+
+### PBT backtest.pre_break_low
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: with 5-minute bars, the low before the break taken over the whole day's bars.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:279: in test_pre_break_low
+    assert before == min(seen)
+E   AssertionError: assert Decimal('8') == Decimal('9')
+```
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: the trigger bar's low counted after the break as well as before it.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:280: in test_pre_break_low
+    assert after == (min(rest) if rest else None)
+E   AssertionError: assert Decimal('9') == None
+```
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: a day low the 5-minute bars miss dropped instead of counted after the break.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:280: in test_pre_break_low
+    assert after == (min(rest) if rest else None)
+E   AssertionError: assert None == Decimal('8.99')
+```
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: without the bars, the estimate min(open, level x (1 - adr20/100)) used even below the day's low.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:287: in test_pre_break_low
+    assert before == max(day_low, min(open_, level * (1 - adr20 / 100)))
+E   AssertionError: assert Decimal('8.55') == Decimal('9')
+```
+
+### PBT backtest.entry_day_stop
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: the low-of-day stop planned from the whole day's low again.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:368: in test_entry_day_stop
+    assert signal.stop_price == low_of_day(entry, [before], 1, _tick(data, iid, day)).stop
+E   AssertionError: assert Decimal('142.2600') == Decimal('144.87')
+```
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: a gap over without 5-minute bars entered instead of skipped.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:356: in test_entry_day_stop
+    assert result.skips.get("gap_over_no_intraday", 0) == gaps
+E   AssertionError: assert 0 == 13
+```
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: a low-of-day entry with no 5-minute bars and no adr20 entered on the whole day's low.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:366: in test_entry_day_stop
+    assert intraday or (adr20 is not None and adr20 > 0)
+E   AssertionError: assert (() or (Decimal('0.0000') is not None and Decimal('0.0000') > 0))
+```
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: the entry day's low after the break never run (no same-day stop, no MAE seed).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:374: in test_entry_day_stop
+    assert outcome == (day, "hard_stop", -1, -1)
+E   AssertionError: assert (datetime.dat....1867220000')) == (datetime.dat...stop', -1, -1)
+```
+
+### PBT backtest.contraction_stop_too_wide
+
+Break: (PR 60) in `backend/app/hat/engine/backtest.py`: an empty contraction plan skipped as `stop_input_missing` again.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:399: in test_contraction_stop_too_wide
+    assert result.skips.get(SKIP_BAD_INPUT, 0) == 0
+E   AssertionError: assert 13 == 0
 ```
 
 ### PBT backtest.exit_fill_proxy
