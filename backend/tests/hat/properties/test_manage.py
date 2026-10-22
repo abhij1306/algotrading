@@ -5,6 +5,7 @@ adapter over `FakeBroker`. Nothing reaches a real broker."""
 from __future__ import annotations
 
 import json
+import threading
 import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -39,6 +40,7 @@ from app.hat.execution.protect import (
     ALERT_GTT_UNVERIFIED,
     ALERT_STOP_NOT_MOVED,
     ALERT_STOP_NOT_PLACED,
+    CODE_SERIES_UNMAPPED,
     EVENT_GTT_TRIGGERED,
     LIVE,
     STOP_DAY,
@@ -58,7 +60,7 @@ from app.hat.models import (
 )
 from app.hat.risk import controls
 from app.hat.telegram.render import URGENT_ALERTS
-from app.hat.time import IST
+from app.hat.time import IST, trade_date_of
 
 D = Decimal
 WRITES = ("place_order", "modify_order", "cancel_order", "place_gtt", "modify_gtt", "cancel_gtt")
@@ -1485,6 +1487,67 @@ def test_ex_date_gtt_replaced(ex: int | None, kind: str, shape: str, refused: bo
         assert D(day_stop.trigger_price) == broker_trigger(D(position.current_stop), TICK)
 
 
+@settings(max_examples=12, deadline=None)
+@given(
+    shape=st.sampled_from(["cancelled", "dropped"]),
+    other=st.sampled_from(["protect", "verify"]),  # the fill sync's step, or the nightly verify
+)
+@example(shape="cancelled", other="protect")
+def test_ex_date_check_serialised(shape: str, other: str) -> None:
+    """HAT-EXEC-145 (PR 47, CodeAnt): the 08:40 check runs on the job's thread while the fill
+    sync runs on its own over the same desk. When the other path reaches the position between
+    the check ending the broker-cancelled GTT and placing its new one, it waits on the
+    position's stop lock and then finds the new GTT: exactly one GTT is placed. Harm: two GTT
+    sales rest over the same shares, and the second trigger sells shares HAT no longer holds."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(16, 0))
+        [old] = rig.stops(position.id)
+        session.add(
+            HatCorporateAction(
+                instrument_id=position.instrument_id,
+                ex_date=CHECK_DAY,
+                action_type=TYPE_DIVIDEND,
+                adjustment_factor=D(1),
+                raw_text="fixture",
+                source="mcp",
+            )
+        )
+        session.commit()
+        _book_shape(rig, old, shape)
+        now = _on(CHECK_DAY, 8, 40)
+        desk = rig.desk
+        tick_for = desk._tick_for  # noqa: SLF001
+        threads: list[threading.Thread] = []
+
+        def other_path() -> None:
+            with Session(session.get_bind()) as second:
+                if other == "protect":
+                    desk.protect(second, position.id, now)
+                else:
+                    desk.verify(second, position.id, now)
+
+        def tick_then_race(s: Session, p: HatPosition) -> Decimal | None:
+            # the check's first tick read comes after the old GTT was ended, before the new one
+            # is reserved: the other path starts there and gets a moment to run
+            if not threads:
+                threads.append(threading.Thread(target=other_path))
+                threads[0].start()
+                threads[0].join(timeout=0.5)
+            return tick_for(s, p)
+
+        desk._tick_for = tick_then_race  # type: ignore[method-assign]  # noqa: SLF001
+        start = len(rig.fake.calls)
+        rig.manager.check_ex_date_gtts(session, rig.account_id, now)
+        assert threads, "the check never placed a stop"
+        threads[0].join(timeout=10)
+        assert not threads[0].is_alive()
+        placed = [name for name, _ in rig.fake.calls[start:] if name == "place_gtt"]
+        assert len(placed) == 1
+        session.expire_all()
+        assert len([row for row in rig.stops(position.id, *LIVE) if row.purpose == STOP_GTT]) == 1
+
+
 class _Book:
     """Exit levels for any instrument: a view is always there to give."""
 
@@ -1500,17 +1563,28 @@ class _Book:
     successor=st.sampled_from(["none", "mapped", "unmapped", "other_isin"]),
     shape=st.sampled_from(["resting", "cancelled", "dropped"]),
     renamed=st.booleans(),  # the new series also took a new NSE symbol
+    cancel_ok=st.booleans(),
+    morning=st.booleans(),  # the 08:40 check runs (its switch on), else the nightly verify alone
 )
-@example(successor="mapped", shape="cancelled", renamed=False)
-@example(successor="mapped", shape="cancelled", renamed=True)
-@example(successor="other_isin", shape="cancelled", renamed=False)
-def test_series_change_remapped(successor: str, shape: str, renamed: bool) -> None:
+@example(successor="mapped", shape="cancelled", renamed=False, cancel_ok=True, morning=True)
+@example(successor="mapped", shape="cancelled", renamed=True, cancel_ok=True, morning=True)
+@example(successor="other_isin", shape="cancelled", renamed=False, cancel_ok=True, morning=True)
+@example(successor="mapped", shape="resting", renamed=False, cancel_ok=True, morning=True)
+@example(successor="mapped", shape="resting", renamed=False, cancel_ok=False, morning=True)
+@example(successor="mapped", shape="resting", renamed=False, cancel_ok=True, morning=False)
+def test_series_change_remapped(
+    successor: str, shape: str, renamed: bool, cancel_ok: bool, morning: bool
+) -> None:
     """HAT-EXEC-146 (PR 47, research G17): when the instrument of an open real position leaves
     the listing and the same ISIN trades on under another series (EQ to BE), the position is
     manage-only (no exit view), alerted URGENT `position.series_changed` naming the new series
     and its Fyers symbol (or `unmapped`) by the morning check and every nightly verify, and its
     GTT is checked against the book: one the broker cancelled is placed again under the
-    successor's Fyers symbol, under its NSE symbol when it took a new one. A delisted row with
+    successor's Fyers symbol, under its NSE symbol when it took a new one; one still listed
+    under the old symbol (which takes no order) is cancelled first, and a refused cancel is
+    alerted `gtt.unverified` with nothing placed and the run failed. The nightly verify does the
+    same for a GTT still under the old symbol (a refused cancel leaves it refreshed). A delisted
+    row with
     no such successor, or none delisted, is no
     series change. Harm: the old `-EQ` GTT is gone, every order under it is refused, and exit
     rules run on prices that stopped."""
@@ -1528,9 +1602,11 @@ def test_series_change_remapped(successor: str, shape: str, renamed: bool) -> No
         position = _opened(rig, at(16, 0))
         [old] = rig.stops(position.id)
         be_symbol = "NSE:SBINBE-BE" if renamed else "NSE:SBIN-BE"
+        # the old GTT went out two days before the refresh that delisted the old row
+        old.placed_at = rig.wall() - timedelta(days=2)
         if successor != "none":
             old_instrument.active = False
-            old_instrument.delisted_on = CHECK_DAY
+            old_instrument.delisted_on = trade_date_of(rig.wall()) - timedelta(days=1)
             moved = HatInstrument(
                 market_id=old_instrument.market_id,
                 isin="INE999999999" if successor == "other_isin" else old_instrument.isin,
@@ -1548,26 +1624,12 @@ def test_series_change_remapped(successor: str, shape: str, renamed: bool) -> No
                 )
             session.commit()
         _book_shape(rig, old, shape)
+        if not cancel_ok:
+            rig.fake.script("cancel_gtt", NOT_FOUND)
         changed = successor in ("mapped", "unmapped")
-        start, alerts = len(rig.fake.calls), len(rig.notifier.alerts)
-        rig.manager.check_ex_date_gtts(session, rig.account_id, _on(CHECK_DAY, 8, 40))
-        flagged = [p for c, _, p in rig.notifier.alerts[alerts:] if c == ALERT_SERIES_CHANGED]
         assert ALERT_SERIES_CHANGED in URGENT_ALERTS
-        if not changed:
-            assert flagged == []
-            assert not _read_book(rig, start)
-            assert _writes_since(rig, start) == []
-        else:
-            [payload] = flagged
-            assert (payload["from"], payload["to"]) == ("EQ", "BE")
-            assert payload["broker_symbol"] == (be_symbol if successor == "mapped" else "unmapped")
-            placed = [args for name, args in rig.fake.calls[start:] if name == "place_gtt"]
-            if shape == "resting":
-                assert placed == []
-            else:
-                [gtt] = placed
-                if successor == "mapped":
-                    assert gtt["symbol"] == be_symbol  # type: ignore[index]
+        if morning:
+            _check_series_morning(rig, position, old, successor, shape, cancel_ok, be_symbol)
         views = ExitViews(
             _Book(),  # type: ignore[arg-type]
             lambda _iid: D(100),
@@ -1576,10 +1638,76 @@ def test_series_change_remapped(successor: str, shape: str, renamed: bool) -> No
         )
         session.refresh(position)
         assert (views(session, position) is None) == changed
-        alerts = len(rig.notifier.alerts)
+        start, alerts = len(rig.fake.calls), len(rig.notifier.alerts)
         rig.manager.verify_stops(session, rig.account_id, _on(CHECK_DAY, 23, 0))
         nightly = [c for c, _, _ in rig.notifier.alerts[alerts:] if c == ALERT_SERIES_CHANGED]
         assert len(nightly) == (1 if changed else 0)
+        if morning and successor == "mapped" and (shape != "resting" or cancel_ok):
+            # the GTT the morning placed under the new symbol is left resting
+            assert "place_gtt" not in [name for name, _ in rig.fake.calls[start:]]
+        if successor == "unmapped":
+            assert "place_gtt" not in [name for name, _ in rig.fake.calls[start:]]
+        elif not morning and changed and shape == "resting":
+            placed = [args for name, args in rig.fake.calls[start:] if name == "place_gtt"]
+            names = [name for name, _ in rig.fake.calls[start:]]
+            if not cancel_ok:
+                assert placed == []  # refreshed in place; the next night tries again
+            else:
+                assert names.index("cancel_gtt") < names.index("place_gtt")
+                [gtt] = placed
+                if successor == "mapped":
+                    assert gtt["symbol"] == be_symbol  # type: ignore[index]
+
+
+def _alert_codes(rig: ManageRig, since: int) -> list[tuple[str, object]]:
+    """(alert, its payload's code) of every alert after the first `since`."""
+    return [(c, p.get("code")) for c, _, p in rig.notifier.alerts[since:]]
+
+
+def _check_series_morning(
+    rig: ManageRig,
+    position: HatPosition,
+    old: HatOrder,
+    successor: str,
+    shape: str,
+    cancel_ok: bool,
+    be_symbol: str,
+) -> None:
+    """The 08:40 check of `test_series_change_remapped`."""
+    session = rig.session
+    changed = successor in ("mapped", "unmapped")
+    start, alerts = len(rig.fake.calls), len(rig.notifier.alerts)
+    report = rig.manager.check_ex_date_gtts(session, rig.account_id, _on(CHECK_DAY, 8, 40))
+    flagged = [p for c, _, p in rig.notifier.alerts[alerts:] if c == ALERT_SERIES_CHANGED]
+    if not changed:
+        assert flagged == []
+        assert not _read_book(rig, start)
+        assert _writes_since(rig, start) == []
+    else:
+        [payload] = flagged
+        assert (payload["from"], payload["to"]) == ("EQ", "BE")
+        assert payload["broker_symbol"] == (be_symbol if successor == "mapped" else "unmapped")
+        placed = [args for name, args in rig.fake.calls[start:] if name == "place_gtt"]
+        names = [name for name, _ in rig.fake.calls[start:]]
+        if successor == "unmapped":
+            # no Fyers symbol for BE: nothing goes out under the old `-EQ` one, and a GTT still
+            # listed is left for the owner
+            assert placed == []
+            assert "cancel_gtt" not in names
+            if shape != "resting":
+                assert (ALERT_STOP_NOT_PLACED, CODE_SERIES_UNMAPPED) in _alert_codes(rig, alerts)
+        elif shape == "resting" and not cancel_ok:
+            assert placed == []
+            assert ALERT_GTT_UNVERIFIED in rig.codes()
+            assert report.failed == [position.id]
+        else:
+            if shape == "resting":
+                assert names.index("cancel_gtt") < names.index("place_gtt")
+            session.refresh(old)
+            assert old.status == "cancelled"
+            [gtt] = placed
+            if successor == "mapped":
+                assert gtt["symbol"] == be_symbol  # type: ignore[index]
 
 
 @settings(max_examples=30, deadline=None)

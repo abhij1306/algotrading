@@ -283,10 +283,13 @@ def gate_inputs(
         (r["instrument_id"], r["close"], r["prev_close"])
         for r in frame.select("instrument_id", "close", "prev_close").to_dicts()
     ]
-    explained = {
+    explained = {  # a dividend's row changes no price, so it explains no move (HAT-DATA-062)
         str(i)
         for i in session.scalars(
-            select(HatCorporateAction.instrument_id).where(HatCorporateAction.ex_date == trade_date)
+            select(HatCorporateAction.instrument_id).where(
+                HatCorporateAction.ex_date == trade_date,
+                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES),
+            )
         )
     }
     return {

@@ -492,7 +492,7 @@ to an artefact that exists.
 | HAT-EXEC-142 | [07](07-execution-and-brokers.md) | 21, 31 | PBT `rescale.pending_is_manage_only` |
 | HAT-EXEC-143 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.broker_stop_follows` |
 | HAT-EXEC-144 | [07](07-execution-and-brokers.md) | 31 | PBT `rescale.unhandled_is_manage_only`, PBT `manage.flatten_capped_at_holdings`, PBT `corporate_actions.factor_parse_unparseable_is_reported`, PBT `rescale.price_neutral_changes_nothing` |
-| HAT-EXEC-145 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.ex_date_gtt_replaced`, PBT `ops.ex_date_job_behind_flag` |
+| HAT-EXEC-145 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.ex_date_gtt_replaced`, PBT `ops.ex_date_job_behind_flag`, PBT `manage.ex_date_check_serialised` |
 | HAT-EXEC-146 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.series_change_remapped` |
 | HAT-TG-005 | [08](08-telegram.md) | 16 | PBT `telegram.unknown_chat_has_no_effect` |
 | HAT-TG-010 | [08](08-telegram.md) | 16 | CONF `telegram.no_webhook_no_listener` |

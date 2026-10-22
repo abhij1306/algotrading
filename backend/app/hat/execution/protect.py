@@ -51,7 +51,9 @@ codes only, never broker text.
 
 from __future__ import annotations
 
+import functools
 import logging
+import threading
 import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
@@ -80,7 +82,7 @@ from .broker import (
 )
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
-from .series import series_changed
+from .series import broker_symbol, series_changed
 from .submit import (
     EXIT_SALES,
     OrderRefusedError,
@@ -133,6 +135,7 @@ SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
 LOST_ANSWER_SETTLE = timedelta(seconds=60)
 # A GTT this old is placed again by the nightly verify: Fyers expires a GTT a year after it was
 # placed, and a modify may not reset that clock (research G24; [verify on a live account]).
+CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
 GTT_RENEW_AFTER = timedelta(days=300)
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
@@ -174,6 +177,22 @@ class _Target:
     signal: HatSignal
     account_id: uuid.UUID
     symbol: str
+    # The series changed and the new series has no stored Fyers symbol (a BZ stock): the
+    # adapter would fall back to the old `-EQ` symbol, so no stop is sent (HAT-EXEC-146).
+    unmapped: bool = False
+
+
+def _serialised(method: Callable[..., str]) -> Callable[..., str]:
+    """Hold the position's stop lock for the call. The fill sync and a trade job run on their
+    own threads over one desk: without it, both could see a cancelled stop and each place a new
+    one, leaving two GTTs over the same shares."""
+
+    @functools.wraps(method)
+    def locked(self: StopDesk, session: Session, position_id: uuid.UUID, *args: object) -> str:
+        with self._stop_lock(position_id):
+            return method(self, session, position_id, *args)
+
+    return locked
 
 
 class StopDesk:
@@ -202,6 +221,13 @@ class StopDesk:
         self._wall = wall
         # Entries whose remainder the broker was asked to cancel (`cancel_entry`): not asked again.
         self._entry_cancels: set[uuid.UUID] = set()
+        # One re-entrant lock per position around what places a stop (`_serialised`).
+        self._stop_locks: dict[uuid.UUID, threading.RLock] = {}
+        self._stop_locks_guard = threading.Lock()
+
+    def _stop_lock(self, position_id: uuid.UUID) -> threading.RLock:
+        with self._stop_locks_guard:
+            return self._stop_locks.setdefault(position_id, threading.RLock())
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows)."""
@@ -291,7 +317,8 @@ class StopDesk:
         )
         if signal is None or bot is None or symbol is None:
             raise HatError("position without signal, bot or instrument")
-        return _Target(position, signal, bot.broker_account_id, symbol)
+        unmapped = moved is not None and broker_symbol(session, moved.id) is None
+        return _Target(position, signal, bot.broker_account_id, symbol, unmapped)
 
     # --- events and alerts --------------------------------------------------------------------
 
@@ -354,6 +381,9 @@ class StopDesk:
     ) -> SendOutcome | str:
         """One send of a reserved stop: the outcome, or a refusal code (nothing was sent, or it
         cannot be told)."""
+        if target.unmapped:
+            self._release_unsent(session, tag)
+            return CODE_SERIES_UNMAPPED
         try:
             return send_order(
                 session,
@@ -394,6 +424,9 @@ class StopDesk:
         the next tag. True once the broker confirmed it; an unconfirmed send is left to the next
         sync (a day stop is looked up by its tag; a GTT waits for the nightly verify). A failure
         raises `alert`."""
+        if target.unmapped:
+            self._alert(alert, target, now, CODE_SERIES_UNMAPPED)  # no tag spent
+            return False
         tick = self._tick_for(session, target.position)
         reason = "broker_rejected"
         for _ in range(MAX_STOP_REJECTIONS):
@@ -501,6 +534,7 @@ class StopDesk:
 
     # --- protect, resize, cancel --------------------------------------------------------------
 
+    @_serialised
     def protect(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
         """After a fill: make the broker stop cover the open quantity (HAT-EXEC-060). A closed
         position's working stops are cancelled."""
@@ -784,6 +818,7 @@ class StopDesk:
 
     # --- the 15:25 swap -----------------------------------------------------------------------
 
+    @_serialised
     def swap(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
         """Replace the intraday stop with a GTT for the night (HAT-EXEC-061): the GTT first, the
         intraday stop cancelled only once the GTT is confirmed placed."""
@@ -840,6 +875,22 @@ class StopDesk:
             return False
         return self._cancel(session, target, row, now)
 
+    def _old_series(self, session: Session, target: _Target, row: HatOrder) -> bool:
+        """The GTT went out under the old series' symbol of a position whose instrument changed
+        series (HAT-EXEC-146): placed on or before the day the old row left the listing. That
+        symbol takes no order, so a GTT the broker still lists under it protects nothing. The
+        weekly refresh that delists runs on a Saturday, when no GTT is placed; one placed on that
+        day is counted old, so at worst it is placed again once. With no Fyers symbol for the new
+        series nothing could replace it, so it is left for the owner (the URGENT alert says
+        `unmapped`)."""
+        if target.unmapped or series_changed(session, target.position) is None:
+            return False
+        old = session.get(HatInstrument, target.position.instrument_id)
+        if row.placed_at is None or old is None or old.delisted_on is None:
+            return True
+        return trade_date_of(as_utc(row.placed_at)) <= old.delisted_on
+
+    @_serialised
     def check_gtt(
         self, session: Session, position_id: uuid.UUID, now: datetime, book: Collection[str]
     ) -> str:
@@ -852,7 +903,9 @@ class StopDesk:
         whose answer was lost is settled first; one still unsure is alerted (`gtt.unverified`)
         and nothing is placed on top of it. A position still awaiting a split or bonus rescale
         gets nothing yet (UNVERIFIED, so the job tries again; `ca.rescale` alerts it): a GTT at
-        its old-scale stop would rest above the ex-date price and sell at the open."""
+        its old-scale stop would rest above the ex-date price and sell at the open. A GTT still
+        listed under the old series' symbol (HAT-EXEC-146) is cancelled and placed again under
+        the new one; a refused cancel is alerted (`gtt.unverified`) and nothing is placed."""
         target = self._target(session, position_id)
         position = target.position
         if position.closed_at is not None or position.qty_open <= 0:
@@ -862,13 +915,19 @@ class StopDesk:
             self._settle(session, target, [row for row in gtts if self.lost(row)])
             gtts = [r for r in self.stops_of(session, position.id) if r.purpose == STOP_GTT]
         live = [row for row in gtts if row.status in LIVE and row.broker_order_id]
-        if any(row.broker_order_id in book for row in live):
+        stale = [row for row in live if self._old_series(session, target, row)]
+        if any(row.broker_order_id in book for row in live if row not in stale):
             return VERIFIED
         if any(self.lost(row) for row in gtts):
             self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
             return UNVERIFIED
         if pending_actions(session, position, trade_date_of(now)):
             return UNVERIFIED
+        for row in stale:
+            if row.broker_order_id in book and not self._cancel(session, target, row, now):
+                self._alert(ALERT_GTT_UNVERIFIED, target, now, "series_cancel_refused")
+                return UNVERIFIED
+        live = [row for row in live if row.status in LIVE]  # the broker cancelled these
         if live:
             self._alert(ALERT_GTT_MISSING, target, now, "gtt_cancelled_by_broker")
             for row in live:
@@ -889,6 +948,7 @@ class StopDesk:
         self._alert(ALERT_GTT_UNVERIFIED, target, now, reason)
         return FAILED
 
+    @_serialised
     def verify(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
         """Confirm the position's GTT rests at the broker at the current stop (HAT-EXEC-063,
         HAT-OPS-024): refreshed, else alerted and placed again."""
@@ -909,6 +969,15 @@ class StopDesk:
             # No GTT price can be set without the tick: told, and nothing is ended or placed.
             self._alert(ALERT_GTT_UNVERIFIED, target, now, "no_tick")
             return UNVERIFIED
+        if (
+            live
+            and self._old_series(session, target, live[-1][0])
+            and self._cancel(session, target, live[-1][0], now)
+        ):
+            # Placed under the old series' symbol, which takes no order (HAT-EXEC-146): placed
+            # again under the new one; a refused cancel leaves it refreshed and alerted by the
+            # series alert, and the next night tries again.
+            return REPLACED if self._place(session, target, STOP_GTT, now) else FAILED
         if live and self._renewed(session, target, live[-1][0], goal, now):
             # The old GTT is cancelled (the market is shut at the nightly verify, so nothing can
             # trigger meanwhile) and placed again, with a new placement date.

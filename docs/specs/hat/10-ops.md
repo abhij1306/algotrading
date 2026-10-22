@@ -776,8 +776,9 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 1. Alert: URGENT `position.series_changed` (symbol, old and new series, Fyers symbol or
    `unmapped`), at 08:40 (with `HAT_EXDATE_GTT_CHECK` on) and at every 23:00 `gtt.verify`.
 2. The position is manage-only: no exit rule runs on it, and its broker stops go out under the new
-   series' Fyers symbol. `unmapped` means no Fyers symbol is stored for the new series (BZ has
-   none): no stop can be placed.
+   series' Fyers symbol (a GTT still under the old symbol is cancelled and placed again).
+   `unmapped` means no Fyers symbol is stored for the new series (BZ has none): no stop is sent
+   (`stop.not_placed`, code `series_unmapped`) and a GTT under the old symbol is left as it is.
 3. Decide whether to keep it at Fyers yourself or `/flatten` it. The alert repeats until it is
    closed.
 
