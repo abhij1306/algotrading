@@ -465,9 +465,9 @@ class StopDesk:
         if lost:
             # A stop whose answer was lost may rest at the broker and could not be settled yet
             # (sent too recently, or the book unreadable): nothing is placed on top of it; the
-            # next sync settles it. Only one the settle could not decide is alerted: a young
-            # answer is still in flight and alerting it on every sync would only add noise.
-            if all(self._settled_long_enough(row) for row in lost):
+            # next sync settles it. Only an answer the settle could not decide is alerted: a
+            # young one is still in flight and alerting it on every sync would only add noise.
+            if any(self._settled_long_enough(row) for row in lost):
                 gtt = any(row.purpose == STOP_GTT for row in lost)
                 reason = "gtt_unconfirmed" if gtt else "stop_unconfirmed"
                 self._alert(ALERT_STOP_NOT_PLACED, target, now, reason)

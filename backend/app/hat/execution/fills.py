@@ -379,26 +379,20 @@ class FillSync:
 
     @staticmethod
     def _closed_with_unsure_stops(session: Session, account_id: uuid.UUID) -> set[uuid.UUID]:
-        """Closed real positions that still have a stop of unknown outcome."""
-        unsure = (
-            select(HatOrder.id)
-            .where(
-                HatOrder.position_id == HatPosition.id,
-                HatOrder.purpose.in_(STOPS),
-                HatOrder.status.in_(UNSURE),
-            )
-            .exists()
-        )
+        """Closed real positions that still have a stop of unknown outcome (read from the few
+        unsure stop orders, not from every closed position)."""
         return set(
             session.scalars(
-                select(HatPosition.id)
-                .join(HatBot, HatBot.id == HatPosition.bot_id)
+                select(HatOrder.position_id)
+                .join(HatPosition, HatPosition.id == HatOrder.position_id)
                 .where(
-                    HatBot.broker_account_id == account_id,
-                    HatPosition.is_virtual.is_(False),
+                    HatOrder.broker_account_id == account_id,
+                    HatOrder.is_virtual.is_(False),
+                    HatOrder.purpose.in_(STOPS),
+                    HatOrder.status.in_(UNSURE),
                     or_(HatPosition.closed_at.is_not(None), HatPosition.qty_open <= 0),
-                    unsure,
                 )
+                .distinct()
             )
         )
 

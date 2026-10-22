@@ -289,12 +289,11 @@ def _fire_again(session: Session, row: HatOrder) -> None:
         live_trades.unmark_fired(session, row.position_id, row.rule_ids)
 
 
-def end_lost_order(session: Session, row: HatOrder, *, fire_again: bool = True) -> None:
+def end_lost_order(session: Session, row: HatOrder) -> None:
     """An order whose answer was lost and that the broker's book does not hold after a good read
-    (no commit): it never landed, so it ends `expired`, and a sale's rules fire again unless
-    `fire_again` is false (a sale of an earlier session, which today's book cannot show)."""
+    (no commit): it never landed, so it ends `expired`, and a sale's rules fire again."""
     row.status = "expired"
-    if fire_again and row.purpose in EXIT_SALES:
+    if row.purpose in EXIT_SALES:
         _fire_again(session, row)
 
 
@@ -478,12 +477,14 @@ def _call_broker(
     return outcome.status, outcome.broker_order_id, outcome.code
 
 
-def _claim_first_attempt(session: Session, row: HatOrder) -> bool:
-    """Stamp the first attempt of `row` in one conditional UPDATE: False when another sender
-    (a thread or process holding the same tag) stamped it first."""
+def _claim_attempt(session: Session, row: HatOrder, earlier: datetime | None) -> bool:
+    """Stamp a new attempt of `row` (now) in one conditional UPDATE on the attempt this sender
+    read (`earlier`, None before the first): False when another sender (a thread or process
+    holding the same tag) stamped one since, so its call may be in flight."""
+    same = HatOrder.placed_at.is_(None) if earlier is None else HatOrder.placed_at == earlier
     claimed = session.execute(
         update(HatOrder)
-        .where(HatOrder.id == row.id, HatOrder.placed_at.is_(None))
+        .where(HatOrder.id == row.id, same)
         .values(placed_at=utc_now())
         .execution_options(synchronize_session=False)
     )
@@ -517,14 +518,14 @@ def send_order(
         # The lookup returned absent: the same tag may be placed again.
     request = _build_request(row, tag, symbol, tick_size)  # may refuse: nothing stamped yet
     earlier_attempt = row.placed_at
-    if earlier_attempt is None and not _claim_first_attempt(session, row):
-        # Another sender stamped this tag first: its call may be in flight, so this one sends
-        # nothing and reports what that send left (unconfirmed while it is still out).
+    # The attempt is stamped before the call, so a crash is seen as unknown; each attempt is
+    # stamped anew, so a lost answer's settle wait runs from the send that may be in flight.
+    if not _claim_attempt(session, row, earlier_attempt):
+        # Another sender stamped this tag since this one read it: its call may be in flight, so
+        # this one sends nothing and reports what that send left (unconfirmed while it is out).
         status = "unconfirmed" if row.status in ("pending", "unconfirmed") else row.status
         code = CODE_UNCONFIRMED if status == "unconfirmed" else CODE_OK
         return SendOutcome(tag, status, row.broker_order_id, code, 0)
-    row.placed_at = row.placed_at or utc_now()
-    session.commit()  # the attempt is stamped before the call, so a crash is seen as unknown
     # A reconciliation or restart since the first check may have closed the gate: read it again.
     refusal = guard.refusal(bot_id, row.broker_account_id, is_entry=row.purpose == ENTRY)
     if refusal is not None:

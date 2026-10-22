@@ -693,9 +693,10 @@ def test_a_settled_answer_never_sells_twice(case: str, path: str) -> None:
     cancelled at the broker by the first sync after the settle wait (`closed_sweep`). A lost
     sale that the broker filled is left to the fill sync, which records its fills, and no
     second sale goes out meanwhile (`landed_filled`). A lost sale of an earlier session that
-    today's book does not hold ends without firing its rule again (it may have sold) and is
-    alerted, and the position can still be sold (`earlier_session`). Harm: a GTT rests under
-    shares already sold, or a position is sold twice."""
+    today's book does not hold may have sold: it is left unsure with its rule fired, alerted,
+    and nothing more is sold while a broker stop keeps protecting the position
+    (`earlier_session`). Harm: a GTT rests under shares already sold, or a position is sold
+    twice."""
     with Session(memory_engine()) as session:
         rig = ManageRig(session, exits=exit_stack("partials"), settle_after=timedelta(minutes=1))
         if case == "closed_sweep":
@@ -740,10 +741,12 @@ def test_a_settled_answer_never_sells_twice(case: str, path: str) -> None:
             rig.elapsed = timedelta(days=4)
             start = len(rig.fake.calls)
             rig.manager.flatten(session, rig.account_id, at(11, 5))
+            rig.sync(at(11, 6))
             session.refresh(position)
             session.refresh(sale)
-            assert sale.status == "expired"
+            assert sale.status == "unconfirmed"
             assert set(sale.rule_ids) <= set(position.rules_fired or [])
             reasons = [p["reason"] for c, _, p in rig.notifier.alerts if c == ALERT_EXIT_NOT_PLACED]
             assert "sale_unresolved" in reasons
-            assert _sold(rig, start)
+            assert _sold(rig, start) == []
+            assert _resting(rig, position)

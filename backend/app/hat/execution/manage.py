@@ -365,10 +365,10 @@ class TradeManager:
             return None
         settled = self._settle_sales(session, position, signal.bot_id)
         if settled in (UNREADABLE, STALE):
-            # STALE: a lost sale of an earlier session ended without firing its rules again (it
-            # may have sold); the owner is told and this sale goes ahead.
+            # STALE: a lost sale of an earlier session that today's book cannot show may have
+            # sold, so the open quantity may be stale: nothing more is sold; the broker stop
+            # keeps protecting the position and the owner reconciles it.
             self._not_placed(signal, position, "sale_unresolved", now)
-        if settled == UNREADABLE:
             return None
         if settled == WAIT or self._desk.exit_working(session, position.id):
             return None  # one sale at a time; the next evaluation sees what it left
@@ -406,10 +406,9 @@ class TradeManager:
         (found: adopted; absent: it never landed, ends `expired` and its rules fire again).
         One found with shares sold is left to the fill sync, which records its fills with it
         (the position's open quantity is stale until then). The order book is today's, so a
-        lost sale of an earlier session that it does not hold may have sold: it ends `expired`
-        without firing its rules again. SETTLED, WAIT (sent too recently, or fills not yet
-        recorded), STALE (an earlier session's sale was ended so) or UNREADABLE (the order book
-        could not be read)."""
+        lost sale of an earlier session that it does not hold may have sold: it is left unsure.
+        STALE (such a sale), UNREADABLE (the order book could not be read), WAIT (sent too
+        recently, or fills not yet recorded) or SETTLED, the first that applies."""
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -429,27 +428,25 @@ class TradeManager:
         session.commit()
         if not lost:
             return SETTLED
-        if any(self._wall() - as_utc(row.placed_at) < self._settle_after for row in lost):
-            return WAIT
         try:
             book = {order.tag: order for order in self._broker.orders()}
         except BrokerUnavailableError:
             return UNREADABLE
-        outcome = SETTLED
+        stale = waiting = False
         for row in lost:
             found = book.get(row.tag)
-            if found is not None and found.filled_qty > 0:
-                outcome = WAIT
-                continue
-            if found is None:
-                earlier = self._earlier_session(row)
-                end_lost_order(session, row, fire_again=not earlier)
-                if earlier and outcome == SETTLED:
-                    outcome = STALE
+            if found is None and self._earlier_session(row):
+                stale = True
+            elif found is None and self._wall() - as_utc(row.placed_at) < self._settle_after:
+                waiting = True  # sent too recently: it may still be on its way
+            elif found is None:
+                end_lost_order(session, row)
+            elif found.filled_qty > 0:
+                waiting = True
             else:
                 adopt_broker_order(session, row, found, bot_id)
             session.commit()
-        return outcome
+        return STALE if stale else WAIT if waiting else SETTLED
 
     def _earlier_session(self, row: HatOrder) -> bool:
         """The order was sent on an earlier trade date than today's (by the wall clock)."""
@@ -659,7 +656,9 @@ class TradeManager:
                 if row.placed_at is None:
                     row.status = "cancelled"
                 else:
-                    end_lost_order(session, row, fire_again=not self._earlier_session(row))
+                    if self._earlier_session(row):
+                        continue  # today's book cannot show it: left to the owner
+                    end_lost_order(session, row)
                 session.commit()
                 continue
             row.status = "cancelled" if row.placed_at is None else "expired"

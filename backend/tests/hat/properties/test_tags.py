@@ -18,6 +18,7 @@ from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.execution import submit
@@ -53,7 +54,7 @@ from app.hat.execution.tags import (
     signal_fragment,
 )
 from app.hat.ids import Uuid7Generator, uuid7
-from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES
+from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES, HatOrder
 
 PURPOSES = st.sampled_from(sorted(PURPOSE_LETTERS))
 SEQUENCES = st.integers(min_value=0, max_value=MAX_SEQUENCE)
@@ -912,16 +913,24 @@ def test_the_purposes_match_the_database_domain() -> None:
 # ---------------------------------------------------------------------------------------------
 
 
-@given(answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]))
+@given(answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]), retry=st.booleans())
 @settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
-def test_a_reserved_tag_is_sent_by_one_sender(answer: str) -> None:
-    """HAT-BRK-102, HAT-EXEC-065: when two senders read the same reserved, never-sent order
-    before either stamped it (a fill sync and a stop job protecting one position), only the one
-    that stamps the attempt first calls the broker; the other sends nothing and reports what the
-    first left. Harm: two sell stops rest for the same shares, or an entry is bought twice."""
+def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool) -> None:
+    """HAT-BRK-102, HAT-EXEC-065: when two senders read the same order before either stamped
+    a new attempt (a fill sync and a stop job protecting one position), whether it was never
+    sent or its earlier answer was lost and the lookup found nothing (`retry`), only the one
+    that stamps first calls the broker, with a new attempt time from which a lost answer's
+    settle wait runs; the other sends nothing and reports what the first left. Harm: two sell
+    stops rest for the same shares, an entry is bought twice, or a resend still in flight is
+    settled as absent."""
     env = exec_env()
     live_session(env)
     tag = reserve_order(env.session, env.request(uuid7()))
+    earlier = None
+    if retry:
+        env.fake.script("place_order", unconfirmed())
+        send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        earlier = env.session.scalar(select(HatOrder.placed_at).where(HatOrder.tag == tag))
     other = Session(env.session.get_bind(), expire_on_commit=False)
     reply = {"accepted": accepted("B-1"), "rejected": rejected("RMS"), "unconfirmed": unconfirmed()}
     env.fake.script("place_order", reply[answer])
@@ -941,7 +950,9 @@ def test_a_reserved_tag_is_sent_by_one_sender(answer: str) -> None:
     assert first[0].broker_calls == 1
     assert late.broker_calls == 0
     assert late.status == first[0].status
-    assert env.fake.count("place_order") == 1
+    assert env.fake.count("place_order") == (2 if retry else 1)
+    stamped = env.session.scalar(select(HatOrder.placed_at).where(HatOrder.tag == tag))
+    assert earlier is None or stamped > earlier
 
 
 GTT_SHAPES = st.sampled_from(["flat", "order_info", "leg1"])
@@ -968,7 +979,7 @@ def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
         row["orderInfo"] = {"leg1": leg, **({"leg2": dict(leg)} if oco else {})}
     else:
         row.update(leg1=leg, **({"leg2": dict(leg)} if oco else {}))
-    resting = status in (None, 4, 6) and not oco and product == "CNC"
+    resting = status in (None, 2, 4, 6) and not oco and product == "CNC"
     expected = BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger) if resting else None
     return row, expected
 
@@ -987,16 +998,22 @@ class GttBookSdk(RecordingSdk):
 def test_the_gtt_book_reads_only_resting_stops(
     rows: list[tuple[dict, BrokerGtt | None]], odd: int | None
 ) -> None:
-    """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the GTTs that can still trigger as
-    HAT's single-leg CNC stops (the flat book fields, `orderInfo.leg1` or `leg1`); a cancelled,
-    triggered, rejected or expired GTT, an OCO or another product is left out, and a status code
-    it does not know makes the book unreadable. Harm: a lost GTT is matched to one that no
-    longer rests, and the position is left without a stop; or an unknown row is read as gone
-    and a second GTT is placed."""
+    """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the single-leg CNC GTTs that rest or
+    have triggered (the flat book fields, `orderInfo.leg1` or `leg1`); a cancelled, rejected or
+    expired GTT, an OCO or another product is left out, and a single-leg CNC row with a status
+    code it does not know makes the book unreadable. Harm: a lost GTT is matched to one that
+    never sold and no longer rests, leaving the position without a stop; or a triggered or
+    unknown one is read as gone and a second GTT is placed under shares already sold."""
     book = [row for row, _ in rows]
+    single = {"id": "G0", "symbol": SYMBOLS["SBIN"], "side": -1, "productType": "CNC"}
+    single.update(price_trigger=100.0, qty=1)
     if odd is not None:
-        book.append({**rows[0][0], "ord_status": odd} if rows else {"ord_status": odd})
+        # Someone else's GTT (an OCO, or intraday) with any status is not HAT's to read.
+        foreign = [{**single, "gtt_oco_ind": 2, "ord_status": odd}]
+        foreign.append({**single, "productType": "INTRADAY", "ord_status": odd})
+        expected = [g for _, g in rows if g is not None]
+        assert adapter_over(GttBookSdk([*book, *foreign])).gtts() == expected
         with pytest.raises(BrokerUnavailableError):
-            adapter_over(GttBookSdk(book)).gtts()
+            adapter_over(GttBookSdk([*book, {**single, "ord_status": odd}])).gtts()
         return
     assert adapter_over(GttBookSdk(book)).gtts() == [g for _, g in rows if g is not None]

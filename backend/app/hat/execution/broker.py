@@ -194,8 +194,8 @@ class BrokerOrder:
 
 @dataclass(frozen=True)
 class BrokerGtt:
-    """A GTT stop resting at the broker (its GTT book). GTTs carry no tag: HAT tells its own
-    from the symbol, side, quantity and trigger it sent."""
+    """A single-leg CNC GTT in the broker's GTT book, resting or already triggered. GTTs carry
+    no tag: HAT tells its own from the symbol, side, quantity and trigger it sent."""
 
     gtt_id: str
     symbol: str  # database symbol
