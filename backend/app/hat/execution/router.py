@@ -4,7 +4,8 @@
 A trigger reaches the router as an `EntryRequest`. The router works out the bot's effective mode
 for the session (`modes.bot_mode`: the queued mode in force at the session open, gated by the
 account's GTT capability) and hands the request to `trades.open_entry`, which runs
-`evaluate_signal` under the bot's lock and writes what the mode needs in one transaction:
+`evaluate_signal` under the bot's lock and the owner's (over every bot's slots, HAT-RISK-030) and
+writes what the mode needs in one transaction:
 
 - **shadow**: the virtual position (no broker call, HAT-EXEC-010);
 - **confirm**: the approval card (AwaitingApproval). The user's Take re-checks max-chase

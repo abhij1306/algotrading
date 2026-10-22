@@ -138,7 +138,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `47458413076c6b30932adac54e19a5ea90b3fef8aa76b2f94551357cdc8b6fc7`
+Covered digest: `2d961c3f19a5a15118612130bc6b0a9533f0282250289baddb5b430f3f929da7`
 
 ## Scope changes
 
@@ -161,6 +161,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 16 added the Telegram jobs to `JobScheduler` (`TgTick`, `LoginFlip`, `Prompt`, `Reprompt`, `Report`; `LoginPromptOrder`, `ReportsAfterClose`), whose breaks are in `verify-telegram`, and `16` to `MERGED_PRS`; `KNOWN_GAPS` is unchanged.
 - PR 17 put `AllocateAfterRegime` and `IntradayOrder` (named `JobScheduler!...` until then and never built) in a new model `DailyCycle` rather than in `JobScheduler`, whose state space is already about a million states; the README rows were renamed to match. `DailyCycle` checks the order of first starts on one trade date with the scheduler running all day: a job's retry after a failure is modelled only for the gate refresh, `exits.close`, `regime` and `allocate` (the jobs whose outcome something waits on), a restart late in the day (which starts every due job at once) is outside it, and each job run is one step (an `exits.close` run still running at 15:25 is handled by `gtt.swap` leaving a position whose exit sale is working). No entry before 09:20 is guarded twice (the trigger window and the 09:20 gate refresh), so removing either guard alone cannot show it; the breaks remove the gate refresh and the 15:20 end of the window instead. `NightlyPipeline`'s `LaterStep` now points at `scheduler.py:due` (ordering by `after`) instead of `run_job`.
 - PR 17 added the read-only dashboard routes. `ops.status_matches_db` compares against an oracle that takes the latest row of each kill key by time; the generated rows have distinct times, so the tie rule of `kill._latest` (a tripped row wins) is covered by the risk checks, not here. The status report shows `feed.stale` as the latest such event of the day: recovery writes no event, so the feed's current health shows through the health kill. The Telegram CONF checks `gov__lever_catalogue` and `no_override_command` (in `verify-telegram`) now judge only writing (non-GET) routes, because reads are held to `hat_routes_read_only`; they still fail on a `POST /api/hat/regime`. Their route list reads `route.path`, which already carries the router prefix (it was prefixed twice).
+- PR 19 fixed a flaky `ops.stop_names_abandoned_jobs` (CI: `OSError(39, 'Directory not empty')`): its held body returned `release.wait`'s `True`, so the released run's `_finish` raised in the scheduler's thread, left the row `running`, and raced the temporary directory's removal. The body now returns None and the property waits until every run row has its finish before the directory goes (`_await_runs_finished`). The property is unchanged otherwise; with the old body the new wait fails `an abandoned job never recorded its finish`.
 
 ## Scratch breaks
 

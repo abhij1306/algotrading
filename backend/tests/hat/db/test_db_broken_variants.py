@@ -31,19 +31,43 @@ def _patch_trades(attribute: str, replacement: Callable[..., object]) -> None:
     UNDO.append(lambda: setattr(trades, attribute, original))
 
 
-def no_bot_lock(_conn: Connection) -> None:
-    """The code, not the database, is broken: `lock_bot` does nothing."""
-    _patch_trades("lock_bot", lambda *_args, **_kwargs: None)
+def _no_lock(attribute: str) -> None:
+    _patch_trades(attribute, lambda *_args, **_kwargs: None)
 
 
-def per_call_bot_lock(_conn: Connection) -> None:
-    """The lock is keyed by something unique to each call, so two entries never share it."""
+def _per_call_lock(attribute: str) -> None:
     import uuid
 
     from app.hat.engine import trades
 
-    real = trades.lock_bot
-    _patch_trades("lock_bot", lambda session, _bot_id: real(session, uuid.uuid4()))
+    real = getattr(trades, attribute)
+    _patch_trades(attribute, lambda session, _key: real(session, uuid.uuid4()))
+
+
+# An entry takes its bot's lock and then its owner's, and the owner lock alone also
+# serialises two entries of one bot; so the per-bot breaks remove both.
+
+
+def no_bot_lock(_conn: Connection) -> None:
+    """The code, not the database, is broken: `lock_bot` and `lock_owner` do nothing."""
+    _no_lock("lock_bot")
+    _no_lock("lock_owner")
+
+
+def per_call_bot_lock(_conn: Connection) -> None:
+    """Both locks are keyed by something unique to each call, so two entries never share one."""
+    _per_call_lock("lock_bot")
+    _per_call_lock("lock_owner")
+
+
+def no_owner_lock(_conn: Connection) -> None:
+    """The code is broken: an entry takes no owner lock, only its bot's."""
+    _no_lock("lock_owner")
+
+
+def per_call_owner_lock(_conn: Connection) -> None:
+    """The owner lock is keyed by something unique to each call, so two bots never share it."""
+    _per_call_lock("lock_owner")
 
 
 def no_publish_lock(_conn: Connection) -> None:
@@ -392,8 +416,12 @@ VARIANTS_RUNTIME: dict[str, list[tuple[str, Break]]] = {
         ),
     ],
     "runtime.per_bot_serialised": [
-        ("the bot lock is a no-op", no_bot_lock),
-        ("the bot lock is keyed per call", per_call_bot_lock),
+        ("the bot and owner locks are no-ops", no_bot_lock),
+        ("the bot and owner locks are keyed per call", per_call_bot_lock),
+    ],
+    "runtime.owner_serialised": [
+        ("the owner lock is a no-op", no_owner_lock),
+        ("the owner lock is keyed per call", per_call_owner_lock),
     ],
     "runtime.publish_serialised": [("the publish takes no bot lock", no_publish_lock)],
     "events.append_only": [

@@ -363,12 +363,12 @@ def test_stop_names_abandoned_jobs(stuck: list[bool]) -> None:
     one still running then. Harm: a close or swap cut off by a shutdown leaves no trace of which
     job was abandoned, so a position left on its day stop is found only by chance."""
     release = threading.Event()
+
+    def held(_day: date) -> None:  # returns nothing: a body's result is a JobResult or None
+        release.wait(10)
+
     jobs = [
-        ScheduledJob(
-            f"job{i}",
-            time(9, 0),
-            (lambda _d: release.wait(10)) if blocked else (lambda _d: None),
-        )
+        ScheduledJob(f"job{i}", time(9, 0), held if blocked else (lambda _d: None))
         for i, blocked in enumerate(stuck)
     ]
     clock = [_ist(RESTART_DAY, time(9, 0))]
@@ -384,8 +384,22 @@ def test_stop_names_abandoned_jobs(stuck: list[bool]) -> None:
             return abandoned
 
         abandoned = asyncio.run(run())
+        _await_runs_finished(engine)
         engine.dispose()
     assert abandoned == sorted(f"job{i}" for i, blocked in enumerate(stuck) if blocked)
+
+
+def _await_runs_finished(engine: Engine, timeout: float = 10.0) -> None:
+    """Wait until every `hat_job_run` row has its finish: an abandoned body, once released, still
+    records its run from the scheduler's own thread, and the temporary database must not be
+    removed under that write."""
+    pause = threading.Event()
+    for _ in range(int(timeout / 0.02)):
+        with Session(engine) as session:
+            if session.scalar(select(HatJobRun.id).where(HatJobRun.finished_at.is_(None))) is None:
+                return
+        pause.wait(0.02)
+    raise AssertionError("an abandoned job never recorded its finish")
 
 
 class _StopFeed:

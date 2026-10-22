@@ -9,10 +9,11 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 import hat_db_builders as b
 from hat_db_rules import accepts, rejects
-from sqlalchemy import Connection, Engine, delete, select, text, update
+from sqlalchemy import Connection, Engine, delete, func, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
@@ -29,6 +30,9 @@ from app.hat.ops.partitions import (
     partition_name,
 )
 from app.hat.schema import ensure_hat_schema
+
+if TYPE_CHECKING:
+    from app.hat.engine.trades import EntryRequest
 
 # --- runtime tables (HAT-SCH-051 .. HAT-SCH-058) -------------------------------------------
 
@@ -502,17 +506,102 @@ def _committed_bot_world(
     return bot, b.USER_ID, instruments, policy
 
 
+def _second_bot(engine: Engine, bot: uuid.UUID) -> uuid.UUID:
+    """Another shadow bot of `bot`'s owner, strategy version and universe, on another broker
+    account of the owner."""
+    with engine.begin() as connection:
+        row = connection.execute(select(m.HatBot).where(m.HatBot.id == bot)).one()
+        return b.bot(
+            connection,
+            row.strategy_id,
+            b.broker_account(connection),
+            execution_mode="shadow",
+            live_version_id=row.live_version_id,
+            universe_version_id=row.universe_version_id,
+            risk_cluster="c2",
+        )
+
+
+def _race_entries(
+    engine: Engine,
+    holder: "EntryRequest",
+    racer: "EntryRequest",
+) -> list[bool]:
+    """Run two `open_entry` transactions at once, the holder pausing between its risk decision
+    and its insert until the racer waits on an advisory lock (or 5 s pass); whether each took a
+    position, in the order they committed. The caller empties the runtime tables."""
+    from sqlalchemy.orm import Session
+
+    from app.hat.engine import trades
+    from app.hat.risk.decision import SignalContext
+    from app.hat.risk.service import evaluate_signal
+
+    first_in = threading.Event()
+    release = threading.Event()
+    taken: list[bool] = []
+
+    def hold_between_decision_and_insert(ctx: SignalContext):  # noqa: ANN202
+        decision = evaluate_signal(ctx)
+        first_in.set()
+        release.wait(10)
+        return decision
+
+    def worker(request: EntryRequest, hold: bool) -> None:
+        if not hold:
+            first_in.wait(5)
+        with Session(engine) as session:
+            decide = hold_between_decision_and_insert if hold else evaluate_signal
+            outcome = trades.open_entry(session, request, decide=decide)
+            session.commit()
+            taken.append(outcome.position_id is not None)
+
+    holding = threading.Thread(target=worker, args=(holder, True))
+    racing = threading.Thread(target=worker, args=(racer, False))
+    try:
+        holding.start()
+        racing.start()
+        deadline = time.monotonic() + 5
+        waiting = text(
+            "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'"
+            " AND wait_event = 'advisory' AND datname = current_database()"
+        )
+        while time.monotonic() < deadline and racing.is_alive():
+            with engine.connect() as probe:
+                if probe.execute(waiting).scalar_one() >= 1:
+                    break
+            time.sleep(0.05)  # noqa: ASYNC251
+        release.set()
+        holding.join(10)
+        racing.join(10)
+        return taken
+    finally:
+        release.set()
+
+
+def _held(engine: Engine, bots: list[uuid.UUID]) -> int:
+    with engine.connect() as probe:
+        return probe.execute(
+            select(func.count()).select_from(m.HatPosition).where(m.HatPosition.bot_id.in_(bots))
+        ).scalar_one()
+
+
+def _empty_runtime(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "TRUNCATE hat_event, hat_fill, hat_order, hat_position, hat_signal, hat_bot CASCADE"
+            )
+        )
+
+
 def check_runtime__per_bot_serialised(conn: Connection) -> None:
     """HAT-EXEC-045: two entries of one bot evaluated at the same time cannot both take the last
     slot. The first holds the bot's lock between its risk decision and its insert; the second
     must wait for it, then see the first one's position and be rejected for the cap."""
     from hat_risk_support import AT, TRADE_DAY, policy_with, valid_ctx
-    from sqlalchemy.orm import Session
 
     from app.hat.engine import trades
-    from app.hat.risk.decision import SignalContext
     from app.hat.risk.policy import PolicyVersion
-    from app.hat.risk.service import evaluate_signal
 
     engine = conn.engine
     bot, _, instruments, policy_id = _committed_bot_world(engine)
@@ -530,55 +619,51 @@ def check_runtime__per_bot_serialised(conn: Connection) -> None:
             context=valid_ctx(policy_versions=[version]),
         )
 
-    first_in = threading.Event()
-    release = threading.Event()
-    taken: list[bool] = []
-
-    def hold_between_decision_and_insert(ctx: SignalContext):  # noqa: ANN202
-        decision = evaluate_signal(ctx)
-        first_in.set()
-        release.wait(10)
-        return decision
-
-    def worker(instrument: uuid.UUID, hold: bool) -> None:
-        if not hold:
-            first_in.wait(5)
-        with Session(engine) as session:
-            decide = hold_between_decision_and_insert if hold else evaluate_signal
-            outcome = trades.open_entry(session, request(instrument), decide=decide)
-            session.commit()
-            taken.append(outcome.position_id is not None)
-
-    holder = threading.Thread(target=worker, args=(instruments[0], True))
-    racer = threading.Thread(target=worker, args=(instruments[1], False))
     try:
-        holder.start()
-        racer.start()
-        deadline = time.monotonic() + 5
-        waiting = text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
-        while time.monotonic() < deadline and racer.is_alive():
-            with engine.connect() as probe:
-                if probe.execute(waiting).scalar_one() >= 1:
-                    break
-            time.sleep(0.05)  # noqa: ASYNC251
-        release.set()
-        holder.join(10)
-        racer.join(10)
-        with engine.connect() as probe:
-            held = probe.execute(
-                text("SELECT count(*) FROM hat_position WHERE bot_id = :bot"), {"bot": bot}
-            ).scalar_one()
+        taken = _race_entries(engine, request(instruments[0]), request(instruments[1]))
+        held = _held(engine, [bot])
         assert sorted(taken) == [False, True], taken
         assert held == 1, f"{held} positions for a bot whose cap is 1"
     finally:
-        release.set()
-        with engine.begin() as connection:
-            connection.execute(
-                text(
-                    "TRUNCATE hat_event, hat_fill, hat_order, hat_position, hat_signal, hat_bot"
-                    " CASCADE"
-                )
-            )
+        _empty_runtime(engine)
+
+
+def check_runtime__owner_serialised(conn: Connection) -> None:
+    """HAT-RISK-030: two bots of one owner, on different broker accounts, entering at the same
+    time cannot both fit under the global open-risk cap when it has room for one entry. The
+    first holds the owner's lock between its risk decision and its insert; the second (another
+    bot, so the bot lock does not serialise them) must wait for it, then see the first one's
+    position and be rejected for `global_open_risk`."""
+    from hat_risk_support import AT, TRADE_DAY, policy_with, valid_ctx
+
+    from app.hat.engine import trades
+    from app.hat.risk.policy import PolicyVersion
+    from app.hat.risk.service import evaluate_signal
+
+    engine = conn.engine
+    bot, _, instruments, policy_id = _committed_bot_world(engine)
+    other = _second_bot(engine, bot)
+    version = PolicyVersion(policy_id, 1, datetime(2026, 1, 1, tzinfo=UTC), None, policy_with())
+    risk = evaluate_signal(valid_ctx(total_equity=Decimal(10**12))).risk_amount
+    total_equity = (risk + 1) / Decimal("0.03")  # room for one entry of either bot
+
+    def request(bot_id: uuid.UUID, instrument: uuid.UUID) -> trades.EntryRequest:
+        return trades.EntryRequest(
+            bot_id=bot_id,
+            playbook="pb",
+            instrument_id=instrument,
+            trade_date=TRADE_DAY,
+            triggered_at=AT,
+            context=valid_ctx(policy_versions=[version], total_equity=total_equity),
+        )
+
+    try:
+        taken = _race_entries(engine, request(bot, instruments[0]), request(other, instruments[1]))
+        held = _held(engine, [bot, other])
+        assert sorted(taken) == [False, True], taken
+        assert held == 1, f"{held} positions for an owner whose open-risk cap fits 1"
+    finally:
+        _empty_runtime(engine)
 
 
 def check_runtime__publish_serialised(conn: Connection) -> None:

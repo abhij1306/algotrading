@@ -11,8 +11,8 @@
   on the daily bars up to the previous session;
 - `submit_trigger` turns a fired trigger into a signal through a `Route`: the execution router
   (`execution/router.py`), or by default `trades.open_entry` under the bot's effective mode, so
-  every entry still passes `evaluate_signal` under the bot's lock (a skipped stop or entry filter
-  is stored as a Rejected signal with its reason);
+  every entry still passes `evaluate_signal` under the bot's and the owner's lock (a skipped
+  stop or entry filter is stored as a Rejected signal with its reason);
 - `TriggerService` attaches the monitor to `LiveData` as a bar listener and hands each trigger to
   a worker thread (the database work never runs on the loop);
 - `DataHealthKill` is the `EventFeedHealth` hook that trips the account's data-health kill while
