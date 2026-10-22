@@ -1042,8 +1042,15 @@ SILENT_AFTER = 60  # seconds, the watch's threshold in the property
 QUIET = ["AAA", "BBB", "CCC"]
 
 
-@example(  # AAA ticks once and goes quiet; an outage pauses the count; the market closes a while
+@example(  # AAA ticks once and goes quiet; an outage restarts the count; the market closes a while
     closed=(400, 200), ticks=[(20, "AAA")], watches=[], outage=(100, 40), raises=False
+)
+@example(  # AAA trades every 100 s: asked again after each silence, alerted only once
+    closed=None,
+    ticks=[(s, "AAA") for s in range(0, 901, 100)],
+    watches=[],
+    outage=None,
+    raises=False,
 )
 @settings(max_examples=80, deadline=None)
 @given(
@@ -1055,20 +1062,21 @@ QUIET = ["AAA", "BBB", "CCC"]
     outage=st.one_of(st.none(), st.tuples(st.integers(0, 900), st.integers(1, 300))),
     raises=st.booleans(),
 )
-def test_symbol_silence_reported_once(
+def test_symbol_silence_resubscribes_and_alerts(
     closed: tuple[int, int] | None,
     ticks: list[tuple[int, str]],
     watches: list[tuple[int, frozenset[str]]],
     outage: tuple[int, int] | None,
     raises: bool,
 ) -> None:
-    """PR 39: with the heartbeat ticking, a watched symbol is reported (one alert, and one
-    resubscribe of the symbols found at that check) exactly when it has been silent for the
-    threshold, counted only while it was watched, the market open and the feed live, and once
-    per silence: again only after a tick of it, an unwatch or the close. Neither a quiet symbol
-    nor a failing alert or resubscribe ever reaches the feed's health. Harm: an illiquid or
-    band-locked name makes the account manage-only all day, or a dead subscription goes
-    unnoticed."""
+    """PR 39: with the heartbeat ticking, a watched symbol is subscribed again exactly when it
+    has been silent for the threshold, counted from its last tick, its last resubscribe, or the
+    last check at which it was not yet watched, the market closed or the feed stale; the
+    symbols found at one check go in one resubscribe, and the owner gets one alert per check
+    naming those not alerted since the market last opened. Neither a quiet symbol nor a failing
+    alert or resubscribe ever reaches the feed's health. Harm: an illiquid or band-locked name
+    makes the account manage-only all day, a dead subscription goes unnoticed, or an alert per
+    quiet name per interval floods the owner's chat."""
     start = 10 * 3600
     shut = Downtime(closed)  # the market is closed for a while (as overnight), then reopens
 
@@ -1077,12 +1085,12 @@ def test_symbol_silence_reported_once(
 
     clock = FixedClock(at_us(start * US))
     sink = Sink()
-    alerts: list[tuple[str, datetime]] = []
+    alerts: list[tuple[datetime, list[str]]] = []
     resubscribed: list[tuple[datetime, list[str]]] = []
     watched: set[str] = {*QUIET, HEARTBEAT_SYMBOL}
 
-    def alert(symbol: str, now: datetime) -> None:
-        alerts.append((symbol, now))
+    def alert(symbols: list[str], now: datetime) -> None:
+        alerts.append((now, symbols))
         if raises:
             raise RuntimeError("alert sink down")
 
@@ -1117,11 +1125,13 @@ def test_symbol_silence_reported_once(
             live.step()
             checks.append((now, frozenset(watched), is_open(now), live.staleness.stale))
 
-    found = {(s, t) for s, t in alerts}
-    assert len(found) == len(alerts)  # one alert per symbol and check
-    for t, symbols in resubscribed:
-        assert symbols == sorted(s for s, at in alerts if at == t)
-    assert {t for _, t in alerts} == {t for t, _ in resubscribed}
+    asked = dict(resubscribed)
+    told = dict(alerts)
+    assert len(asked) == len(resubscribed)  # one call per check
+    assert len(told) == len(alerts)
+    assert all(names == sorted(names) and names for names in [*asked.values(), *told.values()])
+    found = {(s, t) for t, names in resubscribed for s in names}
+    alerted = {(s, t) for t, names in alerts for s in names}
     limit = timedelta(seconds=SILENT_AFTER)
     for symbol in QUIET:
         for i, (t, names, open_, stale) in enumerate(checks):
@@ -1134,11 +1144,16 @@ def test_symbol_silence_reported_once(
             run = checks[first : i + 1]
             c0 = run[0][0]
             own = [a for a in arrivals[symbol] if c0 <= a <= t]
-            quiet_from = max([c0, *own, *(c for c, _, o, st_ in run if not o or st_)])
-            episode = max([c0, *own, *(c for c, _, o, _ in run if not o)])
-            reported = any((symbol, c) in found for c, *_ in run if episode <= c < t)
-            expected = open_ and not stale and t - quiet_from >= limit and not reported
+            asked_before = [c for c, *_ in run if c < t and (symbol, c) in found]
+            paused = [c for c, _, o, st_ in run if not o or st_]
+            quiet_from = max([c0, *own, *asked_before, *paused])
+            expected = open_ and not stale and t - quiet_from >= limit
             assert ((symbol, t) in found) == expected, (symbol, t)
+            opened = max([c for c, _, o, _ in checks[: i + 1] if not o], default=None)
+            told_before = any(
+                (symbol, c) in found for c, *_ in checks[:i] if opened is None or c > opened
+            )
+            assert ((symbol, t) in alerted) == (expected and not told_before), (symbol, t)
     opens = at_us(start * US)
     later = [t for t in sink.stale if t != opens]  # the first tick ends the silence before it
     if outage is None:

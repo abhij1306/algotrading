@@ -191,13 +191,17 @@ def off_loop(work: Callable[[], None]) -> None:
         work()
 
 
-def silence_alert(notifier: Notifier) -> Callable[[str, datetime], None]:
-    """`SilenceWatch`'s alert as the health alert `symbol_silent` for the symbol, sent off the
-    loop (a notifier blocks on its transport)."""
+def silence_alert(notifier: Notifier) -> Callable[[list[str], datetime], None]:
+    """`SilenceWatch`'s alert as one health alert `symbol_silent` naming the symbols, sent off
+    the loop (a notifier blocks on its transport). An `&` (M&M) is written `_`, as the alert
+    text keeps only plain characters."""
 
-    def alert(symbol: str, now: datetime) -> None:
+    def alert(symbols: list[str], now: datetime) -> None:
         day = trade_date_of(now)
-        off_loop(lambda: notifier.alert(ALERT_SYMBOL_SILENT, day, {"symbol": symbol}))
+        detail: dict[str, str | int] = {"count": len(symbols)}
+        for n, symbol in enumerate(symbols, 1):
+            detail[f"symbol_{n}"] = symbol.replace("&", "_")
+        off_loop(lambda: notifier.alert(ALERT_SYMBOL_SILENT, day, detail))
 
     return alert
 

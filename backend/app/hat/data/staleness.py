@@ -10,8 +10,9 @@ Pure and synchronous: the caller passes `now`, and calls `check(now)` on a timer
 
 One symbol's silence is not the feed's (PR 39): an illiquid or band-locked name can stay quiet
 for hours while the socket is fine, and a missed entry is safe where a kill would make the
-account manage-only all day. `SilenceWatch` raises an alert and asks the provider to subscribe
-the symbol again once per silence of `silent_after`, and never reaches the health kill.
+account manage-only all day. `SilenceWatch` asks the provider to subscribe the symbol again
+after each `silent_after` of silence and alerts the owner once a day per symbol, and never
+reaches the health kill.
 """
 
 from __future__ import annotations
@@ -23,12 +24,11 @@ from typing import Protocol
 
 from app.hat.clock import require_aware
 
-__all__ = ["STALE_AFTER", "SYMBOL_SILENT_AFTER", "FeedHealth", "SilenceWatch", "StalenessMonitor"]
+__all__ = ["STALE_AFTER", "FeedHealth", "SilenceWatch", "StalenessMonitor"]
 
 logger = logging.getLogger(__name__)
 
 STALE_AFTER = timedelta(seconds=30)
-SYMBOL_SILENT_AFTER = timedelta(seconds=120)
 
 
 class FeedHealth(Protocol):
@@ -97,28 +97,28 @@ class StalenessMonitor:
 
     @staticmethod
     def _notify(call: Callable[[], None]) -> None:
-        try:
-            call()
-        except Exception:  # a failing sink must never stop the feed; the state is kept
-            logger.exception("feed health sink failed")
+        _isolated(call, "feed health sink")
 
 
 class SilenceWatch:
     """Per-symbol silence (PR 39). A watched symbol is silent at a `check` when the market is
-    open, the feed is live and no tick of it arrived in the last `silent_after`, counted only
-    over checks where all three held (a closed market or a stale feed explains any silence, and
-    a symbol newly watched starts its count at its first check). Each silence is reported once:
-    one `alert` per symbol and one `resubscribe` of the symbols found at that check; the next
-    report needs a tick of the symbol first, or the symbol unwatched or the market closed in
-    between. It holds no reference to the feed's health, so it can never trip a kill."""
+    open, the feed is live and no tick of it arrived in the last `silent_after`, counted from
+    its last tick or from the last check at which it was not yet watched, the market was closed
+    or the feed stale, whichever is later (a closed market or a stale feed explains any silence,
+    so either restarts the count). Each check asks the provider to `resubscribe` the symbols
+    found silent in one call, and counts each one again from then, so a symbol that stays
+    silent is asked again every `silent_after`. The owner is told by one `alert` per check
+    listing the symbols not yet alerted since the market last opened (one message, not one per
+    symbol, and not again for a symbol that resumes and falls silent again that day). It holds
+    no reference to the feed's health, so it can never trip a kill."""
 
     def __init__(
         self,
         is_open: Callable[[datetime], bool],
-        alert: Callable[[str, datetime], None],
+        alert: Callable[[list[str], datetime], None],
         resubscribe: Callable[[list[str]], None],
         *,
-        silent_after: timedelta = SYMBOL_SILENT_AFTER,
+        silent_after: timedelta,
     ) -> None:
         if silent_after <= timedelta(0):
             raise ValueError("silent_after must be positive")
@@ -127,16 +127,11 @@ class SilenceWatch:
         self._resubscribe = resubscribe
         self._silent_after = silent_after
         self._since: dict[str, datetime] = {}  # where each symbol's silence is counted from
-        self._reported: set[str] = set()
+        self._alerted: set[str] = set()  # alerted since the market last opened
 
     @property
     def silent_after(self) -> timedelta:
         return self._silent_after
-
-    @property
-    def reported(self) -> frozenset[str]:
-        """The symbols whose current silence was reported."""
-        return frozenset(self._reported)
 
     def on_tick(self, symbol: str, now: datetime) -> None:
         """A tick of `symbol` arrived at `now`: its silence ends (counted for a symbol already
@@ -145,37 +140,41 @@ class SilenceWatch:
         since = self._since.get(symbol)
         if since is not None and now > since:
             self._since[symbol] = now
-        self._reported.discard(symbol)
 
     def check(self, now: datetime, watched: Collection[str], feed_stale: bool) -> list[str]:
-        """Report the watched symbols newly silent at `now`; returns them, sorted."""
+        """Resubscribe the watched symbols silent at `now` and alert the new ones; returns the
+        silent symbols, sorted."""
         require_aware(now)
         watched = frozenset(watched)
         for symbol in [s for s in self._since if s not in watched]:
             del self._since[symbol]
-        self._reported &= watched
-        if not self._is_open(now):
-            self._reported.clear()
-        if feed_stale or not self._is_open(now):
+        is_open = self._is_open(now)
+        if not is_open:
+            self._alerted.clear()
+        if feed_stale or not is_open:
             for symbol in watched:
                 self._since[symbol] = now
             return []
         found = sorted(
             symbol
             for symbol in watched
-            if symbol not in self._reported
-            and now - self._since.setdefault(symbol, now) >= self._silent_after
+            if now - self._since.setdefault(symbol, now) >= self._silent_after
         )
         if found:
-            self._reported.update(found)
-            _isolated(lambda: self._resubscribe(found), "symbol resubscribe")
+            fresh = [symbol for symbol in found if symbol not in self._alerted]
+            self._alerted.update(fresh)
             for symbol in found:
-                _isolated(lambda s=symbol: self._alert(s, now), "symbol silence alert")
+                self._since[symbol] = now
+            _isolated(lambda: self._resubscribe(found), "symbol resubscribe")
+            if fresh:
+                _isolated(lambda: self._alert(fresh, now), "symbol silence alert")
         return found
 
 
 def _isolated(call: Callable[[], None], what: str) -> None:
+    """Run a sink; its failure is logged and never reaches the feed (the caller keeps its
+    state)."""
     try:
         call()
-    except Exception:  # the watch keeps its state; a failing sink never stops the feed
+    except Exception:
         logger.exception("%s failed", what)

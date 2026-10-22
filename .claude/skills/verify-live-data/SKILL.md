@@ -74,7 +74,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and coverage has the same opening ranges and day volumes as one that saw every tick, a restored bar never replaces a live one, and it has no day low (the restart is a gap); the opening range comes back only when the stopped process saw the feed past the first bar (`coverage.json` `seen_until`). Harm: after a restart the opening range is lost and no ORB entry fires that day.
 - `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). PR 39 adds `seeded`: the exchange range is on and each AAA tick carries the session's high and low so far (`high_price`, `low_price`); the same holds, and a symbol first seen late, after a restart or after a gap, with no gap after, has the opening range when it ticked inside the first bar and the day low once that tick's bar is final (`@example`s: the 09:17:30 subscriber, a seed after a restart, a gap then a new seed, a seed before a gap whose low traded unseen, and a restart whose next tick knows a high from after 09:20). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4); or EP never fires on a gap-scan name (PR 39).
 - `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. With `seeded` (PR 39) the late candidate's ticks carry the exchange's high and low, and its stop is exactly the real low less a tick. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
-- `PBT bars.symbol_silence_reported_once` Through `LiveData` with a `SilenceWatch` (threshold 60 s, checks every 5 s, the heartbeat ticking every 10 s), a watched symbol is reported, with one alert and one resubscribe of the symbols found at that check, exactly when no tick of it arrived for the threshold, counted only over checks where it was watched, the market open and the feed live; once per silence (again only after a tick of it, an unwatch, or a closed market that reopens); a failing alert or resubscribe changes nothing; and no quiet symbol ever makes the feed stale (only a feed-wide outage does). Harm: an illiquid or band-locked name makes the account manage-only all day, or a dead subscription goes unnoticed (PR 39, HAT-DATA-116).
+- `PBT bars.symbol_silence_resubscribes_and_alerts` Through `LiveData` with a `SilenceWatch` (threshold 60 s, checks every 5 s, the heartbeat ticking every 10 s), a watched symbol is subscribed again exactly when the threshold has passed since its last tick, its last resubscribe, or the last check at which it was not yet watched, the market closed or the feed stale; each check makes at most one resubscribe (every symbol found) and one alert (those not alerted since the market last opened); a failing alert or resubscribe changes nothing; and no quiet symbol ever makes the feed stale (only a feed-wide outage does). `@example`s: an outage then a closed window that reopens; a name trading every 100 s. Harm: an illiquid or band-locked name makes the account manage-only all day, a dead subscription goes unnoticed, or an alert per quiet name floods the owner's chat (PR 39, HAT-DATA-116).
 - `PBT bars.live_flags_parsed` `HAT_EXCHANGE_DAY_RANGE` turns the exchange-range seed on exactly for a true value (off unset or for anything else), and `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120. Harm: unverified tick fields seed the opening range and the stop by default, or a typo reports every symbol (PR 39).
 - `PBT bars.seed_needs_ordered_prices` A seed is taken only from a tick inside the session with `0 < low <= price <= high`; any other leaves the opening range and day low as they would be without it. Harm: a garbled or stale high/low field publishes a range or a low the session never had (PR 39).
 - `PBT bars.usable_price` For every quote, clock and band, the price a Take, a placement or an exit may act on is the quote's price exactly when it is under 30 seconds from the clock either way (by exchange time) and inside the known bounds, else none with `price_unknown`, `stale_price` or `price_out_of_band`; a tick exactly 30 seconds old no longer counts (PR 51, HAT-DATA-116). Harm: one quiet symbol's hours-old print prices a Take while the feed as a whole is live.
@@ -157,11 +157,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `5f4b0119b66705810e8fe4ced2b01e1fe5f851e0be1988b2a1f80fe59eb2bf7a`
+Covered digest: `210658844dede3c5b4ab4ed678e7d92124ee3703f32377cca7a2548779f73554`
 
 ## Scope changes
 
-- PR 39 (audit triage §18): the heartbeat `NIFTY50` (`NSE:NIFTY50-INDEX`) is always in the `"hat"` owner's set, so feed staleness measures the socket. A watched symbol silent for `HAT_SYMBOL_SILENT_SECONDS` (default 120) gets the health alert `symbol_silent` and a resubscribe, never a kill (`SilenceWatch`, wired in `daily/runtime.py`; the alert is sent off the loop). With `HAT_EXCHANGE_DAY_RANGE` on, a tick's `high_price` and `low_price` seed the builder (`BarBuilder.seed`), so a symbol first seen late, after a restart or after a gap has an opening range and a day low; the field names are `[A]`: no recorded websocket tick exists (the fixtures hold REST replies only), so the flag defaults to off and, until it is on, such a symbol has neither (HAT-DATA-114). The bar builder now keeps every gap start of a day, not only the first. Nothing was narrowed: `bars.subscription_set`, `bars.session_state_never_partial` and `bars.trigger_never_uses_a_partial_session` were strengthened.
+- PR 39 (audit triage §18): the heartbeat `NIFTY50` (`NSE:NIFTY50-INDEX`) is always in the `"hat"` owner's set, so feed staleness measures the socket. A watched symbol silent for `HAT_SYMBOL_SILENT_SECONDS` (default 120) is subscribed again (and again after each further threshold) and named in one health alert `symbol_silent` per check, once per symbol per day; never a kill (`SilenceWatch`, wired in `daily/runtime.py`; the alert is sent off the loop, and an `&` in a symbol is written `_`, as the alert text keeps only plain characters). With `HAT_EXCHANGE_DAY_RANGE` on, a tick's `high_price` and `low_price` seed the builder (`BarBuilder.seed`), so a symbol first seen late, after a restart or after a gap has an opening range and a day low; the field names are `[A]`: no recorded websocket tick exists (the fixtures hold REST replies only), so the flag defaults to off and, until it is on, such a symbol has neither (HAT-DATA-114). The bar builder now keeps every gap start of a day, not only the first. Nothing was narrowed: `bars.subscription_set`, `bars.session_state_never_partial` and `bars.trigger_never_uses_a_partial_session` were strengthened.
 - PR 48: `daily/live.py:SaleBands` reads the day's lower band and the lower-circuit lock (PR 51's `lower_circuit_price` and `locked_lower_circuit` on the dated last price) for the trade manager's sales; its use is checked by `verify-execution`'s `mpp.*` through a stub band. No live-data check changed.
 - PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
 - PR 12 added the minute-history loader (HAT-DATA-119). `FyersClient.get_historical_data` named by the spec does not exist; the loader takes the history call as an injected function, so the properties fake it and no check reaches Fyers.
@@ -1402,7 +1402,7 @@ Break: (PR 39) `BarBuilder.day_low` ignores the seed's low (`lows.append((seed.a
 E   AssertionError: assert Decimal('99.95') == Decimal('89.95')
 ```
 
-### PBT bars.symbol_silence_reported_once
+### PBT bars.symbol_silence_resubscribes_and_alerts
 
 Break: (PR 39) `SilenceWatch.check` needs more than the threshold (`>=` to `>`).
 
@@ -1410,22 +1410,22 @@ Break: (PR 39) `SilenceWatch.check` needs more than the threshold (`>=` to `>`).
 E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
 ```
 
-Break: (PR 39) `SilenceWatch.on_tick` does not end the reported silence (`self._reported.discard(symbol)` removed).
-
-```
-E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 2, 5, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
-```
-
-Break: (PR 39) `SilenceWatch.check` counts silence while the feed is stale (`feed_stale or` removed).
+Break: (PR 39) `SilenceWatch.on_tick` does not end the silence (its update to `pass`).
 
 ```
 E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
 ```
 
-Break: (PR 39) `SilenceWatch.check` alerts without resubscribing (the `_resubscribe` call removed).
+Break: (PR 39) `SilenceWatch.check` counts silence while the feed is stale (`feed_stale or` removed).
 
 ```
-E   AssertionError: assert {datetime.dat...ia/Kolkata'))} == set()
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 2, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39) `SilenceWatch.check` never resubscribes (the `_resubscribe` call removed).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
 ```
 
 Break: (PR 39) `SilenceWatch.check` calls `resubscribe` unguarded (`_isolated` removed).
@@ -1434,11 +1434,22 @@ Break: (PR 39) `SilenceWatch.check` calls `resubscribe` unguarded (`_isolated` r
 E   RuntimeError: provider down
 ```
 
-Break: (PR 39) `SilenceWatch.check` keeps a reported silence across a closed market (`self._reported.clear()` removed). It first passed: the property's market closed at 15:30 and never reopened, so the property now draws a closed window that reopens.
+Break: (PR 39) `SilenceWatch.check` keeps the day's alerted names across a closed market (`self._alerted.clear()` removed). It first passed in the first version of the property, whose market closed at 15:30 and never reopened; the property now draws a closed window that reopens.
 
 ```
 E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 10, 55, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
-E   Failing explicit example: test_symbol_silence_reported_once(
+```
+
+Break: (PR 39, code review) `SilenceWatch.check` does not restart the count after a resubscribe (it would ask again at every check).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, 25, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39, code review) `SilenceWatch.check` alerts every symbol found, not only those not yet alerted (`fresh = list(found)`).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 3, 15, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
 ```
 
 ### PBT bars.live_flags_parsed

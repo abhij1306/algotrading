@@ -158,7 +158,6 @@ class BarBuilder:
     _days: dict[tuple[str, date], _DayState] = field(default_factory=dict)
     _lows: dict[tuple[str, date], list[tuple[datetime, Decimal]]] = field(default_factory=dict)
     _watched: dict[tuple[str, date], datetime] = field(default_factory=dict)
-    _gap_from: dict[date, datetime] = field(default_factory=dict)
     _gaps: dict[date, set[datetime]] = field(default_factory=dict)
     _seeds: dict[tuple[str, date], list[_Seed]] = field(default_factory=dict)
     _last_arrival: dict[date, datetime] = field(default_factory=dict)
@@ -243,10 +242,11 @@ class BarBuilder:
         day no day low is published, nor an opening range if `since` is before the first bar's
         end."""
         day = require_aware(since).astimezone(IST).date()
-        gap = self._gap_from.get(day)
-        if gap is None or since < gap:
-            self._gap_from[day] = since
         self._gaps.setdefault(day, set()).add(since)
+
+    def _first_gap(self, day: date) -> datetime | None:
+        gaps = self._gaps.get(day)
+        return min(gaps) if gaps else None
 
     def seed(self, tick: Tick, high: Decimal, low: Decimal, now: datetime) -> bool:
         """Seed the symbol's day from `tick`, which arrived at `now` and carries the exchange's
@@ -293,7 +293,7 @@ class BarBuilder:
         )
         last = self._last_arrival.get(day)
         seen = None if last is None else min(last, opens + BAR_WIDTH)
-        return watched, self._gap_from.get(day), seen
+        return watched, self._first_gap(day), seen
 
     def restore(
         self,
@@ -340,7 +340,7 @@ class BarBuilder:
         for table in (self._opening, self._days, self._lows, self._watched, self._seeds):
             for key in [k for k in table if k[1] < day]:
                 del table[key]
-        for table in (self._gap_from, self._gaps, self._last_arrival):
+        for table in (self._gaps, self._last_arrival):
             for key in [d for d in table if d < day]:
                 del table[key]
 
@@ -351,7 +351,7 @@ class BarBuilder:
         and a tick arrived at or after `seen_through`: a feed that went silent before a bar
         ended may have lost the bar's last prints, and only a silence of the stale threshold is
         marked as a gap, so until the feed is seen past the bar nothing is published."""
-        gap = self._gap_from.get(day)
+        gap = self._first_gap(day)
         clean = gap is None or (until is not None and gap >= until)
         return clean and self._seen(day, seen_through) and self.from_open(symbol, day)
 
