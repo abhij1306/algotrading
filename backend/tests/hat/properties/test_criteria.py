@@ -601,15 +601,24 @@ def test_earnings_growth_contract(rng: Lcg, filed: list, accelerating: bool) -> 
 
 @given(
     rng=RNG,
-    style=STYLES,
-    length=st.sampled_from([0, 40, 64, 65, 80]),
+    style=STYLES | st.just("trend"),
+    length=st.sampled_from([0, 40, 64, 65, 80, 126, 127, 160]),
     max_ret=st.sampled_from([0.0, 10.0, 30.0, 100.0]),
+    max_range=st.sampled_from([None, None, 5.0, 30.0, 60.0]),
 )
 @SLOW
-def test_neglect_contract(rng: Lcg, style: str, length: int, max_ret: float) -> None:
+def test_neglect_contract(
+    rng: Lcg, style: str, length: int, max_ret: float, max_range: float | None
+) -> None:
+    """HAT-CRIT-120 (PR 56): on the bars before the date, `passed` iff |ret63| x 100 <=
+    max_return_63d_pct and, when `max_range_126d_pct` is set, the 126-session range (max high /
+    min low - 1) x 100 is at most it; a rise fails `already_extended`, a fall `already_fell`
+    (both before the range is read), a wide range `range_too_wide`, and too few bars for the
+    63-session return, or for an enabled range, `no_data`. The date's own bar (the gap day) is
+    never read. Harm: a stock that collapsed or swung wildly is bought as a neglected EP name."""
     rows = make_rows(rng, length, style)
     ctx = context(rows)
-    params = {"max_return_63d_pct": max_ret}
+    params = {"max_return_63d_pct": max_ret, "max_range_126d_pct": max_range}
     result = contract("neglect", params, ctx, rng)
     previous = rows[:-1]  # bars up to the previous session
     if len(previous) < 64:
@@ -618,9 +627,31 @@ def test_neglect_contract(rng: Lcg, style: str, length: int, max_ret: float) -> 
         return
     window = previous[-64:]
     ret = (rupees(window[-1].close) / rupees(window[0].close) - 1) * 100
-    assert result.passed == (ret <= Fraction(str(max_ret)))
-    changed = [*rows[:-1], dataclasses.replace(rows[-1], close=rows[-1].close + 1000)]
-    assert evaluate("neglect", params, context(changed)) == result  # today's bar is not read
+    limit = Fraction(str(max_ret))
+    wide: bool | None = False  # None: the range is on but there are fewer than 126 sessions
+    if max_range is not None:
+        span = previous[-126:]
+        top, bottom = max(r.high for r in span), min(r.low for r in span)
+        wide = (
+            None
+            if len(span) < 126
+            else (Fraction(top, bottom) - 1) * 100 > Fraction(str(max_range))
+        )
+    want = (
+        "already_extended" if ret > limit
+        else "already_fell" if ret < -limit
+        else "no_data" if wide is None
+        else "range_too_wide" if wide
+        else "ok"
+    )  # fmt: skip
+    assert result.reason == want
+    if want != "no_data":
+        assert result.value is not None
+        assert math.isclose(result.value, float(ret), abs_tol=1e-9)
+    today = dataclasses.replace(
+        rows[-1], high=rows[-1].high * 3, low=1, close=rows[-1].close + 1000
+    )
+    assert evaluate("neglect", params, context([*previous, today])) == result  # gap day unread
 
 
 # --- HAT-CRIT-123 close_vs_pivot ------------------------------------------------------------

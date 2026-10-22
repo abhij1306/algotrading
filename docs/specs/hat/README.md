@@ -335,7 +335,7 @@ to an artefact that exists.
 | HAT-CRIT-117 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.early_volume_contract` |
 | HAT-CRIT-118 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.catalyst_attached_contract` |
 | HAT-CRIT-119 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.price_breaks_level_contract` |
-| HAT-CRIT-120 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.neglect_contract` |
+| HAT-CRIT-120 | [04](04-criteria-and-bots.md) | 8, 15, 56 | PBT `criteria.neglect_contract` |
 | HAT-CRIT-121 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.adtr_filter_contract` |
 | HAT-CRIT-122 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.max_chase_contract`, TLA `ExecutionRouter!MaxChaseAlwaysApplied` |
 | HAT-CRIT-123 | [04](04-criteria-and-bots.md) | 54 | PBT `criteria.close_vs_pivot_contract`, PBT `criteria.close_vs_pivot_stage`, PBT `scoring.stage_levels`, PBT `scoring.numeric_levels`, PBT `config.close_vs_pivot_needs_vcp` |

@@ -113,7 +113,9 @@ PARAMS: dict[str, st.SearchStrategy[dict[str, Any]]] = {
         }
     ),
     "close_vs_pivot": st.fixed_dictionaries({"max_above_pct": st.sampled_from([0.0, 1.0, 2.5])}),
-    "neglect": st.fixed_dictionaries({"max_return_63d_pct": NUM}),
+    "neglect": st.fixed_dictionaries(
+        {"max_return_63d_pct": NUM}, optional={"max_range_126d_pct": st.none() | POS}
+    ),
     "adtr_filter": st.fixed_dictionaries({"max_multiple": POS}),
     "max_chase": st.fixed_dictionaries({"pct": POS}),
 }
