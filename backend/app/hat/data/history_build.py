@@ -11,8 +11,9 @@ stopped; every step is idempotent (the same input rewrites the same files). Noth
 or the verification touches the network: the sources below are injected.
 
 Environment: `HAT_DATA_ROOT` (data directory); the NSE bhavcopy MCP endpoint variable of the ops
-spec (corporate actions, index history and validation; without it those steps are skipped); a
-PostgreSQL database as for the rest of HAT (`DB_*`). Add `--skip-actions`, `--skip-index` or
+spec (corporate actions, recent index history and validation; without it those steps are
+skipped and the index comes from NSE's daily index archive alone); a PostgreSQL database as for
+the rest of HAT (`DB_*`). Add `--skip-actions`, `--skip-index` or
 `--skip-validation` to leave a step out.
 """
 
@@ -28,13 +29,14 @@ import time
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
 
 from sqlalchemy import select
 
+from ..errors import HatError
 from ..ids import uuid7
 from ..ops.jobs import JobError, JobResult
 from ..settings import operator_settings, process_env
@@ -53,7 +55,7 @@ from .bhavcopy import (
     weekdays,
 )
 from .corporate_actions import ActionRecord, LoadReport, Normalised, load_actions
-from .mcp_client import McpClient, McpError, parse_data_date
+from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .run_report import save_report
 from .sessions import IST
 from .store import (
@@ -67,12 +69,23 @@ from .store import (
 
 logger = logging.getLogger(__name__)
 
-INDEX_NAMES = ("NIFTY 50", "NIFTY 500", "NIFTY SMALLCAP 250", "INDIA VIX")
+NIFTY_50 = "NIFTY 50"
+NIFTY_500 = "NIFTY 500"
+INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
 # [A] Each index's first day in the archive. Smallcap 250's start date is to be checked on the
 # first run (HAT-DATA-095); until then every index is expected from the start of the build.
 DEFAULT_INDEX_START = date(2010, 1, 1)
 SAMPLE_SIZE = 50
 MCP_HISTORY_MONTHS = 12
+# [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
+INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
+# [A] Names the archive used before NSE's 2015 renaming; read as today's names.
+INDEX_ALIASES = {
+    "CNX NIFTY": NIFTY_50,
+    "S&P CNX NIFTY": NIFTY_50,
+    "CNX 500": NIFTY_500,
+    "S&P CNX 500": NIFTY_500,
+}
 REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD.txt per run day
 
 
@@ -178,12 +191,24 @@ def index_point_from_mcp(name: str, row: dict) -> IndexPoint | None:
 
 
 def mcp_index_source(client: McpClient) -> IndexSource:
-    """Chain `get_index_history` chunks (12 months each) back from `end` to `start`."""
+    """Chain `get_index_history` chunks (12 months each) back from `end` to `start`. A "no data"
+    answer is the server's depth and ends the chain; any other failure raises."""
+
+    def chunk(name: str, cursor: date) -> tuple[list[dict], date | None] | None:
+        try:
+            return client.index_history(name, cursor, MCP_HISTORY_MONTHS)
+        except McpError as exc:
+            if exc.code == CODE_NO_DATA:
+                return None
+            raise
 
     def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
         cursor: date | None = end
         while cursor is not None and cursor >= start:
-            rows, nxt = client.index_history(name, cursor, MCP_HISTORY_MONTHS)
+            answer = chunk(name, cursor)
+            if answer is None:
+                return
+            rows, nxt = answer
             for row in rows:
                 point = index_point_from_mcp(name, row)
                 if point is not None and start <= point.day <= end:
@@ -204,6 +229,7 @@ def parse_index_archive_csv(
     for raw in csv.DictReader(io.StringIO(text)):
         row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
         name = row.get("index name", "").upper()
+        name = INDEX_ALIASES.get(name, name)
         if name not in wanted:
             continue
         values = [
@@ -226,10 +252,115 @@ def parse_index_archive_csv(
     return points
 
 
+CODE_INDEX_ARCHIVE = "index_archive_error"
+
+
+class IndexArchiveError(HatError):
+    """An index archive file could not be fetched or held no index row; raised after the rows
+    that were available, so the index keeps them and is reported failed."""
+
+    code = CODE_INDEX_ARCHIVE
+
+
+def index_archive_name(day: date) -> str:
+    return f"ind_close_all_{day:%d%m%Y}.csv"
+
+
+class ArchiveIndexSource:
+    """Index rows from NSE's daily `ind_close_all_DDMMYYYY.csv`, for the days that have bars.
+    One file serves every index: it is fetched at most once per run, paced like the bhavcopy
+    downloader, and kept untouched under `raw/` so a later run reads it from disk. A day NSE has
+    no file for stays missing (reported by the coverage); a failed fetch, or an answer with no
+    index row (never kept, so the next run asks again), fails the indices that needed it."""
+
+    def __init__(
+        self, store: DataStore, fetch: Fetcher, pacing: Pacing, names: Collection[str] = INDEX_NAMES
+    ) -> None:
+        self._store = store
+        self._fetch = fetch
+        self._pacing = pacing
+        self._names = names
+        self._points: dict[date, list[IndexPoint]] = {}
+        self._bar_days: list[date] | None = None
+        self._last_start: float | None = None
+        self.requested: list[date] = []
+        self.not_found: list[date] = []
+        self.errors: list[date] = []
+
+    def __call__(self, name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        wanted = name.upper()
+        if self._bar_days is None:
+            self._bar_days = self._store.days(DATASET_BARS)
+        days = [d for d in self._bar_days if start <= d <= end]
+        for day in days:
+            yield from (p for p in self._day(day) if p.row.index_name == wanted)
+        if any(day in self.errors for day in days):
+            raise IndexArchiveError(CODE_INDEX_ARCHIVE)
+
+    def _day(self, day: date) -> list[IndexPoint]:
+        if day not in self._points:
+            self._points[day] = self._read(day)
+        return self._points[day]
+
+    def _read(self, day: date) -> list[IndexPoint]:
+        name = index_archive_name(day)
+        if self._store.raw_exists(name):
+            return self._parse(self._store.read_raw(name), day)
+        self._wait_turn()
+        self.requested.append(day)
+        result = self._fetch(INDEX_ARCHIVE_URL + name)
+        if result.status == "not_found":
+            self.not_found.append(day)
+            return []
+        points = self._parse(result.data, day) if result.status == "ok" else []
+        if not points:  # an error, or an answer that is no index file (a block page, a cut body)
+            self.errors.append(day)
+            return []
+        self._store.store_raw(name, result.data)
+        return points
+
+    def _parse(self, data: bytes, day: date) -> list[IndexPoint]:
+        return parse_index_archive_csv(data.decode("utf-8-sig", errors="replace"), day, self._names)
+
+    def _wait_turn(self) -> None:
+        # the first request waits too: the bhavcopy downloader may have just asked the same host
+        last = self._pacing.clock() if self._last_start is None else self._last_start
+        remaining = self._pacing.interval - (self._pacing.clock() - last)
+        if remaining > 0:
+            self._pacing.sleep(remaining)
+        self._last_start = self._pacing.clock()
+
+
+def archive_fill_source(primary: IndexSource, archive: IndexSource) -> IndexSource:
+    """The primary source (the MCP) first; the archive fills the days before its first row, or
+    the whole range when it has none. A failure of either is raised after every row both could
+    give (the primary's first), so the index keeps them and is still reported failed."""
+
+    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        points: list[IndexPoint] = []
+        failure: Exception | None = None
+        try:
+            points.extend(primary(name, start, end))  # keeps the rows taken before a failure
+        except Exception as exc:  # re-raised below, after the archive fill
+            failure = exc
+        yield from points
+        first = min((p.day for p in points), default=end + timedelta(days=1))
+        if first > start:
+            try:
+                yield from archive(name, start, first - timedelta(days=1))
+            except Exception as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    return source
+
+
 @dataclass
 class IndexLoadReport:
     days_written: int = 0
     points: int = 0
+    failed: dict[str, str] = field(default_factory=dict)  # index -> stable code
 
 
 def load_index_history(
@@ -239,12 +370,19 @@ def load_index_history(
     end: date,
     names: Sequence[str] = INDEX_NAMES,
 ) -> IndexLoadReport:
-    """Pull every index, then write each day once with all its indices (idempotent)."""
+    """Pull every index, then write each day once with all its indices (idempotent). An index
+    whose source fails is recorded with a stable code and keeps the rows it already gave; the
+    other indices still load."""
     by_day: dict[date, dict[str, IndexRow]] = defaultdict(dict)
-    for name in names:
-        for point in source(name, start, end):
-            by_day[point.day][point.row.index_name] = point.row
     report = IndexLoadReport()
+    for name in names:
+        try:
+            for point in source(name, start, end):
+                by_day[point.day][point.row.index_name] = point.row
+        except Exception as exc:  # one index never stops the others, validation or the report
+            code = getattr(exc, "code", None)
+            report.failed[name] = code if isinstance(code, str) else "index_source_failed"
+            logger.warning("index history %s failed: %s", name, report.failed[name])
     for day in sorted(by_day):
         store.upsert_index(day, list(by_day[day].values()))
         report.days_written += 1
@@ -493,6 +631,8 @@ def history_build_job(**kwargs: object) -> Callable[[], JobResult]:
             raise JobError("history_incomplete")
         if report.action_symbols_failed:
             raise JobError("history_actions_incomplete")
+        if report.index is not None and report.index.failed:
+            raise JobError("history_index_incomplete")
         return JobResult(calls=len(report.download.requested), rows=report.rows_written)
 
     return body
@@ -553,22 +693,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             session.commit()
             return result
 
+    fetch = http_fetcher()
+    pacing = Pacing(interval=args.interval)
+    index_source = None
+    if not args.skip_index:
+        index_source = ArchiveIndexSource(store, fetch, pacing)
+        if client is not None:
+            index_source = archive_fill_source(mcp_index_source(client), index_source)
     hooks = None
     if not args.skip_actions and (client is not None or args.actions_archive):
         hooks = _action_hooks(client, instruments, args.actions_archive, args.start, end, sink)
     report = run_history_build(
         store=store,
-        fetch=http_fetcher(),
+        fetch=fetch,
         catalog=DbCatalog(SessionLocal, market_id),
         start=args.start,
         end=end,
         holidays=holidays,
         resume=args.resume,
-        pacing=Pacing(interval=args.interval),
+        pacing=pacing,
         actions=hooks,
-        index_source=mcp_index_source(client)
-        if client is not None and not args.skip_index
-        else None,
+        index_source=index_source,
         validation=Validation(mcp_close_source(client), seed=args.seed)
         if client is not None and not args.skip_validation
         else None,
@@ -581,10 +726,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _exit_code(report: BuildReport) -> int:
     """Non-zero when anything needs the operator: a mismatch, an unplaced security, an unusable
-    file, a day with no file that is not a holiday, or an action lookup that failed."""
+    file, a day with no file that is not a holiday, an action lookup or an index that failed."""
     failed = report.validation is not None and report.validation.failed
     incomplete = report.unresolved or report.problems or report.days.gaps or report.days.unaccounted
-    return 1 if failed or incomplete or report.action_symbols_failed else 0
+    index_failed = report.index is not None and report.index.failed
+    return 1 if failed or incomplete or report.action_symbols_failed or index_failed else 0
 
 
 def _action_hooks(
@@ -641,6 +787,12 @@ def _summary(report: BuildReport) -> str:
         f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
         f"left out {dict(report.left_out)}",
     ]
+    if report.index is not None:
+        missing = {name: len(days) for name, days in report.index_missing.items() if days}
+        lines.append(
+            f"index: {report.index.days_written} days, {report.index.points} rows, "
+            f"failed {report.index.failed}, missing days {missing}"
+        )
     if report.validation is not None:
         lines.append(
             f"validation: {len(report.validation.samples)} samples, "
