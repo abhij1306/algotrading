@@ -12,7 +12,8 @@ from __future__ import annotations
 
 import threading
 import uuid
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from datetime import timedelta
 from decimal import Decimal
 
@@ -66,19 +67,45 @@ def clean_db(pg_engine: Engine) -> Generator[Engine, None, None]:
     _truncate(pg_engine)
     yield pg_engine
     _truncate(pg_engine)
+    _assert_triggers_on(pg_engine)
 
 
-def _rig(session: Session, **kwargs: object) -> Rig:
-    """The router rig on PostgreSQL. The shared seed writes a few rows before the rows they
-    reference (universe members before their instruments, the bot before its broker account),
-    which SQLite never checks: the seed runs with the foreign-key triggers off for this
-    connection, and every row it leaves is consistent once it commits. The checks then run with
-    them on."""
-    session.execute(text("SET session_replication_role = replica"))
-    rig = Rig(session, **kwargs)  # type: ignore[arg-type]
-    session.execute(text("SET session_replication_role = origin"))
-    session.commit()
-    return rig
+def _assert_triggers_on(engine: Engine) -> None:
+    """Every connection the pool holds runs the triggers: the FK-off seed (`_seeded`) must never
+    leave a pooled connection in `replica`, or a later check on it (the stop-only-rises trigger)
+    passes vacuously or fails."""
+    held = [engine.connect() for _ in range(engine.pool.size())]  # type: ignore[attr-defined]
+    try:
+        for connection in held:
+            role = connection.exec_driver_sql("SHOW session_replication_role").scalar()
+            assert role == "origin", role
+    finally:
+        for connection in held:
+            connection.close()
+
+
+@contextmanager
+def _seeded(engine: Engine, **kwargs: object) -> Iterator[tuple[Session, Rig]]:
+    """The router rig on PostgreSQL, with a session bound to one dedicated connection. The
+    shared seed writes a few rows before the rows they reference (universe members before their
+    instruments, the bot before its broker account), which SQLite never checks: the seed runs
+    with the foreign-key triggers off for that connection only, and every row it leaves is
+    consistent once it commits; the check then runs with them on. The session never changes
+    connection (a plain session takes a new one from the pool after each commit, so the setting
+    leaked to a pooled connection and a later check ran without its triggers), and the
+    connection is reset before it goes back to the pool, whatever the check did."""
+    with engine.connect() as connection:
+        try:
+            with Session(bind=connection) as session:
+                session.execute(text("SET session_replication_role = replica"))
+                rig = Rig(session, **kwargs)  # type: ignore[arg-type]
+                session.execute(text("SET session_replication_role = origin"))
+                session.commit()
+                yield session, rig
+        finally:
+            connection.rollback()
+            connection.exec_driver_sql("RESET session_replication_role")
+            connection.commit()
 
 
 def _stranded(session: Session, signal_id: uuid.UUID) -> bool:
@@ -140,8 +167,10 @@ def test_db_crash_resumes_entry_once(
             for n, ok in enumerate(replies)
         ),
     )
-    with Session(clean_db) as session:
-        rig = _rig(session, mode=modes.AUTO if path == "auto" else modes.CONFIRM, fake=fake)
+    with _seeded(clean_db, mode=modes.AUTO if path == "auto" else modes.CONFIRM, fake=fake) as (
+        session,
+        rig,
+    ):
         live = desks_for(clean_db, rig)
         live.recover(AT)
         rig.router = live.by_account[rig.account_id].router
@@ -230,8 +259,7 @@ def test_db_concurrent_sweeps_settle_once(clean_db: Engine, threads: int, taken:
     no order, whatever the overlap. Harm: two overlapping sweeps open two veto trades for one
     card, record its expiry twice, or end a stranded Take twice."""
     _truncate(clean_db)
-    with Session(clean_db) as session:
-        rig = _rig(session, mode=modes.CONFIRM)
+    with _seeded(clean_db, mode=modes.CONFIRM) as (session, rig):
         ids = [rig.route(instrument=n).signal_id for n in range(2)]
         if taken:
             try:
@@ -300,8 +328,7 @@ def test_db_concurrent_placements_send_one(clean_db: Engine, threads: int, path:
     connection, reaches the broker exactly once under one tag and ends EntryPlaced. Harm: two
     placements that both read no open tag reserve two tags and buy twice."""
     _truncate(clean_db)
-    with Session(clean_db) as session:
-        rig = _rig(session, mode=modes.AUTO if path == "auto" else modes.CONFIRM)
+    with _seeded(clean_db, mode=modes.AUTO if path == "auto" else modes.CONFIRM) as (session, rig):
         live = desks_for(clean_db, rig)
         live.recover(AT)
         router = live.by_account[rig.account_id].router
