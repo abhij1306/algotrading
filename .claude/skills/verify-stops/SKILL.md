@@ -24,7 +24,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT rescale.factor_exact` A stored 12-place factor of a ratio with denominator ≤ 1000 reads back exactly; a short factor that is no such ratio is refused. Harm: 0.0110 read as 11/1000 instead of 1/91.
 - `PBT rescale.pending_is_manage_only` While a position awaits its rescale the exits' view source gives it no view and a trigger of its instrument is stored Rejected `corporate_action_pending`; once rescaled both return. Harm: exits or entries on prices of the wrong scale.
 - `PBT rescale.broker_stop_follows` After a rescale, the next sync moves every live broker stop (GTT or day stop) down to the rescaled trigger first and then to the rescaled quantity, never larger than the old size at the old trigger; while the broker refuses the larger size the stop rests at the new trigger for the old size; with no rescale nothing moves. Harm: the old GTT fires on the ex-date open.
-- `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
+- `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup (or one with an unreadable row) once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
 - `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
 - `TLA StopPlacement!StopAfterFill` After a real entry fill, its broker stop is placed (or resized) before any other HAT action on the position. Harm: a raised stop, a sale or a swap runs on a position the broker does not yet protect.
 - `TLA StopPlacement!AlwaysProtected` A held real position always has a working broker stop, except while a fill's stop work has not run yet, after a failure that raised an alert, or while a GTT that triggered without a fill is still unseen. Harm: a gap-down or a machine outage hits an unprotected position and nobody is told.
@@ -115,7 +115,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `fe1ad2053e6e3bc6f3f5fe4153b85641af5de3723f59ef4280108854fdb82e3c`
+Covered digest: `c5c056595c9f0e3e659525140393be8407d6fd4d5b87ddfeacb0f16ff8807221`
 
 ## Scope changes
 
@@ -550,6 +550,12 @@ FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [c
 ```
 
 Break: in `backend/app/hat/daily/nightly.py`: a failed lookup is not alerted.
+
+```
+FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
+```
+
+Break: in `backend/app/hat/data/ingest.py`: `lookup_actions` counts a symbol with an unreadable row as looked up.
 
 ```
 FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]

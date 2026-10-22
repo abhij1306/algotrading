@@ -51,7 +51,7 @@ from decimal import ROUND_FLOOR, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..engine.rescale import applied_factors
+from ..engine.rescale import applied_factors, pending_actions
 from ..errors import HatError
 from ..events import record
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
@@ -660,7 +660,8 @@ class StopDesk:
         if position.closed_at is not None or position.qty_open <= 0:
             return True
         if not applied_factors(session, position.id):
-            return True
+            # Never rescaled: nothing to follow, but a pending action means the stop is not done.
+            return not pending_actions(session, position, trade_date_of(now))
         if self.exit_working(session, position.id):
             return False  # the sale holds the shares; the next sync tries again
         tick = self._tick_for(session, position)

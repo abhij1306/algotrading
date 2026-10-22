@@ -575,8 +575,8 @@ def lookup_actions(
     to_date: date,
 ) -> tuple[int, list[str]]:
     """`get_corporate_actions` for each symbol (to its instrument id) over the dates, stored
-    idempotently (HAT-DATA-052). Returns (actions created, symbols whose lookup failed or came
-    back incomplete)."""
+    idempotently (HAT-DATA-052). Returns (actions created, symbols whose lookup failed, came
+    back incomplete or held a row that could not be read: an unknown action is not "none")."""
 
     def one(symbol: str) -> Callable[[], tuple[str, ca.Normalised | None]]:
         def run() -> tuple[str, ca.Normalised | None]:
@@ -592,7 +592,7 @@ def lookup_actions(
 
     results = client.map_calls([one(s) for s in sorted(instruments)])
     records = [r for _, n in results if n is not None for r in n.records]
-    failed = sorted(s for s, n in results if n is None)
+    failed = sorted(s for s, n in results if n is None or n.unparsed)
     created = 0
     if records:
         with session_factory() as session:

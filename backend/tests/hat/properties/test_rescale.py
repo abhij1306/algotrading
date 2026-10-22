@@ -281,8 +281,9 @@ def test_factor_exact(d: int, n: int, places: int) -> None:
     short = (D(n) / D(d)).quantize(D(1).scaleb(-places))
     nearest = Fraction(short).limit_denominator(rescale.MAX_DENOMINATOR)
     if nearest != Fraction(short):
+        stored = factor_to_decimal(Fraction(short))
         with pytest.raises(ValueError):
-            rescale.exact_factor(factor_to_decimal(Fraction(short)))
+            rescale.exact_factor(stored)
 
 
 # --- HAT-EXEC-142: until rescaled, no exit and no entry ---------------------------------------
@@ -478,14 +479,21 @@ def _seed_symbols(session: Session, ids: list[uuid.UUID]) -> dict[str, uuid.UUID
     watched=st.sets(st.integers(0, 5), max_size=3),
     actions=st.sets(st.integers(0, 5)),
     failing=st.sets(st.integers(0, 5)),
+    malformed=st.sets(st.integers(0, 5)),
     configured=st.booleans(),
 )
 def test_next_session_lookup(
-    held: set[int], watched: set[int], actions: set[int], failing: set[int], configured: bool
+    held: set[int],
+    watched: set[int],
+    actions: set[int],
+    failing: set[int],
+    malformed: set[int],
+    configured: bool,
 ) -> None:
     """For every set of held and watchlisted instruments and MCP answers, `ca.adjust` looks up
     exactly the held and watchlisted symbols, each over (next session, next session); stores
-    every action returned; and alerts each failed lookup once while the step still succeeds;
+    every action returned; and alerts each failed lookup, or one with a row it cannot read,
+    once while the step still succeeds;
     with no MCP client the step still succeeds (the features and scan run) and alerts once.
     Harm: a split of a held name is first seen after its ex-date close, when the fake stop-out
     has already happened."""
@@ -525,7 +533,9 @@ def test_next_session_lookup(
                 "adjustmentFactor": 0.5,
             }
         ]
-        return {"symbol": arguments["symbol"], "actions": rows if n in actions else []}
+        if n in malformed:  # a row with no factor: unreadable, so the answer is incomplete
+            rows = [{"exDate": target.isoformat(), "actionType": "BONUS", "purpose": "Bonus"}]
+        return {"symbol": arguments["symbol"], "actions": rows if n in actions | malformed else []}
 
     transport = ScriptedTransport(respond)
     notifier = RecordingNotifier()
@@ -551,8 +561,8 @@ def test_next_session_lookup(
     with factory() as session:
         stored = set(session.scalars(select(HatCorporateAction.instrument_id)))
         count = session.scalar(select(func.count()).select_from(HatCorporateAction))
-    assert stored == {symbols[f"SYM{n}"] for n in wanted & actions - failing}
+    assert stored == {symbols[f"SYM{n}"] for n in wanted & actions - failing - malformed}
     assert count == len(stored)
     alerted = sorted(d["symbol"] for code, _, d in notifier.alerts)
-    assert alerted == sorted(f"SYM{n}" for n in wanted & failing)
+    assert alerted == sorted(f"SYM{n}" for n in wanted & (failing | malformed))
     assert {code for code, _, _ in notifier.alerts} <= {rescale.ALERT_ACTION_UNCHECKED}
