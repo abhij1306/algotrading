@@ -386,7 +386,8 @@ def test_yaml_round_trip_seed(name: str) -> None:
 
 
 def add_run(session: Session, version: HatStrategyVersion) -> HatBacktestRun:
-    """A backtest run row for `version` (what publishing needs as evidence)."""
+    """A backtest run row for `version` flagged for promotion (what publishing needs as
+    evidence)."""
     run = HatBacktestRun(
         id=uuid.uuid4(),
         strategy_version_id=version.id,
@@ -396,7 +397,7 @@ def add_run(session: Session, version: HatStrategyVersion) -> HatBacktestRun:
         period_end=date(2025, 12, 31),
         data_snapshot={},
         status="completed",
-        metrics={},
+        metrics={"for_promotion": True},
     )
     session.add(run)
     session.flush()

@@ -92,12 +92,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `50a4dacbed2a7ee6ddf33c78e3c0f88f769ceaa7d6d6b57d4f2bc8ad3bdb0e6f`
+Covered digest: `8a64df3d681057830dda04c37c6613771d87fc78a666f5e63cf4221f1401b17a`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 62: `engine/backtest.py` gained the recorded fill conventions (`conventions`, `config_digest` via `confighash.config_hash`, `RunSpec.entry_fill_rule` and `for_promotion`) and `test_config.add_run` flags its run for promotion; no governance check reads them (properties in `verify-backtest`).
 - PR 48: `HatSettings` gains `mpp_resend` (`HAT_MPP_RESEND`, default off) and `mpp_page_after` (`HAT_MPP_PAGE_AFTER`, default 3); their parse is checked by `verify-execution`'s `mpp.resend_flag_parsed`. No governance check changed.
 - PR 58: `risk/policy.py` gained `cooldown_sessions` (06 §1, HAT-RISK-036): a whole number in [0, 250], seed 0, optional in a stored document (reads as 0), and less permissive when higher. `OLD_SEED_POLICY` (the PR 10 seed) leaves it out, as that seed had none. The cooling-off functions are untouched; the properties are in verify-risk.
 - PR 10 extended `risk/policy.py` (the policy record, direction classification and the evidence gate) without touching `cooling_off_satisfied` or `require_cooling_off`; the new rules are checked by `verify-risk`.

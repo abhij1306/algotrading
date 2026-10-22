@@ -26,6 +26,22 @@ hit on the way down, a profit rule fires at the first tick price on the way up a
 `exits.evaluate` acts, and the close rules see the official close. Fills go through the cost
 model (`app.hat.backtest.costs`): slippage against the trade, then statutory charges.
 
+Fill conventions (PR 62, HAT-BT-020..022, O5): pessimistic by default. An entry needs the high to
+clear the level by one tick and fills at that price (`penetration_1_tick`; `touch` is a variant a
+run may choose), a stop gapped through fills at min(open, stop), and the slippage defaults to
+20 bps (`DEFAULT_SLIPPAGE_BPS`). A run flagged for promotion (`RunSpec.for_promotion`, the only
+kind `publish_version` accepts and the sleeve's evidence reads) is refused at a slippage of 0 or
+under `touch` (`check_conventions`). Every run's metrics record the
+fill path, the entry fill rule, the gap-through rule, the trigger proxy, the slippage and the
+cost model, and `config_digest` hashes them, so two runs under different conventions never read
+as comparable.
+
+The exit search along a day's way up (`first_trigger`) assumes a monotone rule stack: above the
+stop, every live rule that acts at a price acts at any higher one. The built-in rules are
+thresholds (targets, R levels, breakeven moves), and the close-phase rules
+(`partial_after_days`, the breakeven moves) see one price; a custom rule that acts only inside a
+band of prices would need a linear scan of the tick grid instead of the bisection.
+
 The entry day (PR 60, HAT-BT-020): an entry breaks its level after the day's pre-break low, read
 from the session's 5-minute bars when the run has them and otherwise estimated as
 max(day low, min(open, level x (1 - adr20 / 100))) with `adr20` as of the session before; a low-of-
@@ -76,9 +92,19 @@ from sqlalchemy.pool import StaticPool
 
 from ...base import Base
 from ..backtest import metrics as bt_metrics
-from ..backtest.costs import BacktestFills
+from ..backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills
 from ..backtest.dsr import ReturnStats, return_stats
-from ..backtest.fills import entry_fill, stop_fill
+from ..backtest.fills import (
+    ENTRY_FILL_RULES,
+    FILL_PATH,
+    GAP_THROUGH_RULE,
+    PENETRATION,
+    TOUCH,
+    TRIGGER_PROXY,
+    entry_fill,
+    stop_fill,
+)
+from ..confighash import config_hash
 from ..data.sessions import IST
 from ..data.ticks import tick_for_date
 from ..errors import HatError
@@ -129,6 +155,7 @@ __all__ = [
     "INITIAL_EQUITY",
     "KNOWN_GAPS",
     "LOOKBACK_SESSIONS",
+    "TOUCH_GAP",
     "TRADE_SCHEMA",
     "BacktestError",
     "BacktestResult",
@@ -138,8 +165,12 @@ __all__ = [
     "SignalRow",
     "TradeRow",
     "WatchRow",
+    "check_conventions",
     "compute_metrics",
+    "config_digest",
+    "conventions",
     "first_trigger",
+    "known_gaps",
     "pre_break_low",
     "upper_circuit_locked",
     "run_backtest",
@@ -156,7 +187,6 @@ KNOWN_GAPS = (
     "episodic_pivot_not_backtested",
     "close_exits_at_official_close",
     "kill_switches_not_simulated",
-    "entry_fills_on_touch",  # a high at the level fills; live needs a trade at or above it
     "gap_over_fills_at_open",  # live fills at the first tick after the open
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band; no band table in the run
     "lower_circuit_not_modelled",  # a stop at a locked lower band fills at min(open, stop)
@@ -164,6 +194,8 @@ KNOWN_GAPS = (
     "suspension_not_marked",  # a bar-less, not delisted, position is carried at its last close
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
 )
+# Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
+TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # The NSE price bands an upper circuit is inferred at when the run has no band table (PR 61).
 NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
 END_OF_PERIOD = "end_of_period"
@@ -239,6 +271,8 @@ class RunSpec:
     end: date
     fills: BacktestFills
     initial_equity: Decimal = INITIAL_EQUITY
+    entry_fill_rule: str = PENETRATION  # HAT-BT-020: `touch` is the variant
+    for_promotion: bool = False  # the run may evidence a version (`publish_version`)
 
 
 # --- outputs ----------------------------------------------------------------------------------
@@ -790,13 +824,13 @@ class _Run:
             bar = self.bar.get((instrument_id, day))
             if bar is None:
                 continue  # no session today: the level cannot break
-            if row.pivot is None:
-                self._skip(SKIP_NO_LEVEL)
+            price = self._fill(row, bar, day)
+            if isinstance(price, str):
+                self._skip(price)
                 continue
-            level = Decimal(row.pivot)
-            price = entry_fill(bar.open, bar.high, level)
             if price is None:
                 continue  # the level did not break: the row expires at the session end
+            level = Decimal(row.pivot)
             playbook = self.config.playbook(row.playbook)
             lows = self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
             if isinstance(lows, str):
@@ -814,6 +848,22 @@ class _Run:
             )
             plan = _EntryPlan(price, stop, dip, locked, failed, filters)
             self._enter(row, bar, plan, prev, at)
+
+    def _fill(self, row: HatWatchlistEntry, bar: _Bar, day: date) -> Decimal | str | None:
+        """The entry fill of the row's level under the run's entry fill rule, None when the
+        level did not break, or the skip reason when there is no level or no tick to penetrate
+        by (HAT-BT-020)."""
+        if row.pivot is None:
+            return SKIP_NO_LEVEL
+        level = Decimal(row.pivot)
+        rule = self.spec.entry_fill_rule
+        # The tick matters only to a penetration from below; read it only then.
+        tick = None
+        if rule == PENETRATION and bar.open <= level < bar.high:
+            tick = self._tick(str(row.instrument_id), day)
+            if tick is None:
+                return SKIP_BAD_INPUT  # no tick to penetrate by (nor to plan a stop on)
+        return entry_fill(bar.open, bar.high, level, tick, rule)
 
     def _locked(self, instrument_id: str, price: Decimal, high: Decimal, day: date) -> bool | None:
         """Whether the entry at `price` is at the upper circuit (`upper_circuit_locked`)."""
@@ -871,7 +921,10 @@ class _Run:
                 return SKIP_GAP_NO_INTRADAY
             if adr20 is None or adr20 < 0:
                 return SKIP_BAD_INPUT  # the whole day's low would be read before the break
-        before, after = pre_break_low(bar.open, bar.low, level, adr20, intraday)
+        # The break is at the entry price (level + 1 tick under penetration); a gap over at the
+        # open breaks on the first bar either way.
+        broke = level if gapped else price
+        before, after = pre_break_low(bar.open, bar.low, broke, adr20, intraday)
         if gapped and not low_of_day:
             # A gap over enters at the open and then sees the whole day's way down.
             return before, bar.low
@@ -1295,14 +1348,39 @@ def compute_metrics(
         "sharpe_annual": _float(bt_metrics.sharpe_mean_std(returns)),
         "returns": _stats_json(stats),
         "sessions": len(equity),
-        "cost_model": spec.fills.model.to_json(),
-        "slippage_bps": str(spec.fills.slippage_bps),
         "strategy_version_id": str(spec.strategy_version_id),
         "risk_policy_version_id": str(spec.policy.version_id),
         "cooldown_sessions": spec.policy.policy.cooldown_sessions,
-        "known_gaps": list(KNOWN_GAPS),
+        "known_gaps": known_gaps(spec),
         "entry_day_low": ENTRY_DAY_LOW,
+        **conventions(spec),
+        "for_promotion": spec.for_promotion,
+        "config_digest": config_digest(spec),
     }
+
+
+def known_gaps(spec: RunSpec) -> list[str]:
+    """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, and the touch fill under `touch`."""
+    return [*KNOWN_GAPS, *([TOUCH_GAP] if spec.entry_fill_rule == TOUCH else [])]
+
+
+def conventions(spec: RunSpec) -> dict[str, Any]:
+    """The fill conventions a run used (PR 62, O5): recorded in its metrics."""
+    return {
+        "fill_path": FILL_PATH,
+        "entry_fill_rule": spec.entry_fill_rule,
+        "gap_through_rule": GAP_THROUGH_RULE,
+        "trigger_proxy": TRIGGER_PROXY,
+        # normalised, so 20 and 20.0 bps record (and hash) alike
+        "slippage_bps": format(abs(spec.fills.slippage_bps).normalize(), "f"),  # -0 is 0
+        "cost_model": spec.fills.model.to_json(),
+    }
+
+
+def config_digest(spec: RunSpec) -> str:
+    """The canonical hash of the run's fill conventions (`conventions`): runs with equal
+    digests were filled, slipped and charged alike."""
+    return config_hash(conventions(spec))
 
 
 # --- trades.parquet ---------------------------------------------------------------------------
@@ -1369,7 +1447,19 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
         raise BacktestError("backtest_bad_period")
     if not spec.initial_equity.is_finite() or spec.initial_equity <= 0:
         raise BacktestError("backtest_bad_equity")
+    check_conventions(spec.entry_fill_rule, spec.fills.slippage_bps, spec.for_promotion)
     return _Run(spec, data).run()
+
+
+def check_conventions(entry_fill_rule: str, slippage_bps: Decimal, for_promotion: bool) -> None:
+    """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule, and for a run
+    flagged for promotion, perfect fills (a slippage of 0) or the optimistic `touch` rule."""
+    if entry_fill_rule not in ENTRY_FILL_RULES:
+        raise BacktestError("backtest_bad_fill_rule")
+    if for_promotion and slippage_bps == 0:
+        raise BacktestError("backtest_promotion_without_slippage")
+    if for_promotion and entry_fill_rule != PENETRATION:
+        raise BacktestError("backtest_promotion_on_touch")
 
 
 # --- command line -----------------------------------------------------------------------------
@@ -1378,10 +1468,13 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD
     [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N]
+    [--entry-fill penetration_1_tick|touch] [--for-promotion]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe over the
     Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
     `backtests/run_id=<id>/trades.parquet`. Prints the run id, status, trade count and DSR.
+    The slippage defaults to 20 bps; `--for-promotion` marks a run `publish_version` may take as
+    a version's evidence, and is refused at a slippage of 0 (PR 62).
     """
     import argparse  # noqa: PLC0415
     import json  # noqa: PLC0415
@@ -1398,9 +1491,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
     parser.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
     parser.add_argument("--version", type=uuid.UUID, default=None)
-    parser.add_argument("--slippage-bps", type=Decimal, default=Decimal(0))
+    parser.add_argument("--slippage-bps", type=Decimal, default=DEFAULT_SLIPPAGE_BPS)
     parser.add_argument("--cost-model", default=None)
     parser.add_argument("--cooldown-sessions", type=int, default=None)
+    parser.add_argument("--entry-fill", choices=ENTRY_FILL_RULES, default=PENETRATION)
+    parser.add_argument("--for-promotion", action="store_true")
     args = parser.parse_args(argv)
     settings = operator_settings()
     extra: dict[str, Any] = {} if args.cost_model is None else {"cost_model": args.cost_model}
@@ -1421,6 +1516,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 root=settings.data_root,
                 slippage_bps=args.slippage_bps,
                 version_id=args.version,
+                entry_fill_rule=args.entry_fill,
+                for_promotion=args.for_promotion,
                 **extra,
             )
         except RunError as exc:

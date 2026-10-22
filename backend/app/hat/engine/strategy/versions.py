@@ -167,7 +167,8 @@ def publish_version(
 ) -> HatStrategyVersion:
     """Freeze a draft: it becomes `backtested` against a completed run of that version, which
     evidences it (HAT-BT-061), and its config can no longer change. Any other starting status, or
-    a run of another version or one not completed, is refused."""
+    a run of another version, one not completed or one not flagged for promotion (PR 62), is
+    refused."""
     row = session.get(HatStrategyVersion, version_id)
     if row is None:
         raise VersionError("unknown_version")
@@ -180,6 +181,9 @@ def publish_version(
         raise VersionError("run_not_for_version")
     if run.status != "completed":
         raise VersionError("run_not_completed")
+    if (run.metrics or {}).get("for_promotion") is not True:
+        # O5 (PR 62): only a run flagged for promotion, never one at perfect fills, evidences.
+        raise VersionError("run_not_for_promotion")
     row.status = "backtested"
     row.backtest_run_id = backtest_run_id
     session.flush()

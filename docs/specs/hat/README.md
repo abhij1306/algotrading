@@ -526,13 +526,13 @@ to an artefact that exists.
 | HAT-BT-011 | [09](09-backtest.md) | 12 | PBT `backtest.no_lookahead` |
 | HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time` |
 | HAT-BT-013 | [09](09-backtest.md) | 12 | PBT `backtest.version_pinned` |
-| HAT-BT-020 | [09](09-backtest.md) | 12, 60 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide` |
-| HAT-BT-021 | [09](09-backtest.md) | 12 | PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close` |
-| HAT-BT-022 | [09](09-backtest.md) | 12 | PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds` |
+| HAT-BT-020 | [09](09-backtest.md) | 12, 60, 62 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide` |
+| HAT-BT-021 | [09](09-backtest.md) | 12, 62 | PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close`, PBT `backtest.fill_conventions_recorded` |
+| HAT-BT-022 | [09](09-backtest.md) | 12, 62 | PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds`, PBT `backtest.fill_conventions_recorded` |
 | HAT-BT-023 | [09](09-backtest.md) | 12 | PBT `costs.charges_contract`, PBT `costs.charges_contract_run`, PBT `costs.charges_contract_float_rates` |
 | HAT-BT-024 | [09](09-backtest.md) | 12 | PBT `backtest.decimal_money` |
 | HAT-BT-025 | [09](09-backtest.md) | 61 | PBT `backtest.adtr_filter_applied`, PBT `backtest.upper_circuit_inferred`, PBT `backtest.upper_circuit_skip` |
-| HAT-BT-030 | [09](09-backtest.md) | 12 | PBT `dsr.trial_counting` |
+| HAT-BT-030 | [09](09-backtest.md) | 12, 62 | PBT `dsr.trial_counting` |
 | HAT-BT-031 | [09](09-backtest.md) | 12 | PBT `dsr.family_key` |
 | HAT-BT-032 | [09](09-backtest.md) | 3, 12 | CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics` |
 | HAT-BT-040 | [09](09-backtest.md) | 11, 12 | PBT `backtest.r_and_expectancy` |
@@ -540,9 +540,9 @@ to an artefact that exists.
 | HAT-BT-042 | [09](09-backtest.md) | 12 | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example` |
 | HAT-BT-050 | [09](09-backtest.md) | 12 | PBT `backtest.deterministic` |
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
-| HAT-BT-060 | [09](09-backtest.md) | 9, 12 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
-| HAT-BT-061 | [09](09-backtest.md) | 2, 12 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
-| HAT-BT-070 | [09](09-backtest.md) | 12, 61 | CONF `known_gaps_listed`, PBT `backtest.deterministic` |
+| HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
+| HAT-BT-061 | [09](09-backtest.md) | 2, 12, 62 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
+| HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
 | HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start` |

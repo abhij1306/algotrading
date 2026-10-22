@@ -30,6 +30,7 @@ from ..engine.backtest import (
     BacktestResult,
     MarketData,
     RunSpec,
+    check_conventions,
     run_backtest,
     with_cooldown,
 )
@@ -48,8 +49,16 @@ from ..models import (
 from ..risk.policy import PolicyVersion, TradeOutcome, build_gate_evidence, effective_version
 from ..risk.policy_service import load_versions
 from ..time import as_utc, utc_now
-from .costs import DEFAULT_COST_MODEL, BacktestFills, CostError, check_slippage, load_cost_model
+from .costs import (
+    DEFAULT_COST_MODEL,
+    DEFAULT_SLIPPAGE_BPS,
+    BacktestFills,
+    CostError,
+    check_slippage,
+    load_cost_model,
+)
 from .dsr import Deflated, ReturnStats, deflated_sharpe, trial_variance
+from .fills import PENETRATION
 from .market import load_market
 
 __all__ = [
@@ -245,16 +254,21 @@ def backtest_bot(
     end: date,
     *,
     root: Path,
-    slippage_bps: Decimal = Decimal(0),
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
     cost_model: str = DEFAULT_COST_MODEL,
     version_id: uuid.UUID | None = None,
     cooldown_sessions: int | None = None,
+    entry_fill_rule: str = PENETRATION,
+    for_promotion: bool = False,
 ) -> HatBacktestRun:
     """Backtest a sleeve's strategy version (its live one unless `version_id` names another of
     the same strategy) on the sleeve's universe under the risk policy in force now, over the
-    Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58).
-    The command line's body. Refusals before the run is recorded raise `RunError` and record
-    nothing; a refusal of the engine is a failed trial."""
+    Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58), and
+    `entry_fill_rule` the default penetration fill (PR 62). A run `for_promotion` (one
+    `publish_version` may take) is refused at a slippage of 0 or under `touch`. The command
+    line's body.
+    Refusals before the run is recorded raise `RunError` and record nothing; a refusal of the
+    engine is a failed trial."""
     bot = session.get(HatBot, bot_id)
     if bot is None:
         raise RunError("backtest_unknown_bot")
@@ -278,6 +292,10 @@ def backtest_bot(
     except CostError as exc:
         raise RunError(exc.code) from None
     try:
+        check_conventions(entry_fill_rule, fills.slippage_bps, for_promotion)
+    except BacktestError as exc:
+        raise RunError(exc.code) from None
+    try:
         data, snapshot = load_market(
             store, session, universe_id=universe_id, index=config.regime.index, start=start, end=end
         )
@@ -290,6 +308,8 @@ def backtest_bot(
         start=start,
         end=end,
         fills=fills,
+        entry_fill_rule=entry_fill_rule,
+        for_promotion=for_promotion,
     )
     return record_backtest(
         session, spec, data, universe_id=universe_id, data_snapshot=snapshot, root=root
@@ -315,7 +335,9 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     """The newest completed run of the bot's live version on the bot's universe that ran under
     `cooldown`, the one in force when the evidence is read (HAT-RISK-036): a
     `--cooldown-sessions` sweep run, or one made before the cooldown changed, traded another rule
-    and is not the sleeve's evidence. A run recorded before the field existed ran with none (0)."""
+    and is not the sleeve's evidence. A run recorded before the field existed ran with none (0).
+    Only a run flagged for promotion counts (PR 62, O5): a sensitivity run (`touch`, 0 bps) or
+    one recorded before the flag existed is never the evidence."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
@@ -329,7 +351,12 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
         .order_by(HatBacktestRun.id.desc())
     )
     return next(
-        (run for run in candidates if (run.metrics or {}).get("cooldown_sessions", 0) == cooldown),
+        (
+            run
+            for run in candidates
+            if (run.metrics or {}).get("cooldown_sessions", 0) == cooldown
+            and (run.metrics or {}).get("for_promotion") is True
+        ),
         None,
     )
 

@@ -26,6 +26,7 @@ from ..errors import HatError
 
 __all__ = [
     "DEFAULT_COST_MODEL",
+    "DEFAULT_SLIPPAGE_BPS",
     "MAX_SLIPPAGE_BPS",
     "BacktestFills",
     "Charges",
@@ -42,6 +43,8 @@ Side = Literal["buy", "sell"]
 SIDES: tuple[Side, ...] = ("buy", "sell")
 DEFAULT_COST_MODEL = "cnc-delivery-1"
 MAX_SLIPPAGE_BPS = Decimal(10_000)  # a slippage must be below 100%
+# The slippage a run uses unless it names one (O5, PR 62): pessimistic, never perfect fills.
+DEFAULT_SLIPPAGE_BPS = Decimal(20)
 PAISE = Decimal("0.01")
 PRICE_PLACES = Decimal("0.0001")  # hat_fill.price is numeric(18, 4)
 _BPS = Decimal(10_000)
