@@ -179,6 +179,13 @@ class FillSync:
                 self._gtt_unfilled(session, gtts[order.symbol], order, now, report)
             elif self._resting_trigger(session, order, gtts):
                 self._gtt_resting(session, gtts[order.symbol], order, now, report)
+        # a sale that filled or left the book before it counted as resting is forgotten
+        working = {order.order_id for order in orders}
+        self._working_since = {
+            order_id: since
+            for order_id, since in self._working_since.items()
+            if order_id in working
+        }
         for position_id in self._unprotected(session, account_id) - report.protected:
             self._protect(session, position_id, now, report)
         for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
