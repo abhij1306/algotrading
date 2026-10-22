@@ -240,18 +240,15 @@ def test_session_handshake(
     """For every sequence of calls and session losses on a live-shaped server, `HttpTransport`
     opens a session (`initialize`, `notifications/initialized`) before its first call and sends
     every call on it, so the server never answers 400, and starts a handshake again when another
-    replica answers one of its steps (never twice in a row); a call whose session was lost (404) is
-    sent once more on a new session and returns the recorded reply, and one lost twice fails
-    with `mcp_transport`; a session is kept until it is lost."""
+    replica answers one of its steps (at most one per handshake); a call whose session was lost
+    (404) is sent once more on a new session and returns the recorded reply, and one lost twice
+    fails with `mcp_transport`; a session is kept until it is lost."""
     losses = [
         flag for _tool, first, second in plan for flag in ([first, second] if first else [False])
     ]
-    previous = [False]
 
-    def lose_handshake() -> bool:  # a replica 404s a handshake step, but never twice in a row
-        lost = bool(handshake_losses) and handshake_losses.pop(0) and not previous[0]
-        previous[0] = lost
-        return lost
+    def lose_handshake() -> bool:  # the server lets at most one step of a handshake be lost
+        return bool(handshake_losses) and handshake_losses.pop(0)
 
     server = StreamableServer(RECORDED, lambda: losses.pop(0), lose_handshake)
     transport = HttpTransport({"nse-bhavcopy": "http://fixture.invalid"}, post=server.post)

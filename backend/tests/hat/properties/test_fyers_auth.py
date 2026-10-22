@@ -92,7 +92,9 @@ class Harness:
             credentials=lambda: CREDS,
             on_token_change=lambda: self.events.append("token_change"),
             clock=self.ticker,
-            model_factory=lambda **_kwargs: RecordingSdk(profile or profile_ok("XA0001")),
+            model_factory=lambda **_kwargs: RecordingSdk(
+                profile if profile is not None else profile_ok("XA0001")
+            ),
         )
         self.service.add_hook("login", lambda: self.events.append("login"))
         self.service.add_hook("disconnect", lambda: self.events.append("disconnect"))

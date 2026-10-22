@@ -32,6 +32,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only); a mode outside the three runs shadow and its request is refused as unknown (`UnknownModeError`), whatever the account. Harm: a live mode runs on an account that cannot hold a protective stop.
 - `PBT broker.account_active_after_check` `onboard_account` marks an account active only when funds, positions and holdings were all fetched, whichever one fails. Harm: an account that cannot be read is treated as ready.
 - `PBT broker.token_refused_is_session_expired` Over the real `FyersBroker` answering the -16 replies recorded on 2026-10-22, the adapter's session status is EXPIRED though the token file is in date, and every read fails with `broker_session_expired`; any other error reply or SDK failure is an outage: reads fail with `broker_unavailable` and the session stays LIVE; the profile is read once per token per 30 s window. Harm: a revoked or server-expired token reads as an outage, so nobody is asked to log in again while every read fails.
+- `PBT broker.token_refused_on_a_read_ends_the_check` A -16 on any read inside the 30 s window of a passed profile check makes the next `session_status` EXPIRED at once (CodeAnt, PR 23). Harm: the alert and login prompt wait up to 30 s while every read already fails.
 - `PBT broker.one_session_owner` `SessionRegistry` hands out one owner per account, serialises that owner's calls and refuses a call after release; the adapter's session status never raises and maps (connected, client, store error) to live, expired, missing or unknown; `record_session` writes the morning login. Harm: two owners race for one session, or a broken token store reads as live.
 - `PBT ops.session_backoff_alert` The reconnect delay is 1 s doubling to 30 s, and an outage raises exactly one alert after 2 minutes, none after a recovery until the next outage. Harm: a dead session retries in a tight loop or alerts every minute.
 - `CONF brk__interface_methods` The `HatBroker` protocol has exactly the 17 methods of 07 §8 and the Fyers adapter implements each with the same parameters. Harm: a method is added to or dropped from the broker boundary without the spec.
@@ -275,7 +276,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `f3be8998e2fe2ef1b31a3321cb7ee6058e27afeb789fd42c6145ddfda8e86741`
+Covered digest: `09fb8302a5d9310d6442515839561baa15e644e13e64e9bbb6b27b02ef548dae`
 
 ## Scope changes
 
@@ -763,6 +764,14 @@ E   AssertionError: assert ('AUTHCODE0000000000' not in 'login faile...y-fyers-9
 E     
 E     'AUTHCODE0000000000' is contained here:
 E       -fyers-9a1b and 'SECRETKEY-9f8e7d6c' not in 'login faile...y-fyers-9a1b'
+```
+
+### PBT broker.token_refused_on_a_read_ends_the_check
+
+Break: (PR 23) a -16 on a read leaves the profile check standing.
+
+```
+1 failed: assert <SessionStatus.LIVE: 'live'> is <SessionStatus.EXPIRED: 'expired'>
 ```
 
 ### PBT broker.token_refused_is_session_expired

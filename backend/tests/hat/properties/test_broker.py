@@ -188,9 +188,31 @@ def test_token_refused_is_session_expired(reply: object, read: str, wait: float)
     model[0] = object()
     adapter.session_status()
     assert profiles() == (3 if wait >= TOKEN_CHECK_SECONDS else 2)
+    fetch = getattr(adapter, read)
     with pytest.raises(BrokerUnavailableError) as caught:
-        getattr(adapter, read)()
+        fetch()
     assert caught.value.code == (CODE_SESSION_EXPIRED if refused else CODE_UNAVAILABLE)
+
+
+@given(read=st.sampled_from(["funds", "positions", "holdings", "orders", "trades", "gtts"]))
+def test_token_refused_on_a_read_ends_the_check(read: str) -> None:
+    """A -16 on a read inside the 30 s window of a passed profile check is seen by the next
+    `session_status`: EXPIRED at once, not when the window ends."""
+    sdk = RecordingSdk(LIVE_REPLIES["profile_ok"])
+    adapter = FyersHatBroker(
+        broker_over(sdk),
+        client=lambda: type("C", (), {"fyers": model})(),  # type: ignore[arg-type,return-value]
+        auth=lambda: _Auth(True),  # type: ignore[arg-type,return-value]
+        instruments=lambda: [],
+        clock=lambda: 0.0,
+    )
+    model = object()
+    assert adapter.session_status() is SessionStatus.LIVE
+    sdk.reply = LIVE_REPLIES["funds_invalid_token"]  # revoked at Fyers inside the window
+    fetch = getattr(adapter, read)
+    with pytest.raises(BrokerUnavailableError):
+        fetch()
+    assert adapter.session_status() is SessionStatus.EXPIRED
 
 
 @given(st.lists(st.tuples(st.integers(0, 2), st.sampled_from(["acquire", "release"])), max_size=30))

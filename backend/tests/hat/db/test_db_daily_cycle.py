@@ -130,6 +130,7 @@ BROKER_READS = frozenset(
         "fetch_funds",
         "fetch_gtt_orders",
         "get_positions",
+        "get_profile",  # the session check (PR 23)
     }
 )
 

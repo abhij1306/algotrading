@@ -168,9 +168,9 @@ class StreamableServer:
     """A fake NSE MCP endpoint behaving as the live ones did on 2026-10-22: a request without a
     session it opened and initialized answers 400 (the bare `tools/call` the old client sent), a
     session is opened by `initialize` (id in the `mcp-session-id` reply header) and readied by
-    `notifications/initialized` (which answers 404 when `lose_handshake` says another replica
-    took it), and a `tools/call` whose session `lose` says another replica holds answers 404 and
-    forgets it. Tool results are the recorded replies, as text content."""
+    `notifications/initialized` (one step of a handshake answers 404 when `lose_handshake` says
+    another replica took it), and a `tools/call` whose session `lose` says another replica holds
+    answers 404 and forgets it. Tool results are the recorded replies, as text content."""
 
     def __init__(
         self,
@@ -182,6 +182,7 @@ class StreamableServer:
         self.lose = lose
         self.lose_handshake = lose_handshake  # a handshake step answered by another replica
         self.handshake_404s = 0
+        self._handshake_lost = False  # a replica took one step of the handshake under way
         self.opened: list[str] = []
         self.handshakes = 0
         self.lost: set[str] = set()
@@ -202,10 +203,20 @@ class StreamableServer:
         with self._lock:
             return self._answer(json, headers.get("Mcp-Session-Id"))
 
+    def _lose_step(self) -> bool:
+        """At most one step of one handshake goes to another replica."""
+        if self._handshake_lost or not self.lose_handshake():
+            return False
+        self._handshake_lost = True
+        self.handshake_404s += 1
+        return True
+
     def _answer(self, body: Mapping[str, Any], session: str | None) -> StreamableServer.Response:
         method = body.get("method")
         if method == "initialize":
             self.handshakes += 1
+            if self._lose_step():
+                return self.Response(404)
             opened = f"s{self.handshakes}"
             self.opened.append(opened)
             result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}}}
@@ -218,10 +229,10 @@ class StreamableServer:
             self.bad_requests += 1
             return self.Response(400, '{"cause":null,"stackTrace":[]}')
         if method == "notifications/initialized":
-            if self.lose_handshake():
+            if self._lose_step():
                 self.opened.remove(session)
-                self.handshake_404s += 1
                 return self.Response(404)
+            self._handshake_lost = False
             self.ready.add(session)
             return self.Response(202)
         if method != "tools/call" or session not in self.ready:

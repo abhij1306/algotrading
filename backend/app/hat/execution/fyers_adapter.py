@@ -479,14 +479,16 @@ class FyersHatBroker:
 
     # --- reads (fail closed) --------------------------------------------------------------
 
-    @staticmethod
-    def _read(fetch: Callable[[], Any], parse: Callable[[Any], Any]) -> Any:  # noqa: ANN401
+    def _read(self, fetch: Callable[[], Any], parse: Callable[[Any], Any]) -> Any:  # noqa: ANN401
         """Fetch and parse; any failure is a fixed-code BrokerUnavailableError
-        (`broker_session_expired` when Fyers refused the token)."""
+        (`broker_session_expired` when Fyers refused the token, which also ends the standing
+        profile check, so the next `session_status` reads the refusal at once)."""
         try:
             raw = fetch()
         except FyersSessionExpiredError:
             logger.warning("Fyers refused the token on a read")
+            with self._token_check_lock:
+                self._token_check = None
             raise BrokerUnavailableError(CODE_SESSION_EXPIRED) from None
         except (FyersUnavailableError, BrokerUnavailableError):
             logger.warning("Fyers read unavailable")

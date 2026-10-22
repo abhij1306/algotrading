@@ -739,6 +739,8 @@ def test_nightly_index_breadth(index: str, breadth: str) -> None:
         assert market["volume"][0] == sent["total_volume"]
         assert market["total_stocks"][0] == sent["total_stocks"]
         assert market["ad_ratio"][0] == sent["ad_ratio"]
+        for count in ("advances", "declines", "unchanged"):
+            assert market[count][0] == sent[count]
 
 
 @settings(max_examples=20)
