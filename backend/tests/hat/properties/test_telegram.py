@@ -244,7 +244,13 @@ def alert_code(text: str) -> str:
 
 HEALTH = st.lists(
     st.sampled_from(
-        ("quality.failed", "feed.stale", "broker.session_lost", "broker.capabilities_changed")
+        (
+            "quality.failed",
+            "feed.stale",
+            "broker.session_lost",
+            "broker.capabilities_changed",
+            "corporate_action.unhandled",
+        )
     ),
     max_size=4,
 )
@@ -273,7 +279,25 @@ _HEALTH_AGGREGATE = {
     "feed.stale": ("session", "engine"),
     "broker.session_lost": ("session", "broker"),
     "broker.capabilities_changed": ("session", "broker"),
+    "corporate_action.unhandled": ("position", "scheduler"),
 }
+
+
+def _held_position(rig: TgRig) -> HatPosition:
+    return HatPosition(
+        bot_id=rig.world.bot_id,
+        signal_id=uuid.uuid4(),
+        instrument_id=rig.world.instruments[0],
+        is_virtual=False,
+        qty_open=10,
+        avg_entry=Decimal(100),
+        initial_stop=Decimal(95),
+        current_stop=Decimal(95),
+        currency="INR",
+        opened_at=ist(TRADE_DAY, 9, 0),
+        state="Open",
+        rules_fired=[],
+    )
 
 
 @SLOW
@@ -282,10 +306,11 @@ def test_health_alert_for_every_failure(
     health: list[str], rejections: int, direct: list[str]
 ) -> None:
     """HAT-DEC-T15, HAT-OPS-071: every `quality.failed`, `feed.stale`, `broker.session_lost`,
-    `broker.capabilities_changed` and `order.rejected` event becomes exactly one health alert in
-    the chat, and every other alert
-    the services raise becomes one message; an alert whose event the relay sends is not sent
-    twice. `gtt.unverified`, `gtt.unfilled` and `fill.excess` are URGENT. Harm: the owner does
+    `broker.capabilities_changed`, `corporate_action.unhandled` and `order.rejected` event
+    becomes exactly one health alert in the chat, and every other alert the services raise
+    becomes one message; an alert whose event the relay sends is not sent twice.
+    `gtt.unverified`, `gtt.unfilled`, `fill.excess` and `corporate_action.unhandled` (HAT-EXEC-144)
+    are URGENT. Harm: the owner does
     not learn that a bot went manage-only or an order failed, or learns it twice and starts
     ignoring alerts."""
     fake = FakeBroker()
@@ -296,13 +321,20 @@ def test_health_alert_for_every_failure(
     with rig.factory() as session:
         for event_type in health:
             aggregate, actor = _HEALTH_AGGREGATE[event_type]
+            aggregate_id, signal_id = uuid.uuid4(), None
+            if aggregate == "position":  # a position event names the position and its signal
+                position = _held_position(rig)
+                session.add(position)
+                session.flush()
+                aggregate_id, signal_id = position.id, position.signal_id
             record(
                 session,
                 aggregate_type=aggregate,
-                aggregate_id=uuid.uuid4(),
+                aggregate_id=aggregate_id,
                 event_type=event_type,
                 actor=actor,
                 payload={"status": "expired"},
+                correlation_id=signal_id,
             )
         session.commit()
     for code in direct:
@@ -314,7 +346,12 @@ def test_health_alert_for_every_failure(
     if rejections >= 2:
         expected["entry.not_placed"] += 1
     assert Counter(alert_code(t) for t in sent) == +expected
-    assert {"gtt.unverified", "gtt.unfilled", "fill.excess"} <= URGENT_ALERTS
+    assert {
+        "gtt.unverified",
+        "gtt.unfilled",
+        "fill.excess",
+        "corporate_action.unhandled",
+    } <= URGENT_ALERTS
     for text in sent:
         assert text.startswith("URGENT: ") == (alert_code(text) in URGENT_ALERTS)
 

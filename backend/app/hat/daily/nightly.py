@@ -49,7 +49,12 @@ from ..data.symbols import symbol_master
 from ..engine.live_trades import record_close_gaps
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
 from ..engine.portfolio.service import policy_at
-from ..engine.rescale import ALERT_ACTION_UNCHECKED, held_and_watchlisted, rescale_open_positions
+from ..engine.rescale import (
+    ALERT_ACTION_UNCHECKED,
+    flag_unhandled,
+    held_and_watchlisted,
+    rescale_open_positions,
+)
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
@@ -293,11 +298,17 @@ class Nightly:
 
     def rescale(self, day: date) -> JobResult:
         """`ca.rescale` (before the open): every open position spanning a stored split or bonus
-        is rescaled (HAT-EXEC-141). Fails when one could not be, so the job is retried; that
-        position stays manage-only and is alerted meanwhile."""
+        is rescaled (HAT-EXEC-141), then every action the rescale cannot handle is flagged once
+        per position (`corporate_action.unhandled`, HAT-EXEC-144). Fails when a position could
+        not be rescaled or the flags not written, so the job is retried; the position stays
+        manage-only and is alerted meanwhile."""
+        now = self._now()
         applied, failed = rescale_open_positions(
-            self.deps.session_factory, day, self._now(), self.deps.notifier
+            self.deps.session_factory, day, now, self.deps.notifier
         )
+        with self.deps.session_factory() as session:
+            flag_unhandled(session, day, now)
+            session.commit()
         if failed:
             raise JobError("rescale_failed")
         return JobResult(rows=applied)

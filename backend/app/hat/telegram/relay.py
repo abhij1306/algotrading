@@ -11,8 +11,10 @@ sends at most one message per event:
 - `order.filled`, `exit.partial`, `position.closed` and `stop.moved` of a real order or
   position: price, qty and R so far.
 - `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed` (the
-  adapter's GTT for delivery reached the account, HAT-BRK-092) and `order.rejected`: a health
-  alert (T15). The `Notifier` leaves these codes to the relay, so each failure is one alert.
+  adapter's GTT for delivery reached the account, HAT-BRK-092), `corporate_action.unhandled` (a
+  position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT) and
+  `order.rejected`: a health alert (T15). The `Notifier` leaves these codes to the relay, so
+  each failure is one alert.
 
 An event is relayed only once it is `RELAY_LAG` old, so a transaction that took a lower id and
 committed a little later is still seen in order. An id the cursor passes without seeing it (a
@@ -71,6 +73,7 @@ HEALTH_EVENTS = frozenset(
         "feed.stale",
         "broker.session_lost",
         "broker.capabilities_changed",
+        "corporate_action.unhandled",
         "order.rejected",
     }
 )

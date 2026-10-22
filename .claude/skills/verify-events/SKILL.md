@@ -84,7 +84,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `fbe6bede020e5177b173fc45f76444d19a691693f35e757573088f7f528f09b6`
+Covered digest: `76a106d44d7f6492ee3706124ea5f2d9d0ed742a4a93028e8190bb9adc244061`
 
 ## Scope changes
 
@@ -104,6 +104,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 16 added `events.user_actor_chat_id` and typed `record(actor=...)` as `Actor` (engine, user, broker, scheduler); the catalogue and the other properties are unchanged.
 - PR 27 added `gtt.triggered` to the Orders group (HAT-EXEC-066: a GTT triggered with its sale resting below the limit; the payload names the broker order it became). The catalogue now holds 40 types; the text above no longer gives a count. The properties are unchanged.
 - PR 29 added `broker.capabilities_changed` to the Sessions group (HAT-BRK-092: a live session check rewrote the account's capabilities from the adapter; the payload has `gtt_delivery` and `was_gtt_delivery`). The catalogue holds 41 types (`events.catalogue`). The properties are unchanged.
+- PR 31 added `corporate_action.unhandled` to the Positions group (HAT-EXEC-144: a position spans an action the rescale cannot handle; the payload has `action`, `factor`, `symbol` and `virtual`). The catalogue holds 42 types. The properties are unchanged.
 
 ## Scratch breaks
 

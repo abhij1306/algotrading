@@ -142,7 +142,9 @@ def from_archive_csv(text: str, instrument_for: Callable[[str, date], object | N
         parsed = parse_action_text(purpose)
         if parsed is None:
             lowered = purpose.lower()
-            if "split" in lowered or "bonus" in lowered:
+            # a consolidation changes prices too, and HAT never guesses its factor: it is
+            # reported, not dropped as a dividend would be (HAT-EXEC-144)
+            if "split" in lowered or "bonus" in lowered or "consolidat" in lowered:
                 out.unparsed.append(purpose)
             else:
                 out.ignored += 1

@@ -260,12 +260,16 @@ def test_factor_parse(a: int, tenths: int, template: int) -> None:
     assert parse_action_text(f"Face value split from Rs {a} to Rs {a}") is None
 
 
-@given(text=st.text(alphabet="abcdefghijklmnopqrstuvwxyz ABC-/.:,", max_size=60))
-def test_factor_parse_unparseable_is_reported(text: str) -> None:
+@given(
+    text=st.text(alphabet="abcdefghijklmnopqrstuvwxyz ABC-/.:,", max_size=60),
+    word=st.sampled_from(["split", "Bonus", "Consolidation of shares", "consolidated"]),
+)
+def test_factor_parse_unparseable_is_reported(text: str, word: str) -> None:
     """Text without a usable ratio gives no factor, and an archive row with such text lands in
-    `unparsed` (when it names a split or bonus) and never in the records."""
+    `unparsed` (when it names a split, a bonus or a consolidation, HAT-EXEC-144) and never in
+    the records."""
     assert parse_action_text(text) is None
-    csv_text = f'SYMBOL,PURPOSE,EX-DATE\nAAA,"{text.replace(chr(34), "")} split",14-Jun-2018\n'
+    csv_text = f'SYMBOL,PURPOSE,EX-DATE\nAAA,"{text.replace(chr(34), "")} {word}",14-Jun-2018\n'
     result = from_archive_csv(csv_text, lambda s, d: uuid.UUID(int=1))
     assert result.records == []
     assert len(result.unparsed) == 1

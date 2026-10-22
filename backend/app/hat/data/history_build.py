@@ -353,6 +353,7 @@ class BuildReport:
     left_out: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     actions: LoadReport | None = None
     action_symbols_failed: int = 0
+    actions_unparsed: list[str] = field(default_factory=list)  # archive texts, HAT-DATA-055
     index: IndexLoadReport | None = None
     index_missing: dict[str, list[date]] = field(default_factory=dict)
     validation: ValidationReport | None = None
@@ -372,9 +373,10 @@ class Pacing:
 
 @dataclass(frozen=True)
 class ActionHooks:
-    """Where corporate actions come from and where they are stored."""
+    """Where corporate actions come from and where they are stored. The loader returns the
+    records, the failed or partial lookups and the archive texts it could not parse."""
 
-    loader: Callable[[], tuple[Sequence[ActionRecord], int]]
+    loader: Callable[[], tuple[Sequence[ActionRecord], int, Sequence[str]]]
     sink: Callable[[Sequence[ActionRecord]], LoadReport]
 
 
@@ -424,9 +426,10 @@ def run_history_build(
     trading_days = [d for d in days if d not in report.days.holidays]
     report.partitions = partition_report(store, DATASET_BARS, trading_days)
     if actions is not None:
-        records, failed = actions.loader()
+        records, failed, unparsed = actions.loader()
         report.actions = actions.sink(records)
         report.action_symbols_failed = failed
+        report.actions_unparsed = list(unparsed)
     if index_source is not None:
         report.index = load_index_history(store, index_source, start, end)
         starts = index_starts or {n: max(start, DEFAULT_INDEX_START) for n in INDEX_NAMES}
@@ -593,12 +596,15 @@ def _action_hooks(
     sink: Callable[[Sequence[ActionRecord]], LoadReport],
 ) -> ActionHooks:
     """Actions from the MCP (first) and an operator-supplied NSE archive CSV (fallback); the
-    loader keeps the first value per key. A failed or partial (warned) MCP lookup is counted."""
+    loader keeps the first value per key. A failed or partial (warned) MCP lookup is counted;
+    an archive row naming a split, bonus or consolidation without a usable ratio is reported
+    (HAT-DATA-055), never dropped."""
     from . import corporate_actions as ca
 
-    def loader() -> tuple[list[ActionRecord], int]:
+    def loader() -> tuple[list[ActionRecord], int, list[str]]:
         known = instruments()
         records: list[ActionRecord] = []
+        unparsed: list[str] = []
         failed = 0
         for instrument_id, symbol in known if client is not None else []:
             try:
@@ -611,8 +617,12 @@ def _action_hooks(
         if archive:
             by_symbol = {symbol: instrument_id for instrument_id, symbol in known}
             text = Path(archive).read_text(encoding="utf-8")
-            records.extend(ca.from_archive_csv(text, lambda sym, _d: by_symbol.get(sym)).records)
-        return records, failed
+            parsed = ca.from_archive_csv(text, lambda sym, _d: by_symbol.get(sym))
+            records.extend(parsed.records)
+            unparsed.extend(parsed.unparsed)
+            for purpose in parsed.unparsed:
+                logger.warning("archive action not parsed: %s", purpose)
+        return records, failed, unparsed
 
     return ActionHooks(loader, sink)
 
@@ -626,7 +636,8 @@ def _summary(report: BuildReport) -> str:
         f"holiday candidates explained {len(report.days.holidays)}, "
         f"gaps (not on the holiday list) {len(report.days.gaps)}",
         f"unaccounted days {len(report.days.unaccounted)}, "
-        f"action lookups failed or partial {report.action_symbols_failed}",
+        f"action lookups failed or partial {report.action_symbols_failed}, "
+        f"archive actions not parsed {len(report.actions_unparsed)}",
         f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
         f"left out {dict(report.left_out)}",
     ]

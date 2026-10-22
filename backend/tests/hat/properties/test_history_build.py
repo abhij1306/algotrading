@@ -22,7 +22,16 @@ from hypothesis import strategies as st
 from sqlalchemy.orm import sessionmaker
 
 from app.hat.data import history_build
-from app.hat.data.bhavcopy import BhavRow, Fetcher, FetchResult, archive_url, weekdays
+from app.hat.data.bhavcopy import (
+    BhavRow,
+    DayReconciliation,
+    DownloadReport,
+    Fetcher,
+    FetchResult,
+    archive_url,
+    weekdays,
+)
+from app.hat.data.corporate_actions import LoadReport
 from app.hat.data.history_build import (
     BuildReport,
     DictCatalog,
@@ -33,7 +42,7 @@ from app.hat.data.history_build import (
     run_history_build,
 )
 from app.hat.data.mcp_client import McpClient, McpError
-from app.hat.data.store import DATASET_BARS, DataStore
+from app.hat.data.store import DATASET_BARS, DataStore, PartitionReport
 from app.hat.models import HatMarket, HatTradingCalendar
 from app.hat.ops.jobs import JobError
 
@@ -425,3 +434,38 @@ def _drive_main(
     assert reached == []
     [report] = reports
     return code, report, out.getvalue(), root
+
+
+@given(
+    words=st.lists(
+        st.sampled_from(["Face value split", "Bonus issue", "Consolidation of shares"]),
+        max_size=3,
+    ),
+    split=st.booleans(),
+)
+def test_archive_unparsed_reported(words: list[str], split: bool) -> None:
+    """HAT-DATA-055, HAT-EXEC-144: every archive row that names a split, a bonus or a
+    consolidation without a usable ratio reaches the build report (`actions_unparsed`) and its
+    summary; a parseable split beside them is still loaded. Harm: a consolidation in the
+    archive leaves the adjusted history wrong and nobody is told."""
+    rows = [f"AAA,{word},14-Jun-2018" for word in words]
+    if split:
+        rows.append("AAA,Face value split from Rs 10 to Rs 2,15-Jun-2018")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "actions.csv"
+        path.write_text("SYMBOL,PURPOSE,EX-DATE\n" + "\n".join(rows) + "\n", encoding="utf-8")
+        hooks = history_build._action_hooks(
+            None,
+            lambda: [(1, "AAA")],
+            str(path),
+            date(2018, 1, 1),
+            date(2018, 12, 31),
+            lambda _records: LoadReport(),
+        )
+        records, failed, unparsed = hooks.loader()
+    assert failed == 0
+    assert list(unparsed) == words
+    assert len(records) == int(split)
+    report = BuildReport(DownloadReport(), DayReconciliation(), PartitionReport())
+    report.actions_unparsed = list(unparsed)
+    assert f"archive actions not parsed {len(words)}" in history_build._summary(report)

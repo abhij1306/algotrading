@@ -23,6 +23,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT rescale.applied_once` For every sequence of runs with actions added between, each (position, action) is applied once, and an action on or before the entry day, an `other` action and a consolidation never. Harm: a split applied twice, or a rights issue adding shares.
 - `PBT rescale.factor_exact` A stored 12-place factor of a ratio with denominator ≤ 1000 reads back exactly; a short factor that is no such ratio is refused. Harm: 0.0110 read as 11/1000 instead of 1/91.
 - `PBT rescale.pending_is_manage_only` While a position awaits its rescale the exits' view source gives it no view and a trigger of its instrument is stored Rejected `corporate_action_pending`; once rescaled both return. Harm: exits or entries on prices of the wrong scale.
+- `PBT rescale.unhandled_is_manage_only` For every action the rescale cannot handle (`other`, or a split or bonus with factor 1 or above) and ex-date around the entry day, with or without a split beside it, over repeated `ca.rescale` runs (`Nightly.rescale`): the action is never applied, a position it spans gets no exit view and is manage-only, its instrument awaits a rescale, and one `corporate_action.unhandled` names the (position, action); the split beside it is applied once. Harm: a consolidation keeps ten times the shares on an old-scale stop, or a rights issue's old stop sells at the open.
 - `PBT rescale.broker_stop_follows` After a rescale, the next sync moves every live broker stop (GTT or day stop) down to the rescaled trigger first and then to the rescaled quantity, never larger than the old size at the old trigger; while the broker refuses the larger size the stop rests at the new trigger for the old size; with no rescale nothing moves. Harm: the old GTT fires on the ex-date open.
 - `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup (or one with an unreadable row) once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
 - `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
@@ -117,7 +118,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `545ab6578d65e1148c1c15bd2a0c1c358abf7fa10260d098dfc266737d7f969c`
+Covered digest: `062a5960d4b655c843cbb5f3fe0f5eb387581162d18ca1bb4b20689d033071e8`
 
 ## Scope changes
 
@@ -131,6 +132,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
 - PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed. In the review round `protect` stopped placing or growing a stop while a sale the broker accepted still works (`make_room` gave the sale the shares; `manage.a_resting_sale_is_never_stopped_over`, its break in `verify-execution`); the model's `Sell` is atomic, so this window is not modelled.
 - PR 21 (audit 2026-10-22 F3) added the split and bonus rescale (`engine/rescale.py`, 07 §14). `StopPlacement` keeps one price scale: a rescale is a change of unit, not a stop move, so `StopOnlyTightens` and `BrokerStopMatchesCurrent` hold in scale-adjusted prices and the rescale is not modelled (between `ca.rescale` and the next sync the broker stop rests above the rescaled stop in new units, at the old stop in old units; the market is shut). The broker stop's move down is `StopDesk.rescaled`, checked by `rescale.broker_stop_follows`, and it moves only a position with a `position.rescaled` event. Fractional entitlements are floored (the broker pays them in cash); a factor is read back as the ratio with denominator ≤ 1000 within 1e-9 of it, or refused; only splits and bonuses with factor below 1 are applied. Nothing was narrowed.
+- PR 31 (design review 2026-10-22 item 6, option A, HAT-EXEC-142, -144): every stored action the rescale cannot handle (`rescale.unhandled_actions`) makes the position manage-only (`rescale.manage_only`, read by `ExitViews` and `awaits_rescale`) for as long as it is open, and `ca.rescale` flags it once per (position, action) with `corporate_action.unhandled` (URGENT). `StopDesk.rescaled` still reads `pending_actions`, so an unhandled action never moves a broker stop. `/flatten` caps the sale at the broker's holdings (`manage.flatten_capped_at_holdings`, in `verify-execution`). Virtual positions are flagged too (`virtual` in the payload). Option B (applying consolidations) is later. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 - PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
 
@@ -522,6 +524,43 @@ Break: in `backend/app/hat/engine/live_entry.py`: `submit_trigger` does not skip
 
 ```
 FAILED tests/hat/properties/test_rescale.py::test_pending_is_manage_only - As [cut]
+```
+
+### PBT rescale.unhandled_is_manage_only
+
+Break: in `backend/app/hat/daily/live.py`: `ExitViews` reads `pending_actions` only (main before PR 31).
+
+```
+E   AssertionError: assert (ExitView(price=Decimal('10.00'), days_held=2, sma={10: Decimal('10.00')}, swing_low={}, regime_off=False) is None) == True
+E   Failing test case: test_unhandled_is_manage_only(
+```
+
+Break: in `backend/app/hat/engine/rescale.py`: `awaits_rescale` reads `pending_actions` only.
+
+```
+E   AssertionError: assert False == True
+E    +  where False = <function awaits_rescale at 0x...>(<Session>, UUID('...'), datetime.date(2026, 10, 24))
+```
+
+Break: `_rescalable` ignores the factor (a split or bonus with factor 1 or above counts as handled).
+
+```
+E   AssertionError: assert (ExitView(price=Decimal('10.00'), ...) is None) == True
+E   Failing test case: test_unhandled_is_manage_only(
+```
+
+Break: `flag_unhandled` without the `key in done` check.
+
+```
+E   AssertionError: assert ['2026-10-22:...-10-22:other'] == ['2026-10-22:other']
+E     Left contains one more item: '2026-10-22:other'
+```
+
+Break: in `backend/app/hat/daily/nightly.py`: `rescale` does not call `flag_unhandled`.
+
+```
+E   AssertionError: assert [] == ['2026-10-22:other']
+E     Right contains one more item: '2026-10-22:other'
 ```
 
 ### PBT rescale.broker_stop_follows

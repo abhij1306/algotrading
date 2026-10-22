@@ -45,6 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..engine import exits, live_trades, trades
+from ..engine.rescale import unhandled_actions
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
@@ -265,15 +266,25 @@ class TradeManager:
         reconciliation and stop checks as any exit, never a kill or pause check. It can only
         reduce exposure. A position already being sold is left to that sale. Virtual positions
         are measurements, not exposure, and are left alone. The confirmation and the
-        `flatten.executed` event are the caller's (the Telegram edge)."""
+        `flatten.executed` event are the caller's (the Telegram edge).
+
+        A position spanning a corporate action the rescale cannot handle (HAT-EXEC-144) holds a
+        quantity of the old scale, so its sale is capped at the shares the broker holds of the
+        symbol (a consolidation leaves fewer), less what the flatten already sized for other
+        positions of that symbol; an unreadable holdings book leaves the cap off, since the
+        broker refuses an oversell anyway and a flatten is never blocked."""
         report = FlattenReport()
         sending = self._sending_clock(now)
+        held: list[dict[str, int] | None] = []  # read once, spent as capped sales are sized
         for position in self.open_positions(session, account_id):
             report.positions += 1
             try:
-                sent = self._sell_qty(
-                    session, position, FLATTEN, position.qty_open, FLATTEN, (), now, sending
-                )
+                qty = position.qty_open
+                if unhandled_actions(session, position, trade_date_of(now)):
+                    if not held:
+                        held.append(self._held_shares())
+                    qty = self._capped(session, position, qty, held[0])
+                sent = self._sell_qty(session, position, FLATTEN, qty, FLATTEN, (), now, sending)
             except Exception:  # one position's failure must not stop the others being sold
                 session.rollback()
                 logger.exception("flatten of position %s failed", position.id)
@@ -282,6 +293,33 @@ class TradeManager:
             if sent is not None and sent.status != "rejected":
                 report.sent += 1
         return report
+
+    def _held_shares(self) -> dict[str, int] | None:
+        """Shares the broker holds per symbol; None when the book cannot be read."""
+        try:
+            holdings = self._broker.holdings()
+        except BrokerUnavailableError:
+            logger.warning("holdings unreadable: flatten sells the open quantity")
+            return None
+        out: dict[str, int] = {}
+        for holding in holdings:
+            out[holding.symbol] = out.get(holding.symbol, 0) + holding.qty
+        return out
+
+    @staticmethod
+    def _capped(
+        session: Session, position: HatPosition, qty: int, held: dict[str, int] | None
+    ) -> int:
+        if held is None:
+            return qty  # unreadable: the broker refuses an oversell
+        symbol = str(
+            session.scalar(
+                select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+            )
+        )
+        capped = max(0, min(qty, held.get(symbol, 0)))
+        held[symbol] = held.get(symbol, 0) - capped  # a second position of it gets the rest
+        return capped
 
     # --- sales --------------------------------------------------------------------------------
 

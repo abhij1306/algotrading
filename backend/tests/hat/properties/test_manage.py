@@ -4,6 +4,7 @@ adapter over `FakeBroker`. Nothing reaches a real broker."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -37,7 +38,7 @@ from app.hat.execution.protect import (
     STOP_GTT,
     broker_trigger,
 )
-from app.hat.models import HatEvent, HatOrder, HatPosition, HatSignal
+from app.hat.models import HatCorporateAction, HatEvent, HatOrder, HatPosition, HatSignal
 from app.hat.risk import controls
 
 D = Decimal
@@ -1217,3 +1218,86 @@ def test_the_close_ends_only_settled_answers(order: str, landed: bool, young: bo
         else:
             assert row.status == "expired"
             assert order == "sale" or signal.state == "Rejected"
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-EXEC-144: /flatten of a position spanning an unhandled action sells what the broker holds
+# ---------------------------------------------------------------------------------------
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    action=st.sampled_from([None, ("other", "0.95"), ("split", "10"), ("bonus", "0.5")]),
+    held=st.one_of(st.none(), st.integers(min_value=0, max_value=900)),
+    days=st.integers(min_value=1, max_value=2),
+    twin=st.booleans(),
+)
+@example(action=("split", "10"), held=1, days=1, twin=False)
+@example(action=("other", "0.95"), held=None, days=2, twin=False)
+@example(action=("split", "10"), held=600, days=1, twin=True)
+def test_flatten_capped_at_holdings(
+    action: tuple[str, str] | None, held: int | None, days: int, twin: bool
+) -> None:
+    """HAT-EXEC-144: a position spanning an action the rescale cannot handle (a consolidation
+    leaves fewer shares than HAT holds) is flattened for at most the shares the broker holds of
+    the symbol; a readable book of none sells nothing, an unreadable one sells the open
+    quantity (a flatten is never blocked). Two positions of the symbol (`twin`) share the held
+    shares: together they sell at most what is held. Every other position, one spanning a
+    bonus (an action the rescale handles) included, is sold for its open quantity whatever the
+    book says. Harm: an oversell the broker refuses leaves the position unsold, or one sale is
+    short of what HAT holds."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        position = _opened(rig, at(10, 40))
+        total = position.qty_open
+        if twin:  # a second open position of the symbol, as a second bot of the account holds
+            first = session.get(HatSignal, position.signal_id)
+            columns = HatSignal.__table__.columns
+            signal = HatSignal(**{c.key: getattr(first, c.key) for c in columns if c.key != "id"})
+            signal.id = uuid.uuid4()
+            signal.trade_date -= timedelta(days=1)  # one signal per bot, playbook, name and day
+            session.add(signal)
+            session.flush()
+            session.add(
+                HatPosition(
+                    bot_id=position.bot_id,
+                    signal_id=signal.id,
+                    instrument_id=position.instrument_id,
+                    is_virtual=False,
+                    qty_open=position.qty_open,
+                    avg_entry=position.avg_entry,
+                    initial_stop=position.initial_stop,
+                    current_stop=position.current_stop,
+                    currency=position.currency,
+                    opened_at=position.opened_at,
+                    state="Open",
+                    rules_fired=[],
+                )
+            )
+            session.commit()
+            total *= 2
+        if action is not None:
+            session.add(
+                HatCorporateAction(
+                    instrument_id=position.instrument_id,
+                    ex_date=TRADE_DAY + timedelta(days=1),
+                    action_type=action[0],
+                    adjustment_factor=D(action[1]),
+                    raw_text="fixture",
+                    source="mcp",
+                )
+            )
+            session.commit()
+        rig.fake.holdings = (
+            BrokerUnavailableError("broker_unavailable")
+            if held is None
+            else [{"symbol": SYMBOLS["SBIN"], "quantity": held, "costPrice": 100}]
+        )
+        start = len(rig.fake.calls)
+        rig.manager.flatten(session, rig.account_id, at(10, 0) + timedelta(days=days))
+        sold = sum(int(a["quantity"]) for a in _sold(rig, start))
+        unhandled = action is not None and action[0] != "bonus"
+        if unhandled and held is not None:
+            assert sold == min(total, held)
+        else:
+            assert sold == total

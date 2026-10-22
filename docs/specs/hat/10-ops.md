@@ -119,7 +119,7 @@ table.
 | `bands.nightly` | trading | 07:45 | | | 4 |
 | `reference.weekly` | every, Saturday | 09:00 | | | 4 |
 | `telegram.login_prompt` | trading | 08:30 | 09:05 | | 16 |
-| `ca.rescale` (open positions across a split or bonus, HAT-EXEC-141) | trading | 08:40 | | | 21 |
+| `ca.rescale` (open positions across a split or bonus, HAT-EXEC-141; flags actions it cannot handle, HAT-EXEC-144) | trading | 08:40 | | | 21, 31 |
 | `live.prepare` | trading | 08:45 | | | 14 |
 | `telegram.login_reprompt` | trading | 09:05 | 15:30 | | 16 |
 | `modes.apply` | trading | 09:15 | | | 15b |
@@ -222,6 +222,7 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
   closed (no candidate) when the active bots disagree.
 - The nightly scan does not read price bands; the band is checked at entry (`risk.service.price_band_ok`, HAT-DATA-025).
 - `ca.rescale` (PR 21) fails while some position could not be rescaled, so it is retried every 5 minutes (three tries before the 09:00 pre-open); that position stays manage-only and is alerted `corporate_action.pending` on each try.
+- An action `ca.rescale` cannot handle (a consolidation, a rights issue, a demerger; PR 31, HAT-EXEC-144) sends one URGENT `corporate_action.unhandled` per position. The position stays manage-only with its broker stop untouched until the owner resolves it: `/flatten` sells what the broker holds of the symbol. Reconciliation may report a holdings mismatch for it meanwhile (a consolidation changes the share count), which blocks the account's entries until resolved.
 
 Acceptance run (PR 17, PLAN §4.3): `backend/tests/hat/db/test_db_daily_cycle.py::test_ops__simulated_day`
 (Postgres-marked, CI job `backend-postgres`) runs a whole day through `HatRuntime` with HAT enabled,
