@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -15,6 +16,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
+from unittest import mock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -715,11 +717,14 @@ def test_deploy_window_guard(now: datetime, listed: bool | None, force: bool) ->
     allowed = hat_deploy_guard.deploy_allowed(now, trading, force)
     assert allowed == (force or not (trading and inside))
 
-    with tempfile.TemporaryDirectory() as scratch:
-        log = Path(scratch) / "guard.jsonl"
+    with (
+        tempfile.TemporaryDirectory() as scratch,
+        mock.patch.dict(os.environ, {"HAT_DATA_ROOT": scratch}),
+    ):
+        log = Path(scratch) / "ops" / "deploy_guard.jsonl"
         cal = Path(scratch) / "calendar.csv"
         cal.write_text("".join(f"{d},{'t' if t else 'f'}\n" for d, t in calendar.items()))
-        argv = ["--calendar", str(cal), "--log", str(log)]
+        argv = ["--calendar", str(cal)]
         argv += ["--force", "--reason", "drill"] if force else []
         code = hat_deploy_guard.main(argv, now)
         assert (code == 0) == (force or not (trading and inside))

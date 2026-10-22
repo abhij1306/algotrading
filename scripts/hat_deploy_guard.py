@@ -7,7 +7,7 @@ Usage (from the repo root), as the first step of every deploy (runbook, 10-ops.m
 Exit code 0 means the deploy may go ahead; 2 means it is refused. The window is 08:30 to 15:35
 IST (start included, end excluded) on trading days. `--force` lets a deploy through inside the
 window only with a `--reason`, and every forced run is printed and appended as one JSON line to
-the guard log (`--log`, default `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl`).
+the guard log, `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl` (fixed: no argument names a file to write).
 
 Trading days. The guard runs on the host before the stack is up, so it cannot read
 `hat_trading_calendar`. It fails closed: every weekday counts as a trading day. `--calendar`
@@ -76,14 +76,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="deploy inside the window")
     parser.add_argument("--reason", default="", help="why a forced deploy cannot wait")
     parser.add_argument("--calendar", type=Path, help="hat_trading_calendar export (date,flag)")
-    parser.add_argument("--log", type=Path, default=_default_log(), help="forced-run log")
     args = parser.parse_args(argv)
     if args.force and not args.reason.strip():
         parser.error("--force needs --reason")
     return args
 
 
-def log_forced(path: Path, now: datetime, reason: str) -> None:
+def log_forced(now: datetime, reason: str) -> None:
     record = {
         "ts": now.astimezone(UTC).isoformat(),
         "ist": now.astimezone(IST).isoformat(),
@@ -93,6 +92,7 @@ def log_forced(path: Path, now: datetime, reason: str) -> None:
     }
     line = json.dumps(record, sort_keys=True)
     print(f"FORCED deploy inside the market window: {line}", file=sys.stderr)
+    path = _default_log()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(line + "\n")
@@ -113,7 +113,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None) -> int:
                 file=sys.stderr,
             )
             return REFUSED
-        log_forced(args.log, now, args.reason)
+        log_forced(now, args.reason)
     print(f"deploy allowed ({now.astimezone(IST):%Y-%m-%d %H:%M} IST)")
     return 0
 

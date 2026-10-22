@@ -502,4 +502,4 @@ class HatRuntime:
 
     async def _release(self) -> None:
         if hasattr(self, "desks"):
-            self.desks.release()
+            await asyncio.to_thread(self.desks.release)  # closes broker sessions: blocking

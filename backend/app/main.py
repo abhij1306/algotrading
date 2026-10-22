@@ -117,7 +117,8 @@ async def _validate_fyers_token(app: FastAPI) -> None:
         logger.warning("[WARN] Fyers token is invalid or expired; log in through the Fyers route.")
 
 
-def _build_hat_feed() -> Any:  # noqa: ANN401 - LiveFeed, imported only when HAT is enabled
+# Returns a LiveFeed, imported only when HAT is enabled (hence `Any`).
+def _build_hat_feed() -> Any:  # noqa: ANN401
     """HAT's live feed (the one Fyers data socket of the process, HAT-OVR-006), its login hooks
     hung on the Fyers auth service. The runtime starts it."""
     from .database import SessionLocal

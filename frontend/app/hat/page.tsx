@@ -49,13 +49,15 @@ function regimeText(regime: HatStatus["regime"]): string {
 type Query<T> = { data: T | undefined; error: Error | null; isPending: boolean };
 
 /** Loading, error and empty states shared by every section; `children` renders the data. */
-function Section<T>(props: {
-  title: string;
-  query: Query<T>;
-  isEmpty: (data: T) => boolean;
-  empty: string;
-  children: (data: T) => ReactNode;
-}) {
+function Section<T>(
+  props: Readonly<{
+    title: string;
+    query: Query<T>;
+    isEmpty: (data: T) => boolean;
+    empty: string;
+    children: (data: T) => ReactNode;
+  }>,
+) {
   const { title, query, isEmpty, empty, children } = props;
   let body: ReactNode;
   if (query.data !== undefined) {
@@ -83,7 +85,7 @@ function Section<T>(props: {
   );
 }
 
-function StatusSummary({ status }: { status: HatStatus }) {
+function StatusSummary({ status }: Readonly<{ status: HatStatus }>) {
   return (
     <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm md:grid-cols-4">
       <dt className="text-foreground-muted">Trade date</dt>
@@ -114,7 +116,7 @@ function StatusSummary({ status }: { status: HatStatus }) {
   );
 }
 
-function BotsTable({ bots }: { bots: HatStatus["bots"] }) {
+function BotsTable({ bots }: Readonly<{ bots: HatStatus["bots"] }>) {
   return (
     <Table>
       <TableHeader>
@@ -143,7 +145,7 @@ function BotsTable({ bots }: { bots: HatStatus["bots"] }) {
   );
 }
 
-function AllocationsTable({ allocations }: { allocations: HatAllocations }) {
+function AllocationsTable({ allocations }: Readonly<{ allocations: HatAllocations }>) {
   return (
     <>
       <p className="mb-2 text-xs text-foreground-muted">
@@ -177,7 +179,7 @@ function AllocationsTable({ allocations }: { allocations: HatAllocations }) {
   );
 }
 
-function WatchlistTables({ watchlist }: { watchlist: HatWatchlist }) {
+function WatchlistTables({ watchlist }: Readonly<{ watchlist: HatWatchlist }>) {
   return (
     <div className="space-y-4">
       {watchlist.map((bot) => (
@@ -204,7 +206,7 @@ function WatchlistTables({ watchlist }: { watchlist: HatWatchlist }) {
   );
 }
 
-function PositionsTable({ positions }: { positions: HatPositions }) {
+function PositionsTable({ positions }: Readonly<{ positions: HatPositions }>) {
   return (
     <Table>
       <TableHeader>
@@ -240,7 +242,7 @@ function PositionsTable({ positions }: { positions: HatPositions }) {
   );
 }
 
-function EventsList({ events }: { events: HatEvents }) {
+function EventsList({ events }: Readonly<{ events: HatEvents }>) {
   return (
     <ul className="space-y-1 text-sm">
       {events.map((event) => (

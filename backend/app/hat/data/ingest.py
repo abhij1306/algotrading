@@ -634,51 +634,66 @@ def run_ingest(deps: IngestDeps, trade_date: date, run_id: uuid.UUID) -> IngestR
     report.universe = len(members)
     symbols = request_symbols(members)
     report.requested = len(symbols)
-    by_sym = by_symbol(members)
     csv_first = False
-
-    existing = deps.store.partition_files(DATASET_BARS, trade_date)
-    if existing:
-        report.reused = True
-        report.source = str(deps.store.read_bars(trade_date)["source"][0])
-        report.stored = deps.store.read_bars(trade_date).height
-        _restore_checks(deps.store, trade_date, report)
+    if deps.store.partition_files(DATASET_BARS, trade_date):
+        _reuse_partition(deps, trade_date, report)
     else:
-        outcome = wait_for_data(
-            lambda: _probe(deps, trade_date), trade_date, deps.clock, deps.sleep
-        )
-        report.probes = len(outcome.probes)
-        if outcome.ready:
-            report.source = SOURCE_MCP
-            accepted = _fetch_mcp(deps, trade_date, symbols, report)
-            traded: dict[str, Decimal | None] = {}
-        else:
-            csv_first = True
-            report.source = SOURCE_BHAVCOPY
-            parsed = deps.fallback(trade_date) if deps.fallback is not None else None
-            if parsed is None or not parsed.rows:
-                raise JobError(CODE_NO_DATA)
-            accepted, traded, report.violations = _bhav_candidates(parsed, members)
-        if not accepted:
-            raise JobError(CODE_NO_ROWS)
-        report.stored = len(accepted)
-        stored = previous_closes(deps.store, trade_date)
-        flagged = flagged_instruments(accepted, by_sym, stored, deps.rss_symbols(trade_date))
-        report.flagged = len(flagged)
-        report.actions_created, report.lookups_failed = _lookup_actions(
-            deps, trade_date, flagged, by_sym
-        )
-        rows = [
-            _bar(by_sym[s], c, report.source, run_id, traded.get(s))
-            for s, c in sorted(accepted.items())
-            if s in by_sym
-        ]
-        if rows and not deps.store.partition_files(DATASET_BARS, trade_date):
-            _keep_checks(deps.store, trade_date, report)  # first: ingest's partition has its counts
-        write_raw_once(deps.store, trade_date, rows)
+        csv_first = _fetch_and_write(deps, trade_date, members, symbols, run_id, report)
     _store_indices(deps, trade_date, report, csv_first=csv_first)
     _store_breadth(deps, trade_date, report)
     return report
+
+
+def _reuse_partition(deps: IngestDeps, trade_date: date, report: IngestReport) -> None:
+    """A retry after the day's raw partition was written: report what it holds."""
+    report.reused = True
+    bars = deps.store.read_bars(trade_date)
+    report.source = str(bars["source"][0])
+    report.stored = bars.height
+    _restore_checks(deps.store, trade_date, report)
+
+
+def _fetch_and_write(
+    deps: IngestDeps,
+    trade_date: date,
+    members: list[Member],
+    symbols: Sequence[str],
+    run_id: uuid.UUID,
+    report: IngestReport,
+) -> bool:
+    """Fetch the day (MCP, else the bhavcopy fallback), look up flagged actions and write the raw
+    partition, its row-check counts first. True when the rows came from the bhavcopy CSV."""
+    by_sym = by_symbol(members)
+    outcome = wait_for_data(lambda: _probe(deps, trade_date), trade_date, deps.clock, deps.sleep)
+    report.probes = len(outcome.probes)
+    traded: dict[str, Decimal | None] = {}
+    if outcome.ready:
+        report.source = SOURCE_MCP
+        accepted = _fetch_mcp(deps, trade_date, symbols, report)
+    else:
+        report.source = SOURCE_BHAVCOPY
+        parsed = deps.fallback(trade_date) if deps.fallback is not None else None
+        if parsed is None or not parsed.rows:
+            raise JobError(CODE_NO_DATA)
+        accepted, traded, report.violations = _bhav_candidates(parsed, members)
+    if not accepted:
+        raise JobError(CODE_NO_ROWS)
+    report.stored = len(accepted)
+    stored = previous_closes(deps.store, trade_date)
+    flagged = flagged_instruments(accepted, by_sym, stored, deps.rss_symbols(trade_date))
+    report.flagged = len(flagged)
+    report.actions_created, report.lookups_failed = _lookup_actions(
+        deps, trade_date, flagged, by_sym
+    )
+    rows = [
+        _bar(by_sym[s], c, report.source, run_id, traded.get(s))
+        for s, c in sorted(accepted.items())
+        if s in by_sym
+    ]
+    if rows and not deps.store.partition_files(DATASET_BARS, trade_date):
+        _keep_checks(deps.store, trade_date, report)  # first: ingest's partition has its counts
+    write_raw_once(deps.store, trade_date, rows)
+    return not outcome.ready
 
 
 # The row-check counts of the run that wrote a day's raw partition. A retry that finds the

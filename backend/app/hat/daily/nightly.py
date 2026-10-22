@@ -15,9 +15,11 @@ them over fixture data, a recorded MCP transport and fake text sources.
 
 from __future__ import annotations
 
+import copy
+import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
@@ -103,6 +105,8 @@ NIGHTLY_CHAIN = (
     SCAN,
     WATCHLIST_DIGEST,
 )
+
+logger = logging.getLogger(__name__)
 
 INGEST_AT = time(18, 0)  # the first probe (HAT-OPS-022); the body waits until 22:00 at most
 CALENDAR_AT = time(7, 0)  # daily: a changed holiday list is picked up the same morning
@@ -226,7 +230,7 @@ class Nightly:
         with self.deps.session_factory() as session:
             factors = stored_factors(session)
         with self.deps.store.connect(factors):
-            pass
+            logger.info("adjusted view loads with %d factors", len(factors))
         return JobResult(rows=len(factors))
 
     def features(self, day: date) -> JobResult:
@@ -347,7 +351,7 @@ class Nightly:
 
 def _without(inputs: ScanInputs, excluded: set[str]) -> ScanInputs:
     keep = ~pl.col("instrument_id").cast(pl.String).is_in(sorted(excluded))
-    return replace(inputs, bars=inputs.bars.filter(keep))
+    return copy.replace(inputs, bars=inputs.bars.filter(keep))
 
 
 def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:

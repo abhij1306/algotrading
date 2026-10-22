@@ -19,8 +19,8 @@ WORKDIR /app
 # scripts/install_backend_deps.py does.
 COPY backend/requirements.txt backend/requirements-ci.lock backend/
 RUN sed -e '/^#/d' -e 's/ .*//' backend/requirements-ci.lock > /tmp/constraints.txt \
-    && pip install -r backend/requirements.txt -c /tmp/constraints.txt \
-    && pip install --no-deps "fyers-apiv3==3.2.0" \
+    && pip install --only-binary :all: -r backend/requirements.txt -c /tmp/constraints.txt \
+    && pip install --only-binary :all: --no-deps "fyers-apiv3==3.2.0" \
     && rm /tmp/constraints.txt
 
 COPY backend/ backend/

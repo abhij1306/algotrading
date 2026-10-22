@@ -21,11 +21,11 @@ the entry alone (the risk check rejects an entry with a missing input).
 
 from __future__ import annotations
 
+import copy
 import logging
 import threading
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import replace
 from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -276,7 +276,7 @@ class LiveContexts:
             if virtual
             else self._funds(bot.broker_account_id)
         )
-        return replace(
+        return copy.replace(
             base,
             equity=equity,
             allocation_risk_pct=Decimal(allocation.risk_pct),
@@ -290,7 +290,7 @@ class LiveContexts:
 def _with_industry(session: Session, request: trades.EntryRequest) -> trades.EntryRequest:
     found = current_industry(session, request.instrument_id, request.trade_date)
     industry = found.industry if found is not None else "unknown"
-    return replace(request, context=replace(request.context, industry=industry))
+    return copy.replace(request, context=copy.replace(request.context, industry=industry))
 
 
 class LiveRoute:
