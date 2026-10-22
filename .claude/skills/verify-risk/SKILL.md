@@ -23,7 +23,7 @@ Checks that `evaluate_signal` (`backend/app/hat/risk/service.py`) is the one pla
 - `PBT exposure.*` The L1 to L3 ladder: a level moves up after the policy's winners in a row and down after its losers, one level at a time, never past L1 or L3; a level move resets both counters; the level's position limit and risk multiplier are the ones the decision applies; shadow (virtual) trades never move it; a trade closed at 0 R counts as a loss. Harm: paper wins unlock real exposure, or a losing streak does not cut it.
 - `PBT kill.*` Kill state from rows: a (scope, bot) is tripped exactly when the latest row of its risk stream (drawdown, manual together) or of one of its health reasons (`data_health`, `feed_health`, `broker_health`, each its own stream) is a trip, so an automatic health re-arm never hides a tripped drawdown kill nor another source's health trip; another bot's rows never count. On the real service on SQLite, random trips, health changes (the account's from the gate and from the feed apart), re-arms, pauses and resumes keep a bot manage-only exactly when the model says, a re-arm needs a user and a second confirmation, a resume never lifts a kill, a drawdown or manual trip ends the undecided approvals it covers, and the nightly snapshot trips the account kill at 10% and a bot at 10% (D128; the account was 15% before PR 46) from the summed and per-bot equity. A planned reallocation is not a drawdown (HAT-RISK-066): with no trade results, any sequence of allocation capitals (cuts, rises, nights at zero) trips nothing and leaves no stored peak above its equity, and a cut together with a realised loss trips exactly when the loss reaches the drawdown share of the restated capital; a snapshot of day d is measured on the bot's latest allocation on or before d, and its capital for restating the peak and the account series is the one it used (equity less realised P&L), so an allocation written after it, or a night without one, reads as no loss (PR 33: `snapshot.bots` no longer waits for `allocate`). Harm: a tripped kill that reads as armed, or one that a pause or a glitch quietly clears.
 - `PBT calendar.*` The next session open is the earliest open strictly after the instant, holidays and weekends skipped; a mode change is queued only outside market hours and takes effect at that next open, never before; the bot's mode is untouched until then. Harm: a mode flips to auto in the middle of a session.
-- `PBT policy.*` The startup upkeep (`policy_upkeep.ensure_hat_policies`, PR 46) moves each user whose policy in force is the withdrawn PR 10 seed, with nothing pending, to the 06 §1 seed as an `initial` version effective at once, supersedes the old one at that instant and writes both governance events; any other policy, a pending change, no policy and every later run are left exactly as they were (HAT-RISK-011, D128). A constraint failure while moving a user is ignored only when another process moved that user first; any other is raised and startup fails. Harm: an account keeps the 15% kill and 3% cap the owner withdrew and its bots stay in shadow, or the owner's own policy is overwritten.
+- `PBT policy.*` The startup upkeep (`policy_upkeep.ensure_hat_policies`, PR 46) moves each user whose policy in force is the withdrawn PR 10 seed, with nothing pending, to the 06 §1 seed as an `initial` version effective at once, supersedes the old one at that instant and writes both governance events; any other policy, a pending change, no policy and every later run are left exactly as they were (HAT-RISK-011, D128). A constraint failure while moving a user is ignored only when the policy in force is no longer the old seed (another process moved that user first); any other, a change queued meanwhile included, is raised and startup fails. Harm: an account keeps the 15% kill and 3% cap the owner withdrew and its bots stay in shadow, or the owner's own policy is overwritten.
 - `CONF risk.*` The policy document's fields are exactly the 06 section 1 table, the seed equals the table's seed column field by field, no bot, strategy or version column carries a risk number, `size_position` is called from one place only, no risk function takes an override or bypass switch, HAT's pinned safety properties (exits, regime gate, stop, staleness, session, kill, caps, tag and fail-closed broker rules) still exist as Hypothesis properties, match their recorded digests and pass, the legacy manual-trading modules are gone, and no HAT module names the legacy VCP halt flag. Harm: a second sizing path, a hidden override, a safety property weakened to fit a change, or a manual-trading path around HAT's risk decision.
 - `DB risk.*` On Postgres, the real policy, kill and snapshot services write rows the database constraints accept (cooling-off span, kill scope, one snapshot per bot and day), and a service that forgets its own rule is refused. Harm: the code and the database disagree about what a legal row is.
 
@@ -96,7 +96,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `f658a780d9bed2ad498639457d0b07c4aae052fe1ac6452abf7806f16d84b420`
+Covered digest: `930b36bf36c068ec8d0c4f11058f70d42039f8b23554a64ad3873fe8e2d48b61`
 
 ## Scope changes
 
@@ -1114,4 +1114,12 @@ Break: (PR 46) `ensure_hat_policies` re-raises every `IntegrityError`, a lost ra
 ```
 E   sqlalchemy.exc.IntegrityError: (builtins.Exception) unique violation
 E   Failing explicit example: test_upkeep_raises_unless_race_lost(
+```
+
+Break: (PR 46) After an `IntegrityError` the upkeep re-runs `supersede_old_seed` instead of reading the policy in force, so a change queued meanwhile makes the retry a no-op and the error is swallowed with the old seed in force.
+
+```
+E   Failed: DID NOT RAISE IntegrityError
+E   Failing explicit example: test_upkeep_raises_unless_race_lost(
+E       faults=['pending'],
 ```

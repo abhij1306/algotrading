@@ -128,13 +128,15 @@ def test_seed_supersedes_old_initial(states: list[str], runs: int) -> None:
 
 
 @settings(max_examples=20, deadline=None)
-@given(st.lists(st.sampled_from(("none", "race", "other")), min_size=1, max_size=3))
+@given(st.lists(st.sampled_from(("none", "race", "pending", "other")), min_size=1, max_size=3))
 @example(faults=["other"])
 @example(faults=["race", "none"])
+@example(faults=["pending"])
 def test_upkeep_raises_unless_race_lost(faults: list[str]) -> None:
     """HAT-RISK-011 (PR 46): a constraint failure while moving a user off the old seed is ignored
     only when another process moved that user first (the version number race); any other one,
-    after which the old seed would still be in force, is raised and startup fails. Harm: a
+    after which the old seed is still in force (a change queued meanwhile included), is raised
+    and startup fails. Harm: a
     swallowed failure leaves the withdrawn 15% kill and 3% cap in force while HAT runs."""
     engine = memory_engine()
     users = [uuid.uuid4() for _ in faults]
@@ -153,12 +155,25 @@ def test_upkeep_raises_unless_race_lost(faults: list[str]) -> None:
             with Session(engine) as other:
                 real(other, user_id, now)
                 other.commit()
+        if fault == "pending":  # another process queues the owner's change on the same number
+            with Session(engine) as other:
+                other.add(
+                    HatRiskPolicyVersion(
+                        user_id=user_id,
+                        version=2,
+                        policy={**OLD_SEED_POLICY, "risk_pct": "0.0020"},
+                        direction="decrease",
+                        requested_at=now,
+                        effective_from=now + timedelta(days=2),
+                    )
+                )
+                other.commit()
         if fault != "none":
             raise IntegrityError("insert", {}, Exception("unique violation"))
         return real(session, user_id, now)
 
     with patch.object(policy_upkeep, "supersede_old_seed", faulty):
-        if "other" in faults:
+        if "other" in faults or "pending" in faults:
             with pytest.raises(IntegrityError):
                 ensure_hat_policies(engine)
             return
