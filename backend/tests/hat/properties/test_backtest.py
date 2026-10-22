@@ -24,8 +24,19 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
-from app.hat.backtest.fills import entry_fill, stop_fill
+from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
+from app.hat.backtest.fills import (
+    ENTRY_FILL_RULES,
+    FILL_PATH,
+    GAP_THROUGH_RULE,
+    PENETRATION,
+    TOUCH,
+    TRIGGER_PROXY,
+    entry_fill,
+    stop_fill,
+)
 from app.hat.backtest.market import load_market
+from app.hat.confighash import config_hash
 from app.hat.data.store import (
     DATASET_FEATURES,
     DATASET_SCHEMAS,
@@ -37,10 +48,13 @@ from app.hat.data.ticks import tick_for_date
 from app.hat.engine.backtest import (
     KNOWN_GAPS,
     NSE_BANDS,
+    TOUCH_GAP,
+    BacktestError,
     BacktestResult,
     MarketData,
     TradeRow,
     compute_metrics,
+    config_digest,
     industry_on,
     pre_break_low,
     run_backtest,
@@ -185,27 +199,54 @@ def test_version_pinned(paths: dict) -> None:
 # --- HAT-BT-020 / 021 -------------------------------------------------------------------------
 
 
-@given(PRICE, PRICE, PRICE)
-@example(D(10), D(12), D(10))
-@example(D(10), D(12), D(12))
-def test_entry_fill_proxy(open_: D, high: D, level: D) -> None:
-    """An entry fills at the level when the open is at or below it and the high reaches it, at
-    the open when the day opens above it, and not at all when the high stays below it."""
+FILL_TICKS = st.sampled_from([D("0.01"), D("0.05"), D("0.10")])
+
+
+@given(PRICE, PRICE, PRICE, FILL_TICKS)
+@example(D(10), D(12), D(10), D("0.05"))
+@example(D(10), D(12), D(12), D("0.05"))  # touch fills at 12; penetration needs 12.05
+@example(D(10), D("12.05"), D(12), D("0.05"))  # penetrated by exactly one tick
+@example(D(12), D(13), D(12), D("0.05"))  # an open at the level does not fill at the open
+@example(D(10), D("12.05"), D("12.01"), D("0.05"))  # an off-grid level: cleared at 12.05
+def test_entry_fill_proxy(open_: D, high: D, level: D, tick: D) -> None:
+    """A day opening above the level enters at the open (a gap over) under either rule.
+    Otherwise the default `penetration_1_tick` enters at the first tick-grid price above the
+    level (level + tick on the grid; the next grid price for an off-grid adjusted level) when
+    the high reaches it, as live's first trade above the level, and `touch` at the level when
+    the high reaches the
+    level; no entry when the high falls short. Penetration never fills where touch does not, nor
+    below touch's price. Harm: the backtest buys breakouts live never sees trade, at a better
+    price than live pays."""
     high = max(high, open_)
-    expected = open_ if open_ > level else (level if level <= high else None)
-    assert entry_fill(open_, high, level) == expected
+    pen = entry_fill(open_, high, level, tick)
+    touch = entry_fill(open_, high, level, tick, TOUCH)
+    if open_ > level:
+        assert pen == touch == open_
+        return
+    # the smallest grid price above the level, stated without the code's formula
+    above = next(p for p in (level - level % tick + n * tick for n in (0, 1, 2)) if p > level)
+    assert above % tick == 0
+    assert level < above <= level + tick
+    assert pen == (above if high >= above else None)
+    assert touch == (level if high >= level else None)
+    assert pen is None or (touch is not None and pen >= touch)
+    assert entry_fill(open_, high, level, None) is None  # no tick, no penetration
 
 
-@given(s.paths(SESSIONS), st.sampled_from([D("0.5"), D(1), D(5)]))
+@given(
+    s.paths(SESSIONS), st.sampled_from([D("0.5"), D(1), D(5)]), st.sampled_from(ENTRY_FILL_RULES)
+)
 @RUNS
-def test_entry_fill_proxy_chase(paths: dict, chase: D) -> None:
+def test_entry_fill_proxy_chase(paths: dict, chase: D, rule: str) -> None:
     """In a run, every opened entry records its watchlist level as the trigger price
     (HAT-CRIT-119) and filled at the proxy price of that level, within max chase of it: a
-    gap-over beyond level x (1 + pct/100) is never bought. The generated opens gap up by at
-    most 3%, so the chase is drawn below that too."""
+    gap-over beyond level x (1 + pct/100) is never bought, under either entry fill rule, and
+    every watchlist row the rule fills on its day becomes a signal or a counted skip. The
+    generated opens gap up by at most 3%, so the chase is drawn below that too."""
     data = s.market(paths, DAYS)
     cfg = s.config(chase=float(chase))
-    result = run_backtest(s.spec(cfg, DAYS, fills=s.zero_fills()), data)
+    spec = dataclasses.replace(s.spec(cfg, DAYS, fills=s.zero_fills()), entry_fill_rule=rule)
+    result = run_backtest(spec, data)
     levels = {(w.trade_date, w.instrument_id): w.pivot for w in result.watchlists}
     bought = {(f.day, f.instrument_id): f.price for f in result.fills if f.purpose == "entry"}
     for signal in result.signals:
@@ -215,8 +256,24 @@ def test_entry_fill_proxy_chase(paths: dict, chase: D) -> None:
         assert signal.trigger_price == level  # the signal records the level it broke
         open_, high, _, _ = _bar(data, signal.instrument_id, signal.trade_date)
         price = bought[(signal.trade_date, signal.instrument_id)]
-        assert price == entry_fill(open_, high, level)
+        tick = _tick(data, signal.instrument_id, signal.trade_date)
+        assert price == entry_fill(open_, high, level, tick, rule)
         assert price <= level * (1 + chase / 100)
+    # Every row the rule fills on its day became a signal or a counted skip: none was dropped.
+    triggered = sum(
+        row.pivot is not None
+        and entry_fill(
+            *_bar(data, row.instrument_id, row.trade_date)[:2],
+            row.pivot,
+            _tick(data, row.instrument_id, row.trade_date),
+            rule,
+        )
+        is not None
+        for row in result.watchlists
+        if row.trade_date in DAYS[s.WARM_UP :]
+    )
+    skipped = sum(n for reason, n in result.skips.items() if reason != "no_trigger_level")
+    assert triggered == len(result.signals) + skipped
 
 
 @given(s.paths(SESSIONS), st.sampled_from([1, 30]))
@@ -242,7 +299,9 @@ def test_stop_on_instrument_tick(paths: dict, scale: int) -> None:
         tick = tick_for_date(prior["date"].to_list(), closes, signal.trade_date)
         assert tick is not None
         open_, high, _, _ = _bar(data, signal.instrument_id, signal.trade_date)
-        entry = entry_fill(open_, high, signal.trigger_price)  # the trigger price is the level
+        entry = entry_fill(
+            open_, high, signal.trigger_price, tick
+        )  # the trigger price is the level
         assert entry is not None
         assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
 
@@ -356,19 +415,21 @@ def test_entry_day_stop(paths: dict, with_intraday: bool, draw: st.DataObject) -
             continue
         open_, high, _, _ = _bar(data, row.instrument_id, row.trade_date)
         no_bars = (row.instrument_id, row.trade_date) not in data.intraday
-        gaps += entry_fill(open_, high, row.pivot) == open_ and no_bars
+        tick = _tick(data, row.instrument_id, row.trade_date)
+        gaps += entry_fill(open_, high, row.pivot, tick) == open_ and no_bars
     assert result.skips.get("gap_over_no_intraday", 0) == gaps
     trades = {(t.instrument_id, t.entry_date): t for t in result.trades}
     for signal in result.signals:
         day, iid, level = signal.trade_date, signal.instrument_id, signal.trigger_price
         open_, high, low, _ = _bar(data, iid, day)
         intraday = data.intraday.get((iid, day), ())
-        entry = entry_fill(open_, high, level)
+        entry = entry_fill(open_, high, level, _tick(data, iid, day))
         assert entry is not None
         assert entry != open_ or intraday  # no gap over without 5-minute bars
         adr20 = _adr20(data, iid, day)
         assert intraday or adr20 is not None
-        before, dip = pre_break_low(open_, low, level, adr20, intraday)
+        broke = level if entry == open_ else entry  # the break is at the entry price
+        before, dip = pre_break_low(open_, low, broke, adr20, intraday)
         assert signal.stop_price == low_of_day(entry, [before], 1, _tick(data, iid, day)).stop
         trade = trades.get((iid, day))
         if trade is None or dip is None:
@@ -395,7 +456,12 @@ def test_contraction_stop_too_wide(paths: dict, max_pct: float) -> None:
     result = run_backtest(s.spec(s.config(stop=stop), DAYS, fills=s.zero_fills()), data)
     triggers = sum(
         row.pivot is not None
-        and entry_fill(*_bar(data, row.instrument_id, row.trade_date)[:2], row.pivot) is not None
+        and entry_fill(
+            *_bar(data, row.instrument_id, row.trade_date)[:2],
+            row.pivot,
+            _tick(data, row.instrument_id, row.trade_date),
+        )
+        is not None
         for row in result.watchlists
         if row.trade_date in DAYS[s.WARM_UP :]
     )
@@ -431,7 +497,7 @@ def test_adtr_filter_applied(paths: dict, multiple: float, blank: set[date]) -> 
     for signal in result.signals:
         day, iid = signal.trade_date, signal.instrument_id
         open_, high, _, _ = _bar(data, iid, day)
-        entry = entry_fill(open_, high, signal.trigger_price)
+        entry = entry_fill(open_, high, signal.trigger_price, _tick(data, iid, day))
         assert entry is not None
         adtr = _adr20(data, iid, day, "adtr20")
         wide = adtr is None or adtr <= 0 or entry - signal.stop_price > D(repr(multiple)) * adtr
@@ -557,7 +623,7 @@ def test_upper_circuit_skip(paths: dict, sessions: set[int], band: float, fade: 
     for signal in result.signals:
         day, iid = signal.trade_date, signal.instrument_id
         open_, high, _, _ = _bar(data, iid, day)
-        entry = entry_fill(open_, high, signal.trigger_price)
+        entry = entry_fill(open_, high, signal.trigger_price, _tick(data, iid, day))
         assert entry is not None
         prev_close = _bar(data, iid, DAYS[DAYS.index(day) - 1])[3]
         locked = _at_band(entry, high, prev_close, _tick(data, iid, day))
@@ -737,17 +803,76 @@ def test_deterministic(paths: dict, rnd: object) -> None:
     assert first.metrics["known_gaps"] == list(KNOWN_GAPS)
 
 
+# --- HAT-BT-020..022: recorded fill conventions (PR 62) -----------------------------------------
+
+SLIPPAGES = st.sampled_from([D(0), D("-0"), D(5), DEFAULT_SLIPPAGE_BPS, D("20.0"), D(50)])
+
+
+@given(s.paths(SESSIONS), st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.booleans())
+@RUNS
+@example({s.instrument(0): [(100.0, 101.0, 99.0, 100.0)] * SESSIONS}, PENETRATION, D(0), True)
+@example({s.instrument(0): [(100.0, 101.0, 99.0, 100.0)] * SESSIONS}, TOUCH, D(20), True)
+def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool) -> None:
+    """Every run's metrics record its fill path (open, low, high, close), entry fill rule,
+    gap-through rule (min(open, stop)), trigger proxy, slippage and cost model, whether it is
+    flagged for promotion, and `config_digest`, the hash of exactly those conventions; a
+    `touch` run also reports the touch gap. A run flagged for promotion at a slippage of 0, or
+    under `touch`, is refused. Harm: runs under different fill conventions read as comparable
+    evidence, or a promotion rides on perfect or optimistic fills."""
+    fills = BacktestFills(load_cost_model(), bps)
+    spec = dataclasses.replace(
+        s.spec(s.config(), DAYS, fills=fills), entry_fill_rule=rule, for_promotion=promote
+    )
+    if promote and (bps == 0 or rule == TOUCH):
+        with pytest.raises(BacktestError, match="backtest_promotion_(without_slippage|on_touch)"):
+            run_backtest(spec, s.market(paths, DAYS))
+        return
+    metrics = run_backtest(spec, s.market(paths, DAYS)).metrics
+    recorded = {
+        "fill_path": FILL_PATH,
+        "entry_fill_rule": rule,
+        "gap_through_rule": GAP_THROUGH_RULE,
+        "trigger_proxy": TRIGGER_PROXY,
+        "slippage_bps": "0" if bps == 0 else format(bps.normalize(), "f"),  # -0 too
+        "cost_model": fills.model.to_json(),
+    }
+    assert {k: metrics[k] for k in recorded} == recorded
+    assert metrics["for_promotion"] is promote
+    assert metrics["config_digest"] == config_hash(recorded)
+    assert metrics["known_gaps"] == [*KNOWN_GAPS, *([TOUCH_GAP] if rule == TOUCH else [])]
+
+
+@given(
+    st.tuples(st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.sampled_from(["zero", "default"])),
+    st.tuples(st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.sampled_from(["zero", "default"])),
+)
+def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
+    """Two runs' `config_digest`s are equal exactly when their entry fill rule, slippage (20
+    and 20.0 bps alike, -0 and 0 alike) and cost model are. Harm: a run under other
+    conventions passes for a rerun, or a rerun reads as another convention."""
+
+    def spec(rule: str, bps: D, model: str) -> object:
+        fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_model(), D(0))
+        fills = BacktestFills(fills.model, bps)
+        return dataclasses.replace(s.spec(s.config(), DAYS, fills=fills), entry_fill_rule=rule)
+
+    same = (a[0], a[1], a[2]) == (b[0], b[1], b[2])  # Decimal(20) == Decimal("20.0")
+    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+
+
 # --- HAT-BT-061 -------------------------------------------------------------------------------
 
 ENGINE = memory_engine()
 seed_hat_reference(ENGINE)
 
 
-@given(st.sampled_from(["running", "completed", "failed"]), st.booleans())
+@given(st.sampled_from(["running", "completed", "failed"]), st.booleans(), st.booleans())
 @settings(max_examples=25, deadline=None)
-def test_version_status_requires_run(status: str, same_version: bool) -> None:
-    """A draft becomes `backtested` only with a completed run of that same version; a run that
-    is still running, failed, or of another version is refused and leaves the draft a draft."""
+@example("completed", True, False)  # a completed run of the version, not flagged for promotion
+def test_version_status_requires_run(status: str, same_version: bool, promoted: bool) -> None:
+    """A draft becomes `backtested` only with a completed run of that same version flagged for
+    promotion (PR 62); a run that is still running, failed, of another version or not flagged
+    is refused and leaves the draft a draft."""
     with Session(ENGINE) as session:
         strategy = seed_default_strategies(session, uuid.uuid4())[0]
         draft = HatStrategyVersion(
@@ -767,11 +892,11 @@ def test_version_status_requires_run(status: str, same_version: bool) -> None:
             period_end=DAYS[-1],
             data_snapshot={},
             status=status,
-            metrics={},
+            metrics={"for_promotion": promoted},
         )
         session.add(run)
         session.flush()
-        if status == "completed" and same_version:
+        if status == "completed" and same_version and promoted:
             assert publish_version(session, draft.id, backtest_run_id=run.id).status == "backtested"
             assert draft.backtest_run_id == run.id
         else:

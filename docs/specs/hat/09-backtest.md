@@ -49,13 +49,14 @@ Daily bars cannot show where in the day a pivot broke. The trigger proxy below i
 Each simulated day is read as one path: **open, then low, then high, then close** (the adverse move first). At the open the nightly rules and then the live rules see the open price, so a gap through a stop exits at the open. On the way down a stop fills by HAT-BT-021; on the way up each profit rule (`partial_at_r`, `pct_gain_target`, a raised stop) fires at the first price at which `exits.evaluate` acts, as many times as the stack keeps acting; an entry breaks its level on the way up or at the open (a gap over); on the entry day the low is split around the break (HAT-BT-020 design, PR 60). The close rules then see the official close. The fill proxies are pure functions in `app/hat/backtest/fills.py`; whether an entry is taken is `evaluate_signal`'s decision and which exit fires is `exits.evaluate`'s.
 
 #### HAT-BT-020: Entry fill on daily bars
-- **Statement:** On daily bars, an entry fills at the trigger level when the day's high reaches it, or at the open when the day opens above the trigger level (gap over); otherwise no entry.
+- **Statement:** On daily bars, an entry fills at the open when the day opens above the trigger level (gap over); otherwise, under the default rule `penetration_1_tick`, at the first price of the instrument's tick grid above the level (level + tick for a level on the grid) when the day's high reaches it, and under the variant `touch` at the level when the high reaches the level; otherwise no entry.
 - **Source:** PLAN Q4; BL "Criteria library" (`price_breaks_level`, `max_chase`).
-- **PR:** 12, 60
-- **Verification:** PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide`
+- **PR:** 12, 60, 62
+- **Verification:** PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide`
 - **Acceptance:**
-  - Property: for every (open, high, level), the entry price is level if open <= level <= high, open if open > level, and there is no entry if high < level; the entry is still subject to max-chase, so a gap-over open above level × (1 + pct/100) is skipped. Harm: the backtest buys at prices the live engine would refuse, inflating results.
-- **[OWNER-PENDING]** daily-bar trigger proxy: default as stated (PLAN Q4); episodic-pivot (opening-range) backtests need the Fyers minute history the optional loader writes to `bars_5m` (HAT-DATA-119, I4); the discrepancy is measured in shadow; owner to confirm.
+  - Property: for every (open, high, level, tick), the entry price is open if open > level; otherwise, under `penetration_1_tick`, the smallest tick-grid price above the level (in (level, level + tick]) if the high reaches it, and under `touch` level if high >= level; else no entry. Penetration never fills where touch does not, nor below touch's price, and without a tick there is no penetration entry. In a run, under either rule, the entry is still subject to max-chase, so a gap-over open above level × (1 + pct/100) is skipped. Harm: the backtest buys breakouts live never sees trade, at a better price than live pays.
+  - Property: every run's metrics record `fill_path` (`open_low_high_close`), `entry_fill_rule`, `gap_through_rule` (`min_open_stop`), `trigger_proxy` (`daily_bar_level_break`), `slippage_bps` (normalised, so 20 and 20.0, or -0 and 0, record alike), `cost_model` and `for_promotion`, and `config_digest` is the canonical hash (`confighash.config_hash`) of exactly the first six; two runs' digests are equal iff their entry rule, slippage and cost model are. Harm: runs under different fill conventions read as comparable evidence.
+- **Decision (PR 62, O5; owner defaults 2026-10-22, D154):** the daily-bar trigger proxy (`daily_bar_level_break`) is the convention for S1 and S2; the episodic-pivot playbook is backtested on 5-minute bars only (`bars_5m`, HAT-DATA-119), with at least five years of them (Fyers Prime, from 2017-07-03; D154 drops the one-year EP exception O5 had proposed); the discrepancy from live is measured in shadow. The entry rule is `penetration_1_tick` by default: live's `price_breaks_level` needs a trade strictly above the level (HAT-CRIT-119) and enters at that price, so the backtest's first such price is the first price on the instrument's tick grid (HAT-EXEC-053, the tick on the trade date) above the level: level + tick for a level on the grid, the next grid price for an adjusted level between two, and the high must reach it. `touch` (the PR 12 rule) stays as a variant for sensitivity runs (`--entry-fill touch`, `RunSpec.entry_fill_rule`); a `touch` run adds `entry_fills_on_touch` to its `known_gaps`. An instrument with no close before the trade date has no tick, so a day whose high goes above the level (a trigger that would need a penetration) is skipped (`stop_input_missing`, as its stop needs the tick too); a day whose high stays at or below the level is no trigger and counts no skip. The entry-day split (PR 60) breaks at the entry price: the first 5-minute bar whose high reaches it. Under `touch` an open exactly at the level stays a gap over, as PR 60 defined it (the level breaks on the first tick); under penetration such an open is not one (the high must still clear the level).
 - **Deviation (PR 12):** the trigger is the break of the level alone. `volume_pace` and the opening range need intraday bars and are not modelled (`adtr_filter` is, since PR 61: HAT-BT-025), and the episodic-pivot playbook, built live from the pre-open gap scan, is not backtested (its rows are skipped): the PR 12 loop runs on daily bars only, and the minute-history loader exists for a later EP backtest. Both are listed in `metrics.known_gaps`.
 - **Design (PR 12):** the initial stop is planned with the instrument's NSE tick on the trade date (`data.ticks.tick_for_date`, HAT-EXEC-053), as the live trigger plans it; an instrument with no close before the trade date is skipped (`stop_input_missing`). The backtest reads the tick from the adjusted closes it runs on, while live reads the unadjusted ones: across a corporate action the two can sit in different price slabs, which moves a stop by less than the larger of the two ticks. Property `backtest.stop_on_instrument_tick`: every opened entry's stop is the live plan on the instrument's tick of the trade date, with prices in more than one slab. Harm: backtest stops sit on a grid the live trigger never uses.
 
@@ -71,22 +72,23 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 #### HAT-BT-021: Stop and close-based exit fills
 - **Statement:** A stop fills at the stop price, or at the open when the day opens below the stop; close-based exits (`close_below_sma`, `time_stop`, `partial_after_days`, `trailing_swing_low`) fill at the day's official close.
 - **Source:** BL "Stops and exits"; MA "Failure handling" (close vs live price); BL "Defaults that are assumptions" (exit at 15:25 vs official close); PLAN Q10.
-- **PR:** 12
-- **Verification:** PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close`
+- **PR:** 12, 62
+- **Verification:** PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close`, PBT `backtest.fill_conventions_recorded`
 - **Acceptance:**
   - Property: for every (open, low, stop) on a held day, the stop fill price is min(open, stop) when low <= stop, and the fill is never better than the stop. Harm: gap-down losses are understated.
   - Property: for every close-based exit, the fill price equals that day's close, and the difference from a 15:25 live price is recorded as a known gap, not corrected. Harm: the measured gap between backtest and live exits is hidden.
-- **[OWNER-PENDING]** gap-through stop fill: default min(open, stop); docs silent; owner to confirm.
+- **Decision (PR 62, O5):** a stop gapped through fills at min(open, stop) (`gap_through_rule` = `min_open_stop`, recorded in every run). The day's path is open, then low, then high, then close (`fill_path` = `open_low_high_close`), the adverse move first.
+- **Design (PR 62, N14):** the search for the first price on the day's way up at which a live rule acts (`engine.backtest.first_trigger`) is a bisection over the tick grid, which assumes a monotone rule stack: above the stop, a rule that acts at a price acts at every higher one. The built-in rules are thresholds (profit targets, R levels, breakeven moves); `partial_after_days` and the breakeven moves of the close phase see one price. A custom rule that acts only inside a band of prices would need a linear scan instead.
 
 #### HAT-BT-022: Slippage
 - **Statement:** Every simulated fill is moved against the trade by a configured slippage in basis points.
 - **Source:** PLAN PR 12 (fill and cost model: slippage bps); BL "Defaults that are assumptions" (liquidity cap validated by slippage in shadow mode).
-- **PR:** 12
-- **Verification:** PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds`
+- **PR:** 12, 62
+- **Verification:** PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds`, PBT `backtest.fill_conventions_recorded`
 - **Acceptance:**
   - Property: for every fill price p > 0 and slippage s with 0 <= s < 10000 bps (a configured value outside this range is rejected when the run starts), a buy fills at p × (1 + s/10000) rounded up to 4 places and a sell at p × (1 − s/10000) rounded down to 4 places, never below 0.0001, so net P&L is monotone non-increasing in s. Harm: the backtest assumes perfect fills and overstates edge.
-- **Design (PR 12):** prices are stored to 4 places, and rounding never favours the trade: a buy's slipped price is rounded up, a sell's down, and a sell never fills below 0.0001. The slippage is a Decimal checked when the run starts (`cost_bad_slippage` otherwise); the command line takes `--slippage-bps` (default 0) and every run's metrics record it.
-- **[OWNER-PENDING]** slippage default: the docs give no number; the value is set by the owner, calibrated from shadow-mode slippage, and every run records the value it used.
+- **Design (PR 12):** prices are stored to 4 places, and rounding never favours the trade: a buy's slipped price is rounded up, a sell's down, and a sell never fills below 0.0001. The slippage is a Decimal checked when the run starts (`cost_bad_slippage` otherwise); the command line takes `--slippage-bps` (default 20, `costs.DEFAULT_SLIPPAGE_BPS`) and every run's metrics record it.
+- **Decision (PR 62, O5):** the slippage defaults to 20 bps, recalibrated from shadow-mode slippage (PR 40) through a new default, never per run silently. A run flagged for promotion (`--for-promotion`, `RunSpec.for_promotion`) is refused at a slippage of 0 (`backtest_promotion_without_slippage`) and under the optimistic `touch` rule (`backtest_promotion_on_touch`): `engine.backtest.check_conventions` is called by `backtest_bot` before the run is recorded (recording nothing) and by `run_backtest`. A slippage of -0 records and hashes as 0. `publish_version` takes only a run whose metrics say `for_promotion: true` (HAT-BT-061), so a version is never promoted on perfect fills. Property `backtest.fill_conventions_recorded`.
 
 #### HAT-BT-023: Statutory costs for delivery trades
 - **Statement:** Every simulated buy and sell is charged STT, stamp duty, exchange transaction charges, SEBI turnover fees and GST at delivery (CNC) rates held in a versioned cost-model config, and each run records the cost-model version used.
@@ -123,9 +125,9 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 
 #### HAT-BT-030: Every run increments the trial count of its family
 - **Statement:** Every backtest run, whatever its outcome, is counted as one trial of its `family_key` (strategy × universe), and the family's trial count is the number of runs recorded for it.
-- **Design (PR 12):** a run is recorded with status `running` before the engine starts, then ends `completed` (metrics and trades written) or `failed` (`metrics = {"error": <code>}`, a fixed code, never exception text). A failed run stays a trial; the command line commits the failed row before it reports the refusal. Refusals before a run is recorded (unknown bot or version, no universe, no policy in force, a bad cost model or slippage, no data) record nothing.
+- **Design (PR 12):** a run is recorded with status `running` before the engine starts, then ends `completed` (metrics and trades written) or `failed` (`metrics = {"error": <code>}`, a fixed code, never exception text). A failed run stays a trial; the command line commits the failed row before it reports the refusal. Refusals before a run is recorded (unknown bot or version, no universe, no policy in force, a bad cost model or slippage, an unknown entry fill rule, a run for promotion at a slippage of 0 or under `touch` (PR 62), no data) record nothing.
 - **Source:** BL "Sleeve lifecycle" (every backtest run is counted as a trial); SCH "Portfolio layer" (`hat_backtest_run` gains `family_key`); PL4.
-- **PR:** 12
+- **PR:** 12, 62
 - **Verification:** PBT `dsr.trial_counting`
 - **Acceptance:**
   - Property: for every sequence of runs across families, the trial count of a family equals the number of `hat_backtest_run` rows with that `family_key`, is monotone non-decreasing over time, and runs of other families never change it. Harm: discarded variants are forgotten and the deflated Sharpe ratio under-corrects for luck.
@@ -203,33 +205,35 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 #### HAT-BT-060: Evidence hook for the Backtested state
 - **Statement:** The backtest supplies the sleeve lifecycle (05 §6) with each run's trade count, deflated Sharpe probability and family trial count; the Research → Backtested guard passes only when DSR >= 0.95 and trades >= 200.
 - **Source:** BL "Sleeve lifecycle"; PL4; PLAN PR 12 (lifecycle evidence hook).
-- **PR:** 9, 12
-- **Verification:** PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`
+- **PR:** 9, 12, 62
+- **Verification:** PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`
 - **Acceptance:**
   - Property: for every evidence record, the guard result is (dsr_prob >= 0.95 and trades >= 200), and the evidence always carries the family trial count current at evaluation time. Harm: a sleeve passes the gate on stale trial counts.
 - **[A]** DSR >= 0.95 and >= 200 trades: defaults; validated by owner review of the first sleeves' evidence.
 - **Design (PR 12):** `app.hat.backtest.runs.backtest_evidence` is the lifecycle's `BacktestEvidence` source (05 §6): the newest completed run of the sleeve's live version on its family, with the DSR recomputed at the family's trial count and Sharpe variance now (failed runs and other versions of the strategy count), its trade count and expectancy, as `BacktestFacts`. With no such run there is no evidence and Research → Backtested stays closed. The same runs feed the risk-increase gate (06, HAT-GOV-091): `runs.gate_evidence` builds `gate_evidence` from the user's closed trades against the trade-weighted mean expectancy of the sleeves' newest completed runs, discounted by the lifecycle's backtest discount (`DEFAULT_DISCOUNT` 0.58, HAT-PORT-065, owner-pending); with no completed run it gives none and the increase is refused.
 
+- **Design (PR 62, O5):** the evidence, for the lifecycle (`backtest_evidence`) and for the risk-increase gate (`gate_evidence`, HAT-GOV-091), is read only from runs flagged for promotion (`metrics.for_promotion`): a sensitivity run (`touch`, 0 bps, a sweep) or a run recorded before the flag existed is never a sleeve's evidence. After this PR an existing sleeve needs one `--for-promotion` run before its gates see evidence again (they fail closed until then). Property `dsr.evidence_promoted_only`. Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
+
 #### HAT-BT-061: Strategy versions record their backtest
-- **Statement:** A strategy version leaves `draft` for `backtested` only with a `backtest_run_id` of a completed run of that version, and status `live` requires both `backtest_run_id` and `shadow_started_at`.
+- **Statement:** A strategy version leaves `draft` for `backtested` only with a `backtest_run_id` of a completed run of that version flagged for promotion (PR 62: its metrics say `for_promotion: true`, so its slippage is above 0), and status `live` requires both `backtest_run_id` and `shadow_started_at`.
 - **Source:** SCH "Governance enforced in the database" (no promotion without evidence); BL "Governance" (draft → automatic backtest → shadow → promote); B5.
-- **PR:** 2, 12
+- **PR:** 2, 12, 62
 - **Verification:** DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run`
 - **Acceptance:**
-  - Property: for every version with status other than `draft`, `backtest_run_id` references a completed run whose `strategy_version_id` is that version. Harm: a version is promoted on another version's evidence.
+  - Property: for every version with status other than `draft`, `backtest_run_id` references a completed run whose `strategy_version_id` is that version and which was flagged for promotion; a running, failed, foreign or unflagged run is refused. Harm: a version is promoted on another version's evidence, or on perfect fills.
   - Property: for every row with status `live`, the database rejects it unless `backtest_run_id` and `shadow_started_at` are not null. Harm: an untested strategy trades.
 
 ## §7 Command line and known gaps
 
-`python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD [--version <id>] [--slippage-bps N] [--cost-model NAME]` backtests a sleeve's live strategy version (or `--version`, another version of the same strategy) on the sleeve's universe, under the risk-policy version in force now, over the Parquet store under `HAT_DATA_ROOT` (the adjusted `bars_daily` view, `features_daily`, the regime index closes and point-in-time membership from the database). It records the run as a trial, writes the trades file and prints the run id, status, trade count and DSR; a refusal prints a fixed code and exits non-zero.
+`python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N] [--entry-fill penetration_1_tick|touch] [--for-promotion]` backtests a sleeve's live strategy version (or `--version`, another version of the same strategy) on the sleeve's universe, under the risk-policy version in force now, over the Parquet store under `HAT_DATA_ROOT` (the adjusted `bars_daily` view, `features_daily`, the regime index closes and point-in-time membership from the database). It records the run as a trial, writes the trades file and prints the run id, status, trade count and DSR; a refusal prints a fixed code and exits non-zero.
 
 #### HAT-BT-070: Every unmodelled behaviour is a listed gap
 - **Statement:** Every run's `metrics.known_gaps` lists, by fixed code and in the order of the table below, each way the daily-bar loop differs from live trading. The gaps are measured in shadow mode (PLAN Q4), not corrected; the lifecycle gate (PR 69) and the confidence label (D132) read the codes.
 - **Source:** PLAN Q4; audit 2026-10-22 N9, G32, N8.
-- **PR:** 12, 61
-- **Verification:** CONF `known_gaps_listed`, PBT `backtest.deterministic`
+- **PR:** 12, 61, 62
+- **Verification:** CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded`
 - **Acceptance:**
-  - Property: the codes of the table below equal `engine.backtest.KNOWN_GAPS`, in order, and every run's metrics carry that list. Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
+  - Property: the codes of the table below equal `engine.backtest.KNOWN_GAPS`, in order, and every run's metrics carry that list (a `touch` run appends `entry_fills_on_touch`). Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
 
 | Code | What the loop does instead of live | Closed or measured by |
 |---|---|---|
@@ -237,7 +241,6 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 | `episodic_pivot_not_backtested` | the EP playbook's rows are skipped | PR 70 |
 | `close_exits_at_official_close` | close exits fill at the official close, not the 15:25 price | shadow (PR 40) |
 | `kill_switches_not_simulated` | kill switches never trip (their re-arm is manual); the exposure ladder is simulated | none (by design) |
-| `entry_fills_on_touch` | an entry fills when the high touches the level; live needs a trade at or above it | PR 62 (penetration fill) |
 | `gap_over_fills_at_open` | a gap over fills at the open; live fills at the first tick after it | shadow (PR 40) |
 | `upper_circuit_inferred_from_bar` | the upper circuit is an entry at the day's high within a tick of an NSE band's upper price (HAT-BT-025); no band table | a band loader |
 | `lower_circuit_not_modelled` | a stop on a locked lower band fills at min(open, stop) | PR 64 |
@@ -245,4 +248,5 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 | `suspension_not_marked` | a position with no bar for some sessions that is not delisted is carried at its last close | PR 64 |
 | `entry_day_low_estimated` | without `bars_5m` the pre-break low is the adr20 estimate and low-of-day gap overs are skipped (HAT-BT-020) | PR 70 |
 
+- **Note (PR 62):** `entry_fills_on_touch` (a high at the level fills at the level; live needs a trade above it) left the table when the default entry rule became `penetration_1_tick` (HAT-BT-020). A run under the `touch` variant still reports it after the table's codes (`engine.backtest.TOUCH_GAP`).
 - **Note (N8):** young listings are excluded by design, not by a gap: the 52-week criteria need 252 bars and RS needs 253, so a stock listed under a year ago is never an S1 or S2 candidate, live or in the backtest. It is not a listed gap because live behaves the same way.

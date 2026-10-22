@@ -22,7 +22,12 @@ from typing import Any
 import polars as pl
 from hypothesis import strategies as st
 
-from app.hat.backtest.costs import BacktestFills, load_cost_model, parse_cost_model
+from app.hat.backtest.costs import (
+    DEFAULT_SLIPPAGE_BPS,
+    BacktestFills,
+    load_cost_model,
+    parse_cost_model,
+)
 from app.hat.data.features import compute_features
 from app.hat.engine.backtest import MarketData, RunSpec, run_backtest
 from app.hat.engine.portfolio.universe import Interval, members_on
@@ -282,13 +287,18 @@ def fixture_market(text: str) -> MarketData:
 
 
 def golden_document() -> dict[str, Any]:
-    """S1 and S2 over the last sessions of the committed fixture market: each seed's metrics,
-    trades (as text), and signal and watchlist counts (HAT-BT-051)."""
+    """S1 and S2 over the last sessions of the committed fixture market under the default fill
+    conventions: each seed's metrics, trades (as text), and signal and watchlist counts
+    (HAT-BT-051)."""
     data = fixture_market((FIXTURES / "backtest_market.csv").read_text(encoding="utf-8"))
     found: dict[str, Any] = {}
     for name in GOLDEN_SEEDS:
         cfg = seed_config(name)
-        result = run_backtest(spec(cfg, data.days, start=len(data.days) - GOLDEN_SESSIONS), data)
+        start = len(data.days) - GOLDEN_SESSIONS
+        # the default conventions (PR 62): penetration fill, 20 bps, the default cost model
+        result = run_backtest(
+            spec(cfg, data.days, slippage=DEFAULT_SLIPPAGE_BPS, start=start), data
+        )
         found[name] = {
             "metrics": result.metrics,
             "trades": [

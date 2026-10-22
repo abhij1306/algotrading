@@ -15,11 +15,13 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.survivorship_free` An instrument that stops trading at session x is scanned as a member before x, no fill of it is dated after its last bar, and every position in it closes no later than that bar (HAT-BT-012). Harm: dead stocks vanish from the test and returns are overstated.
 - `PBT backtest.market_point_in_time` `load_market` reads bars and index closes up to the period's end only; an instrument delisted by the end has its last bar on or before its delisting as its last traded session, one delisted later has none; industry classifications come with their effective dates and `industry_on` gives the one in force on each day (HAT-BT-011, HAT-BT-012). Harm: a run closes a live stock as delisted, or a later reclassification changes an earlier industry-cap decision.
 - `PBT backtest.version_pinned` Every signal and trade carries the run's strategy and risk-policy versions, and the metrics name them (HAT-BT-013). Harm: evidence cannot be tied to the version being promoted.
-- `PBT backtest.entry_fill_proxy` An entry fills at the level when the open is at or below it and the high reaches it, at the open on a gap over, and not at all when the high stays below (HAT-BT-020). Harm: the backtest buys a gap at the level, a price the market never offered.
-- `PBT backtest.entry_fill_proxy_chase` In a run, every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at the proxy price of that level and within max chase of it, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses.
+- `PBT backtest.entry_fill_proxy` A gap over (open above the level) fills at the open under either rule; otherwise the default `penetration_1_tick` fills at the first tick-grid price above the level (level + tick on the grid, the next grid price for an off-grid adjusted level) when the high reaches it and `touch` at the level when the high reaches the level, else no entry; penetration never fills where touch does not nor below its price, and without a tick there is no penetration entry (HAT-BT-020, PR 62). Harm: the backtest buys breakouts live never sees trade, at a better price than live pays.
+- `PBT backtest.entry_fill_proxy_chase` In a run under either entry rule (drawn), every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at that rule's proxy price on the instrument's tick and within max chase of the level, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses, or ignores the rule a run asked for.
+- `PBT backtest.fill_conventions_recorded` Every run's metrics record `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `slippage_bps` (normalised), `cost_model`, `for_promotion` and `config_digest` (the canonical hash of the first six), and a `touch` run appends `entry_fills_on_touch` to `known_gaps`; a run flagged for promotion at a slippage of 0 or under `touch` is refused (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`; HAT-BT-020..022, O5, PR 62). Harm: runs under different fill conventions read as comparable evidence, or a promotion rides on perfect fills.
+- `PBT backtest.fill_conventions_recorded_digest` Two specs' `config_digest`s are equal exactly when their entry rule, slippage (20 and 20.0 bps alike, -0 and 0 alike) and cost model are (PR 62). Harm: a run under other conventions passes for a rerun, or a rerun reads as another convention.
 - `PBT backtest.stop_on_instrument_tick` Every opened entry's stop is entry x 0.95 rounded down to the instrument's NSE tick of the trade date (`data.ticks.tick_for_date` on the closes before it), with prices scaled into the 0.01 and the 0.10 slab (HAT-BT-020 design, HAT-EXEC-053). Harm: backtest stops sit on a grid the live trigger never uses, so backtest and live risk differ.
 - `PBT backtest.pre_break_low` The entry day's low before the break is the lowest low of the 5-minute bars up to the first one that reaches the level, and the low after it the lowest of the later bars (or a day low they miss); without them it is max(day low, min(open, level x (1 - adr20/100))), with the day low after the break only when lower (HAT-BT-020 design, PR 60). Harm: a low-of-day stop reads a low made after the entry.
-- `PBT backtest.entry_day_stop` Under a low-of-day stop, with and without generated 5-minute bars, every entry's stop is the live plan from the low before the break, a gap over without 5-minute bars is skipped and counted as `gap_over_no_intraday`, an entry without them needs adr20 (generated markets blank it on some dates), and an entry-day low at or below the stop exits that day at -1 R (MAE -1), while a higher one bounds the MAE (HAT-BT-020 design, PR 60). Harm: an S2 entry's stop sits at a low made after the entry, and the entry day's loss is never seen.
+- `PBT backtest.entry_day_stop` Under a low-of-day stop, with and without generated 5-minute bars, every entry's stop is the live plan from the low before the break (the break at the entry price, level + tick under penetration, PR 62), a gap over without 5-minute bars is skipped and counted as `gap_over_no_intraday`, an entry without them needs adr20 (generated markets blank it on some dates), and an entry-day low at or below the stop exits that day at -1 R (MAE -1), while a higher one bounds the MAE (HAT-BT-020 design, PR 60). Harm: an S2 entry's stop sits at a low made after the entry, and the entry day's loss is never seen.
 - `PBT backtest.contraction_stop_too_wide` A contraction stop the scan left empty skips the trigger as `stop_too_wide`, never `stop_input_missing` (HAT-BT-020 design, PR 60). Harm: skip counts blame missing data for a stop the plan refused as too wide.
 - `PBT backtest.adtr_filter_applied` With an `adtr_filter`, a trigger whose stop is wider than max_multiple x ADTR(20) as of the session before (or with no ADTR, blanked at some closes) is Rejected `adtr_filter` and buys nothing; one within it is never refused for that reason (HAT-BT-025, PR 61). Harm: the backtest takes wide-stop entries live refuses.
 - `PBT backtest.upper_circuit_inferred` An entry price that is the day's high, above the previous close and within one tick of the upper price of an NSE band (2, 5, 10, 20%) above the previous close is locked; one below the high, at or below the previous close, or between bands is not; no previous close or tick is unknown (HAT-BT-025, PR 61). Harm: the backtest buys a stock locked at its upper band.
@@ -32,7 +34,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.r_and_expectancy` R = realised P&L / ((entry − initial stop) × qty), a whole exit at the initial stop without costs is −1 R, and expectancy is the mean R (HAT-BT-040). Harm: R values are inconsistent and the lifecycle and veto scores read wrong numbers.
 - `PBT backtest.metrics_bounds` Max drawdown and win rate are in [0, 1], and the metrics do not depend on the order of trades closing on the same day (HAT-BT-041). Harm: impossible values reach the lifecycle gate.
 - `PBT backtest.deterministic` Two runs of the same market, with rows, features, members and mappings shuffled, give byte-identical trade files and equal metrics JSON, including the known-gaps list (HAT-BT-050). Harm: evidence cannot be reproduced, so a promotion cannot be audited.
-- `PBT backtest.version_status_requires_run` A draft becomes `backtested` only with a completed run of that same version; a running, failed or foreign run is refused and leaves the draft untouched (HAT-BT-061). Harm: a version is promoted on a run that never finished, or on another version's evidence.
+- `PBT backtest.version_status_requires_run` A draft becomes `backtested` only with a completed run of that same version flagged for promotion (`metrics.for_promotion`, PR 62); a running, failed, foreign or unflagged run is refused and leaves the draft untouched (HAT-BT-061). Harm: a version is promoted on a run that never finished, on another version's evidence, or on perfect fills.
 - `CONF backtest.backtest_run_columns` `hat_backtest_run` has non-null pinned versions, period, snapshot, status, metrics and family key; trades go to `backtests/run_id=<id>/trades.parquet` with the 09 §3 columns; the statuses are `running`, `completed`, `failed` (HAT-BT-032). Harm: a run cannot be traced to its inputs or its trades file.
 - `CONF backtest.known_gaps_listed` Spec 09 §7's gap table (HAT-BT-070) lists exactly `KNOWN_GAPS`, in order, and the golden runs report that list (PR 61). Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
 - `CONF backtest.backtest_golden_replay` The committed fixture market (`tests/hat/fixtures/backtest_market.csv`) run through S1 and S2 reproduces `tests/hat/fixtures/backtest_golden.json` exactly (HAT-BT-051). Harm: a silent engine change shifts every sleeve's evidence.
@@ -53,6 +55,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.family_key` Two runs share a family key iff they share strategy and universe, whatever their version or period (HAT-BT-031). Harm: a new version escapes the trial penalty.
 - `PBT dsr.evidence_current_trials` The lifecycle's evidence is the newest completed run of the live version with the DSR deflated by the family's trials and Sharpe variance now, later failed runs and other versions counted; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the gate on a stale trial count.
 - `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force when it is read (now for the lifecycle, the request's instant for the risk-increase gate): a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: a gate is passed on a run of a rule that is not live.
+- `PBT dsr.evidence_promoted_only` The sleeve's evidence, for the lifecycle and the risk-increase gate, is its newest completed run flagged for promotion (`metrics.for_promotion`); a sensitivity run or one recorded before the flag is skipped, and with none there is no evidence (HAT-BT-060, O5, PR 62). Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
 - `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
 
 ## Run
@@ -113,10 +116,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `87ecb721a998a1fe910f0fd74a9737ba4db631996c214b537a5644cf277f866f`
+Covered digest: `60fcddd4b886308681e278d27604d5361d584a86bfa0ccf3596467c9987bbfca`
 
 ## Scope changes
 
+- PR 62 (G08, G09, G34, N14; O5): the fill conventions are pessimistic by default and recorded. `fills.entry_fill` takes the instrument's tick and a rule: `penetration_1_tick` (default; the high must reach the first tick-grid price above the level, and the fill is that price: level + tick on the grid, the next grid price for an off-grid adjusted level) or `touch` (the PR 12 rule, `RunSpec.entry_fill_rule`, `--entry-fill touch`). The tick is read only for a penetration from below (open at or under the level, high above it); without one that day skips as `stop_input_missing`. The entry-day split breaks at the entry price. `costs.DEFAULT_SLIPPAGE_BPS` = 20 is the default of the command line and `backtest_bot`. `engine.backtest.check_conventions` (called by `backtest_bot` before recording and by `run_backtest`) refuses an unknown rule, and a run flagged for promotion (`RunSpec.for_promotion`, `--for-promotion`) at 0 bps or under `touch`. `publish_version` takes only a run whose metrics say `for_promotion: true`, and `runs._latest_run` (the lifecycle's and the risk-increase gate's evidence) reads only such runs (code review of PR 62: a sensitivity run must not become the evidence). Metrics gain `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `for_promotion` and `config_digest`; `slippage_bps` is normalised (20.0 and -0 record as 20 and 0). `entry_fills_on_touch` left `KNOWN_GAPS` (a `touch` run reports it as `TOUCH_GAP`). The monotone-rule-stack assumption of `first_trigger` is documented (09 HAT-BT-021, N14). The golden now replays the defaults (penetration, 20 bps): S1's entry 2393.98 to 2398.788 (the grid price 2394.00 on the 0.10 tick, plus 20 bps), `expectancy_r` 8.0036 to 7.5884, `net_pnl` 9938.51 to 9860.77; S2's entries 837.33/838.34 to 839.0247/840.0267 (837.35/838.35 on the 0.05 tick, plus 20 bps), `net_pnl` -3047.66 to -3919.47, `expectancy_r` -1.2216 to -1.2396; both gain the six new metric keys and lose `entry_fills_on_touch` from `known_gaps`.
 - PR 58: the loop reads the per-instrument cooldown (HAT-RISK-036) through `trades.open_entry`, as live does; `engine.backtest.with_cooldown` and `--cooldown-sessions` (`runs.backtest_bot(cooldown_sessions=)`) replace N in the run's copy of the policy, refused as `backtest_bad_cooldown` outside [0, 250], and every run records `metrics.cooldown_sessions`; `runs.backtest_evidence` (`_latest_run`) reads only runs made under the cooldown in force (code review of PR 58: a sweep run must not become the sleeve's evidence). The golden gained that key (0) only; no trade changed.
 - PR 61: the loop runs the playbook's entry filters at each trigger through `trigger.evaluate_entry_filters` (moved out of `trigger.plan_entry`, behaviour unchanged): `adtr_filter` on the planned stop with ADTR(20) as of the session before, and `max_chase` with the upper circuit inferred from the entry price and the bar (`upper_circuit_locked`: the day's high, above the previous close, within a tick of an NSE band's upper price); a failure is a Rejected signal with the filter's type, counted in `metrics.rejections`. `KNOWN_GAPS` grew from 4 to 11 codes (09 §7, HAT-BT-070). The golden was regenerated: S2's 2025-07-08 trade (entry 639.09, stop 612.60, width 26.49 against 1.0 x ADTR 24.92) is now Rejected `adtr_filter`, so S2 has one trade fewer (`net_pnl` -4358.17 to -3047.66, `avg_loss_r` -1.165 to -1.222); S1 and S2 gain the seven new gap codes and S2 `rejections: {adtr_filter: 1}`.
 - PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`; an adr20 of 0 is a value, not a gap), the low after the break can stop the trade out on the entry day (recorded at 09:45, after the 09:30 entry) and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
@@ -255,6 +259,37 @@ tests/hat/properties/test_backtest.py:170: in test_entry_fill_proxy
 E   AssertionError: assert Decimal('1') == Decimal('1.01')
 ```
 
+Break: (PR 62) in `backend/app/hat/backtest/fills.py`: the penetration rule fills at the level (a touch), not the first grid price above it.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:230: in test_entry_fill_proxy
+    assert pen == (above if high >= above else None)
+E   AssertionError: assert Decimal('10') == Decimal('10.05')
+E   (note: 4 other explicit examples also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_entry_fill_proxy(
+E       open_=Decimal('10'),
+E       high=Decimal('12'),
+E       level=Decimal('10'),
+E       tick=Decimal('0.05'),
+E   )
+```
+
+Break: (PR 62) in `backend/app/hat/backtest/fills.py`: an off-grid level is penetrated at level + tick, not at the next grid price above it.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:230: in test_entry_fill_proxy
+    assert pen == (above if high >= above else None)
+E   AssertionError: assert None == Decimal('12.05')
+E   Failing explicit example: test_entry_fill_proxy(
+E       open_=Decimal('10'),
+E       high=Decimal('12.05'),
+E       level=Decimal('12.01'),
+E       tick=Decimal('0.05'),
+E   )
+```
+
 ### PBT backtest.entry_fill_proxy_chase
 
 Break: in `backend/app/hat/engine/backtest.py`: the risk decision gets the fill as the trigger level, so max chase never bites.
@@ -264,6 +299,118 @@ tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:209: in test_entry_fill_proxy_chase
     assert signal.trigger_price == level  # the signal records the level it broke
 E   AssertionError: assert Decimal('175.3800') == Decimal('172.9800')
+```
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: the loop ignores the run's entry fill rule (always penetration), so a `touch` run drops its non-gap triggers.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:276: in test_entry_fill_proxy_chase
+    assert triggered == len(result.signals) + skipped
+E   AssertionError: assert 13 == (0 + 0)
+E    +  where 0 = len(())
+E    +    where () = BacktestResult(trades=(), equity=((datetime.date(2025, 2, 4), Decimal('1000000')), (datetime.date(2025, 2, 5), Decimal [cut]est': 'd1b214f31fc87c65817249261ffb6ac4445cef531aa9723ff106668f26869edc', 'skips': {} [cut]
+E   Failing test case: test_entry_fill_proxy_chase(
+E       paths={'00000000-0000-0000-0000-000000001000': [(80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+```
+
+### PBT backtest.fill_conventions_recorded
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: a run flagged for promotion runs at a slippage of 0.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:811: in test_fill_conventions_recorded
+    with pytest.raises(BacktestError, match="backtest_promotion_(without_slippage|on_touch)"):
+E   Failed: DID NOT RAISE BacktestError
+E   Failing explicit example: test_fill_conventions_recorded(
+E       paths={'00000000-0000-0000-0000-000000001000': [(100.0,
+E          101.0,
+E          99.0,
+E          100.0),
+E         (100.0, 101.0, 99.0, 100.0),
+E         (100.0, 101.0, 99.0, 100.0),
+```
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: a run flagged for promotion runs under `touch`.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:811: in test_fill_conventions_recorded
+    with pytest.raises(BacktestError, match="backtest_promotion_(without_slippage|on_touch)"):
+E   Failed: DID NOT RAISE BacktestError
+E   Failing explicit example: test_fill_conventions_recorded(
+E       paths={'00000000-0000-0000-0000-000000001000': [(100.0,
+E          101.0,
+E          99.0,
+E          100.0),
+E         (100.0, 101.0, 99.0, 100.0),
+E         (100.0, 101.0, 99.0, 100.0),
+```
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: the metrics record `penetration_1_tick` whatever rule the run used.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:823: in test_fill_conventions_recorded
+    assert {k: metrics[k] for k in recorded} == recorded
+E   AssertionError: assert {'fill_path': [cut]l_break',  [cut]} == {'fill_path': [cut]l_break',  [cut]}
+E     Differing items:
+E     {'entry_fill_rule': 'penetration_1_tick'} != {'entry_fill_rule': 'touch'}
+E       {
+E           'fill_path': 'open_low_high_close',
+E     -     'entry_fill_rule': 'touch',
+E     ?                           ^ ^
+E     +     'entry_fill_rule': 'penetration_1_tick',
+```
+
+### PBT backtest.fill_conventions_recorded_digest
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: `config_digest` leaves the slippage out.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:844: in test_fill_conventions_recorded_digest
+    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+E   AssertionError: assert ('340f4ea148ee [cut]4efad28dd8de1' == '340f4ea148ee [cut]4efad28dd8de1'
+E       fad28dd8de1) is False
+E   Failing test case: test_fill_conventions_recorded_digest(
+E       a=('penetration_1_tick', Decimal('0'), 'zero'),
+E       b=('penetration_1_tick', Decimal('5'), 'zero'),
+E   )
+```
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: the slippage is recorded as given, not normalised (20.0 and -0 differ from 20 and 0).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:844: in test_fill_conventions_recorded_digest
+    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+E   AssertionError: assert ('d3d82e254f62 [cut]83142de5bb92d' == '115a6c41c730 [cut]e77e5ded2b9ee'
+E     - 115a6c41c7305046597025e10bb4eb3cbef68325886c1c1a187e77e5ded2b9ee
+E     + d3d82e254f62e2720a04a2cf62161163026156ba8799ab73d6183142de5bb92d) is True
+E   Failing test case: test_fill_conventions_recorded_digest(
+E       a=('penetration_1_tick', Decimal('0'), 'zero'),
+E       b=('penetration_1_tick', Decimal('-0'), 'zero'),
+E   )
+```
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: the slippage is normalised but its sign kept, so -0 records apart from 0.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:844: in test_fill_conventions_recorded_digest
+    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+E   AssertionError: assert ('d3d82e254f62 [cut]83142de5bb92d' == '115a6c41c730 [cut]e77e5ded2b9ee'
+E     - 115a6c41c7305046597025e10bb4eb3cbef68325886c1c1a187e77e5ded2b9ee
+E     + d3d82e254f62e2720a04a2cf62161163026156ba8799ab73d6183142de5bb92d) is True
+E   Failing test case: test_fill_conventions_recorded_digest(
+E       a=('penetration_1_tick', Decimal('0'), 'zero'),
+E       b=('penetration_1_tick', Decimal('-0'), 'zero'),
+E   )
 ```
 
 ### PBT backtest.stop_on_instrument_tick
@@ -360,6 +507,22 @@ tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:374: in test_entry_day_stop
     assert outcome == (day, "hard_stop", -1, -1)
 E   AssertionError: assert (datetime.dat....7777780000')) == (datetime.dat...stop', -1, -1)
+```
+
+Break: (PR 62) in `backend/app/hat/engine/backtest.py`: the entry day breaks at the level, not at the entry price.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:417: in test_entry_day_stop
+    assert signal.stop_price == low_of_day(entry, [before], 1, _tick(data, iid, day)).stop
+E   AssertionError: assert Decimal('129.4600') == Decimal('129.47')
+E    +  where Decimal('129.4600') = SignalRow(trade_date=datetime.date(2025, 2, 12), playbook='default', instrument_id='00000000-0000-0000-0000-0000000010 [cut]n_id=UUID('00000000-0000-7000-8000-0000000000b1'), risk_policy_version [cut]
+E    +  and   Decimal('129.47') = StopPlan(stop=Decimal('129.47'), skip=None).stop
+E    +    where StopPlan(stop=Decimal('129.47'), skip=None) = low_of_day(Decimal('130.60'), [Decimal('129.4872880')], 1, Decimal('0.01'))
+E    +      where Decimal('0.01') = _tick(MarketData(days=(datetime.date(2025, 1, 6), datetime.date(2025, 1, 7), datetime.date(2025, 1, 8), datetime.date(2025,  [cut]0000000-0000-0000-0000-000000001001': 'EQ', '00000000-0000-0000- [cut]
+E   Failing test case: test_entry_day_stop(
+E       paths={'00000000-0000-0000-0000-000000001000': [(150.53,
+E          150.53,
 ```
 
 ### PBT backtest.contraction_stop_too_wide
@@ -563,6 +726,20 @@ tests/hat/properties/test_backtest.py:369: in test_version_status_requires_run
 tests/hat/properties/test_backtest.py:400: in test_version_status_requires_run
     with pytest.raises(VersionError):
          ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+```
+
+Break: (PR 62) in `backend/app/hat/engine/strategy/versions.py`: `publish_version` takes a run not flagged for promotion.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:887: in test_version_status_requires_run
+    with pytest.raises(VersionError):
+E   Failed: DID NOT RAISE VersionError
+E   Failing explicit example: test_version_status_requires_run(
+E       status='completed',
+E       same_version=True,
+E       promoted=False,
+E   )
 ```
 
 ### CONF backtest.backtest_run_columns
@@ -875,6 +1052,22 @@ tests/hat/properties/test_dsr.py:312: in test_evidence_cooldown_in_force
 E   AssertionError: assert {'live_trades [cut]cimal('0.84')} == {'live_trades [cut]cimal('0.42')}
 E     Differing items:
 E     {'backtest_expectancy_r': Decimal('0.84')} != {'backtest_expectancy_r': Decimal('0.42')}
+```
+
+### PBT dsr.evidence_promoted_only
+
+Break: (PR 62) in `backend/app/hat/backtest/runs.py`: the evidence reads the newest completed run whether or not it is flagged for promotion.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:350: in test_evidence_promoted_only
+    assert facts.trades == (want[-1] if want else 0)
+E   AssertionError: assert 1 == 0
+E    +  where 1 = BacktestFacts(dsr_prob=Decimal('0.778222'), trades=1, expectancy=Decimal('1'), trials=1).trades
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_evidence_promoted_only(
+E       flags=[None],
+E   )
 ```
 
 ### PBT dsr.gate_evidence
