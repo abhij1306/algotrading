@@ -53,17 +53,18 @@ def session_token_valid() -> bool:
 
 def fyers_history() -> Callable[[dict[str, str]], Mapping[str, object]] | None:
     """The SDK's `history` request on HAT's Fyers session, or None when logged out or the token
-    is refused (a network call: never on the event loop)."""
+    is refused (a network call: never on the event loop). Each request asks the session for its
+    current model, so a re-login during a long download is picked up and an expired token is
+    never used."""
     from app.hat.execution.fyers_session import get_fyers_session
 
-    session = get_fyers_session()
-    if not session.validate_token():  # also builds a model the session could not at startup
-        return None
-    model = session.fyers
-    if model is None:
+    if not get_fyers_session().validate_token():  # also builds a model missing at startup
         return None
 
     def history(request: dict[str, str]) -> Mapping[str, object]:
+        model = get_fyers_session().fyers
+        if model is None:
+            raise RuntimeError("logged out")  # the loader reports it as history_failed
         return model.history(data=request)
 
     return history

@@ -34,7 +34,8 @@ import sys
 import time
 import uuid
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -604,6 +605,28 @@ def history_universe(session: Session) -> tuple[dict[str, uuid.UUID], int]:
     return mapped, sum(1 for _, symbol in rows if symbol is None)
 
 
+@contextmanager
+def _run_lock(path: Path) -> Iterator[None]:
+    """One download at a time per data root: a second run would share the progress file, the
+    call budget and the day partitions. The OS lock goes with the process, so a crash leaves
+    nothing to clean up."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        try:
+            if sys.platform == "win32":
+                import msvcrt  # noqa: PLC0415
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl  # noqa: PLC0415
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise MinuteHistoryError("history_already_running") from exc
+        yield
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m app.hat.data.minute_history", description=__doc__)
     defaults = HistoryLimits()
@@ -644,13 +667,23 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
         per_day=args.per_day,
         plan_days=args.plan_days,
     )
-    from app.database import db_session_scope
-
     from ..settings import load_settings
     from .provider.fyers_websocket import fyers_history
 
     logging.basicConfig(level=logging.INFO)
     root = load_settings().data_root
+    with _run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
+        return _download(args, limits, root, fyers_history)
+
+
+def _download(
+    args: argparse.Namespace,
+    limits: HistoryLimits,
+    root: Path,
+    fyers_history: Callable[[], HistoryCall | None],
+) -> int:  # pragma: no cover - real Fyers and DB
+    from app.database import db_session_scope
+
     progress = Progress.load(root / PROGRESS_FILE)
     history = fyers_history()
     if history is None:
