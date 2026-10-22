@@ -105,10 +105,11 @@ logger = logging.getLogger(__name__)
 CODE_INVALID_RESPONSE = "broker_response_invalid"
 CODE_OK = "ok"
 
-# Fyers documents a 1-20 alphanumeric orderTag; GTT delivery is unverified on a live account
-# (HAT-BRK-091, PLAN Q8): the owner flips `gtt_delivery` after a live verification.
+# Fyers documents a 1-20 alphanumeric orderTag. GTT for delivery was verified on the live account
+# on 2026-10-22 (HAT-BRK-091, PLAN Q8): a single-leg CNC sell GTT was placed (with and without a
+# tag), read in the GTT book, modified and cancelled (`tests/hat/fixtures/fyers_live_writes.json`).
 FYERS_CAPABILITIES = Capabilities(
-    gtt_delivery=False,
+    gtt_delivery=True,
     tag_max_len=TAG_LENGTH,
     tag_alphabet="A-Za-z0-9",
     order_types=tuple(t.value for t in OrderType),

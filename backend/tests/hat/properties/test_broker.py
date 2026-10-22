@@ -71,12 +71,18 @@ def test_confirm_and_auto_need_gtt(mode: str, status: str, capabilities: dict) -
         assert request_mode(mode, account_status=status, capabilities=capabilities) == mode
 
 
-def test_the_fyers_adapter_never_unlocks_confirm_or_auto() -> None:
-    """HAT-BRK-091 with HAT-EXEC-012: with the capabilities the adapter reports, no mode but
-    shadow is effective."""
+@given(status=st.sampled_from(["active", "pending", "failed", "suspended"]))
+def test_the_fyers_adapter_unlocks_modes_on_an_active_account(status: str) -> None:
+    """HAT-BRK-091 with HAT-EXEC-012: the adapter reports GTT for delivery (verified live), so
+    with its capabilities every mode runs as asked on an active account, and only shadow on any
+    other; without GTT for delivery only shadow runs anywhere."""
     capabilities = FyersHatBroker(FakeBroker()).capabilities().to_json()
+    assert capabilities["gtt_delivery"] is True
     for mode in MODES:
-        assert effective_mode(mode, account_status="active", capabilities=capabilities) == "shadow"
+        expected = mode if status == "active" else "shadow"
+        assert effective_mode(mode, account_status=status, capabilities=capabilities) == expected
+        off = {**capabilities, "gtt_delivery": False}
+        assert effective_mode(mode, account_status=status, capabilities=off) == "shadow"
 
 
 reads = st.sampled_from(["funds", "positions", "holdings"])

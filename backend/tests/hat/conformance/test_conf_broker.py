@@ -120,15 +120,15 @@ def test_brk__import_boundary() -> None:
 
 
 def test_brk__fyers_capabilities() -> None:
-    """HAT-BRK-091: in the MVP build the adapter reports tag length 20, a static IP requirement
-    and no GTT for delivery (until the owner verifies it on a live account)."""
+    """HAT-BRK-091: the adapter reports tag length 20, a static IP requirement and GTT for
+    delivery (verified on the live account on 2026-10-22, `fyers_live_writes.json`)."""
     capabilities = FyersHatBroker(broker=object()).capabilities()  # type: ignore[arg-type]
     assert capabilities == FYERS_CAPABILITIES
     assert capabilities.tag_max_len == 20
     assert capabilities.static_ip_required is True
-    assert capabilities.gtt_delivery is False
+    assert capabilities.gtt_delivery is True
     assert capabilities.products == ("CNC",)
-    assert capabilities.to_json()["gtt_delivery"] is False
+    assert capabilities.to_json()["gtt_delivery"] is True
 
 
 # The only HAT modules that may import the Fyers SDK, each with the one SDK module it may import
