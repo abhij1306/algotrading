@@ -34,6 +34,7 @@ from app.hat.data.bhavcopy import (
 )
 from app.hat.data.corporate_actions import LoadReport
 from app.hat.data.history_build import (
+    CODE_INDEX_ARCHIVE,
     INDEX_NAMES,
     ArchiveIndexSource,
     BuildReport,
@@ -49,7 +50,7 @@ from app.hat.data.history_build import (
     mcp_index_source,
     run_history_build,
 )
-from app.hat.data.mcp_client import CODE_BAD_RESPONSE, McpClient, McpError
+from app.hat.data.mcp_client import CODE_BAD_RESPONSE, CODE_TIMEOUT, McpClient, McpError
 from app.hat.data.store import (
     DATASET_BARS,
     BarRow,
@@ -398,20 +399,28 @@ def _bars(store: DataStore, days: set[date]) -> None:
         {n: st.one_of(st.none(), st.sampled_from(FILL_DAYS)) for n in INDEX_NAMES}
     ),
     files=st.dictionaries(
-        st.sampled_from(FILL_DAYS), st.sampled_from(["ok", "old_names", "not_found", "error"])
+        st.sampled_from(FILL_DAYS),
+        st.sampled_from(["ok", "old_names", "not_found", "error", "garbage"]),
     ),
     usual=st.sampled_from(["ok", "old_names"]),
+    broken=st.sets(st.sampled_from(INDEX_NAMES)),
 )
 @settings(max_examples=40, deadline=None)
 def test_archive_fills_before_mcp_depth(
-    bars: set[date], depths: dict[str, date | None], files: dict[date, str], usual: str
+    bars: set[date],
+    depths: dict[str, date | None],
+    files: dict[date, str],
+    usual: str,
+    broken: set[str],
 ) -> None:
     """PR 44: with the MCP serving each index only from its depth (or not at all), the daily
     `ind_close_all` archive fills every earlier day that has bars, under today's index names
     whatever the file calls them, and the MCP's rows win from its depth on. Only a day whose
     file NSE lacks or failed to send stays missing. Each file is fetched once for all indices,
     requests are spaced by the interval, and a rerun reads stored files from disk and asks
-    again only for the days that failed."""
+    again only for the days that failed. A failed fetch, or an answer that is no index file
+    (never kept), fails the indices that needed that day; an MCP failing after its first rows
+    still gets the archive fill and is reported with its own code."""
     far = date.max
     first = {n: min((d for d in bars if d >= (depths[n] or far)), default=far) for n in depths}
 
@@ -419,6 +428,8 @@ def test_archive_fills_before_mcp_depth(
         for day in sorted(d for d in bars if d >= first[name] and start <= d <= end):
             v = Decimal(day.toordinal())
             yield IndexPoint(day, IndexRow(name, v, v, v, v))
+        if name in broken:
+            raise McpError(CODE_TIMEOUT)
 
     now = [0.0]
     asked: list[tuple[date, float]] = []
@@ -430,22 +441,31 @@ def test_archive_fills_before_mcp_depth(
         kind = files.get(day, usual)
         if kind in ("not_found", "error"):
             return FetchResult(kind)  # type: ignore[arg-type]
+        if kind == "garbage":
+            return FetchResult("ok", b"<html>Access Denied</html>")
         return FetchResult("ok", _archive_csv(day, kind == "old_names"))
 
     def sleep(seconds: float) -> None:
         now[0] += seconds
 
     pacing = Pacing(interval=2.0, clock=lambda: now[0], sleep=sleep)
-    failed = {d for d, kind in files.items() if kind in ("not_found", "error")}
+    errors = {d for d, kind in files.items() if kind in ("error", "garbage")}
+    failed = errors | {d for d, kind in files.items() if kind == "not_found"}
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
         _bars(store, bars)
         archive = ArchiveIndexSource(store, fetch, pacing)
-        load_index_history(
+        report = load_index_history(
             store, archive_fill_source(primary, archive), FILL_DAYS[0], FILL_DAYS[-1]
         )
+        assert report.failed == {
+            n: CODE_TIMEOUT if n in broken else CODE_INDEX_ARCHIVE
+            for n in INDEX_NAMES
+            if n in broken or any(d < first[n] for d in bars & errors)
+        }
         before = max(first.values())
         assert sorted(d for d, _t in asked) == sorted(d for d in bars if d < before)
+        assert all(t >= 2.0 for _d, t in asked[:1])  # the first request waits its turn too
         assert all(b - a >= 2.0 for (_d, a), (_e, b) in itertools.pairwise(asked))
         missing = index_coverage(store, sorted(bars), dict.fromkeys(INDEX_NAMES, FILL_DAYS[0]))
         for name in INDEX_NAMES:

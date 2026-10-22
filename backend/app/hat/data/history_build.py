@@ -36,6 +36,7 @@ from typing import Protocol
 
 from sqlalchemy import select
 
+from ..errors import HatError
 from ..ids import uuid7
 from ..ops.jobs import JobError, JobResult
 from ..settings import operator_settings, process_env
@@ -243,6 +244,16 @@ def parse_index_archive_csv(
     return points
 
 
+CODE_INDEX_ARCHIVE = "index_archive_error"
+
+
+class IndexArchiveError(HatError):
+    """An index archive file could not be fetched or held no index row; raised after the rows
+    that were available, so the index keeps them and is reported failed."""
+
+    code = CODE_INDEX_ARCHIVE
+
+
 def index_archive_name(day: date) -> str:
     return f"ind_close_all_{day:%d%m%Y}.csv"
 
@@ -250,7 +261,9 @@ def index_archive_name(day: date) -> str:
 class ArchiveIndexSource:
     """Index rows from NSE's daily `ind_close_all_DDMMYYYY.csv`, for the days that have bars.
     One file serves every index: it is fetched at most once per run, paced like the bhavcopy
-    downloader, and kept untouched under `raw/` so a later run reads it from disk."""
+    downloader, and kept untouched under `raw/` so a later run reads it from disk. A day NSE has
+    no file for stays missing (reported by the coverage); a failed fetch, or an answer with no
+    index row (never kept, so the next run asks again), fails the indices that needed it."""
 
     def __init__(
         self, store: DataStore, fetch: Fetcher, pacing: Pacing, names: Collection[str] = INDEX_NAMES
@@ -260,6 +273,7 @@ class ArchiveIndexSource:
         self._pacing = pacing
         self._names = names
         self._points: dict[date, list[IndexPoint]] = {}
+        self._bar_days: list[date] | None = None
         self._last_start: float | None = None
         self.requested: list[date] = []
         self.not_found: list[date] = []
@@ -267,46 +281,70 @@ class ArchiveIndexSource:
 
     def __call__(self, name: str, start: date, end: date) -> Iterable[IndexPoint]:
         wanted = name.upper()
-        for day in self._store.days(DATASET_BARS):
-            if start <= day <= end:
-                yield from (p for p in self._day(day) if p.row.index_name == wanted)
+        if self._bar_days is None:
+            self._bar_days = self._store.days(DATASET_BARS)
+        days = [d for d in self._bar_days if start <= d <= end]
+        for day in days:
+            yield from (p for p in self._day(day) if p.row.index_name == wanted)
+        if any(day in self.errors for day in days):
+            raise IndexArchiveError(CODE_INDEX_ARCHIVE)
 
     def _day(self, day: date) -> list[IndexPoint]:
         if day not in self._points:
-            text = self._text(day)
-            self._points[day] = parse_index_archive_csv(text, day, self._names) if text else []
+            self._points[day] = self._read(day)
         return self._points[day]
 
-    def _text(self, day: date) -> str | None:
+    def _read(self, day: date) -> list[IndexPoint]:
         name = index_archive_name(day)
-        if not self._store.raw_exists(name):
-            self._wait_turn()
-            self.requested.append(day)
-            result = self._fetch(INDEX_ARCHIVE_URL + name)
-            if result.status != "ok":
-                (self.not_found if result.status == "not_found" else self.errors).append(day)
-                return None
-            self._store.store_raw(name, result.data)
-        return self._store.read_raw(name).decode("utf-8-sig", errors="replace")
+        if self._store.raw_exists(name):
+            return self._parse(self._store.read_raw(name), day)
+        self._wait_turn()
+        self.requested.append(day)
+        result = self._fetch(INDEX_ARCHIVE_URL + name)
+        if result.status == "not_found":
+            self.not_found.append(day)
+            return []
+        points = self._parse(result.data, day) if result.status == "ok" else []
+        if not points:  # an error, or an answer that is no index file (a block page, a cut body)
+            self.errors.append(day)
+            return []
+        self._store.store_raw(name, result.data)
+        return points
+
+    def _parse(self, data: bytes, day: date) -> list[IndexPoint]:
+        return parse_index_archive_csv(data.decode("utf-8-sig", errors="replace"), day, self._names)
 
     def _wait_turn(self) -> None:
-        if self._last_start is not None:
-            remaining = self._pacing.interval - (self._pacing.clock() - self._last_start)
-            if remaining > 0:
-                self._pacing.sleep(remaining)
+        # the first request waits too: the bhavcopy downloader may have just asked the same host
+        last = self._pacing.clock() if self._last_start is None else self._last_start
+        remaining = self._pacing.interval - (self._pacing.clock() - last)
+        if remaining > 0:
+            self._pacing.sleep(remaining)
         self._last_start = self._pacing.clock()
 
 
 def archive_fill_source(primary: IndexSource, archive: IndexSource) -> IndexSource:
     """The primary source (the MCP) first; the archive fills the days before its first row, or
-    the whole range when it has none."""
+    the whole range when it has none. A failure of either is raised after every row both could
+    give (the primary's first), so the index keeps them and is still reported failed."""
 
     def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
-        points = list(primary(name, start, end))
+        points: list[IndexPoint] = []
+        failure: Exception | None = None
+        try:
+            for point in primary(name, start, end):
+                points.append(point)
+        except Exception as exc:  # re-raised below, after the archive fill
+            failure = exc
         yield from points
         first = min((p.day for p in points), default=end + timedelta(days=1))
         if first > start:
-            yield from archive(name, start, first - timedelta(days=1))
+            try:
+                yield from archive(name, start, first - timedelta(days=1))
+            except Exception as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
 
     return source
 
@@ -335,7 +373,8 @@ def load_index_history(
             for point in source(name, start, end):
                 by_day[point.day][point.row.index_name] = point.row
         except Exception as exc:  # one index never stops the others, validation or the report
-            report.failed[name] = getattr(exc, "code", "index_source_failed")
+            code = getattr(exc, "code", None)
+            report.failed[name] = code if isinstance(code, str) else "index_source_failed"
             logger.warning("index history %s failed: %s", name, report.failed[name])
     for day in sorted(by_day):
         store.upsert_index(day, list(by_day[day].values()))

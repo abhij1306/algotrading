@@ -54,7 +54,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT history_build.job_fails_on_any_gap_or_failed_download` The job body succeeds only when every weekday is stored or an explained holiday: a failed download, a missing file that is no holiday or a file with no usable rows raises `history_incomplete`. Harm: a scheduled build reports success with holes in history.
 - `PBT history_build.mcp_index_source_chains` Chained `get_index_history` chunks yield every present day in range exactly once and nothing outside. Harm: index history with holes or repeats.
 - `PBT history_build.mcp_index_source_ends_at_depth` A server keeping history only from some day answers an older window with its "No data for index" error: the chain ends there, having yielded every present day from that depth in range, and asks nothing more; any other `error` answer raises `mcp_bad_response`. Harm: the full-history build aborts after hours of downloads with no index, validation or report (the 22 Oct 2026 run), or a real outage reads as the start of history.
-- `PBT history_build.archive_fills_before_mcp_depth` With the MCP serving each index from its own depth (or not at all), NSE's daily `ind_close_all` archive fills every earlier day that has bars, under today's names whatever the file calls the index, and the MCP's rows win from its depth on; only days whose file is missing or failed stay missing. Each file is fetched once for all indices, requests are spaced by the interval, and a rerun reads kept files from disk and asks again only for failed days. Harm: 5-year backtests run the regime and RS benchmark on 2 years of index history, or the archive is hammered.
+- `PBT history_build.archive_fills_before_mcp_depth` With the MCP serving each index from its own depth (or not at all), NSE's daily `ind_close_all` archive fills every earlier day that has bars, under today's names whatever the file calls the index, and the MCP's rows win from its depth on; only days whose file is missing or failed stay missing. A failed fetch, or a 200 answer with no index row (never kept), fails the indices that needed that day (`index_archive_error`); an MCP failing after its first rows still gets the archive fill and is reported with its own code. Each file is fetched once for all indices, every request (the first too) waits the interval, and a rerun reads kept files from disk and asks again only for failed days. Harm: 5-year backtests run the regime and RS benchmark on 2 years of index history, or the archive is hammered.
 - `PBT history_build.index_failure_isolated` An index whose source fails is recorded with a stable code and keeps the rows it gave; the other indices load in full, validation and the report still run, and the exit code and the job flag the run exactly when an index failed. Harm: one index's error loses the whole build's report, or a failed index passes unnoticed.
 - `PBT history_build.mcp_close_source_exact` The MCP close for a symbol-day is the row dated that day, exactly; other days, missing rows and unreadable closes give None. Harm: validation compares against a neighbouring day.
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
@@ -188,7 +188,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33 (design review item 12): the gate fills the exclusion list itself (the quarantine), so `big_moves_explained` no longer treats it as an owner-chosen input; it draws universe sizes 0 to 1100, and the end-to-end gate properties use 100 to 300 instruments (1% of fewer than 100 is no mover at all). `big_moves_end_to_end` and `quarantine_*` run 10 to 12 examples (one database and store each); `quarantine_release` runs 40 sequences of up to 14 steps over three instruments and four earlier days. A passing gate is never run again for its day (one success per job and day), so the retry of `quarantine_one_mover` is a gate failing another check (India VIX not stored) and then passing on fixed data. `quarantine_lookup` calls `Nightly._quarantine_actions` directly (the next-session lookup of `ca.adjust` needs the position and watchlist tables, and is `test_rescale.py`'s); it runs 20 examples. The gate still measures moves on raw close against `prev_close`, not on adjusted prices as the HAT-DATA-062 property words it (unchanged from PR 7; follow-up). Nothing was narrowed.
 - PR 31 (design review 2026-10-22 item 6, HAT-EXEC-144): `from_archive_csv` reports a purpose text naming a consolidation as unparsed (it was ignored as a dividend is); `corporate_actions.factor_parse_unparseable_is_reported` draws the word (split, bonus, two consolidation forms). Rights issues and demergers are still ignored by the archive path. CodeAnt round: the history build kept only the archive's records, so its unparsed rows (splits and bonuses too, since PR 5) were dropped unseen; `ActionHooks.loader` now also returns them, `BuildReport.actions_unparsed` holds them, the summary counts them and each is logged. They do not fail the build (a real archive has odd texts; the operator reads the report). Nothing was narrowed.
 
-- PR 44 (index history to 2010): the MCP keeps index history only from about Oct 2023, and the build now fills earlier days from NSE's daily `ind_close_all_DDMMYYYY.csv` (`ArchiveIndexSource`, `archive_fill_source`), which needs no MCP. Its URL and column layout and the pre-2015 names (`INDEX_ALIASES`: CNX Nifty, CNX 500 and their S&P forms) are `[A]` until the orchestrator's rerun; the properties render that assumed layout. The archive is asked only for days that have bars, so a day the bhavcopy lacks is never filled from the index file. The no-data fixture (`mcp_index_history_no_data.json`) holds only the `error` text the brief quoted: `similar_indices` and `hint` were elided there and nothing reads them. `archive_fills_before_mcp_depth` runs 40 examples over 65 weekdays with a fake clock; `index_failure_isolated` runs 30 builds of one week. Nothing was narrowed.
+- PR 44 (index history to 2010): the MCP keeps index history only from about Oct 2023, and the build now fills earlier days from NSE's daily `ind_close_all_DDMMYYYY.csv` (`ArchiveIndexSource`, `archive_fill_source`), which needs no MCP. Its URL and column layout and the pre-2015 names (`INDEX_ALIASES`: CNX Nifty, CNX 500 and their S&P forms) are `[A]` until the orchestrator's rerun; the properties render that assumed layout. The archive is asked only for days that have bars, so a day the bhavcopy lacks is never filled from the index file. The no-data fixture (`mcp_index_history_no_data.json`) holds only the `error` text the brief quoted: `similar_indices` and `hint` were elided there and nothing reads them. `archive_fills_before_mcp_depth` runs 40 examples over 65 weekdays with a fake clock; `index_failure_isolated` runs 30 builds of one week. The review round made archive fetch errors fail the index, refused to keep a 200 answer with no index row, let the archive fill after an MCP failure, and paced the first archive request (the bhavcopy downloader may have just asked the same host). A day NSE has no index file for is asked again on every run (not remembered like bhavcopy candidates; follow-up). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -613,6 +613,31 @@ Break: (PR 44) a fetched file is used but not kept (`store_raw` dropped): the re
 ```
 E   assert [datetime.date(2023, 9, 1)] == []
 E     Left contains one more item: datetime.date(2023, 9, 1)
+```
+
+Break: (PR 44 review) an MCP failure drops the archive fill (`failure = exc` to `raise exc` in `archive_fill_source`).
+
+```
+    | AssertionError: assert [] == [datetime.date(2023, 9, 1)]
+```
+
+Break: (PR 44 review) archive fetch errors fail nothing (the `if any(day in self.errors ...)` raise to `if False:`).
+
+```
+E   AssertionError: assert {} == {'NIFTY 50': ...rchive_error'}
+```
+
+Break: (PR 44 review) a 200 answer with no index row is kept (`if not points:` to `if result.status != "ok":`).
+
+```
+    | AssertionError: assert [] == [datetime.date(2023, 9, 1)]
+    | AssertionError: assert {} == {'NIFTY 50': ...rchive_error'}
+```
+
+Break: (PR 44 review) the first archive request does not wait.
+
+```
+E   assert False
 ```
 
 Break: (PR 44) unpaced requests (the `_wait_turn()` call removed).
