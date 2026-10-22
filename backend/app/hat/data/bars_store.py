@@ -136,16 +136,20 @@ class BarStore:
         return written
 
     def read_coverage(self, day: date) -> Coverage:
-        """The stored coverage of `day`; none (nothing watched from the open) when absent."""
+        """The stored coverage of `day`; none (nothing watched from the open) when absent or
+        unreadable, so a restored opening range fails closed."""
         path = self.partition(day) / COVERAGE_NAME
         if not path.is_file():
             return Coverage()
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        gap = raw.get("gap_from")
-        return Coverage(
-            frozenset(str(i) for i in raw.get("from_open", ())),
-            None if gap is None else as_utc(datetime.fromisoformat(gap)),
-        )
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            gap = raw.get("gap_from")
+            return Coverage(
+                frozenset(str(i) for i in raw.get("from_open", ())),
+                None if gap is None else as_utc(datetime.fromisoformat(gap)),
+            )
+        except (OSError, ValueError, TypeError, AttributeError):
+            return Coverage()
 
     def write_coverage(self, day: date, coverage: Coverage) -> None:
         """Merge `coverage` into the stored one: the union of the instruments, the earlier

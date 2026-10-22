@@ -91,7 +91,9 @@ class BarView(Protocol):
 
     def day_volume(self, symbol: str, day: date) -> int: ...
 
-    def day_low(self, symbol: str, day: date) -> Decimal | None: ...
+    def day_low(
+        self, symbol: str, day: date, through: datetime | None = None
+    ) -> Decimal | None: ...
 
 
 @dataclass(frozen=True)
@@ -509,7 +511,7 @@ class TriggerMonitor:
             )
             if not evaluation.fired or not self._claim(key):
                 continue
-            low = self._view.day_low(bar.symbol, day)
+            low = self._view.day_low(bar.symbol, day, bar.start)
             plan = plan_entry(candidate, ctx, evaluation.level, () if low is None else (low,))
             fired.append(Trigger(candidate, bar.final_at, evaluation, plan, ctx))
         return fired

@@ -137,7 +137,7 @@ class BarBuilder:
     _open_bars: dict[tuple[str, datetime], _OpenBar] = field(default_factory=dict)
     _opening: dict[tuple[str, date], tuple[Decimal, Decimal]] = field(default_factory=dict)
     _days: dict[tuple[str, date], _DayState] = field(default_factory=dict)
-    _lows: dict[tuple[str, date], Decimal] = field(default_factory=dict)
+    _lows: dict[tuple[str, date], list[tuple[datetime, Decimal]]] = field(default_factory=dict)
     _watched: dict[tuple[str, date], datetime] = field(default_factory=dict)
     _gap_from: dict[date, datetime] = field(default_factory=dict)
     _seq: int = 0
@@ -209,9 +209,7 @@ class BarBuilder:
         return finals
 
     def _note_low(self, bar: Bar, day: date) -> None:
-        low = self._lows.get((bar.symbol, day))
-        if low is None or bar.low < low:
-            self._lows[(bar.symbol, day)] = bar.low
+        self._lows.setdefault((bar.symbol, day), []).append((bar.start, bar.low))
 
     def mark_gap(self, since: datetime) -> None:
         """Prints from `since` on may be missing (a feed gap, a restart): for the rest of that
@@ -282,12 +280,18 @@ class BarBuilder:
             return None
         return self._opening.get((symbol, day))
 
-    def day_low(self, symbol: str, day: date) -> Decimal | None:
-        """The lowest low of the day's final bars; None unless the symbol was watched from the
-        open and no feed gap was marked that day (fail closed)."""
+    def day_low(self, symbol: str, day: date, through: datetime | None = None) -> Decimal | None:
+        """The lowest low of the day's final bars (those starting at or before `through`, when
+        given); None unless the symbol was watched from the open and no feed gap was marked that
+        day (fail closed)."""
         if not self._complete(symbol, day, None):
             return None
-        return self._lows.get((symbol, day))
+        lows = [
+            low
+            for start, low in self._lows.get((symbol, day), ())
+            if through is None or start <= through
+        ]
+        return min(lows, default=None)
 
     def day_volume(self, symbol: str, day: date) -> int:
         state = self._days.get((symbol, day))

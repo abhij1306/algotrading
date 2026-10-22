@@ -336,7 +336,8 @@ def tape_bars(tape: Iterable[tuple[int, int]], now: datetime) -> list[Bar]:
 
 
 def true_opening(tape: list[tuple[int, int]]) -> tuple[Decimal, Decimal] | None:
-    first = [b for b in tape_bars(tape, at_us(CLOSE_SOD * US + 3600 * US)) if b.start.minute == 15]
+    opens = at_us(OPEN_SOD * US)
+    first = [b for b in tape_bars(tape, at_us(CLOSE_SOD * US + 3600 * US)) if b.start == opens]
     return (first[0].high, first[0].low) if first else None
 
 
@@ -354,6 +355,7 @@ class Downtime:
 
 
 @example(tape=PROBE, watch=150, dropout=None, restart=None)
+@example(tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None)  # a 10:15 bar
 @example(tape=PROBE, watch=-600, dropout=(100, 60), restart=None)  # a gap inside the first bar
 @example(  # a restart at 09:21:40; the day's low trades while HAT is down
     tape=[*PROBE, (410, 9_000)], watch=-600, dropout=None, restart=(400, 30)
