@@ -283,3 +283,69 @@ def test_db_concurrent_sweeps_settle_once(clean_db: Engine, threads: int, taken:
             else:
                 assert signal.state == lifecycle.EXPIRED
                 assert len(vetoes) == 1
+
+
+@settings(
+    max_examples=6,
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
+)
+@example(threads=4, path="auto")
+@example(threads=2, path="take")
+@given(threads=st.integers(min_value=2, max_value=6), path=st.sampled_from(("auto", "take")))
+def test_db_concurrent_placements_send_one(clean_db: Engine, threads: int, path: str) -> None:
+    """HAT-EXEC-021, HAT-OPS-003 (PR 52) on PostgreSQL: an entry left unplaced (an auto signal
+    in Triggered, or a passed Take) placed from several threads at once through the account's
+    one router (the trigger path, a Take and the periodic resume share it), each on its own
+    connection, reaches the broker exactly once under one tag and ends EntryPlaced. Harm: two
+    placements that both read no open tag reserve two tags and buy twice."""
+    _truncate(clean_db)
+    with Session(clean_db) as session:
+        rig = _rig(session, mode=modes.AUTO if path == "auto" else modes.CONFIRM)
+        live = desks_for(clean_db, rig)
+        live.recover(AT)
+        router = live.by_account[rig.account_id].router
+        rig.router = router
+        signal_id = None if path == "auto" else rig.route().signal_id
+        try:
+            with crash_after(1, rig.fake):  # the commit lands, the placement never runs
+                if path == "auto":
+                    rig.route()
+                else:
+                    assert signal_id is not None
+                    router.take(
+                        session,
+                        signal_id,
+                        price=D(rig.signal(signal_id).trigger_price),
+                        locked_upper_circuit=False,
+                        now=AT,
+                        chat_id=7,
+                        check=LIVE,
+                    )
+        except Crash:
+            session.rollback()
+        signal_id = signal_id or session.scalar(select(HatSignal.id))
+        assert signal_id is not None
+    assert rig.places() == []
+    start = threading.Barrier(threads)
+    errors: list[BaseException] = []
+
+    def place() -> None:
+        try:
+            with Session(clean_db) as own:
+                start.wait()
+                router.place_entry(own, signal_id, now=AT, check=LIVE)
+        except BaseException as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    workers = [threading.Thread(target=place) for _ in range(threads)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    assert errors == []
+    sent = rig.places()
+    assert len(sent) == 1
+    with Session(clean_db) as fresh:
+        assert fresh.get(HatSignal, signal_id).state == lifecycle.ENTRY_PLACED  # type: ignore[union-attr]
+    live.release()

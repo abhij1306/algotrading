@@ -33,17 +33,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..engine.approvals import TAKE
-from ..engine.lifecycle import AWAITING_APPROVAL, TRIGGERED
 from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.fills import FillSync, SaleBand, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
-from ..execution.modes import AUTO
 from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
-from ..execution.router import ExecutionRouter, PlacementCheck
+from ..execution.router import ExecutionRouter, PlacementCheck, unplaced_entry
 from ..execution.session import (
     SessionOwner,
     SessionRegistry,
@@ -362,6 +359,7 @@ class Desks:
                 desk.router.place_entry(session, signal_id, now=now, check=bot_check)
         except Exception:
             session.rollback()
+            desk.router.remember_stranded(signal_id)  # tried again at the next resume
             logger.exception("resuming the entry of signal %s failed", signal_id)
 
     # --- the periodic steps -------------------------------------------------------------------
@@ -413,8 +411,7 @@ def _left_unplaced(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
             .outerjoin(HatApproval, HatApproval.signal_id == HatSignal.id)
             .where(
                 HatBot.broker_account_id == account_id,
-                ((HatSignal.state == TRIGGERED) & (HatSignal.mode == AUTO))
-                | ((HatSignal.state == AWAITING_APPROVAL) & (HatApproval.decision == TAKE)),
+                unplaced_entry(),
             )
             .order_by(HatSignal.id)
         )

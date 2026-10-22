@@ -132,7 +132,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `TLA ApprovalToken!ChaseRecheckOnTake` No Take places an order at a price past the max-chase level. Harm: the user approves an entry that already ran away.
 - `TLA ApprovalToken!SingleDecision` A card is decided at most once. Harm: a double tap places two orders.
 - `TLA ApprovalToken!CardsDecided` Every sent card is eventually decided (liveness). Harm: an undecided card waits forever.
-- `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement, with the dated live price since PR 51: none, stale, out of band or at or below the stop refuses) allow it and otherwise (auto) no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price. Harm: a route places an order its mode never allows, or a pending entry's open risk is understated.
+- `PBT router.routes_by_mode` For every mode and GTT capability, one accepted trigger through the real router on `FakeBroker` gives a virtual position and no call (shadow), a 5-minute card and no call (confirm), or one HT-tagged LIMIT BUY CNC at the entry price for the risk-sized quantity after the session's reconciliation (auto), when the live conditions passed to `route` (read at placement, with the dated live price since PR 51: none, stale, out of band or at or below the stop refuses) allow it and otherwise (auto) no order and the signal Rejected with the reason; confirm and auto without GTT run shadow; a routed signal without a position holds a slot valued at its planned entry price; the outcome `route` returns carries the signal's state after placement and the shadow position's id (PR 52). Harm: a route places an order its mode never allows, a pending entry's open risk is understated, or the caller acts on a stale outcome.
 - `PBT router.entry_needs_live_session` An accepted auto entry is placed only when its broker account has a live `hat_broker_session` for the placement's trade date (written by the runtime's session watch); a missing, expired or unknown session, or a live one of another day, sends nothing and ends the signal Rejected with `broker_session_not_live`. Harm: an entry goes out on an account nobody logged in today (HAT-OPS-023).
 - `PBT router.refused_entry_is_not_sent` An auto entry whose bot became manage-only (account, bot, manual or health kill, or a pause) after the signal committed sends nothing: an unsent reserved order is cancelled and the signal ends Rejected with the kill or pause reason; an order that may be at the broker (unconfirmed) is left to reconciliation, neither placed again nor rejected. Harm: a bot buys after its kill switch, or a refusal re-sends an order the broker may hold.
 - `PBT router.take_rechecks_max_chase` A Take before expiry places exactly when the live conditions allow an entry (the dated live price included, PR 51) and the price is within max-chase; otherwise it records the decision, ends Rejected with the reason and places nothing; a Take at or after expiry expires the card into its veto trade; a second Take does nothing. Harm: a Take buys late, blind or past the plan's price.
@@ -196,9 +196,11 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.unreadable_foreign_rows_skipped` An order row without an HT tag that the adapter cannot read (a missing key, an unreadable side or quantity, not a mapping) is skipped and counted (`OrderBook.skipped`, `ReconcileReport.skipped_rows`) and the rest of the book is read, with one `reconcile.unreadable_row` alert per trade date; an HT-tagged row that cannot be read fails the read and the reconciliation. Harm: one manual order fails every reconciliation of the day, or an HT order HAT cannot read is missed.
 - `PBT tags.held_quantity_nets_today` Through the adapter, the quantity reconciled per symbol is the holding plus today's signed net CNC position, an intraday position not counted; `@example`s for a buy today, a buy and sale today, a holding sold in full and in part (MX-F8). Harm: a holding a GTT sold today reads as held (fail open), or a correct HAT book blocks the account.
 - `PBT router.resumed_entry_waits_for_feed` An entry left Triggered by the previous process is placed after a restart only once the feed has heard a fresh tick and the account is reconciled, at most once, and never on a later trade date than its own (`signal_expired`); the restart runs the fill sync whether or not its reconciliation succeeded (D118). Harm: an entry goes out on a stale price, twice, or a day late.
-- `PBT router.crash_resumes_entry_once` (PR 52, HAT-OPS-003, HAT-EXEC-023) For an auto entry or a Take, every reply sequence, a process that dies (`Crash`, a `BaseException`) or a placement that raises (`PlacementError`) right after its k-th commit or broker call (k 1-12, `hat_router_support.crash_after`), then a restart's recovery and two resume passes (or the next resume in the same process): at most two entry orders under distinct tags, at most one the broker took, the signal not left waiting with no order that may have reached the broker, and its stored state equal to its events' replay. `@example`s: auto after the second rejection (k=9), a Take right after its decision, auto right after the trigger's commit. Harm: a Take committed before a crash is never bought and holds its slot, or a restart sends a third entry or buys twice.
+- `PBT router.crash_resumes_entry_once` (PR 52, HAT-OPS-003, HAT-EXEC-023) For an auto entry or a Take, every reply sequence, a process that dies (`Crash`, a `BaseException`) or a placement that raises (`PlacementError`) right after its k-th commit or broker call (k 1-12, `hat_router_support.crash_after`), then a restart's recovery and two resume passes (or the next resume in the same process): at most two entry orders under distinct tags, at most one the broker took, the signal not left waiting with no order that may have reached the broker, and its stored state equal to its events' replay; when the first resume pass itself raises after its `again`-th step (0-3), a later pass places it (`Desks._resume_one` gives it back to the router, `remember_stranded`). `@example`s: auto after the second rejection (k=9), a Take right after its decision, auto right after the trigger's commit. Harm: a Take committed before a crash is never bought and holds its slot, or a restart sends a third entry or buys twice.
 - `PBT router.sweep_idempotent` (PR 52, HAT-EXEC-030) Over any interleaving of sweeps, Takes, Skips, placements and Takes whose placement crashed, on two cards: a sweep repeated at the same time leaves an identical snapshot (signals, approvals, veto trades, orders, event count), each signal has at most one entry order, an undecided card is never placed, every card is decided after its 5 minutes (a taken one is placed or still awaits today's resume), and the next trade date's sweep leaves nothing waiting. Harm: two sweeps open two veto trades or record an expiry twice, or an undecided card is bought.
 - `PBT router.stranded_entry_ends_next_day` (PR 52, HAT-OPS-003, HAT-EXEC-030) An auto entry or a Take whose process died after its k-th step (k 1-6) and did not come back that day: on the next trade date the sweep and the restart, in any order and number, place nothing more and leave it not waiting with no order that may have reached the broker (an order reserved and never sent does not count); one ended is Rejected `signal_expired`; a further sweep changes nothing. Harm: yesterday's price, size and risk decision are bought today, or a stranded signal holds its slot for good.
+- `PBT router.sweep_survives_a_bad_signal` (PR 52, HAT-EXEC-030) Two earlier-day stranded auto entries, ending one of them raising (`trades.reject_signal` patched to fail for it): the sweep still ends the other Rejected `signal_expired`, leaves the failing one in Triggered with no order, and the next sweep ends it. Harm: one bad row stops the sweep every minute and every stranded signal after it holds its slot.
+- `Postgres test_db_crash_safe_routing.py::test_db_concurrent_placements_send_one` (PR 52, HAT-EXEC-021; Postgres-marked) An auto entry or a Take left unplaced, placed by 2-6 threads at once through the account's one router, each on its own connection: exactly one entry order reaches the broker and the signal ends EntryPlaced. Harm: two placements that both read no open tag reserve two tags and buy twice.
 - `Postgres test_db_crash_safe_routing.py::test_db_crash_resumes_entry_once` (PR 52; Postgres-marked, not a `DB` governance check) `router.crash_resumes_entry_once` on PostgreSQL: the real router, desks and recovery commit to a real database and a new process restarts on it. Harm: the in-memory SQLite run hides a commit or lock the database orders differently.
 - `Postgres test_db_crash_safe_routing.py::test_db_concurrent_sweeps_settle_once` (PR 52; Postgres-marked) 2-6 sweeps at once, each on its own connection, over two cards past their 5 minutes (one, when drawn, a Take whose placement crashed), then again, then twice on the next trade date: each untaken card Expired with exactly one expiry event and one veto trade, the stranded Take Rejected `signal_expired` with no order, no order sent, and a repeated round leaves the same snapshot. Harm: overlapping sweeps (the periodic job and a Telegram tap's sweep) open two veto trades or record an expiry twice.
 - `PBT router.fill_sync_cadence` `Desks.sync_due` reads an account's fills at every periodic step while `fills.watch_closely` holds (a real entry of the day's signals may still fill, or a stop of an open real position is pending or unconfirmed), and otherwise at the first pass and then once a minute; an entry of an earlier session still shown working and a stop the broker refused do not speed it up, and a sync whose read failed (an outage, or the call budget refusing it, `FyersRateLimitedError`, PR 50) is tried again at the next step. The test reads the expected state row by row (`_watched`). Harm: an entry filled just after a sync sits up to a minute at the broker with no stop, or a refused stop is re-sent every 5 s until its tag's sequence runs out.
@@ -349,7 +351,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `9915ab7998737a84d8b91eba508122873730a0303181f25438a4995e7e4bdbba`
+Covered digest: `388252ea5c80205aa433874d5248bb77f825ae1b91f5b98d069e6c1afbe33f45`
 
 ## Scope changes
 
@@ -357,7 +359,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
 - PR 58: `trades.open_entry` fills `SignalContext.hard_stop_days` from `trades.last_hard_stop` (the bot's latest `hard_stop` close of the instrument at or before the trigger, a veto trade's excluded as in `_day_counts`). `trades.last_hard_stop` generates no veto trade (a virtual trade of a skipped confirm signal); the exclusion is the same `_NOT_VETO` filter the daily stop-out count uses.
-- PR 52 (audit T-F4, T-F7, T-F15; HAT-EXEC-023, -030, HAT-OPS-003): `_send_entry` reads the stored rejection count before it reserves a new tag, so a resume after the second rejection ends the signal `order_rejected` instead of sending a third order. `route` and `take` commit and place through `_place_committed`, which remembers a signal whose commit or placement raised (`take_stranded`, drained by `Desks.resume_entries`); `daily/accounts.py:_left_unplaced` (was `_left_triggered`) also finds a Take left in AwaitingApproval with decision `take`. `place_entry` refuses an undecided card (`_taken`): it found that a resume of an AwaitingApproval signal could place a card nobody took. `expire` ends Rejected `signal_expired` a real entry of an earlier trade date left waiting, cancelling first an order reserved and never sent and leaving one that may have reached the broker to reconciliation. The sweep was already scheduled (`daily/runtime.py`, `expire` every minute: T-F15's wiring part); the idempotency is a property here and on PostgreSQL. The router `Rig` moved from `test_router.py` to `hat_router_support.py` (with `crash_after`, `restart`, `desks_for`), shared with the Postgres checks. The Postgres checks seed the shared rig with the foreign-key triggers off for that connection (`session_replication_role = replica`; the seed writes rows before the rows they reference, which SQLite never checks) and run with them on. `ExecutionRouter.tla`: Take now decides to a new state `taken` and `PlaceTaken` places it; a per-signal `lost` flag and `Crash` model the lost in-process placement; `Place`/`PlaceTaken` are weakly fair over all variables while the router's other actions keep their fairness over `routerVars`; new property `EntriesSettled` and broken variant `no_resume`. The state space grew from 823,680 to 982,080 distinct states (local run 67 s to 123 s). `OrderReconciliation.tla`'s `Reserve` comment names the router's rejection count check (the model already keeps retries across `Restart`). FakeBroker keeps no order book, so an entry the broker accepted and whose answer was lost is never found by the tag lookup in these properties (left to reconciliation: follow-up). Nothing was narrowed.
+- PR 52 (audit T-F4, T-F7, T-F15; HAT-EXEC-023, -030, HAT-OPS-003): `_send_entry` reads the stored rejection count before it reserves a new tag, so a resume after the second rejection ends the signal `order_rejected` instead of sending a third order. `route` and `take` commit and place through `_place_committed`, which remembers a signal whose commit or placement raised (`take_stranded`, drained by `Desks.resume_entries`); `daily/accounts.py:_left_unplaced` (was `_left_triggered`) also finds a Take left in AwaitingApproval with decision `take`. `place_entry` refuses an undecided card (`_taken`): it found that a resume of an AwaitingApproval signal could place a card nobody took. `expire` ends Rejected `signal_expired` a real entry of an earlier trade date left waiting, cancelling first an order reserved and never sent and leaving one that may have reached the broker to reconciliation. The sweep was already scheduled (`daily/runtime.py`, `expire` every minute: T-F15's wiring part); the idempotency is a property here and on PostgreSQL. The router `Rig` moved from `test_router.py` to `hat_router_support.py` (with `crash_after`, `restart`, `desks_for`), shared with the Postgres checks. The Postgres checks seed the shared rig with the foreign-key triggers off for that connection (`session_replication_role = replica`; the seed writes rows before the rows they reference, which SQLite never checks) and run with them on. `ExecutionRouter.tla`: Take now decides to a new state `taken` and `PlaceTaken` places it; a per-signal `lost` flag and `Crash` model the lost in-process placement; `Place`/`PlaceTaken` are weakly fair over all variables while the router's other actions keep their fairness over `routerVars`; new property `EntriesSettled` and broken variant `no_resume`. The state space grew from 823,680 to 982,080 distinct states (local run 67 s to 123 s). `OrderReconciliation.tla`'s `Reserve` comment names the router's rejection count check (the model already keeps retries across `Restart`). FakeBroker keeps no order book, so an entry the broker accepted and whose answer was lost is never found by the tag lookup in these properties (left to reconciliation: follow-up). Review round (/code-review): `place_entry` runs under the router's `_placing` lock and re-reads the signal, since the trigger path, a Take and the periodic resume share one router per account and two placements that both read no open tag reserved two tags (a cross-process race is out of scope: one runtime places); `route` again returns the state after placement and keeps the shadow position's id (the branch swap had lost both; `routes_by_mode` now asserts them); a resume that raises is given back to the router for the next pass; one signal's failure no longer stops the sweep (`_end_stranded`, under `_placing`); the recovery and the sweep share one predicate (`router.unplaced_entry`: Triggered and auto, or a passed Take). Declined: bounding the sweep's scan to recent dates (the stranded rows are few; a row of unknown outcome is re-read each minute until reconciliation moves it) and replacing the in-memory stranded set with a query (the set only adds the in-process failures; recovery re-reads the database). Nothing was narrowed.
 - PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
 - PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
 - K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
@@ -2144,6 +2146,25 @@ E   Failing test case: test_routes_by_mode(
 E       mode='confirm',
 ```
 
+Break: (PR 52) `route` returns the trigger's outcome after an auto placement (`return outcome` before the re-read).
+
+```
+    assert outcome.state == signal.state  # the state after placement, not the trigger's
+E   AssertionError: assert 'Triggered' == 'EntryPlaced'
+E   Failing test case: test_routes_by_mode(
+E       mode='auto',
+E       gtt=True,
+```
+
+Break: (PR 52) `route` drops the shadow position's id (returns a new outcome with `position_id=None`).
+
+```
+    assert outcome.position_id == position.id
+E   AssertionError: assert None == UUID('01a165b7-d6b2-7088-aaf5-0fd539c8664c')
+E   Failing test case: test_routes_by_mode(
+E       mode='shadow',  # or any other generated value
+```
+
 ### PBT router.entry_needs_live_session
 
 Break: `_preflight` drops the live-session refusal (`_session_refusal`).
@@ -3053,6 +3074,16 @@ E       path='take',
 E       replies=[False, True],
 ```
 
+Break: (PR 52, review) `Desks._resume_one` does not give a failed resume back to the router (`desk.router.remember_stranded(signal_id)` to `pass`).
+
+```
+    assert not _left_stranded(fresh, signal_id)
+E   AssertionError: assert not True
+E   Failing explicit example: test_crash_resumes_entry_once(
+E       path='take',
+E       replies=[True, True],
+```
+
 ### PBT router.sweep_idempotent
 
 Break: (PR 52) `place_entry` places an undecided card (the `_taken` guard to `if False:`).
@@ -3094,6 +3125,28 @@ E   Failing test case: test_stranded_entry_ends_next_day(
 E       k=2,
 E       order=['sweep'],
 E       path='auto',  # or any other generated value
+```
+
+### PBT router.sweep_survives_a_bad_signal
+
+Break: (PR 52, review) the sweep's per-signal `except Exception` narrowed to `except ZeroDivisionError`.
+
+```
+    raise RuntimeError("database error")
+E   RuntimeError: database error
+E   Failing explicit example: test_sweep_survives_a_bad_signal(
+E       bad=0,
+```
+
+### Postgres test_db_crash_safe_routing.py::test_db_concurrent_placements_send_one
+
+Break: (PR 52, review) `place_entry` without the router's `_placing` lock (`with self._placing:` to `if True:`).
+
+```
+    assert len(sent) == 1
+E   AssertionError: assert 2 == 1
+E   Failing explicit example: test_db_concurrent_placements_send_one(
+E       threads=2,
 ```
 
 ### Postgres test_db_crash_safe_routing.py::test_db_crash_resumes_entry_once

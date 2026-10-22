@@ -211,12 +211,19 @@ def desks_for(engine: Engine, rig: Rig, day: date = TRADE_DAY) -> Desks:
     )
 
 
-def restart(engine: Engine, rig: Rig, now: datetime, desks: Desks | None = None) -> Desks:
+def restart(
+    engine: Engine, rig: Rig, now: datetime, desks: Desks | None = None, fail_first: int = 0
+) -> Desks:
     """After a crash: a new process (fresh desks, unless the process lived: `desks`) recovers
-    and resumes its entries twice (a second pass must place nothing more)."""
+    and resumes its entries twice (a second pass must place nothing more). With `fail_first`, a
+    first resume pass raises `PlacementError` right after its `fail_first`-th step (the resume
+    logs it and must try again at the next pass)."""
     if desks is None:
         desks = desks_for(engine, rig, now.astimezone(IST).date())
         desks.recover(now)
+    if fail_first:
+        with crash_after(fail_first, rig.fake, PlacementError):
+            desks.resume_entries(now, live_check, lambda: False)
     for _ in range(2):
         desks.resume_entries(now, live_check, lambda: False)
     return desks

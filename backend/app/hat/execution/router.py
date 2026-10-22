@@ -52,7 +52,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from ..data.live import PRICE_UNKNOWN
@@ -157,6 +157,15 @@ def _taken(session: Session, signal_id: uuid.UUID) -> bool:
     return approval is not None and approval.decision == approvals.TAKE
 
 
+def unplaced_entry() -> ColumnElement[bool]:
+    """A real entry committed but not placed: an auto signal in Triggered, or a confirm signal
+    whose Take passed while it still awaits placement. Needs `HatApproval` outer-joined on the
+    signal. Shared by the restart's recovery and the sweep, so they agree (PR 52)."""
+    return ((HatSignal.state == lifecycle.TRIGGERED) & (HatSignal.mode == AUTO)) | (
+        (HatSignal.state == lifecycle.AWAITING_APPROVAL) & (HatApproval.decision == approvals.TAKE)
+    )
+
+
 def _kill_refusal(session: Session, bot_id: uuid.UUID) -> str | None:
     """A kill switch or a pause that came on after the risk check (the bot's lock is released
     when the signal commits) stops the entry: the bot is manage-only (06 §6)."""
@@ -215,6 +224,10 @@ class ExecutionRouter:
         # signals whose placement raised after their commit, for the next resume (PR 52)
         self._stranded: set[uuid.UUID] = set()
         self._stranded_lock = threading.Lock()
+        # one placement at a time per account: the trigger path, a Take and the periodic resume
+        # share this router, and two placements of one signal that both read no open tag would
+        # reserve two tags and send two entry orders (PR 52)
+        self._placing = threading.RLock()
 
     # --- routing ------------------------------------------------------------------------------
 
@@ -242,21 +255,20 @@ class ExecutionRouter:
             bot_mode(session, bot, request.triggered_at, request.context.calendar), confidence
         )
         outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
-        if outcome.mode == AUTO and outcome.state == lifecycle.TRIGGERED:
-            self._place_committed(session, outcome.signal_id, now, check)
-        else:
+        if outcome.mode != AUTO or outcome.state != lifecycle.TRIGGERED:
             session.commit()
-            signal = session.get(HatSignal, outcome.signal_id)
-            state = signal.state if signal is not None else outcome.state
-            return trades.EntryOutcome(
-                outcome.signal_id,
-                state,
-                outcome.decision,
-                None,
-                duplicate=outcome.duplicate,
-                mode=outcome.mode,
-            )
-        return outcome
+            return outcome
+        self._place_committed(session, outcome.signal_id, now, check)
+        signal = session.get(HatSignal, outcome.signal_id)
+        state = signal.state if signal is not None else outcome.state
+        return trades.EntryOutcome(
+            outcome.signal_id,
+            state,
+            outcome.decision,
+            None,
+            duplicate=outcome.duplicate,
+            mode=outcome.mode,
+        )
 
     # --- confirm mode ---------------------------------------------------------------------------
 
@@ -306,13 +318,22 @@ class ExecutionRouter:
         count = approvals.expire_due(session, now)
         session.commit()
         for signal_id in self._stranded_before(session, trade_date_of(now)):
+            try:
+                self._end_stranded(session, signal_id, now)
+            except Exception:  # one signal's failure never stops the others' sweep
+                session.rollback()
+                logger.exception("ending the stranded entry of signal %s failed", signal_id)
+        return count
+
+    def _end_stranded(self, session: Session, signal_id: uuid.UUID, now: datetime) -> None:
+        with self._placing:  # never while a resume or a trigger places it
             tag = self._open_entry_tag(session, signal_id)
             if tag is not None and not self._release_unsent(session, tag):
-                continue  # an entry that may have reached the broker: reconciliation's
+                return  # an entry that may have reached the broker: reconciliation's
             signal = session.get(HatSignal, signal_id)
             if signal is not None:
+                session.refresh(signal)
                 self._not_placed(session, signal, SIGNAL_EXPIRED, now)
-        return count
 
     def take_stranded(self) -> list[uuid.UUID]:
         """The signals whose placement raised since the last call (each returned once)."""
@@ -320,6 +341,11 @@ class ExecutionRouter:
             stranded = sorted(self._stranded)
             self._stranded.clear()
         return stranded
+
+    def remember_stranded(self, signal_id: uuid.UUID) -> None:
+        """Keep a signal whose resumed placement raised for the next resume."""
+        with self._stranded_lock:
+            self._stranded.add(signal_id)
 
     def _place_committed(
         self, session: Session, signal_id: uuid.UUID, now: datetime, check: PlacementCheck
@@ -331,8 +357,7 @@ class ExecutionRouter:
             session.commit()
             self.place_entry(session, signal_id, now=now, check=check)
         except Exception:
-            with self._stranded_lock:
-                self._stranded.add(signal_id)
+            self.remember_stranded(signal_id)
             raise
 
     @staticmethod
@@ -343,15 +368,7 @@ class ExecutionRouter:
             session.scalars(
                 select(HatSignal.id)
                 .outerjoin(HatApproval, HatApproval.signal_id == HatSignal.id)
-                .where(
-                    HatSignal.trade_date < day,
-                    HatSignal.mode != trades.SHADOW,
-                    (HatSignal.state == lifecycle.TRIGGERED)
-                    | (
-                        (HatSignal.state == lifecycle.AWAITING_APPROVAL)
-                        & (HatApproval.decision == approvals.TAKE)
-                    ),
-                )
+                .where(HatSignal.trade_date < day, unplaced_entry())
                 .order_by(HatSignal.id)
             )
         )
@@ -367,10 +384,18 @@ class ExecutionRouter:
         reserved is sent (or looked up) under its own tag, and a signal that left Triggered or
         AwaitingApproval, or a card not yet taken, is left alone. On a refusal a reserved order
         that never reached the broker is cancelled and one that may have is left to
-        reconciliation; nothing is sent. Returns the last send, or None when nothing was sent."""
+        reconciliation; nothing is sent. Returns the last send, or None when nothing was sent.
+        Placements through this router run one at a time, each reading the signal afresh."""
+        with self._placing:
+            return self._place_entry(session, signal_id, now=now, check=check)
+
+    def _place_entry(
+        self, session: Session, signal_id: uuid.UUID, *, now: datetime, check: PlacementCheck
+    ) -> SendOutcome | None:
         signal = session.get(HatSignal, signal_id)
         if signal is None:
             raise trades.TradeError("unknown_signal")
+        session.refresh(signal)
         if signal.state not in _ROUTABLE or signal.mode == trades.SHADOW or signal.qty <= 0:
             return None
         if signal.state == lifecycle.AWAITING_APPROVAL and not _taken(session, signal.id):

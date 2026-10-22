@@ -438,10 +438,10 @@ to an artefact that exists.
 | HAT-EXEC-013 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.intent_product_cnc` |
 | HAT-EXEC-014 | [07](07-execution-and-brokers.md) | 45 | PBT `router.auto_places_only_high_confidence` |
 | HAT-EXEC-020 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent` |
-| HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal` |
+| HAT-EXEC-021 | [07](07-execution-and-brokers.md) | 3, 11, 15, 52 | TLA `OrderReconciliation!AtMostOneEntryPerSignal`, DB `runtime.signal_unique_per_day`, PBT `trades.retry_returns_existing_signal`, Postgres check `test_db_crash_safe_routing.py::test_db_concurrent_placements_send_one` |
 | HAT-EXEC-022 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!NoOrderWhenStale`, TLA `ExecutionRouter!NoOrderOutsideHours`, PBT `router.take_rechecks_max_chase` |
 | HAT-EXEC-023 | [07](07-execution-and-brokers.md) | 15, 52 | TLA `OrderReconciliation!RetryAtMostOnce`, PBT `router.rejected_entry_is_retried_once`, PBT `router.crash_resumes_entry_once` |
-| HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15, 52 | TLA `ApprovalToken!NoTakeAfterExpiry`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.sweep_idempotent`, PBT `router.stranded_entry_ends_next_day`, Postgres check `test_db_crash_safe_routing.py::test_db_concurrent_sweeps_settle_once` |
+| HAT-EXEC-030 | [07](07-execution-and-brokers.md) | 15, 52 | TLA `ApprovalToken!NoTakeAfterExpiry`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.sweep_idempotent`, PBT `router.stranded_entry_ends_next_day`, PBT `router.sweep_survives_a_bad_signal`, Postgres check `test_db_crash_safe_routing.py::test_db_concurrent_sweeps_settle_once` |
 | HAT-EXEC-031 | [07](07-execution-and-brokers.md) | 15, 51 | TLA `ApprovalToken!ChaseRecheckOnTake`, PBT `caps.max_chase_always`, PBT `router.take_rechecks_max_chase`, PBT `bars.circuit_locks_read_the_band`, PBT `bars.exits_and_placement_read_the_checked_price` |
 | HAT-EXEC-032 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow`, PBT `router.skip_and_expiry_become_one_veto_trade` |
 | HAT-EXEC-033 | [07](07-execution-and-brokers.md) | 15 | TLA `ExecutionRouter!ExitsNeverAsk` |
