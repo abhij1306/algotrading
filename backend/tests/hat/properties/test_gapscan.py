@@ -130,12 +130,13 @@ def test_filter(stocks: list[tuple[str, tuple[Decimal, Decimal], bool, object]])
         session.commit()
     server = PricedListingServer(listing_rows([(s, "EQ", p[0], p[1]) for s, p, _, _ in stocks]))
     handed: dict[str, object] = {}
+    opens: dict[str, Decimal] = {}
     body = gap_scan_body(
         client=McpClient(server, sleep=lambda _s: None),
         session_factory=session_factory_for(engine),
         trade_date=DAY,
         universe=lambda instrument: passes[instrument.symbol],
-        on_candidates=handed.update,
+        on_candidates=lambda found, scanned: (handed.update(found), opens.update(scanned)),
     )
     body()
     expected = set()
@@ -146,6 +147,9 @@ def test_filter(stocks: list[tuple[str, tuple[Decimal, Decimal], bool, object]])
         if gap_ok and universe_ok and band != "missing" and band_ok:
             expected.add(symbol)
     assert set(handed) == expected
+    for symbol, (opened, _prev), _u, _b in stocks:  # the listing's open reaches EP (PR 22)
+        if symbol in expected:
+            assert opens[symbol] == Decimal(str(float(opened)))
 
 
 # --- timing (HAT-DATA-122) ----------------------------------------------------------------------

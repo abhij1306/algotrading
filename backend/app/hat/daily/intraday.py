@@ -176,7 +176,7 @@ class Intraday:
             session_factory=self._session_factory,
             trade_date=day,
             universe=self._in_a_universe(day),
-            on_candidates=lambda found: self.on_gappers(day, found),
+            on_candidates=lambda found, opens: self.on_gappers(day, found, opens),
         )()
         if is_late(self._now(), day):
             self._notifier.alert(ALERT_LATE, day, {})
@@ -189,12 +189,23 @@ class Intraday:
                 members |= bot_universe_members(session, bot, day)
         return lambda instrument: instrument.id in members
 
-    def on_gappers(self, day: date, found: Mapping[str, uuid.UUID]) -> int:
-        """Record the gappers with their opens from the feed's pre-open record (a restart
-        rebuilds the candidates from them: the record is gone by then), then add the EP
-        candidates."""
+    def on_gappers(
+        self,
+        day: date,
+        found: Mapping[str, uuid.UUID],
+        scanned: Mapping[str, Decimal] | None = None,
+    ) -> int:
+        """Record the gappers with their opens (a restart rebuilds the candidates from them: the
+        record is gone by then), then add the EP candidates. The open is the feed's pre-open
+        record of that trade date, else the open the scan's listing gave (a gapper is usually
+        not subscribed before the scan, so the feed has no record of it)."""
         gaps = self._live.gaps.records(day)
-        opens = {symbol: gaps[symbol].open for symbol in found if symbol in gaps}
+        listed = scanned or {}
+        opens = {
+            symbol: gaps[symbol].open if symbol in gaps else listed[symbol]
+            for symbol in found
+            if symbol in gaps or symbol in listed
+        }
         with self._session_factory() as session:
             _record_gappers(session, day, found, opens, self._now())
             session.commit()

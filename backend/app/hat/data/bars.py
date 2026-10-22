@@ -140,6 +140,7 @@ class BarBuilder:
     _lows: dict[tuple[str, date], list[tuple[datetime, Decimal]]] = field(default_factory=dict)
     _watched: dict[tuple[str, date], datetime] = field(default_factory=dict)
     _gap_from: dict[date, datetime] = field(default_factory=dict)
+    _last_arrival: dict[date, datetime] = field(default_factory=dict)
     _seq: int = 0
 
     def __post_init__(self) -> None:
@@ -163,7 +164,12 @@ class BarBuilder:
     def on_tick(self, tick: Tick, now: datetime) -> TickOutcome:
         """Apply `tick`, which arrived at `now`. Never changes a bar that is already final."""
         require_aware(now)
-        self._watched.setdefault((tick.symbol, now.astimezone(IST).date()), now)
+        arrival_day = now.astimezone(IST).date()
+        if arrival_day not in self._last_arrival:
+            self._forget_before(arrival_day)
+        self._watched.setdefault((tick.symbol, arrival_day), now)
+        if now > self._last_arrival.get(arrival_day, now - BAR_WIDTH):
+            self._last_arrival[arrival_day] = now
         start = self.bar_start(tick.at)
         if start is None:
             return TickOutcome.OUTSIDE_SESSION
@@ -266,32 +272,51 @@ class BarBuilder:
             self.mark_gap(max(bar.end for bar in bars))
         return applied
 
-    def _complete(self, symbol: str, day: date, until: datetime | None) -> bool:
-        """Watched from the open with no feed gap before `until` (None: none at all that day)."""
+    def _forget_before(self, day: date) -> None:
+        """Drop the per-day state of earlier days (a process running across days)."""
+        for table in (self._opening, self._days, self._lows, self._watched):
+            for key in [k for k in table if k[1] < day]:
+                del table[key]
+        for table in (self._gap_from, self._last_arrival):
+            for key in [d for d in table if d < day]:
+                del table[key]
+
+    def _complete(
+        self, symbol: str, day: date, until: datetime | None, seen_through: datetime
+    ) -> bool:
+        """Watched from the open with no feed gap before `until` (None: none at all that day),
+        and a tick arrived at or after `seen_through`: a feed that went silent before a bar
+        ended may have lost the bar's last prints, and only a silence of the stale threshold is
+        marked as a gap, so until the feed is seen past the bar nothing is published."""
         gap = self._gap_from.get(day)
         clean = gap is None or (until is not None and gap >= until)
-        return clean and self.from_open(symbol, day)
+        last = self._last_arrival.get(day)
+        seen = last is not None and last >= seen_through
+        return clean and seen and self.from_open(symbol, day)
 
     def opening_range(self, symbol: str, day: date) -> tuple[Decimal, Decimal] | None:
         """(high, low) of the session's first bar once it is final; None before that, for a
         symbol that had no tick in the first bar, and for one not watched from the open or with
         a feed gap before the first bar's end (fail closed)."""
-        if not self._complete(symbol, day, self.session_start(day) + BAR_WIDTH):
+        first_end = self.session_start(day) + BAR_WIDTH
+        if not self._complete(symbol, day, first_end, first_end):
             return None
         return self._opening.get((symbol, day))
 
     def day_low(self, symbol: str, day: date, through: datetime | None = None) -> Decimal | None:
         """The lowest low of the day's final bars (those starting at or before `through`, when
-        given); None unless the symbol was watched from the open and no feed gap was marked that
-        day (fail closed)."""
-        if not self._complete(symbol, day, None):
-            return None
+        given); None unless the symbol was watched from the open, no feed gap was marked that
+        day and the feed was seen past the last of those bars (fail closed)."""
         lows = [
-            low
+            (start, low)
             for start, low in self._lows.get((symbol, day), ())
             if through is None or start <= through
         ]
-        return min(lows, default=None)
+        if not lows or not self._complete(
+            symbol, day, None, max(start for start, _ in lows) + BAR_WIDTH
+        ):
+            return None
+        return min(low for _, low in lows)
 
     def day_volume(self, symbol: str, day: date) -> int:
         state = self._days.get((symbol, day))

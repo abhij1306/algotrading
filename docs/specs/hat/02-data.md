@@ -752,7 +752,7 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
   - Property: no bar is reported final before bar_end + 2 s, and a final bar never changes. Harm: a trigger fires on a bar that later changes, so live and replay disagree.
 
 #### HAT-DATA-114: Opening range is fixed when the first bar closes
-- **Statement:** The opening-range high and low are the high and low of the 09:15–09:20 bar, fixed when it becomes final. They exist only for a symbol watched from the open: its first tick that trade date arrived at or before 09:15:00 and no feed gap began before 09:20:00. The day low (the lowest low of the day's final bars, HAT-EXEC-051) exists only for a symbol watched from the open with no feed gap that day. A feed gap is a silence of the stale threshold (HAT-DATA-116) inside the session, from its last tick (or the open), and a restart is a gap from the end of the last stored bar. Otherwise both are undefined (fail closed: no opening-range trigger, `stop_input_missing`).
+- **Statement:** The opening-range high and low are the high and low of the 09:15–09:20 bar, fixed when it becomes final. They exist only for a symbol watched from the open: its first tick that trade date arrived at or before 09:15:00 and no feed gap began before 09:20:00. The day low (the lowest low of the day's final bars up to the trigger bar, HAT-EXEC-051) exists only for a symbol watched from the open with no feed gap that day. Both exist only once a tick of the feed (any symbol) has arrived at or after the end of the last bar they cover: a feed that went silent before a bar ended may have lost its last prints, and a silence is marked as a gap only at the stale threshold. A feed gap is a silence of the stale threshold (HAT-DATA-116) inside the session, from its last tick (or the open), and a restart is a gap from the end of the last stored bar. Otherwise both are undefined (fail closed: no opening-range trigger, `stop_input_missing`).
 - **Source:** DS "Live data" (09:20 row); MA "Daily cycle" step 4; B9; audit 2026-10-22 F4.
 - **PR:** 14, 22
 - **Verification:** PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`, PBT `bars.session_state_never_partial`, PBT `bars.trigger_never_uses_a_partial_session`
@@ -821,12 +821,12 @@ EP candidates come from a full-market gap scan just after the open, because the 
   - Property: for every listing, the scan evaluates every active EQ symbol exactly once with gap % = 100 × (open / prev_close − 1). Harm: a gapper is missed because its prefix page was truncated.
 
 #### HAT-DATA-121: Gap-scan selection rule
-- **Statement:** Gappers of at least 10% that pass the bot's universe criteria and are in a 10% or 20% band or are F&O names are subscribed at 09:17, with matching announcements attached.
+- **Statement:** Gappers of at least 10% that pass the bot's universe criteria and are in a 10% or 20% band or are F&O names are subscribed at 09:17, with matching announcements attached. Each gapper's open for `gap_up` is the feed's record of that trade date (HAT-DATA-118), else the open the scan's listing gave (a gapper is usually not subscribed before the scan).
 - **Source:** DS "Live data" (09:17 row); BL "Qullamaggie-style bot" (India-specific consequence); BL `gap_up` (min gap % (10)).
-- **PR:** 14
+- **PR:** 14, 22
 - **Verification:** PBT `gapscan.filter`
 - **Acceptance:**
-  - Property: for every scan result, the selected set equals {s : gap%(s) ≥ 10 ∧ universe(s) passes ∧ (band(s) ∈ {10, 20} ∨ s is F&O)}, and every selected symbol is added to the `"hat"` subscriptions with announcements matched per HAT-DATA-103. Harm: impossible gaps are chased or valid EP candidates are never watched.
+  - Property: for every scan result, the selected set equals {s : gap%(s) ≥ 10 ∧ universe(s) passes ∧ (band(s) ∈ {10, 20} ∨ s is F&O)}, each is handed over with the listing's open, and every selected symbol is added to the `"hat"` subscriptions with announcements matched per HAT-DATA-103. Harm: impossible gaps are chased or valid EP candidates are never watched.
 - **[OWNER-PENDING]** F&O identification: default "no price band" (`band_pct` null) marks an F&O name, since NSE F&O stocks carry no band; owner to confirm.
 
 #### HAT-DATA-122: Gap-scan timing is recorded

@@ -132,5 +132,7 @@ class PreopenGaps:
             return None
         day = require_aware(now).astimezone(IST).date()
         found = GapRecord(symbol, day, prev_close, open_price, pct, source, now)
+        for key in [k for k in self._records if k[1] < day]:  # earlier days are never read
+            del self._records[key]
         self._records[(symbol, day)] = found
         return found

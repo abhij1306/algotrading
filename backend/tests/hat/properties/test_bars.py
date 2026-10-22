@@ -261,7 +261,10 @@ def test_opening_range_fixed(
     assert builder.opening_range("AAA", DAY) is None
     assert builder.advance(at_us((OPEN_SOD + 300) * US + 2 * US - 1)) == []
     assert builder.opening_range("AAA", DAY) is None
+    first_end = at_us((OPEN_SOD + 300) * US)
     builder.advance(at_us((OPEN_SOD + 300) * US + 2 * US))
+    assert builder.opening_range("AAA", DAY) is None  # the feed is not seen past the first bar
+    builder.on_tick(Tick("ZZZ", first_end, Decimal(1)), at_us((OPEN_SOD + 300) * US + 2 * US))
     fixed = builder.opening_range("AAA", DAY)
     if first:
         assert fixed == (max(p for _, p, _ in first), min(p for _, p, _ in first))
@@ -314,6 +317,8 @@ def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut
     from_open, gap = live.coverage(DAY)
     assert restored.restore(finals, from_open, gap) == len(finals)
     assert restored.restore(finals, from_open, gap) == 0
+    for builder in (live, restored):  # the rest of the feed, seen at the restart
+        builder.on_tick(Tick("ZZZ", at_us(cut), Decimal(1)), at_us(cut))
     for symbol in SYMBOLS:
         assert restored.opening_range(symbol, DAY) == live.opening_range(symbol, DAY)
         assert restored.day_low(symbol, DAY) is None  # the restart is a gap (PR 22)
@@ -357,6 +362,9 @@ class Downtime:
 @example(tape=PROBE, watch=150, dropout=None, restart=None)
 @example(tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None)  # a 10:15 bar
 @example(tape=PROBE, watch=-600, dropout=(100, 60), restart=None)  # a gap inside the first bar
+@example(  # the feed drops at 09:19:55; the low of the first bar prints, unseen, at 09:19:57
+    tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(295, 60), restart=None
+)
 @example(  # a restart at 09:21:40; the day's low trades while HAT is down
     tape=[*PROBE, (410, 9_000)], watch=-600, dropout=None, restart=(400, 30)
 )
@@ -438,7 +446,8 @@ def test_session_state_never_partial(
                 live.restore(DAY)
                 back = True
             clock.set(now)
-            if hidden.hides(second) or (kind == "AAA" and second < watch):
+            silent = hidden.hides(second) or (kind == "AAA" and second < watch)
+            if silent and kind != "step":  # the feed is silent; the process steps on
                 continue
             if kind == "watch":
                 live.on_tick({"symbol": "AAA", "ltp": 100.0})
@@ -530,11 +539,14 @@ def test_gap_record_from_its_own_day(seen: list[tuple[int, int, bool]]) -> None:
         if with_indicative:
             payload["indicative_open_price"] = float(indicative[index])
         gaps.observe(payload, now)
+    last = max((index for index, _m, _i in seen), default=0)
     for index in range(3):
         day = DAY + timedelta(days=index)
         for record in gaps.records(day).values():
             assert record.trade_date == day
             assert record.open in {session_open[index + 1], indicative[index]}
+        if index < last and gaps.records(DAY + timedelta(days=last)):
+            assert gaps.records(day) == {}  # a later day's record drops the earlier days
 
 
 # --- volume pace (HAT-DATA-115) ----------------------------------------------------------------

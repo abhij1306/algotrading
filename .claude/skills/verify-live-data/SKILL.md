@@ -29,12 +29,12 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.no_store_keeps_no_bars` Without a bar store, final bars reach the listeners and are then forgotten; nothing accumulates. Harm: the long-running loop grows memory all session.
 - `PBT bars.persisted_equals_live` The `bars_5m` rows equal the final bars the bar listener saw, one row per (instrument, bar_start), exactly the spec's columns, however writes failed and re-ran. Harm: replays and audits cannot reproduce a live decision.
 - `PBT bars.gap_pct` The recorded gap is 100 x (o / c - 1), from the indicative price inside 09:00-09:08 else the open of the first tick at or after 09:15, and the record names its source and trade date; a later first tick never replaces a record. Harm: EP gap filters use a wrong gap.
-- `PBT bars.gap_record_from_its_own_day` In a process running across days, every gap record of trade date d holds d's open: its own indicative open, or the feed's open from a tick at or after 09:15 (a 09:00 snapshot carries yesterday's open). Harm: `gap_up` runs on yesterday's open (PR 22, audit F13).
+- `PBT bars.gap_record_from_its_own_day` In a process running across days, every gap record of trade date d holds d's open: its own indicative open, or the feed's open from a tick at or after 09:15 (a 09:00 snapshot carries yesterday's open), and a later day's record drops the earlier days' records. Harm: `gap_up` runs on yesterday's open (PR 22, audit F13).
 - `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
 - `PBT bars.history_matches_builder` Aggregating a 1-minute series to 5-minute bars (`minute_history.aggregate`) gives exactly the bars the live builder makes of the same prints (open with the volume, high, low, close): same windows, OHLC and volume, nothing outside the session. Harm: EP backtests read bars built differently from live and mislead promotion decisions.
 - `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for 1-minute candles in consecutive chunks of at most 100 days covering exactly the period, writes the builder's bars of them to `bars_5m`, and on a failed response for any symbol (a later one included) writes nothing and raises `history_failed` without the broker's text. Harm: a history gap or a broker message reaches the store or the logs.
 - `PBT gapscan.covers_universe` The scan evaluates every EQ symbol exactly once with the exact gap, and no other series. Harm: a gapper is missed because a page was truncated.
-- `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed. Harm: impossible gaps are chased or valid EP candidates never watched.
+- `PBT gapscan.filter` The selected set equals {gap >= 10 and universe passes and (band 10 or 20, or F&O)}; a stock with no price-band row is never selected; every selected symbol is handed on to be subscribed, with the listing's open (PR 22: the gapper is not subscribed yet, so the feed has no open of it). Harm: impossible gaps are chased or valid EP candidates never watched.
 - `PBT gapscan.timing_recorded` Every gap-scan run, successful or failed, has a `hat_job_run` row with start and finish, and a run finishing at or after 09:20:00 IST raises an alert. Harm: the EP playbook silently never sees its candidates in time.
 - `PBT announcements.poll_schedule` The next poll is 2 minutes after t from 07:30 (inclusive) to 15:30 (exclusive) IST and 15 minutes otherwise. Harm: a 09:10 catalyst is missed by the 09:20 trigger.
 - `PBT announcements.poll_schedule_edges` The window edges 07:29:59, 07:30:00, 15:29:59 and 15:30:00. Harm: the cadence changes at the wrong second.
@@ -67,7 +67,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.trigger_only_on_final_bars` With prints arriving late or out of order through the real bar builder, a pivot breakout fires once, at the final instant (end + 2 s) of the first final bar in [09:20, 15:20] whose high is above the pivot, never from a print in a bar still open or a late print the bar never took, and never at an instant before the bar was handed over; the elapsed share of the session is read at that same final instant, where the day volume is read; and (`test_failed_signal_write_retries`) a failed signal write releases the key so the next final bar fires again, while a stored signal closes it for the day. Harm: an entry fires on a print the 5-minute bar later disowns, or before the bar that justifies it exists.
 - `PBT bars.stale_feed_trips_health_kill` Wired as in production (staleness monitor, `EventFeedHealth`, `DataHealthKill`), the account's data-health kill is tripped exactly while the feed is stale and clears by itself when ticks resume, even when the trip and the recovery fall on one instant and (`test_health_kill_writes_out_of_order`) whatever order the worker threads write the changes in; a trigger fired while stale is stored Rejected with `stale_feed` and opens nothing, one on a live feed opens its virtual position. Harm: entries keep being taken on prices that stopped updating, or the account stays manage-only after the feed is back.
 - `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and coverage has the same opening ranges and day volumes as one that saw every tick, a restored bar never replaces a live one, and it has no day low (the restart is a gap). Harm: after a restart the opening range is lost and no ORB entry fires that day.
-- `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, a restart and its downtime, with a BBB heartbeat as the rest of the feed), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
+- `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
 - `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
 
 ## Run
@@ -141,7 +141,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `43e375a4af094ce59c9ba9f46245b9ecf2fe825183cd975dbb52dd86740d5222`
+Covered digest: `6396bf937cc181c270c45881deccf651606e5a26a467ed7c6a8262b4e5a51d34`
 
 ## Scope changes
 
@@ -395,6 +395,13 @@ tests/hat/properties/test_gapscan.py:148: in test_filter
 E   AssertionError: assert {'A'} == set()
 E     
 E     Extra items in the left set:
+```
+
+Break (PR 22): `gap_scan_body` hands over no opens (`on_candidates(found, {})`).
+
+```
+E   KeyError: 'A'
+E   Failing test case: test_filter(
 ```
 
 ### PBT gapscan.timing_recorded
@@ -1088,6 +1095,13 @@ E   AssertionError: assert ((Decimal('110.00'), Decimal('100.00')) is None or da
 
 Break: `LiveData.persist` does not write `coverage.json`: same failure as the previous break.
 
+Break: `BarBuilder._complete` does not require a feed tick at or after the end of the bars it covers (`seen = True`); the code-review case (feed silent from 09:19:55, the first bar's low printed unseen at 09:19:57) publishes a partial opening range at 09:20:02.
+
+```
+E   AssertionError: assert (Decimal('100...imal('100.0')) == (Decimal('100...imal('90.00'))
+E     At index 1 diff: Decimal('100.0') != Decimal('90.00')
+```
+
 ### PBT bars.trigger_never_uses_a_partial_session
 
 Break: `BarBuilder.from_open` returns `True`.
@@ -1105,6 +1119,12 @@ Break: `PreopenGaps.observe` takes the first-tick open at any time (`local.time(
 E   AssertionError: assert Decimal('1000.0') in {Decimal('1010'), Decimal('2000')}
 E   Failing explicit example: test_gap_record_from_its_own_day(
 E       seen=[(0, 540, False), (1, 540, False)],
+```
+
+Break: `PreopenGaps.record` keeps earlier days' records (the pruning loop to `pass`).
+
+```
+E   AssertionError: assert {'AAA': GapRe...a/Kolkata')))} == {}
 ```
 
 Break: `PreopenGaps.records` ignores the trade date (records keyed by symbol only, as before PR 22).
