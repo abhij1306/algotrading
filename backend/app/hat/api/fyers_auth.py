@@ -6,24 +6,38 @@ removes it. This is the one login and, through the service, the one token store.
 
 Every answer is a fixed message. Exception text, the token, the secret and the auth code never reach
 the client or the log, and a failed exchange writes no token.
+
+The two POST routes are HAT's only writes (HAT-DEC-T3). Each depends on `guard.frontend_write`,
+which refuses a request that did not come from the HAT page (HAT-DEC-BD5). `token` also refuses a
+login for a Fyers user other than the active Fyers broker account, so no page can plant a token
+for another account. With no active Fyers account yet (before onboarding, which needs the first
+token) any user is accepted.
 """
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
+from app.database import get_db
+from app.hat.api.guard import frontend_write
 from app.hat.execution.fyers_auth import (
     FyersAuthError,
     FyersAuthService,
     MissingCredentialsError,
     TokenRejectedError,
+    WrongAccountError,
     get_fyers_auth,
 )
 from app.hat.execution.fyers_tokens import TokenStoreError
+from app.hat.models import HatBrokerAccount
 
 __all__ = ["router"]
 
@@ -32,6 +46,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/hat/auth/fyers", tags=["HAT auth"])
 
 AuthService = Annotated[FyersAuthService, Depends(get_fyers_auth)]
+Db = Annotated[Session, Depends(get_db)]
+FYERS = "fyers"
+ACCOUNT_ACTIVE = "active"  # `hat_broker_account.status` of an onboarded account
 
 STATUS_ERROR = "Could not read Fyers login status"
 MISSING_CREDENTIALS_ERROR = (
@@ -41,6 +58,7 @@ URL_ERROR = "Failed to generate authentication URL"
 EXCHANGE_ERROR = "Token exchange failed"
 STORE_ERROR = "The Fyers token could not be saved"
 DISCONNECT_ERROR = "Failed to disconnect from Fyers"
+DB_ERROR = "The database is unavailable; the Fyers login was not saved"
 
 
 class AuthCodeRequest(BaseModel):
@@ -88,26 +106,55 @@ def fyers_login_url(service: AuthService) -> LoginUrlResponse:
         raise HTTPException(status_code=500, detail=URL_ERROR) from None
 
 
+def _account_check(db: Session) -> Callable[[str | None], bool]:
+    """The `accept_user` of a login: the user id must be the `account_ref` of an active Fyers
+    broker account, unless there is none yet. The accounts are read once Fyers has answered, just
+    before the save, so no connection is held while Fyers answers and an account onboarded in
+    the meantime counts."""
+
+    def accept(user_id: str | None) -> bool:
+        refs = set(
+            db.scalars(
+                select(HatBrokerAccount.account_ref).where(
+                    HatBrokerAccount.broker == FYERS, HatBrokerAccount.status == ACCOUNT_ACTIVE
+                )
+            )
+        )
+        return not refs or user_id in refs
+
+    return accept
+
+
 @router.post(
     "/token",
+    dependencies=[Depends(frontend_write)],
     responses={
         400: {"description": "Fyers rejected the auth code"},
+        403: {"description": "Not from the HAT page, or not the HAT broker account's login"},
+        503: {"description": "The broker accounts could not be read"},
         500: {"description": "Credentials missing, the exchange failed or the token was not saved"},
     },
 )
-def exchange_auth_code(request: AuthCodeRequest, service: AuthService) -> MessageResponse:
+def exchange_auth_code(request: AuthCodeRequest, service: AuthService, db: Db) -> MessageResponse:
     """Exchange an auth code for an access token and save it. Any failure writes no token."""
+    accept_user = _account_check(db)
     try:
-        service.exchange(request.auth_code)
+        service.exchange(request.auth_code, accept_user=accept_user)
     except MissingCredentialsError:
         raise HTTPException(status_code=500, detail=MISSING_CREDENTIALS_ERROR) from None
     except TokenRejectedError as error:
         raise HTTPException(status_code=400, detail=error.message) from None
+    except WrongAccountError as error:
+        raise HTTPException(status_code=403, detail=error.message) from None
     except FyersAuthError as error:
         raise HTTPException(status_code=500, detail=error.message) from None
     except TokenStoreError:
         logger.exception("Fyers token could not be stored")
         raise HTTPException(status_code=500, detail=STORE_ERROR) from None
+    except SQLAlchemyError:
+        # the broker accounts could not be read: fail closed, nothing was saved
+        logger.exception("Fyers login: broker accounts unreadable")
+        raise HTTPException(status_code=503, detail=DB_ERROR) from None
     except Exception:
         logger.exception("Fyers token exchange failed")
         raise HTTPException(status_code=500, detail=EXCHANGE_ERROR) from None
@@ -116,7 +163,11 @@ def exchange_auth_code(request: AuthCodeRequest, service: AuthService) -> Messag
 
 @router.post(
     "/disconnect",
-    responses={500: {"description": "The token could not be removed"}},
+    dependencies=[Depends(frontend_write)],
+    responses={
+        403: {"description": "Not from the HAT page"},
+        500: {"description": "The token could not be removed"},
+    },
 )
 def fyers_disconnect(service: AuthService) -> MessageResponse:
     """Remove the saved Fyers token and drop the session."""

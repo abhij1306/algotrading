@@ -7,6 +7,10 @@ the routers of the `app.hat.api` modules and the source of each GET endpoint. Fr
 follows every call it can resolve to a function of an `app.hat` module (the module's own helpers,
 `reads.*`, `controls.kill_state` and so on) and refuses a session write (`add`, `commit`,
 `delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`.
+
+HAT-DEC-BD5 (PR 38): every write route depends on the write guard (`app.hat.api.guard`); the app
+wiring hands the guard the CORS frontend-origin rule; the server binds to loopback by default. The
+wiring is read from the source of `app/main.py` and `start_server.py`, which are never imported.
 """
 
 import ast
@@ -20,11 +24,13 @@ from typing import Any
 
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
+from hat_conf_spec import REPO_ROOT
 
 import app.hat.api
+from app.hat.api import guard
 
 # The only routes that are not GET: the daily Fyers login (HAT-OPS-051, K2). It writes the token
-# file, never a HAT table.
+# file, never a HAT table, and each route depends on the write guard (HAT-DEC-BD5).
 WRITE_ROUTES = {
     ("POST", "/api/hat/auth/fyers/token"),
     ("POST", "/api/hat/auth/fyers/disconnect"),
@@ -135,3 +141,79 @@ def test_hat_routes_read_only() -> None:
         else:
             writes |= {(method, route.path) for method in methods}
     assert writes == WRITE_ROUTES
+
+
+def _dependency_calls(route: APIRoute) -> set[object]:
+    """Every dependency callable of the route, nested ones included."""
+    found: set[object] = set()
+    pending = list(route.dependant.dependencies)
+    while pending:
+        dependant = pending.pop()
+        found.add(dependant.call)
+        pending.extend(dependant.dependencies)
+    return found
+
+
+def test_hat_writes_guarded() -> None:
+    """HAT-DEC-BD5: every route under `app/hat/api` that is not a read depends on
+    `guard.frontend_write`, so no write runs before the guard has refused a request from another
+    site. Harm: a new POST route ships open to cross-site requests (CSRF) on the owner's browser."""
+    writes = [
+        (module, route)
+        for module, route in _routes()
+        if not set(route.methods or ()) <= READ_METHODS
+    ]
+    assert {(m, r.path) for m, r in writes}
+    for module, route in writes:
+        assert guard.frontend_write in _dependency_calls(route), (module, route.path)
+
+
+def _assigned(tree: ast.AST, target: str) -> list[ast.expr]:
+    """The values assigned to the dotted name `target` anywhere in `tree`."""
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and any(ast.unparse(t) == target for t in node.targets)
+    ]
+
+
+def test_api_loopback_no_auth_wiring() -> None:
+    """HAT-DEC-BD5: the API has no auth and relies on its bind and the write guard, so
+    `start_server.py` binds `BACKEND_HOST` to 127.0.0.1 by default, and `app/main.py` sets
+    `app.state.frontend_origin` to the CORS rule `is_frontend_origin` imported from
+    `app.utils.origins`. Harm: the server listens on every interface with no auth, or the guard
+    has no rule and either refuses the HAT page or is replaced by a looser rule than CORS."""
+    start = ast.parse((REPO_ROOT / "backend" / "start_server.py").read_text(encoding="utf-8"))
+    defaults = [
+        node.args[1]
+        for node in ast.walk(start)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) == "os.getenv"
+        and len(node.args) == 2
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "BACKEND_HOST"
+    ]
+    assert [ast.unparse(value) for value in defaults] == ["'127.0.0.1'"]
+
+    main = ast.parse((REPO_ROOT / "backend" / "app" / "main.py").read_text(encoding="utf-8"))
+    wired = _assigned(main, f"app.state.{guard.ORIGIN_RULE}")
+    assert [ast.unparse(value) for value in wired] == ["is_frontend_origin"]
+    imported = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "utils.origins"
+        and node.level == 1
+        and any(alias.name == "is_frontend_origin" and alias.asname is None for alias in node.names)
+    ]
+    assert len(imported) == 1
+
+
+def test_frontend_sends_write_header() -> None:
+    """HAT-DEC-BD5: the frontend API client names the guard's header and value, and sets them in
+    its one write middleware. Harm: a rename on either side makes every login and logout from
+    the HAT page a 403."""
+    client = (REPO_ROOT / "frontend" / "lib" / "api" / "client.ts").read_text(encoding="utf-8")
+    assert f'export const WRITE_HEADER = "{guard.HEADER}";' in client
+    assert f'request.headers.set(WRITE_HEADER, "{guard.HEADER_VALUE}")' in client
+    assert client.count("client.use(") == 1

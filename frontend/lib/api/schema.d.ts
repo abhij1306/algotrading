@@ -675,6 +675,13 @@ export interface operations {
           "application/json": components["schemas"]["MessageResponse"];
         };
       };
+      /** @description Not from the HAT page */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description The token could not be removed */
       500: {
         headers: {
@@ -733,6 +740,13 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Not from the HAT page, or not the HAT broker account's login */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
       /** @description Validation Error */
       422: {
         headers: {
@@ -744,6 +758,13 @@ export interface operations {
       };
       /** @description Credentials missing, the exchange failed or the token was not saved */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The broker accounts could not be read */
+      503: {
         headers: {
           [name: string]: unknown;
         };

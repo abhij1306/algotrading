@@ -89,8 +89,10 @@ engine, each even if the other failed.
   in `def` routes, which FastAPI runs in its threadpool, or behind `asyncio.to_thread`. Never
   block in `async def`. SDK callbacks arrive on SDK threads: hand work to the event loop with
   `asyncio.run_coroutine_threadsafe` or `loop.call_soon_threadsafe`. The server binds to
-  `BACKEND_HOST` (default `127.0.0.1`) and there is no API auth, by decision. Errors never carry
-  broker or database text.
+  `BACKEND_HOST` (default `127.0.0.1`) and there is no API auth, by decision (HAT-DEC-BD5). The two
+  Fyers login POSTs are the only writes. Each depends on `app/hat/api/guard.py`'s
+  `frontend_write`, which needs the `X-HAT-Request: 1` header and a frontend `Origin`, and any new
+  write route must depend on it too. Errors never carry broker or database text.
 - **DB sessions.** Use `db_session_scope()` from `app.database` for service-owned DB work and
   `get_db()` for request-scoped FastAPI dependencies.
 - **Frontend: no new `useEffect`/`useLayoutEffect`** (`.claude/hooks/no-useeffect.sh` blocks them).

@@ -29,12 +29,13 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: all HAT engine code lives under `backend/app/hat/` and is importable by the backend's Python version. Harm: a second runtime adds a deployment and a boundary nobody verifies.
 
 #### HAT-DEC-T3: Web dashboard plus Telegram
-- **Statement:** HAT exposes read-only dashboard views through `/api/hat/*` and one frontend page; Telegram is the control surface.
-- **Source:** MA "Recommended options" (T3); MA "Reuse vs build" (KPI dashboards).
-- **PR:** 16, 17
-- **Verification:** CONF `hat_routes_read_only`
+- **Statement:** HAT exposes read-only dashboard views through `/api/hat/*` and one frontend page; Telegram is the control surface. The only writes are the two Fyers login routes, `POST /api/hat/auth/fyers/token` and `POST /api/hat/auth/fyers/disconnect`. They write only the token file and run behind the write guard (HAT-DEC-BD5).
+- **Source:** MA "Recommended options" (T3); MA "Reuse vs build" (KPI dashboards); design review 2026-10-22 item 17 (the two POSTs were exempt without being named here).
+- **PR:** 16, 17, 38
+- **Verification:** CONF `hat_routes_read_only`, CONF `hat_writes_guarded`
 - **Acceptance:**
-  - Property: every route under `/api/hat/` is an HTTP GET with no side effect on HAT tables. Harm: an unauthenticated localhost API could change modes, risk or positions outside the governed Telegram path. Detail: 10 §1, 08 §3.
+  - Property: every route under `/api/hat/` is an HTTP GET with no side effect on HAT tables, except the two Fyers login POSTs, and each of those depends on the write guard. Harm: an unauthenticated localhost API could change modes, risk or positions outside the governed Telegram path. Detail: 10 §1, 08 §3.
+- **Changed (PR 38):** the two login POSTs are named in the statement and must carry the write guard; before this the CONF check exempted them silently.
 
 #### HAT-DEC-T4: Extend SmartTrader
 - **Statement:** HAT extends SmartTrader; SmartTrader's stack wins wherever it differs from T2, T3, T5 or T6.
@@ -569,6 +570,21 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Verification:** CONF `no_deferred_integrations`
 - **Acceptance:**
   - Property: no HAT module imports or calls OpenAlgo, and every `openalgo_ref` value is null. Harm: a second secret store and process appear that nobody verified.
+
+#### HAT-DEC-BD5: No API auth; loopback bind; guarded writes
+- **Statement:** The HTTP API has no authentication. It binds to loopback (`BACKEND_HOST`, default `127.0.0.1`) or a VPN address and serves one owner. A shared secret is not possible, since a `VITE_*` value is in the public frontend bundle. The two writes (HAT-DEC-T3) must show they came from the HAT page instead:
+  - The request carries the header `X-HAT-Request: 1`. A page on another site cannot send it without a CORS preflight, and CORS answers a preflight only for the frontend's origins.
+  - An `Origin`, when sent, must pass the CORS frontend-origin rule (`app.utils.origins.is_frontend_origin`, handed to the guard as `app.state.frontend_origin`).
+  - With no `Origin`, `Sec-Fetch-Site` must be absent, `same-origin` or `none`.
+
+  A refusal is a 403 with one fixed message, and nothing is written. `POST /token` also saves a token only for the Fyers user that is the `account_ref` of an active Fyers broker account; before any such account exists (onboarding needs the first token), any user is accepted. Once an account exists, a login whose user cannot be read is refused (`ACCOUNT_UNCONFIRMED`; the owner logs in again), and one that cannot read the accounts answers 503. The accounts are read after Fyers answers, just before the save. A frontend served on a non-loopback address (a VPN) must have its origin in `CORS_ORIGINS`: a same-origin `Sec-Fetch-Site` is not trusted while an `Origin` is sent, since a DNS-rebinding page is same-origin too. Every frontend write sends the header from one `api.use()` middleware (`frontend/lib/api/client.ts`).
+- **Source:** design review 2026-10-22 item 17 (any web page could disconnect Fyers or plant a token by CSRF); owner decision "no API auth" (CLAUDE.md).
+- **PR:** 38
+- **Verification:** CONF `hat_writes_guarded`, CONF `api_loopback_no_auth_wiring`, CONF `frontend_sends_write_header`, PBT `fyers_auth_routes.cross_site_write_refused`, PBT `fyers_auth_routes.token_for_another_account_refused`
+- **Acceptance:**
+  - Property: for every combination of the write header, `Origin` and `Sec-Fetch-Site`, a login POST runs only when the header is `1` and the request names a frontend origin, or names no origin and is not marked cross-site or same-site. Otherwise it answers 403, writes or removes no token and runs no login hook. Harm: any page the owner's browser opens logs HAT out of Fyers mid-session or plants its own token.
+  - Property: for every set of broker accounts and every user a login token belongs to, `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`, and saves nothing when the accounts cannot be read. Harm: HAT trades or reconciles on another Fyers account.
+  - Property: the server binds to loopback by default, the app wires the CORS rule into the guard, every non-GET HAT route depends on the guard, and the frontend client sends the guard's header on its writes. Harm: the API listens on every interface, or a new write route ships unguarded.
 
 #### HAT-DEC-BD4: Specs win over existing repo code
 - **Statement:** Where existing repo code or old docs conflict with `docs/specs/hat/`, the specs win; the old docs were deleted in PR 1.

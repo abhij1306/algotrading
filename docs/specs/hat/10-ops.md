@@ -503,7 +503,9 @@ incident in the PR or issue tracker).
 
 1. 08:30 IST: Telegram sends the Fyers login link (`login.prompt`). Open it and log in at Fyers.
 2. Fyers redirects to the registered `REDIRECT_URI`; copy the `auth_code` from the redirected URL
-   into the login dialog in the app header (or `POST /api/hat/auth/fyers/token`).
+   into the login dialog in the app header. Or send `POST /api/hat/auth/fyers/token` with the
+   header `X-HAT-Request: 1` (HAT-DEC-BD5) and the JSON body `{"auth_code": "<code>"}`. The token must be for the HAT Fyers account: a login
+   with another Fyers user is refused once that account is onboarded.
 3. Check: the header shows Fyers connected; `/status` shows the broker session live.
 4. No entries are placed until the login is done; stops and exits that rest at the broker are not
    affected.

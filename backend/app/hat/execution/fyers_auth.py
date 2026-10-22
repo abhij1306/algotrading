@@ -44,6 +44,9 @@ __all__ = [
     "LoginCancelledError",
     "MissingCredentialsError",
     "TokenRejectedError",
+    "ACCOUNT_UNCONFIRMED",
+    "WRONG_ACCOUNT",
+    "WrongAccountError",
     "credentials_from_env",
     "fyers_auth",
     "get_fyers_auth",
@@ -59,6 +62,8 @@ _SESSION_STATE = "fyers_api_state"
 AUTH_CODE_REJECTED = "Fyers rejected the auth code. Please log in again."
 LOGIN_FAILED = "Fyers login failed. Please try again."
 LOGIN_CANCELLED = "Login was cancelled by a logout. Please log in again."
+WRONG_ACCOUNT = "This Fyers login is not the HAT broker account. Please log in with that account."
+ACCOUNT_UNCONFIRMED = "Could not confirm which Fyers account logged in. Please log in again."
 
 Event = Literal["token_change", "login", "disconnect"]
 
@@ -77,6 +82,10 @@ class MissingCredentialsError(FyersAuthError):
 
 class TokenRejectedError(FyersAuthError):
     """Fyers did not return a token for the auth code."""
+
+
+class WrongAccountError(FyersAuthError):
+    """The token is for a Fyers user the caller does not accept (HAT-DEC-BD5)."""
 
 
 class LoginCancelledError(TokenRejectedError):
@@ -213,7 +222,8 @@ class FyersAuthService:
         """The Fyers user id (`fy_id`) from the profile of a new token. The token reply carries
         none, so without this the login status has no user id. None when there is no model
         factory or the profile cannot be read in PROFILE_TIMEOUT_SECONDS; the login stands either
-        way. The reply is checked as every profile read is (`profile_data`)."""
+        way unless the caller's `accept_user` refuses an unknown user. The reply is checked as
+        every profile read is (`profile_data`)."""
         if self._model_factory is None:
             return None
         try:
@@ -229,11 +239,17 @@ class FyersAuthService:
             return None
         return user_id
 
-    def exchange(self, auth_code: str) -> FyersStatus:
+    def exchange(
+        self, auth_code: str, *, accept_user: Callable[[str | None], bool] | None = None
+    ) -> FyersStatus:
         """Trade an auth code for a token, save it, and point the process at it.
 
-        Raises MissingCredentialsError, TokenRejectedError, FyersAuthError (the SDK failed) or
-        TokenStoreError (save failed); in each case no token was written.
+        `accept_user`, when given, sees the token's Fyers user id (None when the profile could not
+        be read) before anything is saved; a refusal raises WrongAccountError, with
+        ACCOUNT_UNCONFIRMED when the user id is unknown and WRONG_ACCOUNT otherwise.
+
+        Raises MissingCredentialsError, TokenRejectedError, WrongAccountError, FyersAuthError (the
+        SDK failed) or TokenStoreError (save failed); in each case no token was written.
         """
         creds = self._credentials()
         with self._lock:
@@ -248,6 +264,12 @@ class FyersAuthService:
             raise TokenRejectedError(AUTH_CODE_REJECTED)
 
         user_id = self._profile_user_id(creds.client_id, access_token)
+        if accept_user is not None and not accept_user(user_id):
+            if user_id is None:
+                logger.warning("Fyers login refused: its account could not be confirmed")
+                raise WrongAccountError(ACCOUNT_UNCONFIRMED)
+            logger.warning("Fyers login refused: the token is not for the HAT broker account")
+            raise WrongAccountError(WRONG_ACCOUNT)
         if user_id is not None:
             reply = {**reply, "fy_id": user_id}
 

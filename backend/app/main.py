@@ -33,7 +33,7 @@ from .exceptions import DatabaseUnavailableError  # noqa: E402
 from .hat.api import dashboard as hat_dashboard  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
 from .hat.settings import is_enabled  # noqa: E402
-from .utils.origins import FrontendCORSMiddleware  # noqa: E402
+from .utils.origins import FrontendCORSMiddleware, is_frontend_origin  # noqa: E402
 
 
 def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
@@ -297,6 +297,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# The frontend-origin rule the HAT write guard checks (app/hat/api/guard.py, HAT-DEC-BD5): the
+# same rule as CORS. Unset, the guard refuses every write that carries an Origin.
+app.state.frontend_origin = is_frontend_origin
 
 # HAT routes: the Fyers login and the read-only dashboard (`/api/hat/*`).
 app.include_router(hat_fyers_auth.router)
