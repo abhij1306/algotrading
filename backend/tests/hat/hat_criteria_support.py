@@ -69,9 +69,11 @@ def make_rows(
     rng: Lcg, length: int, style: str = "walk", *, start: int = 0, base: int = 10000
 ) -> list[Row]:
     """`length` consecutive-day bars. Styles: `walk` (a random walk), `tie` (few price levels,
-    so equal averages and equal ratios occur), `flat` (one price)."""
+    so equal averages and equal ratios occur), `flat` (one price), `trend` (a walk drifting up or
+    down, so large moves of either sign occur)."""
     rows: list[Row] = []
     price = base
+    drift = rng.choice([-150, 150]) if style == "trend" else 0
     for i in range(length):
         if style == "flat":
             close, up, down = base, 0, 0
@@ -79,7 +81,7 @@ def make_rows(
             close = rng.choice([base, base + 100, base + 200])
             up, down = rng.choice([0, 100]), rng.choice([0, 100])
         else:
-            price = max(100, price + rng.randrange(-300, 301))
+            price = max(100, price + drift + rng.randrange(-300, 301))
             close, up, down = price, rng.randrange(0, 400), rng.randrange(0, 400)
         low = max(1, close - down)
         rows.append(

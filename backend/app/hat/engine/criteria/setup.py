@@ -374,18 +374,35 @@ def close_vs_pivot(ctx: EvalContext, params: CloseVsPivotParams) -> CriterionRes
 
 
 class NeglectParams(ParamModel):
+    # A negative limit never holds for the absolute move; it stays valid for stored configs.
     max_return_63d_pct: float = Field(default=30.0, ge=-100, le=100_000)
+    # Off by default (PR 56, research G07): the high/low range of the 126 sessions before the date.
+    max_range_126d_pct: float | None = Field(default=None, gt=0, le=100_000)
 
 
 def neglect(ctx: EvalContext, params: NeglectParams) -> CriterionResult:
-    """HAT-CRIT-120: the 63-session return, on bars up to the previous session, is at most
-    `max_return_63d_pct` (close_prev / close_63 sessions before - 1)."""
-    close = ctx.previous_history.close
-    window = last(close, 64)
+    """HAT-CRIT-120: the absolute 63-session move, on bars up to the previous session, is at most
+    `max_return_63d_pct` (|close_prev / close_63 sessions before - 1|), so a stock that rose or
+    fell that far is not neglected. With `max_range_126d_pct`, the range of the 126 sessions
+    before the date (max high / min low - 1) is at most it too, and a stock with fewer such
+    sessions is `no_data`; the evaluation date (the gap day) is never read. The value is the
+    signed 63-session return."""
+    bars = ctx.previous_history
+    window = last(bars.close, 64)
     if window is None or window[0] <= 0:
         return no_data()
     last_close, base = dec(window[-1]), dec(window[0])
     pct = float((last_close / base - 1) * 100)
-    return verdict(
-        last_close * 100 <= base * (100 + dec(params.max_return_63d_pct)), pct, "already_extended"
-    )
+    limit = dec(params.max_return_63d_pct)
+    if last_close * 100 > base * (100 + limit):
+        return verdict(False, pct, "already_extended")
+    if last_close * 100 < base * (100 - limit):
+        return verdict(False, pct, "already_fell")
+    if params.max_range_126d_pct is not None:
+        highs, lows = last(bars.high, 126), last(bars.low, 126)
+        if highs is None or lows is None or min(lows) <= 0:
+            return no_data()
+        span = dec(max(highs)) / dec(min(lows)) - 1
+        if span * 100 > dec(params.max_range_126d_pct):
+            return verdict(False, pct, "range_too_wide")
+    return verdict(True, pct, "")

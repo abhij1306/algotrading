@@ -24,7 +24,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT criteria.ma_surf_contract` `ma_surf` passes exactly when the close is within the maximum distance of every listed SMA, with a score that falls with distance. Harm: stocks far from the moving average are treated as surfing it.
 - `PBT criteria.prior_move_contract` `prior_move` passes exactly when some low-then-high pair inside the trailing window rose at least `min_pct`, never using a high that came before its low. Harm: stocks with no prior run-up pass the EP setup.
 - `PBT criteria.earnings_growth_contract` `earnings_growth` reads only rows filed on or before the date (point in time), and is no data without any. Harm: tomorrow's earnings leak into today's decision.
-- `PBT criteria.neglect_contract` `neglect` measures the 63-session return on bars up to the previous session only, and passes at most the maximum. Harm: a stock that already ran passes as neglected, or the evaluation day's own move changes the answer.
+- `PBT criteria.neglect_contract` `neglect` measures the 63-session return on bars up to the previous session only, and passes when its absolute value is at most the maximum (a rise fails `already_extended`, a fall `already_fell`); with `max_range_126d_pct` the 126-session high/low range of those bars must be at most it (`range_too_wide`). Harm: a stock that already ran, or one that collapsed or swung wildly, passes as neglected, or the evaluation day's own move changes the answer.
 - `PBT criteria.vcp_contract` `vcp` passes exactly when the contraction count, depth ratios, final depth and volume dry-up all meet the parameters, never reads a bar after the date, reports the pivot and final contraction low, and fails closed on missing data. Harm: a loose or noisy base is called a volatility contraction pattern and its stop sits in the wrong place.
 - `PBT criteria.vcp_parity` The ported `vcp` finds the same contraction chain as a transcription of the legacy detector on generated bars, and matches a frozen oracle of the legacy output on accepted cases. Harm: the port quietly changes which patterns the bot trades.
 - `PBT criteria.close_vs_pivot_contract` `close_vs_pivot` passes exactly when close x 100 <= pivot x (100 + `max_above_pct`) (equal passes), its value is the close's percentage above the pivot, a missing or non-positive pivot level fails with `no_pivot` and missing bars with `no_data`. Harm: a name that broke out days ago is published with its stale pivot and bought far above the base.
@@ -143,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `a961cd788e95875fc85d99a7fecb7933c076a05948b8b02e10273ab5f7a6387b`
+Covered digest: `10799e4bc785025257f223cef6d3030120318a150bf25478cc66c3c51331ef4d`
 
 ## Scope changes
 
@@ -163,6 +163,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 55: `FastAboveSlow.rising_days` defaults to 3 (owner default, plan audit N7); its property is `regime.strategy_rules` in `verify-portfolio`. The S2 seed and its spec YAML state `rising_days: 3` explicitly, so `seed_bots_match_spec_yaml` still compares them field for field and is unchanged.
+- PR 56 (research G07, plan audit "PR 56"): `neglect` passes on the absolute 63-session move, so a fall beyond the limit now fails `already_fell`; the optional `max_range_126d_pct` (off by default) adds a 126-session range check on the bars before the date (`range_too_wide`). A negative `max_return_63d_pct` stays valid (stored configs keep loading) but never passes. With the range on, fewer than 126 sessions is `no_data`, checked after the return. `make_rows` gained a `trend` style so large moves of either sign occur. Nothing was narrowed; `criteria.neglect_contract` now covers both signs and the range.
 - PR 54 (plan audit N2): a criterion reads the numeric `extras` of the criteria before it in its stage (`EvalContext.levels`, set by `evaluate_stage` on a copy of the context), which `close_vs_pivot` needs for `vcp`'s pivot. `close_vs_pivot` is a hard S1 setup criterion after `vcp`; a symbol whose `vcp` finds no base now stops at `close_vs_pivot` (`no_pivot`) instead of `below_threshold`. The scan publishes the setup stage's `levels` (`StageOutcome.levels`), so the gate and the watchlist row use one pivot; `ep_setup_passes` evaluates the EP setup through `evaluate_stage` (threshold 0, so only hard criteria decide) to pass levels too. `EvalContext` keeps its read bars in a dict its `with_levels` copies share. No property was narrowed; `hat_config_support` generates the new stop `min_pct` but not `close_vs_pivot` (valid only after a `vcp`; `config.close_vs_pivot_needs_vcp` covers it).
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
@@ -424,6 +425,78 @@ Break: `neglect` includes the evaluation day's bar in the 63-day return.
 | AssertionError: assert CriterionResu...d', extras={}) == CriterionResu...d', extras={})
 |     assert not result.passed and result.reason == "no_data"
 | AssertionError: assert (not False and 'already_extended' == 'no_data'
+```
+
+Break: (PR 56) `neglect` uses the signed return again, so a fall beyond the limit passes.
+
+```
+E   AssertionError: assert 'ok' == 'already_fell'
+E     - already_fell
+E     + ok
+E   Failing test case: test_neglect_contract(
+E       rng=Lcg(2),
+E       style='trend',
+E       length=65,
+E       max_ret=0.0,
+E       max_range=None,  # or any other generated value
+E   )
+FAILED tests/hat/properties/test_criteria.py::test_neglect_contract - Asserti [cut]
+```
+
+Break: (PR 56) `neglect` ignores `max_range_126d_pct`.
+
+```
+E   AssertionError: assert 'ok' == 'range_too_wide'
+E     - range_too_wide
+E     + ok
+E   Failing test case: test_neglect_contract(
+E       rng=Lcg(0),
+E       style='trend',  # or any other generated value
+E       length=127,
+E       max_ret=100.0,
+E       max_range=5.0,
+E   )
+FAILED tests/hat/properties/test_criteria.py::test_neglect_contract - Asserti [cut]
+```
+
+Break: (PR 56) the 126-session range reads the bars up to the date (`ctx.history`), so the gap day counts.
+
+```
+  | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "tests/hat/properties/test_criteria.py", line 654, in test_neglect_contract
+    |     assert evaluate("neglect", params, context([*previous, today])) == result  # gap day unread
+    | AssertionError: assert CriterionResu...e', extras={}) == CriterionResu...k', extras={})
+    |   Omitting 2 identical items, use -vv to show
+    |   Differing attributes:
+    |   ['passed', 'score', 'reason']
+    |   Drill down into differing attribute passed:
+    |     passed: False != True [cut]
+    |   ...Full output truncated (8 lines hidden), use '-vv' to show
+    | Failing test case: test_neglect_contract(
+    |     rng=Lcg(0),  # or any other generated value
+    |     style='tie',
+    |     length=127,
+    |     max_ret=10.0,
+    |     max_range=5.0,
+    | )
+    +---------------- 2 ----------------
+    | Traceback (most recent call last):
+    |   File "tests/hat/properties/test_criteria.py", line 647, in test_neglect_contract
+    |     assert result.reason == want
+    | AssertionError: assert 'range_too_wide' == 'no_data'
+    |   - no_data
+    |   + range_too_wide
+    | Failing test case: test_neglect_contract(
+    |     rng=Lcg(0),
+    |     style='trend',  # or any other generated value
+    |     length=126,
+    |     max_ret=100.0,
+    |     max_range=5.0,
+    | )
+    +------------------------------------
+FAILED tests/hat/properties/test_criteria.py::test_neglect_contract - Excepti [cut]
 ```
 
 ### PBT criteria.vcp_contract

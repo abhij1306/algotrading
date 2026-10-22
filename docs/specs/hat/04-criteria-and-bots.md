@@ -343,13 +343,13 @@ Common properties for every catalogue type (apply to each requirement below; ver
 - **[OWNER-PENDING]** break semantics: default = the first final 5-minute bar whose final instant (bar end + 2 s) lies in 09:20-15:20 IST and whose high is strictly above the level, so a tick traded above the level inside that bar; triggers evaluate only on final bars (HAT-EXEC-120), and the entry price is the bar's close. The docs give only "level" and "bar (5-min)". Owner to confirm. [Reconciled in PR 15a with HAT-EXEC-120, which had evaluation on final bars while this default read "first tick".]
 
 #### HAT-CRIT-120: `neglect`
-- **Statement:** `neglect` passes iff the 63-day return is at most 30%.
-- **Source:** BL "Criteria library" (stage Trigger); BL "Qullamaggie-style bot" (`max_return_63d_pct: 30`, used in the EP setup).
-- **PR:** 8, 15
+- **Statement:** `neglect` passes iff the absolute 63-day move is at most 30%, so a stock that rose or fell that far is not neglected. With `max_range_126d_pct` set (off by default), the high/low range of the 126 sessions before the date must be at most it too. The date's own bar (the gap day) is never read.
+- **Source:** BL "Criteria library" (stage Trigger); BL "Qullamaggie-style bot" (`max_return_63d_pct: 30`, used in the EP setup); strategy research G07 and plan audit 2026-10-22 "PR 56" (absolute move, range check).
+- **PR:** 8, 15, 56
 - **Verification:** PBT `criteria.neglect_contract`
 - **Acceptance:**
-  - Property: for every series, `passed` iff ret63 × 100 <= max_return_63d_pct, computed on adjusted bars up to the previous session. Harm: already-extended stocks are treated as neglected EP candidates.
-- **[A]** neglect: default 30%; validated in shadow mode over one earnings season (BL "Defaults that are assumptions").
+  - Property: for every series, `passed` iff |ret63| × 100 <= max_return_63d_pct and, when `max_range_126d_pct` is set, (max high / min low − 1) × 100 over the 126 sessions <= max_range_126d_pct, all computed on adjusted bars up to the previous session. A rise fails `already_extended` and a fall `already_fell` before the range is read; a wide range fails `range_too_wide`; fewer than 64 sessions, or fewer than 126 with the range on (a listing younger than about six months), is `no_data`; the value is the signed ret63. Harm: an already-extended stock, or one that collapsed or swung wildly, is treated as a neglected EP candidate.
+- **[A]** neglect: default 30%; validated in shadow mode over one earnings season (BL "Defaults that are assumptions"). The 126-session range check is off until a sweep picks a limit (research G07).
 
 #### HAT-CRIT-121: `adtr_filter`
 - **Statement:** `adtr_filter` passes iff (entry − stop) <= max_multiple × ADTR(20), with max_multiple 1.0 for breakouts and 1.5 for episodic pivots.
