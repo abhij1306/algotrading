@@ -52,7 +52,9 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT history_build.mcp_close_source_exact` The MCP close for a symbol-day is the row dated that day, exactly; other days, missing rows and unreadable closes give None. Harm: validation compares against a neighbouring day.
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
 - `PBT history_build.cli_passes_calendar_holidays` Driving `main` (the command line) over a stored calendar (any mix of trading and non-trading rows in the window, sometimes another market's rows too), with the real build, no file for any day and the database, store, fetcher and MCP client patched in: every NSE non-trading date is reported as an explained holiday and every other weekday as a gap, `main` exits 1 exactly when there is a gap, and nothing reaches the network. Harm: a full-history run crashes at the reconciliation after hours of downloads (PR 42), or counts the wrong holidays.
-- `CONF store.data_root` The store root is `app.paths.HAT_DATA_ROOT`, defined only there, and raw names cannot leave it. Harm: data written outside the data volume.
+- `PBT history_build.cli_root_and_report` Driving `main` with `HAT_DATA_ROOT` set only in `.env`, only in the environment, in both, or blank in the environment over a `.env` value (`operator_env` in `hat_support.py`; every candidate root and the default sit in one scratch directory, and the database module, whose import loads the repository's `.env`, is imported before the environment is set): the run writes only under the root that rule gives (the build state included), and `history_build/report-YYYY-MM-DD.txt` there ends with exactly the summary it printed. Harm: a full-history build writes gigabytes to the repo's `data_system/hat/` instead of the data volume, or its report is lost with the terminal.
+- `CONF store.data_root` The settings' default root is `app.paths.HAT_DATA_ROOT`, defined only there, and raw names cannot leave a store's root. Harm: data written outside the data volume.
+- `CONF store.cli_root_after_env` Every module run with `python -m` under `app/hat` (at least `features`, `history_build`, `minute_history` and the backtest) calls `operator_settings()` and never imports `load_settings` under any name, and `DataStore` and `BarStore` have no default root. Harm: a command ignores a data root set only in `.env`, because `app.paths.HAT_DATA_ROOT` is read before `.env` is loaded.
 - `CONF store.layout` Every Parquet file sits in `<dataset>/date=YYYY-MM-DD/`. Harm: DuckDB partition pruning and the views miss files.
 - `PBT features.no_lookahead` Features and breadth of every date d are identical after any bar dated after d is changed, dropped, or more bars are appended (any universe, gaps, ties). Harm: backtests use future data and report edge live trading cannot have.
 - `PBT features.formulas` SMA 10/20/50/150/200, 52-week high and low, ADR20, ADTR20, ADV20, turnover20 and ret21/63/126/252 equal a direct Fraction evaluation of the §7 definitions within 1e-9 relative, and are null exactly when the window is not full, over histories with gaps, short and long series. Harm: a wrong ADV or ADTR changes position size and entry filters on every trade.
@@ -121,6 +123,7 @@ Code under check:
 - `backend/app/hat/data/quality.py`
 - `backend/app/hat/data/renames.py`
 - `backend/app/hat/data/features.py`
+- `backend/app/hat/data/run_report.py`
 
 Checks:
 - `backend/tests/hat/hat_bhav_support.py`
@@ -138,13 +141,14 @@ Checks:
 - `backend/tests/hat/fixtures/rs_oracle.json`
 - `backend/tests/hat/conformance/test_conf_imports.py`
 - `backend/tests/hat/db/test_db_corporate_actions.py`
+- `backend/tests/hat/hat_support.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `3d9fad89d68ccd020310d5d370d59af24b02e8208c970a838d832d2819eb05b3`
+Covered digest: `6c4b90d844088e13e07a2161b1dfd39a18b9c242ec248c8400e3f1781bd38a05`
 
 ## Scope changes
 
@@ -170,6 +174,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). PR 23: the live run of 2026-10-22 confirmed the index layout and found breadth in snake_case (`total_volume`, `total_stocks`, `ad_ratio`); `breadth_from_mcp` reads `total_volume` and the `Nse` and day-rig fixtures send the recorded reply. When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
 - PR 42 added `history_build.cli_passes_calendar_holidays`, the first check that runs `main`: it patches only its boundaries (`app.database.SessionLocal` with an in-memory SQLite calendar, `DataStore`, `http_fetcher`, `client_from_env`) and records the real `run_history_build` report; name lookups and sockets are blocked and recorded, and the property asserts none was attempted. Nothing was narrowed.
+- PR 43 (PR 41 follow-ups 1 and 7): the command lines take their settings from `operator_settings()` (loads `.env` first) and hand its root to their stores, and `history_build` appends its summary to `history_build/report-YYYY-MM-DD.txt` (`run_report.save_report`). `DataStore` no longer has a default root (`app.paths.HAT_DATA_ROOT`): nothing but the old `store.data_root` check used it, which now checks the settings' default instead. The PR 42 property no longer patches `DataStore`: it shares `_drive_main` with `history_build.cli_root_and_report` and runs in a scratch root from the environment. `CONF store.cli_root_after_env` is a source check: it does not run `features` or the backtest, whose `main` needs a real database. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). The report file is named by the wall clock's IST day, so the properties match it by pattern. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -573,6 +578,58 @@ Break: (PR 42) the network guard: the property stops patching the fetcher (the `
 ```
 E   AssertionError: assert [('nsearchive...EAM: 1>), ...] == []
 E     Left contains 20 more items, first extra item: ('nsearchives.nseindia.com', 443, <AddressFamily.AF_UNSPEC: 0>, <SocketKind.SOCK_STREAM: 1>)
+```
+
+### PBT history_build.cli_root_and_report
+
+Break: (PR 43) `history_build` takes its settings from `load_settings` again (imported under the name `operator_settings`, so `.env` is not loaded). With the root set only in `.env` the build state and the report land in the default root; the CONF check fails too.
+
+```
+tests/hat/properties/test_history_build.py:344: in test_cli_root_and_report
+tests/hat/properties/test_history_build.py:357: in test_cli_root_and_report
+E   AssertionError: ['.env', 'default/build/state.json', 'default/history_build/report-2026-10-22.txt']
+E   assert {'.env', 'default'} == {'.env', 'env_file'}
+```
+
+Break: (PR 43) `main` no longer saves its summary.
+
+```
+tests/hat/properties/test_history_build.py:344: in test_cli_root_and_report
+tests/hat/properties/test_history_build.py:360: in test_cli_root_and_report
+E   AssertionError: ['.env', 'env_file/build/state.json']
+E   assert 0 == 1
+E    +  where 0 = len([])
+```
+
+### CONF store.cli_root_after_env
+
+Break: (PR 43) `features.main` imports `load_settings` under the name `operator_settings`.
+
+```
+tests/hat/conformance/test_conf_store.py:96: in test_store__cli_root_after_env
+E   AssertionError: backend/app/hat/data/features.py
+E   assert 'load_settings' not in {'load_settings': 'operator_settings'}
+============================== 1 failed in 0.23s ===============================
+```
+
+Break: (PR 43) `minute_history` reads `load_settings()` again instead of `operator_settings()`.
+
+```
+tests/hat/conformance/test_conf_store.py:96: in test_store__cli_root_after_env
+E   AssertionError: backend/app/hat/data/minute_history.py
+E   assert 'load_settings' not in {'operator_settings': 'operator_settings', 'load_settings': 'load_settings'}
+========================= 1 failed, 2 passed in 0.38s ==========================
+```
+
+Break: (PR 43) `DataStore` gets a default root again.
+
+```
+tests/hat/conformance/test_conf_store.py:105: in test_store__cli_root_after_env
+E   AssertionError: DataStore
+E   assert PosixPath('data_system/hat') is <class 'inspect._empty'>
+E    +  where PosixPath('data_system/hat') = <Parameter "root: 'Path' = PosixPath('data_system/hat')">.default
+E    +  and   <class 'inspect._empty'> = <class 'inspect.Parameter'>.empty
+E    +    where <class 'inspect.Parameter'> = inspect.Parameter
 ```
 
 ### CONF store.data_root

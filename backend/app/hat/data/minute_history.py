@@ -51,6 +51,7 @@ from .bars import Bar, BarBuilder, Tick
 from .bars_store import BarStore
 from .ingest import UNIVERSE_SERIES
 from .instruments import BROKER_FYERS
+from .run_report import save_report
 from .sessions import IST
 from .store import atomic_replace
 
@@ -667,11 +668,11 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
         per_day=args.per_day,
         plan_days=args.plan_days,
     )
-    from ..settings import load_settings
+    from ..settings import operator_settings
     from .provider.fyers_websocket import fyers_history
 
     logging.basicConfig(level=logging.INFO)
-    root = load_settings().data_root
+    root = operator_settings().data_root
     with _run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
         return _download(args, limits, root, fyers_history)
 
@@ -702,8 +703,9 @@ def _download(
         progress=progress,
         resume=args.resume,
     )
-    sys.stdout.write(report.summary())
-    sys.stdout.write(f"active members without a Fyers symbol: {unmapped}\n")
+    text = report.summary() + f"active members without a Fyers symbol: {unmapped}\n"
+    sys.stdout.write(text)
+    save_report(root / PROGRESS_FILE.parent, text, datetime.now(IST))
     return 1 if report.stopped or report.failed else 0
 
 
