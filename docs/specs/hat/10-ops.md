@@ -540,6 +540,54 @@ incident in the PR or issue tracker).
 3. If the token was revoked mid-day, `GET /api/hat/auth/fyers/status` shows disconnected: log in
    again the same way.
 
+### First deploy: the admin command line
+
+The setup and release steps the owner runs once per database, and again for each new strategy
+version, through the local admin command line (HAT-OPS-091). `$ADMIN` stands for
+`$COMPOSE exec -w /app/backend backend python -m app.hat.admin`. Each command runs in one
+transaction and prints its result as JSON (ids included); a refusal prints `refused: <code>`,
+exits 2 and writes nothing. `$ADMIN show` lists the strategies, versions and sleeves with their
+ids at any point. Run every step outside 08:30–15:35 IST on a trading day: the release steps
+refuse inside a session (`market_hours`).
+
+1. Prerequisites: the database is up (HAT starts with `HAT_ENABLED=true` only after step 3), the
+   history build and the features have run (02 §9, §7), the trading calendar is loaded, and
+   `HAT_TELEGRAM_CHAT_ID` is set (the owner's steps carry it).
+2. `$ADMIN seed-policy`: risk-policy version 1 (06 §1), effective now. Safe to repeat.
+3. Log in to Fyers ("Morning login"), then `$ADMIN onboard-account --account-ref <Fyers client
+   id>`: the capability check (funds, positions, holdings) records the account `active` or
+   `failed` (HAT-BRK-092). Note `broker_account_id`. A `failed` account takes no sleeve: fix the
+   cause and run it again.
+4. `$ADMIN seed-strategies`, then `$ADMIN seed-bots --account <broker_account_id>`: the two
+   strategies with version 1 as a draft, and one sleeve per strategy in Research, in shadow mode.
+5. `$ADMIN publish-universe --constituents <ind_nifty500list.csv> --as-of <date>` (add
+   `--include SYMBOL` or `--exclude SYMBOL` as often as needed): a universe version from NSE's
+   index CSV, made live and given to every sleeve (`--bot ID` to name some). Every symbol must
+   name an instrument on that date; otherwise the command lists the unknown ones and writes
+   nothing.
+6. For each sleeve: backtest its strategy's version 1,
+   `$COMPOSE exec -w /app/backend backend python -m app.hat.engine.backtest --bot <bot> --version
+   <version> --from 2010-01-01 --to <last trading day>` (09 §7); note `run_id`.
+7. `$ADMIN publish-version --version <version> --run <run_id>` (draft to backtested, HAT-BT-061),
+   then `$ADMIN assign-version --bot <bot> --version <version>`: the sleeve now scans with it.
+8. `$ADMIN promote --bot <bot> --to backtested`: refused (`backtest_gate`) unless the run's DSR
+   probability is at least 0.95 with 200 or more trades (HAT-PORT-061); the sleeve then stays in
+   Research. Then `$ADMIN promote --bot <bot> --to shadow` and
+   `$ADMIN shadow-version --version <version>` the same evening: the sleeve takes virtual entries
+   sized from its nominal allocation (HAT-PORT-050) and the 20 sessions start for both.
+9. After 20 trading sessions: `$ADMIN promote-version --version <version>` (refused with
+   `shadow_days` until then, HAT-BOT-084), then `$ADMIN promote --bot <bot> --to live` (refused
+   with `version_not_live` before the version is promoted). The sleeve now has weight, but its
+   orders stay virtual until the account's mode changes (`/mode`, HAT-GOV-084), which needs GTT
+   delivery (HAT-EXEC-012).
+10. A new version of a running strategy: save it as a draft, then steps 6, 7 (publish only: a
+    Live sleeve takes only a live version) and `shadow-version`; after 20 sessions,
+    `promote-version` moves the sleeves of the version it replaces onto it (their open trades keep
+    their entry version, HAT-BOT-083).
+11. A sleeve in Probation that has recovered: `$ADMIN promote --bot <bot> --to live` (refused
+    with `still_failing` while it is not, HAT-PORT-060).
+12. Record each step in the check log.
+
 ### Deploy and planned restart: `ops.deploy_window`
 
 1. Pick a time outside 08:30–15:35 IST on a trading day (weekends and NSE holidays are free).
@@ -811,3 +859,13 @@ After any change to `.env` (HAT-OPS-050):
 - **Verification:** CONF `ops.runbook_complete`
 - **Acceptance:**
   - Property: every `OPS` verification name used anywhere in `docs/specs/hat/` and every bullet of §4 has a matching procedure heading in this section. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
+
+#### HAT-OPS-091: The owner's admin command line
+- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves, publish a universe, publish, assign, shadow and promote a strategy version, move a sleeve along a lifecycle edge) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`promote`, `promote-version`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded.
+- **Source:** Design review 2026-10-22 item 8 (no production caller for the forward lifecycle edges, `onboard_account`, `publish_version`, the seeds and the universe publish; nothing set `hat_bot.live_version_id`, so a fresh deploy never scanned); item 14 (keep the portfolio layer and wire it through this command line).
+- **PR:** 35
+- **Verification:** PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services`
+- **Acceptance:**
+  - Property: the "First deploy" procedure, run through the command line on a fresh database, leaves a sleeve in Shadow with a strategy version and a live universe; Live is refused until the version is live, and the version only after 20 trading sessions of shadow; the owner's steps carry `actor = user`, the chat id and `via = cli`. Harm: a fresh deploy never scans, or a sleeve trades real money on an unproven version.
+  - Property: every refused command exits 2 with the fixed code of the rule that refused it and leaves every table as it was. Harm: a half-applied release step (a version promoted but its sleeves not moved, a universe published but not given to the sleeves).
+  - Property: the command line imports only the services it wraps, reads no table and writes no column itself, and nothing imports it. Harm: a setup command skips a service's guard, or the owner's commands become an unauthenticated API.

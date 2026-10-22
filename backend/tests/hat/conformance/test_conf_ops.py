@@ -1,11 +1,13 @@
-"""CONF checks of the deployment and the runbook (HAT-OPS-040, HAT-OPS-090): the Compose file
-brings up only Postgres and the backend (the frontend under a profile) on loopback ports with no
-inline secret, and docs/specs/hat/10-ops.md §9 has a procedure for every OPS check and every §4
-failure case."""
+"""CONF checks of the deployment and the runbook (HAT-OPS-040, HAT-OPS-090, HAT-OPS-091): the
+Compose file brings up only Postgres and the backend (the frontend under a profile) on loopback
+ports with no inline secret, docs/specs/hat/10-ops.md §9 has a procedure for every OPS check and
+every §4 failure case, and the owner's admin command line only calls service functions."""
 
+import ast
 import re
 
 import yaml
+from hat_conf_repo import APP_ROOT, build_graph
 from hat_conf_spec import REPO_ROOT, SPEC_DIR
 
 COMPOSE = REPO_ROOT / "deploy" / "hat" / "docker-compose.yml"
@@ -119,3 +121,110 @@ def test_runbook_complete() -> None:
     assert uncovered == []
     empty = sorted(head for head, body in procedures.items() if not STEP.search(body))
     assert empty == []
+
+
+ADMIN = APP_ROOT / "hat" / "admin.py"
+# The modules the admin command line may import: the services it wraps and what they need.
+ADMIN_IMPORTS = {
+    "__future__",
+    "argparse",
+    "collections.abc",
+    "contextlib",
+    "dataclasses",
+    "datetime",
+    "json",
+    "pathlib",
+    "sys",
+    "typing",
+    "uuid",
+    "sqlalchemy.exc",
+    "sqlalchemy.orm",
+    "app.database",
+    "app.hat.backtest.runs",
+    "app.hat.data.calendar",
+    "app.hat.data.reference",
+    "app.hat.engine.portfolio",
+    "app.hat.engine.portfolio.service",
+    "app.hat.engine.strategy",
+    "app.hat.errors",
+    "app.hat.execution.accounts",
+    "app.hat.execution.broker",
+    "app.hat.risk.policy",
+    "app.hat.risk.policy_service",
+    "app.hat.risk.sessions",
+    "app.hat.settings",
+    "app.hat.telegram.config",
+    "app.hat.time",
+}
+QUERY_NAMES = {"select", "insert", "update", "delete", "text", "func"}
+
+
+def _absolute(node: ast.ImportFrom) -> str:
+    if not node.level:
+        return node.module or ""
+    package = "app.hat"  # admin.py sits in app/hat
+    for _ in range(node.level - 1):
+        package = package.rsplit(".", 1)[0]
+    return f"{package}.{node.module}" if node.module else package
+
+
+def admin_violations(source: str) -> list[str]:
+    """What breaks the rule in the admin module's source: an import outside ADMIN_IMPORTS, a
+    method call on a session (a query or a write), a query builder, or an assignment to an
+    attribute other than the module's own error's (a column written here instead of in a
+    service)."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found += [f"import {a.name}" for a in node.names if a.name not in ADMIN_IMPORTS]
+        elif isinstance(node, ast.ImportFrom):
+            module = _absolute(node)
+            if module not in ADMIN_IMPORTS:
+                found.append(f"from {module}")
+            found += [f"import {a.name}" for a in node.names if a.name in QUERY_NAMES]
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            owner = node.func.value
+            if isinstance(owner, ast.Name) and owner.id == "session":
+                found.append(f"session.{node.func.attr}()")
+        elif isinstance(node, ast.Name) and node.id in QUERY_NAMES:
+            found.append(node.id)
+        elif isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            found += [
+                f"assigns .{t.attr}"
+                for t in targets
+                if isinstance(t, ast.Attribute)
+                and not (isinstance(t.value, ast.Name) and t.value.id == "self")
+            ]
+    return found
+
+
+def test_admin_cli_calls_services() -> None:
+    """CONF ops.admin_cli_calls_services (HAT-OPS-091, HAT-DEC-T3): the admin command line reads
+    no table and writes no column itself (every step is a guarded service function), and no
+    route or app module imports it, so it is never reachable over HTTP. Harm: a setup command
+    skips the guard a service enforces, or the owner's commands become an unauthenticated API."""
+    assert admin_violations(ADMIN.read_text("utf-8")) == []
+    graph = build_graph()
+    assert "app.hat.admin" in graph
+    importers = sorted(m for m, deps in graph.items() if "app.hat.admin" in deps)
+    assert importers == []
+
+
+def test_admin_checker_can_fail() -> None:
+    """The checker finds each kind of violation in a synthetic module."""
+    source = (
+        "from sqlalchemy import select\n"
+        "from .models import HatBot\n"
+        "def run(session, bot):\n"
+        "    session.add(bot)\n"
+        "    bot.lifecycle_state = 'live'\n"
+        "    return select(HatBot)\n"
+    )
+    found = admin_violations(source)
+    assert "from sqlalchemy" in found
+    assert "import select" in found
+    assert "from app.hat.models" in found
+    assert "session.add()" in found
+    assert "assigns .lifecycle_state" in found
+    assert "select" in found

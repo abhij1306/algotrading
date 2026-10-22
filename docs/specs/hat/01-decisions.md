@@ -36,6 +36,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **Acceptance:**
   - Property: every route under `/api/hat/` is an HTTP GET with no side effect on HAT tables, except the two Fyers login POSTs, and each of those depends on the write guard. Harm: an unauthenticated localhost API could change modes, risk or positions outside the governed Telegram path. Detail: 10 §1, 08 §3.
 - **Changed (PR 38):** the two login POSTs are named in the statement and must carry the write guard; before this the CONF check exempted them silently.
+- The owner's setup and release steps (seeds, onboarding, universe, versions, lifecycle edges) run through the local admin command line `python -m app.hat.admin` on the host, never through a route (10 §9, HAT-OPS-091, PR 35; CONF `ops.admin_cli_calls_services` checks that nothing imports it).
 
 #### HAT-DEC-T4: Extend SmartTrader
 - **Statement:** HAT extends SmartTrader; SmartTrader's stack wins wherever it differs from T2, T3, T5 or T6.

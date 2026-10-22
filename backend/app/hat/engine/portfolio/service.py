@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
+from app.hat.data.instruments import resolve_symbol
 from app.hat.errors import HatError
 from app.hat.events import record
 from app.hat.models import (
@@ -31,6 +32,7 @@ from app.hat.models import (
     HatRegimeState,
     HatSignal,
     HatStrategy,
+    HatStrategyVersion,
     HatTradeResult,
     HatTradingCalendar,
     HatUniverse,
@@ -39,6 +41,7 @@ from app.hat.models import (
 )
 from app.hat.risk.policy import RiskPolicy, effective_version
 from app.hat.risk.policy_service import load_versions
+from app.hat.risk.sessions import SessionCalendar, SessionState
 from app.hat.time import IST, as_utc, trade_date_of, utc_now
 
 from . import lifecycle, regime, universe
@@ -69,6 +72,51 @@ def create_universe(
     session.add(row)
     session.flush()
     return row
+
+
+def universe_named(
+    session: Session, *, user_id: uuid.UUID, market_id: uuid.UUID, name: str
+) -> HatUniverse:
+    """The user's universe of that name in the market, created (manual) when missing."""
+    row = session.scalars(
+        select(HatUniverse).where(
+            HatUniverse.user_id == user_id,
+            HatUniverse.market_id == market_id,
+            HatUniverse.name == name,
+        )
+    ).first()
+    return row or create_universe(session, user_id=user_id, market_id=market_id, name=name)
+
+
+def resolve_symbols(
+    session: Session, market_id: uuid.UUID, symbols: Collection[str], on: date
+) -> tuple[frozenset[uuid.UUID], tuple[str, ...]]:
+    """The instruments the symbols name on `on`, and the symbols that name none (sorted)."""
+    found: set[uuid.UUID] = set()
+    unknown: list[str] = []
+    for symbol in sorted({s.strip().upper() for s in symbols if s.strip()}):
+        instrument = resolve_symbol(session, market_id, symbol, on)
+        if instrument is None:
+            unknown.append(symbol)
+        else:
+            found.add(instrument.id)
+    return frozenset(found), tuple(unknown)
+
+
+def assign_universe(
+    session: Session, *, bot_id: uuid.UUID, universe_version_id: uuid.UUID
+) -> HatBot:
+    """Point a sleeve at a live universe version (its scans, backtests and evidence read the
+    universe it belongs to). A draft or retired version is refused."""
+    bot = session.get(HatBot, bot_id, with_for_update=True)
+    if bot is None:
+        raise PortfolioError("bot_unknown")
+    version = session.get(HatUniverseVersion, universe_version_id)
+    if version is None or version.status != "live":
+        raise PortfolioError("universe_version_not_live")
+    bot.universe_version_id = version.id
+    session.flush()
+    return bot
 
 
 def membership_rows(session: Session, universe_id: uuid.UUID) -> list[universe.Interval]:
@@ -447,6 +495,7 @@ def transition(
     actor: str = "engine",
     chat_id: int | None = None,
     by_owner: bool = False,
+    via: str | None = None,
     now: datetime | None = None,
 ) -> HatBot:
     """Move a sleeve along one allowed edge and append `sleeve.lifecycle_changed` in the same
@@ -466,6 +515,8 @@ def transition(
     payload: dict[str, object] = {"from": before, "to": target, "reason": verdict.reason}
     if actor == "user":
         payload["chat_id"] = chat_id
+    if via is not None:
+        payload["via"] = via
     record(
         session,
         aggregate_type="bot",
@@ -478,6 +529,50 @@ def transition(
     )
     session.flush()
     return bot
+
+
+def owner_transition(
+    session: Session,
+    bot_id: uuid.UUID,
+    target: str,
+    *,
+    trade_date: date,
+    policy: RiskPolicy,
+    backtest: BacktestEvidence,
+    calendar: SessionCalendar,
+    chat_id: int,
+    now: datetime,
+) -> HatBot:
+    """The owner moves a sleeve along an edge (HAT-PORT-060, PR 35): the same guard on the same
+    evidence as the engine's moves, recorded as the owner's (`actor = user`, the allowlisted
+    chat, `via = cli`). Outside market hours only, so a sleeve never starts routing differently
+    inside a session. A sleeve goes Live only on a live strategy version (HAT-BOT-084), so a
+    version still in its shadow period never trades real money. A refusal changes nothing."""
+    if calendar.state(now) is not SessionState.CLOSED:
+        raise lifecycle.LifecycleError("market_hours")
+    bot = session.get(HatBot, bot_id)
+    if bot is None:
+        raise PortfolioError("bot_unknown")
+    if target == lifecycle.LIVE:
+        version = (
+            None
+            if bot.live_version_id is None
+            else session.get(HatStrategyVersion, bot.live_version_id)
+        )
+        if version is None or version.status != "live":
+            raise lifecycle.LifecycleError("version_not_live")
+    evidence = load_evidence(session, bot, trade_date, policy, backtest)
+    return transition(
+        session,
+        bot_id,
+        target,
+        evidence,
+        actor="user",
+        chat_id=chat_id,
+        by_owner=True,
+        via="cli",
+        now=now,
+    )
 
 
 def advance_automatic(

@@ -57,6 +57,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT scan.no_universe_publishes_nothing` A bot with no universe publishes and records nothing, so the same day's run after a universe is assigned still publishes. Harm: an empty "published" watchlist blocks that day's real one.
 - `PBT criteria.gap_up_contract` `gap_up` passes exactly when (open / previous close - 1) x 100 is at least `min_pct` (a 10.00% gap passes), and a missing or non-positive open or close fails closed. Harm: a 9.99% gap starts an EP trade the rule excludes, or a real 10% gap is missed.
 - `PBT criteria.volume_pace_contract` `volume_pace` passes exactly when the day's volume projected to the full session (V / elapsed share, a `Fraction`) is at least `vs_avg50` x the 50-day average volume; before the first bar is final, or with no volume or average, it fails closed. Harm: a thin early burst fires a breakout the volume rule rejects.
+- `PBT config.release_gate` On SQLite with the real `save_draft`, `publish_version`, `start_shadow`, `promote_version` and `assign_version` (PR 35): a version goes live only from shadow, outside market hours, after at least 20 trading sessions of shadow on the calendar; promotion retires the strategy's previous live version, moves the sleeves that ran it onto the new one and writes one `strategy.promoted` with the chat id; a refusal changes no version, sleeve or event; a Live or Probation sleeve is never pointed at a version that is not live. Harm: an untested edit trades real money, or two live versions of one strategy split the sleeves.
 - `PBT criteria.early_volume_contract` `early_volume` passes exactly when the cumulative day volume at the trigger is at least `vs_adv20` x ADV(20); missing inputs fail closed. Harm: an EP gap on thin volume is bought.
 - `PBT criteria.catalyst_attached_contract` `catalyst_attached` passes exactly when a matched announcement was published in [at - within_hours, at], both ends included and nothing after `at`; `required_in` never changes the result. Harm: a stale or future-dated announcement is taken as the catalyst of a confirm-mode EP trade.
 - `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level, at that bar's final instant, with the level as the trigger price and the bar's close as the live price; the opening range level does not exist before its bar is final. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20.
@@ -137,7 +138,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `c632b90f848b0157d78f7c37ca3e568c7c36a4077a5baeceb51fb94f598f3532`
+Covered digest: `59034ff5e004bfe679a19aff8d8ca77f9e0e0b05faa7adab732ae37902dbb2ae`
 
 ## Scope changes
 
@@ -157,6 +158,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
+
+- PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1020,4 +1023,40 @@ Break: in `backend/app/hat/engine/trigger.py`: every trigger criterion blocks (`
 E   AssertionError: assert True == ('shadow' in ['confirm'])
 E   AssertionError: assert False == ((False or 'shadow' not in ['confirm']))
 ============================== 1 failed in 1.36s ===============================
+```
+
+### PBT config.release_gate
+
+Break: (1) in `backend/app/hat/engine/strategy/versions.py`: `promote_version` skips the 20-session check.
+
+```
+E   Failed: DID NOT RAISE VersionError
+E   Failing explicit example: test_release_gate(
+E       state='shadow',
+E       waited=19,
+```
+
+Break: (2) `promote_version` leaves the sleeves on the version it replaces.
+
+```
+E   AssertionError: assert UUID('bdb267bc-d16e-4df5-8582-211ca6e2d722') == UUID('ab2ec9ca-ce2d-4de4-b352-ed088a69b4b5')
+E    +  where UUID('bdb267bc-...') = <app.hat.models.strategy.HatBot object at 0x7f472bd41d30>.live_version_id
+E   Failing explicit example: test_release_gate(
+E       state='live',
+```
+
+Break: (3) `promote_version` does not retire the previous live version.
+
+```
+E   sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) UNIQUE constraint failed: hat_strategy_version.strategy_id
+E   [SQL: UPDATE hat_strategy_version SET status=?, promoted_at=? WHERE hat_strategy_version.id = ?]
+```
+
+Break: (4) `assign_version` points a Live sleeve at a version still in shadow.
+
+```
+E   Failed: DID NOT RAISE VersionError
+E   Failing explicit example: test_release_gate(
+E       state='live',
+E       waited=20,
 ```

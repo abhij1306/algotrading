@@ -187,7 +187,7 @@ State is `hat_exposure_state` (bot_id, level, consecutive_wins, consecutive_loss
 
 ## §5 Strategy regime gate
 
-The strategy-level gate (stage 2 of the bot config, see 04) is binary. The portfolio regime (05) only scales weights on top.
+The strategy-level gate (stage 2 of the bot config, see 04) is binary. The portfolio regime (05) only scales weights on top: the gate decides whether a sleeve may enter, the portfolio regime how big the entry is, and the two may disagree (05 §3, design review 2026-10-22 item 13).
 
 #### HAT-RISK-050: Gate off blocks new entries only
 - **Statement:** When a bot's regime gate is off, no new entry is accepted; open positions keep their stops and exits.
@@ -399,8 +399,8 @@ The invariants live in the risk manager, outside every config, so no edit can re
 #### HAT-GOV-083: Strategy changes ship as gated releases
 - **Statement:** A strategy change is created only as a draft version outside market hours and reaches live only through backtested → shadow (20 trading days [A]) → live.
 - **Source:** BL "Governance"; SCH "Governance enforced in the database"; B5.
-- **PR:** 2, 9
-- **Verification:** TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`
+- **PR:** 2, 9, 35
+- **Verification:** TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate`
 - **Acceptance:**
   - Property: in every reachable state, a strategy version with status live has a backtest run and a shadow start at least 20 trading days earlier. Harm: an untested edit trades real money.
 - **[A]** shadow 20 trading days: validated by review after the first two releases.

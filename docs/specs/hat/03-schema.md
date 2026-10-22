@@ -775,7 +775,7 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
 | Sessions | `broker.logged_in`, `broker.session_lost`, `broker.capabilities_changed`, `feed.stale` |
 
-Every user-initiated event carries `actor = user` and the Telegram chat ID in the payload, so discipline metrics (skips, flattens, pauses) come straight from this table. `events.record()` takes `actor` as the type `Actor` (the four values of the check) and refuses a user event whose payload has no integer `chat_id`.
+Every user-initiated event carries `actor = user` and the Telegram chat ID in the payload (an owner step of the local admin command line, 10 §9, carries the allowlisted chat's ID and `via = cli`), so discipline metrics (skips, flattens, pauses) come straight from this table. `events.record()` takes `actor` as the type `Actor` (the four values of the check) and refuses a user event whose payload has no integer `chat_id`.
 
 #### HAT-SCH-060: Event table shape
 - **Statement:** `hat_event` has exactly the columns of the DDL above, PK (id, recorded_at), `actor ∈ {engine, user, broker, scheduler}`, and on Postgres is range-partitioned monthly on `recorded_at`.

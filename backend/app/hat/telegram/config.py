@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from ..errors import HatConfigError
 from ..settings import process_env
 
-__all__ = ["MIN_SECRET_BYTES", "TelegramSettings", "telegram_settings"]
+__all__ = ["MIN_SECRET_BYTES", "TelegramSettings", "owner_chat_id", "telegram_settings"]
 
 TOKEN_VAR = "HAT_TELEGRAM_TOKEN"  # noqa: S105 (a variable name)
 CHAT_VAR = "HAT_TELEGRAM_CHAT_ID"
@@ -35,6 +35,16 @@ def _required(source: Mapping[str, str], name: str) -> str:
     if not raw:
         raise HatConfigError(f"{name} is not set")
     return raw
+
+
+def owner_chat_id(env: Mapping[str, str] | None = None) -> int:
+    """The allowlisted chat alone, for the owner's admin command line (10 §9): its events are the
+    owner's, so they carry this chat id (HAT-SCH-065). The token and secret are not read."""
+    source = process_env() if env is None else env
+    try:
+        return int(_required(source, CHAT_VAR))
+    except ValueError:
+        raise HatConfigError(f"{CHAT_VAR} is not an integer") from None
 
 
 def telegram_settings(env: Mapping[str, str] | None = None) -> TelegramSettings:

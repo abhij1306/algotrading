@@ -20,6 +20,8 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a Shadow or Probation sleeve keeps weight 0 with a nominal `virtual_capital` (base x regime x equity) and `virtual_risk_pct` (risk x regime), and through `run_allocation` and `LiveContexts` its virtual entries are accepted on it while a real one is `no_allocation` (`allocator.virtual_allocation`, `allocator.virtual_entries_sized`, PR 34); a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
 - `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the results a decision reads stop at the trade date's close; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
 - `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
+- `PBT admin.*` Through the owner's admin command line (`python -m app.hat.admin`, PR 35) on SQLite with a fake broker and scripted backtest evidence: the first-deploy runbook takes a fresh database to a sleeve in Shadow that has a strategy version and a live universe, refuses `promote --to live` until the version itself is live, promotes the version only after 20 trading sessions of shadow, and records the owner's steps as `actor = user` with the allowlisted chat id and `via = cli` (`admin.first_deploy`); every refused command exits 2 with the fixed code of the rule that refused it and leaves every table unchanged, a universe publish naming an unknown sleeve included (`admin.refusal_writes_nothing`). Harm: a fresh deploy never scans, a sleeve trades real money on an unproven version, or a refused release step is half applied.
+- `CONF ops.admin_cli_calls_services` `backend/app/hat/admin.py` imports only the services it wraps (and what they need), calls no session method, builds no query and assigns no attribute; no module imports it, so no route reaches it (HAT-DEC-T3). Harm: a setup command skips the guard a service enforces, or the owner's commands become an unauthenticated API.
 - `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value one session earlier; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
 - `PBT dsr.evidence_current_trials` The backtest evidence the lifecycle reads is the newest completed run of the sleeve's live version on its family, with the DSR deflated by the family's trial count and Sharpe variance at evaluation time (later failed runs and other versions counted), as `BacktestFacts`; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the Research to Backtested gate on a stale trial count.
 
@@ -34,8 +36,8 @@ verification/tla/run.sh --broken SleeveLifecycle
 cd backend
 CI=1 python -m pytest tests/hat/properties/test_universe.py tests/hat/properties/test_regime.py \
   tests/hat/properties/test_health.py tests/hat/properties/test_allocator.py \
-  tests/hat/properties/test_lifecycle.py -q --no-cov
-python -m pytest tests/hat/conformance -q --no-cov              # CONF portfolio.* and the harness
+  tests/hat/properties/test_lifecycle.py tests/hat/properties/test_admin.py -q --no-cov
+python -m pytest tests/hat/conformance -q --no-cov              # CONF portfolio.*, ops.admin_cli_calls_services and the harness
 ```
 
 ## Bug or model error
@@ -69,7 +71,8 @@ Code under check:
 - `backend/app/hat/engine/portfolio/allocator.py`: `allocate`, `smooth`
 - `backend/app/hat/engine/portfolio/lifecycle.py`: `guard`, `backtest_gate`, `shadow_gate`, `t_quantile_95`, `probation_trigger`, `discounted_benchmark`, `retire_gate`
 - `backend/app/hat/engine/portfolio/universe.py`: `members_on`, `add_member`, `remove_member`, `effective_members`, `membership_change`
-- `backend/app/hat/engine/portfolio/service.py`: `transition`, `advance_automatic`, `run_allocation`, `record_regime`, `policy_at`
+- `backend/app/hat/engine/portfolio/service.py`: `transition`, `owner_transition`, `advance_automatic`, `run_allocation`, `record_regime`, `policy_at`, `universe_named`, `resolve_symbols`, `assign_universe`
+- `backend/app/hat/admin.py`: `main` and every command
 - `backend/app/hat/engine/portfolio/jobs.py`: `regime_job`, `allocate_job`
 
 - `backend/app/hat/backtest/runs.py`: `backtest_evidence`
@@ -83,6 +86,8 @@ Checks:
 - `backend/tests/hat/properties/test_lifecycle.py`
 - `backend/tests/hat/properties/test_dsr.py`
 - `backend/tests/hat/conformance/test_conf_portfolio.py`
+- `backend/tests/hat/properties/test_admin.py`
+- `backend/tests/hat/conformance/test_conf_ops.py`
 - `backend/app/hat/engine/regime_gate.py`
 
 ## Sync commit
@@ -90,7 +95,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `07373801abe27013cd796c15ca6d62321a0e7abf1e8f022d1a6f144415248aa8`
+Covered digest: `e69b46e1ca533d22cb6598756598c628cf8ec4ec0a5fc3cae70a77dae8b7d2b0`
 
 ## Scope changes
 
@@ -104,6 +109,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The property `lifecycle.transition_records_its_event` and the nightly `run_allocation` properties run on SQLite in memory (foreign keys not enforced); `portfolio.unique_keys` covers the constraints on Postgres.
 - PR 15b: `service.trade_results` leaves out veto trades (virtual positions of confirm or auto signals), so a sleeve's shadow evidence is its shadow trades only (HAT-EXEC-032). The lifecycle, health and allocator properties pass unchanged; none was narrowed.
 - PR 34 (design review 2026-10-22 item 8a, HAT-PORT-050): `hat_allocation_daily` gains `virtual_capital` and `virtual_risk_pct` (nullable; `ensure_hat_columns` adds them to an existing Postgres database), filled for Shadow and Probation sleeves only. `LiveContexts.entry_context` sizes a virtual entry of such a sleeve from them (health 1), and the virtual global open-risk cap reads the book as the sum of `coalesce(virtual_capital, capital)`. `allocator.virtual_entries_sized` builds the engine world (`seed_engine_world`, strategy renamed to a weighted sleeve), allocates on the previous trading day and decides with `valid_ctx` for the trade's own fields. The Probation deadlock (`still_failing` with no shadow trades) eases now that Probation books virtual trades; the forward lifecycle callers are PR 35. Nothing was narrowed.
+- PR 35 (design review 2026-10-22 item 8b, HAT-OPS-091): the forward edges and the setup steps now have a caller, the owner's admin command line. `service.owner_transition` takes an edge under the same guard and evidence as the engine, outside market hours only, records it as the owner's (`actor = user`, the allowlisted chat id, `via = cli`) and refuses Live unless the sleeve's strategy version is itself live (HAT-BOT-084, `config.release_gate` in `verify-criteria`). `admin.*` runs the command line on SQLite: the backtest evidence is scripted (`backtest_evidence` is `dsr.evidence_current_trials`) and the onboarding uses `FyersHatBroker` over `FakeBroker`. `onboard-account` commits its own result (a failed check is recorded as `failed`), so `admin.refusal_writes_nothing` leaves it out. The clock hands out UTC because SQLite keeps no offset. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1045,4 +1051,56 @@ tests/hat/properties/test_dsr.py:248: in test_evidence_current_trials
 tests/hat/properties/test_dsr.py:290: in test_evidence_current_trials
     assert facts.trials == runs.trial_count(session, family) == 1 + len(later)
 E   AssertionError: assert 1 == 2
+```
+
+### PBT admin.*
+
+Break: (1) in `backend/app/hat/engine/portfolio/service.py`: `owner_transition` no longer refuses Live on a version that is not live (`admin.first_deploy`).
+
+```
+E   AssertionError: assert 'refused: shadow_days\n' == 'refused: version_not_live\n'
+E     - refused: version_not_live
+E     + refused: shadow_days
+```
+
+Break: (2) `owner_transition` drops its market-hours check (`admin.refusal_writes_nothing`, case `promote_in_hours`).
+
+```
+E   AssertionError: assert 'refused: no_such_edge\n' == 'refused: market_hours\n'
+E     - refused: market_hours
+E     + refused: no_such_edge
+```
+
+Break: (3) `transition` no longer writes `via` into the payload (`admin.first_deploy`).
+
+```
+E   KeyError: 'via'
+E   Failing explicit example: test_first_deploy(
+E       waited=20,
+```
+
+Break: (4) in `backend/app/hat/admin.py`: `main` commits the session before re-raising a refusal (`admin.refusal_writes_nothing`, case `universe_unknown_bot`).
+
+```
+E   assert {'hat_broker_...cli'})"], ...} == {'hat_broker_...cli'})"], ...}
+E     Omitting 40 identical items, use -vv to show
+E     Differing items:
+```
+
+Break: (5) `publish-universe` publishes without refusing unknown symbols (`admin.refusal_writes_nothing`, case `unknown_symbol`).
+
+```
+E   AssertionError: assert 'refused: uni...ty_interval\n' == 'refused: unk...ymbols: ZZZ\n'
+E     - refused: unknown_symbols: ZZZ
+E     + refused: universe_empty_interval
+```
+
+### CONF ops.admin_cli_calls_services
+
+Break: in `backend/app/hat/admin.py`: `_publish_universe` sets `named.name` itself.
+
+```
+E   AssertionError: assert ['assigns .name'] == []
+E     Left contains one more item: 'assigns .name'
+== cli writes a column: 1 failed, 1 passed, 2 deselected
 ```
