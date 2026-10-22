@@ -66,7 +66,9 @@ __all__ = [
     "daily_inputs",
     "daily_trigger_results",
     "elapsed_fraction",
+    "entry_filter_context",
     "entry_filter_instances",
+    "evaluate_entry_filters",
     "evaluate_trigger",
     "last_configured_chase",
     "locked_lower_circuit",
@@ -427,15 +429,52 @@ def plan_entry(
         trigger_level=level,
         locked_upper_circuit=locked,
     )
+    failed, outcomes = evaluate_entry_filters(
+        candidate.playbook,
+        filter_ctx,
+        configured_pct=candidate.configured_max_chase_pct,
+        strategy_key=candidate.strategy_key,
+    )
+    return EntryPlan(entry, level, stop, locked, skip or failed, outcomes)
+
+
+def entry_filter_context(
+    *,
+    at: datetime,
+    entry: Decimal,
+    stop: Decimal | None,
+    adtr20: Decimal | None,
+    level: Decimal,
+    locked_upper_circuit: bool | None,
+) -> LiveContext:
+    """The context the entry filters read at a trigger: the entry price, its stop, ADTR(20) as of
+    the previous session, the trigger level and the upper-circuit state."""
+    return LiveContext(at=at, price=entry).for_entry(
+        entry=entry,
+        stop=stop,
+        adtr20=adtr20,
+        trigger_level=level,
+        locked_upper_circuit=locked_upper_circuit,
+    )
+
+
+def evaluate_entry_filters(
+    playbook: Playbook,
+    ctx: LiveContext,
+    *,
+    configured_pct: Decimal | None,
+    strategy_key: str,
+) -> tuple[str | None, tuple[CriterionOutcome, ...]]:
+    """(the type of the first failing entry filter or None, every filter's outcome) for the
+    playbook's entry filters at a trigger (`entry_filter_instances`), live and in the backtest."""
     outcomes: list[CriterionOutcome] = []
-    for instance in entry_filter_instances(
-        candidate.playbook, candidate.configured_max_chase_pct, candidate.strategy_key
-    ):
-        result = evaluate_live(instance.type, instance.params, filter_ctx)
+    failed = None
+    for instance in entry_filter_instances(playbook, configured_pct, strategy_key):
+        result = evaluate_live(instance.type, instance.params, ctx)
         outcomes.append(CriterionOutcome(instance.type, instance.order, True, result))
-        if skip is None and not result.passed:
-            skip = instance.type
-    return EntryPlan(entry, level, stop, locked, skip, tuple(outcomes))
+        if failed is None and not result.passed:
+            failed = instance.type
+    return failed, tuple(outcomes)
 
 
 def in_window(at: datetime) -> bool:

@@ -21,6 +21,9 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.pre_break_low` The entry day's low before the break is the lowest low of the 5-minute bars up to the first one that reaches the level, and the low after it the lowest of the later bars (or a day low they miss); without them it is max(day low, min(open, level x (1 - adr20/100))), with the day low after the break only when lower (HAT-BT-020 design, PR 60). Harm: a low-of-day stop reads a low made after the entry.
 - `PBT backtest.entry_day_stop` Under a low-of-day stop, with and without generated 5-minute bars, every entry's stop is the live plan from the low before the break, a gap over without 5-minute bars is skipped and counted as `gap_over_no_intraday`, an entry without them needs adr20 (generated markets blank it on some dates), and an entry-day low at or below the stop exits that day at -1 R (MAE -1), while a higher one bounds the MAE (HAT-BT-020 design, PR 60). Harm: an S2 entry's stop sits at a low made after the entry, and the entry day's loss is never seen.
 - `PBT backtest.contraction_stop_too_wide` A contraction stop the scan left empty skips the trigger as `stop_too_wide`, never `stop_input_missing` (HAT-BT-020 design, PR 60). Harm: skip counts blame missing data for a stop the plan refused as too wide.
+- `PBT backtest.adtr_filter_applied` With an `adtr_filter`, a trigger whose stop is wider than max_multiple x ADTR(20) as of the session before (or with no ADTR, blanked at some closes) is Rejected `adtr_filter` and buys nothing; one within it is never refused for that reason (HAT-BT-025, PR 61). Harm: the backtest takes wide-stop entries live refuses.
+- `PBT backtest.upper_circuit_inferred` An entry price that is the day's high, above the previous close and within one tick of the upper price of an NSE band (2, 5, 10, 20%) above the previous close is locked; one below the high, at or below the previous close, or between bands is not; no previous close or tick is unknown (HAT-BT-025, PR 61). Harm: the backtest buys a stock locked at its upper band.
+- `PBT backtest.upper_circuit_skip` In a run with sessions at an upper band (pinned all day, or opened at the band and faded), a trigger entering at the band is Rejected `max_chase` and buys nothing, and with a 30% chase no other trigger is (HAT-BT-025, PR 61). Harm: the backtest buys locked gap-ups live never gets.
 - `PBT backtest.exit_fill_proxy` A stop fills at min(open, stop) when the day reaches it and is never better than the stop; a day above it does not fill (HAT-BT-021). Harm: gap-down losses are understated.
 - `PBT backtest.exit_fill_proxy_close` A trade closed by a close-based rule sold at that day's official close, and `close_exits_at_official_close` is a recorded known gap. Harm: close exits are priced at a better point of the day than the rule could see.
 - `PBT backtest.decimal_money` Quantities are whole and at least 1, money is Decimal, and the trades' net P&L sums exactly to the change in equity (HAT-BT-024). Harm: float drift makes equity and the trades disagree.
@@ -30,6 +33,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.deterministic` Two runs of the same market, with rows, features, members and mappings shuffled, give byte-identical trade files and equal metrics JSON, including the known-gaps list (HAT-BT-050). Harm: evidence cannot be reproduced, so a promotion cannot be audited.
 - `PBT backtest.version_status_requires_run` A draft becomes `backtested` only with a completed run of that same version; a running, failed or foreign run is refused and leaves the draft untouched (HAT-BT-061). Harm: a version is promoted on a run that never finished, or on another version's evidence.
 - `CONF backtest.backtest_run_columns` `hat_backtest_run` has non-null pinned versions, period, snapshot, status, metrics and family key; trades go to `backtests/run_id=<id>/trades.parquet` with the 09 §3 columns; the statuses are `running`, `completed`, `failed` (HAT-BT-032). Harm: a run cannot be traced to its inputs or its trades file.
+- `CONF backtest.known_gaps_listed` Spec 09 §7's gap table (HAT-BT-070) lists exactly `KNOWN_GAPS`, in order, and the golden runs report that list (PR 61). Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
 - `CONF backtest.backtest_golden_replay` The committed fixture market (`tests/hat/fixtures/backtest_market.csv`) run through S1 and S2 reproduces `tests/hat/fixtures/backtest_golden.json` exactly (HAT-BT-051). Harm: a silent engine change shifts every sleeve's evidence.
 - `PBT costs.slippage_adverse` A buy fills at p × (1 + s/10000) rounded up to 4 places, a sell at p × (1 − s/10000) rounded down and never below 0.0001 (HAT-BT-022). Harm: rounding hands the backtest a better price than any fill.
 - `PBT costs.slippage_adverse_net` A round trip's net P&L does not rise with slippage. Harm: more slippage makes a strategy look better.
@@ -107,10 +111,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `2673dbb507c4e08b8bca49d26f8cbb4cb9705bab1c8c93c94b74ff29ef8f3ca3`
+Covered digest: `e1c69afa95f59329100fd89d9ef1b3083257be5de75d0d60c57b419489059cf8`
 
 ## Scope changes
 
+- PR 61: the loop runs the playbook's entry filters at each trigger through `trigger.evaluate_entry_filters` (moved out of `trigger.plan_entry`, behaviour unchanged): `adtr_filter` on the planned stop with ADTR(20) as of the session before, and `max_chase` with the upper circuit inferred from the entry price and the bar (`upper_circuit_locked`: the day's high, above the previous close, within a tick of an NSE band's upper price); a failure is a Rejected signal with the filter's type, counted in `metrics.rejections`. `KNOWN_GAPS` grew from 4 to 11 codes (09 §7, HAT-BT-070). The golden was regenerated: S2's 2025-07-08 trade (entry 639.09, stop 612.60, width 26.49 against 1.0 x ADTR 24.92) is now Rejected `adtr_filter`, so S2 has one trade fewer (`net_pnl` -4358.17 to -3047.66, `avg_loss_r` -1.165 to -1.222); S1 and S2 gain the seven new gap codes and S2 `rejections: {adtr_filter: 1}`.
 - PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`; an adr20 of 0 is a value, not a gap), the low after the break can stop the trade out on the entry day (recorded at 09:45, after the 09:30 entry) and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
 - PR 54: the loop's re-check of a contraction stop at the fill price (`check_width`) also applies the rule's `min_pct` (`stop_too_narrow`, default 0 = off; property in `verify-stops`). The seeds' golden replay is unchanged by the S1 `close_vs_pivot` criterion.
 - Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
@@ -365,6 +370,66 @@ tests/hat/properties/test_backtest.py:399: in test_contraction_stop_too_wide
 E   AssertionError: assert 13 == 0
 ```
 
+### PBT backtest.adtr_filter_applied
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: the failing filter not passed to `open_entry` (no Rejected signal, the entry opens).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:437: in test_adtr_filter_applied
+    assert (signal.reason == "adtr_filter") == wide
+E   AssertionError: assert (None == 'adtr_filter') == True
+```
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: ADTR(20) read as of the trigger day instead of the session before.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:437: in test_adtr_filter_applied
+    assert (signal.reason == "adtr_filter") == wide
+E   AssertionError: assert ('adtr_filter' == 'adtr_filter'
+```
+
+### PBT backtest.upper_circuit_inferred
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: the day's-high test dropped, so an entry below the high reads as locked.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:472: in test_upper_circuit_inferred
+    assert upper_circuit_locked(price, price + tick, prev_close, tick) is False
+E   AssertionError: assert True is False
+```
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: the above-the-previous-close test dropped, so a flat bar at the previous close reads as locked.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:474: in test_upper_circuit_inferred
+    assert upper_circuit_locked(flat, flat, prev_close, tick) is False
+E   AssertionError: assert True is False
+```
+
+### PBT backtest.upper_circuit_skip
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: the circuit state always False at the trigger.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:524: in test_upper_circuit_skip
+    assert (signal.reason == "max_chase") == locked
+E   AssertionError: assert (None == 'max_chase') == True
+```
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: only a bar pinned at the band all day is locked, so an entry at the band that later faded opens.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:524: in test_upper_circuit_skip
+    assert (signal.reason == "max_chase") == locked
+E   AssertionError: assert (None == 'max_chase') == True
+```
+
 ### PBT backtest.exit_fill_proxy
 
 Break: in `backend/app/hat/backtest/fills.py`: a gap through the stop fills at the stop, not the open.
@@ -489,6 +554,17 @@ E   AssertionError: assert PosixPath('/root/backtests/00000000-0000-7000-8000-00
 E    +  where PosixPath('/root/backtests/00000000-0000-7000-8000-0000000000b1/trades.parquet') = <function trades_path at 0x7f2e65fee770>(PosixPath('/root'), UUID('00000000-0000-7000-8000-0000000000b1'))
 E    +    where <function trades_path at 0x7f2e65fee770> = runs.trades_path
 E    +    and   PosixPath('/root') = Path('/root')
+```
+
+### CONF backtest.known_gaps_listed
+
+Break: (PR 61) in `backend/app/hat/engine/backtest.py`: `suspension_not_marked` dropped from `KNOWN_GAPS`.
+
+```
+tests/hat/conformance/test_conf_backtest.py F
+tests/hat/conformance/test_conf_backtest.py:167: in test_known_gaps_listed
+    assert tuple(codes) == KNOWN_GAPS
+E   AssertionError: assert ('trigger_is_...at_open', ...) == ('trigger_is_...at_open', ...)
 ```
 
 ### CONF backtest.backtest_golden_replay

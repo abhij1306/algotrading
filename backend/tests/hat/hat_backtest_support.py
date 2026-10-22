@@ -93,8 +93,13 @@ def config(
     exits: Sequence[Mapping[str, Any]] | None = None,
     chase: float = 5.0,
     regime_sma: int = 3,
+    adtr: float | None = None,
 ) -> StrategyConfig:
-    """A one-playbook config whose pivot is a short consolidation's high."""
+    """A one-playbook config whose pivot is a short consolidation's high; `adtr` adds an
+    `adtr_filter` of that multiple before the max chase."""
+    filters: list[dict[str, Any]] = [{"type": "max_chase", "params": {"pct": chase}}]
+    if adtr is not None:
+        filters.insert(0, {"type": "adtr_filter", "params": {"max_multiple": adtr}})
     raw: dict[str, Any] = {
         "bot": BOT,
         "universe": [{"type": "series_in", "params": {"series": ["EQ"]}}],
@@ -115,7 +120,7 @@ def config(
             ],
         },
         "trigger": [{"type": "price_breaks_level", "params": {"level": "pivot"}}],
-        "entry_filters": [{"type": "max_chase", "params": {"pct": chase}}],
+        "entry_filters": filters,
         "stop": dict(stop or {"rule": "pct_below_entry", "pct": 5}),
         "exits": copy.deepcopy(list(exits or _EXITS)),
     }
