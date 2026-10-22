@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from hat.fakes.broker import FakeBroker, accepted, rejected
+from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
 from hat_exec_support import SYMBOLS, guard_on, live_session, seed_live_sessions
 from hat_risk_support import CALENDAR
@@ -36,6 +36,7 @@ from app.hat.execution import modes
 from app.hat.execution.broker import BrokerUnavailableError, OrderType, Side
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.guard import ExecutionGuard
+from app.hat.execution.protect import STOP_DAY, STOP_GTT, UNSURE, WORKING
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
 from app.hat.execution.router import (
     ALERT_ENTRY_NOT_PLACED,
@@ -64,7 +65,7 @@ from app.hat.notify import RecordingNotifier
 from app.hat.risk import controls
 from app.hat.risk.modes import ModeChangeError
 from app.hat.risk.sessions import SessionState
-from app.hat.time import IST
+from app.hat.time import IST, trade_date_of
 
 D = Decimal
 MODE = st.sampled_from(modes.MODES)
@@ -783,7 +784,7 @@ def test_desk_calls_serialised(rounds: int) -> None:
         desk = desks.by_account[rig.account_id]
         work = (
             lambda: desks.reconcile_all(AT),
-            lambda: desks.sync_all(AT),
+            lambda: desks.sync_due(AT),
             lambda: desks.watch_sessions(AT),
             lambda: desk.broker.funds(),
         )
@@ -802,6 +803,109 @@ def test_desk_calls_serialised(rounds: int) -> None:
         desks.release()
     assert spy.most == 1
     assert spy.calls == ["session_status"]  # the row and the outage watch see one read
+
+
+def _fill_entry(fake: FakeBroker, order: dict) -> None:
+    """The broker fills the whole entry: its book row and its trade."""
+    [row] = [r for r in fake.book if r["orderTag"] == order["order_tag"]]
+    row.update(filledQty=row["qty"], status=2)
+    fake.tradebook = [
+        {
+            "tradeNumber": "T-1",
+            "orderNumber": row["id"],
+            "orderTag": row["orderTag"],
+            "symbol": row["symbol"],
+            "side": 1,
+            "tradedQty": row["qty"],
+            "tradePrice": float(order["price"]),
+        }
+    ]
+
+
+def _watched(session: Session, now: datetime) -> bool:
+    """The reference for `fills.watch_closely`, read row by row: a real entry of a signal of
+    this trade date the broker may still fill, or an unsure stop of an open real position."""
+    session.expire_all()
+    for order in session.scalars(select(HatOrder).where(HatOrder.is_virtual.is_(False))):
+        if order.purpose == ENTRY and order.status in WORKING:
+            signal = session.get(HatSignal, order.signal_id)
+            if signal is not None and signal.trade_date == trade_date_of(now):
+                return True
+        if order.purpose in (STOP_DAY, STOP_GTT) and order.status in UNSURE:
+            position = session.get(HatPosition, order.position_id)
+            if position is not None and position.closed_at is None:
+                return True
+    return False
+
+
+STOP_REPLIES = {
+    "accepted": lambda: accepted("S-1"),
+    "unconfirmed": unconfirmed,
+    "rejected": lambda: rejected("RMS: price out of band"),
+}
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    st.lists(st.integers(min_value=1, max_value=15), min_size=2, max_size=30),
+    st.integers(min_value=0, max_value=29),
+    st.integers(min_value=0, max_value=29),
+    st.booleans(),
+    st.sampled_from(sorted(STOP_REPLIES)),
+    st.frozensets(st.integers(min_value=0, max_value=29), max_size=6),
+)
+@example(gaps=[1] * 20, placed=2, filled=10, earlier=False, stop="accepted", down=frozenset())
+@example(gaps=[1] * 20, placed=0, filled=29, earlier=True, stop="accepted", down=frozenset())
+@example(gaps=[1] * 30, placed=0, filled=2, earlier=False, stop="unconfirmed", down=frozenset())
+@example(gaps=[1] * 30, placed=0, filled=2, earlier=False, stop="rejected", down=frozenset())
+@example(gaps=[1] * 20, placed=19, filled=0, earlier=False, stop="accepted", down=frozenset({0}))
+def test_fill_sync_cadence(
+    gaps: list[int], placed: int, filled: int, earlier: bool, stop: str, down: frozenset[int]
+) -> None:
+    """HAT-EXEC-060 (review 2026-10-22 item 1): the periodic passes, `gaps` loop steps of 5 s
+    apart, read an account's fills at every pass while a real entry of today's signals may still
+    fill (from the pass it is sent until the pass that reads its fill) or a stop's answer is not
+    in yet, and otherwise at the first pass and then once a minute: an entry of the previous
+    session still shown working and a stop the broker refused do not speed it up. A pass whose
+    read failed (`down`) is tried again at the next pass. Harm: an entry filled just after a sync
+    sits up to a minute at the broker with no stop, or a refused stop is re-sent every 5 s until
+    its tag's sequence runs out."""
+    engine = memory_engine()
+    with Session(engine) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        desks = Desks(
+            sessionmaker(engine),
+            lambda _account: rig.broker,
+            RecordingNotifier(),
+            issuer=None,
+            calendar=lambda: CALENDAR,
+            tick_for=lambda _s, _p: None,
+        )
+        now, last, sent, seen = AT, None, False, False
+        signal_id = None
+        for n, gap in enumerate(gaps):
+            now += timedelta(seconds=5 * gap)
+            if n == placed:
+                signal_id = rig.route(at=now).signal_id
+                sent = len(rig.places()) == 1
+                if earlier:  # the entry of the previous session, still shown working
+                    rig.signal(signal_id).trade_date = TRADE_DAY - timedelta(days=1)
+                    session.commit()
+            if sent and not earlier and n == placed + filled:
+                _fill_entry(rig.fake, rig.places()[0])
+                rig.fake.script("place_order", STOP_REPLIES[stop]())
+            due = last is None or now - last >= timedelta(minutes=1) or _watched(session, now)
+            if due and n in down:
+                rig.fake.script("fetch_tradebook", BrokerUnavailableError("Fyers tradebook failed"))
+            reads = rig.fake.count("fetch_orderbook")
+            desks.sync_due(now)
+            assert (rig.fake.count("fetch_orderbook") > reads) == due
+            if due and n not in down:
+                last = now
+                seen = seen or bool(signal_id and rig.positions(signal_id))
+        desks.release()
+    if placed + filled < len(gaps) and not earlier and placed + filled not in down:
+        assert seen  # the fill landed
 
 
 @settings(max_examples=40, deadline=None)

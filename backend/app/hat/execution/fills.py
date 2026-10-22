@@ -29,6 +29,10 @@ book raises and nothing is written) and then, for one broker account:
    the remainder lands on the open position in step 2 and is protected like any entry fill.
 
 Each fill and its stop work commit as separate steps (the model's atomic steps, StopPlacement).
+
+`watch_closely` tells the runtime when to read the books every loop step instead of every minute:
+while a real entry of today's signals may still fill, or a stop's answer is not in yet, a fill gets
+its stop, and an unsure stop is settled, within one step (HAT-EXEC-060).
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ from .protect import (
     STOP_DAY,
     STOP_GTT,
     UNSURE,
+    WORKING,
     StopDesk,
 )
 from .submit import (
@@ -69,7 +74,7 @@ from .submit import (
 )
 from .tags import is_hat_tag
 
-__all__ = ["ALERT_FILL_REFUSED", "FillSync", "SyncReport"]
+__all__ = ["ALERT_FILL_REFUSED", "FillSync", "SyncReport", "watch_closely"]
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,37 @@ ALERT_FILL_REFUSED = "fill.refused"
 _ENDED_SHORT = ("cancelled", "rejected", "expired")
 STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
+
+
+def watch_closely(session: Session, account_id: uuid.UUID, now: datetime) -> bool:
+    """Whether the account's fills are read at every periodic step (HAT-EXEC-060): a real entry of
+    its signals of this trade date may still fill (one of an earlier session ended at its close),
+    or a stop of an open real position was sent and its answer is not in yet (pending or
+    unconfirmed: the next sync settles it). A stop the broker refused is retried once a minute,
+    never faster, so a refusal does not spend the tag's sequence (07 §10)."""
+    entry = (
+        select(HatOrder.id)
+        .join(HatSignal, HatSignal.id == HatOrder.signal_id)
+        .where(
+            HatOrder.broker_account_id == account_id,
+            HatOrder.is_virtual.is_(False),
+            HatOrder.purpose == ENTRY,
+            HatOrder.status.in_(WORKING),
+            HatSignal.trade_date == trade_date_of(now),
+        )
+    )
+    stop = (
+        select(HatOrder.id)
+        .join(HatPosition, HatPosition.id == HatOrder.position_id)
+        .where(
+            HatOrder.broker_account_id == account_id,
+            HatOrder.is_virtual.is_(False),
+            HatOrder.purpose.in_(STOPS),
+            HatOrder.status.in_(UNSURE),
+            HatPosition.closed_at.is_(None),
+        )
+    )
+    return any(session.scalar(query.limit(1)) is not None for query in (entry, stop))
 
 
 @dataclass

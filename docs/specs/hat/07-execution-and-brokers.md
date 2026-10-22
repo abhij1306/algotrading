@@ -300,12 +300,13 @@ Implementation (PR 15c; `execution/protect.py` `StopDesk`, `execution/fills.py` 
 
 #### HAT-EXEC-060: Stop at the broker on every real fill
 - **Statement:** Every real entry fill is followed by a broker stop at the position's stop price: an intraday stop order (purpose `stop_day`) in the session before the 15:25 swap, a GTT stop (purpose `stop_gtt`) from then on and after the close; this includes a fill of the entry's remainder after the position's sales emptied it.
-- **Source:** BL "Stop placement at the broker (B17)" step 1; MA "Execution modes" ("Protective stops sit at the broker on every real fill"); B17; audit 2026-10-22 tests-hat F2.
-- **PR:** 15, 20
-- **Verification:** TLA `StopPlacement!StopAfterFill`, TLA `StopPlacement!SharesTracked`, TLA `StopPlacement!RestCancelledOnExit`, TLA `StopPlacement!EmptiedCloses`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`, PBT `manage.entry_remainder_tracked`
+- **Source:** BL "Stop placement at the broker (B17)" step 1; MA "Execution modes" ("Protective stops sit at the broker on every real fill"); B17; audit 2026-10-22 tests-hat F2; design review 2026-10-22 item 1 (the fill was seen up to a minute late).
+- **PR:** 15, 20, 26
+- **Verification:** TLA `StopPlacement!StopAfterFill`, TLA `StopPlacement!SharesTracked`, TLA `StopPlacement!RestCancelledOnExit`, TLA `StopPlacement!EmptiedCloses`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`, PBT `manage.entry_remainder_tracked`, PBT `router.fill_sync_cadence`
 - **Acceptance:**
   - Property: in every behaviour, after a real entry fill, a working broker stop for the open quantity exists before any other action on that position, and from then on there is always a working stop (day or GTT) while qty_open > 0. Harm: a position sits unprotected if the machine dies.
   - Property: in every interleaving of part fills of the entry with stop fills, exits and flattens, HAT's open quantity equals the shares the broker holds and its live stops cover them; once a sale empties the position the entry's remainder is asked to be cancelled, and the position closes only when no entry order still works. Harm: shares the broker bought after HAT closed the position sit untracked and unprotected.
+  - Property: while a real entry of the account's signals of the current trade date may still fill (pending, unconfirmed, placed or partially filled), or a stop of an open real position was sent and its answer is not in yet (pending or unconfirmed), the fill sync reads the broker's books at every periodic step (5 s), so a fill gets its stop request, and an unsure stop is settled, within one step; otherwise it reads them once a minute. A stop the broker refused is retried at that minute, never faster. A sync that could not read the books is tried again at the next step. The models take the broker fill and HAT reading it as one step; this bound is the time between them. Harm: an entry filled just after a sync sits up to a minute at the broker with no stop, or a refused stop is re-sent every few seconds until its tag's sequence runs out.
 
 #### HAT-EXEC-061: Intraday stop swapped to GTT at ~15:25
 - **Statement:** At ~15:25 each intraday stop is replaced by a GTT stop (purpose `stop_gtt`) for overnight protection, without a gap in coverage.
