@@ -27,7 +27,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.reconcile_scope` `find_mismatches` depends on the broker's orders only through the HT-tagged ones, and flags exactly the four mismatch kinds. Harm: a manual order in the same account raises a false mismatch or hides a real one.
 - `PBT tags.status_mapping_total` `map_fyers_status` maps every input (any code, any quantity type) to one of the order statuses, unknown or fractional codes to `unconfirmed`. Harm: an unexpected Fyers status crashes the poller or is read as filled.
 - `PBT tags.idempotent_submission` On the real `reserve_order` and `send_order`, random calls, lost answers, simulated crashes and restarts leave at most one broker order per tag, never call the broker for an ended row, look up before a retry, never retry a GTT after a lost answer and do not read an unreachable broker as a rejection, and leave no attempt marker on a GTT that was never sent. Harm: a retry or restart double-places an entry or stop.
-- `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an unreconciled or blocked bot, an entry that is not a buy, an exit that is not a sell, or an entry with the session not live is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
+- `PBT tags.refusals_before_the_broker` A virtual order, an inactive account, an entry on an unreconciled trade date or for a blocked bot (a stop or a sale passes both, D118), an entry that is not a buy, an exit that is not a sell, or an entry with the session not live is refused before the broker is called. Harm: an order reaches the broker that HAT's own rules forbid.
 - `PBT stops.gtt_limit_offset` `gtt_limit_price` is the trigger times 0.99 rounded down to the tick, never above the trigger, never off the tick grid, and raises when the result is not positive. Harm: a stop with a limit above its trigger or off the tick grid is rejected by the exchange, or fills badly.
 - `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only); a mode outside the three runs shadow and its request is refused as unknown (`UnknownModeError`), whatever the account. Harm: a live mode runs on an account that cannot hold a protective stop.
 - `PBT broker.account_active_after_check` `onboard_account` marks an account active only when funds, positions and holdings were all fetched, whichever one fails. Harm: an account that cannot be read is treated as ready.
@@ -144,6 +144,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT router.non_live_sleeve_routes_as_shadow` For every lifecycle state, queued mode and GTT capability, `bot_mode` answers shadow unless the state routes live, and the router places no real order for a non-Live sleeve. Harm: a Probation or Retired sleeve keeps trading real money.
 - `CONF exec__default_mode_shadow` Every seed YAML, the strategy config default, the bot row default (model and database) and the entry path start at shadow, `create_bot` refuses another mode, and an unknown mode reads as shadow. Harm: a new bot trades real money before it ran in shadow.
 - `PBT router.routine_reconcile_keeps_gate` A routine reconciliation (the periodic pass) of an account already reconciled for the trade date leaves the entry gate open while it reads the book and after it, readable or not. Harm: entries are refused while a routine pass runs, or wait on a pass that already succeeded.
+- `PBT router.older_read_never_overrides_newer` When a reconciliation that read the book earlier finishes after one that read it later (`ExecutionGuard.begin_read` tickets), the later read's result stays in force. Harm: the router's run and the periodic run race, and an older clean book clears a newer mismatch so entries open over an unknown HT order.
 - `PBT router.entry_gate_keyed_by_trade_date` Over any sequence of reconciliations that read the book or cannot, with the clock moving on 0..2 trade dates between them, `ExecutionGuard` accepts an entry exactly on a trade date that has had a success, and never refuses a stop or a sale (D118, MX-F5). Harm: yesterday's success opens today's entries over an unmatched book, or an unreadable book keeps a stop or a sale from the broker.
 - `PBT router.failed_first_reconcile_alerts_once_per_date` Through `Desks`, a reconciliation that fails before the trade date's first success raises exactly one `reconcile.failed` health alert for that date, and a failure after the success raises none. Harm: the owner never learns the account cannot open entries, or is flooded every five minutes.
 - `PBT tags.unreadable_foreign_rows_skipped` An order row without an HT tag that the adapter cannot read (a missing key, an unreadable side or quantity, not a mapping) is skipped and counted (`OrderBook.skipped`, `ReconcileReport.skipped_rows`) and the rest of the book is read, with one `reconcile.unreadable_row` alert per trade date; an HT-tagged row that cannot be read fails the read and the reconciliation. Harm: one manual order fails every reconciliation of the day, or an HT order HAT cannot read is missed.
@@ -2066,6 +2067,17 @@ Break: `ReconciliationService.run` clears `guard.reconciled_for` at its top (re-
 
 ```
 E   AssertionError: assert {'not_reconciled'} == {None}
+```
+
+### PBT router.older_read_never_overrides_newer
+
+Break: `ExecutionGuard.update` applies every result, whatever its read ticket (main before PR 24).
+
+```
+E   AssertionError: assert (None == 'reconcile_mismatch') == True
+E   Failing test case: test_older_read_never_overrides_newer(
+E       first_unknown=False,
+E       second_unknown=True,
 ```
 
 ### PBT router.entry_gate_keyed_by_trade_date

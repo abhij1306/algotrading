@@ -186,6 +186,7 @@ class ReconciliationService:
         routine re-run never closes the gate a success of the same date opened. A success opens
         the entries of the guard's trade date (`ExecutionGuard.update`)."""
         day = self._guard.today()  # the date of the book read, not of the run's end
+        read = self._guard.begin_read()
         orders = self._broker.orders()
         skipped = orders.skipped
         self._alert_unreadable(day, skipped)
@@ -252,7 +253,9 @@ class ReconciliationService:
         for mismatch in fresh:
             self._alert(mismatch)
         self._alerted = current  # a mismatch that clears and returns alerts again
-        self._guard.update(day=day, blocked_bots=blocked_bots, blocked_accounts=blocked_accounts)
+        self._guard.update(
+            read=read, day=day, blocked_bots=blocked_bots, blocked_accounts=blocked_accounts
+        )
         return ReconcileReport(
             mismatches=mismatches, adopted=adopted, alerts=len(fresh), skipped_rows=skipped
         )

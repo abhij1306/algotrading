@@ -473,7 +473,7 @@ to an artefact that exists.
 | HAT-BRK-101 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!PersistBeforeCall`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BRK-102 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!UnconfirmedResolvedByTag` |
 | HAT-BRK-110 | [07](07-execution-and-brokers.md) | 13, 15, 24 | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order`, PBT `router.routine_reconcile_keeps_gate`, PBT `router.entry_gate_keyed_by_trade_date`, PBT `router.failed_first_reconcile_alerts_once_per_date` |
-| HAT-BRK-111 | [07](07-execution-and-brokers.md) | 13, 24 | TLA `OrderReconciliation!MismatchBlocksEntries`, PBT `manage.real_exits_never_blocked`, PBT `tags.held_quantity_nets_today` |
+| HAT-BRK-111 | [07](07-execution-and-brokers.md) | 13, 24 | TLA `OrderReconciliation!MismatchBlocksEntries`, PBT `manage.real_exits_never_blocked`, PBT `tags.held_quantity_nets_today`, PBT `router.older_read_never_overrides_newer` |
 | HAT-BRK-112 | [07](07-execution-and-brokers.md) | 13, 24 | PBT `tags.reconcile_scope`, PBT `tags.unreadable_foreign_rows_skipped` |
 | HAT-EXEC-120 | [07](07-execution-and-brokers.md) | 15 | PBT `bars.trigger_only_on_final_bars` |
 | HAT-EXEC-121 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.trigger_conjunction` |

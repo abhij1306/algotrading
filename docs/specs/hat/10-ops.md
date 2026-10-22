@@ -547,8 +547,8 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 ### Reconciliation failed or a row skipped
 
-1. Alert `reconcile.failed` (account): the first reconciliation of the trade date could not read
-   the broker. No entry opens on that account until one succeeds (the 5-minute pass retries);
+1. Alert `reconcile.failed` (account): the first reconciliation of the trade date failed (the
+   broker could not be read, or the database failed; the backend log says which). No entry opens on that account until one succeeds (the 5-minute pass retries);
    stops and sales still go out. Check the Fyers session (`/status`, "Morning login").
 2. Alert `reconcile.unreadable_row` (rows): order rows without an HT tag (manual or foreign
    orders) that HAT could not read were skipped; the reconciliation went on. Check the Fyers

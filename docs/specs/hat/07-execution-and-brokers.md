@@ -540,7 +540,7 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
 ## §11 Reconciliation
 
 #### HAT-BRK-110: Reconcile before the first order
-- **Statement:** On startup and before the first entry of each trade date, broker orders and positions are matched to `hat_order`/`hat_position` by tag; no entry is placed on a trade date until a reconciliation of that date succeeds. The gate holds entries only: stops and sales (protective stops, resizes, exits, `/flatten`) go out whatever the reconciliation state, before the day's first success and after a failed run alike (owner decision D118).
+- **Statement:** On startup and before the first entry of each trade date, broker orders are matched to `hat_order` by tag and broker positions to `hat_position` by symbol and quantity; no entry is placed on a trade date until a reconciliation of that date succeeds. The gate holds entries only: stops and sales (protective stops, resizes, exits, `/flatten`) go out whatever the reconciliation state, before the day's first success and after a failed run alike (owner decision D118).
 - **Source:** MA "Runtime" (Live service reconciles before its first order); MA "Failure handling" (Machine down); owner decision of 2026-10-22 (D118 in the owner's decision log, on audit findings MX-F5 and MX-F8): a failed reconciliation only ever blocks new entries, stops and exits always go out.
 - **PR:** 13, 15, 24
 - **Verification:** TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, PBT `router.reconcile_before_first_order`, PBT `router.routine_reconcile_keeps_gate`, PBT `router.entry_gate_keyed_by_trade_date`, PBT `router.failed_first_reconcile_alerts_once_per_date`
@@ -555,10 +555,11 @@ The letters, the sequence character and the bit selection are an [OWNER-PENDING]
 - **Statement:** A mismatch (broker position without a HAT row, HAT open position missing at the broker, quantity difference, or an unknown HT-tagged order) blocks new entries for the affected bot and raises an alert; it never auto-closes or auto-adopts a position.
 - **Source:** MA "Failure handling"; PLAN PR 13 (fail closed).
 - **PR:** 13, 24
-- **Verification:** TLA `OrderReconciliation!MismatchBlocksEntries`, PBT `manage.real_exits_never_blocked`, PBT `tags.held_quantity_nets_today`
+- **Verification:** TLA `OrderReconciliation!MismatchBlocksEntries`, PBT `manage.real_exits_never_blocked`, PBT `tags.held_quantity_nets_today`, PBT `router.older_read_never_overrides_newer`
 - **Acceptance:**
   - Property: in every reachable state with an unresolved mismatch for a bot, that bot accepts no entry and has raised exactly one alert per mismatch, while its exits and stops keep running. Harm: the engine trades on a false view of its book.
   - Property: the quantity compared per symbol is the broker's holding plus today's signed net CNC position (a buy today adds, a sale today of a holding subtracts, so a holding sold in full reads as 0; an intraday position is not counted) [verify the holdings and positions shapes on a live account]. Harm: a holding a GTT sold today still reads as held, so a HAT book that missed the sale passes, or one that saw it blocks the account.
+  - Property: when two reconciliations finish out of order, the result of the later book read stays in force (`ExecutionGuard.begin_read`). Harm: an older clean book clears a newer mismatch and entries open over it.
 
 #### HAT-BRK-112: Terminal orders ignored
 - **Statement:** Reconciliation considers only HT-tagged orders and HAT positions; orders tagged by the SmartTrader terminal (`ST`) or untagged are out of scope.

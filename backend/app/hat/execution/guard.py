@@ -31,17 +31,31 @@ class ExecutionGuard:
     blocked_accounts: set[uuid.UUID] = field(default_factory=set)
     today: Callable[[], date] = field(default=_today, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _reads: int = field(default=0, repr=False)  # book reads begun
+    _applied: int = field(default=0, repr=False)  # the latest read whose result is in force
+
+    def begin_read(self) -> int:
+        """A ticket for a reconciliation about to read the broker's book."""
+        with self._lock:
+            self._reads += 1
+            return self._reads
 
     def update(
         self,
         *,
+        read: int,
         day: date,
         blocked_bots: set[uuid.UUID],
         blocked_accounts: set[uuid.UUID],
     ) -> None:
         """A successful reconciliation of a book read on trade date `day`: that date's entries
-        open, minus the blocked ones."""
+        open, minus the blocked ones. A run that read the book before the one in force (two runs
+        on different threads finishing out of order) changes nothing: an older clean book never
+        clears a newer mismatch."""
         with self._lock:
+            if read <= self._applied:
+                return
+            self._applied = read
             self.reconciled_for = day
             self.blocked_bots = set(blocked_bots)
             self.blocked_accounts = set(blocked_accounts)

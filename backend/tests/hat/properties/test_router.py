@@ -519,6 +519,64 @@ def test_routine_reconcile_keeps_gate(runs: int, unreadable: bool) -> None:
         assert rig.guard.reconciled_today()
 
 
+class InterleavedBook:
+    """The adapter, running a whole second reconciliation (`then`) right after the first run's
+    order-book read: two runs on different threads finishing out of order."""
+
+    def __init__(self, broker: FyersHatBroker, then: Callable[[], None]) -> None:
+        self._broker = broker
+        self._then: Callable[[], None] | None = then
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._broker, name)
+
+    def orders(self) -> object:
+        book = self._broker.orders()
+        then, self._then = self._then, None
+        if then is not None:
+            then()
+        return book
+
+
+def _foreign_ht_row() -> dict[str, object]:
+    return {
+        "id": "B-X",
+        "symbol": "NSE:SBIN-EQ",
+        "qty": 1,
+        "filledQty": 0,
+        "status": 6,
+        "side": 1,
+        "type": 1,
+        "productType": "CNC",
+        "orderTag": encode_tag(uuid.uuid4(), ENTRY, 0),
+        "limitPrice": 100.0,
+    }
+
+
+@settings(max_examples=10, deadline=None)
+@given(st.booleans(), st.booleans())
+def test_older_read_never_overrides_newer(first_unknown: bool, second_unknown: bool) -> None:
+    """HAT-BRK-111: when a reconciliation that read the book earlier finishes after one that
+    read it later, the later read's result stays in force: an older clean book never clears a
+    newer mismatch, and an older mismatch never re-blocks after a newer clean book. Harm: the
+    router's run and the periodic run race, and entries open over a book with an unknown HT
+    order."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO)
+        rig.fake.orders = [_foreign_ht_row()] if first_unknown else []
+
+        def second_run() -> None:
+            rig.fake.orders = [_foreign_ht_row()] if second_unknown else []
+            with Session(session.get_bind()) as other:
+                ReconciliationService(rig.broker, rig.guard).run(other, rig.account_id)
+
+        first = ReconciliationService(InterleavedBook(rig.broker, second_run), rig.guard)  # type: ignore[arg-type]
+        first.run(session, rig.account_id)
+        refusal = rig.guard.refusal(rig.world.bot_id, rig.account_id, is_entry=True)
+        assert (refusal == "reconcile_mismatch") == second_unknown
+        assert refusal in (None, "reconcile_mismatch")
+
+
 @settings(max_examples=30, deadline=None)
 @given(
     st.lists(
