@@ -31,6 +31,7 @@ from app.hat.models import (
     HatBot,
     HatMarket,
     HatPosition,
+    HatRiskPolicyVersion,
     HatStrategy,
     HatStrategyVersion,
     HatTradeResult,
@@ -38,6 +39,7 @@ from app.hat.models import (
     HatUniverseVersion,
 )
 from app.hat.risk.policy import TradeOutcome, build_gate_evidence
+from app.hat.risk.policy_service import seed_initial_policy
 from app.hat.schema import seed_hat_reference
 from app.hat.time import as_utc
 
@@ -374,14 +376,23 @@ def _numbers(evidence: dict | None) -> dict | None:
 @given(
     st.lists(SLEEVE, min_size=1, max_size=3),
     st.integers(0, 100).map(lambda n: Decimal(n) / 100),
+    st.one_of(st.none(), st.integers(0, 51)),
+)
+@example(
+    sleeves=[((Decimal(1), 10), [(Decimal(2), False, 0), (Decimal(-1), False, 30)])],
+    discount=Decimal("0.5"),
+    step=10,
 )
 @settings(max_examples=30, deadline=None)
-def test_gate_evidence(sleeves: list, discount: Decimal) -> None:
-    """The risk-increase gate's evidence is `build_gate_evidence` over every closed trade of the
-    user's sleeves, in closing order (shadow ones are dropped by it), against the discounted
-    trade-weighted mean expectancy of each sleeve's newest completed run of its live version.
-    Older runs, runs of other versions and other users' sleeves are not read; with no such run
-    (or none with trades) there is no evidence."""
+def test_gate_evidence(sleeves: list, discount: Decimal, step: int | None) -> None:
+    """The risk-increase gate's evidence is `build_gate_evidence` over the trades of the user's
+    sleeves closed since the policy version in force at the request took effect (every closed
+    trade when none is), in closing order (shadow ones are dropped by it), against the
+    discounted trade-weighted mean expectancy of each sleeve's newest completed run of its live
+    version. Older runs, runs of other versions, other users' sleeves, trades closed under an
+    earlier version and a version still pending are not read; with no such run (or none with
+    trades) there is no evidence. Harm (item 9): a second step up rides on the trades that
+    already justified the first."""
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         user = uuid.uuid4()
@@ -424,11 +435,28 @@ def test_gate_evidence(sleeves: list, discount: Decimal) -> None:
         for closed_at, position_id, r in rows:
             virtual = session.get(HatPosition, position_id).is_virtual
             trades.append((as_utc(closed_at), position_id, Decimal(r), bool(virtual)))
-        got = runs.gate_evidence(session, user, discount)
+        since = None
+        if step is not None:  # versions 1 (long before), 2 (in force) and 3 (still pending)
+            first = seed_initial_policy(session, user, CLOSED - timedelta(days=10))
+            since = CLOSED + timedelta(minutes=step)
+            for version, effective in ((2, since), (3, CLOSED + timedelta(hours=2))):
+                session.add(
+                    HatRiskPolicyVersion(
+                        user_id=user,
+                        version=version,
+                        policy=dict(first.policy),
+                        direction="decrease",
+                        requested_at=effective - timedelta(days=1),
+                        effective_from=effective,
+                    )
+                )
+            session.flush()
+        got = runs.gate_evidence(session, user, CLOSED + timedelta(hours=1), discount)
         if count == 0:
             assert got is None
         else:
-            outcomes = [TradeOutcome(r, v) for _, _, r, v in sorted(trades)]
+            counted = [t for t in sorted(trades) if since is None or t[0] >= since]
+            outcomes = [TradeOutcome(r, v) for _, _, r, v in counted]
             want = build_gate_evidence(outcomes, discounted_benchmark(weighted / count, discount))
             assert _numbers(got) == _numbers(want)
         session.rollback()

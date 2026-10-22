@@ -17,7 +17,7 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `PBT universe.*` On the real membership rules: the members on a date are exactly the instruments with an interval holding it (delisted ones included for the dates they were in); an edit never changes the membership of an earlier date; the universe is (constituents plus includes) minus excludes; intervals stay ordered, non empty and non overlapping; leaving the universe blocks entries and never forces an exit; a seeded version is a draft that changes no membership until it is published. Harm: a backtest sees today's survivors, an edit rewrites history, or a universe change sells positions the strategy did not call for.
 - `PBT regime.*` The confirmation matches an independent model for any length; the inputs read nothing dated after the day, the VIX percentile is in [0, 100) and monotone, a missing or unusable input fails with a stable code; the classification is total, follows the precedence Bear, Correction, Bull volatile, Bull quiet and never moves to a safer state when conditions worsen; the multiplier table never rises toward Bear and a replacement table is held within the policy bounds; the `regime` job stores one row per day with the raw state, the confirmed state and one event. Harm: the regime reads the future, overlapping rows give different states by code order, or worse conditions raise exposure.
 - `PBT health.*` The multiplier is the full value under the first band, the half value from it to the second band and 0 (Probation) from the second band on, compared exactly at the edges, never rises with a deeper drawdown, and an unreadable equity pair fails instead of reading as healthy. Harm: a sleeve in a deep drawdown keeps full capital.
-- `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
+- `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a Shadow or Probation sleeve keeps weight 0 with a nominal `virtual_capital` (base x regime x equity) and `virtual_risk_pct` (risk x regime), and through `run_allocation` and `LiveContexts` its virtual entries are accepted on it while a real one is `no_allocation` (`allocator.virtual_allocation`, `allocator.virtual_entries_sized`, PR 34); a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
 - `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the results a decision reads stop at the trade date's close; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
 - `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
 - `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value one session earlier; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
@@ -90,7 +90,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `b37a36adb806ddbe48010321a549d9a4881bd5ef4e66e06c9e121cd33e43bb95`
+Covered digest: `07373801abe27013cd796c15ca6d62321a0e7abf1e8f022d1a6f144415248aa8`
 
 ## Scope changes
 
@@ -103,6 +103,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Backtest evidence is a pluggable source (`BacktestEvidence`, default none). PR 12 supplies `runs.backtest_evidence`, whose DSR is recomputed at the family's current trial count (`dsr.evidence_current_trials`, below and in `verify-backtest`); the gate itself (`lifecycle.backtest_gate`) is fully checked.
 - The property `lifecycle.transition_records_its_event` and the nightly `run_allocation` properties run on SQLite in memory (foreign keys not enforced); `portfolio.unique_keys` covers the constraints on Postgres.
 - PR 15b: `service.trade_results` leaves out veto trades (virtual positions of confirm or auto signals), so a sleeve's shadow evidence is its shadow trades only (HAT-EXEC-032). The lifecycle, health and allocator properties pass unchanged; none was narrowed.
+- PR 34 (design review 2026-10-22 item 8a, HAT-PORT-050): `hat_allocation_daily` gains `virtual_capital` and `virtual_risk_pct` (nullable; `ensure_hat_columns` adds them to an existing Postgres database), filled for Shadow and Probation sleeves only. `LiveContexts.entry_context` sizes a virtual entry of such a sleeve from them (health 1), and the virtual global open-risk cap reads the book as the sum of `coalesce(virtual_capital, capital)`. `allocator.virtual_entries_sized` builds the engine world (`seed_engine_world`, strategy renamed to a weighted sleeve), allocates on the previous trading day and decides with `valid_ctx` for the trade's own fields. The Probation deadlock (`still_failing` with no shadow trades) eases now that Probation books virtual trades; the forward lifecycle callers are PR 35. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -729,6 +730,36 @@ E       bots=[('stage2-contraction-breakout',
 E            'live',
 E            'c1')],  # or any other generated value
 FAILED tests/hat/properties/test_allocator.py::test_no_effect_on_open_positions
+```
+
+Break (PR 34): in `backend/app/hat/daily/live.py`: `LiveContexts` ignores the nominal allocation (main before PR 34). Check run: `test_allocator.py::test_virtual_entries_sized`.
+
+```
+E   AssertionError: assert Decimal('0.0000') == Decimal('50000.0000')
+```
+
+Break (PR 34): the virtual book counts real capital only.
+
+```
+E   AssertionError: global_open_risk
+```
+
+Break (PR 34): a nominal entry keeps the sleeve's health 0.
+
+```
+E   AssertionError: assert Decimal('0E-10') == 1
+```
+
+Break (PR 34): in `allocator.py`: every sleeve gets a nominal allocation. Check run: `test_virtual_allocation`.
+
+```
+E   AssertionError: assert Decimal('0.0000') is None
+```
+
+Break (PR 34): the nominal risk is multiplied by health.
+
+```
+E   AssertionError: assert Decimal('0.000000') == (Decimal('0.0001') * Decimal('0.05'))
 ```
 
 ### PBT lifecycle.*

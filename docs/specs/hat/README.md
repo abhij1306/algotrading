@@ -365,7 +365,7 @@ to an artefact that exists.
 | HAT-PORT-033 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `regime.multiplier_table` |
 | HAT-PORT-034 | [05](05-portfolio-regime-allocation.md) | 9 | DB `portfolio.unique_keys`, TLA `SleeveLifecycle!RegimeNeverChangesLifecycle` |
 | HAT-PORT-040 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `health.bands`, TLA `SleeveLifecycle!ProbationOnHealthZero` |
-| HAT-PORT-050 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.formula_and_bounds` |
+| HAT-PORT-050 | [05](05-portfolio-regime-allocation.md) | 9, 34 | PBT `allocator.formula_and_bounds`, PBT `allocator.virtual_allocation`, PBT `allocator.virtual_entries_sized` |
 | HAT-PORT-051 | [05](05-portfolio-regime-allocation.md) | 9, 10 | PBT `allocator.bounds_from_policy`, DB `governance.risk_increase_cooling_off` |
 | HAT-PORT-052 | [05](05-portfolio-regime-allocation.md) | 9, 10 | PBT `allocator.capital_and_risk` |
 | HAT-PORT-053 | [05](05-portfolio-regime-allocation.md) | 9, 17 | TLA `DailyCycle!AllocateAfterRegime`, PBT `allocator.no_effect_on_open_positions` |
@@ -420,7 +420,7 @@ to an artefact that exists.
 | HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence` |
 | HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session` |
 | HAT-GOV-090 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_direction_classification` |
-| HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12, 17 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused` |
+| HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12, 17, 34 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused` |
 | HAT-GOV-092 | [06](06-risk-and-governance.md) | 2 | DB `governance.risk_version_immutable` |
 | HAT-GOV-093 | [06](06-risk-and-governance.md) | 9, 10 | PBT `caps.policy_direction_classification` |
 | HAT-GOV-094 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_change_emits_event` |

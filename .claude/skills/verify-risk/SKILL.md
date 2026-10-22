@@ -93,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `41bc9010a2d0357d9657b661b2a7f828a4af1be7731a80c82c09211d2faf72bd`
+Covered digest: `beb5de4118ff9230ba7702f69edf1cde8791e37fc111c7d6de80d7338fe80869`
 
 ## Scope changes
 
@@ -117,6 +117,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 24 (owner decision D118): `risk.hat_safety_properties_pinned` re-pins `tags.refusals_before_the_broker` (`test_refusals_happen_before_the_broker`), a deliberate, reviewed change: the reconciliation gate now holds entries only, so the property expects a stop or a sale to pass while the trade date is not reconciled (trading-safety rules 5 and 7 reworded). The fixture `_failing_fake` behind the pinned `test_broker_errors_fail_closed` gives its garbage order row an HT tag, since an untagged unreadable row is now skipped (HAT-BRK-112); that property's digest is unchanged. Nothing was narrowed beyond the owner's rule.
 - PR 30 (design review item 5): `broker_health` is now tripped and cleared, per bot of the account, by every session check (`AccountDesk.check_session`). Its property, `router.broker_health_follows_the_session`, lives in verify-execution, beside the desks; no risk file changed.
 - PR 33: `snapshot.bots` runs at 23:30 on its own (not after `allocate`) and reads each bot's latest allocation on or before the day; `kill.snapshot_latest_allocation` checks it with no trade results (the realised-P&L part is `reallocation_does_not_hide_a_loss`'s), over nights where `allocate` commits before the snapshot, after it or not at all. An `allocate` that ends after 23:30 is not re-measured until the next night. A snapshot's capital is now its equity less its realised P&L, where it was the allocation row of its date; a snapshot whose bot has no allocation on or before its date still has no known capital, so `drawdown_kills_from_snapshots` (synthetic snapshots, no allocations) is unchanged. Nothing was narrowed.
+- PR 34 (design review item 9, HAT-GOV-091): `policy_service.EvidenceSource` takes the request time; `request_policy_change` passes `requested_at`, so `runs.gate_evidence` counts only the trades closed since the policy version in force took effect (`dsr.gate_evidence`, in `verify-backtest`). The increase gate itself is unchanged. Nothing was narrowed.
 
 ## Scratch breaks
 

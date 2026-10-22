@@ -8,24 +8,30 @@ from datetime import UTC, datetime, time, timedelta
 from decimal import ROUND_DOWN, Decimal
 
 import pytest
+from hat_engine_support import seed_engine_world
 from hat_portfolio_support import TRADE_DAY, USER, put_regime, seed_world
-from hat_risk_support import policy_with
+from hat_risk_support import AT, CALENDAR, policy_with, valid_ctx
 from hat_support import memory_engine
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.hat.daily.live import LiveContexts
 from app.hat.engine.portfolio import allocator, regime, service
 from app.hat.engine.portfolio.allocator import SleeveInput, allocate
 from app.hat.engine.portfolio.health import Health
+from app.hat.execution.modes import bot_mode
 from app.hat.models import (
     HatAllocationDaily,
+    HatBot,
     HatEvent,
     HatPosition,
+    HatStrategy,
 )
 from app.hat.ops.jobs import JobError
 from app.hat.risk.policy import RiskPolicy, seed_policy
+from app.hat.risk.service import evaluate_signal
 from app.hat.time import IST
 
 D = Decimal
@@ -130,6 +136,26 @@ def test_capital_and_risk(sleeves: list[SleeveInput], policy: RiskPolicy, equity
         assert r.risk_pct == policy.risk_pct * r.regime_mult * r.health_mult
         assert (r.risk_pct == 0) == (r.health_mult == 0)
     assert sum((r.capital for r in rows), D(0)) <= equity
+
+
+@given(SLEEVES, policies(), EQUITY)
+def test_virtual_allocation(
+    sleeves: list[SleeveInput], policy: RiskPolicy, equity: Decimal
+) -> None:
+    """Item 8: a Shadow or Probation sleeve keeps weight, capital and risk 0 and gets a nominal
+    allocation for its virtual entries, `virtual_capital = base x regime_mult x equity` (rounded
+    down, never capped) and `virtual_risk_pct = risk_pct x regime_mult` (health taken as 1);
+    every other sleeve has none. Harm: a sleeve in shadow books no paper trades, so it never
+    earns its way to Live, or a Probation sleeve keeps trading real money."""
+    for s, r in zip(sleeves, allocate(sleeves, policy, equity), strict=True):
+        if s.lifecycle_state in ("shadow", "probation"):
+            assert (r.final_weight, r.capital, r.risk_pct) == (0, 0, 0)
+            exact = r.base_weight * r.regime_mult * equity
+            assert r.virtual_capital == exact.quantize(D("0.0001"), rounding=ROUND_DOWN)
+            assert r.virtual_risk_pct == policy.risk_pct * r.regime_mult
+        else:
+            assert r.virtual_capital is None
+            assert r.virtual_risk_pct is None
 
 
 @given(
@@ -383,3 +409,76 @@ def test_no_effect_on_open_positions(
         put_regime(session, state)
         service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=D(1_000_000))
         assert snapshot() == before
+
+
+# --- item 8: virtual entries of a Shadow or Probation sleeve are sized ------------------------
+
+
+class _OpenGates:
+    def gate_on(self, _session: Session, _bot_id: object, _at: datetime) -> bool:
+        return True
+
+    def quality_failed(self, _session: Session, _day: object, _calendar: object) -> bool:
+        return False
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    st.sampled_from(("shadow", "probation", "live")),
+    st.sampled_from(regime.STATES),
+    st.integers(100_000, 10**8).map(D),
+)
+def test_virtual_entries_sized(state: str, market: str, equity: Decimal) -> None:
+    """Item 8, HAT-PORT-050: through the nightly allocation and the live context source, a
+    virtual entry of a Shadow or Probation sleeve is accepted and sized from its nominal
+    allocation (equity = `virtual_capital`, risk = policy risk x regime, health 1), the bot
+    routes only virtually, and the same entry made real is rejected `no_allocation`. A Live
+    sleeve's entry is sized from its real allocation. Harm: daily paper trading books nothing
+    (every virtual entry `no_allocation`), or a sleeve out of Live reaches real money."""
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, mode="confirm")
+        strategy = session.get(HatStrategy, world.strategy_id)
+        strategy.name = "stage2-contraction-breakout"  # a sleeve with a base weight
+        bot = session.get(HatBot, world.bot_id)
+        bot.lifecycle_state = state
+        made = CALENDAR.previous_trading_day(AT.date())
+        put_regime(session, market, made)
+        service.run_allocation(session, made, user_id=world.user_id, total_equity=equity)
+        row = session.get(HatAllocationDaily, (made, world.bot_id))
+        contexts = LiveContexts(
+            _OpenGates(),  # type: ignore[arg-type]
+            world.user_id,
+            lambda: False,
+            lambda _account: D(10**9),
+            lambda: CALENDAR,
+        )
+        got = contexts.entry_context(session, world.bot_id, AT)
+        virtual = bot_mode(session, bot, AT, CALENDAR) == "shadow"
+        trade = {
+            k: getattr(got, k)
+            for k in (
+                "equity",
+                "allocation_risk_pct",
+                "regime_mult",
+                "health_mult",
+                "total_equity",
+                "free_cash",
+                "policy_versions",
+            )
+        }
+        decision = evaluate_signal(valid_ctx(is_virtual=virtual, **trade))
+        if state == "live":
+            assert row.virtual_capital is None
+            assert got.equity == D(row.capital)
+            assert got.allocation_risk_pct == D(row.risk_pct)
+            return
+        assert virtual, "a sleeve out of Live routed for real"
+        assert got.equity == D(row.virtual_capital) > 0
+        assert got.allocation_risk_pct == D(row.virtual_risk_pct) > 0
+        assert got.health_mult == 1
+        assert decision.accepted, decision.reason
+        real = valid_ctx(
+            is_virtual=False,
+            **{**trade, "equity": D(row.capital), "allocation_risk_pct": D(row.risk_pct)},
+        )
+        assert evaluate_signal(real).reason == "no_allocation"

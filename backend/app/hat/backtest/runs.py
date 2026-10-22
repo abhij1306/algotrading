@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -40,7 +40,7 @@ from ..models import (
 )
 from ..risk.policy import TradeOutcome, build_gate_evidence, effective_version
 from ..risk.policy_service import load_versions
-from ..time import utc_now
+from ..time import as_utc, utc_now
 from .costs import DEFAULT_COST_MODEL, BacktestFills, CostError, check_slippage, load_cost_model
 from .dsr import Deflated, ReturnStats, deflated_sharpe, trial_variance
 from .market import load_market
@@ -334,12 +334,14 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
 
 
 def gate_evidence(
-    session: Session, user_id: uuid.UUID, discount: Decimal = DEFAULT_DISCOUNT
+    session: Session, user_id: uuid.UUID, at: datetime, discount: Decimal = DEFAULT_DISCOUNT
 ) -> dict[str, Any] | None:
-    """The `gate_evidence` a risk increase is checked with (HAT-GOV-091): every closed
-    trade of the user's sleeves (shadow ones are ignored by `build_gate_evidence`) against the
-    discounted backtest expectancy, the trade-weighted mean over the sleeves' newest completed
-    runs. None when no sleeve has a completed run: the increase gate then refuses."""
+    """The `gate_evidence` a risk increase requested at `at` is checked with (HAT-GOV-091): the
+    trades of the user's sleeves closed since the policy version in force at `at` took effect
+    (every closed trade when none is in force; shadow ones are ignored by
+    `build_gate_evidence`), so each step up needs its own evidence, against the discounted
+    backtest expectancy, the trade-weighted mean over the sleeves' newest completed runs. None
+    when no sleeve has a completed run: the increase gate then refuses."""
     bots = session.scalars(
         select(HatBot).where(HatBot.user_id == user_id).order_by(HatBot.id)
     ).all()
@@ -357,12 +359,16 @@ def gate_evidence(
         count += trades
     if count == 0:
         return None
-    rows = session.execute(
+    query = (
         select(HatTradeResult.r_multiple, HatPosition.is_virtual)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .join(HatBot, HatBot.id == HatPosition.bot_id)
         .where(HatBot.user_id == user_id)
         .order_by(HatPosition.closed_at, HatPosition.id)
-    ).all()
+    )
+    in_force = effective_version(load_versions(session, user_id), at)
+    if in_force is not None:
+        query = query.where(HatPosition.closed_at >= as_utc(in_force.effective_from))
+    rows = session.execute(query).all()
     outcomes = [TradeOutcome(Decimal(r), bool(virtual)) for r, virtual in rows]
     return build_gate_evidence(outcomes, discounted_benchmark(weighted / count, discount))

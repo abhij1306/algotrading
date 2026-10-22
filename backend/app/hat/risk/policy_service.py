@@ -33,16 +33,19 @@ from .policy import (
 from .sessions import SessionCalendar, SessionState
 
 # The evidence an increase is checked with, for a user: None when there is none.
-EvidenceSource = Callable[[Session, uuid.UUID], Mapping[str, Any] | None]
+EvidenceSource = Callable[[Session, uuid.UUID, datetime], Mapping[str, Any] | None]
 
 
-def backtest_evidence(session: Session, user_id: uuid.UUID) -> Mapping[str, Any] | None:
-    """The user's closed trades against the discounted expectancy of the sleeves' newest completed
-    backtest runs; None (the increase is refused) when no sleeve has one."""
+def backtest_evidence(
+    session: Session, user_id: uuid.UUID, at: datetime
+) -> Mapping[str, Any] | None:
+    """The user's trades closed since the policy version in force at `at` took effect, against
+    the discounted expectancy of the sleeves' newest completed backtest runs; None (the increase
+    is refused) when no sleeve has one."""
     # Imported here: `backtest.runs` reads `load_versions` from this module.
     from ..backtest.runs import gate_evidence
 
-    return gate_evidence(session, user_id)
+    return gate_evidence(session, user_id, at)
 
 
 class PolicyChangeError(HatError):
@@ -162,7 +165,7 @@ def request_policy_change(
         if any(classify_direction(v.policy, proposed) == "increase" for v in reference)
         else "decrease"
     )
-    gate_evidence = evidence(session, user_id) if direction == "increase" else None
+    gate_evidence = evidence(session, user_id, requested_at) if direction == "increase" else None
     require_increase_gate(direction, gate_evidence)
     if direction == "increase":
         effective = calendar.first_open_at_or_after(as_utc(requested_at) + COOLING_OFF)

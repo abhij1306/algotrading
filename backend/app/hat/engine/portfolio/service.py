@@ -588,6 +588,8 @@ def run_allocation(
                 capital=allocation.capital,
                 risk_pct=allocation.risk_pct,
                 currency=currency,
+                virtual_capital=allocation.virtual_capital,
+                virtual_risk_pct=allocation.virtual_risk_pct,
             )
         )
         record(
@@ -602,6 +604,14 @@ def run_allocation(
                 "regime_mult": str(allocation.regime_mult),
                 "health_mult": str(allocation.health_mult),
                 "final_weight": str(allocation.final_weight),
+                **(
+                    {
+                        "virtual_capital": str(allocation.virtual_capital),
+                        "virtual_risk_pct": str(allocation.virtual_risk_pct),
+                    }
+                    if allocation.virtual_capital is not None
+                    else {}
+                ),
             },
             bot_id=allocation.bot_id,
             occurred_at=_close_of(trade_date),

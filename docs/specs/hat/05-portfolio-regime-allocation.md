@@ -170,13 +170,15 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 ```
 
 #### HAT-PORT-050: Weight formula and policy bounds
-- **Statement:** Each live sleeve's final weight is base weight × regime multiplier × health multiplier, where multipliers are clamped to the bounds in the risk policy (default [0.25, 1.0]); a sleeve not in Live has weight 0.
-- **Source:** BL "Portfolio layer / Allocation"; SCH (multiplier bounds live in `hat_risk_policy_version.policy`); PL2.
-- **PR:** 9
-- **Verification:** PBT `allocator.formula_and_bounds`
+- **Statement:** Each live sleeve's final weight is base weight × regime multiplier × health multiplier, where multipliers are clamped to the bounds in the risk policy (default [0.25, 1.0]); a sleeve not in Live has weight 0. A sleeve in Shadow or Probation also gets a nominal allocation for its virtual (paper) entries, stored on its row: `virtual_capital` = base weight × regime multiplier × total equity (rounded down, never capped) and `virtual_risk_pct` = policy risk per trade × regime multiplier, health taken as 1. Only a virtual entry is sized from it (equity = `virtual_capital` plus the sleeve's realised virtual P&L; the global open-risk cap of virtual entries reads the day's book as the sum of each sleeve's `virtual_capital`, else its `capital`). A real entry of such a sleeve is still rejected `no_allocation`, and the sleeve routes only virtually (HAT-EXEC-012). Every other sleeve has no nominal allocation.
+- **Source:** BL "Portfolio layer / Allocation"; SCH (multiplier bounds live in `hat_risk_policy_version.policy`); PL2; design review 2026-10-22 item 8 (Shadow and Probation took no virtual entry: `no_allocation`).
+- **PR:** 9, 34
+- **Verification:** PBT `allocator.formula_and_bounds`, PBT `allocator.virtual_allocation`, PBT `allocator.virtual_entries_sized`
 - **Acceptance:**
   - Property: for every base weight b in [0,1], regime and health inputs, and policy bounds [lo, hi] with hi <= 1.0 in the default policy, the stored `final_weight` equals b × clamp(m_regime) × m_health for live sleeves and 0 otherwise, and 0 <= final_weight <= b. Harm: the allocator gives a sleeve more weight than its base.
   - Property: for every allocation, the stored `regime_mult` and `health_mult` are the values used, so `final_weight = base_weight × regime_mult × health_mult` holds row by row. Harm: the audit trail cannot explain a weight.
+  - Property: for every set of sleeves, policy and equity, a Shadow or Probation sleeve has weight, capital and risk 0, `virtual_capital` = base × regime_mult × equity rounded down and `virtual_risk_pct` = risk_pct × regime_mult; every other sleeve has neither. Harm: a sleeve in shadow books no paper trades and never earns its way to Live.
+  - Property: through the nightly allocation and the live context source, for every lifecycle state, regime and equity, a virtual entry of a Shadow or Probation sleeve is accepted and sized from its nominal allocation (health 1), the bot routes only virtually, and the same entry made real is rejected `no_allocation`; a Live sleeve's entry reads its real allocation. Harm: daily paper trading books nothing, or a sleeve out of Live reaches real money.
 - Where a cap binds (HAT-PORT-011 and HAT-PORT-055), `final_weight` is the product scaled down in proportion and rounded down, so it is below base × regime_mult × health_mult; the row identity holds exactly when no cap binds. A sleeve returning from health 0 (a previous health multiplier of 0) restarts at its target, not at 0 plus a smoothing step.
 - **[OWNER-PENDING]** health 0 vs lower bound 0.25: default reading is that bounds apply to the regime multiplier and to the health values 1.0 and 0.5, while health 0 moves the sleeve to Probation whose weight is 0 (BL lifecycle table); owner to confirm.
 
@@ -238,9 +240,9 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 | --- | --- | --- |
 | Research | Draft strategy × universe pair | 0 |
 | Backtested | Backtest passes: deflated Sharpe probability ≥ 0.95 and ≥ 200 backtest trades (*assumptions*); every backtest run is counted as a trial | 0 |
-| Shadow | Passed backtest; 20 trading days of paper trading | 0 (virtual) |
+| Shadow | Passed backtest; 20 trading days of paper trading | 0 (virtual entries sized from the nominal allocation, HAT-PORT-050) |
 | Live | Shadow passed | Base × multipliers |
-| Probation | Health multiplier hits 0, or live expectancy's 90% confidence interval sits below zero after 50 trades | 0; keeps trading in shadow |
+| Probation | Health multiplier hits 0, or live expectancy's 90% confidence interval sits below zero after 50 trades | 0; keeps trading in shadow (virtual entries sized from the nominal allocation, HAT-PORT-050) |
 | Retired | Still failing after 3 months or 50 more shadow trades in probation | 0; re-entry only through the full gate |
 
 #### HAT-PORT-060: Lifecycle transitions follow the table and its guards
