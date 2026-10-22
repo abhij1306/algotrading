@@ -32,10 +32,11 @@ ModelFactory = Callable[..., Any]
 
 
 def sdk_model(**kwargs: str) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
-    """The SDK's `FyersModel`; the SDK is imported on first use to keep startup fast."""
-    from fyers_apiv3 import fyersModel
+    """The SDK's `FyersModel`; the SDK is imported on first use to keep startup fast, through
+    `fyers_ipv4`, so its requests leave over IPv4 (HAT-BRK-093)."""
+    from .fyers_ipv4 import sdk
 
-    module: ModuleType = fyersModel
+    module: ModuleType = sdk()
     return module.FyersModel(**kwargs)
 
 

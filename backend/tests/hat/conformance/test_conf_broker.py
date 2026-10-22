@@ -128,12 +128,14 @@ def test_brk__fyers_capabilities() -> None:
     assert capabilities.to_json()["gtt_delivery"] is False
 
 
-# The only HAT modules that may import the Fyers SDK (HAT-DEC-BD2), and the one that may call its
-# GTT endpoints. Every other module reaches Fyers through them.
+# The only HAT modules that may import the Fyers SDK, each with the one SDK module it may import
+# (HAT-DEC-BD2), and the one that may call its GTT endpoints. Every other module reaches Fyers
+# through them. The SDK's HTTP client (`fyersModel`: orders, GTTs, history, quotes and the login
+# exchange) is imported only by `fyers_ipv4`, which installs the IPv4-only hook first
+# (HAT-BRK-093); the session and the login service take it from `fyers_ipv4.sdk()`.
 SDK_IMPORTERS = {
-    "execution/fyers_session.py",
-    "execution/fyers_auth.py",
-    "data/provider/fyers_websocket.py",
+    "execution/fyers_ipv4.py": "fyersModel",
+    "data/provider/fyers_websocket.py": "FyersWebsocket",
 }
 GTT_CALLERS = {"execution/fyers_broker.py"}
 SDK_GTT_CALLS = ("place_gtt_order", "modify_gtt_order", "cancel_gtt_order", "gtt_orderbook")
@@ -144,9 +146,9 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
     allowed to."""
     offenders = []
     for rel, text in sorted(files.items()):
-        if rel not in SDK_IMPORTERS and re.search(
-            r"^\s*(import|from)\s+fyers_apiv3", text, re.MULTILINE
-        ):
+        imports = re.findall(r"^\s*(?:import|from)\s+fyers_apiv3\b.*$", text, re.MULTILINE)
+        allowed = SDK_IMPORTERS.get(rel)
+        if any(allowed is None or not re.search(rf"\b{allowed}\b", line) for line in imports):
             offenders.append(f"{rel}: imports the SDK")
         if rel not in GTT_CALLERS:
             offenders.extend(f"{rel}: {call}" for call in SDK_GTT_CALLS if call in text)
@@ -156,11 +158,12 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
 
 
 def test_fyers_adapter_wraps_existing() -> None:
-    """HAT-DEC-BD2: the adapter reaches the Fyers SDK only through FyersBroker, FyersSession and
-    FyersAuthService (K2: all in `app/hat/execution`); the SDK is imported only by the session, the
-    login service and the data socket module (K3), its GTT calls are made only by the broker, and
-    nothing under app/hat imports the legacy `app.brokers` (the checker is shown to catch
-    offenders)."""
+    """HAT-DEC-BD2, HAT-BRK-093: the adapter reaches the Fyers SDK only through FyersBroker,
+    FyersSession and FyersAuthService (K2: all in `app/hat/execution`); the SDK's HTTP client is
+    imported only by `fyers_ipv4`, after it installs the IPv4 hook, and taken from there by the
+    session and the login service; the data socket module imports only the websocket (K3); its
+    GTT calls are made only by the broker, and nothing under app/hat imports the legacy
+    `app.brokers` (the checker is shown to catch offenders)."""
     adapter = (HAT_ROOT / "execution" / "fyers_adapter.py").read_text(encoding="utf-8")
     for name in ("FyersBroker", "FyersSession", "FyersAuthService"):
         assert re.search(rf"^\s+{name},?$|import .*{name}", adapter, re.MULTILINE), name
@@ -170,11 +173,21 @@ def test_fyers_adapter_wraps_existing() -> None:
     }
     assert _sdk_offenders(files) == []
     assert "place_gtt_order" in files["execution/fyers_broker.py"]
-    assert "import fyersModel" in files["execution/fyers_session.py"]
+    ipv4 = files["execution/fyers_ipv4.py"]
+    sdk = ipv4[ipv4.index("def sdk(") :]
+    assert sdk.index("install()") < sdk.index("from fyers_apiv3 import fyersModel")
+    for rel in ("execution/fyers_session.py", "execution/fyers_auth.py"):
+        assert "from .fyers_ipv4 import sdk" in files[rel], rel
     # the checker can fail
     assert _sdk_offenders({"execution/gtt.py": "import fyers_apiv3\n"}) == [
         "execution/gtt.py: imports the SDK"
     ]
+    assert _sdk_offenders(
+        {"execution/fyers_session.py": "from fyers_apiv3 import fyersModel\n"}
+    ) == ["execution/fyers_session.py: imports the SDK"]
+    assert _sdk_offenders(
+        {"data/provider/fyers_websocket.py": "    from fyers_apiv3 import fyersModel\n"}
+    ) == ["data/provider/fyers_websocket.py: imports the SDK"]
     assert _sdk_offenders({"data/x.py": "client.place_gtt_order(data)\n"}) == [
         "data/x.py: place_gtt_order"
     ]
