@@ -177,6 +177,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 38 added `CONF hat_writes_guarded`, `CONF api_loopback_no_auth_wiring` and `CONF frontend_sends_write_header` to `test_conf_api.py` (HAT-DEC-BD5); `hat_routes_read_only` is unchanged, and its `WRITE_ROUTES` comment names the guard.
 - PR 38 updated `test_conf_verification.py`: `MERGED_PRS` now includes 38; `KNOWN_GAPS` unchanged.
 - PR 33 changed `NightlyPipeline`: step 2 (`ca.adjust`) waits only for the ingested day and step 3 (`features`) for the gate and the adjustment (`Ready(k)`); `LaterStep(k)` became `\E r : Step(k, r)` so that the adjustment's success alone can carry weak fairness (its lookups are retried until they succeed); a `Snapshot` action and variable `snapDone` model `snapshot.bots`, which waits on no step, also under weak fairness. `NightlyPipelineOrder` was restated for the new waits, not weakened: steps 4 to 7 still need the one before, and features both. The fairness on the adjustment and the snapshot is an assumption that each eventually runs to success, not a check that it does. The traces above that showed `<LaterStep ...>` now show `<Step ...>`. The DB acceptance run `daily_cycle` still runs `NIGHTLY_CHAIN`, which no longer lists `ca.adjust` (it runs on its own `after`). `job_registry` reads the new rows of the 10 §3 table.
+- PR 33 (review) added `ScheduledJob.carry`: a job with no `after` and no window marked `carry` (`snapshot.bots`) carries past midnight as a chained one does. `ops.chain_carries_past_midnight` draws the kind (chained, carry, plain) and checks that a plain unchained job does not carry. This makes the `WF_vars(Snapshot)` of `NightlyPipeline` hold for a restart before 08:30; a process down until after 08:30 still misses the night.
 - PR 33 updated `test_conf_verification.py`: `MERGED_PRS` now includes 33; `KNOWN_GAPS` unchanged.
 
 ## Scratch breaks
@@ -895,6 +896,14 @@ Break: no carry-over (`elif not carries_over(job, day, now):` to `elif True:`).
 
 ```
 E   AssertionError: assert [] == [('next', datetime.date(2026, 10, 20))]
+```
+
+Break: (PR 33 review) `carry` ignored (`(bool(job.after) or job.carry)` to `bool(job.after)` in `carries_over`).
+
+```
+E   AssertionError: assert [] == [('next', dat...026, 10, 20))]
+E     Right contains one more item: ('next', datetime.date(2026, 10, 20))
+E   Failing test case: test_chain_carries_past_midnight(
 ```
 
 ### PBT ops.stop_names_abandoned_jobs

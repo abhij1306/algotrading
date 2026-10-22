@@ -135,7 +135,7 @@ table.
 | `ingest.nightly` (probe 18:00, poll 10 min, 22:00 bhavcopy fallback) | trading | 18:00 | | | 7 |
 | `exits.close_gaps` | trading | 18:00 | | `ingest.nightly` | 15c |
 | `quality.gate` | trading | 18:00 | | `ingest.nightly` | 7 |
-| `ca.adjust` (and the next session's actions of held and watchlisted instruments, HAT-EXEC-140) | trading | 18:00 | | `ingest.nightly` | 6, 21, 33 |
+| `ca.adjust` (and the next session's actions of held and watchlisted instruments, HAT-EXEC-140, and the `since`-date actions of quarantined ones, HAT-DATA-062) | trading | 18:00 | | `ingest.nightly` | 6, 21, 33 |
 | `features` | trading | 18:00 | | `quality.gate`, `ca.adjust` | 6, 33 |
 | `regime` | trading | 18:00 | | `features` | 11 |
 | `allocate` | trading | 18:00 | | `regime` | 11 |
@@ -164,14 +164,18 @@ Design (PR 17), where the wiring chose a default the requirements leave open:
   next night's run covers every open position again.
 - `snapshot.bots` runs at 23:30 and waits on no job (PR 33): it measures the drawdown kills on
   the latest allocation on or before the day, so a failed gate or a failed `allocate` does not
-  leave the kills unmeasured. A restart after midnight does not run the missed snapshot (it has
-  no `after`, so it is not carried past midnight); the next night's snapshot measures again.
+  leave the kills unmeasured. It carries past midnight as a chained job does (`carry`, PBT
+  `ops.chain_carries_past_midnight`), so a restart before 08:30 still runs the missed snapshot.
+  An `allocate` that ends after 23:30 is not measured until the next night; the peak is restated
+  from the capital each snapshot used (its equity less its realised P&L), never from an
+  allocation row written after it (HAT-RISK-066).
   `exits.close_gaps` runs after `ingest.nightly` (it needs the official closes).
 - `ca.adjust` runs after `ingest.nightly`, not after the gate (PR 33): the next session's
   corporate actions of held instruments are looked up even on a day the gate fails, and
   `features` waits on both.
 - The nightly chain belongs to the trade date it started on. A chained job without a window (one
-  with `after`, such as `quality.gate`, `scan` or `allocate`) whose date has passed still starts
+  with `after`, such as `quality.gate`, `scan` or `allocate`, or marked `carry`, such as
+  `snapshot.bots`) whose date has passed still starts
   for that date until 08:30 IST the next day, before `live.prepare` reads the night's watchlist
   (PBT `ops.chain_carries_past_midnight`). After that a failed job of a past date is not re-run
   by the scheduler [OWNER-PENDING: a manual re-run command].
@@ -601,8 +605,8 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    out of every scan from that day on (HAT-DATA-062). The other stocks scan as usual.
 2. Look for the reason: a split or bonus not yet loaded, or real news. `python -m
    app.hat.data.quarantine list` shows every open quarantine.
-3. A corporate action with that ex-date, once stored, releases the quarantine at the next gate.
-   For real news (no corporate action), clear it once you are satisfied the price is right:
+3. A corporate action with that ex-date, once stored, releases the quarantine at the next gate
+   (`ca.adjust` asks the MCP for it again every night). For real news (no corporate action), clear it once you are satisfied the price is right:
    `python -m app.hat.data.quarantine clear SYMBOL`. The stock is back in the next night's scans.
 4. More than 1% of the universe unexplained in one day fails the gate instead (`quality.failed`,
    check `big_moves`); nothing is quarantined. Treat it as a bad data file, as above.

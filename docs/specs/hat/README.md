@@ -194,7 +194,7 @@ to an artefact that exists.
 | HAT-DATA-055 | [02](02-data.md) | 5 | PBT `corporate_actions.factor_parse` |
 | HAT-DATA-060 | [02](02-data.md) | 7 | PBT `quality_gate.coverage_threshold`, TLA `KillSwitch!DataHealthManageOnly` |
 | HAT-DATA-061 | [02](02-data.md) | 7 | PBT `quality_gate.ohlc_zero_tolerance` |
-| HAT-DATA-062 | [02](02-data.md) | 7, 33 | PBT `quality_gate.big_moves_explained`, PBT `quality_gate.quarantine_one_mover`, PBT `quality_gate.quarantine_cap`, PBT `quality_gate.quarantine_release` |
+| HAT-DATA-062 | [02](02-data.md) | 7, 33 | PBT `quality_gate.big_moves_explained`, PBT `quality_gate.quarantine_one_mover`, PBT `quality_gate.quarantine_cap`, PBT `quality_gate.quarantine_release`, PBT `quality_gate.quarantine_lookup` |
 | HAT-DATA-063 | [02](02-data.md) | 7 | PBT `quality_gate.index_snapshot_present` |
 | HAT-DATA-064 | [02](02-data.md) | 7 | PBT `quality_gate.rows_written` |
 | HAT-DATA-065 | [02](02-data.md) | 7, 10, 17 | TLA `KillSwitch!DataHealthManageOnly`, TLA `KillSwitch!ExitsContinue`, TLA `NightlyPipeline!NoScanAfterGateFail`, TLA `KillSwitch!HealthClearsOwnSource`, PBT `quality_gate.rows_written` |

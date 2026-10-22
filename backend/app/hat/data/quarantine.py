@@ -9,8 +9,10 @@ here:
     python -m app.hat.data.quarantine list
     python -m app.hat.data.quarantine clear SYMBOL
 
-`clear` releases every open quarantine of the active instruments with that symbol
-(`released_by = owner`). The instrument is back in the next night's scans.
+`clear` releases every open quarantine of the instruments with that symbol, active or not
+(`released_by = owner`). The instrument is back in the next night's scans. `ca.adjust` looks up
+the actions of every open quarantine's instrument on its `since` date each night, so a split
+whose lookup failed on the day is found later and releases the quarantine at the next gate.
 """
 
 from __future__ import annotations
@@ -48,11 +50,10 @@ def open_quarantines(session: Session) -> list[OpenQuarantine]:
 
 
 def clear(session: Session, symbol: str, now: datetime) -> int:
-    """Release the open quarantines of the active instruments named `symbol`, in the caller's
-    transaction. The number released (0: nothing was quarantined under that symbol)."""
-    ids = select(HatInstrument.id).where(
-        HatInstrument.symbol == symbol.strip().upper(), HatInstrument.active.is_(True)
-    )
+    """Release the open quarantines of the instruments named `symbol` (active or not: `list`
+    shows them all), in the caller's transaction. The number released (0: nothing was
+    quarantined under that symbol)."""
+    ids = select(HatInstrument.id).where(HatInstrument.symbol == symbol.strip().upper())
     rows = session.scalars(
         select(HatQualityQuarantine).where(
             HatQualityQuarantine.instrument_id.in_(ids), HatQualityQuarantine.released_at.is_(None)

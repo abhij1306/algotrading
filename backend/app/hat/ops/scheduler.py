@@ -66,7 +66,9 @@ class ScheduledJob:
     `until` (IST) on when it has a window. `fn` gets the trade date the run is kept under.
 
     `after` names jobs that must have succeeded for the same trade date first; `weekday`
-    (Monday 0) limits the job to one day of the week; `on_finish` is passed to `run_job`."""
+    (Monday 0) limits the job to one day of the week; `on_finish` is passed to `run_job`;
+    `carry` lets a job with no `after` (and no window) carry past midnight as a chained one does
+    (`carries_over`; `snapshot.bots`, PR 33)."""
 
     name: str
     at: time
@@ -77,6 +79,7 @@ class ScheduledJob:
     days: Days = Days.TRADING
     weekday: int | None = None
     on_finish: Callable[[date], OnFinish] | None = None
+    carry: bool = False
 
 
 def runs_on(job: ScheduledJob, day: date, trading: TradingDay) -> bool:
@@ -88,11 +91,11 @@ def runs_on(job: ScheduledJob, day: date, trading: TradingDay) -> bool:
 
 
 def carries_over(job: ScheduledJob, day: date, now: datetime) -> bool:
-    """Whether `now` is still in the carry-over of `day` for `job`: a chained job without a
-    window, on the next IST date before `CARRY_UNTIL`."""
+    """Whether `now` is still in the carry-over of `day` for `job`: a chained job (or one marked
+    `carry`) without a window, on the next IST date before `CARRY_UNTIL`."""
     local = now.astimezone(IST)
     return (
-        bool(job.after)
+        (bool(job.after) or job.carry)
         and job.until is None
         and local.date() == day + ONE_DAY
         and local.time() < CARRY_UNTIL

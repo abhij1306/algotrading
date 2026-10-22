@@ -36,6 +36,7 @@ from ..events import record
 from ..models import (
     HatCorporateAction,
     HatEvent,
+    HatInstrument,
     HatJobRun,
     HatQualityCheck,
     HatQualityQuarantine,
@@ -228,23 +229,24 @@ def ingest_summary(session: Session, trade_date: date) -> Mapping[str, Any] | No
 
 
 def standing_quarantine(session: Session, trade_date: date, now: datetime) -> set[str]:
-    """The instruments still quarantined for `trade_date`: every open quarantine from an earlier
-    day, less those whose corporate action with ex-date `since` is now stored (released here, in
-    the caller's transaction). A quarantine of `trade_date` itself (a retry of the day's gate)
-    stands too."""
+    """The instruments still quarantined for `trade_date`: every open quarantine since that day or
+    earlier, less those whose corporate action with ex-date `since` is now stored (released
+    here, in the caller's transaction)."""
+    explained = (
+        select(HatCorporateAction.id)
+        .where(
+            HatCorporateAction.instrument_id == HatQualityQuarantine.instrument_id,
+            HatCorporateAction.ex_date == HatQualityQuarantine.since,
+        )
+        .exists()
+    )
     standing = set()
-    for row in session.scalars(
-        select(HatQualityQuarantine).where(
+    for row, action in session.execute(
+        select(HatQualityQuarantine, explained).where(
             HatQualityQuarantine.released_at.is_(None), HatQualityQuarantine.since <= trade_date
         )
     ):
-        action = session.scalar(
-            select(HatCorporateAction.id).where(
-                HatCorporateAction.instrument_id == row.instrument_id,
-                HatCorporateAction.ex_date == row.since,
-            )
-        )
-        if action is not None:
+        if action:
             row.released_at = now
             row.released_by = RELEASED_BY_ACTION
         else:
@@ -305,9 +307,10 @@ def gate_body(
 ) -> Callable[[], JobResult]:
     """The `quality.gate` body for `run_job`. It fails (so the next step does not run) when any
     check fails, after committing the check rows, the event and the health kill. `excluded`
-    names instruments to keep out of the day's scans besides the quarantine. On a passing
-    `big_moves` its unexplained movers are quarantined in the same transaction and each is
-    alerted once, after the commit."""
+    names instruments to keep out of the day's scans besides the quarantine. On a passing gate
+    the unexplained movers of `big_moves` are quarantined in the same transaction and each is
+    alerted once, after the commit; a failing gate quarantines nothing (its retry, on data
+    fixed meanwhile, decides afresh), and a passing one is never run again for its day."""
     sink = notifier if notifier is not None else LogNotifier()
     skipped = {str(i) for i in excluded}
 
@@ -324,14 +327,14 @@ def gate_body(
             standing = standing_quarantine(session, trade_date, now)
             inputs = gate_inputs(session, store, trade_date, summary)
             result = evaluate(excluded=skipped | standing, **inputs)
-            moves = next(c for c in result.checks if c.name == CHECK_BIG_MOVES)
-            if moves.passed:
+            if result.passed:
+                moves = next(c for c in result.checks if c.name == CHECK_BIG_MOVES)
                 new = list(moves.detail["unexplained"])
                 quarantine(session, new, trade_date, now)
             symbols = _symbols(session, new)
             news = persist(session, run_id, result, trade_date, clock)
             session.commit()
-        for instrument in new:  # a retry finds them standing, so each is alerted once
+        for instrument in new:  # only a passing gate quarantines, and it does not run again
             sink.alert(
                 CODE_QUARANTINED,
                 trade_date,
@@ -349,7 +352,12 @@ def gate_body(
 def _symbols(session: Session, instruments: Collection[str]) -> dict[str, str]:
     if not instruments:
         return {}
-    return {str(m.instrument_id): m.symbol for m in active_universe(session)}
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.symbol).where(
+            HatInstrument.id.in_([uuid.UUID(i) for i in instruments])
+        )
+    )
+    return {str(i): symbol for i, symbol in rows}
 
 
 def excluded_for(session: Session, trade_date: date) -> set[str]:

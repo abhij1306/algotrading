@@ -8,6 +8,7 @@ from collections.abc import Collection
 from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from types import SimpleNamespace
 
 from hat_ingest_support import (
     TRADE_DAY,
@@ -18,11 +19,14 @@ from hat_ingest_support import (
     store_previous,
     symbols_of,
 )
+from hat_mcp_support import ScriptedTransport
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import select
 
+from app.hat.daily.nightly import Nightly
 from app.hat.data.ingest import ingest_body, outcome_recorder
+from app.hat.data.mcp_client import McpClient
 from app.hat.data.quality import (
     CHECK_NAMES,
     CODE_FAILED,
@@ -229,31 +233,32 @@ def test_big_moves_end_to_end(
 @given(
     size=st.integers(100, 300),
     wanted=st.integers(1, 3),
-    no_vix=st.booleans(),
-    retries=st.integers(0, 2),
+    failing=st.integers(0, 2),
 )
-@example(size=100, wanted=1, no_vix=False, retries=0)
-@example(size=100, wanted=1, no_vix=True, retries=2)
-@example(size=300, wanted=3, no_vix=True, retries=1)
-def test_quarantine_one_mover(size: int, wanted: int, no_vix: bool, retries: int) -> None:
+@example(size=100, wanted=1, failing=0)
+@example(size=100, wanted=1, failing=2)
+@example(size=300, wanted=3, failing=1)
+def test_quarantine_one_mover(size: int, wanted: int, failing: int) -> None:
     """HAT-DATA-062 (PR 33, design review item 12): for every universe of N instruments and up to
-    1% of it moving over 20% with no corporate action, the big_moves check passes and the gate
-    passes unless another check fails (India VIX not stored); each mover is quarantined from the
-    trade date, is on the day's exclusion list and is alerted exactly once with its symbol,
-    however often a failing gate is retried (a retry finds it standing). A passing gate is not
-    run again (one success per job and day)."""
+    1% of it moving over 20% with no corporate action, the big_moves check passes. While another
+    check fails (India VIX not stored, for `failing` runs) nothing is quarantined or alerted as
+    quarantined; once the data is fixed the retry passes (no health kill left), and each mover
+    is quarantined from the trade date, is on the day's exclusion list and is alerted exactly
+    once with its symbol. A passing gate is not run again (one success per job and day)."""
     movers = set(range(min(wanted, size // 100)))
     names = [s for s, _, _ in symbols_of(size)]
     with tempfile.TemporaryDirectory() as tmp:
         world = make_world(tmp, symbols_of(size))
         _night(world, size, movers)
         _ingest(world)
-        if no_vix:
-            read = world.store.read_index
-            world.store.read_index = lambda day: [  # type: ignore[method-assign]
-                r for r in read(day) if r.index_name.upper() != "INDIA VIX"
-            ]
-        results = [_gate(world) for _ in range(retries + 1)]
+        read = world.store.read_index
+        world.store.read_index = lambda day: [  # type: ignore[method-assign]
+            r for r in read(day) if r.index_name.upper() != "INDIA VIX"
+        ]
+        results = [_gate(world) for _ in range(failing)]
+        held = (_quarantined(world), _quarantine_alerts(world))
+        world.store.read_index = read  # type: ignore[method-assign]
+        results += [_gate(world), _gate(world)]
         with world.factory() as session:
             skipped = excluded_for(session, TRADE_DAY)
         quarantined = _quarantined(world)
@@ -262,9 +267,10 @@ def test_quarantine_one_mover(size: int, wanted: int, no_vix: bool, retries: int
         tripped = _health_tripped(world)
     ids = {i: str(world.ids[f"{names[i]}:EQ"]) for i in movers}
     assert _rows(world)["big_moves"] == "PASS"
-    assert results == [not no_vix] * (retries + 1)
-    assert len(failed) == int(no_vix)
-    assert tripped == no_vix
+    assert results == [False] * failing + [True, True]
+    assert held == (set(), [])
+    assert len(failed) == int(failing > 0)
+    assert not tripped
     assert quarantined == {(ids[i], TRADE_DAY, True) for i in movers}
     assert skipped == set(ids.values())
     assert sorted(alerts) == sorted((ids[i], names[i]) for i in movers)
@@ -321,10 +327,12 @@ def test_quarantine_release(ops: list[tuple[str, int, int]]) -> None:
     clears and gate reads over earlier days, against a model: a quarantine stands on a later day
     iff no corporate action with ex-date `since` was stored for its instrument and the owner did
     not clear it (a corporate action on another date does not release it); a gate read releases
-    those with their action (`corporate_action`), `clear` the open ones of its symbol (`owner`),
-    and a quarantine is never reopened. Then the real gate of TRADE_DAY, with no mover, excludes
-    exactly the standing ones from that day's scans."""
-    names = [s for s, _, _ in symbols_of(3)]
+    those with their action (`corporate_action`), `clear` the open ones of its symbol, typed in
+    any case and for an inactive instrument too (`owner`), and a quarantine is never reopened.
+    Then the real gate of TRADE_DAY, with no mover, excludes exactly the standing ones from that
+    day's scans."""
+    universe = [*symbols_of(2), ("S0002", "EQ", False)]  # an inactive one can be cleared too
+    names = [s for s, _, _ in universe]
     rows: dict[tuple[int, date], str | None] = {}  # open: None, else who released it
     actions: set[tuple[int, date]] = set()
 
@@ -339,7 +347,7 @@ def test_quarantine_release(ops: list[tuple[str, int, int]]) -> None:
         return out
 
     with tempfile.TemporaryDirectory() as tmp:
-        world = make_world(tmp, symbols_of(3))
+        world = make_world(tmp, universe)
         key = {i: str(world.ids[f"{names[i]}:EQ"]) for i in range(3)}
         for op, i, back in ops:
             day = TRADE_DAY - timedelta(days=back)
@@ -366,7 +374,7 @@ def test_quarantine_release(ops: list[tuple[str, int, int]]) -> None:
                     for q in session.scalars(select(HatQualityQuarantine))
                 }
             assert stored == {(key[k], since): by for (k, since), by in rows.items()}
-        _night(world, 3, ())
+        _night(world, 2, ())
         _ingest(world)
         assert _gate(world)
         with world.factory() as session:
@@ -449,3 +457,64 @@ def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
     assert job.status == ("succeeded" if passed else "failed")
     assert len(alerts) == (0 if passed else 1)
     assert tripped == (not passed)
+
+
+@settings(max_examples=20)
+@given(
+    quarantined=st.dictionaries(st.integers(0, 3), st.integers(1, 3), max_size=4),
+    found=st.sets(st.integers(0, 4)),
+    unreadable=st.sets(st.integers(0, 4)),
+)
+@example(quarantined={0: 2}, found={0}, unreadable=set())
+@example(quarantined={0: 2, 1: 2}, found={1}, unreadable={0})
+def test_quarantine_lookup(
+    quarantined: dict[int, int], found: set[int], unreadable: set[int]
+) -> None:
+    """HAT-DATA-062 (PR 33): each night `ca.adjust` asks the MCP again for the actions of every
+    open quarantine's instrument on its `since` date, and only those; an action it stores
+    releases that quarantine at the next gate read, while an unreadable answer or none leaves
+    it standing, and nothing is alerted for it (the quarantine was alerted already). Harm: a
+    split whose lookup failed on its day keeps the stock out of the scans until someone
+    notices."""
+    names = [s for s, _, _ in symbols_of(5)]
+    with tempfile.TemporaryDirectory() as tmp:
+        world = make_world(tmp, symbols_of(5))
+        since = {i: TRADE_DAY - timedelta(days=back) for i, back in quarantined.items()}
+        with world.factory() as session:
+            for i, day in since.items():
+                quarantine(session, [str(world.ids[f"{names[i]}:EQ"])], day, day_at(19, day=day))
+            session.commit()
+        for i in range(5):
+            day = since.get(i, TRADE_DAY).isoformat()
+            if i in unreadable:  # no factor: unreadable, so the lookup counts as failed
+                world.nse.actions[names[i]] = [
+                    {"exDate": day, "actionType": "BONUS", "purpose": "Bonus"}
+                ]
+            elif i in found:
+                world.nse.actions[names[i]] = [
+                    {
+                        "exDate": day,
+                        "actionType": "SPLIT",
+                        "purpose": "Face Value Split",
+                        "adjustmentFactor": 0.5,
+                    }
+                ]
+        transport = ScriptedTransport(world.nse.respond)
+        client = McpClient(transport, sleep=lambda _s: None)
+        deps = SimpleNamespace(
+            session_factory=world.factory,
+            mcp=lambda: client,
+            notifier=world.notifier,
+        )
+        Nightly(deps)._quarantine_actions()  # type: ignore[arg-type]  # noqa: SLF001
+        asked = {
+            (a["symbol"], a["fromDate"], a["toDate"])
+            for _, tool, a in transport.calls
+            if tool == "get_corporate_actions"
+        }
+        with world.factory() as session:
+            standing = standing_quarantine(session, TRADE_DAY, day_at(19))
+    assert asked == {(names[i], d.isoformat(), d.isoformat()) for i, d in since.items()}
+    released = set(since) & found - unreadable
+    assert standing == {str(world.ids[f"{names[i]}:EQ"]) for i in set(since) - released}
+    assert world.notifier.alerts == []
