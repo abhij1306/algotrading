@@ -193,6 +193,7 @@ class BrokerOrder:
     filled_qty: int
     status: str  # one of hat_order.status
     product: str
+    order_type: OrderType | None = None  # None when the broker's code is unknown
 
 
 class OrderBook(list[BrokerOrder]):

@@ -363,8 +363,14 @@ class TradeManager:
             # keeps protecting the position and the owner reconciles it.
             self._not_placed(signal, position, "sale_unresolved", now)
             return None
-        if settled == WAIT or self._desk.exit_working(session, position.id):
-            return None  # one sale at a time; the next evaluation sees what it left
+        if (
+            settled == WAIT
+            or self._desk.exit_working(session, position.id)
+            or self._desk.triggered_gtts(session, position.id)
+        ):
+            # one sale at a time (a triggered GTT's working sale is one, HAT-EXEC-066); the next
+            # evaluation sees what it left
+            return None
         # Checked at the moment of sending: a close job that started at 15:24 still sends
         # nothing from 15:30 on (HAT-EXEC-074).
         if not self._orders_allowed(sending()):

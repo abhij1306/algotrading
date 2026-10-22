@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's initi
 
 # verify-stops
 
-Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model), and that a split or bonus rescales an open position before the ex-date open instead of stopping it out (07 §14). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072), `07` §6 (HAT-EXEC-060..065), §14 (HAT-EXEC-140..143), `01-decisions.md` (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
+Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model), and that a split or bonus rescales an open position before the ex-date open instead of stopping it out (07 §14). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072), `07` §6 (HAT-EXEC-060..066), §14 (HAT-EXEC-140..143), `01-decisions.md` (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
 
 ## Properties
 
@@ -38,6 +38,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `TLA StopPlacement!SharesTracked` HAT's open quantity always equals the shares the broker holds for the position, also when part of a DAY limit entry fills after a stop fill, an exit or a flatten emptied the position (the position stays open until the broker shows the entry ended). Harm: shares bought after HAT closed the position sit at the broker untracked and with no stop.
 - `TLA StopPlacement!RestCancelledOnExit` Once a sale has emptied the position, the rest of a still-working entry has been asked to be cancelled. Harm: the remainder holds risk budget no cap counts and buys shares HAT is selling.
 - `TLA StopPlacement!EmptiedCloses` A position its sales emptied eventually closes (the broker ends the entry: the cancel, or the DAY expiry at the close), unless a late part of the entry is held. Harm: an emptied position stays open for ever and holds its slot.
+- `TLA StopPlacement!RestingSold` A GTT that triggered with its limit sale resting below the limit under a held position is eventually sold (the sync has the sale made a market sale), never left at its limit to expire at the close (HAT-EXEC-066). Harm: the stop triggered and the shares sit unsold all session while the price keeps falling.
 - `PBT exits.veto_score` The veto score over the R multiples of the closed veto trades is avoided = -sum(R < 0) and missed = sum(R > 0), exactly, both non-negative, with missed - avoided the plain sum and a zero R in neither. Harm: the weekly digest tells the user their skips saved money they in fact cost.
 - `PBT exits.veto_verdict_threshold` The veto verdict is absent until 50 decisions, then "skips beat takes" exactly when the mean R of the skipped trades is below the mean R of the taken ones (compared without rounding either mean), else "skips do not beat takes", and insufficient data when either side is empty. Harm: the weekly digest tells the owner to keep vetoing (or to switch to auto) on a rounding artefact (HAT-EXEC-131).
 
@@ -109,13 +110,14 @@ Checks:
 - `verification/tla/broken/StopPlacement__close_with_rest.cfg`
 - `verification/tla/broken/StopPlacement__keep_rest.cfg`
 - `verification/tla/broken/StopPlacement__no_close_step.cfg`
+- `verification/tla/broken/StopPlacement__no_resting_market.cfg`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `efaf29de5cf6e8b4c921ddbf18acefa368176dbe989c51131ab77f1d7990a84d`
+Covered digest: `7d64722c59d9f890e17244336b2be8a951fc8bc8f27e5da3f324a93c66782952`
 
 ## Scope changes
 
@@ -130,6 +132,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed. In the review round `protect` stopped placing or growing a stop while a sale the broker accepted still works (`make_room` gave the sale the shares; `manage.a_resting_sale_is_never_stopped_over`, its break in `verify-execution`); the model's `Sell` is atomic, so this window is not modelled.
 - PR 21 (audit 2026-10-22 F3) added the split and bonus rescale (`engine/rescale.py`, 07 §14). `StopPlacement` keeps one price scale: a rescale is a change of unit, not a stop move, so `StopOnlyTightens` and `BrokerStopMatchesCurrent` hold in scale-adjusted prices and the rescale is not modelled (between `ca.rescale` and the next sync the broker stop rests above the rescaled stop in new units, at the old stop in old units; the market is shut). The broker stop's move down is `StopDesk.rescaled`, checked by `rescale.broker_stop_follows`, and it moves only a position with a `position.rescaled` event. Fractional entitlements are floored (the broker pays them in cash); a factor is read back as the ratio with denominator ≤ 1000 within 1e-9 of it, or refused; only splits and bonuses with factor below 1 are applied. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
+- PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -578,3 +581,40 @@ E   AssertionError: the database accepted: a rescale whose event differs in to.q
 ```
 
 The five `rescale_function` variants in `test_db_broken_variants.py` (no rescale exception, any event of the position, an event of any position, only the stops matched, the trigger dropped) each make the check fail too.
+
+### TLA StopPlacement!RestingSold
+
+Break: the variant `no_resting_market`: the sync alerts a resting sale but leaves it at its limit (the main code before PR 27).
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial predicate>
+State 2: <Clock ...>
+State 3: <EntryFill ...>
+State 4: <Protect ...>
+State 5: <SwapPlaceGtt ...>
+State 6: <GttTriggersResting ...>
+State 7: <SeeResting ...>
+State 8: <RaiseStop ...>
+State 9: <Clock ...>
+State 10: <Clock ...>
+State 11: <Verify ...>
+State 12: <Clock ...>
+State 13: <Clock ...>
+State 14: <RaiseStop ...>
+State 15: <EntryFill ...>
+State 16: <Protect ...>
+State 17: <SwapPlaceGtt ...>
+State 18: <Settle ...>
+State 19: <Clock ...>
+State 20: <Clock ...>
+State 21: <Verify ...>
+State 22: <Clock ...>
+State 23: <GttTriggersUnfilled ...>
+State 24: <SeeUnfilled ...>
+State 25: <Clock ...>
+Back to state 16: <Protect ...>
+```
+
+Break: `Spec` without `WF_vars(SeeResting)` (the sync never looks) also violates it.
+

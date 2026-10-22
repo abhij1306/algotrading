@@ -133,6 +133,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.no_sale_after_close` A run that starts at 15:2x and reaches a sale some minutes later sends it only before 15:30 (the time sent is the run's start plus the monotonic time taken, with no clock injected); otherwise `exit.not_placed` is raised and the broker stop keeps resting. Harm: a slow close run sends market orders after the close.
 - `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) when the sync adopts it; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
 - `PBT manage.gtt_trigger_handled` A GTT that triggers and fills only in part reduces the position and is neither resized nor doubled while its sale may still sell the rest; once that sale ends short, `gtt.unfilled` is raised once and the shares left get a new stop for exactly their quantity. Harm: a second stop under a working sale sells the shares twice, or the rest stays unprotected.
+- `PBT manage.gtt_resting_marketed` A GTT that triggered with its limit sale resting below the limit (the order book shows the untagged SELL working at the GTT's quantity, part filled or none) is recorded `gtt.triggered` and alerted `gtt.unfilled` (code `gtt_triggered_resting`) once; every sync asks for exactly `{order_type: MARKET}` on that order until the book shows it MARKET; a refused change is alerted once (`gtt_sale_not_marketed`) and asked again; a flatten and a raised stop send nothing while the sale works, and once it fills the position closes with no stop left (HAT-EXEC-066). Harm: the stop triggered and the shares sit unsold below the limit all session, or a second sale or a stop move goes over the working sale.
 - `PBT manage.lost_answers_never_freeze` For a stop path (lost day stop, lost GTT, refused stop, late fill) and a sale answer (lost and landed, lost and absent, refused, invalid), with the books readable or not and the answer young or settled: an exit or hard stop due is sold once the books can be read and the answer settled, a stop sent with a lost answer is adopted or ended and never doubled, a sale already resting is never sent twice, and an unreadable book alerts instead of acting. Harm: a stop-loss exit is frozen behind a lost answer, or two orders sell the same shares.
 - `PBT manage.async_sale_rejection_retried` A sale the broker accepts and then rejects, cancels or expires short (in full or after a part fill) records `order.rejected`, un-fires its rules unless a partial exit sold some shares, sends one new sale on the next evaluation and alerts `exit.not_placed` on the second rejection with no third sale. Harm: a rule marked fired on a sale that never sold leaves the position open with no alert.
 - `PBT manage.a_settled_answer_never_sells_twice` A lost GTT that landed under a position a sale then closed is cancelled by the first sync after the settle wait; a lost sale the broker filled is left to the fill sync and no second sale goes out before its fills are recorded; a lost sale of an earlier session that today's book cannot show is left unsure with its rule fired, alerted (`sale_unresolved`), and nothing more is sold while the broker stop rests. Harm: a GTT rests under shares already sold, or a position is sold twice.
@@ -282,7 +283,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `dfcf694204abbfc9650693f33776f0d1963925b69433c9528bba99ad36d0c4d3`
+Covered digest: `9925cc4606d82fa13069c4551eaeded32594a05076745371489d18cd78434938`
 
 ## Scope changes
 
@@ -323,6 +324,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 23 (live checks 2026-10-22): Fyers code -16 raises `FyersSessionExpiredError` (a `FyersUnavailableError`, so every read still fails closed); `session_status` makes one profile read when the token file says live (only -16 turns it EXPIRED; an outage leaves it LIVE as before); `FyersAuthService` reads the profile after a login (on its own small pool, 5 s timeout, checked by the shared `profile_data`) only with a `model_factory` (the process instance passes the SDK model, tests a `RecordingSdk`, so no test can reach Fyers). The login fixtures lost the `fy_id` they had put in the token reply, which Fyers does not send. `FakeBroker` gained `profile` and `get_profile`.
 - PR 24 (audit 2026-10-22 money-safety-execution F5, F8; D118): `ExecutionGuard` keys the gate by trade date (`reconciled_for`, `today`; `begin_session` and the boolean `reconciled` are gone) and gates entries only; `TradeManager` no longer takes the reconciler (its sales, `gtt.swap` and the fill sync never wait for a reconciliation). The rigs build their guard with `hat_exec_support.guard_on(day)`, a fixed trade date. `tags.refusals_before_the_broker` now expects a stop or a sale to pass while the date is not reconciled, and `tags.broker_errors_fail_closed`'s garbage order row carries an HT tag (an untagged unreadable row is now skipped, not a failure). `OrderReconciliation` is unchanged: its orders are entries, and a new trade date is the router property. Nothing was narrowed.
 - PR 26 (design review 2026-10-22 item 1): the periodic `sync` step runs every pass and `Desks.sync_due` decides per account (every step while `fills.watch_closely`, else `FILL_SYNC_EVERY`, one minute; a sync that read nothing is tried at the next step; one account's failure is logged and never stops another's); `recover` stamps `synced_at` too and isolates each account (a failure is logged; the start goes on; CodeAnt), and `Desks.sync_all` is gone (`router.desk_calls_serialised` drives `sync_due`). A refused stop keeps the one-minute retry, so the 36 sequence characters of its tag last. The models still take a broker fill and HAT reading it as one step; `router.fill_sync_cadence` checks the time between them. An order socket was not added (HAT-OVR-006 allows one broker socket, the data socket). The per-account isolation has no property (the rig has one account). Nothing was narrowed.
+- PR 27 (design review 2026-10-22 item 2): a GTT that triggers with its sale resting below the limit is seen by `FillSync` step 5b (`_resting_trigger`: untagged SELL, working, short of its quantity, the GTT's quantity) and its sale made a market sale (`StopDesk.market_sale`, `modify_order` with `order_type` MARKET only). `BrokerOrder.order_type` is new (the adapter maps the Fyers `type` code; an unknown code is None, so the sync asks again). `FakeBroker.modify_order` now shows an accepted type change in its book. The GTT row stays live while the sale works, and `StopDesk.triggered_gtts` (a live GTT with a `gtt.triggered` event) holds back exit sales and `follow`. The review's proposals (a `triggered` status, a one-shot 09:15 job) were not taken: the sync already runs every minute and the live row keeps every other path off the shares. That Fyers accepts the change on a GTT's child is `[verify on a live account]`. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1869,6 +1871,57 @@ Break: in `backend/app/hat/execution/fills.py`, a GTT trade marks the GTT `fille
 ```
 E   AssertionError: assert [('place_orde...'SL-M', ...})] == []
 E     Left contains one more item: ('place_order', {'symbol': 'NSE:SBIN-EQ', 'quantity': 250, 'side': 'SELL', 'type': 'SL-M', ...})
+```
+
+Break (PR 27): in `backend/app/hat/execution/fills.py`, `FillSync.run` has no resting step (`elif False and self._resting_trigger(...)`).
+
+```
+E   AssertionError: assert [] == [('modify_ord...: 'MARKET'}))]
+E   Failing test case: test_gtt_trigger_handled(
+```
+
+Break (PR 27): the GTT row is ended when its trigger is first seen (the review's proposal: `gtt.status = 'expired'` in `_gtt_resting`), so the sync protects again over the working sale.
+
+```
+E   AssertionError: assert 1 == 2
+E   Failing test case: test_gtt_trigger_handled(
+```
+
+### PBT manage.gtt_resting_marketed
+
+Break: in `backend/app/hat/execution/fills.py`, `_gtt_resting` asks again after the book shows the sale MARKET (`if order.order_type is OrderType.MARKET: return` to `if False:`).
+
+```
+E   AssertionError: assert [('modify_ord...: 'MARKET'}))] == [('modify_ord...: 'MARKET'}))]
+E   Failing explicit example: test_gtt_resting_marketed(
+```
+
+Break: `_gtt_resting` alerts at every sync (`if not self._trigger_seen(...)` to `if True:`).
+
+```
+E   AssertionError: assert 2 == 1
+E   Failing explicit example: test_gtt_resting_marketed(
+```
+
+Break: `_gtt_resting` never asks for the market sale (`if self._desk.market_sale(...).ok or ...:` to `if True:`).
+
+```
+E   AssertionError: assert [] == [('modify_ord...: 'MARKET'}))]
+E   Failing test case: test_gtt_trigger_handled(
+```
+
+Break: in `backend/app/hat/execution/manage.py`, `_sell_qty` no longer waits on `StopDesk.triggered_gtts`, so a flatten sends a sale over the working one.
+
+```
+E   AssertionError: assert [('modify_ord...ARKET', ...})] == [('modify_ord...: 'MARKET'}))]
+E   Failing explicit example: test_gtt_resting_marketed(
+```
+
+Break: in `backend/app/hat/execution/protect.py`, `follow` no longer skips a triggered GTT (`if row.id in triggered:` to `if False:`).
+
+```
+E   AssertionError: assert [('modify_ord...ice': 94.1}))] == [('modify_ord...: 'MARKET'}))]
+E   Failing explicit example: test_gtt_resting_marketed(
 ```
 
 ### PBT manage.lost_answers_never_freeze

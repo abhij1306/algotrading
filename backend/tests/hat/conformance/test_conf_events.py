@@ -8,12 +8,12 @@ from app.hat.events import ACTORS, AGGREGATE_TYPES, EVENT_GROUPS, EVENT_TYPES
 
 
 def test_events__catalogue() -> None:
-    """The event types `app/hat/events.py` knows equal the 39 of the spec table, group by
+    """The event types `app/hat/events.py` knows equal the 40 of the spec table, group by
     group: nothing missing, nothing extra, no duplicate."""
     spec = parse_event_types()
     assert EVENT_GROUPS == spec
     flat = [t for group in spec.values() for t in group]
-    assert len(flat) == len(set(flat)) == len(EVENT_TYPES) == 39
+    assert len(flat) == len(set(flat)) == len(EVENT_TYPES) == 40
     assert EVENT_TYPES == frozenset(flat)
 
 

@@ -40,6 +40,7 @@ from typing import Any
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     BROKER_ORDER_UNCONFIRMED,
+    FYERS_ORDER_TYPES,
     SUBMIT_UNCONFIRMED,
 )
 from app.hat.execution.fyers_broker import (
@@ -167,7 +168,14 @@ class FakeBroker:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers modify timeout/unavailable"}
-        return _settle(self.modify_reply)
+        reply = _settle(self.modify_reply)
+        if isinstance(reply, dict) and reply.get("s") == "ok" and params.get("order_type"):
+            # the broker shows a modified order with its new type
+            rows = [*self.book, *(self.orders if isinstance(self.orders, list) else [])]
+            for row in rows:
+                if row["id"] == order_id:
+                    row["type"] = FYERS_ORDER_TYPES[str(params["order_type"]).upper()]
+        return reply
 
     def cancel_order(self, order_id: str) -> Any:  # noqa: ANN401
         queue = self._call("cancel_order", order_id)

@@ -62,6 +62,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "order.cancelled",
         "gtt.placed",
         "gtt.refreshed",
+        "gtt.triggered",
     ),
     "Positions": (
         "position.opened",

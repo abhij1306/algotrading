@@ -19,7 +19,10 @@ book raises and nothing is written) and then, for one broker account:
 5. raises `gtt.unfilled` for an untagged SELL order on such a symbol that ended (cancelled,
    rejected, expired) short of its quantity: the GTT triggered and did not fill (07 §6 step 3).
    The GTT is ended and the position protected again. The broker order id is kept on the
-   `order.cancelled` event, so the alert is raised once;
+   `order.cancelled` event, so the alert is raised once; while such an order still works short of
+   its quantity (the price gapped below the GTT's limit), the GTT triggered and its sale rests:
+   `gtt.triggered` is recorded and `gtt.unfilled` raised once, and the sale is asked to go at the
+   market at every sync until the book shows it does (HAT-EXEC-066);
 6. protects again every open real position of the account that has no stop the broker
    confirmed (a stop the broker refused twice was alerted; a stop whose answer was lost is
    settled by `StopDesk.protect`; each sync tries again);
@@ -53,10 +56,11 @@ from ..events import record
 from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..time import trade_date_of
-from .broker import BrokerOrder, BrokerTrade, HatBroker, Side
+from .broker import BrokerOrder, BrokerTrade, HatBroker, OrderType, Side
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     ALERT_GTT_UNFILLED,
+    EVENT_GTT_TRIGGERED,
     EXIT_WORKING,
     LIVE,
     STOP_DAY,
@@ -83,6 +87,8 @@ ALERT_FILL_REFUSED = "fill.refused"
 _ENDED_SHORT = ("cancelled", "rejected", "expired")
 STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
+RESTING = "gtt_triggered_resting"  # alert code: the GTT's sale rests below its limit
+NOT_MARKETED = "gtt_sale_not_marketed"  # alert code: the broker refused the market conversion
 
 
 def watch_closely(session: Session, account_id: uuid.UUID, now: datetime) -> bool:
@@ -122,6 +128,7 @@ class SyncReport:
     adopted: int = 0
     statuses: int = 0
     unfilled_gtts: int = 0
+    resting_gtts: int = 0
     refused: int = 0
     protected: set[uuid.UUID] = field(default_factory=set)
 
@@ -134,6 +141,7 @@ class FillSync:
         self._desk = desk
         self._notifier = notifier or LogNotifier()
         self._refused_trades: set[str] = set()
+        self._unmarketed: set[str] = set()  # resting GTT sales whose conversion was alerted
 
     def run(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport:
         """One pass over the broker's books. Raises BrokerUnavailableError when either book
@@ -164,6 +172,8 @@ class FillSync:
         for order in orders:
             if self._unfilled_trigger(order, gtts):
                 self._gtt_unfilled(session, gtts[order.symbol], order, now, report)
+            elif self._resting_trigger(order, gtts):
+                self._gtt_resting(session, gtts[order.symbol], order, now, report)
         for position_id in self._unprotected(session, account_id) - report.protected:
             self._protect(session, position_id, now, report)
         for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
@@ -434,6 +444,79 @@ class FillSync:
             },
         )
         self._desk.protect(session, position.id, now)
+
+    # --- 5b. a GTT that triggered and whose sale rests unfilled ----------------------------------
+
+    @staticmethod
+    def _resting_trigger(order: BrokerOrder, gtts: dict[str, HatOrder]) -> bool:
+        gtt = gtts.get(order.symbol)
+        return (
+            gtt is not None
+            and order.tag is None
+            and order.side is Side.SELL
+            and order.status in LIVE
+            and order.filled_qty < order.qty
+            and order.qty == gtt.qty
+        )
+
+    @staticmethod
+    def _trigger_seen(session: Session, gtt_id: uuid.UUID, order_id: str) -> bool:
+        payloads = session.scalars(
+            select(HatEvent.payload).where(
+                HatEvent.event_type == EVENT_GTT_TRIGGERED, HatEvent.aggregate_id == gtt_id
+            )
+        )
+        return any((payload or {}).get(TRIGGER_ORDER) == order_id for payload in payloads)
+
+    def _gtt_resting(
+        self,
+        session: Session,
+        gtt: HatOrder,
+        order: BrokerOrder,
+        now: datetime,
+        report: SyncReport,
+    ) -> None:
+        """HAT-EXEC-066: the GTT triggered and its limit sale still works (the price gapped below
+        the limit): the first sight records `gtt.triggered` and raises `gtt.unfilled`; every
+        sync asks for the sale to go at the market until the book shows it does. The GTT row
+        stays live: its sale holds the shares, so no other stop or sale is placed over it."""
+        signal = session.get(HatSignal, gtt.signal_id)
+        if signal is None:
+            return
+        alert = {
+            "bot_id": str(signal.bot_id),
+            "signal_id": str(signal.id),
+            "position_id": str(gtt.position_id),
+        }
+        if not self._trigger_seen(session, gtt.id, order.order_id):
+            record(
+                session,
+                aggregate_type="order",
+                aggregate_id=gtt.id,
+                event_type=EVENT_GTT_TRIGGERED,
+                actor="broker",
+                payload={
+                    "tag": gtt.tag,
+                    "broker_order_id": gtt.broker_order_id,
+                    TRIGGER_ORDER: order.order_id,
+                    "qty": order.qty,
+                    "filled_qty": order.filled_qty,
+                },
+                correlation_id=signal.id,
+                bot_id=signal.bot_id,
+                occurred_at=now,
+            )
+            session.commit()
+            report.resting_gtts += 1
+            self._notifier.alert(ALERT_GTT_UNFILLED, trade_date_of(now), {**alert, "code": RESTING})
+        if order.order_type is OrderType.MARKET:
+            return  # already at the market (one at the lower price band waits for a buyer)
+        if self._desk.market_sale(order.order_id).ok or order.order_id in self._unmarketed:
+            return
+        self._unmarketed.add(order.order_id)
+        self._notifier.alert(
+            ALERT_GTT_UNFILLED, trade_date_of(now), {**alert, "code": NOT_MARKETED}
+        )
 
     # --- 6. positions without a stop ---------------------------------------------------------
 
