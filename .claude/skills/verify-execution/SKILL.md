@@ -31,6 +31,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT stops.gtt_limit_offset` `gtt_limit_price` is the trigger times 0.99 rounded down to the tick, never above the trigger, never off the tick grid, and raises when the result is not positive. Harm: a stop with a limit above its trigger or off the tick grid is rejected by the exchange, or fills badly.
 - `PBT broker.confirm_and_auto_need_gtt` `effective_mode` and `request_mode` allow confirm or auto only for an active account that reports `gtt_delivery`, and the Fyers adapter does not (the MVP is shadow only); a mode outside the three runs shadow and its request is refused as unknown (`UnknownModeError`), whatever the account. Harm: a live mode runs on an account that cannot hold a protective stop.
 - `PBT broker.account_active_after_check` `onboard_account` marks an account active only when funds, positions and holdings were all fetched, whichever one fails. Harm: an account that cannot be read is treated as ready.
+- `PBT broker.token_refused_is_session_expired` Over the real `FyersBroker` answering the -16 replies recorded on 2026-10-22, the adapter's session status is EXPIRED though the token file is in date, and every read fails with `broker_session_expired`; any other error reply or SDK failure is an outage: reads fail with `broker_unavailable` and the session stays LIVE; the profile is read once per token per 30 s window. Harm: a revoked or server-expired token reads as an outage, so nobody is asked to log in again while every read fails.
+- `PBT broker.token_refused_on_a_read_ends_the_check` A -16 on any read inside the 30 s window of a passed profile check makes the next `session_status` EXPIRED at once (CodeAnt, PR 23). Harm: the alert and login prompt wait up to 30 s while every read already fails.
 - `PBT broker.one_session_owner` `SessionRegistry` hands out one owner per account, serialises that owner's calls and refuses a call after release; the adapter's session status never raises and maps (connected, client, store error) to live, expired, missing or unknown; `record_session` writes the morning login. Harm: two owners race for one session, or a broken token store reads as live.
 - `PBT ops.session_backoff_alert` The reconnect delay is 1 s doubling to 30 s, and an outage raises exactly one alert after 2 minutes, none after a recovery until the next outage. Harm: a dead session retries in a tight loop or alerts every minute.
 - `CONF brk__interface_methods` The `HatBroker` protocol has exactly the 17 methods of 07 §8 and the Fyers adapter implements each with the same parameters. Harm: a method is added to or dropped from the broker boundary without the spec.
@@ -52,7 +54,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_session.validation_retry_bound` A profile call is retried only after a re-login is found on disk and only once: at most two calls, and the last answer decides. Harm: validation hammers Fyers or loops.
 - `PBT fyers_session.nested_validation` A validation started from inside a validation returns at once with whether a model exists and makes no call. Harm: a recursive validation loop.
 - `PBT fyers_auth.failed_exchange_fails_closed` Whatever Fyers answers or raises (an error, a missing or empty token, a non-mapping, an SDK exception) the exchange raises a fixed-message error, writes no file, runs no hook, and leaves no auth code, secret or echoed text in the error or the log. Harm: a failed login leaves a half state or leaks the code or secret.
-- `PBT fyers_auth.good_exchange_order` A good reply saves the token for the app's client id, reports connected with the user id at once, runs `token_change` before `login`, and never logs the token, secret or code. Harm: the feed starts on a stale session or the token reaches a log.
+- `PBT fyers_auth.good_exchange_order` A good reply (the documented `generate_token` shape, which has no user id) saves the token for the app's client id, reports connected with the user id from the account's profile (the recorded reply) at once and after the cache expires, none (never an empty string) when the profile is refused or fails, runs `token_change` before `login`, and never logs the token, secret, code or profile error text. Harm: the feed starts on a stale session, the token reaches a log, or the login status shows no user (live check 2026-10-22).
 - `PBT fyers_auth.save_failure_runs_no_hook` When the token cannot be saved the old file stays and no hook runs. Harm: the process is told a new token exists when it does not.
 - `PBT fyers_auth.logout_wins` A logout cancels a login whose reply is still pending, counted from the start of the logout: even while a slow disconnect hook is running, no token is written and no `login` hook fires. Harm: a logged-out user is logged in again by a slow reply.
 - `PBT fyers_auth.hooks_isolated` A hook that raises never fails the login or the logout, never stops the other hooks and its message stays out of the log. Harm: a feed error blocks the daily login or the logout.
@@ -274,7 +276,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `bcd4630fa900afdde80e4573e17501206e3e7b34715fa7f5498139f0d466389c`
+Covered digest: `4d72b50415c70088e2d72b60c5a219ace940dc20d2c41667c7b828587641aa7b`
 
 ## Scope changes
 
@@ -312,6 +314,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 16 review round: `TradeManager` serialises the sales of one position (`_sale_lock`) and `flatten` continues past a position that fails (`FlattenReport.failed`); `orders_allowed` is public for the Telegram flattener. `test_manage.py` passes unchanged.
 - PR 18 (audit 2026-10-22 money-safety-execution F1-F3, engine-ops F1, tests-hat F3): `HatBroker.gtts()` reads the GTT book (07 §8, so `brk__interface_methods` changed with the spec table); `FakeBroker` keeps GTT book rows in the Fyers shape and `RecordingSdk`'s default read replies now carry their list keys (a reply without one is the case `fyers_broker.an_ok_reply_without_its_list_is_unreadable` drives). `ManageRig` takes `settle_after` (default 0: the rig settles a lost answer at once; `manage.lost_answers_never_freeze` also draws a young answer that must wait) and moves the settle's wall clock on by `elapsed`. `FakeBroker`'s GTT book rows take the flat Fyers book shape (`price_trigger`, `qty`, `ord_status`, `gtt_oco_ind`, as OpenAlgo's Fyers mapping reads them) and a cancelled GTT stays in the book with `ord_status` 1 (`resting_gtts()` lists the active ones). The pre-push review found and fixed: a lost GTT left resting under a position a sale closed (the sync now settles and cancels it), two threads sending one reserved stop (`send_order` claims the first attempt), a lost sale found filled followed by a second sale, a lost sale of an earlier session read as never sent, ended or foreign GTT book rows, and a repeated alert while a lost answer is still young. A second review of those fixes found and fixed: a retry kept its first attempt's time (the settle wait then ran from the wrong send), two senders of a retry both sending (every attempt is now a conditional stamp), a triggered GTT dropped from the book read, an odd status on someone else's GTT failing the whole read, and an earlier session's lost sale followed by a new sale for a quantity it may already have sold (it now holds further sales). `manage.async_sale_rejection_retried` patches `submit.utc_now` because `rejected_sales` counts the sales placed on the trade day of the wall clock. The hard-stop fallback now counts only a broker-confirmed stop (an unsure one is settled first, and one still unsure no longer holds the sale back: the previous rule froze positions behind lost answers); `manage.real_exits_never_blocked` passes unchanged. Nothing was narrowed.
 - PR 19 (audit 2026-10-22 money-safety-execution F4, tests-hat F1): `open_entry` hands the decision `owner_slots`, the slots of every bot of the owner on every broker account (each slot carries its own bot, so the per-bot caps in `decide` keep filtering to the bot's own), and takes `lock_owner` after `lock_bot` and after the duplicate check. The scope is the owner, not one broker account, because total equity sums every bot's allocation (`daily/live.py`). Only an entry adds open risk: the other slot writers (fills, Take, skip, expiry, stop raises, exits) hold only the bot's lock and can only keep or shrink a slot, so a stale read over-counts; `_slots` reads the pending signals before the positions so that a fill landing between the two reads is counted twice, never missed (CodeAnt). `bot_snapshot` (the bot's own slots) is unchanged for its other callers. `hat_engine_support.add_bot` adds a second bot of the owner on another broker account. The per-bot DB breaks now also remove the owner lock (above). Nothing was narrowed.
+- PR 23 (live checks 2026-10-22): Fyers code -16 raises `FyersSessionExpiredError` (a `FyersUnavailableError`, so every read still fails closed); `session_status` makes one profile read when the token file says live (only -16 turns it EXPIRED; an outage leaves it LIVE as before); `FyersAuthService` reads the profile after a login (on its own small pool, 5 s timeout, checked by the shared `profile_data`) only with a `model_factory` (the process instance passes the SDK model, tests a `RecordingSdk`, so no test can reach Fyers). The login fixtures lost the `fy_id` they had put in the token reply, which Fyers does not send. `FakeBroker` gained `profile` and `get_profile`.
 
 ## Scratch breaks
 
@@ -763,7 +766,36 @@ E     'AUTHCODE0000000000' is contained here:
 E       -fyers-9a1b and 'SECRETKEY-9f8e7d6c' not in 'login faile...y-fyers-9a1b'
 ```
 
+### PBT broker.token_refused_on_a_read_ends_the_check
+
+Break: (PR 23) a -16 on a read leaves the profile check standing.
+
+```
+1 failed: assert <SessionStatus.LIVE: 'live'> is <SessionStatus.EXPIRED: 'expired'>
+```
+
+### PBT broker.token_refused_is_session_expired
+
+Break: (PR 23, each tried alone) `_read_ok` without the -16 branch; `session_status` without the profile probe; the adapter's `_read` maps -16 to `broker_unavailable`; main's broker and adapter.
+
+Also: no check cache (`assert 2 == 1`); the cache ignores a new SDK model, i.e. a new token (`assert 1 == 2`).
+
+```
+no -16 branch:  E   AssertionError: assert <SessionStatus.LIVE: 'live'> is <SessionStatus.EXPIRED: 'expired'>
+no probe:       E   AssertionError: assert <SessionStatus.LIVE: 'live'> is <SessionStatus.EXPIRED: 'expired'>
+read code:      E   AssertionError: assert 'broker_unavailable' == 'broker_session_expired'
+main:           E   AssertionError: assert <SessionStatus.LIVE: 'live'> is <SessionStatus.EXPIRED: 'expired'>
+```
+
 ### PBT fyers_auth.good_exchange_order
+
+Break: (PR 23, each tried alone) `status()` reports `token.user_id or ""`; the profile's user id is not saved.
+
+```
+empty id:     E   AssertionError: assert '' == None
+not saved:    E   AssertionError: assert None == 'XA1234'
+```
+
 
 Break: `login` runs before `token_change`.
 

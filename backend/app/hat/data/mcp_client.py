@@ -44,6 +44,9 @@ BATCH_SIZE = 50
 PROBE_SYMBOL = "RELIANCE"  # HAT-DATA-040: the one symbol the readiness probe asks for
 BACKOFF_BASE_SECONDS = 1.0
 HTTP_TIMEOUT_SECONDS = 30.0
+MCP_PROTOCOL_VERSION = "2025-03-26"
+HTTP_SESSION_LOST = 404  # streamable HTTP: the server no longer knows the session id
+HANDSHAKE_TRIES = 2
 
 # Stable error codes: the only text an alert, API response or Telegram message may carry.
 CODE_TRANSPORT = "mcp_transport"
@@ -95,7 +98,10 @@ def endpoints_from_env(env: Mapping[str, str]) -> dict[str, str]:
 
 
 class HttpTransport:
-    """JSON-RPC `tools/call` over HTTP POST. Never constructed by tests."""
+    """MCP over streamable HTTP: one session per server, opened with `initialize` and
+    `notifications/initialized`, its `Mcp-Session-Id` sent on every `tools/call`. A 404 means the
+    server lost the session (the NSE servers run several replicas): the call opens a new session
+    and is sent once more. Never constructed by tests with a real network."""
 
     def __init__(
         self,
@@ -111,41 +117,141 @@ class HttpTransport:
         self._timeout = timeout
         self._ids = iter(range(1, 1 << 62))
         self._id_lock = threading.Lock()
+        self._sessions: dict[str, _McpSession] = {}
+        # one lock per server: a slow handshake with one server never holds up calls to the other
+        self._session_locks = {server: threading.Lock() for server in self._endpoints}
 
     def call(self, server: str, tool: str, arguments: Mapping[str, Any]) -> object:
         url = self._endpoints.get(server)
         if url is None:
             raise McpConfigError
+        params = {"name": tool, "arguments": dict(arguments)}
+        session = self._session(server, url, stale=None)
+        status, text = self._send(url, "tools/call", params, session)
+        if status == HTTP_SESSION_LOST:
+            session = self._session(server, url, stale=session)
+            status, text = self._send(url, "tools/call", params, session)
+            if status == HTTP_SESSION_LOST:
+                self._forget(server, session)
+        if status >= 400:
+            raise McpTransportError(CODE_TRANSPORT)
+        return unwrap_result(_decode_body(text))
+
+    def _session(self, server: str, url: str, *, stale: _McpSession | None) -> _McpSession:
+        """The server's open session; a new one when there is none or it is `stale` (the one a
+        call just saw lost). Concurrent calls to the server share one handshake."""
+        with self._session_locks[server]:
+            current = self._sessions.get(server)
+            if current is not None and current is not stale:
+                return current
+            self._sessions.pop(server, None)
+            opened = self._handshake(url)
+            self._sessions[server] = opened
+            return opened
+
+    def _forget(self, server: str, session: _McpSession) -> None:
+        """Drop `session` when it is still the server's open one: the next call opens another."""
+        with self._session_locks[server]:
+            if self._sessions.get(server) is session:
+                del self._sessions[server]
+
+    def _handshake(self, url: str) -> _McpSession:
+        """Open and initialize a session. A 404 on either step means another replica answered,
+        so the handshake starts once more; any other failure, or a JSON-RPC error answering
+        `initialize`, is a transport error."""
+        for _try in range(HANDSHAKE_TRIES):
+            session = self._try_handshake(url)
+            if session is not None:
+                return session
+        raise McpTransportError(CODE_TRANSPORT)
+
+    def _try_handshake(self, url: str) -> _McpSession | None:
+        status, text, headers = self._post_raw(
+            url,
+            {
+                "jsonrpc": "2.0",
+                "id": self._next_id(),
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "hat", "version": "1"},
+                },
+            },
+            {},
+        )
+        if status == HTTP_SESSION_LOST:
+            return None
+        session_id = _header(headers, "mcp-session-id")
+        if status >= 400 or not session_id:
+            raise McpTransportError(CODE_TRANSPORT)
+        envelope = _decode_body(text)
+        if not isinstance(envelope, dict) or not isinstance(envelope.get("result"), dict):
+            raise McpTransportError(CODE_TRANSPORT)  # an error answer opens no session
+        agreed = envelope["result"].get("protocolVersion")
+        version = agreed if isinstance(agreed, str) and agreed else MCP_PROTOCOL_VERSION
+        session = _McpSession(session_id, version)
+        status, _text, _headers = self._post_raw(
+            url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, session.headers()
+        )
+        if status == HTTP_SESSION_LOST:
+            return None
+        if status >= 400:
+            raise McpTransportError(CODE_TRANSPORT)
+        return session
+
+    def _send(
+        self, url: str, method: str, params: Mapping[str, Any], session: _McpSession
+    ) -> tuple[int, str]:
+        body = {"jsonrpc": "2.0", "id": self._next_id(), "method": method, "params": params}
+        status, text, _headers = self._post_raw(url, body, session.headers())
+        return status, text
+
+    def _next_id(self) -> int:
+        with self._id_lock:
+            return next(self._ids)
+
+    def _post_raw(
+        self, url: str, body: Mapping[str, Any], headers: Mapping[str, str]
+    ) -> tuple[int, str, Mapping[str, str]]:
         post = self._post
         if post is None:
             import requests  # deferred: only a real call needs the HTTP stack
 
             post = requests.post
-        with self._id_lock:
-            request_id = next(self._ids)
-        body = {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "method": "tools/call",
-            "params": {"name": tool, "arguments": dict(arguments)},
-        }
         try:
             response = post(
                 url,
                 json=body,
-                headers={"Accept": "application/json, text/event-stream"},
+                headers={"Accept": "application/json, text/event-stream", **headers},
                 timeout=self._timeout,
             )
             status = int(response.status_code)
             text = response.text
+            reply_headers = getattr(response, "headers", None) or {}
         except TimeoutError as exc:
             raise McpTransportError(CODE_TIMEOUT) from exc
         except Exception as exc:  # any network or client failure: the text is dropped
             timed_out = type(exc).__name__.endswith("Timeout")
             raise McpTransportError(CODE_TIMEOUT if timed_out else CODE_TRANSPORT) from exc
-        if status >= 400:
-            raise McpTransportError(CODE_TRANSPORT)
-        return unwrap_result(_decode_body(text))
+        return status, text, reply_headers
+
+
+@dataclass(frozen=True)
+class _McpSession:
+    session_id: str
+    protocol_version: str
+
+    def headers(self) -> dict[str, str]:
+        return {"Mcp-Session-Id": self.session_id, "MCP-Protocol-Version": self.protocol_version}
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    """A reply header by case-insensitive name."""
+    for key, value in headers.items():
+        if str(key).lower() == name:
+            return str(value) if value else None
+    return None
 
 
 def _decode_body(text: str) -> object:
@@ -417,7 +523,8 @@ class McpClient:
 
     def market_breadth(self, trade_date: date) -> BreadthSnapshot:
         """`get_market_breadth` for `trade_date` (HAT-DATA-044). [A] the answer carries
-        `date`, `totalStocks`, `advances`, `declines`, `unchanged`, `adRatio`, `totalVolume`."""
+        `date`, `total_stocks`, `advances`, `declines`, `unchanged`, `ad_ratio`, `total_volume`
+        (snake_case, recorded live 2026-10-22)."""
         data = self.call(
             SERVER_BHAVCOPY,
             "get_market_breadth",

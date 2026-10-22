@@ -95,7 +95,7 @@ def test_imports__mcp_transport_only() -> None:
                 alias.name for n in ast.walk(tree) if isinstance(n, ast.Import) for alias in n.names
             }
             assert not any(lib in imported for lib in HTTP_LIBS), name
-    assert "requests" in inspect.getsource(HttpTransport.call)
+    assert "requests" in inspect.getsource(HttpTransport)  # deferred, inside the transport only
 
 
 def test_mcp_endpoints_allowlist() -> None:

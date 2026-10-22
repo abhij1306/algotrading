@@ -30,7 +30,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT ingest.raw_write_once` For any sequence of attempts at one date (MCP or fallback, failing or not) exactly one raw partition exists, its bytes never change after the first, and the fallback runs at most once. Harm: a re-run rewrites history or splits one day across sources.
 - `PBT ingest.outcome_event` Each ingest run that reaches a final status leaves exactly one `ingest.completed` or `ingest.failed` event in the same transaction, a crash leaves none, and the data-health kill is tripped iff some run failed. Harm: a night with no data scans as if healthy.
 - `PBT ingest.call_budget` A run makes at most ceil(N/50) bulk calls, its probes, one index call, one breadth call and one lookup per flagged symbol. Harm: the nightly job exhausts the MCP quota.
-- `PBT ingest.nightly_index_breadth` The run succeeds iff the trade date's index rows with NIFTY 500 and India VIX are stored, one row per index; the day's breadth row is the server's, or counted from our bars when the server has none. Harm: the regime engine runs on a day with no index or breadth.
+- `PBT ingest.nightly_index_breadth` The run succeeds iff the trade date's index rows with NIFTY 500 and India VIX are stored, one row per index; the day's breadth row is the server's (the recorded snake_case reply of 2026-10-22, its `total_volume`, `total_stocks` and `ad_ratio` stored as sent), or counted from our bars when the server has none. Harm: the regime engine runs on a day with no index or breadth, or stores a volume of 0 for every day.
 - `PBT ingest.renames_from_nse_data` Seeding the renames derived from stored bars makes every (symbol, day) of the bars resolve to the instrument that traded it, with disjoint intervals, and is idempotent. Harm: a renamed stock splits into two histories.
 - `PBT corporate_actions.flag_rule` A symbol is flagged iff prev_close differs from our stored close, or the move exceeds 20% (exact fractions), or the RSS names it. Harm: a split goes unnoticed and prices break.
 - `PBT corporate_actions.lookup_only_flagged` The nightly ingest looks corporate actions up for exactly the flagged symbols, once each. Harm: thousands of needless calls, or a split missed.
@@ -143,7 +143,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `aa6ad3347d7a6dd08ccc94ee467c914b47c3566aa80760684b90b2a71f60606e`
+Covered digest: `8bff04611cf0ea07cac33e615ad4f05494c8456cae9998881974f0fc43b8aa14`
 
 ## Scope changes
 
@@ -167,7 +167,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Runs are serialised with a file lock (`.features.lock` under the data root); two concurrent rebuilds are not tested, the lock is `fcntl.flock` as the index upsert uses.
 - K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten `no_second_websocket` and `single_feed_import_rule`): the checks here (`imports.hat_polars_only` and the rest) are unchanged and still pass.
 
-- PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
+- PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). PR 23: the live run of 2026-10-22 confirmed the index layout and found breadth in snake_case (`total_volume`, `total_stocks`, `ad_ratio`); `breadth_from_mcp` reads `total_volume` and the `Nse` and day-rig fixtures send the recorded reply. When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
 
 ## Scratch breaks
 
@@ -962,6 +962,13 @@ E   Failing test case: test_nightly_index_breadth(
 E       index='no_vix',
 E       breadth='ok',  # or any other generated value
 E   )
+```
+
+
+Second break (PR 23): `breadth_from_mcp` reads only `totalVolume`/`volume` (main), so the recorded snake_case reply stores a volume of 0.
+
+```
+1 failed: assert market["volume"][0] == sent["total_volume"]  (0 != 5853019065)
 ```
 
 ### PBT ingest.renames_from_nse_data

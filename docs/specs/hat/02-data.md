@@ -131,12 +131,13 @@ One canonical instrument ID, ISIN + exchange + series, keys every table. Broker 
 ## §3 NSE MCP client
 
 #### HAT-DATA-030: Thin MCP client behind a transport protocol
-- **Statement:** `app/hat/data/mcp_client.py` is a thin JSON-RPC-over-HTTP MCP client (`tools/call`) behind a `McpTransport` protocol, with one configurable endpoint per server (`HAT_MCP_BHAVCOPY_URL` for `nse-bhavcopy`, `HAT_MCP_CMMARKET_URL` for `cm-market`).
-- **Source:** DS "Nightly ingest from NSE MCP" ("calls the MCP server over HTTP with the Python MCP client"); PLAN PR 4, §7.
-- **PR:** 4
-- **Verification:** CONF `imports.mcp_transport_only`
+- **Statement:** `app/hat/data/mcp_client.py` is a thin JSON-RPC-over-HTTP MCP client (`tools/call`) behind a `McpTransport` protocol, with one configurable endpoint per server (`HAT_MCP_BHAVCOPY_URL` for `nse-bhavcopy`, `HAT_MCP_CMMARKET_URL` for `cm-market`). `HttpTransport` speaks MCP streamable HTTP: it opens one session per server (`initialize`, then `notifications/initialized`) and sends every `tools/call` with that session's `Mcp-Session-Id`; a 404 means the server lost the session (the NSE servers run several replicas), so the call is sent once more on a new session, and a session lost again is dropped; a 404 on a handshake step starts the handshake once more, and an `initialize` answered with a JSON-RPC error opens no session. Each server has its own session lock. [Changed in PR 23: the live servers answered a bare `tools/call` with HTTP 400 and about a third of in-session requests with 404, live checks 2026-10-22.]
+- **Source:** DS "Nightly ingest from NSE MCP" ("calls the MCP server over HTTP with the Python MCP client"); PLAN PR 4, §7; live checks 2026-10-22.
+- **PR:** 4, 23
+- **Verification:** CONF `imports.mcp_transport_only`, PBT `mcp.session_handshake`
 - **Acceptance:**
   - Property: every MCP call made by HAT code passes through `McpTransport`, and no other HAT module opens HTTP connections to an MCP endpoint, so every call can be replaced by a recorded fixture. Harm: a hidden network path calls real NSE from tests or bypasses retry, limits and logging.
+  - Property: for every sequence of calls and session losses, `HttpTransport` sends no `tools/call` outside a session the server opened and initialized, resends a call whose session was lost exactly once on a new session, and otherwise keeps its session. Harm: every live MCP call fails, or a third of them do.
 - **[OWNER-PENDING]** Client implementation: default a thin JSON-RPC client on the existing HTTP stack; adopt the official `mcp` SDK only if it locks without moving the fastapi/starlette pins (PLAN Q1); owner to confirm.
 
 #### HAT-DATA-031: Bulk quotes are fetched in batches of at most 50
@@ -239,7 +240,7 @@ About 100 MCP calls a night: ~63 bulk-quote batches for 3,121 symbols, a few ind
   - Property: the run that writes the partition first writes its row-check counts beside it (`ingest-checks.json`, atomically), so a retry that reuses the partition, after a later failure or a crash right after the write, reports the counts of the run that wrote it. Harm: a retry's quality gate reads 0 dropped rows and passes a day the first run's checks would fail.
 
 #### HAT-DATA-044: Index snapshot and breadth are stored nightly
-- **Statement:** The nightly ingest stores the `get_index_snapshot` levels (including NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX) to `index_daily` and the `get_market_breadth` advance/decline record to `market_breadth/date=d` (counted from our own bars, `source = derived`, when the MCP has none) for the regime engine.
+- **Statement:** The nightly ingest stores the `get_index_snapshot` levels (including NIFTY 50, NIFTY 500, Nifty Smallcap 250 and India VIX) to `index_daily` and the `get_market_breadth` advance/decline record to `market_breadth/date=d` (counted from our own bars, `source = derived`, when the MCP has none) for the regime engine. The breadth record is snake_case: `date`, `total_stocks`, `advances`, `declines`, `unchanged`, `ad_ratio`, `total_volume` (recorded live 2026-10-22; PR 23 reads `total_volume`, which was stored as 0).
 - **Source:** DS "Source map" (index levels and India VIX; market breadth); BL "Regime engine v1" (inputs); PLAN PR 7.
 - **PR:** 7
 - **Verification:** PBT `ingest.index_snapshot_stored`, PBT `ingest.nightly_index_breadth`

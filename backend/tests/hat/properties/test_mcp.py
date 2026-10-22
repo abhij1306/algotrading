@@ -1,11 +1,12 @@
-"""PBT mcp.* (HAT-DATA-033, 034, 035): the MCP client's retries, call log and error text."""
+"""PBT mcp.* (HAT-DATA-030, 033, 034, 035): the MCP client's session, retries, call log and error
+text."""
 
 import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-from hat_mcp_support import ScriptedTransport, fixture_json, reference_engine
+from hat_mcp_support import ScriptedTransport, StreamableServer, fixture_json, reference_engine
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
 from sqlalchemy import select
@@ -26,6 +27,10 @@ from app.hat.models import HatJobRun
 from app.hat.ops.jobs import JobResult, run_job, session_factory_for
 
 GOOD = fixture_json("mcp_bulk_quote.json")
+RECORDED = {  # replies of the live servers (the breadth one recorded 2026-10-22)
+    "get_bulk_quote": GOOD,
+    "get_market_breadth": fixture_json("mcp_market_breadth.json"),
+}
 CODES = [
     mcp_client.CODE_TRANSPORT,
     mcp_client.CODE_TIMEOUT,
@@ -219,3 +224,52 @@ def test_retry_bounded_config_error_not_retried(failures: int) -> None:
     else:
         raise AssertionError("a configuration error must raise")
     assert len(transport.calls) == failures + 1
+
+
+@given(
+    plan=st.lists(
+        st.tuples(st.sampled_from(sorted(RECORDED)), st.booleans(), st.booleans()),
+        min_size=1,
+        max_size=8,
+    ),
+    handshake_losses=st.lists(st.booleans(), max_size=12),
+)
+def test_session_handshake(
+    plan: list[tuple[str, bool, bool]], handshake_losses: list[bool]
+) -> None:
+    """For every sequence of calls and session losses on a live-shaped server, `HttpTransport`
+    opens a session (`initialize`, `notifications/initialized`) before its first call and sends
+    every call on it, so the server never answers 400, and starts a handshake again when another
+    replica answers one of its steps (at most one per handshake); a call whose session was lost
+    (404) is sent once more on a new session and returns the recorded reply, and one lost twice
+    fails with `mcp_transport`; a session is kept until it is lost."""
+    losses = [
+        flag for _tool, first, second in plan for flag in ([first, second] if first else [False])
+    ]
+
+    def lose_handshake() -> bool:  # the server lets at most one step of a handshake be lost
+        return bool(handshake_losses) and handshake_losses.pop(0)
+
+    server = StreamableServer(RECORDED, lambda: losses.pop(0), lose_handshake)
+    transport = HttpTransport({"nse-bhavcopy": "http://fixture.invalid"}, post=server.post)
+    for tool, first, second in plan:
+        sent = len(server.calls)
+        try:
+            result = transport.call("nse-bhavcopy", tool, {})
+        except McpTransportError as exc:
+            assert first
+            assert second
+            assert exc.code == mcp_client.CODE_TRANSPORT
+        else:
+            assert not (first and second)
+            assert result == RECORDED[tool]
+        attempts = server.calls[sent:]
+        assert len(attempts) == (2 if first else 1)
+        if first:  # the resend went out on a session opened after the loss
+            assert attempts[1][0] != attempts[0][0]
+    assert server.bad_requests == 0
+    assert not losses
+    # one session at the start and a new one after every loss (after a call lost twice, the
+    # next call opens it)
+    lost = sum(status == 404 for _s, status in server.calls)
+    assert server.handshakes == 1 + lost - (plan[-1][1] and plan[-1][2]) + server.handshake_404s

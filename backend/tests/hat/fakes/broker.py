@@ -95,6 +95,7 @@ class FakeBroker:
         self.tradebook: list[dict[str, Any]] | BaseException = []
         self.orders: list[dict[str, Any]] | BaseException = []
         self.holdings: list[dict[str, Any]] | BaseException = []
+        self.profile: dict[str, Any] | BaseException = {"fy_id": "XA00000"}
         self.book: list[dict[str, Any]] = []
         self.gtts: list[dict[str, Any]] = []
         self.place_gtt_reply: object = None
@@ -211,6 +212,9 @@ class FakeBroker:
 
     def fetch_gtt_orders(self) -> list[dict[str, Any]]:
         return self._read("fetch_gtt_orders", None, self.gtts, fail_closed=True)
+
+    def get_profile(self) -> dict[str, Any]:
+        return self._read("get_profile", None, self.profile, fail_closed=True)
 
     # --- GTT writes ---------------------------------------------------------------------
 

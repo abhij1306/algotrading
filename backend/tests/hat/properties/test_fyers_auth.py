@@ -11,8 +11,17 @@ from typing import Any, NoReturn
 from unittest import mock
 
 import pytest
-from hat.fakes.fyers_sdk import RecordingSession
-from hat_fyers_support import T0, Ticker, captured_logs, token_store, write_token
+from hat.fakes.fyers_sdk import RecordingSdk, RecordingSession
+from hat_fyers_support import (
+    LIVE_REPLIES,
+    T0,
+    Ticker,
+    captured_logs,
+    profile_ok,
+    token_reply,
+    token_store,
+    write_token,
+)
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -33,10 +42,13 @@ codes = st.from_regex(r"AUTHCODE[0-9a-f]{10,24}", fullmatch=True)
 tokens = st.from_regex(r"TKN[0-9a-f]{16,32}", fullmatch=True)
 MARKER = "echoed-by-fyers-9a1b"
 
-GOOD = st.builds(
-    lambda token, user: {"s": "ok", "code": 200, "access_token": token, "fy_id": user},
-    tokens,
-    st.sampled_from(["XA1234", "XB9999"]),
+GOOD = st.builds(token_reply, tokens)
+# what the profile read after a login answers: the recorded ok reply (with its user id), the
+# recorded -16 refusal, or an SDK failure; only the first gives a user id
+PROFILES = st.one_of(
+    st.sampled_from(["XA1234", "XB9999"]).map(profile_ok),
+    st.just(LIVE_REPLIES["profile_invalid_token"]),
+    st.just(RuntimeError(f"profile failed {MARKER}")),
 )
 BAD_REPLIES = st.one_of(
     st.just({"s": "error", "code": -413, "message": f"invalid code {MARKER}"}),
@@ -56,7 +68,14 @@ BAD_REPLIES = st.one_of(
 
 
 class Harness:
-    def __init__(self, store: TokenStore, reply: object, *, ticker: Ticker | None = None) -> None:
+    def __init__(
+        self,
+        store: TokenStore,
+        reply: object,
+        *,
+        ticker: Ticker | None = None,
+        profile: object = None,
+    ) -> None:
         self.sessions: list[RecordingSession] = []
         self.reply = reply
         self.events: list[str] = []
@@ -73,6 +92,9 @@ class Harness:
             credentials=lambda: CREDS,
             on_token_change=lambda: self.events.append("token_change"),
             clock=self.ticker,
+            model_factory=lambda **_kwargs: RecordingSdk(
+                profile if profile is not None else profile_ok("XA0001")
+            ),
         )
         self.service.add_hook("login", lambda: self.events.append("login"))
         self.service.add_hook("disconnect", lambda: self.events.append("disconnect"))
@@ -101,17 +123,23 @@ def test_a_failed_exchange_fails_closed(reply: object, code: str) -> None:
         assert MARKER not in text
 
 
-@given(reply=GOOD, code=codes)
-def test_a_good_exchange_saves_once_and_reports_in_order(reply: dict[str, Any], code: str) -> None:
+@given(reply=GOOD, code=codes, profile=PROFILES)
+def test_a_good_exchange_saves_once_and_reports_in_order(
+    reply: dict[str, Any], code: str, profile: object
+) -> None:
     """A good reply saves the token for the app's client id, reports connected with the user id
-    straight away (no stale status), runs `token_change` before `login`, and never logs the token,
-    the secret or the code."""
+    of the account's profile straight away and after the status cache expires (none, never an
+    empty one, when the profile cannot be read: the login stands), runs `token_change` before
+    `login`, and never logs the token, the secret, the code or the profile's error text."""
+    user_id = profile["data"]["fy_id"] if isinstance(profile, dict) and "data" in profile else None
     with captured_logs() as logs, token_store() as store:
-        harness = Harness(store, reply)
+        harness = Harness(store, reply, profile=profile)
         assert harness.service.status().connected is False  # primes the cache
         status = harness.service.exchange(code)
         assert status.connected
-        assert status.user_id == reply["fy_id"]
+        assert status.user_id == user_id
+        harness.ticker.now += STATUS_CACHE_SECONDS + 1
+        assert harness.service.status().user_id == user_id
         saved = store.load()
         assert saved is not None
         assert (saved.access_token, saved.client_id) == (reply["access_token"], CREDS.client_id)
@@ -120,7 +148,7 @@ def test_a_good_exchange_saves_once_and_reports_in_order(reply: dict[str, Any], 
         assert harness.service.status().connected is True
         assert listing(store) == [store.path.name]
         text = logs.text
-    for secret in (reply["access_token"], SECRET, code):
+    for secret in (reply["access_token"], SECRET, code, MARKER):
         assert secret not in text
 
 
@@ -277,9 +305,7 @@ def test_status_cache_model(steps: list[tuple[str, float]]) -> None:
     than the window, and always right after a login or a logout, whatever the file did meanwhile."""
     with token_store() as store:
         ticker = Ticker()
-        harness = Harness(
-            store, {"s": "ok", "access_token": "TKN" + "a" * 16, "fy_id": "XA1"}, ticker=ticker
-        )
+        harness = Harness(store, token_reply("TKN" + "a" * 16), ticker=ticker)
         service = harness.service
         cached: tuple[bool, float] | None = None  # (connected, taken_at)
         for kind, amount in steps:

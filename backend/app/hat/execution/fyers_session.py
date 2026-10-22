@@ -23,7 +23,7 @@ from typing import Any
 
 from .fyers_tokens import TokenStore, TokenStoreError, token_store
 
-__all__ = ["FyersSession", "get_fyers_session", "reset_fyers_session"]
+__all__ = ["FyersSession", "get_fyers_session", "reset_fyers_session", "sdk_model"]
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ Clock = Callable[[], datetime]
 ModelFactory = Callable[..., Any]
 
 
-def _sdk_model(**kwargs: str) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+def sdk_model(**kwargs: str) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
     """The SDK's `FyersModel`; the SDK is imported on first use to keep startup fast."""
     from fyers_apiv3 import fyersModel
 
@@ -53,7 +53,7 @@ class FyersSession:
         store: TokenStore | None = None,
         *,
         now: Clock = _utc_now,
-        model_factory: ModelFactory = _sdk_model,
+        model_factory: ModelFactory = sdk_model,
         load: bool = True,
     ) -> None:
         self._store = store if store is not None else token_store

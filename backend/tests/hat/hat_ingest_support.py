@@ -12,7 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from hat_mcp_support import ScriptedTransport, seed_market
+from hat_mcp_support import ScriptedTransport, fixture_json, seed_market
 from hat_support import memory_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -95,14 +95,10 @@ class Nse:
         self.default = Quote()
         self.index_rows: list[dict[str, Any]] | None = list(INDEX_ROWS)
         self.index_date: date | None = day
+        # the reply recorded from the live server (snake_case), moved to `day`
         self.breadth: dict[str, Any] | None = {
+            **fixture_json("mcp_market_breadth.json"),
             "date": day.isoformat(),
-            "totalStocks": 10,
-            "advances": 6,
-            "declines": 3,
-            "unchanged": 1,
-            "adRatio": 2.0,
-            "totalVolume": 12345,
         }
         self.actions: dict[str, list[dict[str, Any]]] = {}
         self.fail_bulk = False
