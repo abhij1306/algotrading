@@ -198,8 +198,10 @@ class LiveData:
         self._tick_listeners: list[Callable[[Tick], None]] = []
         self._unsaved: list[Bar] = []
         # per day, the builder's coverage at the last step, taken on the loop thread for
-        # `persist` (a worker thread); replaced whole, never mutated in place
-        self._coverage: dict[date, tuple[frozenset[str], datetime | None]] = {}
+        # `persist` (a worker thread), and the coverage `persist` last stored; each is replaced
+        # whole by its one writer, never mutated in place
+        self._coverage: dict[date, tuple[frozenset[str], datetime | None, datetime | None]] = {}
+        self._stored: dict[date, tuple[frozenset[str], datetime | None, datetime | None]] = {}
         self._detach: Callable[[], None] | None = None
 
     def attach(self, feed: TickFeed) -> None:
@@ -230,7 +232,7 @@ class LiveData:
         ]
         coverage = self._store.read_coverage(day)
         from_open = [symbols[i] for i in coverage.from_open if i in symbols]
-        return self.builder.restore(bars, from_open, coverage.gap_from)
+        return self.builder.restore(bars, from_open, coverage.gap_from, coverage.seen_until)
 
     def add_tick_listener(self, listener: Callable[[Tick], None]) -> None:
         """Called with each tick that has a symbol and a positive price (the last-price book)."""
@@ -257,11 +259,19 @@ class LiveData:
             for listener in self._bar_listeners:
                 run_listener_call(lambda b=bar, fn=listener: fn(b), "bar listener")
         if self._store is not None:  # without a store nothing would ever clear the list
-            days = {trade_date_of(bar.start) for bar in finals}
-            if days:
-                self._coverage = self._coverage | {d: self.builder.coverage(d) for d in days}
+            days = {trade_date_of(bar.start) for bar in finals} | {trade_date_of(now)}
+            snapshot = {d: self.builder.coverage(d) for d in days}
+            if any(self._coverage.get(d) != c for d, c in snapshot.items()):
+                # a gap marked between bars is stored too, so a restart before the next bar
+                # cannot restore an opening range the gap took away
+                self._coverage = snapshot
             self._unsaved.extend(finals)
         return finals
+
+    @property
+    def coverage_pending(self) -> bool:
+        """Coverage taken by a step that `persist` has not stored yet."""
+        return self._coverage != self._stored
 
     def _note_gap(self, now: datetime) -> None:
         """A stale feed inside the session is a gap from its last tick (or the open): prints may
@@ -284,17 +294,17 @@ class LiveData:
     def persist(self) -> int:
         """Write the final bars not yet stored (blocking; run it off the loop). A failure keeps
         them for the next attempt: the write merges by key, so a retry changes nothing twice."""
-        if self._store is None or not self._unsaved:
+        if self._store is None or not (self._unsaved or self.coverage_pending):
             return 0
         pending = list(self._unsaved)
+        coverage = self._coverage
         ids = self._instrument_ids()
         try:
-            written = self._store.write(pending, ids)
-            coverage = self._coverage
-            for day in sorted({trade_date_of(bar.start) for bar in pending}):
-                watched, gap = coverage.get(day, (frozenset(), None))
+            written = self._store.write(pending, ids) if pending else 0
+            for day, (watched, gap, seen) in sorted(coverage.items()):  # after their bars
                 found = frozenset(str(ids[s]) for s in watched if s in ids)
-                self._store.write_coverage(day, Coverage(found, gap))
+                self._store.write_coverage(day, Coverage(found, gap, seen))
+            self._stored = coverage
         except Exception:
             logger.exception("bars_5m write failed; will retry")
             return 0
@@ -304,7 +314,7 @@ class LiveData:
     async def run(self, interval: float = STEP_SECONDS) -> None:
         while True:
             try:
-                if self.step() or self._unsaved:
+                if self.step() or self._unsaved or self.coverage_pending:
                     await asyncio.to_thread(self.persist)
             except asyncio.CancelledError:
                 raise

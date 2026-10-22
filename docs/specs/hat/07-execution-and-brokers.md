@@ -260,7 +260,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
 - **PR:** 11, 22
 - **Verification:** PBT `stops.low_of_day`, PBT `bars.trigger_never_uses_a_partial_session`
 - **Acceptance:**
-  - Property: for every intraday bar sequence up to the entry bar and every tick size, the stop equals min(low of all bars that day up to and including entry) − buffer_ticks × tick, and is strictly below the entry price. Harm: a stop above the session low triggers on normal noise.
+  - Property: for every intraday bar sequence up to the entry bar whose day low exists (HAT-DATA-114; else the entry skips with `stop_input_missing`) and every tick size, the stop equals min(low of all bars that day up to and including entry) − buffer_ticks × tick, and is strictly below the entry price. Harm: a stop above the session low triggers on normal noise.
 
 #### HAT-EXEC-052: Custom stop rules
 - **Statement:** `pct_below_entry`, `atr_multiple` and `swing_low` compute entry × (1 − %/100), entry − multiple × ATR(days), and the lowest low over lookback days respectively.

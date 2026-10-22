@@ -314,13 +314,16 @@ def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut
         and start + timedelta(minutes=5, seconds=2) > at_us(cut)
     }
     restored = BarBuilder()
-    from_open, gap = live.coverage(DAY)
-    assert restored.restore(finals, from_open, gap) == len(finals)
-    assert restored.restore(finals, from_open, gap) == 0
+    from_open, gap, seen = live.coverage(DAY)
+    assert restored.restore(finals, from_open, gap, seen) == len(finals)
+    assert restored.restore(finals, from_open, gap, seen) == 0
     for builder in (live, restored):  # the rest of the feed, seen at the restart
         builder.on_tick(Tick("ZZZ", at_us(cut), Decimal(1)), at_us(cut))
+    # the stopped process saw the feed past the first bar, else what it missed is unknown
+    past_first = seen is not None and seen >= at_us((OPEN_SOD + 300) * US)
     for symbol in SYMBOLS:
-        assert restored.opening_range(symbol, DAY) == live.opening_range(symbol, DAY)
+        expected = live.opening_range(symbol, DAY) if past_first else None
+        assert restored.opening_range(symbol, DAY) == expected
         assert restored.day_low(symbol, DAY) is None  # the restart is a gap (PR 22)
         if symbol not in unfinished:
             assert restored.day_volume(symbol, DAY) == live.day_volume(symbol, DAY)
@@ -362,6 +365,12 @@ class Downtime:
 @example(tape=PROBE, watch=150, dropout=None, restart=None)
 @example(tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None)  # a 10:15 bar
 @example(tape=PROBE, watch=-600, dropout=(100, 60), restart=None)  # a gap inside the first bar
+@example(  # silent from 09:19:50 (the first bar's low unseen), restarted at 09:20:05
+    tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(290, 30), restart=(305, 5)
+)
+@example(  # a gap found after the first bar was stored, then a restart before the next bar
+    tape=[(0, 10_000), (285, 9_000), (400, 10_500)], watch=-600, dropout=(281, 40), restart=(325, 5)
+)
 @example(  # the feed drops at 09:19:55; the low of the first bar prints, unseen, at 09:19:57
     tape=[(0, 10_000), (297, 9_000), (400, 10_500)], watch=-600, dropout=(295, 60), restart=None
 )
@@ -446,8 +455,8 @@ def test_session_state_never_partial(
                 live.restore(DAY)
                 back = True
             clock.set(now)
-            silent = hidden.hides(second) or (kind == "AAA" and second < watch)
-            if silent and kind != "step":  # the feed is silent; the process steps on
+            if hidden.hides(second) or (kind == "AAA" and second < watch):
+                check(now)  # the feed is silent; the process steps on
                 continue
             if kind == "watch":
                 live.on_tick({"symbol": "AAA", "ltp": 100.0})

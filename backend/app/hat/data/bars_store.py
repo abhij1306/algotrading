@@ -77,10 +77,12 @@ def row_from_bar(bar: Bar, instrument_id: uuid.UUID | str) -> BarRow:
 
 @dataclass(frozen=True)
 class Coverage:
-    """One day's session coverage: instruments watched from the open, first feed gap."""
+    """One day's session coverage: instruments watched from the open, first feed gap, and how
+    far the feed was seen (up to the first bar's end)."""
 
     from_open: frozenset[str] = frozenset()
     gap_from: datetime | None = None
+    seen_until: datetime | None = None
 
 
 class BarStore:
@@ -143,25 +145,33 @@ class BarStore:
             return Coverage()
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            gap = raw.get("gap_from")
+            gap, seen = raw.get("gap_from"), raw.get("seen_until")
             return Coverage(
                 frozenset(str(i) for i in raw.get("from_open", ())),
                 None if gap is None else as_utc(datetime.fromisoformat(gap)),
+                None if seen is None else as_utc(datetime.fromisoformat(seen)),
             )
         except (OSError, ValueError, TypeError, AttributeError):
             return Coverage()
 
     def write_coverage(self, day: date, coverage: Coverage) -> None:
         """Merge `coverage` into the stored one: the union of the instruments, the earlier
-        gap. Written whole through a temporary file and an atomic replace."""
+        gap, the later seen instant. Written whole through a temporary file and an atomic
+        replace."""
         stored = self.read_coverage(day)
         gaps = [g for g in (stored.gap_from, coverage.gap_from) if g is not None]
-        merged = Coverage(stored.from_open | coverage.from_open, min(gaps, default=None))
+        seen = [s for s in (stored.seen_until, coverage.seen_until) if s is not None]
+        merged = Coverage(
+            stored.from_open | coverage.from_open, min(gaps, default=None), max(seen, default=None)
+        )
         if merged == stored and self.partition(day).joinpath(COVERAGE_NAME).is_file():
             return
         body = {
             "from_open": sorted(merged.from_open),
             "gap_from": None if merged.gap_from is None else as_utc(merged.gap_from).isoformat(),
+            "seen_until": None
+            if merged.seen_until is None
+            else as_utc(merged.seen_until).isoformat(),
         }
         self._atomic(self.partition(day) / COVERAGE_NAME, json.dumps(body).encode())
 

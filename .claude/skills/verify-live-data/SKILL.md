@@ -66,8 +66,8 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `CONF no_duplicate_fakes_or_authorities` Across `backend/` HAT has one `FakeBroker` (`tests/hat/fakes/broker.py`) and one `evaluate_signal` (`app/hat/risk/service.py`); no legacy copy is left (K4 deleted the legacy `FakeBroker` re-export and `RiskManager`, K5b the legacy `LiveMarketService`; a class named `RiskManager` or `LiveMarketService` fails the check), and no other class is named as a risk authority or live-tick service. Harm: two risk authorities or two fakes drift apart and a check passes against the wrong one.
 - `PBT bars.trigger_only_on_final_bars` With prints arriving late or out of order through the real bar builder, a pivot breakout fires once, at the final instant (end + 2 s) of the first final bar in [09:20, 15:20] whose high is above the pivot, never from a print in a bar still open or a late print the bar never took, and never at an instant before the bar was handed over; the elapsed share of the session is read at that same final instant, where the day volume is read; and (`test_failed_signal_write_retries`) a failed signal write releases the key so the next final bar fires again, while a stored signal closes it for the day. Harm: an entry fires on a print the 5-minute bar later disowns, or before the bar that justifies it exists.
 - `PBT bars.stale_feed_trips_health_kill` Wired as in production (staleness monitor, `EventFeedHealth`, `DataHealthKill`), the account's data-health kill is tripped exactly while the feed is stale and clears by itself when ticks resume, even when the trip and the recovery fall on one instant and (`test_health_kill_writes_out_of_order`) whatever order the worker threads write the changes in; a trigger fired while stale is stored Rejected with `stale_feed` and opens nothing, one on a live feed opens its virtual position. Harm: entries keep being taken on prices that stopped updating, or the account stays manage-only after the feed is back.
-- `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and coverage has the same opening ranges and day volumes as one that saw every tick, a restored bar never replaces a live one, and it has no day low (the restart is a gap). Harm: after a restart the opening range is lost and no ORB entry fires that day.
-- `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
+- `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and coverage has the same opening ranges and day volumes as one that saw every tick, a restored bar never replaces a live one, and it has no day low (the restart is a gap); the opening range comes back only when the stopped process saw the feed past the first bar (`coverage.json` `seen_until`). Harm: after a restart the opening range is lost and no ORB entry fires that day.
+- `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
 - `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
 
 ## Run
@@ -141,7 +141,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `6396bf937cc181c270c45881deccf651606e5a26a467ed7c6a8262b4e5a51d34`
+Covered digest: `f47c32ffebe3a7638ace82d9de2cd3de37c9a202c40e76719cd8e215be4869e9`
 
 ## Scope changes
 
@@ -1094,6 +1094,19 @@ E   AssertionError: assert ((Decimal('110.00'), Decimal('100.00')) is None or da
 ```
 
 Break: `LiveData.persist` does not write `coverage.json`: same failure as the previous break.
+
+Break (CodeAnt): `LiveData.step` snapshots coverage only on a step that finalises bars (`| {trade_date_of(now)}` removed), so a gap found between bars is lost by a restart.
+
+```
+E   AssertionError: assert (Decimal('100...l('100.0000')) == (Decimal('100...imal('90.00'))
+```
+
+Break (CodeAnt nitpick): `BarBuilder.restore` marks the restart gap at the last stored bar's end, ignoring `seen_until` (`self.mark_gap(restart)`).
+
+```
+E   AssertionError: assert (Decimal('100...l('100.0000')) == (Decimal('100...imal('90.00'))
+E     At index 1 diff: Decimal('100.0000') != Decimal('90.00')
+```
 
 Break: `BarBuilder._complete` does not require a feed tick at or after the end of the bars it covers (`seen = True`); the code-review case (feed silent from 09:19:55, the first bar's low printed unseen at 09:19:57) publishes a partial opening range at 09:20:02.
 

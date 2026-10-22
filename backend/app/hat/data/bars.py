@@ -231,23 +231,32 @@ class BarBuilder:
         first = self._watched.get((symbol, day))
         return first is not None and first <= self.session_start(day)
 
-    def coverage(self, day: date) -> tuple[frozenset[str], datetime | None]:
-        """The symbols watched from the open of `day` and the start of its first feed gap."""
-        watched = frozenset(s for (s, d) in self._watched if d == day and self.from_open(s, d))
-        return watched, self._gap_from.get(day)
+    def coverage(self, day: date) -> tuple[frozenset[str], datetime | None, datetime | None]:
+        """The symbols watched from the open of `day`, the start of its first feed gap, and how
+        far the feed was seen, up to the first bar's end (all a restart needs: past it a restart
+        gap only takes the day low, which any restart takes)."""
+        opens = self.session_start(day)
+        watched = frozenset(
+            s for (s, d), first in self._watched.items() if d == day and first <= opens
+        )
+        last = self._last_arrival.get(day)
+        seen = None if last is None else min(last, opens + BAR_WIDTH)
+        return watched, self._gap_from.get(day), seen
 
     def restore(
         self,
         bars: Iterable[Bar],
         from_open: Iterable[str] = (),
         gap_from: datetime | None = None,
+        seen_until: datetime | None = None,
     ) -> int:
         """Seed the day volume, the lows and (for the `from_open` symbols, which the process
         that stored the bars watched from the open) the opening range from final bars stored
         before a restart, for each (symbol, day) with no state yet (a second restore, or one
         after that symbol's first tick, changes nothing). `gap_from` is the stored first feed
-        gap; the restart is a gap from the end of the last stored bar. Returns the bars
-        applied."""
+        gap and `seen_until` how far that process saw the feed: the restart is a gap from there,
+        or from the end of the last stored bar if earlier (from the open when unknown). Returns
+        the bars applied."""
         bars = list(bars)
         watched = set(from_open)
         known = set(self._days)
@@ -269,7 +278,9 @@ class BarBuilder:
         if gap_from is not None:
             self.mark_gap(gap_from)
         if bars:
-            self.mark_gap(max(bar.end for bar in bars))
+            restart = max(bar.end for bar in bars)
+            opens = self.session_start(restart.astimezone(IST).date())
+            self.mark_gap(opens if seen_until is None else min(restart, max(seen_until, opens)))
         return applied
 
     def _forget_before(self, day: date) -> None:
