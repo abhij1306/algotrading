@@ -248,13 +248,18 @@ class Desks:
         """Reconcile every account and read its fills (the fill sync re-protects a fill without a
         working stop whether or not the reconciliation succeeded, D118); remember the auto
         entries a crash left in Triggered for `resume_entries`. An account that did not
-        reconcile places no entry until a later reconciliation succeeds."""
+        reconcile places no entry until a later reconciliation succeeds. One account's failure is
+        logged and never stops another's recovery or the start: its fills are read again by the
+        next periodic sync."""
         for account_id, desk in self.by_account.items():
-            with self._session_factory() as session:
-                self._resume[account_id] = _left_triggered(session, account_id)
-                desk.reconcile(session, now)
-                if desk.manager.sync(session, account_id, now) is not None:
-                    desk.synced_at = now
+            try:
+                with self._session_factory() as session:
+                    self._resume[account_id] = _left_triggered(session, account_id)
+                    desk.reconcile(session, now)
+                    if desk.manager.sync(session, account_id, now) is not None:
+                        desk.synced_at = now
+            except Exception:
+                logger.exception("recovery of account %s failed", account_id)
 
     def resume_entries(
         self, now: datetime, check: CheckFor, feed_stale: Callable[[], bool]
