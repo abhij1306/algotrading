@@ -383,10 +383,10 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
         ]
         with (
             patch("app.database.SessionLocal", factory),
-            patch.object(history_build, "DataStore", lambda: DataStore(Path(tmp))),
+            patch.object(history_build, "DataStore", return_value=DataStore(Path(tmp))),
             patch.object(history_build, "run_history_build", recording_build),
             patch("app.hat.data.bhavcopy.http_fetcher", nothing_fetcher),
-            patch("app.hat.data.mcp_client.client_from_env", lambda _env: None),
+            patch("app.hat.data.mcp_client.client_from_env", return_value=None),
             patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
             # whatever is patched above, nothing may reach the network
             patch("socket.getaddrinfo", no_network),
