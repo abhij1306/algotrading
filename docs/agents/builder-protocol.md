@@ -55,10 +55,13 @@ breaks is a finding: fix the code, never weaken the property.
   `backend/` the test files you touched plus `tests/hat/conformance`, `-m postgres` files if you
   touched schema, and `pnpm check` if you touched the frontend. CI runs everything else.
   Last, `python backend/tests/hat/conformance/hat_conf_skills.py --stale` names the `verify-*`
-  skills whose covered files you changed: run each one's Run command, make sure its Properties
-  and Coverage still describe the code, and only then record it with `--refresh`.
+  skills whose covered files you changed: make sure each one's Properties and Coverage still
+  describe the code, then record it with `--refresh`. Don't rerun its whole Run command; CI does.
+- **Never run full suites locally.** No full `pytest`, no `CI=1` property runs, no run of every
+  TLC model, not before the push, not after a rebase. CI runs all of them on every push. Run TLC
+  only for a model you changed, and a break only for a check you added or changed. After a
+  rebase, rerun the pre-push check above and nothing more.
 - **Tests while iterating:** run the one test you are working on, default Hypothesis profile.
-  The CI profile, TLC and break runs go once, at the end, in the background.
 - **Context:** keep `HANDOFF.md` in your worktree current (goal, done, next, open findings) so a
   compaction or a fresh session resumes from it instead of re-reading. Send spec and code
   exploration to subagents that return file pointers and conclusions, not file dumps. Never read
