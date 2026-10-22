@@ -10,6 +10,17 @@ when the broker cannot answer, never an empty list.
 The breaker is an object, injected per broker, not class state (a failure recorded through one
 subclass used to shadow another's). Production shares one (`PROCESS_BREAKER`) because every broker
 instance talks to the same Fyers account.
+
+The call budget (PR 50, HAT-BRK-082; research G18, O3) is one process-wide `CallBudget`
+(`process_budget`), read from the settings (`HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE`,
+`_PER_DAY`; defaults 8, 180 and the Standard plan's 5,000), so a plan with higher limits is a
+configuration change only. Every SDK call takes one call from it first. Writes (orders, stops,
+GTTs) go ahead of reads: a read may use only `READ_SHARE` of each window, waits while a write is
+waiting, and waits at most `READ_WAIT`; a write waits at most `WRITE_WAIT`. A call the budget
+cannot grant in time is never sent and is answered as Fyers' own rate limit (code 429), so a read
+fails closed with `broker_rate_limited` (the fill sync tries again at its next step) and a write is
+refused as not sent, burning no retry. An HTTP 429 from Fyers is the same refusal; its
+`Retry-After` (else `THROTTLE_PAUSE`) pauses the whole budget.
 """
 
 from __future__ import annotations
@@ -17,23 +28,33 @@ from __future__ import annotations
 import logging
 import math
 import re
+import threading
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
+from datetime import date
 from threading import Lock
 from typing import Any, TypedDict
 
+from ..settings import load_settings
+from ..time import trade_date_of, utc_now
 from .fyers_session import get_fyers_session
 
 __all__ = [
     "BROKER_CIRCUIT_OPEN",
     "BROKER_ORDER_UNCONFIRMED",
     "CLIENT_NOT_INITIALIZED",
+    "CallBudget",
+    "CallLimits",
     "FYERS_ORDER_TAG_PATTERN",
     "FYERS_ORDER_TYPES",
     "GTT_PRODUCTS",
     "PROCESS_BREAKER",
+    "READ",
+    "WRITE",
     "SUBMIT_UNCONFIRMED",
     "CircuitBreaker",
     "FundsReply",
@@ -42,6 +63,7 @@ __all__ = [
     "FyersSessionExpiredError",
     "FyersUnavailableError",
     "checked_reply",
+    "process_budget",
     "rate_limited",
     "profile_data",
     "OrderReply",
@@ -122,29 +144,40 @@ FYERS_CODE_RATE_LIMITED = -360
 
 
 class FyersRateLimitedError(FyersUnavailableError):
-    """Fyers refused the call because the plan's daily requests are spent (code -360): not an
-    outage, and no call succeeds until the next day. Still a failed read (an unreadable book,
-    never an empty one)."""
+    """Fyers refused the call because a request limit is reached (code -360, the plan's daily
+    requests are spent; or HTTP 429), or HAT's own call budget did not grant it (PR 50): not an
+    outage. Still a failed read (an unreadable book, never an empty one)."""
+
+
+# HTTP 429 (too many requests): Fyers' per-second or per-minute limit, or HAT's own call budget
+# refusing to send (PR 50). Nothing was sent past the limit; it is refused like -360.
+HTTP_TOO_MANY_REQUESTS = 429
 
 
 def rate_limited(response: object) -> bool:
-    """Whether `response` is Fyers' -360 refusal (the plan's daily requests spent)."""
+    """Whether `response` is a rate-limit refusal: Fyers' -360 (the plan's daily requests
+    spent), or 429 (a per-second or per-minute limit, Fyers' or the call budget's)."""
     return (
         isinstance(response, dict)
         and response.get("s") != "ok"
-        and response.get("code") == FYERS_CODE_RATE_LIMITED
+        and response.get("code") in (FYERS_CODE_RATE_LIMITED, HTTP_TOO_MANY_REQUESTS)
     )
+
+
+def _throttled(operation: str) -> dict[str, Any]:
+    """The reply of a call the budget did not send, or that Fyers answered with HTTP 429."""
+    return {"s": "error", "code": HTTP_TOO_MANY_REQUESTS, "message": f"{operation} rate limited"}
 
 
 def checked_reply(operation: str, response: object) -> dict[str, Any]:
     """`response` when it is an ok Fyers reply; FyersSessionExpiredError for code -16,
-    FyersRateLimitedError for code -360, FyersUnavailableError for anything else. The error
+    FyersRateLimitedError for code -360 or 429, FyersUnavailableError for anything else. The error
     text is fixed, never the broker's."""
     if not isinstance(response, dict) or response.get("s") != "ok":
         if isinstance(response, dict) and response.get("code") == FYERS_CODE_TOKEN_REJECTED:
             raise FyersSessionExpiredError(f"Fyers {operation} session expired")
         if rate_limited(response):
-            raise FyersRateLimitedError(f"Fyers {operation} daily request limit reached")
+            raise FyersRateLimitedError(f"Fyers {operation} request limit reached")
         raise FyersUnavailableError(f"Fyers {operation} request failed")
     return response
 
@@ -223,7 +256,182 @@ class CircuitBreaker:
 PROCESS_BREAKER = CircuitBreaker()
 """The breaker the production brokers share: one Fyers account, one outage."""
 
+# --- the call budget (PR 50) ----------------------------------------------------------------
+
+READ = "read"
+WRITE = "write"
+READ_SHARE = 0.8  # a read may use this share of each window: the rest is kept for writes
+READ_WAIT = 0.5  # seconds a read waits for a call before failing as rate limited
+WRITE_WAIT = 3.0  # seconds a write waits for a call before it is refused, not sent
+THROTTLE_PAUSE = 1.0  # seconds the budget pauses after a 429 without a usable Retry-After
+MAX_PAUSE = 60.0  # a Retry-After longer than this is read as this
+_WRITER_POLL = 0.05  # how often a read waiting behind a write looks again
+
+
+@dataclass(frozen=True)
+class CallLimits:
+    """Calls per second, per minute and per trading day (IST); `per_day` None is no day cap."""
+
+    per_second: int = 8
+    per_minute: int = 180
+    per_day: int | None = 5000
+
+
+def _read_limit(limit: int) -> int:
+    return max(1, math.floor(limit * READ_SHARE))
+
+
+class CallBudget:
+    """Sliding-window limits on the calls sent to the broker, writes ahead of reads. Thread-safe.
+
+    `take` is the decision at one instant: 0 when a call may go now (and it is counted), else
+    the seconds until one may (infinite when the day's calls are spent). `acquire` waits for a
+    call up to a bound. `clock` is monotonic seconds; `day` the trading date the day cap counts.
+    """
+
+    def __init__(
+        self,
+        limits: CallLimits | None = None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        day: Callable[[], date] = lambda: trade_date_of(utc_now()),
+    ) -> None:
+        self.limits = limits or CallLimits()
+        self._clock = clock
+        self._day = day
+        self._cond = threading.Condition()
+        self._sent: deque[float] = deque()  # when each call of the last minute was granted
+        self._day_of: date | None = None
+        self._day_count = 0
+        self._paused_until = 0.0
+        self._writers = 0
+
+    def take(self, kind: str, now: float, today: date) -> float:
+        """Grant one call of `kind` at `now` (0.0), or the seconds to wait for one."""
+        with self._cond:
+            return self._take(kind, now, today)
+
+    def _take(self, kind: str, now: float, today: date) -> float:
+        limits = self.limits
+        write = kind == WRITE
+        if today != self._day_of:
+            self._day_of, self._day_count = today, 0
+        if limits.per_day is not None:
+            day_limit = limits.per_day if write else _read_limit(limits.per_day)
+            if self._day_count >= day_limit:
+                return math.inf
+        while self._sent and self._sent[0] <= now - 60.0:
+            self._sent.popleft()
+        # the longest of the waits, so a caller that waits as told is granted
+        wait = max(self._paused_until - now, 0.0)
+        per_second = limits.per_second if write else _read_limit(limits.per_second)
+        per_minute = limits.per_minute if write else _read_limit(limits.per_minute)
+        last_second = [at for at in self._sent if at > now - 1.0]
+        if len(last_second) >= per_second:
+            wait = max(wait, last_second[len(last_second) - per_second] + 1.0 - now)
+        if len(self._sent) >= per_minute:
+            wait = max(wait, self._sent[len(self._sent) - per_minute] + 60.0 - now)
+        if wait > 0:
+            return wait
+        self._sent.append(now)
+        self._day_count += 1
+        return 0.0
+
+    def acquire(self, kind: str, max_wait: float) -> bool:
+        """Wait up to `max_wait` seconds for a call of `kind`; True once granted. A read also
+        waits while a write is waiting, so a write is never kept behind one."""
+        deadline = self._clock() + max_wait
+        with self._cond:
+            if kind == WRITE:
+                self._writers += 1
+            try:
+                while True:
+                    now = self._clock()
+                    if kind != WRITE and self._writers:
+                        wait = _WRITER_POLL
+                    else:
+                        wait = self._take(kind, now, self._day())
+                        if wait == 0:
+                            return True
+                    left = deadline - now
+                    if left <= 0 or math.isinf(wait):
+                        return False
+                    self._cond.wait(min(wait, left))
+            finally:
+                if kind == WRITE:
+                    self._writers -= 1
+                    self._cond.notify_all()
+
+    def pause(self, seconds: float) -> None:
+        """Send nothing for `seconds` (a broker 429), at most `MAX_PAUSE`."""
+        seconds = min(max(seconds, 0.0), MAX_PAUSE)
+        with self._cond:
+            self._paused_until = max(self._paused_until, self._clock() + seconds)
+
+
+def limits_from(env: Mapping[str, str] | None = None) -> CallLimits:
+    """The call limits the settings name (`HatSettings.broker_calls_per_*`)."""
+    settings = load_settings(env)
+    return CallLimits(
+        per_second=settings.broker_calls_per_second,
+        per_minute=settings.broker_calls_per_minute,
+        per_day=settings.broker_calls_per_day,
+    )
+
+
+_PROCESS_BUDGET: CallBudget | None = None
+_PROCESS_BUDGET_LOCK = Lock()
+
+
+def process_budget() -> CallBudget:
+    """The budget every production broker shares: one Fyers app, one set of limits."""
+    global _PROCESS_BUDGET
+    with _PROCESS_BUDGET_LOCK:
+        if _PROCESS_BUDGET is None:
+            _PROCESS_BUDGET = CallBudget(limits_from())
+        return _PROCESS_BUDGET
+
+
+# The HTTP status and Retry-After of the last Fyers response on this worker thread, seen by a
+# response hook on the SDK's requests session (the SDK hides both from its caller).
+_HTTP = threading.local()
+
+
+def _note_response(response: Any, *_args: object, **_kwargs: object) -> None:  # noqa: ANN401
+    _HTTP.status = getattr(response, "status_code", None)
+    headers = getattr(response, "headers", None) or {}
+    _HTTP.retry_after = headers.get("Retry-After")
+
+
+def _retry_after(raw: object) -> float:
+    """Seconds from a Retry-After header in seconds; `THROTTLE_PAUSE` for anything else."""
+    try:
+        seconds = float(str(raw))
+    except (TypeError, ValueError):
+        return THROTTLE_PAUSE
+    return seconds if math.isfinite(seconds) and seconds >= 0 else THROTTLE_PAUSE
+
+
+def _watch_responses(model: Any) -> None:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+    """Hook `_note_response` into the model's requests session once (best effort: a model
+    without one, such as a test double, is left as it is)."""
+    session = getattr(getattr(model, "service", None), "session", None)
+    hooks = getattr(session, "hooks", None)
+    if not isinstance(hooks, dict):
+        return
+    response_hooks = hooks.setdefault("response", [])
+    if isinstance(response_hooks, list) and _note_response not in response_hooks:
+        response_hooks.append(_note_response)
+
+
 _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fyers-broker")
+
+
+@dataclass(frozen=True)
+class _Throttled:
+    """A call Fyers answered with HTTP 429, and its Retry-After header."""
+
+    retry_after: object
 
 
 class FyersBroker:
@@ -238,9 +446,12 @@ class FyersBroker:
         client: Callable[[], Any] | None = None,
         *,
         breaker: CircuitBreaker | None = None,
+        budget: CallBudget | None = None,
     ) -> None:
         self._client_source = client if client is not None else lambda: get_fyers_session().fyers
         self.breaker = breaker if breaker is not None else CircuitBreaker()
+        # None sends without a budget (a test double); production passes `process_budget()`
+        self.budget = budget
 
     @property
     def client(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
@@ -259,17 +470,43 @@ class FyersBroker:
         timeout_sec: float = 2.0,
         fallback: object,
         not_sent: object | None = None,
+        kind: str = READ,
     ) -> object:
         """`fn` on a worker thread with a timeout; `fallback` when the circuit is open, the call
         times out or raises. Each timeout or failure counts toward opening the circuit. With
         `not_sent`, an open circuit returns it instead: nothing was sent, which a place must not
-        read as a lost answer."""
+        read as a lost answer. A call the budget does not grant in time, or one Fyers answers
+        with HTTP 429, is answered as a rate-limit refusal (`_throttled`) and counts neither way
+        toward the circuit: the broker is up, it only asks HAT to slow down."""
         if self.breaker.is_open():
             return fallback if not_sent is None else not_sent
+        budget = self.budget
+        if budget is not None and not budget.acquire(
+            kind, WRITE_WAIT if kind == WRITE else READ_WAIT
+        ):
+            return _throttled(operation)
+        _watch_responses(self.client)
 
-        future = _EXECUTOR.submit(fn)
+        def watched() -> object:
+            _HTTP.status = _HTTP.retry_after = None
+            try:
+                result = fn()
+            except Exception:
+                if _HTTP.status == HTTP_TOO_MANY_REQUESTS:
+                    return _Throttled(_HTTP.retry_after)
+                raise
+            if _HTTP.status == HTTP_TOO_MANY_REQUESTS:
+                return _Throttled(_HTTP.retry_after)
+            return result
+
+        future = _EXECUTOR.submit(watched)
         try:
             result = future.result(timeout=timeout_sec)
+            if isinstance(result, _Throttled):
+                logger.warning("Fyers operation %s rate limited (HTTP 429)", operation)
+                if budget is not None:
+                    budget.pause(_retry_after(result.retry_after))
+                return _throttled(operation)
             self.breaker.record_success()
             return result
         except FutureTimeoutError:
@@ -343,7 +580,7 @@ class FyersBroker:
         not_sent: dict[str, Any] = {}
         try:
             response = self._call_with_guard(
-                operation, call, timeout_sec=1.5, fallback=no_reply, not_sent=not_sent
+                operation, call, timeout_sec=1.5, fallback=no_reply, not_sent=not_sent, kind=WRITE
             )
         except Exception:
             logger.exception("Fyers %s failed", operation)
@@ -425,6 +662,7 @@ class FyersBroker:
             call,
             timeout_sec=1.5,
             fallback={"s": "error", "message": timeout_message},
+            kind=WRITE,
         )
 
     # --- GTT writes -----------------------------------------------------------------------

@@ -5,7 +5,10 @@ reaches the SDK. Runs on the real `FyersBroker` over a recording SDK stand-in.""
 
 import json
 import math
+import threading
+import time
 import uuid
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,14 +17,30 @@ from hat.fakes.fyers_sdk import READ_LISTS, RecordingSdk, broker_over
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from app.hat.execution.broker import GttRequest, OrderIntent, OrderType, Side
+from app.hat.execution.broker import (
+    CODE_RATE_LIMITED,
+    BrokerUnavailableError,
+    GttModify,
+    GttRequest,
+    OrderIntent,
+    OrderType,
+    Side,
+)
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
+    MAX_PAUSE,
+    READ,
+    READ_SHARE,
     SUBMIT_UNCONFIRMED,
+    THROTTLE_PAUSE,
+    WRITE,
+    CallBudget,
+    CallLimits,
     CircuitBreaker,
     FyersBroker,
     FyersUnavailableError,
+    limits_from,
 )
 from app.hat.execution.tags import encode_tag
 
@@ -351,3 +370,294 @@ def test_a_circuit_opening_mid_place_is_not_sent(method: str) -> None:
     assert sdk.calls == []
     assert reply["status"] == "REJECTED"
     assert reply["message"] == BROKER_CIRCUIT_OPEN
+
+
+# --- the call budget (PR 50, HAT-BRK-082; research G18, O3) ---------------------------------
+
+BUDGET_DAY = date(2026, 10, 23)
+
+
+def _read_cap(limit: int) -> int:
+    return max(1, math.floor(limit * READ_SHARE))
+
+
+@settings(max_examples=150, deadline=None)
+@given(
+    per_second=st.integers(1, 10),
+    per_minute=st.integers(1, 40),
+    per_day=st.one_of(st.none(), st.integers(1, 12), st.integers(13, 60)),
+    steps=st.lists(
+        st.tuples(
+            st.sampled_from([READ, WRITE, READ, WRITE, "pause", "next_day"]),
+            # seconds since the last step: mostly bursts, so the windows fill
+            st.one_of(st.just(0.0), st.floats(0, 0.5), st.floats(0, 3, allow_nan=False)),
+            st.floats(0, 120, allow_nan=False),  # a pause's Retry-After
+        ),
+        max_size=80,
+    ),
+)
+@example(per_second=8, per_minute=180, per_day=5000, steps=[(WRITE, 0.0, 0.0)] * 10)
+@example(per_second=2, per_minute=3, per_day=None, steps=[(READ, 0.0, 0.0)] * 4)
+@example(per_second=10, per_minute=40, per_day=2, steps=[(WRITE, 1.0, 0.0)] * 3)
+@example(  # a pause longer than the second's wait
+    per_second=1, per_minute=40, per_day=None, steps=[(WRITE, 0.0, 0.0), ("pause", 0.0, 5.0)] * 2
+)
+def test_budget_windows_hold(
+    per_second: int,
+    per_minute: int,
+    per_day: int | None,
+    steps: list[tuple[str, float, float]],
+) -> None:
+    """HAT-BRK-082 (PR 50): for every limit and sequence of calls, pauses and day changes, no
+    second holds more than `per_second` granted calls, no minute more than `per_minute`, no day
+    more than `per_day`; a read is granted only while the window (and the day) leaves the share
+    kept for writes free; nothing is granted inside a pause (at most `MAX_PAUSE`); a call is
+    refused only for one of those reasons, and a refused one asked again after the wait it was
+    told is granted (none after the day's calls are spent). Harm: the 15:25 swap and a burst of
+    fill syncs exceed Fyers' per-second or per-minute limit, every write is refused, and stops
+    are not placed; or a read takes the last call a stop needed."""
+    now, today = 1000.0, BUDGET_DAY
+    budget = CallBudget(
+        CallLimits(per_second, per_minute, per_day), clock=lambda: now, day=lambda: today
+    )
+    granted: list[tuple[float, date]] = []
+    paused_until = 0.0
+
+    def in_window(at: float, span: float) -> int:
+        return sum(1 for t, d in granted if at - span < t <= at)
+
+    def day_count() -> int:
+        return sum(1 for _, d in granted if d == today)
+
+    def check(kind: str) -> None:
+        write = kind == WRITE
+        sec = per_second if write else _read_cap(per_second)
+        minute = per_minute if write else _read_cap(per_minute)
+        day_cap = None if per_day is None else (per_day if write else _read_cap(per_day))
+        reasons = (
+            now < paused_until,
+            in_window(now, 1.0) >= sec,
+            in_window(now, 60.0) >= minute,
+            day_cap is not None and day_count() >= day_cap,
+        )
+        wait = budget.take(kind, now, today)
+        if wait == 0:
+            assert not any(reasons)
+            granted.append((now, today))
+            assert in_window(now, 1.0) <= per_second
+            assert in_window(now, 60.0) <= per_minute
+            assert per_day is None or day_count() <= per_day
+        else:
+            assert any(reasons)
+            if math.isinf(wait):
+                assert reasons[3]
+            else:
+                assert not reasons[3]
+                assert budget.take(kind, now + wait, today) == 0
+                granted.append((now + wait, today))
+
+    for action, gap, pause in steps:
+        now += gap
+        if action == "next_day":
+            today += timedelta(days=1)
+        elif action == "pause":
+            budget.pause(pause)
+            paused_until = max(paused_until, now + min(pause, MAX_PAUSE))
+        else:
+            check(action)
+            now = max([now] + [t for t, _ in granted])
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"]),
+    source=st.sampled_from(["budget", "http429_json", "http429_raw"]),
+    retry_after=st.sampled_from([None, "2", "0.5", "120", "soon", "-1"]),
+)
+@example(op="place_gtt", source="budget", retry_after=None)
+@example(op="orders", source="http429_json", retry_after="2")
+def test_throttled_call_not_sent(op: str, source: str, retry_after: str | None) -> None:
+    """HAT-BRK-082 (PR 50): a call the budget cannot grant is never sent, and one Fyers answers
+    with HTTP 429 (a JSON error body, or none) is sent once and not again; either way a read
+    fails closed with `broker_rate_limited`, a write is refused with `broker_rate_limited` as not
+    sent (burning no retry), the circuit counts nothing, and a 429 pauses the whole budget for
+    its Retry-After in seconds (at most `MAX_PAUSE`; `THROTTLE_PAUSE` when absent or unreadable).
+    Harm: a throttled stop reads as a broker rejection and spends its tag's sequence, or an
+    outage is declared and every call refused for 20 s when Fyers only asked HAT to slow down."""
+    clock = Tick()
+    budget = CallBudget(CallLimits(8, 180, None), clock=clock, day=lambda: BUDGET_DAY)
+    sdk = Http429Sdk(raw=source == "http429_raw", retry_after=retry_after)
+    if source == "budget":
+        budget = CallBudget(CallLimits(8, 180, 1), clock=clock, day=lambda: BUDGET_DAY)
+        assert budget.take(WRITE, clock(), BUDGET_DAY) == 0  # the day's one call is spent
+        sdk.throttle = False
+    breaker = CircuitBreaker()
+    broker = FyersBroker(lambda: sdk, breaker=breaker, budget=budget)
+    adapter = _adapter_over(broker)
+    call = BUDGET_OPS[op]
+    if op in ("orders", "gtts"):
+        with pytest.raises(BrokerUnavailableError) as caught:
+            call(adapter)
+        assert caught.value.code == CODE_RATE_LIMITED
+    else:
+        result = call(adapter)
+        assert result.code == CODE_RATE_LIMITED
+        assert getattr(result, "status", "rejected") == "rejected"
+        assert getattr(result, "ok", False) is False
+    assert breaker.failures == 0
+    assert not breaker.is_open()
+    if source == "budget":
+        assert sdk.calls == []
+        return
+    assert len(sdk.calls) == 1
+    if retry_after is None or retry_after in ("soon", "-1"):
+        expected = THROTTLE_PAUSE
+    else:
+        expected = min(float(retry_after), MAX_PAUSE)
+    assert budget.take(WRITE, clock() + expected - 0.01, BUDGET_DAY) > 0
+    assert budget.take(WRITE, clock() + expected, BUDGET_DAY) == 0
+
+
+@settings(max_examples=12, deadline=None)
+@given(
+    op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"])
+)
+def test_writes_go_ahead_of_reads(op: str) -> None:
+    """HAT-BRK-082 (PR 50): reads may use only `READ_SHARE` of a window, so once they have spent
+    it every write (an order, a stop, a GTT) is still sent and every read is refused unsent; and
+    while a write waits for a call, a read is not granted one even when the window has room.
+    Harm: the 5-second fill sync's reads take the calls a stop placement waits for, and the
+    position sits unprotected."""
+    budget = CallBudget(CallLimits(100, 5, None))  # reads get 4 of the minute's 5 calls
+    while budget.take(READ, time.monotonic(), BUDGET_DAY) == 0:
+        pass
+    sdk = RecordingSdk()
+    adapter = _adapter_over(FyersBroker(lambda: sdk, breaker=CircuitBreaker(), budget=budget))
+    if op in ("orders", "gtts"):
+        with pytest.raises(BrokerUnavailableError) as caught:
+            BUDGET_OPS[op](adapter)
+        assert caught.value.code == CODE_RATE_LIMITED
+        assert sdk.calls == []
+    else:
+        BUDGET_OPS[op](adapter)
+        assert len(sdk.calls) == 1
+
+    now = 0.0
+    gated = CallBudget(CallLimits(1, 100, None), clock=lambda: now, day=lambda: BUDGET_DAY)
+    assert gated.take(WRITE, now, BUDGET_DAY) == 0  # this second's call is spent
+    granted: list[bool] = []
+    writer = threading.Thread(target=lambda: granted.append(gated.acquire(WRITE, 3.0)), daemon=True)
+    writer.start()
+    while not gated._writers:  # the write is waiting
+        time.sleep(0.001)
+    now = 1.0  # the next second's call is free
+    read_granted = gated.acquire(READ, 0.0)
+    with gated._cond:
+        gated._cond.notify_all()
+    writer.join(timeout=3)
+    if writer.is_alive():  # the read took the call: let the write's wait end
+        now = 10.0
+        writer.join(timeout=3)
+    assert not read_granted
+    assert granted == [True]
+    assert gated.take(READ, now, BUDGET_DAY) > 0  # the write took it
+
+
+@given(
+    per_second=st.one_of(st.none(), st.integers(-5, 50).map(str), st.just("eight")),
+    per_minute=st.one_of(st.none(), st.integers(-5, 500).map(str), st.just("")),
+    per_day=st.one_of(st.none(), st.integers(-5, 20000).map(str), st.sampled_from(["off", "x"])),
+)
+def test_limits_from_settings(
+    per_second: str | None, per_minute: str | None, per_day: str | None
+) -> None:
+    """HAT-BRK-082 (PR 50): the budget's limits come from the settings, so a plan with higher
+    limits (Fyers Prime) is a configuration change only: a positive whole number is taken as
+    given, `0` or `off` lifts the day cap, and anything unset or unreadable is the default (8,
+    180, 5,000). Harm: a typo in the environment stops every broker call, or Prime's limits
+    need a code change."""
+    env = {
+        name: value
+        for name, value in (
+            ("HAT_BROKER_CALLS_PER_SECOND", per_second),
+            ("HAT_BROKER_CALLS_PER_MINUTE", per_minute),
+            ("HAT_BROKER_CALLS_PER_DAY", per_day),
+        )
+        if value is not None
+    }
+    limits = limits_from(env)
+
+    def expected(raw: str | None, default: int) -> int:
+        return (
+            int(raw) if raw is not None and raw.lstrip("-").isdigit() and int(raw) > 0 else default
+        )
+
+    assert limits.per_second == expected(per_second, 8)
+    assert limits.per_minute == expected(per_minute, 180)
+    if per_day in ("0", "off"):
+        assert limits.per_day is None
+    else:
+        assert limits.per_day == expected(per_day, 5000)
+
+
+class Http429Sdk(RecordingSdk):
+    """A model whose requests session runs its response hooks with HTTP 429 (and Retry-After)
+    on every call, then answers Fyers' JSON error body, or raises as the SDK does when the body
+    is not JSON. With `throttle` off it answers as `RecordingSdk`."""
+
+    def __init__(self, *, raw: bool, retry_after: str | None) -> None:
+        super().__init__()
+        self.raw = raw
+        self.retry_after = retry_after
+        self.throttle = True
+        self.service = type("Service", (), {})()
+        self.service.session = type("Session", (), {"hooks": {"response": []}})()
+
+    def _answer(self, name: str, data: object) -> object:
+        if not self.throttle:
+            return super()._answer(name, data)
+        self.calls.append((name, data))
+        headers = {} if self.retry_after is None else {"Retry-After": self.retry_after}
+        response = type("Response", (), {"status_code": 429, "headers": headers})()
+        for hook in self.service.session.hooks["response"]:
+            hook(response)
+        if self.raw:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        return {"s": "error", "code": 429, "message": "request limit reached"}
+
+
+def _adapter_over(broker: FyersBroker) -> FyersHatBroker:
+    return FyersHatBroker(
+        broker,
+        client=lambda: type("C", (), {"fyers": object()})(),  # type: ignore[arg-type,return-value]
+        instruments=lambda: [("TCS", "NSE:TCS-EQ")],
+    )
+
+
+BUDGET_OPS = {
+    "place_order": lambda a: a.place_order(
+        OrderIntent(
+            "TCS",
+            Side.SELL,
+            5,
+            OrderType.SL_M,
+            encode_tag(uuid.UUID(int=7), "stop_day", 0),
+            trigger_price=Decimal("95"),
+        )
+    ),
+    "place_gtt": lambda a: a.place_gtt_stop(
+        GttRequest(
+            "TCS",
+            5,
+            Decimal("95"),
+            Decimal("94.5"),
+            tag=encode_tag(uuid.UUID(int=7), "stop_gtt", 0),
+        )
+    ),
+    "modify_gtt": lambda a: a.modify_gtt(
+        GttModify("26102200000001", 5, Decimal("96"), Decimal("95.5"))
+    ),
+    "cancel_gtt": lambda a: a.cancel_gtt("26102200000001"),
+    "orders": lambda a: a.orders(),
+    "gtts": lambda a: a.gtts(),
+}

@@ -150,6 +150,10 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.ex_date_gtt_replaced` (PR 47, HAT-EXEC-145) For every stored action (dividend, notice, split) with ex-date around the check day, every assumed book shape of a broker-cancelled GTT (`fixtures/fyers_gtt_ex_date_assumed.json`) and a GTT accepted or refused, `check_ex_date_gtts` ends a GTT the book no longer holds (`gtt.missing`, `gtt_cancelled_by_broker`) and places it again (a refusal does not fail the run: the intraday stop goes out from 09:15), leaves a resting one alone, fails with `gtt.unverified` and sends nothing on an unreadable book, waits for a split's rescale, and reads no position without an action today or the next session. Harm: Fyers cancels the GTT before a dividend and the position opens the ex-date unprotected.
 - `PBT manage.ex_date_check_serialised` (PR 47, HAT-EXEC-145) For both assumed shapes of a cancelled GTT, the fill sync's protect or the nightly verify reaching the position on another thread between the check ending the old GTT and placing the new waits on the position's stop lock: exactly one GTT is placed. Harm: two GTT sales over the same shares.
 - `PBT manage.series_change_remapped` (PR 47, HAT-EXEC-146) For every successor (none, BE mapped or unmapped, renamed, another ISIN), a series change gives no exit view, one URGENT `position.series_changed` at the morning check and at the nightly verify, and a re-placed GTT under the successor's Fyers symbol: one the broker cancelled, and one still listed under the old symbol, cancelled first (at the morning check, or at the nightly verify when the check is off; a refused cancel at the check fails the run with `gtt.unverified`, at the verify it is refreshed); a GTT placed after the change is left resting; an unmapped successor gets no stop sent (`series_unmapped`) and its old GTT left; otherwise nothing. Harm: every order under the old `-EQ` symbol is refused and exit rules run on stopped prices.
+- `PBT fyers_broker.budget_windows_hold` (PR 50, HAT-BRK-082) For every per-second, per-minute and per-day limit and every sequence of reads, writes, 429 pauses and day changes on a fake clock, `CallBudget.take` grants no more calls than each limit in any window, grants a read only within `READ_SHARE` of each window and of the day, grants nothing inside a pause (at most `MAX_PAUSE`), refuses only for one of those reasons, and grants a refused call asked again after the wait it was told (none once the day is spent). Harm: a burst of syncs and the 15:25 swap exceed Fyers' limits and every write, stops included, is refused.
+- `PBT fyers_broker.throttled_call_not_sent` (PR 50, HAT-BRK-082) For every adapter operation (an SL-M stop, GTT place, modify and cancel, the order and GTT books), a call the budget cannot grant is not sent, and one Fyers answers HTTP 429 (JSON body or not, any `Retry-After`) is sent once: a read fails closed and a write is refused with `broker_rate_limited`, the breaker counts nothing, and a 429 pauses the budget for its Retry-After (`THROTTLE_PAUSE` when absent or unreadable). Harm: a throttled stop reads as a rejection and burns its tag's sequence, or a busy broker opens the circuit.
+- `PBT fyers_broker.writes_go_ahead_of_reads` (PR 50, HAT-BRK-082) For every adapter operation, once reads have spent their share of the minute a write is still sent and a read is refused unsent; and while a write waits for a call (`acquire`), a read is not granted the call the window frees. Harm: the fill sync's reads take the calls a stop placement waits for.
+- `PBT fyers_broker.limits_from_settings` (PR 50, HAT-BRK-082) For every value of `HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE` and `_PER_DAY`, `limits_from` takes a positive whole number as given, the default (8, 180, 5,000) for anything unset, unreadable or not positive, and `0` or `off` lifts the day cap only. Harm: Fyers Prime's limits need a code change, or a typo removes the limit.
 - `PBT manage.real_exits_never_blocked` A real position's live exits come from the shared exit stack and go out as MARKET SELL CNC orders, identical with and without an account or bot kill or a pause, and whatever the reconciliation state (none today, only yesterday's, a failed run, a mismatch; the new fill's stop is placed in each, D118); HAT sends nothing at the hard stop while the broker stop rests, and every sale is preceded by the broker stop's cancel or its resize to the shares left. Harm: a kill switch traps a position its exits should sell, or HAT and the broker both sell at the stop.
 - `PBT manage.no_sale_after_close` A run that starts at 15:2x and reaches a sale some minutes later sends it only before 15:30 (the time sent is the run's start plus the monotonic time taken, with no clock injected); otherwise `exit.not_placed` is raised and the broker stop keeps resting. Harm: a slow close run sends market orders after the close.
 - `PBT manage.entry_ended_by_broker` An entry the broker cancels, expires at the close or rejects after taking it, with nothing filled, ends its signal (Cancelled, or Rejected with `order.rejected` final); one whose send answer was lost and that is first found already ended ends Rejected (`entry_not_filled`) when the sync adopts it; replay agrees, no position opens and no stop is placed. Harm: a dead entry keeps its signal in EntryPlaced and holds one of the bot's slots.
@@ -182,7 +186,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT tags.unreadable_foreign_rows_skipped` An order row without an HT tag that the adapter cannot read (a missing key, an unreadable side or quantity, not a mapping) is skipped and counted (`OrderBook.skipped`, `ReconcileReport.skipped_rows`) and the rest of the book is read, with one `reconcile.unreadable_row` alert per trade date; an HT-tagged row that cannot be read fails the read and the reconciliation. Harm: one manual order fails every reconciliation of the day, or an HT order HAT cannot read is missed.
 - `PBT tags.held_quantity_nets_today` Through the adapter, the quantity reconciled per symbol is the holding plus today's signed net CNC position, an intraday position not counted; `@example`s for a buy today, a buy and sale today, a holding sold in full and in part (MX-F8). Harm: a holding a GTT sold today reads as held (fail open), or a correct HAT book blocks the account.
 - `PBT router.resumed_entry_waits_for_feed` An entry left Triggered by the previous process is placed after a restart only once the feed has heard a fresh tick and the account is reconciled, at most once, and never on a later trade date than its own (`signal_expired`); the restart runs the fill sync whether or not its reconciliation succeeded (D118). Harm: an entry goes out on a stale price, twice, or a day late.
-- `PBT router.fill_sync_cadence` `Desks.sync_due` reads an account's fills at every periodic step while `fills.watch_closely` holds (a real entry of the day's signals may still fill, or a stop of an open real position is pending or unconfirmed), and otherwise at the first pass and then once a minute; an entry of an earlier session still shown working and a stop the broker refused do not speed it up, and a sync whose read failed is tried again at the next step. The test reads the expected state row by row (`_watched`). Harm: an entry filled just after a sync sits up to a minute at the broker with no stop, or a refused stop is re-sent every 5 s until its tag's sequence runs out.
+- `PBT router.fill_sync_cadence` `Desks.sync_due` reads an account's fills at every periodic step while `fills.watch_closely` holds (a real entry of the day's signals may still fill, or a stop of an open real position is pending or unconfirmed), and otherwise at the first pass and then once a minute; an entry of an earlier session still shown working and a stop the broker refused do not speed it up, and a sync whose read failed (an outage, or the call budget refusing it, `FyersRateLimitedError`, PR 50) is tried again at the next step. The test reads the expected state row by row (`_watched`). Harm: an entry filled just after a sync sits up to a minute at the broker with no stop, or a refused stop is re-sent every 5 s until its tag's sequence runs out.
 - `PBT router.desk_calls_serialised` Every broker call of an account's desk goes through its session owner, so no two overlap, and a session check reads `session_status` once and records that same status. Harm: concurrent sends race the reconciliation gate, and the recorded session status disagrees with the one that raised the alert.
 - `PBT router.one_login_per_broker` Two active accounts of one broker refuse the start with `HatConfigError`; one per broker builds. Harm: two accounts share one login and the same funds count twice in the allocation equity.
 
@@ -323,7 +327,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `b066c295c64f3203545fc585abe5014fee0eae61ae508c425befde195cf374ce`
+Covered digest: `1fe2f3ede20b83764db2fdfbf4f33701f069df3096bd7bcbc4266b267488345f`
 
 ## Scope changes
 
@@ -376,6 +380,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33 edited `test_ops.py` (covered here): `ops.chain_carries_past_midnight` also draws an unchained job marked `carry` (`snapshot.bots`); its checks are `verify-scheduler`'s, and the property runs in this skill's command too. Nothing was narrowed.
 - PR 45 (HAT-GOV-085, HAT-EXEC-014): the DDPI and base-weights gates and the high-confidence rule are proved on the real code (`router.mode_gates_hold_bots_in_shadow`, `router.open_settles_mode_changes`, `router.auto_places_only_high_confidence`); `ExecutionRouter.tla` models only the GTT gate and was not extended. No live caller passes a confidence label yet (PR 71), so every auto signal goes to approval. Nothing was narrowed.
 - PR 47 (research G01, G17, G24; HAT-EXEC-063, -145, -146): `TradeManager.check_ex_date_gtts` (job `gtt.ex_date`, behind `HAT_EXDATE_GTT_CHECK`, default off) and `StopDesk.check_gtt`; `StopDesk._renewed` (300-day renewal in `verify`); `execution/series.py` (successor by market and ISIN). The broker-cancelled GTT's book shape is ASSUMED (`fyers_gtt_ex_date_assumed.json`, three shapes) until the O2(b) live check; the property draws all three. ASM and GSM are not detectable (no source) and are not checked. A BZ successor has no Fyers symbol (`fyers_symbol` maps only BE) and is alerted `unmapped`; its re-place is refused by the adapter, which the property does not draw separately. `manage.verify_covers` passes unchanged. CodeAnt round: a GTT placed on or before the old row's `delisted_on` went out under the old symbol (`StopDesk._old_series`): the check and the verify cancel it and place it again (the weekly refresh runs on Saturday, so the boundary day has no GTT; one placed that day is counted old and re-placed once at worst). An unmapped successor (`_Target.unmapped`) gets no stop: the adapter would fall back to the old `-EQ` symbol. `StopDesk.protect`, `swap`, `check_gtt` and `verify` hold a per-position re-entrant lock (`_serialised`), since the fill sync and the trade jobs share one desk on separate threads; `manage.ex_date_check_serialised` interleaves deterministically (the second path starts at the check's tick read, between ending the old GTT and reserving the new), with a second session on the same in-memory engine. Moves (`make_room`, `follow`, `rescaled`) are not locked: they modify existing stops and place none. Nothing was narrowed.
+- PR 50 (HAT-BRK-082, HAT-EXEC-060; research O3, D154): one process-wide `CallBudget` in `fyers_broker.py` (limits from `HAT_BROKER_CALLS_PER_*` in `settings.py`, wired by `fyers_adapter.py` as `process_budget()`), writes ahead of reads (`READ_SHARE`, waiting writers gate reads), HTTP 429 caught through a `requests` response hook on the SDK's session (`_watch_responses`; it relies on `fyers_apiv3`'s `model.service.session`, which `Http429Sdk` imitates) and mapped to `broker_rate_limited` like -360. `writes_go_ahead_of_reads` reads `CallBudget._writers` and `_cond` to interleave deterministically. The budget's day count is per process and restarts at zero on a restart; `minute_history`'s SDK calls do not go through the budget (left for a later PR). `router.fill_sync_cadence` scripts the throttled read as `FyersRateLimitedError` on odd `down` passes: a `BrokerUnavailableError` from the inner broker is re-coded `broker_unavailable` by the adapter. The window property found a pause shortened by the per-second wait (fixed). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -2994,6 +2999,21 @@ E       placed=19,
 E       down=frozenset({0}),
 ```
 
+
+Break: (PR 50) in `backend/app/hat/execution/manage.py`, `sync` re-raises a `broker_rate_limited` read failure, so `sync_due` counts the throttled pass as synced and waits its minute.
+
+```
+E   AssertionError: assert (2 > 2) == True
+E    +  where 2 = count('fetch_orderbook')
+E   Failing explicit example: test_fill_sync_cadence(
+E       gaps=[1, 12, 1, 1],
+E       placed=3,
+E       filled=0,
+E       earlier=False,
+E       stop='accepted',
+E       down=frozenset({1}),
+```
+
 ### PBT router.one_login_per_broker
 
 Break: `production.one_login_each` never refuses (`if account.broker in built:` to `if False:`).
@@ -3246,4 +3266,150 @@ E    +  where 2 = len(['place_gtt', 'place_gtt'])
 E   Failing explicit example: test_ex_date_check_serialised(
 E       shape='cancelled',
 E       other='protect',
+```
+
+### PBT fyers_broker.budget_windows_hold
+
+Break: (PR 50) in `backend/app/hat/execution/fyers_broker.py`, `_read_limit` returns the whole limit (reads use writes' share).
+
+```
+E   assert not True
+E    +  where True = any((False, True, False, False))
+E   Failing explicit example: test_budget_windows_hold(
+E       per_second=2,
+E       per_minute=3,
+```
+
+Break: (PR 50) the per-second window is not checked.
+
+```
+E   assert not True
+E    +  where True = any((False, True, False, False))
+E   Failing explicit example: test_budget_windows_hold(
+E       per_second=2,
+```
+
+Break: (PR 50) a pause is ignored (`wait = 0.0`).
+
+```
+E   assert not True
+E    +  where True = any((True, False, False, False))
+E   Failing test case: test_budget_windows_hold(
+E       per_second=1,  # or any other generated value
+```
+
+Break: (PR 50) the per-second wait replaces a longer pause instead of taking the larger (the bug the property found first).
+
+```
+E   AssertionError: assert 4.0 == 0
+E    +  where 4.0 = take('write', (1000.0 + 1.0), datetime.date(2026, 10, 23))
+E   Failing explicit example: test_budget_windows_hold(
+E       per_second=1,
+```
+
+Break: (PR 50) the day cap is not checked.
+
+```
+E   assert not True
+E    +  where True = any((False, False, False, True))
+E   Failing explicit example: test_budget_windows_hold(
+E       per_second=10,
+E       per_minute=40,
+E       per_day=2,
+```
+
+Break: (PR 50) the day count is never reset on a new day.
+
+```
+    |     assert any(reasons)
+    | AssertionError: assert False
+    |     assert reasons[3]
+    | AssertionError: assert False
+```
+
+### PBT fyers_broker.throttled_call_not_sent
+
+Break: (PR 50) `rate_limited` matches -360 only, not 429.
+
+```
+    | AssertionError: assert 'broker_rejected' == 'broker_rate_limited'
+    | AssertionError: assert 'broker_unavailable' == 'broker_rate_limited'
+```
+
+Break: (PR 50) a throttled call records a breaker failure.
+
+```
+E   assert 1 == 0
+E    +  where 1 = <app.hat.execution.fyers_broker.CircuitBreaker object at 0x7f6794fe4a50>.failures
+E   Failing explicit example: test_throttled_call_not_sent(
+E       op='orders',
+E       source='http429_json',
+```
+
+Break: (PR 50) Retry-After ignored (always `THROTTLE_PAUSE`).
+
+```
+E   AssertionError: assert 0.0 > 0
+E    +  where 0.0 = take('write', ((100.0 + 2.0) - 0.01), datetime.date(2026, 10, 23))
+E   Failing explicit example: test_throttled_call_not_sent(
+E       op='orders',
+E       source='http429_json',
+E       retry_after='2',
+```
+
+Break: (PR 50) a 429 whose body is not JSON (the SDK raises) is not caught.
+
+```
+    | AssertionError: assert 'broker_unavailable' == 'broker_rate_limited'
+    | AssertionError: assert 'submit_unconfirmed' == 'broker_rate_limited'
+```
+
+Break: (PR 50) `_call_with_guard` does not ask the budget.
+
+```
+E   AssertionError: assert 'ok' == 'broker_rate_limited'
+E   Failing explicit example: test_throttled_call_not_sent(
+E       op='place_gtt',
+E       source='budget',
+```
+
+### PBT fyers_broker.writes_go_ahead_of_reads
+
+Break: (PR 50) `acquire` lets a read through while a write waits.
+
+```
+    assert not read_granted
+E   assert not True
+E   Failing test case: test_writes_go_ahead_of_reads(
+E       op='place_order',  # or any other generated value
+```
+
+Break: (PR 50) `_send` (orders) asks the budget as a read.
+
+```
+E   assert 0 == 1
+E    +  where 0 = len([])
+E    +    where [] = <hat.fakes.fyers_sdk.RecordingSdk object at 0x7fe1f2887790>.calls
+E   Failing test case: test_writes_go_ahead_of_reads(
+E       op='place_order',
+```
+
+### PBT fyers_broker.limits_from_settings
+
+Break: (PR 50) in `backend/app/hat/settings.py`, `broker_calls_per_second` ignores the environment.
+
+```
+E   AssertionError: assert 8 == 1
+E    +  where 8 = CallLimits(per_second=8, per_minute=180, per_day=5000).per_second
+E   Failing test case: test_limits_from_settings(
+E       per_second='1',
+```
+
+Break: (PR 50) `HAT_BROKER_CALLS_PER_DAY=0` does not lift the day cap.
+
+```
+E   assert 5000 is None
+E    +  where 5000 = CallLimits(per_second=8, per_minute=180, per_day=5000).per_day
+E   Failing test case: test_limits_from_settings(
+E       per_day='0',
 ```
