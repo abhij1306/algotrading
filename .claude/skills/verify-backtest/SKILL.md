@@ -108,6 +108,7 @@ Covered digest: `629b5cb7e0c3157314549e598a60440093387bffc6fb3a47f8b7427f1f8f8fb
 
 ## Scope changes
 
+- PR 54: the loop's re-check of a contraction stop at the fill price (`check_width`) also applies the rule's `min_pct` (`stop_too_narrow`, default 0 = off; property in `verify-stops`). The seeds' golden replay is unchanged by the S1 `close_vs_pivot` criterion.
 - Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
 
 - MFE and MAE stop at a fill: a position the stop closes on the way down, or a profit exit closes on the way up, never saw the rest of that bar (CodeAnt review of PR 12). No property isolates the excursions; the golden replay pins them (the fix moved one trade's `mae_r` and `avg_mae_r` only).

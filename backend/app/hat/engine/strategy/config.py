@@ -121,6 +121,17 @@ class SetupStage(Model):
     @model_validator(mode="after")
     def _check(self) -> SetupStage:
         object.__setattr__(self, "criteria", _sorted_unique(self.criteria))
+        # HAT-CRIT-123: `close_vs_pivot` is a gate, so hard only, and reads the pivot of an
+        # enabled `vcp` evaluated before it; without one it could never pass, and the playbook
+        # would silently stop trading.
+        pivot_seen = False
+        for instance in self.criteria:
+            if instance.type == "close_vs_pivot" and instance.mode != "hard":
+                raise ValueError("close_vs_pivot_not_hard")
+            if instance.enabled and instance.type == "vcp":
+                pivot_seen = True
+            if instance.enabled and instance.type == "close_vs_pivot" and not pivot_seen:
+                raise ValueError("close_vs_pivot_needs_vcp")
         return self
 
 
@@ -167,9 +178,19 @@ class FastAboveSlow(_Rule):
 
 
 class StopBelowFinalContractionLow(Model):
+    """`min_pct` (0 = off) skips a stop nearer the entry than that percentage
+    (`stop_too_narrow`, HAT-EXEC-050)."""
+
     rule: Literal["below_final_contraction_low"]
     buffer_pct: float = Field(default=0.5, ge=0, le=50)
     max_pct: float = Field(default=8.0, gt=0, le=100)
+    min_pct: float = Field(default=0.0, ge=0, lt=100)
+
+    @model_validator(mode="after")
+    def _check(self) -> StopBelowFinalContractionLow:
+        if self.min_pct >= self.max_pct:
+            raise ValueError("min_pct_not_below_max_pct")
+        return self
 
 
 class StopLowOfDay(Model):

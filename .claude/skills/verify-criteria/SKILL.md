@@ -1,11 +1,11 @@
 ---
 name: verify-criteria
-description: How to run, read and update the checks behind Hire a Trader's criteria library (the 17 daily criteria and the seven registered live ones), stage scoring, the strategy config model (instances, playbooks, versions, YAML, no risk keys), the two seeded bots and the catalogue conformance checks. Use before and after any change to backend/app/hat/engine/criteria, backend/app/hat/engine/strategy or the seed YAML files.
+description: How to run, read and update the checks behind Hire a Trader's criteria library (the 18 daily criteria and the seven registered live ones), stage scoring, the strategy config model (instances, playbooks, versions, YAML, no risk keys), the two seeded bots and the catalogue conformance checks. Use before and after any change to backend/app/hat/engine/criteria, backend/app/hat/engine/strategy or the seed YAML files.
 ---
 
 # verify-criteria
 
-Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Specs: `docs/specs/hat/04-criteria-and-bots.md` §1-§8 (HAT-CRIT-010..040, 100..122; HAT-BOT-050, 052, 060, 061, 070..072, 080..084), `07-execution-and-brokers.md` §12 (HAT-EXEC-120..122), `01-decisions.md` (HAT-DEC-B2..B7, B22, T10), `00-overview.md` (HAT-OVR-002, 003), `03-schema.md` (HAT-SCH-016, 032).
+Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Specs: `docs/specs/hat/04-criteria-and-bots.md` §1-§8 (HAT-CRIT-010..040, 100..123; HAT-BOT-050, 052, 060, 061, 070..072, 080..084), `07-execution-and-brokers.md` §12 (HAT-EXEC-120..122), `01-decisions.md` (HAT-DEC-B2..B7, B22, T10), `00-overview.md` (HAT-OVR-002, 003), `03-schema.md` (HAT-SCH-016, 032).
 
 ## Properties
 
@@ -27,6 +27,11 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT criteria.neglect_contract` `neglect` measures the 63-session return on bars up to the previous session only, and passes at most the maximum. Harm: a stock that already ran passes as neglected, or the evaluation day's own move changes the answer.
 - `PBT criteria.vcp_contract` `vcp` passes exactly when the contraction count, depth ratios, final depth and volume dry-up all meet the parameters, never reads a bar after the date, reports the pivot and final contraction low, and fails closed on missing data. Harm: a loose or noisy base is called a volatility contraction pattern and its stop sits in the wrong place.
 - `PBT criteria.vcp_parity` The ported `vcp` finds the same contraction chain as a transcription of the legacy detector on generated bars, and matches a frozen oracle of the legacy output on accepted cases. Harm: the port quietly changes which patterns the bot trades.
+- `PBT criteria.close_vs_pivot_contract` `close_vs_pivot` passes exactly when close x 100 <= pivot x (100 + `max_above_pct`) (equal passes), its value is the close's percentage above the pivot, a missing or non-positive pivot level fails with `no_pivot` and missing bars with `no_data`. Harm: a name that broke out days ago is published with its stale pivot and bought far above the base.
+- `PBT criteria.close_vs_pivot_stage` In a stage, `close_vs_pivot` after `vcp` reads the pivot `vcp` reported for that date (`EvalContext.levels`, filled by `evaluate_stage` from earlier results' numeric extras); before `vcp`, after a `vcp` that found no base, or alone, it fails with `no_pivot`; the shared context is never changed. The stage's `levels`, and the levels the scan publishes, hold the first passed criterion's pivot. Harm: the gate checks a level from another symbol, date or playbook, or none.
+- `PBT scoring.stage_levels` With a probe criterion that reports chosen levels and passes or fails, each criterion in a stage sees exactly the levels the passed criteria before it reported (first reporter per key), and the stage's `levels` equal the scan's published `levels`; a failed result adds none; the shared context is unchanged. Harm: the gate approves one level while the watchlist row, and so the trigger, uses another.
+- `PBT scoring.numeric_levels` A result's levels are exactly its finite int, float and Decimal extras; flags, text, lists and non-finite values (a Decimal signalling NaN included) are dropped without raising. Harm: one odd extra aborts the nightly scan, or a NaN reaches a gate.
+- `PBT config.close_vs_pivot_needs_vcp` A setup with an enabled `close_vs_pivot` is accepted exactly when an enabled `vcp` comes before it; otherwise `close_vs_pivot_needs_vcp`; a `close_vs_pivot` in score mode is refused (`close_vs_pivot_not_hard`). Harm: a config whose gate can never pass is saved and the playbook silently stops trading.
 - `PBT scoring.weighted_mean` The stage score is the exact weighted mean of the score criteria (`sum(w s) / sum(w)`). Harm: a weight does not mean what the owner set.
 - `PBT scoring.threshold_gate` A stage passes exactly when every hard criterion passed and the score is at least the threshold (equal passes); a stage with no score criterion scores 1.0. Harm: weak setups reach the watchlist or good ones are dropped.
 - `PBT scoring.hard_short_circuit` A failing hard criterion stops its stage at once and is stored with its reason and value. Harm: later criteria run on a symbol already rejected, or the reason for the rejection is lost.
@@ -42,7 +47,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT config.new_bot_mode_shadow` A bot created through the service starts in shadow; any other requested mode is refused. Harm: a new bot could place real orders before it has a shadow record.
 - `CONF criterion_instance_schema` An instance has exactly the seven fields of the 04 §2 table. Harm: a field the spec never approved changes what a criterion means.
 - `CONF criterion_type_registry` The stored `param_schema` of every type equals the schema generated from its parameter model, and the registry holds exactly the catalogue. Harm: app and catalogue validation disagree.
-- `CONF criterion_catalogue_complete` The registered types and their stages equal the 24 types of the 04 §4 table. Harm: a config refers to a type with no schema, or a type exists nobody specified.
+- `CONF criterion_catalogue_complete` The registered types and their stages equal the 25 types of the 04 §4 table. Harm: a config refers to a type with no schema, or a type exists nobody specified.
 - `CONF bot_seed_s1_matches_spec` The S1 seed file equals the YAML block of 04 §6 as data, `earnings_growth` off. Harm: the bot that runs is not the bot the owner approved.
 - `CONF bot_seed_s2_matches_spec` The S2 seed file equals the YAML block of 04 §7 as data. Harm: the bot that runs is not the bot the owner approved.
 - `CONF seed_bots_match_spec_yaml` Both seed files equal their spec YAML (every key, value, list order and `enabled` flag) and validate. Harm: the seeded bots drift from the approved design.
@@ -157,6 +162,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
 - PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
+- PR 54 (plan audit N2): a criterion reads the numeric `extras` of the criteria before it in its stage (`EvalContext.levels`, set by `evaluate_stage` on a copy of the context), which `close_vs_pivot` needs for `vcp`'s pivot. `close_vs_pivot` is a hard S1 setup criterion after `vcp`; a symbol whose `vcp` finds no base now stops at `close_vs_pivot` (`no_pivot`) instead of `below_threshold`. The scan publishes the setup stage's `levels` (`StageOutcome.levels`), so the gate and the watchlist row use one pivot; `ep_setup_passes` evaluates the EP setup through `evaluate_stage` (threshold 0, so only hard criteria decide) to pass levels too. `EvalContext` keeps its read bars in a dict its `with_levels` copies share. No property was narrowed; `hat_config_support` generates the new stop `min_pct` but not `close_vs_pivot` (valid only after a `vcp`; `config.close_vs_pivot_needs_vcp` covers it).
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
 - PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
@@ -453,6 +459,158 @@ E       quiet=40,  # or any other generated value
 E       walk=True,
 ```
 
+### PBT criteria.close_vs_pivot_contract
+
+Break: (PR 54) a close exactly at the limit fails (`<=` to `<` in `close_vs_pivot`).
+
+```
+E   AssertionError: assert False == True
+E    +  where False = CriterionResult(passed=False, score=0.0, value=0.0, reason='above_pivot', extras={}).passed
+E    +  and   True = close_vs_pivot_holds(Fraction(10007, 100), Fraction(10007, 100), 0.0)
+E    +    where Fraction(10007, 100) = rupees(10007)
+E   Failing test case: test_close_vs_pivot_contract(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),  # or any other generated value
+FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_contract - [cut]
+```
+
+Break: (PR 54) no pivot passes (`no_pivot` returns a pass).
+
+```
+E   AssertionError: assert (True, 'ok') == (False, 'no_pivot')
+E
+E     At index 0 diff: True != False
+E     Use -v to get more diff
+E   Failing test case: test_close_vs_pivot_contract(
+E       rng=Lcg(0),
+E       style='walk',
+FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_contract - [cut]
+```
+
+### PBT criteria.close_vs_pivot_stage
+
+Break: (PR 54) `evaluate_stage` passes the bare context, so no criterion sees an earlier level.
+
+```
+E   AssertionError: assert False == True
+E    +  where False = CriterionResult(passed=False, score=0.0, value=None, reason='no_pivot', extras={}).passed
+E    +    where CriterionResult(passed=False, score=0.0, value=None, reason='no_pivot', extras={}) = CriterionOutcome(type='close_vs_pivot', order=1, mode='hard', weight=1.0, result=CriterionResult(passed=False, score=0.0, value=None, reason='no_pivot', extras={})).result
+E    +  and   True = close_vs_pivot_holds(Fraction(9597, 100), Fraction(2422, 25), 0.0)
+E    +    where Fraction(9597, 100) = rupees(9597)
+E   Failing test case: test_close_vs_pivot_stage(
+E       # The test always failed when commented parts were varied together.
+FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_stage - Ass [cut]
+```
+
+Break: (PR 54) `EvalContext.with_levels` writes the levels into the shared context (`staged = self`).
+
+```
+E   AssertionError: assert {'pivot': 96....3698961157904} == {}
+E
+E     Left contains 4 more items:
+E     {'contraction_count': 2.0,
+E      'dryup_ratio': 0.5663698961157904,
+E      'final_contraction_low': 93.77,
+E      'pivot': 96.88}
+FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_stage - Ass [cut]
+```
+
+### PBT scoring.stage_levels
+
+Break: (PR 54) a later criterion overrides a level (`levels.setdefault(key, value)` to `levels[key] = value`).
+
+```
+FAILED tests/hat/properties/test_scoring.py::test_stage_levels - ExceptionGro [cut]
+```
+
+Break: (PR 54) the scan reads the last outcome's raw `extras` instead of the stage's `levels`.
+
+```
+E   AssertionError: assert {'pivot': 2.0} == {'pivot': 1.0}
+E
+E     Differing items:
+E     {'pivot': 2.0} != {'pivot': 1.0}
+E     Use -v to get more diff
+E   Failing test case: test_stage_levels(
+E       probes=[('pivot', 1.0, True, 'hard'), ('pivot', 2.0, True, 'hard')],
+FAILED tests/hat/properties/test_scoring.py::test_stage_levels - AssertionErr [cut]
+```
+
+Break: (PR 54) a failed result's extras become levels (`if result.passed:` to `if True:`).
+
+```
+E   AssertionError: assert {'pivot': 1.0} == {}
+E
+E     Left contains 1 more item:
+E     {'pivot': 1.0}
+E     Use -v to get more diff
+E   Failing test case: test_stage_levels(
+E       # The test always failed when commented parts were varied together.
+FAILED tests/hat/properties/test_scoring.py::test_stage_levels - AssertionErr [cut]
+```
+
+Break: (PR 54) `with_levels` writes into the shared context (`staged = self`).
+
+```
+E   AssertionError: assert {'pivot': 1.0} == {}
+E
+E     Left contains 1 more item:
+E     {'pivot': 1.0}
+E     Use -v to get more diff
+E   Failing test case: test_stage_levels(
+E       # The test always failed when commented parts were varied together.
+FAILED tests/hat/properties/test_scoring.py::test_stage_levels - AssertionErr [cut]
+```
+
+### PBT scoring.numeric_levels
+
+Break: (PR 54) a Decimal's finiteness is read with `math.isfinite`.
+
+```
+E   ValueError: cannot convert signaling NaN to float
+E   Failing test case: test_numeric_levels(
+E       extras={'': Decimal('sNaN')},
+E   )
+E
+FAILED tests/hat/properties/test_scoring.py::test_numeric_levels - ValueError [cut]
+```
+
+### PBT config.close_vs_pivot_needs_vcp
+
+Break: (PR 54) the config never refuses `close_vs_pivot` (`raise` to `pass`).
+
+```
+E   Failed: DID NOT RAISE ConfigError
+E   Failing test case: test_close_vs_pivot_needs_vcp(
+E       # The test sometimes passed when commented parts were varied together.
+E       gate_at=0,  # or any other generated value
+E       vcp_at=None,  # or any other generated value
+E       gate_on=True,
+E       vcp_on=False,  # or any other generated value
+FAILED tests/hat/properties/test_config.py::test_close_vs_pivot_needs_vcp - F [cut]
+```
+
+Break: (PR 54, review round) a scored `close_vs_pivot` is saved (the `close_vs_pivot_not_hard` raise to `pass`).
+
+```
+    | AssertionError: assert 'close_vs_pivot_not_hard' in {'close_vs_pivot_needs_vcp'}
+    | Failed: DID NOT RAISE ConfigError
+FAILED tests/hat/properties/test_config.py::test_close_vs_pivot_needs_vcp - B [cut]
+```
+
+Break: (PR 54) a disabled `vcp` counts as the pivot source.
+
+```
+E   Failed: DID NOT RAISE ConfigError
+E   Failing test case: test_close_vs_pivot_needs_vcp(
+E       gate_at=0,  # or any other generated value
+E       vcp_at=0,
+E       gate_on=True,
+E       vcp_on=False,
+E   )
+FAILED tests/hat/properties/test_config.py::test_close_vs_pivot_needs_vcp - F [cut]
+```
+
 ### PBT scoring.weighted_mean
 
 Break: The weight is left out of the weighted sum.
@@ -701,6 +859,14 @@ E     Omitting 23 identical items, use -vv to show
 E     Right contains 1 more item:
 E     {'max_chase': 'entry_filter'}
 E     Use -v to get more diff
+```
+
+Break: (PR 54) the `close_vs_pivot` row is left out of the 04 §4 table.
+
+```
+E   AssertionError: assert 24 == 25
+E    +  where 24 = len({'series_in': 'universe', 'min_turnover': 'universe', 'min_price': 'universe', 'price_band_allowed': 'universe', ...})
+FAILED tests/hat/conformance/test_conf_criteria.py::test_criterion_catalogue_complete
 ```
 
 ### CONF bot_seed_s1_matches_spec

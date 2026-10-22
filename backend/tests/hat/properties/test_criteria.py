@@ -1,4 +1,5 @@
-"""PBT criteria.* (HAT-CRIT-040, 100..114, 120): the library's pure criteria against exact oracles.
+"""PBT criteria.* (HAT-CRIT-040, 100..114, 120, 123): the library's pure criteria against exact
+oracles.
 
 Every test checks the common contract of 04 §4 (repeated calls agree, a row dated after the
 evaluation date changes nothing, the score is in [0, 1], missing data fails closed) and then the
@@ -61,6 +62,9 @@ from app.hat.engine.criteria import CriterionResult, EvalContext, evaluate, eval
 from app.hat.engine.criteria import vcp as vcp_module
 from app.hat.engine.criteria.live import LiveContext, resolve_level
 from app.hat.engine.live_entry import ep_candidates, submit_trigger
+from app.hat.engine.scan import criteria_results
+from app.hat.engine.strategy.config import Instance
+from app.hat.engine.strategy.scoring import PlaybookEvaluation, evaluate_stage
 from app.hat.engine.trades import evaluate_signal
 from app.hat.engine.trigger import (
     DailyInputs,
@@ -619,6 +623,52 @@ def test_neglect_contract(rng: Lcg, style: str, length: int, max_ret: float) -> 
     assert evaluate("neglect", params, context(changed)) == result  # today's bar is not read
 
 
+# --- HAT-CRIT-123 close_vs_pivot ------------------------------------------------------------
+
+ABOVE = st.sampled_from([0.0, 0.0, 0.5, 1.0, 2.0, 2.5, 10.0])
+
+
+def close_vs_pivot_holds(close: Fraction, pivot: Fraction, max_above: float) -> bool:
+    return close * 100 <= pivot * (100 + Fraction(str(max_above)))
+
+
+@given(
+    rng=RNG,
+    style=STYLES,
+    length=st.sampled_from([0, 1, 30]),
+    offset=st.one_of(st.sampled_from([-1, 0, 1]), st.integers(-3000, 3000)),
+    max_above=ABOVE,
+)
+@SLOW
+def test_close_vs_pivot_contract(
+    rng: Lcg, style: str, length: int, offset: int, max_above: float
+) -> None:
+    """HAT-CRIT-123: with a pivot level P > 0 from an earlier criterion, `passed` iff close x 100
+    <= P x (100 + max_above_pct), exact (a close equal to the limit passes), and the value is
+    the close's percentage above P; without a pivot the result fails with `no_pivot`, and
+    without bars with `no_data`. Harm: a name that broke out days ago is published with a stale
+    pivot and bought far above its base."""
+    rows = make_rows(rng, length, style)
+    params = {"max_above_pct": max_above}
+    bare = context(rows)
+    pivot = max(1, (rows[-1].close if rows else 10000) + offset)
+    ctx = bare.with_levels({"pivot": pivot / 100})
+    result = contract("close_vs_pivot", params, ctx, rng)
+    assert fails_closed("close_vs_pivot", params, ctx)
+    if not rows:
+        assert result.reason == "no_data"
+        return
+    close = rupees(rows[-1].close)
+    assert result.passed == close_vs_pivot_holds(close, rupees(pivot), max_above)
+    assert result.value == pytest.approx(float((close / rupees(pivot) - 1) * 100))
+    missing = evaluate("close_vs_pivot", params, bare)
+    assert (missing.passed, missing.reason) == (False, "no_pivot")
+    for level in (0.0, -1.0):
+        assert evaluate("close_vs_pivot", params, bare.with_levels({"pivot": level})).reason == (
+            "no_pivot"
+        )
+
+
 # --- HAT-CRIT-040 vcp ------------------------------------------------------------------------
 
 ORACLE = json.loads(
@@ -715,6 +765,59 @@ def test_vcp_contract(rng: Lcg, depths: list[int], quiet: int, params: dict) -> 
     assert result.extras["pivot"] == float(top)
     assert result.extras["final_contraction_low"] == float(bottom)
     assert bottom < top  # the stop rule always has a level below entry
+
+
+@given(
+    rng=RNG,
+    depths=st.builds(shrinking_depths, st.integers(8, 30), st.integers(40, 85), st.integers(2, 6)),
+    lift=st.sampled_from([-300, 0, 0, 300, 2000]),
+    max_above=ABOVE,
+    pivot_first=st.booleans(),
+)
+@SLOW
+def test_close_vs_pivot_stage(
+    rng: Lcg, depths: list[int], lift: int, max_above: float, pivot_first: bool
+) -> None:
+    """HAT-CRIT-123 in a stage: `close_vs_pivot` after `vcp` reads the pivot `vcp` reported for
+    that date (as the S1 seed orders them), fails with `no_pivot` when `vcp` found no base or
+    runs later, and the shared context is never changed, so the level does not reach another
+    stage or playbook. The stage's `levels` (what the scan publishes) hold the first passed
+    criterion's pivot, the one the gate read, whatever a later criterion reports. Harm: the
+    gate checks a level from another symbol or date, or none, or approves one level while the
+    bot trades another, and a stale breakout is published."""
+    rows = vcp_rows(rng, depths, 40)
+    last = rows[-1]
+    close = last.close + lift
+    rows[-1] = dataclasses.replace(last, close=close, high=max(last.high, close))
+    ctx = context(rows)
+    vcp_params = {"contractions": [2, 6], "lookback_days": 120}
+    found = evaluate("vcp", vcp_params, ctx)
+    vcp_at, gate_at = (0, 1) if pivot_first else (1, 0)
+    stage = [
+        Instance(type="close_vs_pivot", stage="setup", order=gate_at, mode="hard",
+                 params={"max_above_pct": max_above}),
+        Instance(type="vcp", stage="setup", order=vcp_at, mode="score", weight=2,
+                 params=vcp_params),
+        Instance(type="vcp", stage="setup", order=2, mode="score", weight=1,
+                 params={**vcp_params, "lookback_days": 60, "final_depth_max_pct": 30.0}),
+    ]  # fmt: skip
+    outcome = evaluate_stage("setup", stage, ctx)
+    gate = next(o for o in outcome.outcomes if o.type == "close_vs_pivot")
+    if pivot_first and found.passed:
+        pivot = Fraction(str(found.extras["pivot"]))
+        assert gate.result.passed == close_vs_pivot_holds(rupees(close), pivot, max_above)
+    else:
+        assert (gate.result.passed, gate.result.reason) == (False, "no_pivot")
+    assert dict(ctx.levels) == {}
+    published = criteria_results(PlaybookEvaluation("p", outcome.passed, (outcome,)))["levels"]
+    if pivot_first and found.passed:
+        assert outcome.levels["pivot"] == found.extras["pivot"]
+        assert Decimal(published["pivot"]) == Decimal(repr(found.extras["pivot"]))
+    else:
+        assert "pivot" not in outcome.levels  # the stage stopped at the gate, before vcp
+        assert "pivot" not in published
+    alone = evaluate_stage("setup", stage[:1], ctx)
+    assert alone.reason == "no_pivot"
 
 
 @given(

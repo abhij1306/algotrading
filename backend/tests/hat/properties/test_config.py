@@ -236,6 +236,43 @@ def test_stage_slots(raw: dict, rnd: random.Random) -> None:
     assert "score_outside_setup" in codes_of(explicit)
 
 
+@given(
+    gate_at=st.integers(0, 13),
+    vcp_at=st.one_of(st.none(), st.integers(0, 13)),
+    gate_on=st.booleans(),
+    vcp_on=st.booleans(),
+    scored=st.booleans(),
+)
+def test_close_vs_pivot_needs_vcp(
+    gate_at: int, vcp_at: int | None, gate_on: bool, vcp_on: bool, scored: bool
+) -> None:
+    """PBT config.close_vs_pivot_needs_vcp (HAT-CRIT-123): a setup with an enabled
+    `close_vs_pivot` is valid exactly when an enabled `vcp` comes before it (S1's seed setup
+    with the two moved, removed or switched off), and `close_vs_pivot` is refused in score mode.
+    Harm: a config whose gate can never pass is saved, and the playbook silently stops trading;
+    a scored gate only lowers the score, so a stale breakout still publishes."""
+    raw = yaml.safe_load(seed_text("stage2-contraction-breakout"))
+    criteria = raw["setup"]["criteria"]
+    gate = next(c for c in criteria if c["type"] == "close_vs_pivot")
+    vcp = next(c for c in criteria if c["type"] == "vcp")
+    rest = [c for c in criteria if c["type"] not in {"close_vs_pivot", "vcp"}]
+    scoring = {"mode": "score", "weight": 1} if scored else {}
+    rest.insert(min(gate_at, len(rest)), {**gate, "enabled": gate_on, **scoring})
+    if vcp_at is not None:
+        rest.insert(min(vcp_at, len(rest)), {**vcp, "enabled": vcp_on})
+    raw["setup"]["criteria"] = rest
+    types = [c["type"] for c in rest]
+    valid = not gate_on or (
+        vcp_at is not None and vcp_on and types.index("vcp") < types.index("close_vs_pivot")
+    )
+    if scored:
+        assert "close_vs_pivot_not_hard" in codes_of(raw)
+    elif valid:
+        parse_config(raw)
+    else:
+        assert codes_of(raw) == {"close_vs_pivot_needs_vcp"}
+
+
 @given(raw_configs(), st.data())
 def test_invalid_never_saves(raw: dict, data: st.DataObject) -> None:
     """PBT config.invalid_never_saves (HAT-CRIT-020, HAT-BOT-081): a config with an unknown

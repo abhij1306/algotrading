@@ -50,11 +50,12 @@ from ..risk.decision import SignalContext
 from ..risk.sessions import SessionCalendar
 from ..time import IST, utc_now
 from . import lifecycle, trades
-from .criteria import CriterionResult, EvalContext, evaluate
+from .criteria import CriterionResult, EvalContext
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
 from .scan import EP_PLAYBOOK
 from .strategy.config import Playbook, StrategyConfig, parse_config
+from .strategy.scoring import evaluate_stage
 from .trigger import (
     Candidate,
     DailyInputs,
@@ -218,7 +219,8 @@ def ep_setup_passes(playbook: Playbook, bars: pl.DataFrame, trade_date: date) ->
     ctx = EvalContext(
         as_of=trade_date, instrument_id="", bars=bars.filter(pl.col("date") < trade_date)
     )
-    return all(evaluate(c.type, c.params, ctx).passed for c in enabled)
+    # Threshold 0: only the hard criteria decide; the stage passes earlier levels on (HAT-CRIT-123).
+    return evaluate_stage("setup", playbook.setup.criteria, ctx, 0.0).passed
 
 
 def ep_candidates(gappers: Sequence[Gapper], setup_passes: Callable[[str], bool]) -> list[str]:

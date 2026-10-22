@@ -78,7 +78,7 @@ from ..risk.service import evaluate_signal
 from ..time import as_utc, day_bounds, trade_date_of
 from . import exits, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
-from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_WIDE
+from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
 from .strategy.config import ExitRule, parse_config
 from .watchlist import bot_universe_members
 
@@ -142,6 +142,7 @@ ENTRY_SKIP_REASONS = frozenset(
         SKIP_BAD_INPUT,
         SKIP_NOT_BELOW_ENTRY,
         SKIP_TOO_WIDE,
+        SKIP_TOO_NARROW,
         "adtr_filter",
         "max_chase",
         "level_undefined",

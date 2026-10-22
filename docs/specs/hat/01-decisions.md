@@ -167,7 +167,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
 - **PR:** 8
 - **Verification:** CONF `criterion_catalogue_complete`
 - **Acceptance:**
-  - Property: the set of registered criterion types equals the 24 types listed in 04 §4, each with a parameter schema stored in `hat_criterion_type`. Harm: a config refers to a type with no schema and runs unvalidated parameters. Detail: 04 §4.
+  - Property: the set of registered criterion types equals the 25 types listed in 04 §4, each with a parameter schema stored in `hat_criterion_type`. Harm: a config refers to a type with no schema and runs unvalidated parameters. Detail: 04 §4.
 
 #### HAT-DEC-B4: Pass/fail plus weighted score
 - **Statement:** A symbol makes the watchlist when every hard criterion passes and the weighted setup score clears the threshold.

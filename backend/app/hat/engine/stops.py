@@ -25,6 +25,7 @@ from .strategy.config import (
 __all__ = [
     "SKIP_BAD_INPUT",
     "SKIP_NOT_BELOW_ENTRY",
+    "SKIP_TOO_NARROW",
     "SKIP_TOO_WIDE",
     "StopInputs",
     "StopPlan",
@@ -36,10 +37,12 @@ __all__ = [
     "mean_true_range",
     "pct_below_entry",
     "plan_stop",
+    "plan_stop_at_pivot",
     "swing_low",
 ]
 
 SKIP_TOO_WIDE = "stop_too_wide"
+SKIP_TOO_NARROW = "stop_too_narrow"
 SKIP_NOT_BELOW_ENTRY = "stop_not_below_entry"
 SKIP_BAD_INPUT = "stop_input_missing"
 _HUNDRED = Decimal(100)
@@ -77,26 +80,36 @@ def _valid(entry: Decimal, stop: Decimal) -> StopPlan:
     return StopPlan(stop)
 
 
-def check_width(entry: Decimal, stop: Decimal, max_pct: Decimal) -> StopPlan:
-    """`stop` itself, or a skip when it is not below the entry or (entry - stop) / entry is more
-    than `max_pct` percent."""
+def check_width(
+    entry: Decimal, stop: Decimal, max_pct: Decimal, min_pct: Decimal = _ZERO
+) -> StopPlan:
+    """`stop` itself, or a skip when it is not below the entry, when (entry - stop) / entry is
+    more than `max_pct` percent, or, with `min_pct` above 0, less than `min_pct` percent."""
     plan = _valid(entry, stop)
     if plan.skipped:
         return plan
-    if (entry - stop) * _HUNDRED > max_pct * entry:
+    width = (entry - stop) * _HUNDRED
+    if width > max_pct * entry:
         return _skip(SKIP_TOO_WIDE)
+    if min_pct > 0 and width < min_pct * entry:
+        return _skip(SKIP_TOO_NARROW)
     return plan
 
 
 def final_contraction_low(
-    entry: Decimal, low: Decimal, buffer_pct: Decimal, max_pct: Decimal, tick: Decimal
+    entry: Decimal,
+    low: Decimal,
+    buffer_pct: Decimal,
+    max_pct: Decimal,
+    tick: Decimal,
+    min_pct: Decimal = _ZERO,
 ) -> StopPlan:
     """HAT-EXEC-050: stop = low x (1 - buffer/100) rounded down to the tick; skipped when it is
-    more than `max_pct` percent below the entry."""
+    more than `max_pct` percent below the entry, or less than `min_pct` percent (0 = off)."""
     if not (_positive(entry, low, tick) and isinstance(buffer_pct, Decimal) and buffer_pct >= 0):
         return _skip(SKIP_BAD_INPUT)
     stop = floor_to_tick(low * (_HUNDRED - buffer_pct) / _HUNDRED, tick)
-    return check_width(entry, stop, max_pct)
+    return check_width(entry, stop, max_pct, min_pct)
 
 
 def low_of_day(
@@ -165,6 +178,16 @@ def _dec(value: float) -> Decimal:
     return Decimal(repr(value))
 
 
+def plan_stop_at_pivot(rule: StopRule, inputs: StopInputs) -> StopPlan:
+    """The stop planned overnight with the pivot as the entry (`inputs.entry`). The contraction
+    rule's `min_pct` is left to the entry: a contraction stop does not move with the entry, so
+    a higher entry only widens it, and a stop too narrow at the pivot can be wide enough at the
+    fill (`check_width` at the entry applies it, as the live plan does)."""
+    if isinstance(rule, StopBelowFinalContractionLow) and rule.min_pct:
+        rule = rule.model_copy(update={"min_pct": 0.0})
+    return plan_stop(rule, inputs)
+
+
 def plan_stop(rule: StopRule, inputs: StopInputs) -> StopPlan:
     """The initial stop of one configured rule for one entry."""
     entry, tick = inputs.entry, inputs.tick
@@ -172,7 +195,12 @@ def plan_stop(rule: StopRule, inputs: StopInputs) -> StopPlan:
         if inputs.final_contraction_low is None:
             return _skip(SKIP_BAD_INPUT)
         return final_contraction_low(
-            entry, inputs.final_contraction_low, _dec(rule.buffer_pct), _dec(rule.max_pct), tick
+            entry,
+            inputs.final_contraction_low,
+            _dec(rule.buffer_pct),
+            _dec(rule.max_pct),
+            tick,
+            _dec(rule.min_pct),
         )
     if isinstance(rule, StopLowOfDay):
         return low_of_day(entry, inputs.day_lows, rule.buffer_ticks, tick)

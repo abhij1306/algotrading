@@ -26,7 +26,7 @@ verification can check.
 | [01-decisions.md](01-decisions.md) | Decisions T1-T16, B1-B27 (revised B1/B2/B12), I1-I17, PL1-PL5, build decisions of 20 Oct | HAT-DEC-&lt;code&gt; |
 | [02-data.md](02-data.md) | Source map, reference data, NSE MCP client, nightly ingest, corporate actions, quality gate, features, Parquet/DuckDB, historical build, announcements, live bars, gap scan | HAT-DATA |
 | [03-schema.md](03-schema.md) | The 42 tables, the event log (`hat_event`) and event types, DB-enforced governance, indexes, retention, migration mechanism | HAT-SCH |
-| [04-criteria-and-bots.md](04-criteria-and-bots.md) | Nine-stage model, criterion instances, scoring, the 24 criterion types, playbooks, S1 and S2 default configs, versioning | HAT-CRIT, HAT-BOT |
+| [04-criteria-and-bots.md](04-criteria-and-bots.md) | Nine-stage model, criterion instances, scoring, the 25 criterion types, playbooks, S1 and S2 default configs, versioning | HAT-CRIT, HAT-BOT |
 | [05-portfolio-regime-allocation.md](05-portfolio-regime-allocation.md) | Sleeves, universes, regime v1, health multiplier, allocator, sleeve lifecycle, regime v2 (P2) | HAT-PORT |
 | [06-risk-and-governance.md](06-risk-and-governance.md) | Risk policy, sizing, caps, progressive exposure, regime gate, kill switches, invariants, governance, the risk authority (`evaluate_signal`) | HAT-RISK, HAT-GOV |
 | [07-execution-and-brokers.md](07-execution-and-brokers.md) | Modes, router, approvals, trade lifecycle, stops, exits, broker interface, Fyers adapter, tags, reconciliation, live triggers, veto scoring | HAT-EXEC, HAT-BRK |
@@ -338,11 +338,12 @@ to an artefact that exists.
 | HAT-CRIT-120 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.neglect_contract` |
 | HAT-CRIT-121 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.adtr_filter_contract` |
 | HAT-CRIT-122 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.max_chase_contract`, TLA `ExecutionRouter!MaxChaseAlwaysApplied` |
+| HAT-CRIT-123 | [04](04-criteria-and-bots.md) | 54 | PBT `criteria.close_vs_pivot_contract`, PBT `criteria.close_vs_pivot_stage`, PBT `scoring.stage_levels`, PBT `scoring.numeric_levels`, PBT `config.close_vs_pivot_needs_vcp` |
 | HAT-BOT-050 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `config.playbook_shape`, PBT `trades.shared_bot_cap` |
 | HAT-BOT-051 | [04](04-criteria-and-bots.md) | 8, 15 | DB `runtime.signal_unique_per_day`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BOT-052 | [04](04-criteria-and-bots.md) | 14, 15 | PBT `criteria.ep_candidate_bands` |
 | HAT-BOT-053 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `regime.strategy_rules` |
-| HAT-BOT-060 | [04](04-criteria-and-bots.md) | 8 | CONF `bot_seed_s1_matches_spec` |
+| HAT-BOT-060 | [04](04-criteria-and-bots.md) | 8, 54 | CONF `bot_seed_s1_matches_spec` |
 | HAT-BOT-061 | [04](04-criteria-and-bots.md) | 8 | CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_shadow` |
 | HAT-BOT-062 | [04](04-criteria-and-bots.md) | 11 | PBT `stops.final_contraction_low` |
 | HAT-BOT-070 | [04](04-criteria-and-bots.md) | 8 | CONF `bot_seed_s2_matches_spec` |
@@ -448,7 +449,7 @@ to an artefact that exists.
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
 | HAT-EXEC-045 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap` |
-| HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.final_contraction_low` |
+| HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11, 54 | PBT `stops.final_contraction_low`, PBT `stops.contraction_stop_at_the_fill` |
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
 | HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs`, PBT `ops.daily_tick_matches_reference` |

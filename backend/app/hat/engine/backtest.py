@@ -658,7 +658,12 @@ class _Run:
             # The contraction stop does not move with the entry; only its width is checked again.
             if row.planned_stop is None:
                 return None, SKIP_BAD_INPUT
-            plan = check_width(entry, Decimal(row.planned_stop), Decimal(repr(rule.max_pct)))
+            plan = check_width(
+                entry,
+                Decimal(row.planned_stop),
+                Decimal(repr(rule.max_pct)),
+                Decimal(repr(rule.min_pct)),
+            )
             return plan.stop, plan.skip
         inputs = StopInputs(entry=entry, tick=tick)
         if isinstance(rule, StopLowOfDay):

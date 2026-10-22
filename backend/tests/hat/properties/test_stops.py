@@ -6,8 +6,9 @@ from decimal import Decimal
 from fractions import Fraction
 
 import pytest
-from hypothesis import example, given
+from hypothesis import assume, example, given
 from hypothesis import strategies as st
+from pydantic import ValidationError
 
 from app.hat.data.ticks import reference_close, tick_for_date, tick_size
 from app.hat.engine import stops
@@ -19,6 +20,7 @@ from app.hat.engine.strategy.config import (
     StopPctBelowEntry,
     StopSwingLow,
 )
+from app.hat.engine.trades import ENTRY_SKIP_REASONS
 from app.hat.execution.gtt import GttPriceError, gtt_limit_price
 
 ticks = st.sampled_from(
@@ -53,33 +55,95 @@ prices = st.integers(1, 2_000_000).map(lambda n: Decimal(n) / 100)  # 0.01 .. 20
 pcts = st.integers(0, 5000).map(lambda n: Decimal(n) / 100)
 
 
+# A low within 20% of a 100.00 entry, so `min_pct` decides often; `entry` draws other prices too.
+near_entry_lows = st.integers(8000, 10_000).map(lambda n: Decimal(n) / 100)
+
+
 def grid_floor(x: Fraction, tick: Decimal) -> Fraction:
     t = Fraction(tick)
     return (x // t) * t
 
 
-@given(prices, prices, pcts, st.integers(1, 10_000).map(lambda n: Decimal(n) / 100))
+@example(
+    entry=Decimal(100), low=Decimal(98), buffer=Decimal(0), max_pct=Decimal(8), min_pct=Decimal(2)
+)  # exactly min_pct below the entry is taken
+@example(
+    entry=Decimal(100), low=Decimal(99), buffer=Decimal(0), max_pct=Decimal(8), min_pct=Decimal(2)
+)  # 1% below is too narrow
+@given(
+    entry=st.one_of(st.just(Decimal(100)), prices),
+    low=st.one_of(prices, near_entry_lows),
+    buffer=pcts,
+    max_pct=st.integers(1, 10_000).map(lambda n: Decimal(n) / 100),
+    min_pct=st.one_of(st.just(Decimal(0)), st.integers(0, 2000).map(lambda n: Decimal(n) / 100)),
+)
 def test_final_contraction_low(
-    entry: Decimal, low: Decimal, buffer: Decimal, max_pct: Decimal
+    entry: Decimal, low: Decimal, buffer: Decimal, max_pct: Decimal, min_pct: Decimal
 ) -> None:
     """HAT-EXEC-050: stop = low x (1 - buffer/100) rounded down to the tick; it is skipped when
-    it is not below the entry or more than max_pct percent below it; a taken stop is on the tick
-    grid, below the entry, and never wider than max_pct. Harm: a stop wider than the rule allows
-    risks more than the sizing assumed."""
-    plan = stops.final_contraction_low(entry, low, buffer, max_pct, TICK)
+    it is not below the entry, more than max_pct percent below it, or, with min_pct above 0,
+    less than min_pct percent below it (`stop_too_narrow`; min_pct 0 is off); a taken stop is on
+    the tick grid, below the entry, and within [min_pct, max_pct]; every skip reason is one the
+    signal stores as itself (`ENTRY_SKIP_REASONS`). The configured rule gives the same plan
+    through `plan_stop`, and a rule with min_pct >= max_pct is refused. Harm: a stop wider than
+    the rule allows risks more than the sizing assumed; one tighter than the base allows is
+    shaken out by normal noise."""
+    plan = stops.final_contraction_low(entry, low, buffer, max_pct, TICK, min_pct)
     exact = grid_floor(Fraction(low) * (100 - Fraction(buffer)) / 100, TICK)
+    width = (Fraction(entry) - exact) * 100
     if not 0 < exact < Fraction(entry):
         assert plan.skip == stops.SKIP_NOT_BELOW_ENTRY
-    elif (Fraction(entry) - exact) * 100 > Fraction(max_pct) * Fraction(entry):
+    elif width > Fraction(max_pct) * Fraction(entry):
         assert plan.skip == stops.SKIP_TOO_WIDE
+    elif min_pct > 0 and width < Fraction(min_pct) * Fraction(entry):
+        assert plan.skip == stops.SKIP_TOO_NARROW
     else:
         assert plan.stop is not None
         assert Fraction(plan.stop) == exact
         assert plan.stop % TICK == 0
         assert 0 < plan.stop < entry
-        assert (entry - plan.stop) / entry * 100 <= max_pct
+        assert min_pct <= (entry - plan.stop) / entry * 100 <= max_pct
     assert plan.skipped == (plan.stop is None)
     assert plan.skipped == (plan.skip is not None)
+    assert plan.skip is None or plan.skip in ENTRY_SKIP_REASONS  # stored as itself, not invalid
+    if buffer > 50 or max_pct > 100:
+        return
+    fields = {"buffer_pct": float(buffer), "max_pct": float(max_pct), "min_pct": float(min_pct)}
+    if min_pct >= max_pct:
+        with pytest.raises(ValidationError):
+            StopBelowFinalContractionLow(rule="below_final_contraction_low", **fields)
+        return
+    rule = StopBelowFinalContractionLow(rule="below_final_contraction_low", **fields)
+    assert plan_stop(rule, StopInputs(entry, TICK, final_contraction_low=low)) == plan
+
+
+@example(pivot=Decimal(100), above=100, low=Decimal("99.2"), max_pct=8, min_pct=2)
+@given(
+    pivot=st.one_of(st.just(Decimal(100)), prices),
+    above=st.integers(0, 1500),
+    low=st.one_of(prices, near_entry_lows),
+    max_pct=st.integers(1, 30),
+    min_pct=st.sampled_from([0, 0, 1, 2, 5]),
+)
+def test_contraction_stop_at_the_fill(
+    pivot: Decimal, above: int, low: Decimal, max_pct: int, min_pct: int
+) -> None:
+    """HAT-EXEC-050: the contraction stop the scan plans at the pivot, re-checked at a fill at
+    or above it (the backtest's `check_width`), is the live plan at that fill, for every
+    min_pct: a stop too narrow at the pivot is not dropped overnight, since a higher entry only
+    widens it. Harm: the backtest skips (as `stop_input_missing`) trades live would take, so
+    its results are not the live strategy's."""
+    assume(low < pivot and min_pct < max_pct)
+    entry = pivot + pivot * above / 10_000
+    rule = StopBelowFinalContractionLow(
+        rule="below_final_contraction_low", max_pct=float(max_pct), min_pct=float(min_pct)
+    )
+    live = plan_stop(rule, StopInputs(entry, TICK, final_contraction_low=low))
+    planned = stops.plan_stop_at_pivot(rule, StopInputs(pivot, TICK, final_contraction_low=low))
+    if planned.stop is None:
+        assert live.stop is None
+        return
+    assert stops.check_width(entry, planned.stop, Decimal(max_pct), Decimal(min_pct)) == live
 
 
 @given(prices, st.lists(prices, min_size=1, max_size=20), st.integers(0, 20))

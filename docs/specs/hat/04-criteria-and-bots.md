@@ -1,6 +1,6 @@
 # 04: Criteria and Bots
 
-Scope: the nine-stage bot model, criterion instances and their validation, setup scoring, the 24-type criteria library, playbooks, the two MVP default bot configs and config versioning. Requirement format and verification methods: see README.md and 11-verification.md.
+Scope: the nine-stage bot model, criterion instances and their validation, setup scoring, the 25-type criteria library, playbooks, the two MVP default bot configs and config versioning. Requirement format and verification methods: see README.md and 11-verification.md.
 
 Risk numbers (risk %, caps, ladder, kill thresholds, allocations) are not part of a bot; they live in the account risk policy (06-risk-and-governance.md). Stop-rule and exit-rule semantics are specified in 07-execution-and-brokers.md; this file carries them only as config values.
 
@@ -68,7 +68,7 @@ A bot version is nine stages evaluated in a fixed order (BL "Configuration model
 - **Verification:** PBT `config.invalid_never_saves`, CONF `criterion_type_registry`
 - **Acceptance:**
   - Property: for every generated params object that violates its type's schema (wrong type, out-of-range, unknown key), saving the version raises and no `hat_strategy_version` row is written. Harm: the engine would run a config whose meaning nobody checked.
-  - Property: for every type in the registry, the stored `param_schema` equals the JSON Schema generated from the type's parameter model, and the registry holds exactly the 24 types of §4. Harm: app and catalogue validation disagree, so a config valid in one place fails or misbehaves in the other.
+  - Property: for every type in the registry, the stored `param_schema` equals the JSON Schema generated from the type's parameter model, and the registry holds exactly the 25 types of §4. Harm: app and catalogue validation disagree, so a config valid in one place fails or misbehaves in the other.
 
 #### HAT-CRIT-022: `enabled` and `order` control evaluation without deleting
 - **Statement:** A disabled criterion is skipped entirely, and enabled criteria within a stage evaluate in ascending `order`.
@@ -116,7 +116,7 @@ setup_score = sum_i(w_i * s_i) / sum_i(w_i),   s_i in [0, 1]
 
 ## §4 Criteria catalogue
 
-24 criterion types cover both MVP bots (BL "Criteria library"). Each is a pure function over daily bars, features or live bars with a typed parameter schema, and returns `(passed, score in [0,1], value, reason)`. M = Minervini-style, Q = Qullamaggie-style breakout, Q-EP = episodic pivot. Feature columns (`sma*`, `high_52w`, `low_52w`, `adr20`, `adtr20`, `adv20`, `turnover20`, `ret*`, `rs_pct`, `mom_rank`) are defined in 02-data.md §7.
+25 criterion types cover both MVP bots (BL "Criteria library"; `close_vs_pivot` added in PR 54). Each is a pure function over daily bars, features or live bars with a typed parameter schema, and returns `(passed, score in [0,1], value, reason)`. M = Minervini-style, Q = Qullamaggie-style breakout, Q-EP = episodic pivot. Feature columns (`sma*`, `high_52w`, `low_52w`, `adr20`, `adtr20`, `adv20`, `turnover20`, `ret*`, `rs_pct`, `mom_rank`) are defined in 02-data.md §7.
 
 | Type | Stage | Parameters (default) | Data | Used by |
 | --- | --- | --- | --- | --- |
@@ -136,6 +136,7 @@ setup_score = sum_i(w_i * s_i) / sum_i(w_i),   s_i in [0, 1]
 | `ma_surf` | Setup | MAs (10, 20), max distance % (5) | Daily bars | Q |
 | `prior_move` | Setup | min % (30) within days (21-63) | Daily bars | Q |
 | `earnings_growth` | Setup | EPS YoY % (20), sales YoY % (20), accelerating (on); **off by default** | Fundamentals (later) | M |
+| `close_vs_pivot` | Setup | max % above the pivot of an earlier criterion (0) | Daily bars | M |
 | `gap_up` | Trigger | min gap % (10) vs prior close | Pre-open + live | Q-EP |
 | `volume_pace` | Trigger | × 50-day avg, projected to full day (1.5) | Live bars | M, Q |
 | `early_volume` | Trigger | cumulative by entry ≥ × 20-day ADV (0.5, *assumption*) | Live bars | Q-EP |
@@ -367,6 +368,18 @@ Common properties for every catalogue type (apply to each requirement below; ver
   - Property: for every (price, level > 0, pct), `passed` iff price <= level × (1 + pct/100) and the stock is not locked at upper circuit. Harm: the bot buys far above its planned entry, breaking the planned risk.
   - Property: for every config, including ones where `max_chase` is deleted or `enabled: false`, the evaluated entry-filter list contains `max_chase` with the playbook's last configured pct, or the strategy's default (M 5, Q 2) when none was ever configured. Harm: a config edit removes invariant 6.
 
+#### HAT-CRIT-123: `close_vs_pivot` refuses a base that already broke out
+- **Statement:** `close_vs_pivot` passes iff the scan-day close is at most `max_above_pct` (default 0) percent above the pivot an earlier criterion of the same stage exposed (`vcp`'s pivot, HAT-CRIT-040); without a pivot it fails with `no_pivot`. A criterion reads the numeric levels (`extras`) the passed criteria evaluated before it in its stage reported, each key from the first to report it, and only those; the stage's levels are the ones the scan publishes with the watchlist row. A config with an enabled `close_vs_pivot` and no enabled `vcp` before it in the same setup is refused (`close_vs_pivot_needs_vcp`), and so is a `close_vs_pivot` in score mode (`close_vs_pivot_not_hard`: a gate that only lowers the score would let a stale breakout publish). In S1 this makes a VCP base required: a symbol whose `vcp` finds none stops at `close_vs_pivot` with `no_pivot`.
+- **Source:** Plan audit 2026-10-22 N2 and §6 item 12 (owner default: close at or below the pivot, hard; a later sweep tests 0/1/2%).
+- **PR:** 54
+- **Verification:** PBT `criteria.close_vs_pivot_contract`, PBT `criteria.close_vs_pivot_stage`, PBT `scoring.stage_levels`, PBT `scoring.numeric_levels`, PBT `config.close_vs_pivot_needs_vcp`
+- **Acceptance:**
+  - Property: for every close C and pivot P > 0, `passed` iff C × 100 <= P × (100 + max_above_pct), exact in decimals (equality passes); the value is (C / P − 1) × 100; without a pivot level, or with P <= 0, the result fails with `no_pivot`, and without the date's bar with `no_data`. Harm: a name that broke out days ago is published with its stale pivot and bought far above the base.
+  - Property: in a stage, `close_vs_pivot` ordered after `vcp` reads the pivot `vcp` reported for that instrument and date; ordered before it, or after a `vcp` that found no base, it fails with `no_pivot`; the shared evaluation context is never changed, so no level reaches another stage or playbook. Harm: the gate checks a level from another symbol, date or playbook.
+  - Property: for every sequence of criteria in a stage, each sees exactly the finite numeric levels the passed criteria before it reported (first reporter per key), and the stage's levels equal the levels the scan publishes; a failed result adds none, and a non-numeric or non-finite extra is never a level and never raises. Harm: the gate approves one level while the watchlist row and the trigger use another, or one odd extra aborts the scan.
+  - Property: a setup with an enabled hard `close_vs_pivot` is accepted iff an enabled `vcp` precedes it, and a scored one is refused. Harm: a config whose gate can never pass is saved and the playbook silently stops trading.
+- **[A]** max_above_pct: default 0 (owner, §6 item 12); a backtest sweep over 0/1/2% decides it.
+
 ## §5 Playbooks
 
 A **playbook** is a named set of setup, trigger, entry filters and stop; a bot can hold several. Playbooks share one regime gate, capital pool, sizing and exit stack (BL "Qullamaggie-style bot").
@@ -408,7 +421,7 @@ A **playbook** is a named set of setup, trigger, entry filters and stop; a bot c
 
 ## §6 S1 default config: `stage2-contraction-breakout`
 
-End-of-day scan for Stage 2 stocks with a tightening base, entry on an intraday pivot break with volume, stop under the last contraction. Trend Template rules are hard; RS and VCP quality are scored. The seed is this YAML, verbatim from BL "Minervini-style bot - default config":
+End-of-day scan for Stage 2 stocks with a tightening base, entry on an intraday pivot break with volume, stop under the last contraction. Trend Template rules are hard; RS and VCP quality are scored, and the scan-day close may not be above the VCP pivot (HAT-CRIT-123). The seed is this YAML, verbatim from BL "Minervini-style bot - default config" except the `close_vs_pivot` line (PR 54, plan audit N2):
 
 ```yaml
 bot: stage2-contraction-breakout      # Minervini-style
@@ -443,6 +456,7 @@ setup:
     - {type: rs_rank, mode: score, weight: 1, params: {score_from: 70, score_full: 95}}
     - {type: vcp, mode: score, weight: 2, params: {contractions: [2, 6], depth_ratio_max: 0.75,
         final_depth_max_pct: 10, lookback_days: 120, dryup_vs_avg50: 0.7}}
+    - {type: close_vs_pivot, mode: hard, params: {max_above_pct: 0}}   # close at or below the pivot
     - {type: earnings_growth, mode: hard, enabled: false, params: {eps_yoy: 20, sales_yoy: 20}}
 
 trigger:
@@ -466,8 +480,8 @@ exits:                                  # evaluated top to bottom
 
 #### HAT-BOT-060: S1 seed equals the documented config
 - **Statement:** The S1 seed `stage2-contraction-breakout` v1 loads, validates and equals the YAML above field for field.
-- **Source:** BL "Minervini-style bot - default config"; B3-B7, B14, PL1.
-- **PR:** 8
+- **Source:** BL "Minervini-style bot - default config"; B3-B7, B14, PL1; plan audit 2026-10-22 N2 (`close_vs_pivot`).
+- **PR:** 8, 54
 - **Verification:** CONF `bot_seed_s1_matches_spec`
 - **Acceptance:**
   - Property: the parsed seed file and the YAML block in this section are equal as data (every key, value, order of list items and `enabled` flag), and both validate against the criterion schemas. Harm: the bot that runs is not the bot the owner approved.
