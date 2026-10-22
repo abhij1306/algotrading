@@ -13,12 +13,13 @@ accident. Nothing here reads the database, the clock or the network.
 
 from __future__ import annotations
 
+import copy
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from functools import cached_property
+from types import MappingProxyType
 from typing import Any, Literal, NamedTuple
 
 import polars as pl
@@ -101,6 +102,16 @@ def _clean(values: Sequence[float | None]) -> list[float | None]:
     return [float(v) if v is not None and math.isfinite(v) else None for v in values]
 
 
+def _bars(frame: pl.DataFrame) -> Bars:
+    columns = {
+        name: _clean(frame[name].cast(pl.Float64).to_list())
+        if name in frame.columns
+        else [None] * frame.height
+        for name in BAR_FIELDS
+    }
+    return Bars(frame["date"].to_list(), **columns)
+
+
 @dataclass(eq=False)
 class EvalContext:
     """What a criterion may read, for one instrument on one evaluation date.
@@ -111,6 +122,8 @@ class EvalContext:
     criteria. `series`: the instrument's series (instrument master). `price_bands`: the
     instrument's `(effective_from, band_pct)` rows, `band_pct` None for no band.
     `fundamentals`: rows `filed_at`, `eps_yoy`, `sales_yoy` (none until Phase 2).
+    `levels`: the numeric levels earlier criteria of the same stage exposed (such as `vcp`'s
+    `pivot`), set by `with_levels`; empty outside a stage.
     """
 
     as_of: date
@@ -120,33 +133,40 @@ class EvalContext:
     series: str | None = None
     price_bands: Sequence[tuple[date, float | None]] = ()
     fundamentals: pl.DataFrame | None = None
+    levels: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    # The bars read so far, shared by the `with_levels` copies (not an init field, so
+    # `dataclasses.replace` with other bars starts empty).
+    _read: dict[str, Bars] = field(default_factory=dict, init=False, repr=False)
 
-    @cached_property
+    def with_levels(self, levels: Mapping[str, float]) -> EvalContext:
+        """A copy reading `levels` and sharing the bars read by either (this one is unchanged,
+        so a level never leaks into another playbook's stage); itself when both have none."""
+        if not levels and not self.levels:
+            return self
+        staged = copy.copy(self)
+        staged.levels = MappingProxyType(dict(levels))
+        return staged
+
+    @property
     def history(self) -> Bars:
         """The bars dated on or before `as_of`, sorted by date; empty without a bar on `as_of`
         itself (an instrument that did not trade that day has no features for it either)."""
-        frame = self.bars.filter(pl.col("date") <= self.as_of).sort("date")
-        if frame.is_empty() or frame["date"][-1] != self.as_of:
-            return EMPTY_BARS
-        columns = {
-            name: _clean(frame[name].cast(pl.Float64).to_list())
-            if name in frame.columns
-            else [None] * frame.height
-            for name in BAR_FIELDS
-        }
-        return Bars(frame["date"].to_list(), **columns)
+        if "history" not in self._read:
+            frame = self.bars.filter(pl.col("date") <= self.as_of).sort("date")
+            if frame.is_empty() or frame["date"][-1] != self.as_of:
+                self._read["history"] = EMPTY_BARS
+            else:
+                self._read["history"] = _bars(frame)
+        return self._read["history"]
 
-    @cached_property
+    @property
     def previous_history(self) -> Bars:
         """The bars dated strictly before `as_of` (live criteria read the previous session)."""
-        frame = self.bars.filter(pl.col("date") < self.as_of).sort("date")
-        columns = {
-            name: _clean(frame[name].cast(pl.Float64).to_list())
-            if name in frame.columns
-            else [None] * frame.height
-            for name in BAR_FIELDS
-        }
-        return Bars(frame["date"].to_list(), **columns)
+        if "previous" not in self._read:
+            self._read["previous"] = _bars(
+                self.bars.filter(pl.col("date") < self.as_of).sort("date")
+            )
+        return self._read["previous"]
 
 
 Evaluator = Callable[[EvalContext, Any], CriterionResult]

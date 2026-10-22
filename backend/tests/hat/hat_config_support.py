@@ -112,6 +112,7 @@ PARAMS: dict[str, st.SearchStrategy[dict[str, Any]]] = {
             "bar": st.just("5m"),
         }
     ),
+    "close_vs_pivot": st.fixed_dictionaries({"max_above_pct": st.sampled_from([0.0, 1.0, 2.5])}),
     "neglect": st.fixed_dictionaries({"max_return_63d_pct": NUM}),
     "adtr_filter": st.fixed_dictionaries({"max_multiple": POS}),
     "max_chase": st.fixed_dictionaries({"pct": POS}),
@@ -119,7 +120,8 @@ PARAMS: dict[str, st.SearchStrategy[dict[str, Any]]] = {
 UNIVERSE_TYPES = ["series_in", "min_turnover", "min_price", "price_band_allowed", "adr_min"]
 SETUP_TYPES = [
     "sma_above", "sma_rising", "pct_from_52w_low", "pct_from_52w_high", "rs_rank",
-    "momentum_rank", "vcp", "consolidation", "ma_surf", "prior_move", "earnings_growth", "neglect",
+    "momentum_rank", "vcp", "consolidation", "ma_surf", "prior_move", "earnings_growth",
+    "neglect",
 ]  # fmt: skip
 TRIGGER_TYPES = [
     "gap_up", "volume_pace", "early_volume", "catalyst_attached", "price_breaks_level", "neglect",
@@ -153,7 +155,8 @@ def instance_list(
 
 STOPS = st.one_of(
     st.fixed_dictionaries(
-        {"rule": st.just("below_final_contraction_low"), "buffer_pct": POS, "max_pct": POS}
+        {"rule": st.just("below_final_contraction_low"), "buffer_pct": POS, "max_pct": POS},
+        optional={"min_pct": st.sampled_from([0.0, 0.25])},
     ),
     st.fixed_dictionaries({"rule": st.just("low_of_day"), "buffer_ticks": st.integers(0, 5)}),
     st.fixed_dictionaries(

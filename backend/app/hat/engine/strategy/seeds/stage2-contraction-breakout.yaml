@@ -30,6 +30,7 @@ setup:
     - {type: rs_rank, mode: score, weight: 1, params: {score_from: 70, score_full: 95}}
     - {type: vcp, mode: score, weight: 2, params: {contractions: [2, 6], depth_ratio_max: 0.75,
         final_depth_max_pct: 10, lookback_days: 120, dryup_vs_avg50: 0.7}}
+    - {type: close_vs_pivot, mode: hard, params: {max_above_pct: 0}}   # close at or below the pivot
     - {type: earnings_growth, mode: hard, enabled: false, params: {eps_yoy: 20, sales_yoy: 20}}
 
 trigger:

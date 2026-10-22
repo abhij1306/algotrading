@@ -44,7 +44,7 @@ OpenAlgo for the MVP; the owner's build decisions of 20 Oct narrow that to a dir
 | Sleeve | One strategy version on one universe version (PL1). The unit the allocator weights. |
 | Strategy version | An immutable, versioned configuration: universe, regime rule, setup, trigger, entry filters, stop rule, exits. |
 | Playbook | A named set of setup, trigger, entry filters and stop inside one bot (S2 has `breakout` and `episodic_pivot`). |
-| Criterion | A library type (24 in the MVP) with a typed parameter schema; a pure function over bars, features or live bars. |
+| Criterion | A library type (25 in the MVP) with a typed parameter schema; a pure function over bars, features or live bars. |
 | Hard / score | A hard criterion must pass; a scored one contributes a value in [0,1] to the weighted setup score. |
 | Setup score | `Σ w_i s_i / Σ w_i` over scored setup criteria; the bot's threshold (default 0.6) gates the watchlist. |
 | Pivot | The price level whose intraday break is the entry trigger. |

@@ -9,7 +9,8 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 
 ## Properties
 
-- `PBT stops.final_contraction_low` The stop is the final contraction low times (1 minus the buffer percentage) rounded down to the tick, and is skipped when it is not below the entry or more than the maximum percentage below it. Harm: a stop wider than the rule allows risks more than the position was sized for.
+- `PBT stops.final_contraction_low` The stop is the final contraction low times (1 minus the buffer percentage) rounded down to the tick, and is skipped when it is not below the entry, more than the maximum percentage below it, or (with `min_pct` above 0; 0 is off) less than `min_pct` below it (`stop_too_narrow`); every skip reason is one a signal stores as itself (`trades.ENTRY_SKIP_REASONS`), the configured rule gives the same plan through `plan_stop`, and a rule with `min_pct` >= `max_pct` is refused. Harm: a stop wider than the rule allows risks more than the position was sized for; one inside the base's noise is shaken out.
+- `PBT stops.contraction_stop_at_the_fill` The contraction stop the scan plans at the pivot (`plan_stop_at_pivot`, which leaves `min_pct` to the entry) and the backtest re-checks at a fill at or above the pivot (`check_width`) is the live plan at that fill, for every `min_pct`. Harm: the backtest skips (as `stop_input_missing`) trades live would take.
 - `PBT stops.low_of_day` The stop is the lowest low of the day so far less the buffer ticks, strictly below the entry, else a skip. Harm: a stop above the day's low is hit by ordinary noise, and one at or above the entry is not a stop.
 - `PBT stops.custom_rules` `pct_below_entry`, `atr_multiple` and `swing_low` give the formula rounded down to the tick, strictly below the entry, else a skip with a fixed reason; a rule whose input is missing is a skip, never a guess. Harm: a stop above the entry or off the tick grid is refused by the exchange or fires at once.
 - `PBT exits.full_beats_partial` When a full exit and partials fire on one evaluation the output is exactly one exit of the whole open quantity and no partial. Harm: a partial sale before a stop-out leaves the position half open after the trade should have ended.
@@ -118,7 +119,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `48e94ca75d5e98bc942b93019118cabdc0f00b797d91cf1ddf096df1c6fb4961`
+Covered digest: `be139ec0c0aaed2a3da0d52369d8dd90742746a48828e406ebfca4c89a1a169b`
 
 ## Scope changes
 
@@ -134,6 +135,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed. In the review round `protect` stopped placing or growing a stop while a sale the broker accepted still works (`make_room` gave the sale the shares; `manage.a_resting_sale_is_never_stopped_over`, its break in `verify-execution`); the model's `Sell` is atomic, so this window is not modelled.
 - PR 21 (audit 2026-10-22 F3) added the split and bonus rescale (`engine/rescale.py`, 07 §14). `StopPlacement` keeps one price scale: a rescale is a change of unit, not a stop move, so `StopOnlyTightens` and `BrokerStopMatchesCurrent` hold in scale-adjusted prices and the rescale is not modelled (between `ca.rescale` and the next sync the broker stop rests above the rescaled stop in new units, at the old stop in old units; the market is shut). The broker stop's move down is `StopDesk.rescaled`, checked by `rescale.broker_stop_follows`, and it moves only a position with a `position.rescaled` event. Fractional entitlements are floored (the broker pays them in cash); a factor is read back as the ratio with denominator ≤ 1000 within 1e-9 of it, or refused; only splits and bonuses with factor below 1 are applied. Nothing was narrowed.
 - PR 31 (design review 2026-10-22 item 6, option A, HAT-EXEC-142, -144): every stored action the rescale cannot handle (`rescale.unhandled_actions`) makes the position manage-only (`rescale.manage_only`, read by `ExitViews` and `awaits_rescale`) for as long as it is open, and `ca.rescale` flags it once per (position, action) with `corporate_action.unhandled` (URGENT). `StopDesk.rescaled` still reads `pending_actions`, so an unhandled action never moves a broker stop. `/flatten` caps the sale at the broker's holdings (`manage.flatten_capped_at_holdings`, in `verify-execution`). Virtual positions are flagged too (`virtual` in the payload). Option B (applying consolidations) is later. Nothing was narrowed.
+- PR 54 (plan audit G28) added `min_pct` to `below_final_contraction_low` (default 0, off) and the skip `stop_too_narrow`; the backtest's re-check at the fill price (`check_width`) applies it too. `final_contraction_low` draws a low near a 100.00 entry as well, so `min_pct` decides often. The scan's overnight plan at the pivot leaves `min_pct` to the entry (`plan_stop_at_pivot`), since a higher fill only widens a contraction stop. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 - PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
 
@@ -148,6 +150,73 @@ Break: in `backend/app/hat/engine/stops.py`: the buffer is added to the low inst
 ```
 FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Excep [cut]
 ============================== 1 failed in 0.20s ===============================
+```
+
+Break: (PR 54) `min_pct` is ignored (`if min_pct > 0 and` to `if False and`).
+
+```
+E   AssertionError: assert None == 'stop_too_narrow'
+E    +  where None = StopPlan(stop=Decimal('99.0'), skip=None).skip
+E    +  and   'stop_too_narrow' = stops.SKIP_TOO_NARROW
+E   Failing explicit example: test_final_contraction_low(
+E       entry=Decimal('100'),
+E       low=Decimal('99'),
+E       buffer=Decimal('0'),
+FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Asser [cut]
+```
+
+Break: (PR 54) `min_pct` 0 is not off (the narrow check is `width <= min_pct * entry`).
+
+```
+E   AssertionError: assert None is not None
+E    +  where None = StopPlan(stop=None, skip='stop_too_narrow').stop
+E   Failing explicit example: test_final_contraction_low(
+E       entry=Decimal('100'),
+E       low=Decimal('98'),
+E       buffer=Decimal('0'),
+E       max_pct=Decimal('8'),
+FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Asser [cut]
+```
+
+Break: (PR 54) `stop_too_narrow` is left out of `trades.ENTRY_SKIP_REASONS`, so the signal would store `invalid_input`.
+
+```
+E   AssertionError: assert ('stop_too_narrow' is None or 'stop_too_narrow' in frozenset({'adtr_filter', 'corporate_action_pending', 'level_undefined', 'max_chase', 'no_live_price', 'stop_input_missing', ...}))
+E    +  where 'stop_too_narrow' = StopPlan(stop=None, skip='stop_too_narrow').skip
+E    +  and   'stop_too_narrow' = StopPlan(stop=None, skip='stop_too_narrow').skip
+E   Failing explicit example: test_final_contraction_low(
+E       entry=Decimal('100'),
+E       low=Decimal('99'),
+E       buffer=Decimal('0'),
+FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Asser [cut]
+```
+
+Break: (PR 54) the config accepts `min_pct` >= `max_pct`.
+
+```
+E   Failed: DID NOT RAISE ValidationError
+E   Failing test case: test_final_contraction_low(
+E       # The test always failed when commented parts were varied together.
+E       entry=Decimal('100'),  # or any other generated value
+E       low=Decimal('0.01'),  # or any other generated value
+E       buffer=Decimal('0'),  # or any other generated value
+E       max_pct=Decimal('0.01'),
+FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Faile [cut]
+```
+
+### PBT stops.contraction_stop_at_the_fill
+
+Break: (PR 54) the overnight plan at the pivot applies `min_pct` (the `model_copy` dropping it removed).
+
+```
+E   AssertionError: assert Decimal('98.70') is None
+E    +  where Decimal('98.70') = StopPlan(stop=Decimal('98.70'), skip=None).stop
+E   Failing explicit example: test_contraction_stop_at_the_fill(
+E       pivot=Decimal('100'),
+E       above=100,
+E       low=Decimal('99.2'),
+E       max_pct=8,
+FAILED tests/hat/properties/test_stops.py::test_contraction_stop_at_the_fill
 ```
 
 ### PBT stops.low_of_day

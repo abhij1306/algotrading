@@ -1,4 +1,4 @@
-"""Setup criteria (04 §4, HAT-CRIT-105..114): trend, relative strength and base quality."""
+"""Setup criteria (04 §4, HAT-CRIT-105..114, -123): trend, relative strength and base quality."""
 
 from __future__ import annotations
 
@@ -347,6 +347,30 @@ def earnings_growth(ctx: EvalContext, params: EarningsGrowthParams) -> Criterion
             return no_data()
         ok = eps > rows["eps_yoy"][-2]
     return verdict(ok, float(eps), "growth_below_min")
+
+
+class CloseVsPivotParams(ParamModel):
+    max_above_pct: float = Field(default=0.0, ge=0, le=100)
+
+
+PIVOT = "pivot"
+
+
+def close_vs_pivot(ctx: EvalContext, params: CloseVsPivotParams) -> CriterionResult:
+    """HAT-CRIT-123: the scan-day close is at most `max_above_pct` percent above the pivot an
+    earlier criterion of the stage exposed (`vcp`), so a base that already broke out is not
+    published with a stale pivot. Without a close it is `no_data`, without a pivot it fails
+    with `no_pivot`; the value is the
+    close's percentage above the pivot (negative below it)."""
+    close = ctx.history.close[-1] if ctx.history.close else None
+    if close is None:
+        return no_data()
+    level = ctx.levels.get(PIVOT)
+    if level is None or level <= 0:
+        return CriterionResult(False, 0.0, None, "no_pivot")
+    pivot, price = dec(level), dec(close)
+    pct = float((price / pivot - 1) * 100)
+    return verdict(price * 100 <= pivot * (100 + dec(params.max_above_pct)), pct, "above_pivot")
 
 
 class NeglectParams(ParamModel):

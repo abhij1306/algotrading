@@ -89,9 +89,9 @@ def test_criterion_type_registry() -> None:
 
 
 def test_criterion_catalogue_complete() -> None:
-    """HAT-DEC-B3: the registered types are the 24 listed in 04 §4, each in its stage."""
+    """HAT-DEC-B3: the registered types are the 25 listed in 04 §4, each in its stage."""
     catalogue = _catalogue()
-    assert len(catalogue) == 24
+    assert len(catalogue) == 25
     assert {code: ctype.stage for code, ctype in REGISTRY.items()} == catalogue
 
 

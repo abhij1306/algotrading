@@ -25,7 +25,7 @@ import polars as pl
 from ..data.ticks import tick_for_date
 from .criteria import EvalContext
 from .regime_gate import regime_allows_longs
-from .stops import StopInputs, plan_stop
+from .stops import StopInputs, plan_stop_at_pivot
 from .strategy.config import Playbook, StopBelowFinalContractionLow, StrategyConfig
 from .strategy.scoring import PlaybookEvaluation, StageOutcome, evaluate_playbook
 
@@ -122,12 +122,11 @@ def criteria_results(evaluation: PlaybookEvaluation) -> dict[str, Any]:
 
 
 def _extra(evaluation: PlaybookEvaluation, key: str) -> Decimal | None:
+    """A setup level as the setup's own criteria saw it (`StageOutcome.levels`: the first
+    passed criterion to report it), so the gate and the published level agree."""
     for stage in evaluation.stages:
-        if stage.stage != "setup":
-            continue
-        for outcome in stage.outcomes:
-            if key in outcome.result.extras:
-                return _dec(outcome.result.extras[key])
+        if stage.stage == "setup" and key in stage.levels:
+            return _dec(stage.levels[key])
     return None
 
 
@@ -140,7 +139,8 @@ def _planned_stop(
 ) -> Decimal | None:
     """The stop the setup implies at the pivot, for the rules that can be priced overnight, on
     the instrument's tick grid (HAT-EXEC-053). A skip (too wide, no pivot, no tick) leaves it
-    empty; the live entry recomputes it from the real entry price (HAT-BOT-062)."""
+    empty; the live entry recomputes it from the real entry price (HAT-BOT-062), and only there
+    is a contraction stop's `min_pct` applied (`plan_stop_at_pivot`)."""
     if pivot is None or tick is None:
         return None
     rule = playbook.stop
@@ -148,7 +148,7 @@ def _planned_stop(
     if isinstance(rule, StopBelowFinalContractionLow) and contraction_low is None:
         return None
     swing = [d for v in lows if v is not None and (d := _dec(v)) is not None]
-    plan = plan_stop(
+    plan = plan_stop_at_pivot(
         rule,
         StopInputs(entry=pivot, tick=tick, final_contraction_low=contraction_low, swing_lows=swing),
     )

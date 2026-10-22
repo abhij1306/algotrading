@@ -169,7 +169,7 @@ That is 17 PRs: 1 docs plus 16 code. A wave lists what *could* run in parallel; 
 ### PR 8: Criteria library (daily stages), config model, two default bots
 - **Implements:** 04 §1–§8 (live trigger/entry-filter *evaluation* is in PR 15, but their schemas are registered here); 01 B3–B7, B22–B23, T10.
 - **Scope:**
-  - `app/hat/engine/criteria/`: a registry of the 24 types. Each has a pydantic param model (→ JSON Schema stored in `hat_criterion_type`), a stage, data needs, and a pure function over polars frames returning `(passed, score∈[0,1], value, reason)`.
+  - `app/hat/engine/criteria/`: a registry of the 25 types (24 until PR 54 added `close_vs_pivot`). Each has a pydantic param model (→ JSON Schema stored in `hat_criterion_type`), a stage, data needs, and a pure function over polars frames returning `(passed, score∈[0,1], value, reason)`.
   - Implement the universe and setup types now: `series_in`, `min_turnover`, `min_price`, `price_band_allowed`, `adr_min`, `sma_above`, `sma_rising`, `pct_from_52w_low/high`, `rs_rank`, `momentum_rank`, `vcp` (port of `services/vcp/pattern.py`, scored, exposing pivot + final contraction low), `consolidation`, `ma_surf`, `prior_move`, `earnings_growth` (registered, disabled; no data until P2) and `neglect`.
   - Config model: 9 stages, playbooks, hard short-circuit, weighted setup score with threshold, `enabled`/`order`, YAML import/export, `config_hash` (sha256 of canonical JSON), versioning service (draft creation; publish = immutable).
   - Seeds: S1 `stage2-contraction-breakout` v1 and S2 `momentum-breakout-ep` v1 YAML, exactly per the docs.

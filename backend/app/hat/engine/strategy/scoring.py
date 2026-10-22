@@ -4,15 +4,20 @@
 criterion stops the stage at once and is stored with its reason and value (HAT-CRIT-032); score
 criteria add `(weight, score)`; the stage score is the weighted mean, 1.0 when no score
 criterion is enabled (HAT-CRIT-030). A stage passes when every hard criterion passed and the
-score reaches the threshold (HAT-CRIT-031). `evaluate_playbook` chains the nightly stages
-universe, regime gate, setup, and stops at the first that fails (HAT-CRIT-010).
+score reaches the threshold (HAT-CRIT-031). A criterion reads the numeric levels the earlier
+criteria of its stage exposed (`EvalContext.levels`, e.g. `vcp`'s pivot for `close_vs_pivot`,
+HAT-CRIT-123). `evaluate_playbook` chains the nightly stages universe, regime gate, setup, and
+stops at the first that fails (HAT-CRIT-010).
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+import math
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from decimal import Decimal
 from fractions import Fraction
+from typing import Any
 
 from ..criteria import CriterionResult, EvalContext, evaluate
 from .config import Instance, StrategyConfig
@@ -37,6 +42,7 @@ class StageOutcome:
     outcomes: tuple[CriterionOutcome, ...]
     failed: CriterionOutcome | None = None
     reason: str = "ok"
+    levels: Mapping[str, float] = field(default_factory=dict)  # see `evaluate_stage`
 
 
 def weighted_mean(pairs: Iterable[tuple[float, float]]) -> float:
@@ -57,6 +63,19 @@ def passes_threshold(hard_ok: bool, score: float, threshold: float) -> bool:
     return hard_ok and score >= threshold
 
 
+def _finite_number(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, Decimal):
+        return value.is_finite()
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def numeric_levels(extras: Mapping[str, Any]) -> dict[str, float]:
+    """The finite numeric values of a result's `extras` (lists, flags and text are not levels)."""
+    return {key: float(value) for key, value in extras.items() if _finite_number(value)}
+
+
 def evaluate_stage(
     stage: str,
     instances: Sequence[Instance],
@@ -64,24 +83,38 @@ def evaluate_stage(
     threshold: float = 0.0,
 ) -> StageOutcome:
     """Evaluate the enabled `instances` of `stage` in ascending `order` (the list's own order
-    does not matter). Stops at the first failing hard criterion."""
+    does not matter). Stops at the first failing hard criterion. Each criterion sees the levels
+    the passed criteria before it reported, a key set by the first to report it; the outcome's
+    `levels` are the stage's, which the scan publishes. `ctx` itself is never changed."""
     done: list[CriterionOutcome] = []
     scored: list[tuple[float, float]] = []
+    levels: dict[str, float] = {}
     for instance in sorted((i for i in instances if i.enabled), key=lambda i: i.order):
-        result = evaluate(instance.type, instance.params, ctx)
+        result = evaluate(instance.type, instance.params, ctx.with_levels(levels))
+        if result.passed:
+            for key, value in numeric_levels(result.extras).items():
+                levels.setdefault(key, value)
         outcome = CriterionOutcome(
             instance.type, instance.order, instance.mode, instance.weight, result
         )
         done.append(outcome)
         if instance.mode == "hard":
             if not result.passed:
-                return StageOutcome(stage, False, 0.0, tuple(done), outcome, result.reason)
+                return StageOutcome(
+                    stage, False, 0.0, tuple(done), outcome, result.reason, dict(levels)
+                )
         else:
             scored.append((instance.weight, result.score))
     score = weighted_mean(scored)
     passed = passes_threshold(True, score, threshold)
     return StageOutcome(
-        stage, passed, score, tuple(done), None, "ok" if passed else "below_threshold"
+        stage,
+        passed,
+        score,
+        tuple(done),
+        None,
+        "ok" if passed else "below_threshold",
+        dict(levels),
     )
 
 

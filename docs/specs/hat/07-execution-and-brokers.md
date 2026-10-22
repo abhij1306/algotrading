@@ -240,7 +240,7 @@ How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `
 
 | Rule | Parameters | Used by |
 | --- | --- | --- |
-| `below_final_contraction_low` | buffer % (0.5), max % below entry (8); wider → skip | M |
+| `below_final_contraction_low` | buffer % (0.5), max % below entry (8); wider → skip; min % below entry (0 = off); narrower → skip | M |
 | `low_of_day` | buffer ticks (1) | Q |
 | `pct_below_entry` | % | Custom bots |
 | `atr_multiple` | ATR days, multiple | Custom bots |
@@ -249,12 +249,13 @@ How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `
 One stop rule per playbook; the initial stop is computed before entry (BL "Stops and exits").
 
 #### HAT-EXEC-050: below_final_contraction_low
-- **Statement:** Stop = final contraction low × (1 − buffer_pct/100) with buffer 0.5%; if (entry − stop)/entry > 8% the trade is skipped.
+- **Statement:** Stop = final contraction low × (1 − buffer_pct/100) with buffer 0.5%; if (entry − stop)/entry > 8% the trade is skipped (`stop_too_wide`). With `min_pct` above 0 (default 0 = off; `min_pct` < `max_pct`), a stop less than `min_pct` percent below entry is skipped too (`stop_too_narrow`, PR 54).
 - **Source:** BL "Stop rules"; BL "Minervini-style bot" (`stop: {rule: below_final_contraction_low, buffer_pct: 0.5, max_pct: 8}`).
-- **PR:** 11
-- **Verification:** PBT `stops.final_contraction_low`
+- **PR:** 11, 54
+- **Verification:** PBT `stops.final_contraction_low`, PBT `stops.contraction_stop_at_the_fill`
 - **Acceptance:**
-  - Property: for every final contraction low L > 0, entry P > 0 and buffer b, the stop equals L × (1 − b/100) rounded down to the tick, and the result is SKIP exactly when (P − stop)/P > max_pct/100. Harm: stops wider than the playbook allows are accepted, or valid trades are dropped.
+  - Property: for every final contraction low L > 0, entry P > 0 and buffer b, the stop equals L × (1 − b/100) rounded down to the tick, and the result is SKIP exactly when the stop is not below P, when (P − stop)/P > max_pct/100 (`stop_too_wide`), or when min_pct > 0 and (P − stop)/P < min_pct/100 (`stop_too_narrow`); with min_pct = 0 no stop is too narrow, and a config with min_pct >= max_pct is refused. Harm: stops wider than the playbook allows are accepted, stops inside the base's noise are taken, or valid trades are dropped.
+  - Property: the stop planned overnight at the pivot (which leaves `min_pct` to the entry) and re-checked at a fill at or above the pivot equals the live plan at that fill. Harm: the backtest skips trades live would take, so its results are not the live strategy's.
 
 #### HAT-EXEC-051: low_of_day
 - **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid. The day's low exists only for a session watched from the open with no feed gap (HAT-DATA-114); without it the entry skips with `stop_input_missing`.
