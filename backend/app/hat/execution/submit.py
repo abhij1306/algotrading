@@ -273,7 +273,7 @@ def adopt_broker_order(
     elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED)
     elif found.status == "cancelled":
-        _event(session, row, bot_id, "order.cancelled")
+        _event(session, row, bot_id, EVENT_ORDER_CANCELLED)
 
 
 def _end_adopted_entry(
@@ -297,7 +297,7 @@ def _entry_ended(
 ) -> None:
     """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled."""
     if found.status in ("cancelled", "expired"):
-        _event(session, row, bot_id, "order.cancelled")
+        _event(session, row, bot_id, EVENT_ORDER_CANCELLED)
     elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True)
 

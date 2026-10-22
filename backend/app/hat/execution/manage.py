@@ -505,7 +505,7 @@ class TradeManager:
                 "code": BAND_LIMIT,
             },
         )
-        limit = replace(request, order_type=OrderType.LIMIT, price=floor)
+        limit: OrderRequest = replace(request, order_type=OrderType.LIMIT, price=floor)
         return self._send_sale(
             session, signal, position, limit, request.rule_ids, rule, now, attempts=1
         )
@@ -766,7 +766,7 @@ class TradeManager:
         sold = sum(session.scalars(select(HatFill.qty).where(HatFill.order_id == row.id)).all())
         qty = position.qty_open if row.purpose != EXIT_PARTIAL else row.qty - sold
         rule_ids = tuple(row.rule_ids or ())
-        rule = rule_ids[0].split(":", 1)[1] if rule_ids else row.purpose
+        rule = (rule_ids[0].partition(":")[2] if rule_ids else "") or row.purpose
         sending = self._sending_clock(now)
         self._sell_qty(session, position, row.purpose, qty, rule, rule_ids, now, sending)
 

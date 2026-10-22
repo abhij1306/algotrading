@@ -337,13 +337,13 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `90ef106396f914abdd04dd4e39226863cfd9b10e4662c53d95da51478ef36094`
+Covered digest: `f77ad37efeef9a0321b29b120fa9d1f0c93d770b42ee57d8172bd84cfef388bd`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
-- PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
+- PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
 - PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
 - PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
 - K5b deleted the legacy `services/fyers_client.py`, `symbol_master.py` and `services/fyers/` (their subclass-of-HAT assertions in `CONF ops.one_login_one_token_store` became assertions that the files are gone; the rest of the check is unchanged).
@@ -3539,7 +3539,7 @@ E
 E     Full diff:
 ```
 
-Break: (PR 48) `_sales` does not record the book's price on the sale's row.
+Break: (PR 48) `_record_book_price` (called by `_sales`) does not record the book's price on the sale's row.
 
 ```
 E   TypeError: conversion from NoneType to Decimal is not supported

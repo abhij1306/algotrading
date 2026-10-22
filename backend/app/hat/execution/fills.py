@@ -203,6 +203,28 @@ class SyncReport:
     resend: list[uuid.UUID] = field(default_factory=list)
 
 
+def _resend_due(session: Session, row: HatOrder) -> bool:
+    """A sale HAT cancelled to send it again (PR 48) that the book now shows ended."""
+    return (
+        row.purpose in EXIT_SALES and row.status == "cancelled" and resend_requested(session, row)
+    )
+
+
+def _record_book_price(session: Session, row: HatOrder, found: BrokerOrder) -> None:
+    """Record on the sale's row the price the book shows for it (PR 48: a market sale under
+    market price protection shows its protected limit)."""
+    if found.price is None or (row.price is not None and Decimal(row.price) == found.price):
+        return
+    row.price = found.price
+    session.commit()
+    logger.info(
+        "sale %s shows %s at %s in the book",
+        row.tag,
+        found.order_type.value if found.order_type else "unknown",
+        found.price,
+    )
+
+
 class FillSync:
     """Fills for one broker account's session; `desk` places and moves its stops."""
 
@@ -486,11 +508,7 @@ class FillSync:
                 self._sale_ended(session, row, found, now)
                 if row.position_id is not None and row.purpose != ENTRY:
                     touched.add(row.position_id)
-                if (
-                    row.purpose in EXIT_SALES
-                    and row.status == "cancelled"
-                    and resend_requested(session, row)
-                ):
+                if _resend_due(session, row):
                     report.resend.append(row.id)
         for position_id in touched - report.protected:
             # A stop that ended (a day stop expired at the close) or a sale that ended short:
@@ -516,15 +534,7 @@ class FillSync:
             found = book.for_row(row)
             if found is None or found.status not in LIVE:
                 continue
-            if found.price is not None and (row.price is None or Decimal(row.price) != found.price):
-                row.price = found.price
-                session.commit()
-                logger.info(
-                    "sale %s shows %s at %s in the book",
-                    row.tag,
-                    found.order_type.value if found.order_type else "unknown",
-                    found.price,
-                )
+            _record_book_price(session, row, found)
             if (
                 row.order_type == OrderType.MARKET.value
                 and found.filled_qty < row.qty
