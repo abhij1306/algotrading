@@ -26,6 +26,9 @@ Commands, in first-deploy order:
     promote --bot ID --to STATE               a lifecycle edge, under its guard (HAT-PORT-060)
     promote-version --version ID              shadow -> live after 20 sessions (HAT-BOT-084)
 
+Input files (`--constituents`, `--config`) are names inside `<HAT_DATA_ROOT>/admin/`: a path that
+leaves that folder, or a file without the expected suffix, is refused (`file_outside_admin`).
+
 `promote` and `promote-version` are the owner's acts: their events carry `actor = user`, the
 allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
@@ -84,11 +87,12 @@ class AdminError(HatError):
 
 @dataclass(frozen=True)
 class AdminDeps:
-    """What a command needs from outside: the owner's user id, the transaction, the broker of an
-    onboarding, the backtest evidence, the environment and the clock. `production()` builds the
-    real ones."""
+    """What a command needs from outside: the owner's user id, the folder its input files are
+    read from, the transaction, the broker of an onboarding, the backtest evidence, the
+    environment and the clock. `production()` builds the real ones."""
 
     user_id: uuid.UUID
+    files: Path
     scope: Callable[[], AbstractContextManager[Session]]
     broker_for: Callable[[str], HatBroker]
     evidence: BacktestEvidence
@@ -104,6 +108,7 @@ class AdminDeps:
         settings = operator_settings()  # loads .env first, as every command line does
         return AdminDeps(
             user_id=settings.user_id,
+            files=settings.data_root / "admin",
             scope=db_session_scope,
             broker_for=lambda name: ADAPTER_FACTORIES[name](),
             evidence=backtest_evidence,
@@ -124,7 +129,7 @@ def _parser() -> argparse.ArgumentParser:
     bots = commands.add_parser("seed-bots")
     bots.add_argument("--account", type=uuid.UUID, required=True)
     universe = commands.add_parser("publish-universe")
-    universe.add_argument("--constituents", type=Path, required=True)
+    universe.add_argument("--constituents", required=True)
     universe.add_argument("--as-of", type=date.fromisoformat, required=True)
     universe.add_argument("--name", default="nifty500")
     universe.add_argument("--include", action="append", default=[])
@@ -132,7 +137,7 @@ def _parser() -> argparse.ArgumentParser:
     universe.add_argument("--bot", type=uuid.UUID, action="append", default=[])
     draft = commands.add_parser("save-draft")
     draft.add_argument("--strategy", type=uuid.UUID, required=True)
-    draft.add_argument("--config", type=Path, required=True)
+    draft.add_argument("--config", required=True)
     publish = commands.add_parser("publish-version")
     publish.add_argument("--version", type=uuid.UUID, required=True)
     publish.add_argument("--run", type=uuid.UUID, required=True)
@@ -162,7 +167,13 @@ def _policy(session: Session, user_id: uuid.UUID, now: datetime) -> RiskPolicy:
     return version.policy
 
 
-def _read(path: Path, code: str) -> str:
+def _read(root: Path, name: str, suffixes: tuple[str, ...], code: str) -> str:
+    """A file named inside the admin folder: anything resolving outside it, or with another
+    suffix, is refused before it is opened."""
+    base = root.resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base) or path.suffix.lower() not in suffixes:
+        raise AdminError("file_outside_admin")
     try:
         return path.read_text("utf-8")
     except (OSError, UnicodeDecodeError):
@@ -170,10 +181,12 @@ def _read(path: Path, code: str) -> str:
 
 
 def _publish_universe(
-    session: Session, args: argparse.Namespace, user_id: uuid.UUID, now: datetime
+    session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
+    user_id = deps.user_id
     calendar = _calendar(session)
-    rows = parse_industry_csv(_read(args.constituents, "constituents_unreadable"))
+    content = _read(deps.files, args.constituents, (".csv",), "constituents_unreadable")
+    rows = parse_industry_csv(content)
     if not rows:
         raise AdminError("constituents_empty")
     market_id = portfolio.market_id_of(session)
@@ -216,9 +229,11 @@ def _publish_universe(
     }
 
 
-def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[str, Any]:
+def _setup(
+    session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
+) -> dict[str, Any] | None:
+    """The setup commands; None for a release command."""
     user_id = deps.user_id
-    now = deps.clock()
     command = args.command
     if command == "show":
         return versions.release_overview(session, user_id)
@@ -241,9 +256,18 @@ def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[st
         bots = versions.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
         return {"bots": [str(b.id) for b in bots]}
     if command == "publish-universe":
-        return _publish_universe(session, args, user_id, now)
+        return _publish_universe(session, args, deps, now)
+    return None
+
+
+def _release(
+    session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
+) -> dict[str, Any] | None:
+    """The version commands that need no owner chat; None for the owner's acts."""
+    command = args.command
     if command == "save-draft":
-        config = import_yaml(_read(args.config, "config_unreadable"))
+        content = _read(deps.files, args.config, (".yaml", ".yml"), "config_unreadable")
+        config = import_yaml(content)
         row = versions.save_draft(
             session,
             strategy_id=args.strategy,
@@ -258,15 +282,22 @@ def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[st
     if command == "assign-version":
         bot = versions.assign_version(session, bot_id=args.bot, version_id=args.version)
         return {"bot_id": str(bot.id), "live_version_id": str(bot.live_version_id)}
-    calendar = _calendar(session)
     if command == "shadow-version":
-        row = versions.start_shadow(session, args.version, calendar=calendar, now=now)
+        row = versions.start_shadow(session, args.version, calendar=_calendar(session), now=now)
         return {"version_id": str(row.id), "status": row.status}
+    return None
+
+
+def _owner(
+    session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
+) -> dict[str, Any]:
+    """The owner's acts, `promote-version` and `promote`, under the allowlisted chat id."""
+    calendar = _calendar(session)
     try:
         chat_id = owner_chat_id(deps.env)
     except HatConfigError:
         raise AdminError("no_owner_chat") from None
-    if command == "promote-version":
+    if args.command == "promote-version":
         row = versions.promote_version(
             session, args.version, calendar=calendar, now=now, chat_id=chat_id
         )
@@ -277,13 +308,21 @@ def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[st
         args.bot,
         args.to,
         trade_date=trade_date,
-        policy=_policy(session, user_id, now),
+        policy=_policy(session, deps.user_id, now),
         backtest=deps.evidence,
         calendar=calendar,
         chat_id=chat_id,
         now=now,
     )
     return {"bot_id": str(bot.id), "lifecycle_state": bot.lifecycle_state}
+
+
+def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[str, Any]:
+    now = deps.clock()
+    result = _setup(session, args, deps, now)
+    if result is None:
+        result = _release(session, args, deps, now)
+    return _owner(session, args, deps, now) if result is None else result
 
 
 def _code(exc: HatError) -> str:

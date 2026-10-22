@@ -547,7 +547,9 @@ version, through the local admin command line (HAT-OPS-091). `$ADMIN` stands for
 `$COMPOSE exec -w /app/backend backend python -m app.hat.admin`. Each command runs in one
 transaction and prints its result as JSON (ids included); a refusal prints `refused: <code>`,
 exits 2 and writes nothing. `$ADMIN show` lists the strategies, versions and sleeves with their
-ids at any point. Run every step outside 08:30–15:35 IST on a trading day: the release steps
+ids at any point. Input files are names inside `<HAT_DATA_ROOT>/admin/` (copy the CSV or YAML
+there first); a path leaving that folder, or another suffix (`.csv`, `.yaml`, `.yml`), is refused
+(`file_outside_admin`). Run every step outside 08:30–15:35 IST on a trading day: the release steps
 refuse inside a session (`market_hours`).
 
 1. Prerequisites: the database is up (HAT starts with `HAT_ENABLED=true` only after step 3), the
@@ -864,7 +866,7 @@ After any change to `.env` (HAT-OPS-050):
   - Property: every `OPS` verification name used anywhere in `docs/specs/hat/` and every bullet of §4 has a matching procedure heading in this section. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
 
 #### HAT-OPS-091: The owner's admin command line
-- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves on an active account, publish a universe whose symbols and ISINs all match instruments, save a draft, publish, assign, shadow and promote a strategy version, move a sleeve along a lifecycle edge) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`promote`, `promote-version`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded.
+- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves on an active account, publish a universe whose symbols and ISINs all match instruments, save a draft, publish, assign, shadow and promote a strategy version, move a sleeve along a lifecycle edge) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`promote`, `promote-version`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded. Input files are read only from `<HAT_DATA_ROOT>/admin/`.
 - **Source:** Design review 2026-10-22 item 8 (no production caller for the forward lifecycle edges, `onboard_account`, `publish_version`, the seeds and the universe publish; nothing set `hat_bot.live_version_id`, so a fresh deploy never scanned); item 14 (keep the portfolio layer and wire it through this command line).
 - **PR:** 35
 - **Verification:** PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services`

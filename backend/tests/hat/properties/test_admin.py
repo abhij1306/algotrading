@@ -93,6 +93,7 @@ class World:
     def deps(self) -> AdminDeps:
         return AdminDeps(
             user_id=USER,
+            files=self.tmp,
             scope=self.scope,
             broker_for=lambda _name: FyersHatBroker(FakeBroker(), instruments=lambda: []),  # type: ignore[arg-type]
             evidence=lambda _s, _b: self.evidence,
@@ -173,7 +174,7 @@ def deploy_to_shadow(world: World) -> tuple[str, str]:
     bots = world.ok("seed-bots", "--account", account["broker_account_id"])["bots"]
     csv = constituents_csv(world.tmp, SYMBOLS[:3])
     universe = world.ok(
-        "publish-universe", "--constituents", str(csv), "--as-of", START.isoformat()
+        "publish-universe", "--constituents", csv.name, "--as-of", START.isoformat()
     )
     assert universe["members"] == 3
     assert sorted(universe["bots"]) == sorted(bots)
@@ -226,7 +227,7 @@ def test_first_deploy(tmp_path: Path, waited: int) -> None:
     config.write_text(seed_text("stage2-contraction-breakout"), "utf-8")
     with world.scope() as session:
         strategy_id = session.get(HatStrategyVersion, uuid.UUID(version)).strategy_id  # type: ignore[union-attr]
-    draft = world.ok("save-draft", "--strategy", str(strategy_id), "--config", str(config))
+    draft = world.ok("save-draft", "--strategy", str(strategy_id), "--config", config.name)
     assert (draft["version"], draft["status"]) == (2, "draft")
     with world.scope() as session:
         owner_events = session.scalars(
@@ -267,6 +268,8 @@ REFUSALS = {
     "bots_on_unknown_account": "account_not_active",
     "draft_in_hours": "market_hours",
     "draft_bad_utf8": "config_unreadable",
+    "file_outside_admin": "file_outside_admin",
+    "draft_wrong_suffix": "file_outside_admin",
 }
 
 
@@ -305,7 +308,7 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
         argv = ("assign-version", "--bot", str(other_bot), "--version", str(draft))
     elif case == "unknown_symbol":
         csv = constituents_csv(world.tmp, (*SYMBOLS[:2], "ZZZ"))
-        argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
+        argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
     elif case == "no_owner_chat":
         world.env = {}
         world.now = night(later)
@@ -318,10 +321,10 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
     elif case == "universe_in_hours":
         world.now = at(START + timedelta(days=1), 11)
         csv = constituents_csv(world.tmp, SYMBOLS)
-        argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
+        argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
     elif case == "isin_mismatch":
         csv = constituents_csv(world.tmp, SYMBOLS, {"BBB": "INE123456A01"})
-        argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
+        argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
     elif case == "bots_on_unknown_account":
         argv = ("seed-bots", "--account", str(uuid.uuid4()))
     elif case in ("draft_in_hours", "draft_bad_utf8"):
@@ -331,10 +334,15 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
             world.now = at(START + timedelta(days=1), 11)
         else:
             config.write_bytes(b"bot: \xff\xfe\n")
-        argv = ("save-draft", "--strategy", str(strategy_id), "--config", str(config))
+        argv = ("save-draft", "--strategy", str(strategy_id), "--config", config.name)
+    elif case == "file_outside_admin":
+        outside = constituents_csv(world.tmp.parent, SYMBOLS)
+        argv = ("publish-universe", "--constituents", f"../{outside.name}", "--as-of", "2026-11-02")
+    elif case == "draft_wrong_suffix":
+        argv = ("save-draft", "--strategy", str(strategy_id), "--config", "../../etc/passwd")
     elif case == "universe_unknown_bot":
         csv = constituents_csv(world.tmp, SYMBOLS)
-        argv = ("publish-universe", "--constituents", str(csv), "--as-of", START.isoformat())
+        argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
         argv = (*argv, "--bot", bot, "--bot", str(uuid.uuid4()))
     else:
         run = add_run(world, version)
