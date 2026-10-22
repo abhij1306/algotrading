@@ -78,7 +78,13 @@ PARAMS: dict[str, st.SearchStrategy[dict[str, Any]]] = {
             "final_depth_max_pct": POS,
             "lookback_days": st.integers(15, 252),
             "dryup_vs_avg50": st.sampled_from([0.3, 0.7, 2.0]),
-        }
+        },
+        optional={
+            "max_high_spread_pct": st.none() | POS,
+            "min_first_depth_pct": st.none() | POS,
+            "min_contraction_bars": st.none() | st.integers(2, 60),
+            "pivot_source": st.sampled_from(["vcp", "base_high"]),
+        },
     ),
     "consolidation": st.fixed_dictionaries(
         {"days": _pair(2, 60), "max_range_pct": POS, "higher_lows": st.booleans()}

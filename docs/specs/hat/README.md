@@ -314,7 +314,7 @@ to an artefact that exists.
 | HAT-CRIT-030 | [04](04-criteria-and-bots.md) | 8 | PBT `scoring.weighted_mean` |
 | HAT-CRIT-031 | [04](04-criteria-and-bots.md) | 8 | PBT `scoring.threshold_gate` |
 | HAT-CRIT-032 | [04](04-criteria-and-bots.md) | 8 | PBT `scoring.hard_short_circuit` |
-| HAT-CRIT-040 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.vcp_contract`, PBT `criteria.vcp_parity` |
+| HAT-CRIT-040 | [04](04-criteria-and-bots.md) | 8, 57 | PBT `criteria.vcp_contract`, PBT `criteria.vcp_parity`, PBT `criteria.vcp_structure_narrows`, PBT `criteria.vcp_base_high` |
 | HAT-CRIT-100 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.series_in_contract` |
 | HAT-CRIT-101 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.min_turnover_contract` |
 | HAT-CRIT-102 | [04](04-criteria-and-bots.md) | 8 | PBT `criteria.min_price_contract` |

@@ -7,10 +7,17 @@ bars strictly beyond their three neighbours on each side; contractions chain piv
 next pivot-low, then to the next pivot-high after it, up to the allowed maximum. What the spec
 changes: the tightening test is the ratio rule (each depth at most `depth_ratio_max` x the
 previous one, the final depth at most `final_depth_max_pct`), the dry-up test is the final
-contraction's mean volume against the 50-session mean (`dryup_vs_avg50`), a contraction's depth
+contraction's mean volume against the mean of the 50 sessions before the base starts
+(`dryup_vs_avg50`, PR 57), a contraction's depth
 is measured from the highest high to the lowest low of its own bars, and the result is a score
 with the pivot and the final contraction low. The legacy stage-2, RS, overhead-resistance,
 volume-slope, grade and breakout gates are other criteria's work (or dropped) and are not here.
+
+PR 57 (research G25-G27) adds three structural rules, each off by default for backtest sweeps:
+level highs (`max_high_spread_pct`), a minimum first depth (`min_first_depth_pct`) and a minimum
+contraction length (`min_contraction_bars`); and `pivot_source: base_high`, under which the
+pattern only scores: any base passes with the base's highest high as the pivot, so a
+template-only variant still has a breakout level.
 """
 
 from __future__ import annotations
@@ -18,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -45,6 +53,13 @@ class VcpParams(ParamModel):
     final_depth_max_pct: float = Field(default=10.0, gt=0, le=100)
     lookback_days: int = Field(default=120, ge=MIN_BASE_BARS, le=252)
     dryup_vs_avg50: float = Field(default=0.7, gt=0, le=10)
+    # PR 57, each off (None) by default: every contraction high within this % of the highest one,
+    # the first contraction at least this deep, and every contraction at least this many bars.
+    max_high_spread_pct: float | None = Field(default=None, gt=0, le=100)
+    min_first_depth_pct: float | None = Field(default=None, gt=0, le=100)
+    min_contraction_bars: int | None = Field(default=None, ge=2, le=60)
+    # `base_high`: the pattern scores but does not gate, and the pivot is the base's highest high.
+    pivot_source: Literal["vcp", "base_high"] = "vcp"
 
     @model_validator(mode="after")
     def _check(self) -> VcpParams:
@@ -136,16 +151,49 @@ def vcp_score(
     return (in_range + ratio + depth + quiet) / 4.0
 
 
+def _pattern_fault(
+    contractions: Sequence[Contraction], ratios: Sequence[Decimal], params: VcpParams
+) -> tuple[str, float] | None:
+    """The first structural rule the contractions (with their consecutive depth `ratios`) break,
+    as (reason, value), or None."""
+    lo_count, _ = params.contractions
+    if len(contractions) < lo_count:
+        return "too_few_contractions", float(len(contractions))
+    if len(ratios) != len(contractions) - 1 or any(r > dec(params.depth_ratio_max) for r in ratios):
+        return "depth_ratio_too_wide", float(len(contractions))
+    first, final = contractions[0], contractions[-1]
+    if final.depth_pct > dec(params.final_depth_max_pct):
+        return "final_depth_too_deep", float(final.depth_pct)
+    if params.min_contraction_bars is not None:
+        shortest = min(c.end - c.start + 1 for c in contractions)
+        if shortest < params.min_contraction_bars:
+            return "contraction_too_short", float(shortest)
+    if params.min_first_depth_pct is not None and first.depth_pct < dec(params.min_first_depth_pct):
+        return "first_depth_too_shallow", float(first.depth_pct)
+    if params.max_high_spread_pct is not None:
+        top = max(c.high for c in contractions)
+        spread = (top - min(c.high for c in contractions)) / top * 100
+        if spread > dec(params.max_high_spread_pct):
+            return "highs_not_level", float(spread)
+    return None
+
+
 def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
     """HAT-CRIT-040. Passes with the score, the contraction list, `pivot` (the highest high of
     the final contraction) and `final_contraction_low` (its lowest low), or fails with the first
-    rule broken as the reason."""
+    rule broken as the reason. A base is the bars from the first highest close of the lookback
+    to the date, at least `MIN_BASE_BARS` long (`base_too_short`) with the 50 sessions before it
+    (`no_data` without them), which are the dry-up baseline. With `pivot_source: base_high` every
+    base passes: the score is the pattern's when it holds and 0 when not (`pattern` names the
+    rule broken), `pivot` is the base's highest high, and `final_contraction_low` the last
+    contraction's low (the base's lowest low without one); a base whose low equals its high
+    fails `flat_base`, so the low is always below the pivot."""
     bars = ctx.history
-    if len(bars) < AVG_VOLUME_DAYS:
-        return no_data()
     start = base_start(bars.close, params.lookback_days)
-    avg_volume = last(bars.volume, AVG_VOLUME_DAYS)
-    if start is None or avg_volume is None:
+    if start is None:
+        return no_data()
+    baseline = last(bars.volume, AVG_VOLUME_DAYS, offset=len(bars) - start)
+    if baseline is None:
         return no_data()
     high, low, volume = bars.high[start:], bars.low[start:], bars.volume[start:]
     if len(high) < MIN_BASE_BARS:
@@ -155,50 +203,56 @@ def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
     highs = [float(v) for v in high if v is not None]
     lows = [float(v) for v in low if v is not None]
     volumes = [float(v) for v in volume if v is not None]
-    lo_count, hi_count = params.contractions
+    _, hi_count = params.contractions
     contractions = build_contractions(highs, lows, contraction_chain(highs, lows, hi_count))
-    if len(contractions) < lo_count:
-        return verdict(False, float(len(contractions)), "too_few_contractions")
     depths = [c.depth_pct for c in contractions]
     ratios = [b / a for a, b in zip(depths, depths[1:], strict=False) if a > 0]
-    if len(ratios) != len(depths) - 1 or any(r > dec(params.depth_ratio_max) for r in ratios):
-        return verdict(False, float(len(contractions)), "depth_ratio_too_wide")
-    final = contractions[-1]
-    if final.depth_pct > dec(params.final_depth_max_pct):
-        return verdict(False, float(final.depth_pct), "final_depth_too_deep")
-    mean_final = dsum(volumes[final.start : final.end + 1]) / (final.end - final.start + 1)
-    mean_avg = dsum(avg_volume) / AVG_VOLUME_DAYS
-    if mean_avg <= 0:
-        return no_data()
-    dryup = mean_final / mean_avg
-    if dryup > dec(params.dryup_vs_avg50):
-        return verdict(False, float(dryup), "no_volume_dryup")
-    score = vcp_score(
-        len(contractions),
-        float(max(ratios, default=Decimal(0))),
-        float(final.depth_pct),
-        float(dryup),
-        params,
-    )
+    fault = _pattern_fault(contractions, ratios, params)
+    dryup: Decimal | None = None
+    if fault is None:
+        mean_avg = dsum(baseline) / AVG_VOLUME_DAYS
+        if mean_avg <= 0:
+            return no_data()
+        final = contractions[-1]
+        mean_final = dsum(volumes[final.start : final.end + 1]) / (final.end - final.start + 1)
+        dryup = mean_final / mean_avg
+        if dryup > dec(params.dryup_vs_avg50):
+            fault = ("no_volume_dryup", float(dryup))
+    if fault is not None and params.pivot_source == "vcp":
+        return verdict(False, fault[1], fault[0])
+    score = 0.0
+    if dryup is not None and fault is None:
+        score = vcp_score(
+            len(contractions),
+            float(max(ratios, default=Decimal(0))),
+            float(depths[-1]),
+            float(dryup),
+            params,
+        )
+    if params.pivot_source == "base_high":
+        pivot = dec(max(highs))
+        floor = contractions[-1].low if contractions else dec(min(lows))
+        if floor >= pivot:
+            return verdict(False, float(pivot), "flat_base")
+    else:
+        pivot, floor = contractions[-1].high, contractions[-1].low
     base_dates = bars.dates[start:]
-    return CriterionResult(
-        True,
-        score,
-        float(len(contractions)),
-        REASON_OK,
-        {
-            "pivot": float(final.high),
-            "final_contraction_low": float(final.low),
-            "contraction_count": len(contractions),
-            "contractions": [
-                {
-                    "start": base_dates[c.start].isoformat(),
-                    "end": base_dates[c.end].isoformat(),
-                    "depth_pct": float(c.depth_pct),
-                }
-                for c in contractions
-            ],
-            "dryup_ratio": float(dryup),
-            "base_start": base_dates[0].isoformat(),
-        },
-    )
+    extras: dict[str, object] = {
+        "pivot": float(pivot),
+        "final_contraction_low": float(floor),
+        "contraction_count": len(contractions),
+        "contractions": [
+            {
+                "start": base_dates[c.start].isoformat(),
+                "end": base_dates[c.end].isoformat(),
+                "depth_pct": float(c.depth_pct),
+            }
+            for c in contractions
+        ],
+        "base_start": base_dates[0].isoformat(),
+    }
+    if dryup is not None:
+        extras["dryup_ratio"] = float(dryup)
+    if params.pivot_source == "base_high":
+        extras["pattern"] = "ok" if fault is None else fault[0]
+    return CriterionResult(True, score, float(len(contractions)), REASON_OK, extras)

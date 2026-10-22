@@ -25,7 +25,9 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT criteria.prior_move_contract` `prior_move` passes exactly when some low-then-high pair inside the trailing window rose at least `min_pct`, never using a high that came before its low. Harm: stocks with no prior run-up pass the EP setup.
 - `PBT criteria.earnings_growth_contract` `earnings_growth` reads only rows filed on or before the date (point in time), and is no data without any. Harm: tomorrow's earnings leak into today's decision.
 - `PBT criteria.neglect_contract` `neglect` measures the 63-session return on bars up to the previous session only, and passes when its absolute value is at most the maximum (a rise fails `already_extended`, a fall `already_fell`); with `max_range_126d_pct` the 126-session high/low range of those bars must be at most it (`range_too_wide`). Harm: a stock that already ran, or one that collapsed or swung wildly, passes as neglected, or the evaluation day's own move changes the answer.
-- `PBT criteria.vcp_contract` `vcp` passes exactly when the contraction count, depth ratios, final depth and volume dry-up all meet the parameters, never reads a bar after the date, reports the pivot and final contraction low, and fails closed on missing data. Harm: a loose or noisy base is called a volatility contraction pattern and its stop sits in the wrong place.
+- `PBT criteria.vcp_contract` `vcp` passes exactly when the contraction count, depth ratios, final depth, volume dry-up (against the 50 sessions before the base starts, PR 57) and every enabled structural rule meet the parameters, never reads a bar after the date, reports the pivot, final contraction low and the exact dry-up ratio, and fails closed on missing data. Harm: a loose or noisy base is called a volatility contraction pattern and its stop sits in the wrong place.
+- `PBT criteria.vcp_structure_narrows` The structural rules (`max_high_spread_pct`, `min_first_depth_pct`, `min_contraction_bars`) are off when null and only narrow: a base passing with them passes identically without them, and one rejected only by them fails on one of their reasons. Harm: a sweep rule admits a base the default rejects, or the default config changes.
+- `PBT criteria.vcp_base_high` With `pivot_source: base_high` the pattern scores but does not gate: every base (at least 15 sessions, with 50 before it) passes, with the default's score when it passes and 0 (and `pattern` naming the rule) when not; the pivot is the base's highest high and the low strictly below it, and a flat base fails `flat_base`. Harm: a template-only variant has no breakout level, or the wrong one, or a stop at the entry price.
 - `PBT criteria.vcp_parity` The ported `vcp` finds the same contraction chain as a transcription of the legacy detector on generated bars, and matches a frozen oracle of the legacy output on accepted cases. Harm: the port quietly changes which patterns the bot trades.
 - `PBT criteria.close_vs_pivot_contract` `close_vs_pivot` passes exactly when close x 100 <= pivot x (100 + `max_above_pct`) (equal passes), its value is the close's percentage above the pivot, a missing or non-positive pivot level fails with `no_pivot` and missing bars with `no_data`. Harm: a name that broke out days ago is published with its stale pivot and bought far above the base.
 - `PBT criteria.close_vs_pivot_stage` In a stage, `close_vs_pivot` after `vcp` reads the pivot `vcp` reported for that date (`EvalContext.levels`, filled by `evaluate_stage` from earlier results' numeric extras); before `vcp`, after a `vcp` that found no base, or alone, it fails with `no_pivot`; the shared context is never changed. The stage's `levels`, and the levels the scan publishes, hold the first passed criterion's pivot. Harm: the gate checks a level from another symbol, date or playbook, or none.
@@ -143,7 +145,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `10799e4bc785025257f223cef6d3030120318a150bf25478cc66c3c51331ef4d`
+Covered digest: `3341d8c7aec0b2656b0fcfa8ab4d48d213328e6bbdd56f07191281922f92bd73`
 
 ## Scope changes
 
@@ -165,6 +167,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 55: `FastAboveSlow.rising_days` defaults to 3 (owner default, plan audit N7); its property is `regime.strategy_rules` in `verify-portfolio`. The S2 seed and its spec YAML state `rising_days: 3` explicitly, so `seed_bots_match_spec_yaml` still compares them field for field and is unchanged.
 - PR 56 (research G07, plan audit "PR 56"): `neglect` passes on the absolute 63-session move, so a fall beyond the limit now fails `already_fell`; the optional `max_range_126d_pct` (off by default) adds a 126-session range check on the bars before the date (`range_too_wide`). A negative `max_return_63d_pct` stays valid (stored configs keep loading) but never passes. With the range on, fewer than 126 sessions is `no_data`, checked after the return. `make_rows` gained a `trend` style so large moves of either sign occur. Nothing was narrowed; `criteria.neglect_contract` now covers both signs and the range.
 - PR 54 (plan audit N2): a criterion reads the numeric `extras` of the criteria before it in its stage (`EvalContext.levels`, set by `evaluate_stage` on a copy of the context), which `close_vs_pivot` needs for `vcp`'s pivot. `close_vs_pivot` is a hard S1 setup criterion after `vcp`; a symbol whose `vcp` finds no base now stops at `close_vs_pivot` (`no_pivot`) instead of `below_threshold`. The scan publishes the setup stage's `levels` (`StageOutcome.levels`), so the gate and the watchlist row use one pivot; `ep_setup_passes` evaluates the EP setup through `evaluate_stage` (threshold 0, so only hard criteria decide) to pass levels too. `EvalContext` keeps its read bars in a dict its `with_levels` copies share. No property was narrowed; `hat_config_support` generates the new stop `min_pct` but not `close_vs_pivot` (valid only after a `vcp`; `config.close_vs_pivot_needs_vcp` covers it).
+- PR 57 (research G25-G27, plan audit "PR 57"): `vcp`'s dry-up baseline is the 50 sessions before the base starts (a base starting fewer than 50 sessions into the history is `no_data`), so `vcp_contract` now checks that baseline and the exact `dryup_ratio`. New params, off by default: `max_high_spread_pct`, `min_first_depth_pct`, `min_contraction_bars` (reasons `highs_not_level`, `first_depth_too_shallow`, `contraction_too_short`, checked after the final depth and before the dry-up) and `pivot_source: vcp|base_high` (the `pattern` extra appears only under `base_high`; a flat base fails `flat_base`). The zero-volume baseline check runs only when the pattern holds, as before, so it never hides a pattern reason. `scan.py` is unchanged: it already publishes the setup stage's `pivot` level. The golden replay and `vcp_parity` pass unchanged. Nothing was narrowed; `vcp_contract` draws the structural rules, and `hat_config_support` draws all four new params.
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
 - PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
@@ -200,7 +203,7 @@ E    +  where False = CriterionResult(passed=False, score=0.0, value=10.0, reaso
 E    +  and   Fraction(100000000, 1) = mean([Fraction(100000000, 1), Fraction(100000000, 1), Fraction(100000000, 1), Fraction(100000000, 1), Fraction(100000000, 1), Fraction(100000000, 1), ...])
 E    +  and   Fraction(10, 1) = Fraction(10.0)
 E   Failing explicit example: test_min_turnover_contract(
-E       rng=<hat.hat_criteria_support.Lcg object at 0x7fe075739940>,
+E       rng=<hat.hat_criteria_support.Lcg object>,
 E       length=20,
 E       days=20,
 E       inr_cr=10.0,
@@ -218,7 +221,7 @@ E    +  and   Fraction(50, 1) = rupees(5000)
 E    +  and   Fraction(50, 1) = Fraction('50.0')
 E    +    where '50.0' = str(50.0)
 E   Failing explicit example: test_min_price_contract(
-E       rng=<hat.hat_criteria_support.Lcg object at 0x7f864cfdcb90>,
+E       rng=<hat.hat_criteria_support.Lcg object>,
 E       inr=50.0,
 E       close=5000,
 E   )
@@ -516,6 +519,148 @@ E       params={
 E           'contractions': [2, 6],
 ```
 
+Break: (PR 57) the dry-up baseline is the last 50 bars again, including the base.
+
+```
+E   assert 0.3939749517122749 == 0.33160674814475366 ± 3.3e-07
+E     comparison failed
+E     Obtained: 0.3939749517122749
+E     Expected: 0.33160674814475366 ± 3.3e-07
+E   Failing test case: test_vcp_contract(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),
+E       depths=[8, 3],
+E       quiet=20,
+E       params={
+E           'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,  # or any other generated value
+E           'final_depth_max_pct': 5.0,  # or any other generated value
+E           'lookback_days': 60,  # or any other generated value
+FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - assert 0.3939749517122749 == 0.33160674814475366 ± 3.3e-07
+```
+
+Break: (PR 57) `vcp` ignores `min_contraction_bars`.
+
+```
+E   assert False
+E    +  where False = all(<generator object test_vcp_contract.<locals>.<genexpr>>)
+E   Failing test case: test_vcp_contract(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),
+E       depths=[8, 3],
+E       quiet=20,
+E       params={
+E           'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,  # or any other generated value
+E           'final_depth_max_pct': 5.0,  # or any other generated value
+E           'lookback_days': 60,  # or any other generated value
+E           'dryup_vs_avg50': 0.5,  # or any other generated value
+E       },
+FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - assert False
+```
+
+Break: (PR 57) `vcp` ignores `min_first_depth_pct`.
+
+```
+E   AssertionError: assert Fraction(82800, 10009) >= Fraction(15, 1)
+E    +  where Fraction(15, 1) = Fraction('15.0')
+E    +    where '15.0' = str(15.0)
+E   Failing test case: test_vcp_contract(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),
+E       depths=[8, 3],
+E       quiet=20,
+E       params={
+E           'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,  # or any other generated value
+E           'final_depth_max_pct': 5.0,  # or any other generated value
+E           'lookback_days': 60,  # or any other generated value
+E           'dryup_vs_avg50': 0.5,  # or any other generated value
+FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert Fraction(82800, 10009) >= Fraction(15, 1)
+```
+
+Break: (PR 57) `vcp` ignores `max_high_spread_pct`.
+
+```
+E   AssertionError: assert Fraction(32100, 10009) <= Fraction(3, 1)
+E    +  where Fraction(3, 1) = Fraction('3.0')
+E    +    where '3.0' = str(3.0)
+E   Failing test case: test_vcp_contract(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),
+E       depths=[8, 3],
+E       quiet=20,
+E       params={
+E           'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,  # or any other generated value
+E           'final_depth_max_pct': 5.0,  # or any other generated value
+E           'lookback_days': 60,  # or any other generated value
+E           'dryup_vs_avg50': 0.5,  # or any other generated value
+FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert Fraction(32100, 10009) <= Fraction(3, 1)
+```
+
+### PBT criteria.vcp_base_high
+
+Break: (PR 57) under `base_high` the pivot is the final contraction's high.
+
+```
+E   assert 107.43 == 109.22
+E    +  where 109.22 = float(Fraction(5461, 50))
+E   Failing test case: test_vcp_base_high(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(352),
+E       depths=[8],  # or any other generated value
+E       quiet=20,  # or any other generated value
+E       params={'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,
+E           'final_depth_max_pct': 5.0,
+E           'lookback_days': 60,
+E           'dryup_vs_avg50': 0.5},  # or any other generated value
+E       structure={'max_high_spread_pct': None,
+E           'min_first_depth_pct': None,
+FAILED tests/hat/properties/test_criteria.py::test_vcp_base_high - assert 107.43 == 109.22
+```
+
+Break: (PR 57) `base_high` still fails a base whose pattern breaks a rule.
+
+```
+E   AssertionError: assert False
+E    +  where False = CriterionResult(passed=False, score=0.0, value=1.0, reason='too_few_contractions', extras= [cut]
+E   Failing test case: test_vcp_base_high(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(1),
+E       depths=shrinking_depths(
+E           8,  # or any other generated value
+E           40,  # or any other generated value
+E           1,
+E       ),
+E       quiet=20,  # or any other generated value
+E       params={'contractions': [2, 6],
+E           'depth_ratio_max': 0.5,
+E           'final_depth_max_pct': 5.0,
+FAILED tests/hat/properties/test_criteria.py::test_vcp_base_high - AssertionError: assert False
+```
+
+Break: (PR 57) `base_high` passes a flat base, whose low equals its pivot.
+
+```
+E   AssertionError: assert (True, 'ok') == (False, 'flat_base')
+E     At index 0 diff: True != False
+E     Full diff:
+E       (
+E     -     False,
+E     -     'flat_base',
+E     +     True,
+E     +     'ok',
+E       )
+E   Failing test case: test_vcp_base_high(
+E       # The test always failed when commented parts were varied together.
+E       rng=Lcg(0),  # or any other generated value
+E       depths=[8],  # or any other generated value
+E       quiet=20,  # or any other generated value
+FAILED tests/hat/properties/test_criteria.py::test_vcp_base_high - AssertionError: assert (True, 'ok') == (False, 'flat_base')
+```
+
 ### PBT criteria.vcp_parity
 
 Break: `vcp` looks one bar less to the right of a pivot.
@@ -531,6 +676,54 @@ E       rng=Lcg(2279051),
 E       depths=[3],  # or any other generated value
 E       quiet=40,  # or any other generated value
 E       walk=True,
+```
+
+### PBT criteria.vcp_structure_narrows
+
+Break: (PR 57) a null `min_contraction_bars` is not off: it reads as 7 bars.
+
+```
+  | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
+  +-+---------------- 1 ----------------
+    | Traceback (most recent call last):
+    |   File "tests/hat/properties/test_criteria.py", line 863, in test_vcp_structure_narrows
+    |     assert ruled.reason in STRUCTURE_REASONS | {plain.reason}
+    | AssertionError: assert 'no_volume_dryup' in ({'contraction_too_short', 'first_depth_too_shallow', 'highs_n [cut]
+    |  +  where 'no_volume_dryup' = CriterionResult(passed=False, score=0.0, value=0.7514435783548096, reason='n [cut]
+    | Failing test case: test_vcp_structure_narrows(
+    |     # The test always failed when commented parts were varied together.
+    |     rng=Lcg(0),
+    |     depths=[8, 3],
+    |     quiet=70,  # or any other generated value
+    |     params={
+    |         'contractions': [2, 6],
+    |         'depth_ratio_max': 0.5,  # or any other generated value
+    |         'final_depth_max_pct': 5.0,  # or any other generated value
+    |         'lookback_days': 60,  # or any other generated value
+    |         'dryup_vs_avg50': 0.5,  # or any other generated value
+    |     },
+    |     structure={'max_high_spread_pct': None,
+    |         'min_first_depth_pct': None,
+    |         'min_contraction_bars': 3},
+    | )
+    +---------------- 2 ----------------
+    | Traceback (most recent call last):
+    |   File "tests/hat/properties/test_criteria.py", line 859, in test_vcp_structure_narrows
+    |     assert ruled == plain
+    | AssertionError: assert CriterionResu...674814475366}) == CriterionResu...t', extras={})
+    |   Differing attributes:
+    |   ['passed', 'score', 'value', 'reason', 'extras']
+    |   Drill down into differing attribute passed:
+    |     passed: True != False
+    |   Drill down into differing attribute score:
+    |     score: 0.47966426206895246 != 0.0
+    |   Drill down into differing attribute value:
+    |     value: 2.0 != 6.0
+    |   Drill down into differing attribute reason:
+    |     reason: 'ok' != 'contraction_too_short'
+    |     - contraction_too_short
+    |     + ok
+FAILED tests/hat/properties/test_criteria.py::test_vcp_structure_narrows - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
 ```
 
 ### PBT criteria.close_vs_pivot_contract
@@ -747,7 +940,7 @@ Break: The setup stage runs although the regime gate failed.
 
 ```
 E   assert False
-E    +  where False = all(<generator object test_stage_order.<locals>.<genexpr> at 0x7f0ed40d5ff0>)
+E    +  where False = all(<generator object test_stage_order.<locals>.<genexpr>>)
 E   Failing test case: test_stage_order(
 E       series='EQ',
 E       regime=False,
@@ -865,7 +1058,7 @@ Break: The next version number skips one.
 
 ```
 E   assert 4 == ((1 + 0) + 1)
-E    +  where 4 = <app.hat.models.strategy.HatStrategyVersion object at 0x7fe8ff2d2360>.version
+E    +  where 4 = <app.hat.models.strategy.HatStrategyVersion object>.version
 E   Failing test case: test_save_creates_version(
 E       raws=[{'bot': 'alpha',
 E         'universe': [],
@@ -1297,7 +1490,7 @@ Break: (2) `promote_version` leaves the sleeves on the version it replaces.
 
 ```
 E   AssertionError: assert UUID('bdb267bc-d16e-4df5-8582-211ca6e2d722') == UUID('ab2ec9ca-ce2d-4de4-b352-ed088a69b4b5')
-E    +  where UUID('bdb267bc-...') = <app.hat.models.strategy.HatBot object at 0x7f472bd41d30>.live_version_id
+E    +  where UUID('bdb267bc-...') = <app.hat.models.strategy.HatBot object>.live_version_id
 E   Failing explicit example: test_release_gate(
 E       state='live',
 ```
