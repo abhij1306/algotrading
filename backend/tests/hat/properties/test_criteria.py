@@ -749,6 +749,22 @@ VCP_PARAMS = st.fixed_dictionaries(
         "dryup_vs_avg50": st.sampled_from([0.5, 0.7, 1.0, 1.0]),
     }
 )
+# PR 57: the structural rules, each off (None) by default.
+STRUCTURE = st.fixed_dictionaries(
+    {
+        "max_high_spread_pct": st.sampled_from([None, None, 3.0, 8.0, 30.0]),
+        "min_first_depth_pct": st.sampled_from([None, None, 8.0, 15.0, 25.0]),
+        "min_contraction_bars": st.sampled_from([None, None, 3, 7, 9, 12]),
+    }
+)
+STRUCTURE_REASONS = {"contraction_too_short", "first_depth_too_shallow", "highs_not_level"}
+
+
+def base_index(rows: list[Row], lookback: int) -> int:
+    """The base start: the first highest close of the last `lookback` rows."""
+    window = rows[-lookback:]
+    top = max(r.close for r in window)
+    return len(rows) - len(window) + next(i for i, r in enumerate(window) if r.close == top)
 
 
 def segment_stats(rows: list[Row], start: str, end: str) -> tuple[int, int, Fraction, Fraction]:
@@ -768,13 +784,28 @@ def shrinking_depths(first: int, ratio: int, count: int) -> list[int]:
     depths=st.builds(shrinking_depths, st.integers(8, 30), st.integers(40, 85), st.integers(2, 6)),
     quiet=st.sampled_from([20, 40, 70, 100]),
     params=VCP_PARAMS,
+    structure=STRUCTURE,
 )
 @SLOW
-def test_vcp_contract(rng: Lcg, depths: list[int], quiet: int, params: dict) -> None:
+def test_vcp_contract(
+    rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict
+) -> None:
+    """HAT-CRIT-040: a reported base meets every enabled rule: the count, the depth ratios, the
+    final depth, the dry-up against the mean volume of the 50 sessions before the base starts
+    (PR 57; `no_data` with fewer), and the enabled structural rules (PR 57): every contraction
+    at least `min_contraction_bars` bars, the first at least `min_first_depth_pct` deep, and
+    every contraction high within `max_high_spread_pct` of the highest. Harm: a loose base, a noise
+    wiggle or a decelerating down-staircase enters the watchlist, or the base's own quiet bars
+    make every final contraction look dry."""
+    params = {**params, **structure}
     rows = vcp_rows(rng, depths, quiet)
     ctx = context(rows)
     result = contract("vcp", params, ctx, rng)
     assert fails_closed("vcp", params, ctx)
+    start = base_index(rows, params["lookback_days"])
+    cut = rows[start - rng.randrange(0, 50) :]  # the same base with fewer than 50 sessions before
+    assert base_index(cut, params["lookback_days"]) < 50
+    assert evaluate("vcp", params, context(cut)).reason == "no_data"
     if not result.passed:
         assert result.score == 0.0
         return
@@ -788,14 +819,96 @@ def test_vcp_contract(rng: Lcg, depths: list[int], quiet: int, params: dict) -> 
         for a, b in zip(depth, depth[1:], strict=False)
     )
     assert depth[-1] <= Fraction(str(params["final_depth_max_pct"]))
+    if structure["min_contraction_bars"] is not None:
+        assert all(b - a + 1 >= structure["min_contraction_bars"] for a, b, _, _ in stats)
+    if structure["min_first_depth_pct"] is not None:
+        assert depth[0] >= Fraction(str(structure["min_first_depth_pct"]))
+    if structure["max_high_spread_pct"] is not None:
+        tops = [h for _, _, h, _ in stats]
+        spread = (max(tops) - min(tops)) / max(tops) * 100
+        assert spread <= Fraction(str(structure["max_high_spread_pct"]))
+    assert stats[0][0] == start  # the first contraction starts the base
     first, last, top, bottom = stats[-1]
     final_volume = mean([Fraction(r.volume) for r in rows[first : last + 1]])
-    average = mean([Fraction(r.volume) for r in rows[-50:]])
+    average = mean([Fraction(r.volume) for r in rows[start - 50 : start]])
     assert final_volume <= Fraction(str(params["dryup_vs_avg50"])) * average
+    assert result.extras["dryup_ratio"] == pytest.approx(float(final_volume / average))
     assert stats[0][0] >= len(rows) - params["lookback_days"]  # inside the lookback
     assert result.extras["pivot"] == float(top)
     assert result.extras["final_contraction_low"] == float(bottom)
     assert bottom < top  # the stop rule always has a level below entry
+
+
+@given(
+    rng=RNG,
+    depths=st.builds(shrinking_depths, st.integers(8, 30), st.integers(40, 85), st.integers(2, 6)),
+    quiet=st.sampled_from([20, 40, 70, 100]),
+    params=VCP_PARAMS,
+    structure=STRUCTURE,
+)
+@SLOW
+def test_vcp_structure_narrows(
+    rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict
+) -> None:
+    """PR 57: the structural rules are off by default and only narrow: a base that passes with
+    them passes, identically, without them; one that fails only with them fails on one of their
+    reasons. Harm: turning a sweep rule on admits a base the default rejects, or the default
+    config changes."""
+    ctx = context(vcp_rows(rng, depths, quiet))
+    plain = evaluate("vcp", params, ctx)
+    assert evaluate("vcp", {**params, **dict.fromkeys(structure)}, ctx) == plain  # None is off
+    ruled = evaluate("vcp", {**params, **structure}, ctx)
+    if ruled.passed:
+        assert ruled == plain
+    elif plain.passed:
+        assert ruled.reason in STRUCTURE_REASONS
+    else:
+        assert ruled.reason in STRUCTURE_REASONS | {plain.reason}
+
+
+@given(
+    rng=RNG,
+    depths=st.builds(shrinking_depths, st.integers(8, 30), st.integers(40, 85), st.integers(1, 6)),
+    quiet=st.sampled_from([20, 70, 100, 150]),
+    params=VCP_PARAMS,
+    structure=STRUCTURE,
+    style=st.sampled_from(["vcp", "vcp", "walk", "flat"]),
+)
+@SLOW
+def test_vcp_base_high(
+    rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict, style: str
+) -> None:
+    """PR 57 (G26): with `pivot_source: base_high` the pattern scores but does not gate. Where
+    the default `vcp` passes, base_high passes with the same score and contractions; where it
+    fails on a pattern rule, base_high passes with score 0 and `pattern` naming that rule; a
+    missing history or a short base fails the same way in both. The pivot is the base's highest
+    high (base start to the date) and the reported low is strictly below it; a base whose low
+    equals its high fails `flat_base`. Harm: a template-only variant has no breakout level, its
+    pivot is not the base's top, or its stop sits at the entry price."""
+    rows = vcp_rows(rng, depths, quiet) if style == "vcp" else make_rows(rng, 200, style)
+    ctx = context(rows)
+    params = {**params, **structure}
+    plain = contract("vcp", params, ctx, rng)
+    based = contract("vcp", {**params, "pivot_source": "base_high"}, ctx, rng)
+    assert fails_closed("vcp", {**params, "pivot_source": "base_high"}, ctx)
+    if plain.reason in ("no_data", "base_too_short"):
+        assert (based.passed, based.reason) == (False, plain.reason)
+        return
+    start = base_index(rows, params["lookback_days"])
+    top = rupees(max(r.high for r in rows[start:]))
+    if top == rupees(min(r.low for r in rows[start:])):
+        assert (based.passed, based.reason) == (False, "flat_base")
+        return
+    assert based.passed
+    if plain.passed:
+        assert based.score == plain.score
+        assert based.extras["pattern"] == "ok"
+        assert based.extras["contractions"] == plain.extras["contractions"]
+    else:
+        assert based.score == 0.0
+        assert based.extras["pattern"] == plain.reason
+    assert based.extras["pivot"] == float(top)
+    assert based.extras["final_contraction_low"] < based.extras["pivot"]
 
 
 @given(
