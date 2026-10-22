@@ -1557,9 +1557,18 @@ def _want(symbol: str, raw: list[list[Any]], instrument: str, start: date, end: 
     failing=st.sampled_from(["NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ", None]),
     cap=st.integers(1, 60),
     garbage=st.sampled_from(
-        [None, [None], [{}], ["x"], [[1, 2]], [[10**20, 1.0, 1.0, 1.0, 1.0, 0]], [[0, 1.0, 1.0]]]
+        [
+            None,
+            [None],
+            [{}],
+            ["x"],
+            [[1, 2]],
+            [[10**20, 1.0, 1.0, 1.0, 1.0, 0]],
+            [[0, 1.0, 1.0]],
+            [[0, 1e300, 1e300, 1e300, 1e300, 0]],
+        ]
     ),
-    envelope=st.sampled_from([None, [], "error", 0]),
+    envelope=st.sampled_from([None, [], "error", 0, {"s": "ok"}, {"s": "ok", "candles": None}]),
 )
 @settings(deadline=None)
 def test_minute_history_aggregates_to_5m(
@@ -1577,8 +1586,9 @@ def test_minute_history_aggregates_to_5m(
     whose call fails, or whose answer holds more candles than the cap, is reported with a fixed
     code (no broker text) and has nothing written, while every other symbol, before or after it,
     is stored. A garbage candle row (not a list, too short, an impossible epoch) fails its symbol
-    with `history_bad_candle`, and an answer that is not a mapping fails its symbol with
-    `history_bad_answer`, never the run, however many in a row."""
+    (a price too large for a decimal included) with `history_bad_candle`, and an answer that is
+    not a mapping, or an "ok" without candles, fails its symbol with `history_bad_answer`, never
+    the run, however many in a row."""
     start = DAY + timedelta(days=first)
     end = start + timedelta(days=span)
     symbols = {s: str(uuid4()) for s in ("NSE:AAA-EQ", "NSE:MMM-EQ", "NSE:ZZZ-EQ")}

@@ -37,7 +37,7 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from sqlalchemy import select
@@ -107,7 +107,10 @@ class MinuteCandle:
 def _price(raw: object) -> Decimal:
     if isinstance(raw, bool) or not isinstance(raw, int | float) or not math.isfinite(raw):
         raise MinuteHistoryError("history_bad_candle")
-    value = Decimal(repr(raw)).quantize(_PLACES)
+    try:
+        value = Decimal(repr(raw)).quantize(_PLACES)
+    except InvalidOperation as exc:  # too large for the decimal context
+        raise MinuteHistoryError("history_bad_candle") from exc
     if value <= 0:
         raise MinuteHistoryError("history_bad_candle")
     return value
@@ -454,11 +457,14 @@ def _bars_of(
     symbol: str, response: Mapping[str, object], limits: HistoryLimits, first: date, last: date
 ) -> list[Bar]:
     """The 5-minute bars of one answer for `first..last`; a refusal or a bad answer raises."""
-    if response.get("s") not in ("ok", "no_data"):
+    status = response.get("s")
+    if status not in ("ok", "no_data"):
         raise MinuteHistoryError("history_failed")
-    raw = response.get("candles") or []
-    if not isinstance(raw, list):
-        raise MinuteHistoryError("history_bad_candle")
+    raw = response.get("candles")
+    if raw is None and status == "no_data":
+        raw = []
+    if not isinstance(raw, list):  # an "ok" without candles is not an empty range
+        raise MinuteHistoryError("history_bad_answer")
     if len(raw) > limits.candle_cap:
         raise MinuteHistoryError("history_too_many_candles")
     candles = [c for c in parse_candles(raw) if first <= trade_date_of(c.at) <= last]
@@ -486,40 +492,61 @@ def load_minute_history(
     row, the day's call budget or too many plan-limit refusals stop it, with the progress saved.
     Safe to re-run: `BarStore.write` keeps a bar that did not change."""
     progress = progress if progress is not None else Progress()
-    if resume and progress.window is not None:
-        start, end = progress.window  # a resume continues the stopped run's period
-    if start > end:
-        raise MinuteHistoryError("history_bad_period")
+    start, end = _begin(progress, start, end, resume)
     limits = limits or HistoryLimits()
     pacer = pacer or CallPacer(limits, progress)
     report = HistoryReport(start, end, symbols=len(instruments))
     report.available_from = progress.available_from
-    if not resume:
-        progress.done.clear()
-    progress.window = (start, end)
-    progress.save()
     in_row = 0
     # symbols that failed last time go last, so a few bad ones cannot block a resume forever
     for symbol in sorted(instruments, key=lambda s: (s in progress.failed, s)):
         first = max(start, progress.available_from or start)
-        if first > end:
-            report.stopped = "history_plan_limit"
-            break
-        if resume and progress.covers(symbol, first, end):
+        if resume and first <= end and progress.covers(symbol, first, end):
             report.skipped += 1
             continue
-        code = _attempt(
-            history, store, instruments[symbol], pacer, limits, progress, report, symbol, first, end
+        code = (
+            "history_plan_limit"  # the plan serves nothing of the period
+            if first > end
+            else _attempt(
+                history,
+                store,
+                instruments[symbol],
+                pacer,
+                limits,
+                progress,
+                report,
+                symbol,
+                first,
+                end,
+            )
         )
-        if code in _RUN_STOPS:
-            report.stopped = code
-            break
         # only refused calls in a row point at a dead session; a symbol's bad data does not
         in_row = in_row + 1 if code == "history_failed" else 0
-        if in_row >= limits.failures_in_row:
-            report.stopped = "history_failed"
+        report.stopped = _stop(code, in_row, limits)
+        if report.stopped:
             break
     return report
+
+
+def _begin(progress: Progress, start: date, end: date, resume: bool) -> tuple[date, date]:
+    """The run's period (a resume continues the stopped run's), recorded in the progress; a
+    fresh run forgets the symbols done."""
+    if resume and progress.window is not None:
+        start, end = progress.window
+    if start > end:
+        raise MinuteHistoryError("history_bad_period")
+    if not resume:
+        progress.done.clear()
+    progress.window = (start, end)
+    progress.save()
+    return start, end
+
+
+def _stop(code: str | None, in_row: int, limits: HistoryLimits) -> str | None:
+    """Why the run stops after a symbol's outcome `code`, or None to go on."""
+    if code in _RUN_STOPS:
+        return code
+    return "history_failed" if in_row >= limits.failures_in_row else None
 
 
 def _attempt(

@@ -32,7 +32,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.gap_record_from_its_own_day` In a process running across days, every gap record of trade date d holds d's open: its own indicative open, or the feed's open from a tick at or after 09:15 (a 09:00 snapshot carries yesterday's open), and a later day's record drops the earlier days' records. Harm: `gap_up` runs on yesterday's open (PR 22, audit F13).
 - `PBT bars.candidates_never_overwrite_refresh` A watchlist refresh that arrives while a candidate add is in progress is not lost: the `"hat"` set holds the refreshed watchlist after both finish. Harm: a refreshed watchlist symbol or an open position stops receiving prices.
 - `PBT bars.history_matches_builder` Aggregating a 1-minute series to 5-minute bars (`minute_history.aggregate`) gives exactly the bars the live builder makes of the same prints (open with the volume, high, low, close): same windows, OHLC and volume, nothing outside the session. Harm: EP backtests read bars built differently from live and mislead promotion decisions.
-- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for each symbol's 1-minute candles in consecutive chunks of at most `chunk_days` (drawn 1..100) covering exactly the period and writes each symbol's builder bars to `bars_5m` as soon as it loads; a symbol whose call fails (any of three, first, middle or last) or whose answer holds more candles than the cap, or whose candle rows are garbage (`None`, a dict, a string, too short, an impossible epoch: `history_bad_candle`), or whose answer is not a mapping at all (`history_bad_answer`, which never counts toward the refused-in-a-row stop, CodeAnt), is reported with a fixed code (no broker text) and has nothing written, while every other symbol is stored (PR 41, D131). Harm: one bad symbol throws away hours of loaded history, or a broker message reaches the store or the logs.
+- `PBT bars.minute_history_aggregates_to_5m` The loader asks the injected history call for each symbol's 1-minute candles in consecutive chunks of at most `chunk_days` (drawn 1..100) covering exactly the period and writes each symbol's builder bars to `bars_5m` as soon as it loads; a symbol whose call fails (any of three, first, middle or last) or whose answer holds more candles than the cap, or whose candle rows are garbage (`None`, a dict, a string, too short, an impossible epoch, a price too large for a decimal: `history_bad_candle`), or whose answer is not a mapping at all or an "ok" without candles (`history_bad_answer`, which never counts toward the refused-in-a-row stop, CodeAnt), is reported with a fixed code (no broker text) and has nothing written, while every other symbol is stored (PR 41, D131). Harm: one bad symbol throws away hours of loaded history, or a broker message reaches the store or the logs.
 - `PBT bars.minute_history_budget` With a fake clock and calls taking 0..40 s, whatever the day already spent (saved progress), and across a second run started right after the first with a fresh pacer on the saved progress, no 60 s window holds more than `per_minute` calls and no IST day more than `per_day`; a spent day stops the run with `history_daily_limit` and the saved count equals what was spent plus the calls made. Harm: Fyers throttles or blocks the app, and live trading loses its session.
 - `PBT bars.minute_history_resume` A run stopped by the day's budget (0..12 calls) or by failing symbols, then resumed the next day with `--resume` (and given the next day's shifted period, which the resume replaces with the stopped run's), leaves `bars_5m` equal to one uninterrupted run, skips exactly the symbols the progress records and never asks for them again. Harm: a multi-day download wastes its budget or leaves gaps.
 - `PBT bars.minute_history_plan_clamp` A fake plan that refuses (-50, `data.range_from` "exceeds the historical data available for your plan") any range before a floor 0..2 days after `today - plan_days`: a start 0..3 days before the floor is clamped to exactly the floor (saved in the progress), within `max_clamps`, and every symbol is loaded from there; a -50 with another reason is a symbol failure, never a clamp. Harm: the download crashes on its first call, or silently skips history it could have had.
@@ -144,7 +144,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `a8b9af34696d51f83db48063cb4e73351e73e93df205b09ead2806353d25a776`
+Covered digest: `137bc810682d9de6aafdb2b22ed940d4f3ccd115bf43f9e8f79a8aec583bf171`
 
 ## Scope changes
 
@@ -1098,6 +1098,24 @@ tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
 tests/hat/properties/test_bars.py:1647: in test_minute_history_aggregates_to_5m
 E   AssertionError: assert 'history_failed' is None
 E    +  where 'history_failed' = HistoryReport(start=datetime.date(2026, 10, 21), end=datetime.date(2026, 10, 21), symbols=3, days={}, skipped=0, faile...ory_failed', 'NSE:ZZZ-EQ': 'history_failed'}, rows=0, calls=3, available_from=None, clamps=0, stopped='history_failed').stopped
+```
+
+Break (CodeAnt review): `_price` no longer turns a decimal overflow into `history_bad_candle` (1e300 raises `InvalidOperation` out of the run).
+
+```
+tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
+tests/hat/properties/test_bars.py:1607: in test_minute_history_aggregates_to_5m
+E   decimal.InvalidOperation: [<class 'decimal.InvalidOperation'>]
+E   Failing test case: test_minute_history_aggregates_to_5m(
+```
+
+Break (CodeAnt review): an "ok" answer with missing or null `candles` is an empty range again (`response.get("candles") or []`), so the symbol is marked done with nothing.
+
+```
+tests/hat/properties/test_bars.py:1553: in test_minute_history_aggregates_to_5m
+tests/hat/properties/test_bars.py:1658: in test_minute_history_aggregates_to_5m
+E   AssertionError: assert {} == {'NSE:AAA-EQ'...y_bad_answer'}
+E
 ```
 
 ### PBT bars.minute_history_budget
