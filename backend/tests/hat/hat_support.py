@@ -44,10 +44,13 @@ ROOT_SOURCES = ("env_file", "environment", "both", "blank_environment")
 @contextmanager
 def operator_env(scratch: Path, source: str) -> Iterator[Path]:
     """Run a command line with its `HAT_DATA_ROOT` from `source` (one of ROOT_SOURCES); yields
-    the root it must use. The `.env` file, every root, the default and the root a store falls
-    back to when given none (`app.paths.HAT_DATA_ROOT` as read at import, `import_time`) all
-    sit in `scratch`, so a command that resolves its root wrongly writes to a wrong scratch
-    directory, never to a real data root; the process environment is restored afterwards."""
+    the root it must use. The `.env` file, every root and the default all sit in `scratch`, so
+    a command that resolves its root wrongly writes to a wrong scratch directory, never to a
+    real data root; the process environment is restored afterwards. The database module is
+    imported first: its import loads the repository's own `.env`, and done inside the run it
+    could put a real `HAT_DATA_ROOT` back after this helper removed it."""
+    import app.database  # noqa: F401, PLC0415 - its .env load must happen before the run
+
     from_file, from_env, default = (
         scratch / "env_file",
         scratch / "environment",
@@ -62,7 +65,6 @@ def operator_env(scratch: Path, source: str) -> Iterator[Path]:
         patch.dict(os.environ),
         patch("app.hat.settings.ENV_FILE", env_file),
         patch("app.hat.settings.HAT_DATA_ROOT", default),
-        patch("app.hat.data.store.HAT_DATA_ROOT", scratch / "import_time"),
     ):
         os.environ.pop("HAT_DATA_ROOT", None)
         if source in ("environment", "both"):

@@ -147,12 +147,12 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `d697f2b01d28b8158a4f02499ed5454d5c3baf38027ca32915a4f65d5f3de80d`
+Covered digest: `2b8afd3577ceb9e32a028491b2a9d4788c0a2ab0965f2efa890a12550041d8f8`
 
 ## Scope changes
 
 - PR 12 added the minute-history loader (HAT-DATA-119). `FyersClient.get_historical_data` named by the spec does not exist; the loader takes the history call as an injected function, so the properties fake it and no check reaches Fyers.
-- PR 43 (PR 41 follow-ups 1 and 7): the command line takes its root from `operator_settings()` (loads `.env` first) and appends its coverage report to `minute_history/report-YYYY-MM-DD.txt` under that root. `minute_history_cli.root_and_report` drives `main` in its own file, because `main` reads the wall clock (the period ends yesterday; the report is named by the day) and `test_bars.py` promises no property reads one; the report is matched by pattern. Name lookups and sockets are blocked and recorded. Nothing was narrowed.
+- PR 43 (PR 41 follow-ups 1 and 7): the command line takes its root from `operator_settings()` (loads `.env` first) and appends its coverage report to `minute_history/report-YYYY-MM-DD.txt` under that root. `minute_history_cli.root_and_report` drives `main` in its own file, because `main` reads the wall clock (the period ends yesterday; the report is named by the day) and `test_bars.py` promises no property reads one; the report is matched by pattern. Name lookups and sockets are blocked and recorded. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). Nothing was narrowed.
 - PR 41 (owner decision D131) made the download runnable on the Fyers Standard plan: per-symbol writes replace PR 12's all-or-nothing (the old CodeAnt break below is retired with it), with a call pacer, resumable progress and the plan-limit clamp; `BarStore.write` now carries the untouched rows of a day as Arrow data (`bars.persisted_equals_live` guards it). The plan's refusal text is from the audit 2026-10-22 live checks ("Fyers history depth"); a recording of the exact response is a follow-up.
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
@@ -182,7 +182,6 @@ Each check was shown to catch a deliberate break in the real code (HAT-VER-072),
 Break: (PR 43) `_run` reads `load_settings()` again (the PR 41 order: `.env` not yet loaded). With the root set only in `.env` the lock, progress and report land in the default root.
 
 ```
-tests/hat/properties/test_minute_history_cli.py F
 tests/hat/properties/test_minute_history_cli.py:25: in test_root_and_report
 tests/hat/properties/test_minute_history_cli.py:58: in test_root_and_report
 E   AssertionError: ['.env', 'default/minute_history/progress.json', 'default/minute_history/progress.lock', 'default/minute_history/report-2026-10-22.txt']
@@ -192,7 +191,6 @@ E   assert {'.env', 'default'} == {'.env', 'env_file'}
 Break: (PR 43) `operator_settings()` no longer loads `.env`.
 
 ```
-tests/hat/properties/test_minute_history_cli.py F
 tests/hat/properties/test_minute_history_cli.py:25: in test_root_and_report
 tests/hat/properties/test_minute_history_cli.py:58: in test_root_and_report
 E   AssertionError: ['.env', 'default/minute_history/progress.json', 'default/minute_history/progress.lock', 'default/minute_history/report-2026-10-22.txt']
@@ -202,7 +200,6 @@ E   assert {'.env', 'default'} == {'.env', 'env_file'}
 Break: (PR 43) the command line no longer saves its report.
 
 ```
-tests/hat/properties/test_minute_history_cli.py F
 tests/hat/properties/test_minute_history_cli.py:25: in test_root_and_report
 tests/hat/properties/test_minute_history_cli.py:62: in test_root_and_report
 E   AssertionError: ['.env', 'env_file/minute_history/progress.json', 'env_file/minute_history/progress.lock']

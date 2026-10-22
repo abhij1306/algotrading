@@ -39,8 +39,6 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from app.paths import HAT_DATA_ROOT
-
 from ..errors import HatError
 
 DATASET_BARS = "bars_daily_raw"
@@ -326,16 +324,18 @@ def atomic_replace(
 
 
 class DataStore:
-    """The HAT Parquet datasets under one root (`HAT_DATA_ROOT` unless a test gives another)."""
+    """The HAT Parquet datasets under one root: the settings' `data_root` (HAT-DATA-080). There
+    is no default: `app.paths.HAT_DATA_ROOT` is read when `app.paths` is imported, before
+    anything loads `.env`, so a store built from it would ignore a root set only there."""
 
     def __init__(
         self,
-        root: Path | None = None,
+        root: Path,
         *,
         writer: Callable[[pa.Table, Path], None] | None = None,
         replace: Callable[[Path, Path], Any] = os.replace,
     ) -> None:
-        self.root = Path(root if root is not None else HAT_DATA_ROOT)
+        self.root = Path(root)
         self._writer = writer or (lambda table, path: pq.write_table(table, path))
         self._replace = replace
 
