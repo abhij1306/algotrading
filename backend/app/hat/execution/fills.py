@@ -13,13 +13,16 @@ book raises and nothing is written) and then, for one broker account:
    GTT, since Fyers GTTs carry no tag [verify on a live account]; a broker trade id is recorded
    once across all orders, so an old trade never closes a newer position;
 4. moves order statuses (`submit.record_broker_status`): an entry that ended unfilled ends its
-   signal Cancelled; a day stop that expired leaves its position to be protected again;
+   signal Cancelled; a day stop that expired leaves its position to be protected again; a sale
+   the broker took and then ended short records `order.rejected` and fires its rules again, so the
+   next evaluation retries it once; its second rejection raises `exit.not_placed` (HAT-EXEC-075);
 5. raises `gtt.unfilled` for an untagged SELL order on such a symbol that ended (cancelled,
    rejected, expired) short of its quantity: the GTT triggered and did not fill (07 §6 step 3).
    The GTT is ended and the position protected again. The broker order id is kept on the
    `order.cancelled` event, so the alert is raised once;
-6. protects again every open real position of the account that has no working stop (a stop
-   the broker refused twice was alerted; each sync tries it again).
+6. protects again every open real position of the account that has no stop the broker
+   confirmed (a stop the broker refused twice was alerted; a stop whose answer was lost is
+   settled by `StopDesk.protect`; each sync tries again).
 
 Each fill and its stop work commit as separate steps (the model's atomic steps, StopPlacement).
 """
@@ -33,7 +36,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..engine import live_trades
@@ -43,8 +46,23 @@ from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosi
 from ..notify import LogNotifier, Notifier
 from ..time import trade_date_of
 from .broker import BrokerOrder, BrokerTrade, HatBroker, Side
-from .protect import ALERT_GTT_UNFILLED, LIVE, STOP_DAY, STOP_GTT, UNSURE, WORKING, StopDesk
-from .submit import adopt_broker_order, record_broker_status
+from .protect import (
+    ALERT_EXIT_NOT_PLACED,
+    ALERT_GTT_UNFILLED,
+    EXIT_WORKING,
+    LIVE,
+    STOP_DAY,
+    STOP_GTT,
+    UNSURE,
+    StopDesk,
+)
+from .submit import (
+    EXIT_SALES,
+    MAX_SALE_REJECTIONS,
+    adopt_broker_order,
+    record_broker_status,
+    rejected_sales,
+)
 from .tags import is_hat_tag
 
 __all__ = ["ALERT_FILL_REFUSED", "FillSync", "SyncReport"]
@@ -92,7 +110,7 @@ class FillSync:
             )
         }
         by_tag = {o.tag: o for o in orders if is_hat_tag(o.tag)}
-        self._adopt(session, rows, by_tag, report)
+        self._adopt(session, rows, by_tag, now, report)
         for trade in trades:
             row = rows.get(trade.tag) if trade.tag else None
             if row is not None:
@@ -107,8 +125,11 @@ class FillSync:
             if self._unfilled_trigger(order, gtts):
                 self._gtt_unfilled(session, gtts[order.symbol], order, now, report)
         for position_id in self._unprotected(session, account_id) - report.protected:
-            self._desk.protect(session, position_id, now)
-            report.protected.add(position_id)
+            self._protect(session, position_id, now, report)
+        for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
+            # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
+            # once settled, a stop that landed is cancelled, so it never rests under no shares.
+            self._desk.cancel_all(session, position_id, now)
         return report
 
     # --- 1. adoption ----------------------------------------------------------------------------
@@ -122,6 +143,7 @@ class FillSync:
         session: Session,
         rows: dict[str, HatOrder],
         by_tag: dict[str | None, BrokerOrder],
+        now: datetime,
         report: SyncReport,
     ) -> None:
         for tag, row in rows.items():
@@ -129,6 +151,30 @@ class FillSync:
                 adopt_broker_order(session, row, by_tag[tag], self._bot_of(session, row))
                 session.commit()
                 report.adopted += 1
+                self._sale_ended(session, row, by_tag[tag], now)
+
+    def _sale_ended(
+        self, session: Session, row: HatOrder, found: BrokerOrder, now: datetime
+    ) -> None:
+        """A sale the broker ended short: once it is the second rejection of the session, the
+        sale is not retried this session and `exit.not_placed` is raised (HAT-OPS-032)."""
+        if not (
+            row.purpose in EXIT_SALES and row.status in _ENDED_SHORT and found.filled_qty < row.qty
+        ):
+            return
+        if rejected_sales(session, row.signal_id, row.purpose, now) < MAX_SALE_REJECTIONS:
+            return
+        bot_id = self._bot_of(session, row)
+        self._notifier.alert(
+            ALERT_EXIT_NOT_PLACED,
+            trade_date_of(now),
+            {
+                "bot_id": str(bot_id),
+                "signal_id": str(row.signal_id),
+                "position_id": str(row.position_id),
+                "reason": "order_rejected",
+            },
+        )
 
     # --- 2. and 3. fills ------------------------------------------------------------------------
 
@@ -143,8 +189,7 @@ class FillSync:
         position_id = self._record(session, row, trade, now, report)
         if position_id is not None:
             # HAT-EXEC-060: the stop comes before any other action on the position.
-            self._desk.protect(session, position_id, now)
-            report.protected.add(position_id)
+            self._protect(session, position_id, now, report)
 
     def _record(
         self,
@@ -227,8 +272,15 @@ class FillSync:
             # position is protected (a part-filled sale may still sell the rest).
             gtt.status = "filled" if filled >= gtt.qty else "partially_filled"
             session.commit()
-        self._desk.protect(session, position_id, now)
-        report.protected.add(position_id)
+        self._protect(session, position_id, now, report)
+
+    def _protect(
+        self, session: Session, position_id: uuid.UUID, now: datetime, report: SyncReport
+    ) -> None:
+        # A position whose sale still works is not counted as protected: once that sale ends
+        # (later in this sync, or the next) it is protected again.
+        if self._desk.protect(session, position_id, now) != EXIT_WORKING:
+            report.protected.add(position_id)
 
     # --- 4. statuses ----------------------------------------------------------------------------
 
@@ -249,6 +301,7 @@ class FillSync:
             if record_broker_status(session, row, found, self._bot_of(session, row)):
                 session.commit()
                 report.statuses += 1
+                self._sale_ended(session, row, found, now)
                 if row.position_id is not None and row.purpose != ENTRY:
                     touched.add(row.position_id)
         for position_id in touched - report.protected:
@@ -331,13 +384,34 @@ class FillSync:
     # --- 6. positions without a stop ---------------------------------------------------------
 
     @staticmethod
+    def _closed_with_unsure_stops(session: Session, account_id: uuid.UUID) -> set[uuid.UUID]:
+        """Closed real positions that still have a stop of unknown outcome (read from the few
+        unsure stop orders, not from every closed position)."""
+        return set(
+            session.scalars(
+                select(HatOrder.position_id)
+                .join(HatPosition, HatPosition.id == HatOrder.position_id)
+                .where(
+                    HatOrder.broker_account_id == account_id,
+                    HatOrder.is_virtual.is_(False),
+                    HatOrder.purpose.in_(STOPS),
+                    HatOrder.status.in_(UNSURE),
+                    or_(HatPosition.closed_at.is_not(None), HatPosition.qty_open <= 0),
+                )
+                .distinct()
+            )
+        )
+
+    @staticmethod
     def _unprotected(session: Session, account_id: uuid.UUID) -> set[uuid.UUID]:
+        # Only a stop the broker confirmed protects: one reserved and not sent, or sent with its
+        # answer lost, is `protect`'s to send or settle (HAT-EXEC-065).
         working = (
             select(HatOrder.id)
             .where(
                 HatOrder.position_id == HatPosition.id,
                 HatOrder.purpose.in_(STOPS),
-                HatOrder.status.in_(WORKING),
+                HatOrder.status.in_(LIVE),
             )
             .exists()
         )

@@ -9,16 +9,21 @@ import re
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
+from unittest.mock import patch
 
 import pytest
-from hat.fakes.broker import FakeBroker, rejected, unconfirmed
+from hat.fakes.broker import FakeBroker, accepted, rejected, unconfirmed
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, adapter_over, exec_env, live_session
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from hypothesis.stateful import RuleBasedStateMachine, invariant, rule, run_state_machine_as_test
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from app.hat.execution import submit
 from app.hat.execution.broker import (
+    BrokerGtt,
     BrokerOrder,
     BrokerUnavailableError,
     GttModify,
@@ -49,7 +54,7 @@ from app.hat.execution.tags import (
     signal_fragment,
 )
 from app.hat.ids import Uuid7Generator, uuid7
-from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES
+from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES, HatOrder
 
 PURPOSES = st.sampled_from(sorted(PURPOSE_LETTERS))
 SEQUENCES = st.integers(min_value=0, max_value=MAX_SEQUENCE)
@@ -667,6 +672,54 @@ def test_a_timeout_is_looked_up_before_any_retry(outcomes: list[str]) -> None:
     assert len([r for r in env.fake.book if r["orderTag"] == tag]) <= 1
 
 
+# An ok reply that does not carry the order book list where Fyers documents it.
+KEYLESS_BOOKS = st.sampled_from(
+    [
+        {"s": "ok", "code": 200},
+        {"s": "ok", "code": 200, "orderBook": None},
+        {"s": "ok", "code": 200, "orderBook": {}},
+        {"s": "ok", "code": 200, "data": {"orderBook": []}},
+    ]
+)
+
+
+class LostThenKeyless(RecordingSdk):
+    """A place whose answer is lost (the call raises mid-request), then an order book reply
+    without its list."""
+
+    def __init__(self, book: dict) -> None:
+        super().__init__()
+        self.book = book
+
+    def place_order(self, data: dict) -> object:
+        self.calls.append(("place_order", data))
+        raise TimeoutError("read timed out")
+
+    def orderbook(self) -> object:
+        self.calls.append(("orderbook", None))
+        return self.book
+
+
+@given(book=KEYLESS_BOOKS, sends=st.integers(min_value=2, max_value=4))
+@settings(deadline=None)
+def test_a_keyless_book_never_reads_as_absent(book: dict, sends: int) -> None:
+    """HAT-BRK-081, HAT-BRK-102: after a lost answer, an order book that answered ok without its
+    list is unreadable, not empty: every later send raises `BrokerUnavailableError` and places
+    nothing more under the tag. Harm: the lookup reads "not found" and the same order goes out
+    twice (a doubled entry)."""
+    env = exec_env()
+    sdk = LostThenKeyless(book)
+    env.broker = adapter_over(sdk)
+    live_session(env)
+    tag = reserve_order(env.session, env.request(uuid7()))
+    first = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    assert first.status == "unconfirmed"
+    for _ in range(sends - 1):
+        with pytest.raises(BrokerUnavailableError):
+            send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    assert [name for name, _ in sdk.calls].count("place_order") == 1
+
+
 refusal_cases = st.fixed_dictionaries(
     {
         "account_active": st.booleans(),
@@ -853,3 +906,132 @@ def test_several_bots_on_one_symbol_reconcile_against_their_sum() -> None:
 def test_the_purposes_match_the_database_domain() -> None:
     assert set(PURPOSE_LETTERS) == set(ORDER_PURPOSES)
     assert datetime.now(UTC)  # keep the import honest for type checkers
+
+
+# ---------------------------------------------------------------------------------------------
+# HAT-EXEC-065: two senders of one reserved tag; the GTT book read
+# ---------------------------------------------------------------------------------------------
+
+
+@given(
+    answer=st.sampled_from(["accepted", "rejected", "unconfirmed"]),
+    retry=st.booleans(),
+    adopted=st.booleans(),
+)
+@settings(deadline=None, suppress_health_check=[HealthCheck.too_slow])
+@example(answer="accepted", retry=True, adopted=True)
+def test_a_reserved_tag_is_sent_by_one_sender(answer: str, retry: bool, adopted: bool) -> None:
+    """HAT-BRK-102, HAT-EXEC-065: when two senders read the same order before either stamped
+    a new attempt (a fill sync and a stop job protecting one position), whether it was never
+    sent or its earlier answer was lost and the lookup found nothing (`retry`), only the one
+    that stamps first calls the broker, with a new attempt time from which a lost answer's
+    settle wait runs; the other sends nothing and reports what the first left. A lost answer
+    that the fill sync adopted from the book in between (`adopted`: placed, its attempt time
+    unchanged) is not sent again either. Harm: two sell stops rest for the same shares, an
+    entry is bought twice, or a resend still in flight is settled as absent."""
+    env = exec_env()
+    live_session(env)
+    tag = reserve_order(env.session, env.request(uuid7()))
+    earlier = None
+    if retry:
+        env.fake.script("place_order", unconfirmed())
+        send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+        earlier = env.session.scalar(select(HatOrder.placed_at).where(HatOrder.tag == tag))
+    other = Session(env.session.get_bind(), expire_on_commit=False)
+    reply = {"accepted": accepted("B-1"), "rejected": rejected("RMS"), "unconfirmed": unconfirmed()}
+    env.fake.script("place_order", reply[answer])
+    build = submit._build_request
+    first: list = []
+
+    def racing(*args: object, **kwargs: object) -> object:
+        if not first and retry and adopted:  # the sync adopts the tag from the book meanwhile
+            first.append(None)
+            row = other.scalar(select(HatOrder).where(HatOrder.tag == tag))
+            assert row is not None
+            row.status, row.broker_order_id = "placed", "B-0"
+            other.commit()
+        elif not first:  # the other sender runs between this one's read and its stamp
+            first.append(None)
+            first[0] = send_order(
+                other, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id
+            )
+        return build(*args, **kwargs)
+
+    with patch.object(submit, "_build_request", racing):
+        late = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    if retry and adopted:
+        assert late.broker_calls == 0
+        assert late.status == "placed"
+        assert env.fake.count("place_order") == 1
+        return
+    assert first[0].broker_calls == 1
+    assert late.broker_calls == 0
+    assert late.status == first[0].status
+    assert env.fake.count("place_order") == (2 if retry else 1)
+    stamped = env.session.scalar(select(HatOrder.placed_at).where(HatOrder.tag == tag))
+    assert earlier is None or stamped > earlier
+
+
+GTT_SHAPES = st.sampled_from(["flat", "order_info", "leg1"])
+
+
+@st.composite
+def gtt_rows(draw: st.DrawFn) -> tuple[dict, BrokerGtt | None]:
+    """A GTT book row and the resting GTT it stands for (None: not one of HAT's resting stops)."""
+    gtt_id = f"G{draw(st.integers(min_value=1, max_value=999))}"
+    qty = draw(st.integers(min_value=1, max_value=500))
+    trigger = Decimal(draw(st.integers(min_value=1, max_value=99999))) / 20
+    status = draw(st.sampled_from([None, 1, 2, 4, 5, 6, 7]))
+    oco = draw(st.booleans())
+    product = draw(st.sampled_from(["CNC", "CNC", "INTRADAY"]))
+    shape = draw(GTT_SHAPES)
+    leg = {"price": float(trigger) - 1, "triggerPrice": float(trigger), "qty": qty}
+    row: dict = {"id": gtt_id, "symbol": SYMBOLS["SBIN"], "side": -1, "productType": product}
+    if status is not None:
+        row["ord_status"] = status
+    if shape == "flat":
+        row.update(price_limit=leg["price"], price_trigger=leg["triggerPrice"], qty=qty)
+        row["gtt_oco_ind"] = 2 if oco else 1
+    elif shape == "order_info":
+        row["orderInfo"] = {"leg1": leg, **({"leg2": dict(leg)} if oco else {})}
+    else:
+        row.update(leg1=leg, **({"leg2": dict(leg)} if oco else {}))
+    resting = status in (None, 2, 4, 6) and not oco and product == "CNC"
+    expected = BrokerGtt(gtt_id, "SBIN", Side.SELL, qty, trigger) if resting else None
+    return row, expected
+
+
+class GttBookSdk(RecordingSdk):
+    def __init__(self, rows: list[dict]) -> None:
+        super().__init__()
+        self.rows = rows
+
+    def gtt_orderbook(self) -> object:
+        self.calls.append(("gtt_orderbook", None))
+        return {"s": "ok", "code": 200, "orderBook": self.rows}
+
+
+@given(rows=st.lists(gtt_rows(), max_size=6), odd=st.sampled_from([None, 3, 9]))
+def test_the_gtt_book_reads_only_resting_stops(
+    rows: list[tuple[dict, BrokerGtt | None]], odd: int | None
+) -> None:
+    """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the single-leg CNC GTTs that rest or
+    have triggered (the flat book fields, `orderInfo.leg1` or `leg1`); a cancelled, rejected or
+    expired GTT, an OCO or another product is left out, and a single-leg CNC row with a status
+    code it does not know makes the book unreadable. Harm: a lost GTT is matched to one that
+    never sold and no longer rests, leaving the position without a stop; or a triggered or
+    unknown one is read as gone and a second GTT is placed under shares already sold."""
+    book = [row for row, _ in rows]
+    single = {"id": "G0", "symbol": SYMBOLS["SBIN"], "side": -1, "productType": "CNC"}
+    single.update(price_trigger=100.0, qty=1)
+    if odd is not None:
+        # Someone else's GTT (an OCO, or intraday) with any status is not HAT's to read.
+        foreign = [{**single, "gtt_oco_ind": 2, "ord_status": odd}]
+        foreign.append({**single, "productType": "INTRADAY", "ord_status": odd})
+        expected = [g for _, g in rows if g is not None]
+        assert adapter_over(GttBookSdk([*book, *foreign])).gtts() == expected
+        unknown = adapter_over(GttBookSdk([*book, {**single, "ord_status": odd}]))
+        with pytest.raises(BrokerUnavailableError):
+            unknown.gtts()
+        return
+    assert adapter_over(GttBookSdk(book)).gtts() == [g for _, g in rows if g is not None]

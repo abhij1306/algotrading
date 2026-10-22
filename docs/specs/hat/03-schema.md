@@ -597,6 +597,7 @@ Every signal records the exact strategy version and risk-policy version that pro
 | is_virtual | boolean | |
 | placed_at | timestamptz null | |
 | currency | char(3) | |
+| rule_ids | jsonb null | exit rules a sale carries (PR 18): un-fired when the sale ends short, so the rule fires again (07 HAT-EXEC-075) |
 
 **`hat_fill`**: unique (order_id, broker_trade_id).
 

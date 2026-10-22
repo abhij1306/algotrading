@@ -50,7 +50,7 @@ def _protocol_methods() -> set[str]:
 def test_brk__interface_methods() -> None:
     """HAT-BRK-080: the protocol's method set equals the §8 table."""
     expected = _spec_methods()
-    assert len(expected) == 17, sorted(expected)
+    assert len(expected) == 18, sorted(expected)
     assert _protocol_methods() == expected
 
 

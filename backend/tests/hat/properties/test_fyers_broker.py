@@ -6,7 +6,7 @@ reaches the SDK. Runs on the real `FyersBroker` over a recording SDK stand-in.""
 import math
 
 import pytest
-from hat.fakes.fyers_sdk import RecordingSdk, broker_over
+from hat.fakes.fyers_sdk import READ_LISTS, RecordingSdk, broker_over
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -15,6 +15,7 @@ from app.hat.execution.fyers_broker import (
     SUBMIT_UNCONFIRMED,
     CircuitBreaker,
     FyersBroker,
+    FyersUnavailableError,
 )
 
 ORDER = {"symbol": "NSE:TCS-EQ", "quantity": 5, "side": "BUY", "type": "MARKET", "product": "CNC"}
@@ -229,3 +230,66 @@ def test_brokers_do_not_share_a_breaker_unless_given_one(threshold: int) -> None
     assert two.breaker.is_open()
     with pytest.raises(AttributeError):
         _ = CircuitBreaker.failures  # no class-level state to leak
+
+
+# The list reads, by the FyersBroker method and the SDK call behind it.
+LIST_READS = {
+    "fetch_orderbook": "orderbook",
+    "fetch_tradebook": "tradebook",
+    "fetch_holdings": "holdings",
+    "fetch_gtt_orders": "gtt_orderbook",
+    "get_positions": "positions",
+}
+
+
+@given(
+    method=st.sampled_from(sorted(LIST_READS)),
+    shape=st.sampled_from(["missing", "null", "dict", "nested", "string"]),
+)
+@NO_DEADLINE
+def test_an_ok_reply_without_its_list_is_unreadable(method: str, shape: str) -> None:
+    """HAT-BRK-081: an ok reply that does not carry its list under the documented key (missing,
+    null, the wrong type, nested elsewhere) raises `FyersUnavailableError`, never reads as an
+    empty book; the reply with its list, empty, reads as empty. Harm: after a lost answer the
+    tag lookup reads "not found" and sends the order again; a session end ends a working entry."""
+    key = READ_LISTS[LIST_READS[method]]
+    body = {
+        "missing": {},
+        "null": {key: None},
+        "dict": {key: {}},
+        "nested": {"data": {key: []}},
+        "string": {key: "[]"},
+    }[shape]
+    read = getattr(broker_over(ScriptedSdk({"s": "ok", "code": 200, **body})), method)
+    with pytest.raises(FyersUnavailableError):
+        read()
+    assert getattr(broker_over(RecordingSdk()), method)() == []
+
+
+class OpensMidway(CircuitBreaker):
+    """Closed at the caller's check, open by the time the guarded call checks again."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.checks = 0
+
+    def is_open(self) -> bool:
+        self.checks += 1
+        return self.checks > 1
+
+
+@given(method=st.sampled_from(["place_order", "place_gtt"]))
+@NO_DEADLINE
+def test_a_circuit_opening_mid_place_is_not_sent(method: str) -> None:
+    """A place whose circuit opens between its own check and the guarded call sends nothing and
+    says so with the definite circuit-open rejection, never `SUBMIT_UNCONFIRMED` (which would
+    leave a GTT that can never be looked up). Harm: a stop that never went out is read as one that
+    may rest at the broker, and nothing protects the position."""
+    sdk = RecordingSdk()
+    broker = FyersBroker(lambda: sdk, breaker=OpensMidway())
+    reply = (
+        broker.place_order(dict(ORDER)) if method == "place_order" else broker.place_gtt(dict(GTT))
+    )
+    assert sdk.calls == []
+    assert reply["status"] == "REJECTED"
+    assert reply["message"] == BROKER_CIRCUIT_OPEN

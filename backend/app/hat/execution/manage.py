@@ -19,11 +19,16 @@ entries. It runs the exit stack on real positions and the jobs around the close:
 - **Session end** (`end_session`): an entry whose order the broker's book does not hold after a
   successful read (its outcome was unknown) ends its signal Rejected with `entry_not_found`; a
   DAY limit cannot fill after the close. (An entry first found already ended is settled when it
-  is adopted: `submit.adopt_broker_order`.)
+  is adopted: `submit.adopt_broker_order`.) A sale of unknown outcome the book does not hold
+  never landed: it ends `expired` and its rules fire again.
 
 A sale is retried once after a rejection with the next tag, and at most two rejected sales of one
 purpose are sent per signal (HAT-OPS-032); then `exit.not_placed` is raised and the broker stop
-keeps protecting the position. Nothing is sent before the session's reconciliation.
+keeps protecting the position. A rejection the broker sends after taking the sale counts the same
+(`FillSync`, HAT-EXEC-075). A sale whose answer was lost is looked up by its tag before the
+position is sold again (HAT-EXEC-065): found, it is adopted; absent after a good read, it ends
+`expired` and its rules fire again, so it never blocks the position's later sales. Nothing is sent
+before the session's reconciliation.
 """
 
 from __future__ import annotations
@@ -36,24 +41,40 @@ from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from time import monotonic
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..engine import exits, live_trades, trades
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, trade_date_of
+from ..time import IST, as_utc, trade_date_of, utc_now
 from .broker import BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import FillSync, SyncReport
 from .guard import ExecutionGuard
-from .protect import CLOSED, FAILED, REPLACED, SWAPPED, UNSURE, VERIFIED, StopDesk
+from .protect import (
+    ALERT_EXIT_NOT_PLACED,
+    CLOSED,
+    FAILED,
+    LIVE,
+    LOST_ANSWER_SETTLE,
+    REPLACED,
+    SWAPPED,
+    UNSURE,
+    VERIFIED,
+    StopDesk,
+)
 from .reconcile import ReconciliationService
 from .submit import (
+    EXIT_SALES,
+    MAX_SALE_REJECTIONS,
     OrderRefusedError,
     OrderRequest,
     SendOutcome,
     UnresolvedOrderError,
+    adopt_broker_order,
+    end_lost_order,
+    rejected_sales,
     reserve_order,
     send_order,
 )
@@ -83,11 +104,14 @@ EXIT_PARTIAL = "exit_partial"
 EXITS_CLOSE_FROM = time(15, 20)
 EXITS_CLOSE_UNTIL = time(15, 25)
 ORDERS_UNTIL = time(15, 30)
-MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 ALERT_SALE_REJECTED = "order.rejected"
-ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ENTRY_NOT_FOUND = "entry_not_found"
 FLATTEN = "flatten"
+# What settling a position's sales of unknown outcome found (`_settle_sales`).
+SETTLED = "settled"
+WAIT = "wait"
+UNREADABLE = "unreadable"
+STALE = "stale"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -140,6 +164,8 @@ class TradeManager:
         notifier: Notifier | None = None,
         clock: Callable[[], datetime] | None = None,
         ticker: Callable[[], float] = monotonic,
+        settle_after: timedelta = LOST_ANSWER_SETTLE,
+        wall: Callable[[], datetime] = utc_now,
     ) -> None:
         self._broker = broker
         self._guard = guard
@@ -152,6 +178,9 @@ class TradeManager:
         # the run has taken so far (`ticker`, monotonic seconds).
         self._clock = clock
         self._ticker = ticker
+        # A sale whose answer was lost is looked up `settle_after` after its send (wall clock).
+        self._settle_after = settle_after
+        self._wall = wall
         # One sale of a position at a time across threads: the live tick path, the close job
         # and the Telegram flatten all sell through `_sell_qty`, whose "nothing else is selling"
         # check and reservation must not interleave (each sale holds its position's lock from
@@ -276,13 +305,20 @@ class TradeManager:
             return None
         session.refresh(position)
         rule = action.rule_ids[0].split(":", 1)[1]
-        if rule == live_trades.HARD_STOP and self._desk.stops_of(session, position.id):
-            # The stop resting at the broker is the hard stop (one whose answer was lost may
-            # rest there too); HAT sells at market only when no stop may be working.
+        if rule == live_trades.HARD_STOP and self._broker_stop_rests(session, position.id):
+            # The stop resting at the broker is the hard stop; HAT sells at market only when no
+            # stop the broker confirmed rests (HAT-EXEC-065).
             return None
         purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
         qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
         return self._sell_qty(session, position, purpose, qty, rule, action.rule_ids, now, sending)
+
+    def _broker_stop_rests(self, session: Session, position_id: uuid.UUID) -> bool:
+        """A stop the broker confirmed rests under the position, once any stop whose answer was
+        lost is settled. One still unknown does not count: should it rest after all, the broker
+        refuses the market sale (the shares are held for it), the safe way round."""
+        self._desk.settle_lost(session, position_id)
+        return any(row.broker_order_id for row in self._desk.stops_of(session, position_id, *LIVE))
 
     def _sell_qty(
         self,
@@ -318,8 +354,8 @@ class TradeManager:
         now: datetime,
         sending: Callable[[], datetime],
     ) -> SendOutcome | None:
-        if position.closed_at is not None or self._desk.exit_working(session, position.id):
-            return None  # one sale at a time; the next evaluation sees what it left
+        if position.closed_at is not None:
+            return None
         signal = session.get(HatSignal, position.signal_id)
         bot = session.get(HatBot, position.bot_id)
         symbol = session.scalar(
@@ -327,6 +363,15 @@ class TradeManager:
         )
         if signal is None or bot is None or symbol is None:
             return None
+        settled = self._settle_sales(session, position, signal.bot_id)
+        if settled in (UNREADABLE, STALE):
+            # STALE: a lost sale of an earlier session that today's book cannot show may have
+            # sold, so the open quantity may be stale: nothing more is sold; the broker stop
+            # keeps protecting the position and the owner reconciles it.
+            self._not_placed(signal, position, "sale_unresolved", now)
+            return None
+        if settled == WAIT or self._desk.exit_working(session, position.id):
+            return None  # one sale at a time; the next evaluation sees what it left
         # Checked at the moment of sending: a close job that started at 15:24 still sends
         # nothing from 15:30 on (HAT-EXEC-074).
         if not self._orders_allowed(sending()):
@@ -335,7 +380,7 @@ class TradeManager:
         if not self._reconciled(session, bot.broker_account_id):
             self._not_placed(signal, position, "not_reconciled", now)
             return None
-        if self._rejections(session, signal.id, purpose, now) >= MAX_SALE_REJECTIONS:
+        if rejected_sales(session, signal.id, purpose, now) >= MAX_SALE_REJECTIONS:
             return None  # refused twice today and alerted then; tried again the next session
         if not self._desk.make_room(session, position.id, position.qty_open - qty, now):
             self._not_placed(signal, position, "stop_not_moved", now)
@@ -350,25 +395,72 @@ class TradeManager:
             order_type=OrderType.MARKET,
             symbol=symbol,
             position_id=position.id,
+            rule_ids=tuple(rule_ids),
         )
         return self._send_sale(session, signal, position, request, rule_ids, rule, now)
 
-    @staticmethod
-    def _rejections(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
-        """Sales of `purpose` the broker rejected today for the signal."""
-        start, end = trades._day_bounds(trade_date_of(now))
-        count = session.scalar(
-            select(func.count())
-            .select_from(HatOrder)
-            .where(
-                HatOrder.signal_id == signal_id,
-                HatOrder.purpose == purpose,
-                HatOrder.status == "rejected",
-                HatOrder.placed_at >= start,
-                HatOrder.placed_at < end,
+    def _settle_sales(self, session: Session, position: HatPosition, bot_id: uuid.UUID) -> str:
+        """Settle the position's sales of unknown outcome before it is sold again (under its
+        sale lock, so nothing else is sending them): one reserved and never sent is cancelled;
+        one sent with its answer lost is looked up by its tag once `settle_after` has passed
+        (found: adopted; absent: it never landed, ends `expired` and its rules fire again).
+        One found with shares sold is left to the fill sync, which records its fills with it
+        (the position's open quantity is stale until then). The order book is today's, so a
+        lost sale of an earlier session that it does not hold may have sold: it is left unsure.
+        STALE (such a sale), UNREADABLE (the order book could not be read), WAIT (sent too
+        recently, or fills not yet recorded) or SETTLED, the first that applies."""
+        rows = list(
+            session.scalars(
+                select(HatOrder).where(
+                    HatOrder.position_id == position.id,
+                    HatOrder.is_virtual.is_(False),
+                    HatOrder.purpose.in_(EXIT_SALES),
+                    HatOrder.status.in_(UNSURE),
+                )
             )
         )
-        return int(count or 0)
+        lost = []
+        for row in rows:
+            if row.status == "pending" and row.placed_at is None:
+                row.status = "cancelled"  # reserved, never sent
+            else:
+                lost.append(row)
+        session.commit()
+        if not lost:
+            return SETTLED
+        try:
+            book = {order.tag: order for order in self._broker.orders()}
+        except BrokerUnavailableError:
+            return UNREADABLE
+        stale = waiting = False
+        for row in lost:
+            found = book.get(row.tag)
+            if found is None and self._earlier_session(row):
+                stale = True
+            elif found is None and self._young(row):
+                waiting = True  # sent too recently: it may still be on its way
+            elif found is None:
+                end_lost_order(session, row)
+            elif found.filled_qty > 0:
+                waiting = True
+            else:
+                adopt_broker_order(session, row, found, bot_id)
+            session.commit()
+        if stale:
+            return STALE
+        return WAIT if waiting else SETTLED
+
+    def _young(self, row: HatOrder) -> bool:
+        """Sent less than `settle_after` ago (wall clock): its answer may still be on its way."""
+        return (
+            row.placed_at is not None and self._wall() - as_utc(row.placed_at) < self._settle_after
+        )
+
+    def _earlier_session(self, row: HatOrder) -> bool:
+        """The order was sent on an earlier trade date than today's (by the wall clock)."""
+        return row.placed_at is not None and trade_date_of(as_utc(row.placed_at)) < trade_date_of(
+            self._wall()
+        )
 
     def _send_sale(
         self,
@@ -381,7 +473,7 @@ class TradeManager:
         now: datetime,
     ) -> SendOutcome | None:
         sent: SendOutcome | None = None
-        left = MAX_SALE_REJECTIONS - self._rejections(session, signal.id, request.purpose, now)
+        left = MAX_SALE_REJECTIONS - rejected_sales(session, signal.id, request.purpose, now)
         for _ in range(left):
             try:
                 tag = reserve_order(session, request)
@@ -404,7 +496,8 @@ class TradeManager:
             except UnresolvedOrderError:
                 return sent
             if sent.status != "rejected":
-                # Placed, or unknown (looked up by tag before any retry): the rule has fired.
+                # Placed, or unknown (looked up by tag before the position is sold again): the
+                # rule has fired; it fires again if the sale ends without selling.
                 if rule_ids:
                     live_trades.mark_fired(session, position.id, rule_ids)
                 session.commit()
@@ -543,13 +636,16 @@ class TradeManager:
     def end_session(self, session: Session, account_id: uuid.UUID, now: datetime) -> int:
         """After the close: an entry whose order may have been sent but that the broker's book
         does not hold ends its signal Rejected (`entry_not_found`); a reserved entry that was
-        never sent is cancelled with it. Returns the number of signals ended. Nothing is ended
-        when the book cannot be read."""
+        never sent is cancelled with it. A sale of unknown outcome the book does not hold ends
+        `expired` (cancelled when never sent) and its rules fire again (a DAY market sale cannot
+        fill after the close). An order sent less than `settle_after` ago is left for the next run
+        (HAT-EXEC-065). Returns the number of signals ended. Nothing is ended when the book cannot
+        be read."""
         rows = list(
             session.scalars(
                 select(HatOrder).where(
                     HatOrder.broker_account_id == account_id,
-                    HatOrder.purpose == ENTRY,
+                    HatOrder.purpose.in_((ENTRY, *EXIT_SALES)),
                     HatOrder.is_virtual.is_(False),
                     HatOrder.status.in_(UNSURE),
                 )
@@ -563,8 +659,17 @@ class TradeManager:
             return 0
         ended = 0
         for row in rows:
-            if row.tag in book:
-                continue  # the next sync adopts it
+            if row.tag in book or self._young(row):
+                continue  # the next sync adopts it; a young one may still be on its way
+            if row.purpose != ENTRY:
+                if row.placed_at is None:
+                    row.status = "cancelled"
+                else:
+                    if self._earlier_session(row):
+                        continue  # today's book cannot show it: left to the owner
+                    end_lost_order(session, row)
+                session.commit()
+                continue
             row.status = "cancelled" if row.placed_at is None else "expired"
             if trades.reject_signal(session, row.signal_id, ENTRY_NOT_FOUND, now):
                 ended += 1

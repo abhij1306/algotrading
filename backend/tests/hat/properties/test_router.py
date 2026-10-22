@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
+from app.hat.engine.portfolio import lifecycle as sleeves
 from app.hat.execution import modes
 from app.hat.execution.broker import OrderType, Side
 from app.hat.execution.fyers_adapter import FyersHatBroker
@@ -578,3 +579,29 @@ def test_refused_entry_is_not_sent(kill: str, reserved: str) -> None:
             row = session.scalar(select(HatOrder).where(HatOrder.tag == tag))
             assert row is not None
             assert row.status == "cancelled"
+
+
+@settings(max_examples=40, deadline=None)
+@given(state=st.sampled_from(sleeves.STATES), mode=MODE, gtt=st.booleans())
+def test_non_live_sleeve_routes_as_shadow(state: str, mode: str, gtt: bool) -> None:
+    """HAT-PORT-063, HAT-EXEC-012: a bot whose sleeve is not Live (research, backtested, shadow,
+    probation, retired) runs shadow whatever mode it asked for and whatever its account can do:
+    `bot_mode` is shadow and the router places nothing at the broker. A Live sleeve runs the
+    mode its account allows. Harm: a sleeve with no evidence, or one in probation, places real
+    orders."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=mode, gtt=gtt)
+        bot = session.get(HatBot, rig.world.bot_id)
+        assert bot is not None
+        bot.lifecycle_state = state
+        session.commit()
+        allowed = modes.effective_mode(
+            mode, account_status="active", capabilities={"gtt_delivery": gtt}
+        )
+        expected = allowed if state == sleeves.LIVE else modes.SHADOW
+        assert modes.bot_mode(session, bot, AT, CALENDAR) == expected
+        outcome = rig.route()
+        assert outcome.mode == expected
+        if expected != modes.AUTO:
+            assert rig.places() == []
+            assert rig.fake.calls == []

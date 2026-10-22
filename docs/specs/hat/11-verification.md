@@ -81,7 +81,7 @@ outside this list without updating this section.
 | `TradeLifecycle` | 11 states, 4 endings, legal transitions only, every pre-entry state eventually opens or ends, a fired exit eventually closes | 11, 15 | 07 §4 |
 | `ExecutionRouter` | Mode routing (shadow/confirm/auto), mode changes effective next session, no order when stale, outside hours, killed, or (confirm or auto) without GTT | 15 | 07 §1-§3, 06 §6-§7 |
 | `ApprovalToken` | Signed, single-use, expiring token; price re-check against max-chase at take; `/kill` cancels pending approvals | 15, 16 | 08 §4, 07 §3 |
-| `StopPlacement` | Stop only tightens; intraday SL on every real fill; GTT swap around 15:25 leaves no unprotected gap; nightly GTT verify | 13, 15 | 07 §5-§6, 03 §5 |
+| `StopPlacement` | Stop only tightens; intraday SL on every real fill; GTT swap around 15:25 leaves no unprotected gap; nightly GTT verify; a lost GTT answer is settled and never blocks a sale | 13, 15, 18 | 07 §5-§6, 03 §5 |
 | `OrderReconciliation` | Persist PENDING before the broker call; tag idempotency; unconfirmed submit resolved by tag; reconcile before the first order; a rejected order is retried at most once | 13, 15 | 07 §10-§11 |
 | `KillSwitch` | Account, bot, manual and health switches; manage-only blocks entries and never exits; manual re-arm vs automatic re-arm for health | 10 | 06 §6 |
 | `JobScheduler` | At most one success per (job, trade_date); a failed job can be retried; the intraday order | 2, 14, 15, 17 | 10 §2-§3 |
