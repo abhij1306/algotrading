@@ -130,8 +130,9 @@ def confirm_ddpi(
     from the next session open on. Refused, writing nothing: an account that is not the user's
     or not active (`account_not_active`), inside market hours or without a calendar row
     (`market_hours`), a date after today (`ddpi_date_in_future`), an empty or overlong note
-    (`ddpi_note_required`), or an account already confirmed (`ddpi_already_confirmed`)."""
-    account = session.get(HatBrokerAccount, account_id)
+    (`ddpi_note_required`), or an account already confirmed (`ddpi_already_confirmed`). The
+    account row is locked first, so of two confirmations at once the second sees the first."""
+    account = session.get(HatBrokerAccount, account_id, with_for_update=True)
     if account is None or account.user_id != user_id or account.status != ACCOUNT_ACTIVE:
         raise OnboardingError("account_not_active")
     if calendar.state(now) is not SessionState.CLOSED:

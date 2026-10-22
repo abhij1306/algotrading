@@ -6,7 +6,7 @@ Build decision (OWN-20OCT): orders go through HAT's own broker interface (`app/h
 
 ## §1 Execution modes
 
-Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, no broker), **confirm** (Telegram Take/Skip, then a real order), **auto** (real order without asking). Default shadow (B2, revised). All three run the same risk check. Auto is for the owner's own accounts only (MA "Execution modes").
+Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, no broker), **confirm** (Telegram Take/Skip, then a real order), **auto** (real order without asking). A new bot asks for confirm and runs shadow until its gates pass (B2, revised; HAT-EXEC-011, HAT-GOV-085). All three run the same risk check. Auto is for the owner's own accounts only (MA "Execution modes").
 
 #### HAT-EXEC-010: Shadow never reaches the broker
 - **Statement:** A bot in shadow mode never calls any broker method; its orders, fills and positions are written with `is_virtual = true`.
@@ -32,7 +32,7 @@ Mode is a per-bot switch (`hat_bot.execution_mode`): **shadow** (virtual fills, 
 - **PR:** 45
 - **Verification:** PBT `router.auto_places_only_high_confidence`
 - **Acceptance:**
-  - Property: for every confidence value (high, medium, low, none, anything else), an accepted auto signal sends exactly one entry order when it is `high` and otherwise writes an approval card, moves the signal to AwaitingApproval and calls no broker. Harm: a medium- or low-confidence trade is bought without the owner's approval.
+  - Property: for every confidence value (high, medium, low, none, anything else), an accepted auto signal labelled `high` sends exactly one entry order when the live conditions read at placement allow it (§2; otherwise none and the signal Rejected with the reason), and any other label writes an approval card, moves the signal to AwaitingApproval and calls no broker. Harm: a medium- or low-confidence trade is bought without the owner's approval.
 
 #### HAT-EXEC-012: Auto requires a broker with delivery GTT
 - **Statement:** A bot cannot run in auto mode on a broker account whose capabilities lack reliable GTT for delivery (CNC); because every real fill needs an overnight broker-side stop, confirm mode is blocked on such an account too.

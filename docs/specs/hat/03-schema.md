@@ -366,11 +366,11 @@ create table hat_risk_policy_version (
 
 #### HAT-SCH-031: Status and mode domains are enforced
 - **Statement:** CHECK constraints restrict `hat_strategy_version.status`, `hat_risk_policy_version.direction`, `hat_bot.execution_mode` (shadow/confirm/auto), `hat_bot.status` (active/paused/manage_only), `hat_bot.lifecycle_state`, `hat_kill_switch.scope`/`state`, `hat_exposure_state.level` and `hat_criterion_type.stage` to the values in §3.
-- **Source:** SCH (Notes columns and SQL); B1 (revised), B2 (default shadow); PLAN C10 (`shadow|confirm|auto`).
+- **Source:** SCH (Notes columns and SQL); B1 (revised), B2 (default confirm since PR 45); PLAN C10 (`shadow|confirm|auto`).
 - **PR:** 2
 - **Verification:** DB `governance.domain_checks`
 - **Acceptance:**
-  - Property: for every one of these columns, inserting or updating to a value outside its §3 domain raises on Postgres and SQLite, and `hat_bot.execution_mode` defaults to `shadow`. Harm: an unknown mode such as the superseded `signal` reaches the router and is treated as auto.
+  - Property: for every one of these columns, inserting or updating to a value outside its §3 domain raises on Postgres and SQLite, and `hat_bot.execution_mode` defaults to `confirm` (PR 45; a database created earlier has its default reset by `ensure_hat_schema`). Harm: an unknown mode such as the superseded `signal` reaches the router and is treated as auto.
 - **[OWNER-PENDING]** Value sets the docs do not list: `hat_kill_switch.state` {tripped, armed}, `hat_kill_switch.reason` {drawdown_account, drawdown_bot, manual, data_health, feed_health, broker_health}, `hat_mode_change.via` {telegram, dashboard} and `hat_quality_check.status` {PASS, FAIL}: defaults derived from BL "Kill switches" and the event catalogue; owner to confirm.
 
 #### HAT-SCH-032: Bots and strategy versions hold no risk numbers

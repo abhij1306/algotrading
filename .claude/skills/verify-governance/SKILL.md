@@ -12,7 +12,7 @@ Checks that the HAT database enforces its own rules (so no bug or manual edit ca
 - `DB governance.*` Postgres rejects: a changed config or `config_hash` of a published strategy or universe version (and returning one to draft), a second live version per strategy, a risk-policy edit other than setting `superseded_at`, a risk increase effective sooner than 168 hours after it was requested, a delete of a risk policy, domain violations (status, mode, state values), a kill-switch scope without its bot, and an exposure row outside L1 to L3 or with a negative counter. Harm: a live strategy changes under a running bot, or risk is raised with no cooling-off, and nothing stops it.
 - `DB reference.*` Postgres rejects a duplicate instrument, broker symbol, corporate action or announcement GUID, and a price band outside its range. Harm: duplicated reference rows split history and double-apply corporate actions.
 - `DB portfolio.*` Postgres rejects duplicate keys and out-of-domain values in universes, regime states, allocations and fundamentals. Harm: two weights or regimes for one day, so sizing is ambiguous.
-- `DB migration.ensure_idempotent` Running `ensure_hat_schema` or `ensure_hat_columns` any number of times gives the catalog (tables, indexes, constraints, triggers) of running it once and loses no data, and `ensure_hat_schema` issues no DDL on SQLite. Harm: a restart fails or duplicates triggers during startup.
+- `DB migration.ensure_idempotent` Running `ensure_hat_schema` or `ensure_hat_columns` any number of times gives the catalog (tables, indexes, constraints, triggers) of running it once and loses no data, and `ensure_hat_schema` issues no DDL on SQLite. A database from before PR 45 (bots defaulting to shadow, no DDPI columns) gets the `confirm` default and the columns back. Harm: a restart fails or duplicates triggers during startup.
 - `PBT ids.uuid7_ordered` Every `uuid7()` is version 7, variant RFC 9562, and strictly increasing within a process, also across threads and inside one millisecond. Harm: ids collide or lose time order, breaking idempotency keys and index locality.
 - `PBT time.trade_date_ist` For every UTC instant, `trade_date_of` is the Asia/Kolkata calendar date; naive instants are rejected. Harm: an evening job writes rows under tomorrow's or yesterday's date.
 - `PBT config.hash_canonical` The config hash is a sha256 of canonical JSON: key order and spacing never change it, any value change does, equal hashes mean equal configs, and 0.0 and -0.0 hash the same. Harm: a strategy looks unchanged when it changed, or changed when it did not, so version immutability is meaningless.
@@ -162,6 +162,13 @@ Break: in `backend/app/hat/schema.py`: `PG_DDL` no longer adds `hat_signal_state
 
 ```
 FAILED tests/hat/db/test_db_migration.py::test_migration__ensure_idempotent
+```
+
+Break: (PR 45 review) `PG_DDL` without the `ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'confirm'` statement: an upgraded database keeps creating shadow bots.
+
+```
+E   AssertionError: assert False
+E    +  where False = "'shadow'::text".startswith("'confirm'")
 ```
 
 ### PBT ids.uuid7_ordered

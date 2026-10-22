@@ -312,7 +312,7 @@ class StatusView:
 
 # Why a bot runs a mode other than the one asked for (`execution.modes.ModeView.why`).
 MODE_REASONS: Mapping[str, str] = {
-    "no_gtt_delivery": "account has no GTT for delivery",
+    "no_gtt_delivery": "account not active or no GTT for delivery",
     "ddpi_not_confirmed": "DDPI not confirmed",
     "weights_not_confirmed": "base weights not confirmed",
     "unknown_mode": "unknown mode",

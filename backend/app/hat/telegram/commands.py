@@ -276,7 +276,7 @@ def _owner_accounts(session: Session, bots: Sequence[HatBot]) -> bool:
 # A gate's code as `/mode` reports it (`mode_needs_gtt` predates the other gates).
 _GATE_REASONS = {NO_GTT_DELIVERY: "mode_needs_gtt"}
 _REFUSAL_TEXT = {
-    "mode_needs_gtt": "the account has no GTT for delivery",
+    "mode_needs_gtt": "the account is not active or has no GTT for delivery",
     "ddpi_not_confirmed": "DDPI is not confirmed on the account (admin confirm-ddpi)",
     "weights_not_confirmed": "the owner has not confirmed the base weights and cluster cap",
 }
@@ -352,6 +352,8 @@ def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
     bots = reads.bots_named(session, args[0])
     if not bots:
         return refused("unknown_bot")
+    if len(bots) > 1:  # one name, several bots (one strategy on two accounts): name it by id
+        return refused("ambiguous_bot", "Refused: ambiguous_bot (name the bot by its id)")
     if to_mode != AUTO:
         return queue_modes(session, bots, to_mode, ctx.now, ctx.chat_id)
     calendar = session_calendar(session)

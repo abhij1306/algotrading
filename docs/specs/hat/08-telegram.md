@@ -176,8 +176,9 @@ From PLAN §4.4 and DS "Telegram / Commands", with PLAN C10 applied (`signal` is
 | `/login [broker]` | Fresh login link | Any time |
 
 Implementation (PR 16): a command with no bot (`/pause`, `/resume`) applies to every bot,
-all or none. `/mode` names its bot (PR 45, D130): a mode is switched one bot at a time, and a
-refusal says which gate holds it back (HAT-TG-038). `/arm` re-arms every tripped kill switch. The second confirmation is a Confirm button
+all or none. `/mode` names its bot (PR 45, D130): a mode is switched one bot at a time, a name that
+matches more than one bot is refused `ambiguous_bot` (name it by its id), and a refusal says
+which gate holds it back (HAT-TG-038). `/arm` re-arms every tripped kill switch. The second confirmation is a Confirm button
 whose callback is a random 128-bit nonce held in memory for 5 minutes (the same window as
 approvals); it is consumed by its first press, and a restart drops it, so the command has to be
 sent again. `/flatten` sells every open real position (a virtual trade has nothing at the broker).
@@ -254,7 +255,7 @@ named belongs to `HAT_USER_ID` (HAT-OVR-061).
 - **PR:** 45
 - **Verification:** PBT `telegram.mode_names_a_bot_and_its_gate`
 - **Acceptance:**
-  - Property: for every mode word and every state of the DDPI flag and the policy's `weights_confirmed`, `/mode <mode>` without a bot is refused with nothing written, `/mode <bot> <mode>` is refused with the first failing gate's code and nothing written, or accepted and queued; `/status` then shows the queued change and the mode the bot runs. Harm: the owner switches every bot at once by mistake, or cannot tell why a bot stays in shadow.
+  - Property: for every mode word and every state of the DDPI flag and the policy's `weights_confirmed`, `/mode <mode>` without a bot is refused with nothing written, `/mode <bot> <mode>` is refused with the first failing gate's code and nothing written, or accepted and queued (auto only once its Confirm is pressed); a name two bots share is refused `ambiguous_bot` with nothing written; `/status` then shows the queued change and the mode the bot runs. Harm: the owner switches every bot at once by mistake, or cannot tell why a bot stays in shadow.
 
 #### HAT-TG-037: /status, /positions, /watchlist and /login are read-only
 - **Statement:** `/status`, `/positions`, `/watchlist` and `/login` change no trading state (`/login` only issues a fresh broker login link).

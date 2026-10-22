@@ -288,11 +288,10 @@ def _bot_view(bot: HatBot, rows: list[kill.KillRow], name: str, mode: modes.Mode
     )
 
 
-def _bots(session: Session, rows: list[kill.KillRow] | None = None) -> list[BotView]:
+def _bots(session: Session, now: datetime, rows: list[kill.KillRow] | None = None) -> list[BotView]:
     rows = _kill_rows(session) if rows is None else rows
     bots = _all_bots(session)
     labels = _labels(session, (bot.id for bot in bots))
-    now = utc_now()
     calendar = session_calendar(session)
     return [
         _bot_view(bot, rows, labels[bot.id], modes.mode_view(session, bot, now, calendar))
@@ -383,7 +382,7 @@ def _status(session: Session, now: datetime) -> StatusResponse:
         kill_account=kill.current_state(rows, "account", None) == kill.TRIPPED,
         feed_stale_at=_feed_stale_at(session, day),
         regime=regime[0] if regime else None,
-        bots=_bots(session, rows),
+        bots=_bots(session, now, rows),
         kill_switches=_kill_switches(rows),
         sessions=_sessions(session, day),
         jobs=_jobs(session, day),
@@ -552,9 +551,9 @@ def hat_status(db: Db, now: Now) -> StatusResponse:
 
 
 @router.get("/bots", responses=ERRORS)
-def hat_bots(db: Db) -> list[BotView]:
+def hat_bots(db: Db, now: Now) -> list[BotView]:
     """Every bot with its execution mode and why it is manage-only, if it is."""
-    return _read("bots", lambda: _bots(db))
+    return _read("bots", lambda: _bots(db, now))
 
 
 @router.get("/watchlist", responses=ERRORS)

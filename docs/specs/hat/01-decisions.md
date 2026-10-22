@@ -154,7 +154,7 @@ OpenAlgo rows). The owner's verification instruction (OWN-FV) overrides T16.
   - Property: in every reachable state, every bot's execution mode is in {shadow, confirm, auto}. Harm: a bot in an undefined mode routes orders by accident. Detail: 07 §1.
 
 #### HAT-DEC-B2: Default mode confirm (revised, D130/D132)
-- **Statement:** A new bot asks for confirm mode (manual approval of each trade); it runs shadow until its sleeve is Live, its account reports GTT for delivery and has DDPI confirmed, and the owner has confirmed the policy's base weights and cluster cap (07 HAT-EXEC-011, 06 HAT-GOV-085).
+- **Statement:** A new bot asks for confirm mode (manual approval of each trade); it runs shadow until its sleeve is Live, its account is active, reports GTT for delivery and has DDPI confirmed, and the owner has confirmed the policy's base weights and cluster cap (07 HAT-EXEC-011, 06 HAT-GOV-085).
 - **Source:** MA "Recommended options" (B2, revised); D130, D132; plan audit 2026-10-22 PR 45.
 - **PR:** 8, 15, 45
 - **Verification:** CONF `seed_bots_confirm`
