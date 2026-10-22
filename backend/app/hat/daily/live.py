@@ -44,6 +44,7 @@ from ..engine.exits import ExitView, Phase
 from ..engine.live_entry import route_by_mode
 from ..engine.live_trades import record_close_evaluation
 from ..engine.regime_gate import regime_allows_longs
+from ..engine.rescale import pending_actions
 from ..engine.strategy.config import parse_config
 from ..execution.manage import in_close_window
 from ..execution.modes import SHADOW, bot_mode
@@ -64,7 +65,7 @@ from ..risk.decision import SignalContext
 from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
-from ..time import IST, trade_date_of, utc_now
+from ..time import IST, as_utc, trade_date_of, utc_now
 from .market import DailyBook, held_sessions, index_closes, sessions_before
 
 __all__ = [
@@ -329,7 +330,9 @@ class LiveRoute:
 
 class ExitViews:
     """The exits' `ViewSource`: the live price, the sessions held and the daily levels of the
-    position's pinned exit rules. None without a live price."""
+    position's pinned exit rules. None without a live price, and None while the position awaits
+    a split or bonus rescale: its prices are on the old scale, so no exit fires from the action
+    alone (HAT-EXEC-142)."""
 
     def __init__(
         self,
@@ -348,12 +351,15 @@ class ExitViews:
         if price is None:
             return None
         today = trade_date_of(utc_now(self._clock))
+        if pending_actions(session, position, today):
+            logger.warning("position %s awaits a corporate-action rescale", position.id)
+            return None
         signal = session.get(HatSignal, position.signal_id)
         if signal is None:
             return None
         calendar = self._calendar()
         trading = calendar.trading_days() if calendar is not None else []
-        held = held_sessions(trading, trade_date_of(position.opened_at), today)
+        held = held_sessions(trading, trade_date_of(as_utc(position.opened_at)), today)
         rules = trades.exit_rules_of(session, signal)
         return self._book.day(today).exit_view(position.instrument_id, price, rules, held)
 

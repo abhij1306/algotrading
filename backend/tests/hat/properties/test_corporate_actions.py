@@ -117,7 +117,8 @@ def _product(actions: list[ActionFactor], iid: uuid.UUID, keep: Callable[[date],
 @settings(max_examples=80)
 def test_adjusted_view(world: tuple) -> None:
     """adj price(d) = raw x product of factors with ex_date > d (open, high, low, close);
-    adj prev_close(d) = raw x product with ex_date >= d; after the last ex-date adj = raw; and
+    adj prev_close(d) = raw x the same product (NSE's ex-date prev_close is already adjusted,
+    F14); after the last ex-date adj = raw; and
     the raw files are byte-identical after the view is created and read."""
     bars, actions = world
     with tempfile.TemporaryDirectory() as tmp:
@@ -134,10 +135,9 @@ def test_adjusted_view(world: tuple) -> None:
     for iid, day, *adjusted in rows:
         o, h, low, c, p, _ = bars[uuid.UUID(iid)][day]
         cum = _product(actions, uuid.UUID(iid), lambda ex, day=day: ex > day)
-        prev = _product(actions, uuid.UUID(iid), lambda ex, day=day: ex >= day)
         with localcontext() as ctx:
             ctx.prec = 80
-            assert adjusted == [o * cum, h * cum, low * cum, c * cum, p * prev]
+            assert adjusted == [o * cum, h * cum, low * cum, c * cum, p * cum]
             if all(a.ex_date <= day for a in actions if a.instrument_id == uuid.UUID(iid)):
                 assert adjusted[:4] == [o, h, low, c]
 

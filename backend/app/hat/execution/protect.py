@@ -51,6 +51,7 @@ from decimal import ROUND_FLOOR, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..engine.rescale import applied_factors
 from ..errors import HatError
 from ..events import record
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
@@ -647,6 +648,35 @@ class StopDesk:
             done = self._move(session, target, row, goal, tick, now) and done
         return done
 
+    def rescaled(self, session: Session, position_id: uuid.UUID, now: datetime) -> bool:
+        """After a split or bonus rescaled the position (`position.rescaled`, HAT-EXEC-143): move
+        every live broker stop resting above the rescaled stop down to it, keeping the quantity
+        the broker stop already covers; the fill sync then resizes it to the rescaled quantity,
+        so a refused resize (shares not yet credited) still leaves the old shares under the new
+        stop. Waits while a sale is working. The only move down a broker stop makes, and only
+        for a rescaled position. True when no stop is left above the position's stop."""
+        target = self._target(session, position_id)
+        position = target.position
+        if position.closed_at is not None or position.qty_open <= 0:
+            return True
+        if not applied_factors(session, position.id):
+            return True
+        if self.exit_working(session, position.id):
+            return False  # the sale holds the shares; the next sync tries again
+        tick = self._tick_for(session, position)
+        goal = broker_trigger(Decimal(position.current_stop), tick)
+        done = True
+        for row in self.stops_of(session, position.id, *LIVE):
+            if row.trigger_price is None or Decimal(row.trigger_price) <= goal:
+                continue
+            if row.purpose == STOP_GTT and tick is None:
+                self._alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
+                done = False
+                continue
+            moved = self._move(session, target, row, goal, tick, now, qty=row.qty)
+            done = moved and done
+        return done
+
     def _move(
         self,
         session: Session,
@@ -655,29 +685,31 @@ class StopDesk:
         goal: Decimal,
         tick: Decimal | None,
         now: datetime,
+        *,
+        qty: int | None = None,
     ) -> bool:
         if row.broker_order_id is None:
             return False
         limit: Decimal | None = None
         if row.purpose == STOP_DAY:
+            sized = {} if qty is None else {"qty": qty}  # a rescale keeps the stop's own size
             ack = self._broker.modify_order(
-                row.broker_order_id, order_type=OrderType.SL_M, trigger_price=goal
+                row.broker_order_id, order_type=OrderType.SL_M, trigger_price=goal, **sized
             )
         else:
             if tick is None:
                 self._alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
                 return False
             limit = gtt_limit_price(goal, tick)
-            ack = self._broker.modify_gtt(
-                GttModify(row.broker_order_id, target.position.qty_open, goal, limit)
-            )
+            size = target.position.qty_open if qty is None else qty
+            ack = self._broker.modify_gtt(GttModify(row.broker_order_id, size, goal, limit))
         if not ack.ok:
             self._alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
             return False
         row.trigger_price = goal
         if limit is not None:
             row.price = limit
-            row.qty = target.position.qty_open
+            row.qty = size
             self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
         session.commit()
         return True

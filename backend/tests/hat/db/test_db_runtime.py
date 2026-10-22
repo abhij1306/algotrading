@@ -54,6 +54,11 @@ def test_governance__stop_only_rises(conn: Connection) -> None:
 
 
 @pytest.mark.postgres
+def test_governance__rescale_moves_stop(conn: Connection) -> None:
+    rules.check_governance__rescale_moves_stop(conn)
+
+
+@pytest.mark.postgres
 def test_runtime__state_domain(conn: Connection) -> None:
     rules.check_runtime__state_domain(conn)
 

@@ -52,6 +52,7 @@ from ..time import IST, utc_now
 from . import lifecycle, trades
 from .criteria import CriterionResult, EvalContext, evaluate
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
+from .rescale import SKIP_ACTION_PENDING, awaits_rescale
 from .scan import EP_PLAYBOOK
 from .strategy.config import Playbook, StrategyConfig, parse_config
 from .trigger import (
@@ -366,8 +367,12 @@ def submit_trigger(
     route: Route = route_by_mode,
 ) -> trades.EntryOutcome:
     """Write the signal of a fired trigger through `route` (the default writes in the caller's
-    transaction and does not commit; the execution router commits its own steps)."""
+    transaction and does not commit; the execution router commits its own steps). An instrument
+    with an open position awaiting a split or bonus rescale is manage-only: its trigger is stored
+    skipped, `corporate_action_pending` (HAT-EXEC-142)."""
     request = entry_request(trigger, base, feed_stale=feed_stale)
+    if awaits_rescale(session, request.instrument_id, request.trade_date):
+        request = replace(request, skip_reason=SKIP_ACTION_PENDING)
     return route(session, request, decide=decide)
 
 

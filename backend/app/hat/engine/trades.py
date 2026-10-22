@@ -76,7 +76,7 @@ from ..risk.policy import PolicyVersion, effective_version
 from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..time import as_utc, day_bounds, trade_date_of
-from . import exits, lifecycle
+from . import exits, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_WIDE
 from .strategy.config import ExitRule, parse_config
@@ -146,6 +146,7 @@ ENTRY_SKIP_REASONS = frozenset(
         "max_chase",
         "level_undefined",
         "no_live_price",
+        rescale.SKIP_ACTION_PENDING,
     }
 )
 _ZERO = Decimal(0)
@@ -880,13 +881,21 @@ def exit_rules_of(session: Session, signal: HatSignal) -> list[ExitRule]:
     return list(parse_config(version.config).exits)
 
 
-def _entry_qty(session: Session, signal: HatSignal) -> int:
-    qty = session.scalar(
-        select(func.coalesce(func.sum(HatFill.qty), 0))
-        .join(HatOrder, HatOrder.id == HatFill.order_id)
-        .where(HatOrder.signal_id == signal.id, HatOrder.purpose == "entry")
+def _entry_qty(session: Session, signal: HatSignal, position: HatPosition) -> int:
+    """The shares the entry bought, on the position's current scale: each split or bonus applied
+    to it since (`position.rescaled`) scales them as it scaled `qty_open`, so R and the partial
+    exits stay on one scale (HAT-EXEC-141)."""
+    qty = int(
+        session.scalar(
+            select(func.coalesce(func.sum(HatFill.qty), 0))
+            .join(HatOrder, HatOrder.id == HatFill.order_id)
+            .where(HatOrder.signal_id == signal.id, HatOrder.purpose == "entry")
+        )
+        or 0
     )
-    return int(qty or 0)
+    for factor in rescale.applied_factors(session, position.id):
+        qty = rescale.scale_qty(qty, factor)
+    return qty
 
 
 def trade_r(realized_pnl: Decimal, avg_entry: Decimal, initial_stop: Decimal, qty: int) -> Decimal:
@@ -951,7 +960,7 @@ def position_state(
     `evaluate_position` hands to `exits.evaluate`."""
     signal, _ = _signal_and_bot(session, position)
     state = exits.PositionState(
-        qty_original=_entry_qty(session, signal),
+        qty_original=_entry_qty(session, signal, position),
         qty_open=position.qty_open,
         avg_entry=Decimal(position.avg_entry),
         initial_stop=Decimal(position.initial_stop),
@@ -1147,7 +1156,7 @@ def _write_result(
         fees += Decimal(fee)
     entry = Decimal(position.avg_entry)
     stop = Decimal(position.initial_stop)
-    qty = _entry_qty(session, signal)
+    qty = _entry_qty(session, signal, position)
     risk = entry - stop
     r = trade_r(pnl, entry, stop, qty)
     top = max(entry, high if high is not None else entry)
