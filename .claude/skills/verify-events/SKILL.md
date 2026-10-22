@@ -84,12 +84,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `acfb64ae7c1b2670a4adef62440f65d85c8e422a28a9cf5ca6ceff6a796955c3`
+Covered digest: `cd8e8249fc985e32de7a708f2b748a294f6d0736effbfacdd7360d99bf4dff07`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 32 changed `test_telegram.py` (the HAT-TG-011 offset property, checked by `verify-telegram`); `telegram.retention_purge`, the check covered here, is unchanged and passes.
 - `watchlist.published` carries no correlation id: it belongs to a bot and a day, not to one signal, although 03 §6 puts it in the Signals group. `record()` and `events.correlation` exempt it. Recorded as a finding in the PR.
 - `record()` requires `payload.chat_id` for `actor = user` but does not decide which event types are user-initiated: that is the Telegram layer's call (PR 16, HAT-SCH-065).
 - `PBT events.ids_increasing` runs on SQLite only (the properties job has no Postgres); the Postgres identity is checked by `DB events.partitioned`.

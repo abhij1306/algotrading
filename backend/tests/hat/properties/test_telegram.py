@@ -36,6 +36,7 @@ from hat_telegram_support import (
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy import ColumnElement, delete, select
+from sqlalchemy import event as sa_event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
@@ -68,13 +69,13 @@ from app.hat.risk.sessions import SessionCalendar, SessionState
 from app.hat.telegram import reads, store
 from app.hat.telegram.callbacks import ManagerFlattener
 from app.hat.telegram.client import BotClient, HttpsTransport, TelegramError
-from app.hat.telegram.commands import COMMANDS, parse
-from app.hat.telegram.confirm import CONFIRM_WINDOW
+from app.hat.telegram.commands import COMMANDS, Reply, parse
+from app.hat.telegram.confirm import CONFIRM_WINDOW, PendingConfirmations
 from app.hat.telegram.notifier import RELAYED_CODES
 from app.hat.telegram.relay import GAP_WAIT, POSITION_EVENTS, RELAY_LAG, EventRelay
 from app.hat.telegram.render import URGENT_ALERTS
 from app.hat.telegram.reports import Reports, is_week_end, telegram_jobs
-from app.hat.telegram.service import TelegramService
+from app.hat.telegram.service import UNKNOWN_CHAT, TelegramService
 from app.hat.telegram.tokens import SKIP, TAKE, ApprovalSigner, token_hash
 from app.hat.time import IST, as_utc, utc_now
 
@@ -548,63 +549,151 @@ def test_no_free_text_orders(texts: list[str]) -> None:
         assert session.scalars(select(HatOrder).where(HatOrder.purpose == "entry")).all() == []
 
 
-# --- HAT-TG-011: at most once, none lost --------------------------------------------------------
+# --- HAT-TG-011: none dropped, none applied twice --------------------------------------------
 
 
-class CrashError(Exception):
-    """The process dies here."""
+class CrashError(BaseException):
+    """The process dies here: not an `Exception`, so no handler's error branch catches it."""
 
 
 class CrashingService(TelegramService):
-    def __init__(self, *args: object, crash: tuple[int, str] | None, **kwargs: object) -> None:
-        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+    """The service of one process life that dies at `crash`: (update id, where), where is
+    `before` (the update has not run), `commit` (at `handle`'s last commit, the one that writes
+    the command-log row and the offset; a handler's own earlier commits stand) or `after` (the
+    update is done, its reply not yet sent)."""
+
+    def __init__(self, rig: TgRig, crash: tuple[int, str] | None) -> None:
+        super().__init__(
+            rig.client,
+            self._session,
+            signer=rig.signer,
+            confirmations=PendingConfirmations(),  # in memory: a new process starts with none
+            desk=rig.desk,
+            flattener=rig.flattener,
+            clock=lambda: rig.now,
+        )
+        self._real = rig.factory
         self._crash = crash
+        self._dying = False
+
+    def _session(self) -> Session:
+        session = self._real()
+        if self._dying:
+            commit = session.commit
+
+            @sa_event.listens_for(session, "before_flush")
+            def seen(flushing: Session, _context: object, _instances: object) -> None:
+                if any(isinstance(row, HatCommandLog) for row in flushing.new):
+                    flushing.info["logged"] = True
+
+            def dying_commit() -> None:
+                # the command-log row is flushed when written: the commit after that is the
+                # one that writes it and the offset; a handler's earlier commits come before
+                if session.info.get("logged"):
+                    raise CrashError
+                commit()
+
+            session.commit = dying_commit  # type: ignore[method-assign]
+        return session
 
     def handle(self, update: dict) -> object:  # type: ignore[override]
-        if self._crash == (update["update_id"], "before"):
-            raise CrashError  # after the offset was committed, before the update ran
+        where = self._crash[1] if self._crash and self._crash[0] == update["update_id"] else None
+        if where == "before":
+            raise CrashError
+        self._dying = where == "commit"
         handled = super().handle(update)
-        if self._crash == (update["update_id"], "after"):
+        if where == "after":
             raise CrashError
         return handled
 
 
-@SLOW
+CRASH_POINTS = ("before", "commit", "after")
+# What each update is: a text command, a message from another chat, a command whose handler
+# raises (the error row), or the Take of a card (only the first one drawn; later ones are text).
+KINDS = ("text", "text", "stranger", "failing", "take")
+
+
+class FailingService(CrashingService):
+    """Its handler raises an ordinary error for the updates in `failing`."""
+
+    def __init__(self, rig: TgRig, crash: tuple[int, str] | None, failing: set[int]) -> None:
+        super().__init__(rig, crash)
+        self._failing = failing
+        self._current: int | None = None
+
+    def handle(self, update: dict) -> object:  # type: ignore[override]
+        self._current = update["update_id"]
+        return super().handle(update)
+
+    def _run(self, *args: object, **kwargs: object) -> tuple[str, str | None, Reply]:  # type: ignore[override]
+        if self._current in self._failing:
+            raise RuntimeError("handler failed")
+        return super()._run(*args, **kwargs)  # type: ignore[arg-type]
+
+
+@settings(max_examples=40, deadline=None)
 @given(
-    st.lists(st.integers(min_value=1, max_value=4), min_size=1, max_size=8),
     st.lists(
-        st.tuples(st.integers(min_value=0, max_value=7), st.sampled_from(("before", "after"))),
+        st.tuples(st.integers(min_value=1, max_value=4), st.sampled_from(KINDS)),
+        min_size=1,
+        max_size=6,
+    ),
+    st.lists(
+        st.tuples(st.integers(min_value=0, max_value=5), st.sampled_from(CRASH_POINTS)),
         max_size=3,
     ),
 )
-def test_offset_at_most_once(gaps: list[int], crashes: list[tuple[int, str]]) -> None:
-    """HAT-TG-011: for every sequence of updates and every crash point in the poll loop, no
-    update is handled twice, and every update after the offset persisted at a restart is
-    handled; only an update the crash interrupted before it ran is dropped. Harm: a replayed
-    `/flatten` confirmation or Take acts twice; a dropped `/kill` does not act."""
+@example(updates=[(1, "take"), (1, "text")], crashes=[(0, "commit")])
+@example(updates=[(1, "text"), (1, "text")], crashes=[(1, "before")])
+@example(updates=[(1, "failing"), (1, "stranger"), (1, "text")], crashes=[(0, "commit")])
+def test_offset_commits_with_update(
+    updates: list[tuple[int, str]], crashes: list[tuple[int, str]]
+) -> None:
+    """HAT-TG-011: for every sequence of updates (text commands, messages from other chats,
+    commands whose handler fails, a Take button) and every crash point in the poll loop (before
+    an update runs, at the commit of its command-log row and offset, after it), polling again
+    until the queue is done leaves every update logged: each text command, stranger and failed
+    handler exactly once, the Take placing exactly one entry and accepted at most once (a Take
+    whose decision committed before the crash comes back as `already_decided`), and the offset
+    past the last update. Harm: a dropped `/kill` does not act; a replayed `/flatten`
+    confirmation or Take acts twice."""
     rig = TgRig()
-    ids = [sum(gaps[: n + 1]) for n in range(len(gaps))]
-    rig.transport.queued = [text_update(i, CHAT, f"/watchlist u{i}") for i in ids]
+    ids, kinds = [], {}
+    for gap, kind in updates:
+        ids.append((ids[-1] if ids else 0) + gap)
+        kinds[ids[-1]] = "text" if kind == "take" and "take" in kinds.values() else kind
+    take = card_of(rig, wall_relay(rig))[1] if "take" in kinds.values() else ""
+    queued = {
+        "text": lambda i: text_update(i, CHAT, f"/watchlist u{i}"),
+        "failing": lambda i: text_update(i, CHAT, f"/watchlist f{i}"),
+        "stranger": lambda i: text_update(i, CHAT + 1, f"/watchlist s{i}"),
+        "take": lambda i: button_update(i, CHAT, take),
+    }
+    rig.transport.queued = [queued[kinds[i]](i) for i in ids]
+    failing = {i for i in ids if kinds[i] == "failing"}
     plan = [(ids[n % len(ids)], where) for n, where in crashes]
-    dropped: set[int] = set()
-    restarts = []
     for _round in range(len(plan) + 2):
-        crash = plan.pop(0) if plan else None
-        service = CrashingService(
-            rig.client, rig.factory, signer=rig.signer, crash=crash, clock=lambda: rig.now
-        )
-        with rig.factory() as session:
-            restarts.append(store.cursor(session, store.UPDATES))
+        service = FailingService(rig, plan.pop(0) if plan else None, failing)
         try:
             service.poll_once(timeout=0)
         except CrashError:
-            if crash is not None and crash[1] == "before":
-                dropped.add(crash[0])
-    handled = [row.args for row in rig.log()]
-    assert len(handled) == len(set(handled))
-    assert set(handled) == {f"u{i}" for i in ids if i not in dropped}
-    for offset in restarts:
-        assert {f"u{i}" for i in ids if i >= offset and i not in dropped} <= set(handled)
+            pass
+    rows = rig.log()
+    by_reason = Counter(row.reason for row in rows)
+    texts = [row.args for row in rows if row.command not in ("take", "text") and row.args]
+    assert sorted(texts) == sorted(f"u{i}" for i in ids if kinds[i] == "text")
+    assert by_reason["error"] == len(failing)
+    assert by_reason[UNKNOWN_CHAT] == sum(1 for i in ids if kinds[i] == "stranger")
+    with rig.factory() as session:
+        assert store.cursor(session, store.UPDATES) == ids[-1] + 1
+    takes = [row for row in rows if row.command == "take"]
+    if "take" in kinds.values():
+        assert takes
+        assert [row.accepted for row in takes].count(True) <= 1
+        assert {row.reason for row in takes if not row.accepted} <= {"already_decided"}
+        assert len(rig.places()) == 1
+    else:
+        assert takes == []
 
 
 # --- HAT-TG-013: user events are attributed -----------------------------------------------------

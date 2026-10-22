@@ -138,7 +138,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `cda649fc95e4b1410d7d2058165f6d32410d208d78899fa62f79db30180b87a5`
+Covered digest: `613a1002447c320866c255933e5c244bc861af980c6029a05bd5fdf04875ce5f`
 
 ## Scope changes
 
@@ -165,6 +165,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 41 updated `test_conf_verification.py`: `MERGED_PRS` now includes 41; `KNOWN_GAPS` unchanged.
 - PR 42 updated `test_conf_verification.py`: `MERGED_PRS` now includes 42; `KNOWN_GAPS` unchanged.
 - PR 43 updated `test_conf_verification.py`: `MERGED_PRS` now includes 43; `KNOWN_GAPS` unchanged.
+- PR 32 updated `test_conf_verification.py`: `MERGED_PRS` now includes 32; `KNOWN_GAPS` unchanged.
 
 ## Scratch breaks
 

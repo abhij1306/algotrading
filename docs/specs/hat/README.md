@@ -484,7 +484,7 @@ to an artefact that exists.
 | HAT-EXEC-131 | [07](07-execution-and-brokers.md) | 16 | PBT `exits.veto_verdict_threshold` |
 | HAT-TG-005 | [08](08-telegram.md) | 16 | PBT `telegram.unknown_chat_has_no_effect` |
 | HAT-TG-010 | [08](08-telegram.md) | 16 | CONF `telegram.no_webhook_no_listener` |
-| HAT-TG-011 | [08](08-telegram.md) | 16 | PBT `telegram.offset_at_most_once` |
+| HAT-TG-011 | [08](08-telegram.md) | 16, 32 | PBT `telegram.offset_commits_with_update` |
 | HAT-TG-012 | [08](08-telegram.md) | 16 | PBT `telegram.every_command_logged` |
 | HAT-TG-013 | [08](08-telegram.md) | 16 | PBT `telegram.user_events_attributed` |
 | HAT-TG-014 | [08](08-telegram.md) | 16 | PBT `telegram.no_secret_in_output` |
