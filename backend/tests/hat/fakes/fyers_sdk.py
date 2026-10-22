@@ -13,9 +13,20 @@ from typing import Any
 
 from app.hat.execution.fyers_broker import CircuitBreaker, FyersBroker
 
+# The list each read's ok reply carries, as Fyers documents it: a default read reply has it, empty.
+READ_LISTS = {
+    "orderbook": "orderBook",
+    "tradebook": "tradeBook",
+    "holdings": "holdings",
+    "positions": "netPositions",
+    "gtt_orderbook": "orderBook",
+    "funds": "fund_limit",
+}
+
 
 class RecordingSdk:
-    """A fake fyers_apiv3 FyersModel: records every payload it is sent, answers from `reply`."""
+    """A fake fyers_apiv3 FyersModel: records every payload it is sent, answers from `reply`.
+    With no `reply`, a write answers ok with an id and a read answers ok with its list, empty."""
 
     def __init__(self, reply: Any = None) -> None:  # noqa: ANN401 - raw SDK JSON
         self.calls: list[tuple[str, Any]] = []
@@ -27,6 +38,8 @@ class RecordingSdk:
             raise self.reply
         if self.reply is not None:
             return self.reply
+        if name in READ_LISTS:
+            return {"s": "ok", "code": 200, "message": "", READ_LISTS[name]: []}
         return {"s": "ok", "code": 200, "id": f"SDK-{len(self.calls)}", "message": "ok"}
 
     def place_order(self, data: dict[str, Any]) -> Any:  # noqa: ANN401
@@ -52,6 +65,9 @@ class RecordingSdk:
 
     def tradebook(self) -> Any:  # noqa: ANN401
         return self._answer("tradebook", None)
+
+    def gtt_orderbook(self) -> Any:  # noqa: ANN401
+        return self._answer("gtt_orderbook", None)
 
     def holdings(self) -> Any:  # noqa: ANN401
         return self._answer("holdings", None)

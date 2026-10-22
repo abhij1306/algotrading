@@ -23,8 +23,8 @@ Tags and GTT (the HAT adapter's needs): every accepted or landed place that carr
 `order_tag` is kept in `book` as a Fyers orderbook row, and `fetch_orderbook` reads it. `fetch_*`
 are the fail-closed reads (they raise `BrokerUnavailableError` on `circuit_open` or when their
 state is an exception, as `FyersBroker.fetch_*` do). `place_gtt`, `modify_gtt` and `cancel_gtt`
-record into `gtts`; `place_gtt_reply` scripts the GTT place reply like `place_reply` does for
-orders.
+keep `gtts`, the Fyers GTT book rows `fetch_gtt_orders` reads; `place_gtt_reply` scripts the GTT
+place reply like `place_reply` does for orders.
 
 `circuit_open = True` answers as `FyersBroker` does while its circuit breaker is open:
 places are rejected without being sent, modify and cancel return the timeout fallback,
@@ -221,8 +221,22 @@ class FakeBroker:
         if isinstance(reply, _Landed) or (
             isinstance(reply, dict) and reply.get("status") == "SUBMITTED" and reply.get("order_id")
         ):
-            self.gtts.append({**gtt, "id": reply.get("order_id") or f"GL-{len(self.gtts) + 1}"})
+            self.gtts.append(
+                self._gtt_row(gtt, reply.get("order_id") or f"GL-{len(self.gtts) + 1}")
+            )
         return reply
+
+    @staticmethod
+    def _gtt_row(gtt: dict[str, Any], gtt_id: str) -> dict[str, Any]:
+        """The GTT book row of a placed GTT, in the shape it was placed with."""
+        leg = {"price": gtt["price"], "triggerPrice": gtt["trigger_price"], "qty": gtt["quantity"]}
+        return {
+            "id": gtt_id,
+            "symbol": gtt["symbol"],
+            "side": 1 if gtt["side"] == "BUY" else -1,
+            "productType": gtt["product"],
+            "orderInfo": {"leg1": leg},
+        }
 
     def modify_gtt(self, gtt_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
         queue = self._call("modify_gtt", (gtt_id, params))
@@ -230,6 +244,13 @@ class FakeBroker:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers modify timeout/unavailable"}
+        for row in self.gtts:
+            if row["id"] == gtt_id:
+                row["orderInfo"]["leg1"].update(
+                    price=params["price"],
+                    triggerPrice=params["trigger_price"],
+                    qty=params["quantity"],
+                )
         return {"s": "ok", "message": "Modified"}
 
     def cancel_gtt(self, gtt_id: str) -> Any:  # noqa: ANN401
@@ -238,6 +259,7 @@ class FakeBroker:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers cancel timeout/unavailable"}
+        self.gtts = [row for row in self.gtts if row["id"] != gtt_id]
         return {"s": "ok"}
 
     def get_positions(self) -> list[dict[str, Any]]:

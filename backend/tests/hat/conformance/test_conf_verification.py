@@ -27,7 +27,7 @@ TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
 # Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}
+MERGED_PRS = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18}
 
 
 def _models() -> list[Path]:

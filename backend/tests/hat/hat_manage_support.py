@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -56,7 +56,8 @@ def at(hour: int, minute: int) -> datetime:
 
 class ManageRig:
     """One auto bot on one broker account: the router, the stop desk, the fill sync and the trade
-    manager, all over the Fyers adapter and `FakeBroker`."""
+    manager, all over the Fyers adapter and `FakeBroker`. A lost answer is settled at the next
+    look (`settle_after` 0) unless a property sets the wait."""
 
     def __init__(
         self,
@@ -65,6 +66,7 @@ class ManageRig:
         exits: list[dict[str, Any]] | None = None,
         clock: Callable[[], datetime] | None = None,
         ticker: Callable[[], float] | None = None,
+        settle_after: timedelta = timedelta(0),
     ) -> None:
         self.session = session
         self.world: World = seed_engine_world(session, mode="auto", instruments=1, exits=exits)
@@ -97,6 +99,7 @@ class ManageRig:
         self.fake = FakeBroker()
         broker = FyersHatBroker(self.fake, instruments=lambda: list(SYMBOLS.items()))  # type: ignore[arg-type]
         live_session(SimpleNamespace(broker=broker))  # type: ignore[arg-type]
+        self.broker = broker
         self.guard = ExecutionGuard(reconciled=True)
         self.notifier = RecordingNotifier()
         reconciler = ReconciliationService(broker, self.guard, notifier_sink(self.notifier))
@@ -107,6 +110,7 @@ class ManageRig:
             tick_for=lambda _session, _position: TICK,
             calendar=CALENDAR,
             notifier=self.notifier,
+            settle_after=settle_after,
         )
         self.fills = FillSync(broker, self.desk, self.notifier)
         self.manager = TradeManager(
@@ -118,6 +122,7 @@ class ManageRig:
             calendar=CALENDAR,
             notifier=self.notifier,
             clock=clock,
+            settle_after=settle_after,
             **({"ticker": ticker} if ticker is not None else {}),
         )
         self._trades = 0

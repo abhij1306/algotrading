@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's initi
 
 # verify-stops
 
-Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072), `07` §6 (HAT-EXEC-060..064), `01-decisions.md` (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
+Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model). Specs: `docs/specs/hat/07-execution-and-brokers.md` §5 and §7 (HAT-EXEC-050 to 053, 070 to 073), `06-risk-and-governance.md` (HAT-RISK-070, 073), `03-schema.md` (HAT-SCH-081), `04-criteria-and-bots.md` (HAT-BOT-062), `11-verification.md` (HAT-VER-030..034, 072), `07` §6 (HAT-EXEC-060..065), `01-decisions.md` (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
 
 ## Properties
 
@@ -26,6 +26,8 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `TLA StopPlacement!NightlyVerifyCovers` After tonight's verify, a held position has a GTT at its current stop, or the verify alerted it. Harm: a missing or stale GTT goes unnoticed for days.
 - `TLA StopPlacement!StopOnlyTightens` The prices a position's broker stops are set to never go down. Harm: a loosened broker stop widens the risk the position was sized for.
 - `TLA StopPlacement!GttUnfilledAlerted` A GTT that triggered without a fill under a held position is eventually alerted, by the sync in the session or by the nightly verify. Harm: the owner believes a position is protected after its stop failed to fill.
+- `TLA StopPlacement!LostGttSettled` A GTT whose placement answer was lost is eventually settled (adopted when it rests at the broker, ended when it does not) while the position is held. Harm: a lost answer leaves the position with no stop HAT will place, night after night.
+- `TLA StopPlacement!LostNeverBlocksSale` A sale due on a held position is never refused because a GTT's answer is still unsure. Harm: a stop-loss exit is frozen while the price falls.
 - `PBT exits.veto_score` The veto score over the R multiples of the closed veto trades is avoided = -sum(R < 0) and missed = sum(R > 0), exactly, both non-negative, with missed - avoided the plain sum and a zero R in neither. Harm: the weekly digest tells the user their skips saved money they in fact cost.
 - `PBT exits.veto_verdict_threshold` The veto verdict is absent until 50 decisions, then "skips beat takes" exactly when the mean R of the skipped trades is below the mean R of the taken ones (compared without rounding either mean), else "skips do not beat takes", and insufficient data when either side is empty. Harm: the weekly digest tells the owner to keep vetoing (or to switch to auto) on a rounding artefact (HAT-EXEC-131).
 
@@ -90,6 +92,8 @@ Checks:
 - `verification/tla/broken/StopPlacement__verify_skips_missing.cfg`
 - `verification/tla/broken/StopPlacement__reset_on_follow.cfg`
 - `verification/tla/broken/StopPlacement__no_unfilled_alert.cfg`
+- `verification/tla/broken/StopPlacement__never_settle.cfg`
+- `verification/tla/broken/StopPlacement__lost_blocks_sale.cfg`
 
 ## Sync commit
 
@@ -107,6 +111,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - Exits of a real position run through `live_trades.evaluate_real_position` (PR 15c), the same `exits.evaluate`; `evaluate_position` still refuses a position that is not virtual.
 - Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
 - PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
+- PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 
 ## Scratch breaks
@@ -335,4 +340,42 @@ Break: in `backend/app/hat/engine/approvals.py`, `veto_verdict` compares the two
 E   AssertionError: assert 'skips do not beat takes' == 'skips beat takes'
 E     - skips beat takes
 E     + skips do not beat takes
+```
+
+### TLA StopPlacement!LostGttSettled
+
+Break: the variant `never_settle`: `Settle` never runs, so a GTT whose answer was lost stays unsure.
+
+```
+Error: Temporal properties were violated.
+State 1: <Initial predicate>
+State 2: <EntryFill ...>
+State 3: <Protect ...>
+State 4: <RaiseStop ...>
+State 5: <EntryFill ...>
+State 6: <Clock ...>
+State 7: <Protect ...>
+State 8: <RaiseStop ...>
+State 9: <GttTriggersUnfilled ...>
+State 10: <SeeUnfilled ...>
+State 11: <Protect ...>
+State 12: <SwapPlaceGtt ...>
+State 13: <Clock ...>
+State 14: <Clock ...>
+State 15: <Verify ...>
+State 16: <Clock ...>
+```
+
+### TLA StopPlacement!LostNeverBlocksSale
+
+Break: the variant `lost_blocks_sale`: `Sell` is refused while a GTT's answer is unsure (the pre-PR 18 `make_room`).
+
+```
+Error: Invariant LostNeverBlocksSale is violated.
+State 1: <Initial predicate>
+State 2: <Clock ...>
+State 3: <EntryFill ...>
+State 4: <EntryFill ...>
+State 5: <Protect ...>
+State 6: <Sell ...>
 ```

@@ -667,6 +667,54 @@ def test_a_timeout_is_looked_up_before_any_retry(outcomes: list[str]) -> None:
     assert len([r for r in env.fake.book if r["orderTag"] == tag]) <= 1
 
 
+# An ok reply that does not carry the order book list where Fyers documents it.
+KEYLESS_BOOKS = st.sampled_from(
+    [
+        {"s": "ok", "code": 200},
+        {"s": "ok", "code": 200, "orderBook": None},
+        {"s": "ok", "code": 200, "orderBook": {}},
+        {"s": "ok", "code": 200, "data": {"orderBook": []}},
+    ]
+)
+
+
+class LostThenKeyless(RecordingSdk):
+    """A place whose answer is lost (the call raises mid-request), then an order book reply
+    without its list."""
+
+    def __init__(self, book: dict) -> None:
+        super().__init__()
+        self.book = book
+
+    def place_order(self, data: dict) -> object:
+        self.calls.append(("place_order", data))
+        raise TimeoutError("read timed out")
+
+    def orderbook(self) -> object:
+        self.calls.append(("orderbook", None))
+        return self.book
+
+
+@given(book=KEYLESS_BOOKS, sends=st.integers(min_value=2, max_value=4))
+@settings(deadline=None)
+def test_a_keyless_book_never_reads_as_absent(book: dict, sends: int) -> None:
+    """HAT-BRK-081, HAT-BRK-102: after a lost answer, an order book that answered ok without its
+    list is unreadable, not empty: every later send raises `BrokerUnavailableError` and places
+    nothing more under the tag. Harm: the lookup reads "not found" and the same order goes out
+    twice (a doubled entry)."""
+    env = exec_env()
+    sdk = LostThenKeyless(book)
+    env.broker = adapter_over(sdk)
+    live_session(env)
+    tag = reserve_order(env.session, env.request(uuid7()))
+    first = send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    assert first.status == "unconfirmed"
+    for _ in range(sends - 1):
+        with pytest.raises(BrokerUnavailableError):
+            send_order(env.session, env.broker, env.guard, tag, symbol="SBIN", bot_id=env.bot_id)
+    assert [name for name, _ in sdk.calls].count("place_order") == 1
+
+
 refusal_cases = st.fixed_dictionaries(
     {
         "account_active": st.booleans(),

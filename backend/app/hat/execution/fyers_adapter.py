@@ -28,6 +28,7 @@ from .broker import (
     CODE_UNCONFIRMED,
     AckResult,
     BrokerFunds,
+    BrokerGtt,
     BrokerHolding,
     BrokerLoginError,
     BrokerOrder,
@@ -384,6 +385,27 @@ class FyersHatBroker:
 
     def cancel_gtt(self, gtt_id: str) -> AckResult:
         return self._write(lambda: self._broker.cancel_gtt(gtt_id))
+
+    def _gtt_row(self, row: dict[str, Any]) -> BrokerGtt:
+        """One GTT book row. Its single leg is read from `orderInfo.leg1` (the shape a GTT is
+        placed with) or a top-level `leg1` [verify on a live account]; a row without one raises,
+        so the read fails instead of missing a GTT."""
+        leg = (row.get("orderInfo") or {}).get("leg1") or row["leg1"]
+        qty = _whole_number(leg["qty"])
+        if qty is None:
+            raise ValueError("gtt qty")
+        return BrokerGtt(
+            gtt_id=str(row["id"]),
+            symbol=symbol_master.to_db(str(row["symbol"])),
+            side=self._side(row["side"]),
+            qty=qty,
+            trigger_price=_positive_price(leg["triggerPrice"]),
+        )
+
+    def gtts(self) -> list[BrokerGtt]:
+        return self._read(
+            self._broker.fetch_gtt_orders, lambda rows: [self._gtt_row(r) for r in rows]
+        )
 
     # --- reads (fail closed) --------------------------------------------------------------
 

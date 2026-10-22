@@ -1,7 +1,10 @@
 """Which mode a bot runs in, and the mode-change service (HAT-DEC-B1, HAT-DEC-I9, HAT-EXEC-011,
 HAT-EXEC-012, HAT-GOV-084, HAT-SCH-086; 07 §1, 06 §8).
 
-Two rules decide the mode an entry is routed by:
+Three rules decide the mode an entry is routed by:
+
+- **The sleeve's lifecycle.** Only a Live sleeve places real orders: every other lifecycle state
+  routes as shadow whatever mode was asked (HAT-PORT-063, `lifecycle.routes_as_shadow`).
 
 - **The session's mode.** A change is queued outside market hours and takes effect at the next
   session open (`risk.modes.plan_mode_change`). During a session the mode in force is the one at
@@ -24,6 +27,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..engine.portfolio import lifecycle
 from ..errors import HatError
 from ..models import HatBot, HatBrokerAccount, HatModeChange
 from ..risk import controls
@@ -118,8 +122,12 @@ def requested_mode(session: Session, bot: HatBot, at: datetime) -> str:
 
 
 def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalendar | None) -> str:
-    """The effective mode of `bot` for an entry at `at`: the queued mode in force at the open of
-    `at`'s session, gated by the account's GTT capability (a missing account is shadow)."""
+    """The effective mode of `bot` for an entry at `at`: shadow unless its sleeve is Live
+    (HAT-PORT-063: research, backtested, shadow, probation and retired sleeves, and any unknown
+    state, route as shadow whatever mode was asked); else the queued mode in force at the open
+    of `at`'s session, gated by the account's GTT capability (a missing account is shadow)."""
+    if lifecycle.routes_as_shadow(bot.lifecycle_state):
+        return SHADOW
     requested = requested_mode(session, bot, mode_anchor(calendar, at))
     account = session.get(HatBrokerAccount, bot.broker_account_id)
     if account is None:

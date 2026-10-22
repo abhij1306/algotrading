@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+from typing import Any
+from unittest.mock import patch
 
 from hat.fakes.broker import accepted, rejected, unconfirmed
 from hat_engine_support import exit_stack
@@ -18,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import exits, lifecycle, trades
-from app.hat.execution.broker import BrokerUnavailableError
+from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
 from app.hat.execution.manage import ALERT_EXIT_NOT_PLACED
 from app.hat.execution.protect import (
     ALERT_GTT_MISSING,
@@ -27,6 +29,7 @@ from app.hat.execution.protect import (
     ALERT_GTT_UNVERIFIED,
     ALERT_STOP_NOT_MOVED,
     ALERT_STOP_NOT_PLACED,
+    LIVE,
     STOP_DAY,
     STOP_GTT,
     broker_trigger,
@@ -491,3 +494,168 @@ def test_gtt_trigger_handled(part: float, ended: bool) -> None:
         assert stop.qty == position.qty_open
         rig.sync(at(10, 10) + timedelta(days=1))
         assert rig.codes().count(ALERT_GTT_UNFILLED) == 1
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-EXEC-065: a lost broker answer never freezes a position
+# ---------------------------------------------------------------------------------------
+
+LOST_GTT = st.sampled_from(["unconfirmed", "unconfirmed_landed", "raises"])
+LOST_SALE = st.sampled_from(["unconfirmed", "unconfirmed_landed", "invalid"])
+
+
+def _resting(rig: ManageRig, position: HatPosition) -> bool:
+    """A stop the broker confirmed rests under the position."""
+    return any(row.broker_order_id for row in rig.stops(position.id, *LIVE))
+
+
+def _sale_working(rig: ManageRig, position: HatPosition) -> bool:
+    """A sale of the position works at the broker (its row is in the order book, not ended)."""
+    tags = set(
+        rig.session.scalars(
+            select(HatOrder.tag).where(
+                HatOrder.position_id == position.id,
+                HatOrder.purpose.in_(("exit_partial", "exit_full", "flatten")),
+            )
+        )
+    )
+    return any(row["orderTag"] in tags and row["status"] in (4, 6) for row in rig.fake.book)
+
+
+def _invalid_once(rig: ManageRig) -> None:
+    """The adapter refuses the next sale it is asked to send (before any SDK call)."""
+    real = rig.broker._order_payload
+    calls = iter([True])
+
+    def payload(intent: Any) -> dict[str, Any]:  # noqa: ANN401 - the adapter's OrderIntent
+        if intent.order_type == "MARKET" and next(calls, False):
+            raise InvalidIntentError()
+        return real(intent)
+
+    rig.broker._order_payload = payload  # type: ignore[method-assign]
+
+
+def _sold(rig: ManageRig, start: int) -> list[dict[str, Any]]:
+    return [a for n, a in rig.fake.calls[start:] if n == "place_order" and a["type"] == "MARKET"]
+
+
+@settings(max_examples=30, deadline=None)
+@given(
+    path=st.sampled_from(["late_fill", "swap"]), gtt=LOST_GTT, sale=LOST_SALE, young=st.booleans()
+)
+@example(path="late_fill", gtt="unconfirmed", sale="unconfirmed", young=False)
+@example(path="swap", gtt="unconfirmed_landed", sale="unconfirmed_landed", young=False)
+def test_lost_answers_never_freeze(path: str, gtt: str, sale: str, young: bool) -> None:
+    """HAT-EXEC-065, HAT-DEC-B17: a GTT whose placement answer was lost (timed out, raised,
+    id-less), placed for a fill after 15:25 or by the 15:25 swap, is settled against the
+    broker's GTT book by the next sync or swap: adopted when it landed, else ended and placed
+    again, so the position rests on a stop the broker confirmed. Until it is settled (sent too
+    recently: `young`) nothing is placed on top of it and it never holds a sale back. A sale
+    whose answer was lost, or that the adapter refused, never blocks the next one: after a
+    sync, a second flatten either sells or finds a sale working at the broker. Harm: a lost
+    answer leaves a position that HAT can neither protect nor sell, even on /flatten."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session, settle_after=timedelta(hours=1) if young else timedelta(0))
+        if path == "late_fill":
+            rig.fake.script("place_gtt", _gtt_reply(gtt))
+            position = _opened(rig, at(15, 26))
+            rig.sync(at(15, 27))
+        else:
+            position = _opened(rig, at(10, 40))
+            rig.fake.script("place_gtt", _gtt_reply(gtt))
+            rig.manager.swap_stops(session, rig.account_id, at(15, 25))
+            rig.manager.swap_stops(session, rig.account_id, at(15, 26))
+        landed = gtt == "unconfirmed_landed"
+        if young:
+            # Not settled yet: no second GTT on top of one that may rest at the broker.
+            assert rig.fake.count("place_gtt") == 1
+        else:
+            assert _resting(rig, position)
+            assert rig.fake.count("place_gtt") == (1 if landed else 2)
+            assert len(rig.fake.gtts) == 1  # one GTT rests at the broker, never two
+            if path == "swap":
+                assert {row.purpose for row in rig.stops(position.id)} == {STOP_GTT}
+        if sale == "invalid":
+            _invalid_once(rig)
+        else:
+            rig.fake.script("place_order", unconfirmed(landed=sale == "unconfirmed_landed"))
+        start = len(rig.fake.calls)
+        rig.manager.flatten(session, rig.account_id, at(15, 28))
+        assert _sold(rig, start) or sale == "unconfirmed" or sale == "unconfirmed_landed"
+        rig.sync(at(15, 28))
+        session.refresh(position)
+        if position.closed_at is None:
+            start = len(rig.fake.calls)
+            rig.manager.flatten(session, rig.account_id, at(15, 29))
+            assert _sold(rig, start) or _sale_working(rig, position) or young
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-EXEC-075, HAT-OPS-032: a sale the broker took and then rejected is retried once, alerted
+# ---------------------------------------------------------------------------------------
+
+SALE_ENDINGS = {"rejected": 5, "cancelled": 1, "expired": 7}
+
+
+@settings(max_examples=25, deadline=None)
+@given(
+    ending=st.sampled_from(sorted(SALE_ENDINGS)),
+    part=st.integers(min_value=0, max_value=2),
+    again=st.booleans(),
+)
+@example(ending="rejected", part=0, again=True)
+def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> None:
+    """HAT-EXEC-075, HAT-OPS-032: a sale the broker accepted and then ended short (rejected by
+    the exchange or RMS, cancelled, expired) records `order.rejected` (relayed as the health
+    alert), fires its rule again and is sent once more under the next tag for what is still
+    open: the full exit stays a full exit, never lost to a later partial. A second such ending
+    raises `exit.not_placed` and nothing more is sent that session; the position is protected
+    again each time. Harm: a sale the broker drops leaves the position unsold with its rule
+    spent, silently. (Orders are stamped on the rig's trade day, so the session's rejections
+    are counted on it.)"""
+    with (
+        Session(memory_engine()) as session,
+        patch("app.hat.execution.submit.utc_now", lambda: at(11, 0)),
+    ):
+        rig = ManageRig(session, exits=exit_stack("partials"))
+        position = _opened(rig, at(10, 40))
+        view = exits.ExitView(price=D(position.avg_entry) * D("1.4"), days_held=1)
+
+        def end_sales(minute: int) -> list[HatOrder]:
+            rows = list(
+                session.scalars(
+                    select(HatOrder).where(
+                        HatOrder.position_id == position.id, HatOrder.purpose == "exit_full"
+                    )
+                )
+            )
+            for row in rows:
+                book = next(b for b in rig.fake.book if b["orderTag"] == row.tag)
+                if book["status"] in (4, 6):
+                    if part:
+                        rig.fill(row, part, D(row.qty and position.avg_entry))
+                    book["status"] = SALE_ENDINGS[ending]
+            rig.sync(at(11, minute))
+            return rows
+
+        start = len(rig.fake.calls)
+        rig.manager.on_price(session, position.id, view, at(11, 0))
+        first = _sold(rig, start)
+        assert [o["quantity"] for o in first] == [500]
+        [row] = end_sales(1)
+        session.refresh(position)
+        assert _event_count(session, row, "order.rejected") == 1
+        assert _resting(rig, position)
+        start = len(rig.fake.calls)
+        rig.manager.on_price(session, position.id, view, at(11, 2))
+        retry = _sold(rig, start)
+        assert [o["quantity"] for o in retry] == [position.qty_open]
+        assert retry[0]["order_tag"] != first[0]["order_tag"]
+        if again:
+            end_sales(3)
+            assert ALERT_EXIT_NOT_PLACED in rig.codes()
+            start = len(rig.fake.calls)
+            rig.manager.on_price(session, position.id, view, at(11, 4))
+            assert _sold(rig, start) == []
+            session.refresh(position)
+            assert _resting(rig, position)

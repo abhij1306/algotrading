@@ -13,8 +13,14 @@ An order is two steps with the database in between:
 
 Every refusal (account not active, no reconciliation this session, mismatch for the bot, no live
 session, a virtual order, a non-delivery product, a short entry) is raised before the broker is
-called. GTT carries no tag at Fyers, so an unconfirmed GTT cannot be looked up: it is not retried
-(`UnresolvedOrderError`) and waits for the nightly GTT verify.
+called; an intent the adapter refuses (`InvalidIntentError`) is a definite rejection. GTT carries
+no tag at Fyers, so `send_order` never retries an unconfirmed GTT (`UnresolvedOrderError`): the
+`StopDesk` settles it against the broker's GTT book (`find_gtt`, `adopt_gtt`, `end_lost_order`).
+
+A sale the broker took and then ended without selling all of it (rejected, cancelled, expired)
+records `order.rejected` and fires its exit rules again (`hat_order.rule_ids`), so the next
+evaluation retries it under the next tag (HAT-EXEC-075); `rejected_sales` counts both kinds of
+rejection toward the two a session allows (HAT-OPS-032).
 
 Each commit below is one atomic step of the model in `verification/tla/OrderReconciliation.tla`.
 """
@@ -24,25 +30,29 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from ..engine import lifecycle, trades
+from ..engine import lifecycle, live_trades, trades
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatOrder, HatPosition, HatSignal
-from ..time import utc_now
+from ..time import trade_date_of, utc_now
 from .broker import (
+    CODE_INVALID_INTENT,
     CODE_OK,
     CODE_UNAVAILABLE,
     CODE_UNCONFIRMED,
+    BrokerGtt,
     BrokerOrder,
     BrokerUnavailableError,
     GttRequest,
     HatBroker,
+    InvalidIntentError,
     OrderIntent,
     OrderType,
     SessionStatus,
@@ -54,12 +64,18 @@ from .tags import encode_tag
 
 __all__ = [
     "ACCOUNT_ACTIVE",
+    "EXIT_SALES",
+    "MAX_SALE_REJECTIONS",
     "OrderRefusedError",
     "OrderRequest",
     "SendOutcome",
     "UnresolvedOrderError",
     "adopt_broker_order",
+    "adopt_gtt",
+    "end_lost_order",
+    "find_gtt",
     "record_broker_status",
+    "rejected_sales",
     "reserve_order",
     "resolve_by_tag",
     "send_order",
@@ -74,6 +90,8 @@ EVENT_ORDER_REJECTED = "order.rejected"
 _ENDED = {"placed", "partially_filled", "filled", "cancelled", "rejected", "expired"}
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
 _ENTRY_ENDINGS = {"cancelled", "expired", "rejected"}
+EXIT_SALES = ("exit_partial", "exit_full", "flatten")
+MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 # The reason a signal ends Rejected when its entry is first found already ended, unfilled.
 ENTRY_NOT_FILLED = "entry_not_filled"
 
@@ -105,6 +123,7 @@ class OrderRequest:
     position_id: uuid.UUID | None = None
     price: Decimal | None = None
     trigger_price: Decimal | None = None
+    rule_ids: tuple[str, ...] = ()  # a sale's exit rules, fired again if it ends unsold
 
 
 @dataclass(frozen=True)
@@ -149,6 +168,7 @@ def reserve_order(session: Session, request: OrderRequest, *, retries: int = 3) 
                 status="pending",
                 is_virtual=False,
                 currency="INR",
+                rule_ids=list(request.rule_ids) or None,
             )
         )
         try:
@@ -192,6 +212,8 @@ def adopt_broker_order(
         _event(session, row, bot_id, _placed_event(row))
     elif row.purpose == ENTRY and found.status in _ENTRY_ENDINGS:
         _end_adopted_entry(session, row, found, bot_id)
+    elif _sale_ended_short(row, found):
+        _sale_not_sold(session, row, found, bot_id)
     elif found.status == "rejected":
         _event(session, row, bot_id, EVENT_ORDER_REJECTED)
     elif found.status == "cancelled":
@@ -238,7 +260,91 @@ def record_broker_status(
     row.status = found.status
     if row.purpose == ENTRY and found.filled_qty == 0:
         _entry_ended(session, row, found, bot_id)
+    elif _sale_ended_short(row, found):
+        _sale_not_sold(session, row, found, bot_id)
     return True
+
+
+def _sale_ended_short(row: HatOrder, found: BrokerOrder) -> bool:
+    return (
+        row.purpose in EXIT_SALES and found.status in _ENTRY_ENDINGS and found.filled_qty < row.qty
+    )
+
+
+def _sale_not_sold(
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+) -> None:
+    """A sale the broker took and then ended short (HAT-EXEC-075): `order.rejected` carrying the
+    broker status (relayed as the health alert), and its rules fired again so the next evaluation
+    sells again under the next tag. A partial exit that sold some shares keeps its rules fired
+    (firing it again would sell its fraction twice); a full exit sells whatever is left."""
+    code = "exchange_rejected" if found.status == "rejected" else found.status
+    _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=code)
+    if row.purpose != "exit_partial" or found.filled_qty == 0:
+        _fire_again(session, row)
+
+
+def _fire_again(session: Session, row: HatOrder) -> None:
+    if row.rule_ids and row.position_id is not None:
+        live_trades.unmark_fired(session, row.position_id, row.rule_ids)
+
+
+def end_lost_order(session: Session, row: HatOrder) -> None:
+    """An order whose answer was lost and that the broker's book does not hold after a good read
+    (no commit): it never landed, so it ends `expired`, and a sale's rules fire again."""
+    row.status = "expired"
+    if row.purpose in EXIT_SALES:
+        _fire_again(session, row)
+
+
+def find_gtt(
+    gtts: list[BrokerGtt], row: HatOrder, symbol: str, claimed: set[str]
+) -> BrokerGtt | None:
+    """The broker GTT a stop_gtt row whose answer was lost became: the one on the row's symbol
+    for its quantity and trigger that no other HAT row holds; None when the book has none."""
+    trigger = Decimal(row.trigger_price) if row.trigger_price is not None else None
+    return next(
+        (
+            gtt
+            for gtt in gtts
+            if gtt.gtt_id not in claimed
+            and gtt.symbol == symbol
+            and gtt.side is Side.SELL
+            and gtt.qty == row.qty
+            and gtt.trigger_price == trigger
+        ),
+        None,
+    )
+
+
+def adopt_gtt(session: Session, row: HatOrder, gtt: BrokerGtt, bot_id: uuid.UUID | None) -> None:
+    """Record the broker GTT found for a row whose answer was lost (no commit): placed."""
+    row.broker_order_id, row.status = gtt.gtt_id, "placed"
+    _event(session, row, bot_id, _placed_event(row))
+
+
+def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
+    """Sales of `purpose` for the signal the broker rejected today, at once or after taking them
+    (ended short with its order id). A lost sale that never landed is not a rejection."""
+    start, end = trades._day_bounds(trade_date_of(now))
+    count = session.scalar(
+        select(func.count())
+        .select_from(HatOrder)
+        .where(
+            HatOrder.signal_id == signal_id,
+            HatOrder.purpose == purpose,
+            or_(
+                HatOrder.status == "rejected",
+                and_(
+                    HatOrder.status.in_(("cancelled", "expired")),
+                    HatOrder.broker_order_id.is_not(None),
+                ),
+            ),
+            HatOrder.placed_at >= start,
+            HatOrder.placed_at < end,
+        )
+    )
+    return int(count or 0)
 
 
 def _placed_event(row: HatOrder) -> str:
@@ -405,7 +511,12 @@ def send_order(
         session.commit()
         raise OrderRefusedError(refusal)
 
-    status, broker_id, code = _call_broker(broker, request)
+    try:
+        status, broker_id, code = _call_broker(broker, request)
+    except InvalidIntentError:
+        # The adapter refused it before any SDK call: a definite rejection, never a pending
+        # attempt that no one resolves.
+        status, broker_id, code = "rejected", None, CODE_INVALID_INTENT
     if status == "rejected" and code == CODE_UNAVAILABLE:
         # Nothing was sent (circuit open, no client): not a rejection, so it burns no retry and
         # leaves no attempt marker (a GTT with one could not be sent again).

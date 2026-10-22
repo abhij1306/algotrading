@@ -27,6 +27,7 @@ __all__ = [
     "AckResult",
     "BrokerError",
     "BrokerFunds",
+    "BrokerGtt",
     "BrokerHolding",
     "BrokerLoginError",
     "BrokerOrder",
@@ -192,6 +193,18 @@ class BrokerOrder:
 
 
 @dataclass(frozen=True)
+class BrokerGtt:
+    """A GTT stop resting at the broker (its GTT book). GTTs carry no tag: HAT tells its own
+    from the symbol, side, quantity and trigger it sent."""
+
+    gtt_id: str
+    symbol: str  # database symbol
+    side: Side
+    qty: int
+    trigger_price: Decimal
+
+
+@dataclass(frozen=True)
 class BrokerTrade:
     trade_id: str
     order_id: str
@@ -270,6 +283,8 @@ class HatBroker(Protocol):
     def modify_gtt(self, request: GttModify) -> AckResult: ...
 
     def cancel_gtt(self, gtt_id: str) -> AckResult: ...
+
+    def gtts(self) -> list[BrokerGtt]: ...
 
     def orders(self) -> list[BrokerOrder]: ...
 

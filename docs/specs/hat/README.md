@@ -374,7 +374,7 @@ to an artefact that exists.
 | HAT-PORT-060 | [05](05-portfolio-regime-allocation.md) | 9, 12 | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
 | HAT-PORT-061 | [05](05-portfolio-regime-allocation.md) | 9, 12 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions` |
 | HAT-PORT-062 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.shadow_days` |
-| HAT-PORT-063 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero` |
+| HAT-PORT-063 | [05](05-portfolio-regime-allocation.md) | 9, 18 | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`, PBT `router.non_live_sleeve_routes_as_shadow` |
 | HAT-PORT-064 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.retire_gate` |
 | HAT-PORT-065 | [05](05-portfolio-regime-allocation.md) | 9, 12 | PBT `lifecycle.discounted_benchmark` |
 | HAT-PORT-066 | [05](05-portfolio-regime-allocation.md) | 9 | CONF `lifecycle_single_writer`, PBT `lifecycle.transition_records_its_event` |
@@ -456,13 +456,15 @@ to an artefact that exists.
 | HAT-EXEC-062 | [07](07-execution-and-brokers.md) | 13, 15 | PBT `stops.gtt_limit_offset`, TLA `StopPlacement!GttUnfilledAlerted`, PBT `manage.gtt_trigger_handled` |
 | HAT-EXEC-063 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!NightlyVerifyCovers`, PBT `manage.verify_covers` |
 | HAT-EXEC-064 | [07](07-execution-and-brokers.md) | 15 | TLA `StopPlacement!BrokerStopMatchesCurrent`, TLA `StopPlacement!StopOnlyTightens`, PBT `manage.broker_stop_only_tightens` |
+| HAT-EXEC-065 | [07](07-execution-and-brokers.md) | 18 | TLA `StopPlacement!LostGttSettled`, TLA `StopPlacement!LostNeverBlocksSale`, PBT `manage.lost_answers_never_freeze` |
 | HAT-EXEC-070 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.full_beats_partial` |
 | HAT-EXEC-071 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fire_once` |
 | HAT-EXEC-072 | [07](07-execution-and-brokers.md) | 11 | PBT `exits.fraction_arithmetic` |
 | HAT-EXEC-073 | [07](07-execution-and-brokers.md) | 11, 15 | PBT `exits.rule_semantics` |
 | HAT-EXEC-074 | [07](07-execution-and-brokers.md) | 15 | TLA `JobScheduler!ExitsCloseInWindow`, PBT `manage.no_sale_after_close` |
+| HAT-EXEC-075 | [07](07-execution-and-brokers.md) | 18 | PBT `manage.async_sale_rejection_retried` |
 | HAT-BRK-080 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.interface_methods`, CONF `brk.import_boundary` |
-| HAT-BRK-081 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.broker_errors_fail_closed` |
+| HAT-BRK-081 | [07](07-execution-and-brokers.md) | 13, 18 | PBT `tags.broker_errors_fail_closed`, PBT `tags.a_keyless_book_never_reads_as_absent`, PBT `fyers_broker.an_ok_reply_without_its_list_is_unreadable`, PBT `fyers_broker.a_circuit_opening_mid_place_is_not_sent` |
 | HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16 | TLA `ExecutionRouter!NoEntryWithoutSession` |
 | HAT-BRK-090 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.fyers_payload_mapping` |
 | HAT-BRK-091 | [07](07-execution-and-brokers.md) | 13 | CONF `brk.fyers_capabilities` |

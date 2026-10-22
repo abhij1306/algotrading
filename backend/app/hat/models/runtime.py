@@ -191,6 +191,8 @@ class HatOrder(Base):
     is_virtual = Column(Boolean, nullable=False)
     placed_at = Column(Timestamptz)
     currency = Column(Currency, nullable=False)
+    # A sale's exit rule ids (`exits.rule_id`), fired again when it ends without selling.
+    rule_ids = Column(JsonB)
 
 
 class HatFill(Base):

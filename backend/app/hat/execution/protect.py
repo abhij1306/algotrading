@@ -19,6 +19,13 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   (`gtt.refreshed`). A GTT the broker no longer knows (triggered, cancelled or never confirmed)
   is alerted (`gtt.missing`) and placed again; when the broker cannot be reached the position
   is alerted (`gtt.unverified`) and nothing is placed, since the old GTT may still rest there.
+- **A lost answer** (`settle_lost`, HAT-EXEC-065): a stop whose placement answer was lost is
+  settled against the broker once `settle_after` has passed since it was sent (a request still
+  in flight could land later): a GTT against the broker's GTT book by symbol, quantity and
+  trigger (GTTs carry no tag), a day stop by its tag. Found, it is adopted as placed; absent
+  after a good read, it never landed: it ends `expired` and the position is protected again.
+  While a stop's outcome is unknown it never holds a sale back (`make_room` skips it: a resting
+  CNC stop makes the broker refuse the sale, the safe way round).
 
 Every order goes through `submit.reserve_order` and `submit.send_order` (trading-safety rule 1);
 modifies and cancels go straight to the `HatBroker` contract with the broker id `send_order`
@@ -32,7 +39,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from decimal import ROUND_FLOOR, Decimal
 
 from sqlalchemy import select
@@ -43,21 +50,27 @@ from ..events import record
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, trade_date_of
+from ..time import IST, as_utc, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import BrokerUnavailableError, GttModify, HatBroker, OrderType, Side
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
 from .submit import (
+    EXIT_SALES,
     OrderRefusedError,
     OrderRequest,
     SendOutcome,
     UnresolvedOrderError,
+    adopt_broker_order,
+    adopt_gtt,
+    end_lost_order,
+    find_gtt,
     reserve_order,
     send_order,
 )
 
 __all__ = [
+    "ALERT_EXIT_NOT_PLACED",
     "ALERT_GTT_MISSING",
     "ALERT_GTT_SWAP_FAILED",
     "ALERT_GTT_UNFILLED",
@@ -65,6 +78,7 @@ __all__ = [
     "ALERT_STOP_NOT_MOVED",
     "ALERT_STOP_NOT_PLACED",
     "LIVE",
+    "LOST_ANSWER_SETTLE",
     "STOP_DAY",
     "STOP_GTT",
     "SWAP_AT",
@@ -79,15 +93,18 @@ logger = logging.getLogger(__name__)
 
 STOP_DAY = "stop_day"
 STOP_GTT = "stop_gtt"
-EXIT_SALES = ("exit_partial", "exit_full", "flatten")
 EVENT_GTT_REFRESHED = "gtt.refreshed"
 WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 LIVE = ("placed", "partially_filled")
 UNSURE = ("pending", "unconfirmed")
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
+# How long after its send an order whose answer was lost is settled against the broker's books:
+# the guarded call gives up after 1.5 s, but the SDK request may still be in flight and land.
+LOST_ANSWER_SETTLE = timedelta(seconds=60)
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
+ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ALERT_STOP_NOT_MOVED = "stop.not_moved"
 ALERT_GTT_SWAP_FAILED = "gtt.swap_failed"
 ALERT_GTT_MISSING = "gtt.missing"
@@ -139,12 +156,18 @@ class StopDesk:
         tick_for: TickSource,
         calendar: SessionCalendar | None = None,
         notifier: Notifier | None = None,
+        settle_after: timedelta = LOST_ANSWER_SETTLE,
+        wall: Callable[[], datetime] = utc_now,
     ) -> None:
         self._broker = broker
         self._guard = guard
         self._tick_for = tick_for
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
+        # A lost answer is settled `settle_after` after its send, by the wall clock the send was
+        # stamped with (`placed_at`), not the caller's `now`.
+        self._settle_after = settle_after
+        self._wall = wall
 
     # --- reading ------------------------------------------------------------------------------
 
@@ -327,6 +350,77 @@ class StopDesk:
         sent = self._send(session, target, row.tag, self._tick_for(session, target.position))
         return not isinstance(sent, str) and sent.status in LIVE
 
+    # --- lost answers (HAT-EXEC-065) ---------------------------------------------------------
+
+    @staticmethod
+    def lost(row: HatOrder) -> bool:
+        """The stop was sent and its answer lost (or the process stopped mid-send)."""
+        return row.broker_order_id is None and (
+            row.status == "unconfirmed" or (row.status == "pending" and row.placed_at is not None)
+        )
+
+    def _settled_long_enough(self, row: HatOrder) -> bool:
+        if row.placed_at is None:
+            return True
+        return self._wall() - as_utc(row.placed_at) >= self._settle_after
+
+    def settle_lost(self, session: Session, position_id: uuid.UUID) -> None:
+        """Settle every stop of the position whose answer was lost (see `_settle`)."""
+        target = self._target(session, position_id)
+        self._settle(
+            session, target, [r for r in self.stops_of(session, position_id) if self.lost(r)]
+        )
+
+    def _settle(self, session: Session, target: _Target, rows: list[HatOrder]) -> None:
+        """Look the stops in `rows` (each sent, its answer lost) up at the broker once they are
+        old enough: a GTT in the GTT book, a day stop by its tag. Found is adopted as placed;
+        absent after a good read never landed and ends `expired`. An unreadable book leaves them
+        as they are."""
+        ready = [row for row in rows if self._settled_long_enough(row)]
+        gtts = [row for row in ready if row.purpose == STOP_GTT]
+        days = [row for row in ready if row.purpose != STOP_GTT]
+        bot_id = target.signal.bot_id
+        if gtts:
+            try:
+                book = self._broker.gtts()
+            except BrokerUnavailableError:
+                book = None
+            if book is not None:
+                claimed = self._claimed_gtts(session, target.account_id)
+                for row in gtts:
+                    found = find_gtt(book, row, target.symbol, claimed)
+                    if found is None:
+                        end_lost_order(session, row)
+                    else:
+                        adopt_gtt(session, row, found, bot_id)
+                        claimed.add(found.gtt_id)
+                    session.commit()
+        if days:
+            try:
+                orders = {order.tag: order for order in self._broker.orders()}
+            except BrokerUnavailableError:
+                return
+            for row in days:
+                found_order = orders.get(row.tag)
+                if found_order is None:
+                    end_lost_order(session, row)
+                else:
+                    adopt_broker_order(session, row, found_order, bot_id)
+                session.commit()
+
+    @staticmethod
+    def _claimed_gtts(session: Session, account_id: uuid.UUID) -> set[str]:
+        """Broker GTT ids HAT's rows already hold (a lost GTT is never matched to one)."""
+        return set(
+            session.scalars(
+                select(HatOrder.broker_order_id).where(
+                    HatOrder.broker_account_id == account_id,
+                    HatOrder.purpose == STOP_GTT,
+                    HatOrder.broker_order_id.is_not(None),
+                )
+            )
+        )
+
     # --- protect, resize, cancel --------------------------------------------------------------
 
     def protect(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
@@ -342,15 +436,33 @@ class StopDesk:
             # The GTT triggered and its sale is part filled: the rest may still sell. The sync
             # protects what is left once that order ends (`FillSync._gtt_unfilled`).
             return PROTECTED
+        lost_gtts = [row for row in working if row.purpose == STOP_GTT and self.lost(row)]
+        if lost_gtts:
+            self._settle(session, target, lost_gtts)
+            working = self.stops_of(session, position.id)
         covered = self._cover_live(session, target, working, now)
         if covered is not None:
             return PROTECTED if covered else FAILED  # a refused resize is alerted
-        unsure = [row for row in working if row.status in UNSURE]
-        if any(self._resend(session, target, row) for row in unsure):
+        # A stop reserved and never sent is sent; a day stop whose answer was lost is looked up
+        # by its tag and sent again only when absent, once it is old enough (still in flight
+        # otherwise). A lost GTT that settling left is never sent again (it has no tag).
+        ready = [
+            row
+            for row in working
+            if row.status in UNSURE
+            and (not self.lost(row) or (row.purpose == STOP_DAY and self._settled_long_enough(row)))
+        ]
+        if any(self._resend(session, target, row) for row in ready):
             return PROTECTED
-        if any(row.status == "unconfirmed" and row.purpose == STOP_GTT for row in unsure):
-            # A GTT whose answer was lost may rest at the broker: the nightly verify decides.
-            self._alert(ALERT_STOP_NOT_PLACED, target, now, "gtt_unconfirmed")
+        lost = [row for row in self.stops_of(session, position.id) if self.lost(row)]
+        if lost:
+            # A stop whose answer was lost may rest at the broker and could not be settled yet
+            # (sent too recently, or the book unreadable): nothing is placed on top of it; the
+            # next sync settles it.
+            gtt = any(row.purpose == STOP_GTT for row in lost)
+            self._alert(
+                ALERT_STOP_NOT_PLACED, target, now, "gtt_unconfirmed" if gtt else "stop_unconfirmed"
+            )
             return FAILED
         purpose = STOP_DAY if self._day_stop_time(now) else STOP_GTT
         return PLACED if self._place(session, target, purpose, now) else FAILED
@@ -404,6 +516,9 @@ class StopDesk:
         resting under a sold position could sell shares that are not there). Returns how many
         the broker confirmed cancelled."""
         target = self._target(session, position_id)
+        lost = [row for row in self.stops_of(session, position_id) if self.lost(row)]
+        if lost:
+            self._settle(session, target, lost)  # a lost stop that landed is cancelled too
         cancelled = 0
         for row in self.stops_of(session, position_id):
             if self._cancel(session, target, row, now):
@@ -434,11 +549,16 @@ class StopDesk:
         (cancel them when none stay), since a broker holds the shares a resting CNC sell covers
         and would refuse the sale. True when no stop covers more than `keep` shares; a stop that
         could not be changed is alerted and the sale waits. A failed sale is protected again by
-        the next sync."""
+        the next sync. A stop whose answer was lost is settled first; one still unknown is
+        skipped (HAT-EXEC-065)."""
         target = self._target(session, position_id)
+        rows = self.stops_of(session, position_id)
+        if any(self.lost(row) for row in rows):
+            self._settle(session, target, [row for row in rows if self.lost(row)])
+            rows = self.stops_of(session, position_id)
         done = True
-        for row in self.stops_of(session, position_id):
-            if row.qty <= keep:
+        for row in rows:
+            if row.qty <= keep or self.lost(row):
                 continue
             if keep <= 0 or row.status not in LIVE:
                 done = self._cancel(session, target, row, now) and done
@@ -513,15 +633,14 @@ class StopDesk:
             return CLOSED
         if self.exit_working(session, position.id):
             return EXIT_WORKING  # the sale comes first; the job tries the swap again
-        gtts = self.stops_of(session, position.id, *LIVE)
-        has_gtt = any(row.purpose == STOP_GTT and row.broker_order_id for row in gtts)
+        has_gtt = self._has_live_gtt(session, position.id)
         if not has_gtt:
-            unsure = [
-                row
-                for row in self.stops_of(session, position.id, *UNSURE)
-                if row.purpose == STOP_GTT
-            ]
-            has_gtt = any(self._resend(session, target, row) for row in unsure)
+            unsure = self._unsure_gtts(session, position.id)
+            if any(self.lost(row) for row in unsure):
+                self._settle(session, target, [row for row in unsure if self.lost(row)])
+                has_gtt = self._has_live_gtt(session, position.id)
+                unsure = self._unsure_gtts(session, position.id)
+            has_gtt = has_gtt or any(self._resend(session, target, row) for row in unsure)
             if not has_gtt and unsure:
                 self._alert(ALERT_GTT_SWAP_FAILED, target, now, "gtt_unconfirmed")
                 return FAILED
@@ -535,6 +654,15 @@ class StopDesk:
             if row.purpose == STOP_DAY and not self._cancel(session, target, row, now):
                 cancelled = False
         return SWAPPED if cancelled else FAILED
+
+    def _has_live_gtt(self, session: Session, position_id: uuid.UUID) -> bool:
+        return any(
+            row.purpose == STOP_GTT and row.broker_order_id
+            for row in self.stops_of(session, position_id, *LIVE)
+        )
+
+    def _unsure_gtts(self, session: Session, position_id: uuid.UUID) -> list[HatOrder]:
+        return [r for r in self.stops_of(session, position_id, *UNSURE) if r.purpose == STOP_GTT]
 
     # --- the nightly verify -------------------------------------------------------------------
 
@@ -557,6 +685,9 @@ class StopDesk:
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)
         gtts = [row for row in self.stops_of(session, position.id) if row.purpose == STOP_GTT]
+        if any(self.lost(row) for row in gtts):
+            self._settle(session, target, [row for row in gtts if self.lost(row)])
+            gtts = [r for r in self.stops_of(session, position.id) if r.purpose == STOP_GTT]
         live = [
             (row, row.broker_order_id) for row in gtts if row.status in LIVE and row.broker_order_id
         ]
@@ -578,9 +709,9 @@ class StopDesk:
                 # shares twice. Told, and nothing is placed.
                 self._alert(ALERT_GTT_UNVERIFIED, target, now, ack.code)
                 return UNVERIFIED
-        elif any(row.status == "unconfirmed" for row in gtts):
-            # A GTT whose answer was lost has no tag to look it up by and may rest at the
-            # broker: told every night until the owner settles it; nothing is placed.
+        elif any(self.lost(row) for row in gtts):
+            # A GTT whose answer was lost that the GTT book could not settle (unreadable, or
+            # sent too recently) may rest at the broker: told, and nothing is placed.
             self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
             return UNVERIFIED
         # No GTT rests at the broker (none, cancelled above, triggered or ended): alert and place

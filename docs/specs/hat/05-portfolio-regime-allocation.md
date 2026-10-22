@@ -275,11 +275,11 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 #### HAT-PORT-063: Probation trigger and effect
 - **Statement:** A Live sleeve enters Probation when its health multiplier hits 0 or, after at least 50 live trades, the upper bound of the 90% confidence interval of its live expectancy (mean R) is below zero; in Probation its weight is 0 and it keeps trading in shadow.
 - **Source:** BL "Sleeve lifecycle"; PL4.
-- **PR:** 9
-- **Verification:** PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`
+- **PR:** 9, 18
+- **Verification:** PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`, PBT `router.non_live_sleeve_routes_as_shadow`
 - **Acceptance:**
   - Property: for every sequence of live trade R values with n >= 50, the trigger fires iff the 90% CI upper bound of mean R is < 0, and it never fires on the expectancy rule with n < 50. Harm: a sleeve with negative edge keeps real capital, or a sound sleeve is benched on noise.
-  - Property: in every reachable state, a Probation sleeve has final_weight 0 and its signals route as shadow. Harm: a failing sleeve still places real orders.
+  - Property: in every reachable state, a Probation sleeve has final_weight 0 and its signals route as shadow. Harm: a failing sleeve still places real orders. The router reads the effective mode through `execution/modes.py:bot_mode`, which answers shadow for every lifecycle state `lifecycle.routes_as_shadow` names (PR 18).
 - **[OWNER-PENDING]** CI method: default two-sided Student-t interval on mean R; docs silent; owner to confirm.
 - The health multiplier an allocation reads is that of the sleeve's latest snapshot dated before the trade date (a new sleeve with none has the full value); a sleeve whose snapshot cannot be read fails the `allocate` job with a stable code instead of being given a default.
 

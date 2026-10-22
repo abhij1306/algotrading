@@ -201,11 +201,14 @@ class FyersBroker:
         *,
         timeout_sec: float = 2.0,
         fallback: object,
+        not_sent: object | None = None,
     ) -> object:
         """`fn` on a worker thread with a timeout; `fallback` when the circuit is open, the call
-        times out or raises. Each timeout or failure counts toward opening the circuit."""
+        times out or raises. Each timeout or failure counts toward opening the circuit. With
+        `not_sent`, an open circuit returns it instead: nothing was sent, which a place must not
+        read as a lost answer."""
         if self.breaker.is_open():
-            return fallback
+            return fallback if not_sent is None else not_sent
 
         future = _EXECUTOR.submit(fn)
         try:
@@ -280,11 +283,17 @@ class FyersBroker:
         """A place whose id comes back in `id`: SUBMITTED with an id, REJECTED on an explicit
         error, and SUBMIT_UNCONFIRMED for anything else (the order may have landed)."""
         no_reply: dict[str, Any] = {}
+        not_sent: dict[str, Any] = {}
         try:
-            response = self._call_with_guard(operation, call, timeout_sec=1.5, fallback=no_reply)
+            response = self._call_with_guard(
+                operation, call, timeout_sec=1.5, fallback=no_reply, not_sent=not_sent
+            )
         except Exception:
             logger.exception("Fyers %s failed", operation)
             return _unconfirmed()
+        if response is not_sent:
+            # The circuit opened between the caller's check and the call: nothing was sent.
+            return _rejected(BROKER_CIRCUIT_OPEN)
         if response is no_reply or not isinstance(response, dict):
             return _unconfirmed()  # timed out or raised mid-request: it may still have landed
         if response.get("s") == "ok":
@@ -442,11 +451,20 @@ class FyersBroker:
             raise FyersUnavailableError(f"Fyers {operation} request failed")
         return response
 
+    def _read_list(self, operation: str, call: Callable[[], object], key: str) -> list[Any]:
+        """The list under `key` of an ok read. An ok reply without that list (missing, null,
+        nested elsewhere, not a list) is an unreadable book, never an empty one: a tag lookup
+        that read it as empty would send the same order again."""
+        rows = self._read_ok(operation, call).get(key)
+        if not isinstance(rows, list):
+            logger.error("Fyers %s reply has no %s list", operation, key)
+            raise FyersUnavailableError(f"Fyers {operation} request failed")
+        return list(rows)
+
     def get_positions(self) -> list[PositionReply]:
         """Open positions (net quantity other than zero); raises when they cannot be read."""
-        response = self._read_ok("positions", lambda: self.client.positions())
         positions = []
-        for p in response.get("netPositions", []):
+        for p in self._read_list("positions", lambda: self.client.positions(), "netPositions"):
             qty = p.get("netQty", 0)
             if qty == 0:
                 continue
@@ -468,19 +486,20 @@ class FyersBroker:
 
     def fetch_orderbook(self) -> list[dict[str, Any]]:
         """Today's orderbook rows as Fyers returns them; raises when it cannot be read."""
-        return list(
-            self._read_ok("orderbook", lambda: self.client.orderbook()).get("orderBook") or []
-        )
+        return self._read_list("orderbook", lambda: self.client.orderbook(), "orderBook")
 
     def fetch_tradebook(self) -> list[dict[str, Any]]:
         """Today's trades; raises when the tradebook cannot be read."""
-        return list(
-            self._read_ok("tradebook", lambda: self.client.tradebook()).get("tradeBook") or []
-        )
+        return self._read_list("tradebook", lambda: self.client.tradebook(), "tradeBook")
 
     def fetch_holdings(self) -> list[dict[str, Any]]:
         """Demat holdings; raises when they cannot be read."""
-        return list(self._read_ok("holdings", lambda: self.client.holdings()).get("holdings") or [])
+        return self._read_list("holdings", lambda: self.client.holdings(), "holdings")
+
+    def fetch_gtt_orders(self) -> list[dict[str, Any]]:
+        """The GTT order book rows as Fyers returns them; raises when it cannot be read. The
+        rows' field names are unverified on a live account [verify]."""
+        return self._read_list("gtt_orderbook", lambda: self.client.gtt_orderbook(), "orderBook")
 
     def fetch_funds(self) -> FundsReply:
         """Funds; raises when they cannot be read."""

@@ -60,6 +60,7 @@ __all__ = [
     "apply_exit_fill",
     "evaluate_real_position",
     "mark_fired",
+    "unmark_fired",
     "real_position_of",
     "record_close_evaluation",
     "record_close_gaps",
@@ -369,6 +370,15 @@ def mark_fired(session: Session, position_id: uuid.UUID, rule_ids: Iterable[str]
     """Mark the rules of a sale whose order went out as fired (fire once, HAT-EXEC-071)."""
     position = _locked_real_position(session, position_id)
     position.rules_fired = sorted({*(position.rules_fired or []), *rule_ids})
+    session.flush()
+
+
+def unmark_fired(session: Session, position_id: uuid.UUID, rule_ids: Iterable[str]) -> None:
+    """Fire again the rules of a sale that ended without selling (the broker rejected it after
+    taking it, or its answer was lost and it never landed): the next evaluation sells again."""
+    position = _locked_real_position(session, position_id)
+    gone = set(rule_ids)
+    position.rules_fired = [rid for rid in (position.rules_fired or []) if rid not in gone]
     session.flush()
 
 
