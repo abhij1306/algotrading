@@ -246,6 +246,9 @@ CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
 """,
     # HAT-EXEC-011 (PR 45): a database created before PR 45 keeps the old `shadow` default.
     "ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'confirm'",
+    # A real trade's MFE and MAE are NULL (A4a): a database created before keeps NOT NULL.
+    "ALTER TABLE hat_trade_result ALTER COLUMN mfe_r DROP NOT NULL, "
+    "ALTER COLUMN mae_r DROP NOT NULL",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update

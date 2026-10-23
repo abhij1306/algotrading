@@ -15,6 +15,7 @@ from hypothesis import strategies as st
 from app.hat.engine import exits
 from app.hat.engine.approvals import veto_score, veto_verdict
 from app.hat.engine.exits import ExitView, PositionState, evaluate
+from app.hat.engine.positions import TradeError, raise_stop
 from app.hat.engine.strategy.config import (
     ExitBreakeven,
     ExitCloseBelowSma,
@@ -26,6 +27,7 @@ from app.hat.engine.strategy.config import (
     ExitTimeStop,
     ExitTrailingSwingLow,
 )
+from app.hat.models import HatPosition, HatSignal
 
 D = Decimal
 FRACTIONS = st.sampled_from([0.1, 0.25, 0.33, 0.5, 0.75, 1.0])
@@ -452,3 +454,14 @@ def test_veto_verdict_threshold(
     assert abs(Fraction(verdict.taken_mean) - taken_mean) < Fraction(1, 10**20)
     expected = "skips beat takes" if skipped_mean < taken_mean else "skips do not beat takes"
     assert verdict.verdict == expected
+
+
+@pytest.mark.parametrize("new", [D("99.95"), D("100.00")])
+def test_raise_stop_refuses_a_stop_that_does_not_rise(new: Decimal) -> None:
+    """`positions.raise_stop` is invariant 1's Python check: a stop at or below the current one
+    is refused before anything is written (the session is never touched)."""
+    position = HatPosition(current_stop=D("100.00"), is_virtual=True)
+    with pytest.raises(TradeError) as refused:
+        raise_stop(None, HatSignal(mode="shadow"), position, new, None)  # type: ignore[arg-type]
+    assert refused.value.code == "stop_would_lower"
+    assert position.current_stop == D("100.00")

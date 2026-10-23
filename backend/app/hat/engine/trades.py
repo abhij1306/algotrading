@@ -44,7 +44,6 @@ journal (`engine/journal.py`, PR 36).
 from __future__ import annotations
 
 import hashlib
-import logging
 import secrets
 import uuid
 from collections.abc import Callable, Sequence
@@ -78,7 +77,7 @@ from ..time import as_utc
 from . import exits, journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
 from .confidence import LABELS, UNKNOWN_LABEL, Confidence
-from .positions import TradeError, is_veto, position_state, raise_stop, signal_and_bot, write_result
+from .positions import Trade, TradeError, evaluate_stack, trade_of, write_result
 from .snapshot import day_counts, entry_price_of, last_hard_stop, owner_slots
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
 from .watchlist import bot_universe_members
@@ -99,7 +98,6 @@ __all__ = [
     "send_approval",
 ]
 
-logger = logging.getLogger(__name__)
 DECIDE = Callable[[SignalContext], RiskDecision]
 # HAT-EXEC-030: an approval card expires 5 minutes after it is sent.
 APPROVAL_WINDOW = timedelta(minutes=5)
@@ -310,29 +308,22 @@ def open_entry(
     signal.confidence_basis = dict(confidence.basis)
     session.add(signal)
     session.flush()
+    payload = _triggered_payload(request, mode, trigger, entry, signal.confidence)
     journal.record(
         session,
         signal,
-        SIGNAL_TRIGGERED,
-        aggregate_type="signal",
-        aggregate_id=signal.id,
-        payload=_triggered_payload(request, mode, trigger, entry, signal.confidence),
-        now=request.triggered_at,
+        journal.on_signal(signal, SIGNAL_TRIGGERED, payload, now=request.triggered_at),
     )
     if not accepted:
+        reason = {"reason": signal.risk_decision["reason"]}
         journal.record(
             session,
             signal,
-            "signal.rejected",
-            aggregate_type="signal",
-            aggregate_id=signal.id,
-            payload={"reason": signal.risk_decision["reason"]},
-            now=request.triggered_at,
+            journal.on_signal(signal, "signal.rejected", reason, now=request.triggered_at),
         )
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
-    return _route_accepted(
-        session, signal, bot, decision, entry, request.triggered_at, fills, issue
-    )
+    trade = Trade(signal, bot, None)
+    return _route_accepted(session, trade, decision, entry, request.triggered_at, fills, issue)
 
 
 def entry_confidence(session: Session, bot: HatBot, request: EntryRequest) -> Confidence:
@@ -349,8 +340,7 @@ def entry_confidence(session: Session, bot: HatBot, request: EntryRequest) -> Co
 
 def _route_accepted(
     session: Session,
-    signal: HatSignal,
-    bot: HatBot,
+    trade: Trade,
     decision: RiskDecision,
     entry: Decimal,
     now: datetime,
@@ -359,6 +349,7 @@ def _route_accepted(
 ) -> EntryOutcome:
     """An accepted signal by its mode: confirm writes the card, auto waits for the router and
     shadow opens the virtual position."""
+    signal = trade.signal
     mode = signal.mode
     if mode == Mode.CONFIRM:
         send_approval(session, signal, now, issue)
@@ -367,7 +358,7 @@ def _route_accepted(
         # The router places the real order after this transaction commits (HAT-BRK-101).
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     qty, stop = int(decision.quantity or 0), decision.stop or _ZERO
-    position = _virtual_entry(session, signal, bot, qty, stop, fills.fill("buy", qty, entry), now)
+    position = _virtual_entry(session, trade, qty, stop, fills.fill("buy", qty, entry), now)
     return EntryOutcome(signal.id, signal.state, decision, position.id, mode=mode)
 
 
@@ -454,9 +445,7 @@ def send_approval(
 
 def _virtual_order(
     session: Session,
-    signal: HatSignal,
-    bot: HatBot,
-    position: HatPosition | None,
+    trade: Trade,
     *,
     purpose: str,
     side: str,
@@ -466,11 +455,12 @@ def _virtual_order(
 ) -> tuple[HatOrder, HatFill]:
     """A virtual order and its fill at `fill` (price, fees): no broker id, no broker trade id."""
     price, fees = fill
+    signal = trade.signal
     order = HatOrder(
         id=uuid7(),
         signal_id=signal.id,
-        position_id=None if position is None else position.id,
-        broker_account_id=bot.broker_account_id,
+        position_id=None if trade.position is None else trade.position.id,
+        broker_account_id=trade.bot.broker_account_id,
         purpose=purpose,
         side=side,
         qty=qty,
@@ -502,42 +492,29 @@ def _virtual_order(
 
 def _virtual_entry(
     session: Session,
-    signal: HatSignal,
-    bot: HatBot,
+    trade: Trade,
     qty: int,
     stop: Decimal,
     fill: tuple[Decimal, Decimal],
     now: datetime,
-    *,
-    veto: bool = False,
 ) -> HatPosition:
+    """Open the virtual position of `trade` (it has none yet) with its entry order and fill."""
+    signal, veto = trade.signal, trade.veto
     entry = fill[0]
     order, _ = _virtual_order(
-        session, signal, bot, None, purpose="entry", side="buy", qty=qty, fill=fill, now=now
+        session, trade, purpose="entry", side="buy", qty=qty, fill=fill, now=now
+    )
+    placed = {"purpose": "entry", "qty": qty, "is_virtual": True, "tag": order.tag}
+    filled = {"qty": qty, "price": str(entry), "is_virtual": True}
+    journal.record(
+        session, signal, journal.on_order(order, "order.placed", placed, now=now, veto=veto)
     )
     journal.record(
-        session,
-        signal,
-        "order.placed",
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload={"purpose": "entry", "qty": qty, "is_virtual": True, "tag": order.tag},
-        now=now,
-        veto=veto,
-    )
-    journal.record(
-        session,
-        signal,
-        "order.filled",
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload={"qty": qty, "price": str(entry), "is_virtual": True},
-        now=now,
-        veto=veto,
+        session, signal, journal.on_order(order, "order.filled", filled, now=now, veto=veto)
     )
     position = HatPosition(
         id=uuid7(),
-        bot_id=bot.id,
+        bot_id=trade.bot.id,
         signal_id=signal.id,
         instrument_id=signal.instrument_id,
         is_virtual=True,
@@ -554,16 +531,11 @@ def _virtual_entry(
     session.flush()  # the position row first: the order's foreign key points at it
     order.position_id = position.id
     session.flush()
+    opened = {"qty": qty, "avg_entry": str(entry), "stop": str(stop), "is_virtual": True}
     journal.record(
         session,
         signal,
-        "position.opened",
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={"qty": qty, "avg_entry": str(entry), "stop": str(stop), "is_virtual": True},
-        now=now,
-        position=position,
-        veto=veto,
+        journal.on_position(position, "position.opened", opened, now=now, veto=veto),
     )
     return position
 
@@ -605,9 +577,8 @@ def open_veto_trade(session: Session, signal_id: uuid.UUID, now: datetime) -> Ha
     if bot is None:
         raise TradeError("unknown_bot")
     fill = SHADOW_FILLS.fill("buy", signal.qty, entry_price_of(session, signal))
-    return _virtual_entry(
-        session, signal, bot, signal.qty, Decimal(signal.stop_price), fill, now, veto=True
-    )
+    trade = Trade(signal, bot, None, veto=True)
+    return _virtual_entry(session, trade, signal.qty, Decimal(signal.stop_price), fill, now)
 
 
 def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: datetime) -> bool:
@@ -621,15 +592,8 @@ def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: date
     session.refresh(signal)
     if signal.state not in (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL):
         return False
-    journal.record(
-        session,
-        signal,
-        "signal.rejected",
-        aggregate_type="signal",
-        aggregate_id=signal.id,
-        payload={"reason": reason, "stage": "route"},
-        now=now,
-    )
+    rejected = {"reason": reason, "stage": "route"}
+    journal.record(session, signal, journal.on_signal(signal, "signal.rejected", rejected, now=now))
     return True
 
 
@@ -663,27 +627,17 @@ def evaluate_position(
     stop, sell partials, or close the position and write its trade result (HAT-EXEC-070..073).
 
     `high` and `low` are the extremes the price made since entry, for the result's MFE and MAE.
-    A sale fills at `view.price` through `fills`."""
+    A sale fills at `view.price` through `fills`, in this transaction, so its rules are marked
+    fired with it."""
     position = _locked_virtual_position(session, position_id)
-    if position.closed_at is not None or position.qty_open <= 0:
-        return exits.Evaluation()
-    signal, bot = signal_and_bot(session, position)
-    rules, state = position_state(session, position)
-    result = exits.evaluate(rules, state, view, phase)
-    price = view.price
-    if result.actions and price is None:
-        raise TradeError("exit_without_price")  # nothing is written for an exit with no price
-    if result.new_stop is not None and result.new_stop > state.current_stop:
-        raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
-    for rule_id, reason in result.ignored:
-        # A rule that would not raise the stop is logged, never applied (HAT-RISK-070).
-        logger.info("exit rule %s ignored: %s", rule_id, reason)
-    position.rules_fired = sorted({*(position.rules_fired or []), *result.fired})
-    if price is not None:
+    result = evaluate_stack(session, position, view, phase, now)
+    if result.actions and view.price is not None:
+        trade = trade_of(session, position)
+        position.rules_fired = sorted({*(position.rules_fired or []), *result.fired})
         marks = _Marks(fills, high, low)
         for action in result.actions:
             sale = _Sale(action.kind == "full", action.qty, action.rule_ids[0].split(":", 1)[1])
-            _virtual_exit(session, signal, bot, position, sale, price, now, marks)
+            _virtual_exit(session, trade, sale, view.price, now, marks)
     session.flush()
     return result
 
@@ -705,9 +659,8 @@ def close_position(
     position = _locked_virtual_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return False
-    signal, bot = signal_and_bot(session, position)
     sale = _Sale(True, position.qty_open, reason)
-    _virtual_exit(session, signal, bot, position, sale, price, now, _Marks(fills, high, low))
+    _virtual_exit(session, trade_of(session, position), sale, price, now, _Marks(fills, high, low))
     session.flush()
     return True
 
@@ -729,78 +682,44 @@ class _Marks:
 
 
 def _virtual_exit(
-    session: Session,
-    signal: HatSignal,
-    bot: HatBot,
-    position: HatPosition,
-    sale: _Sale,
-    price: Decimal,
-    now: datetime,
-    marks: _Marks,
+    session: Session, trade: Trade, sale: _Sale, price: Decimal, now: datetime, marks: _Marks
 ) -> None:
+    signal, position, veto = trade.signal, trade.position, trade.veto
+    if position is None:
+        raise TradeError("no_open_position")  # an exit sells from the open position
     full = sale.full
-    veto = is_veto(signal, position)
     purpose = "exit_full" if full else "exit_partial"
     fill = marks.fills.fill("sell", sale.qty, price)
     filled = fill[0]
     order, _ = _virtual_order(
-        session,
-        signal,
-        bot,
-        position,
-        purpose=purpose,
-        side="sell",
-        qty=sale.qty,
-        fill=fill,
-        now=now,
+        session, trade, purpose=purpose, side="sell", qty=sale.qty, fill=fill, now=now
     )
     rule = sale.rule
+    placed = {"purpose": purpose, "qty": sale.qty, "is_virtual": True, "rule": rule}
     journal.record(
         session,
         signal,
-        "order.placed",
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload={"purpose": purpose, "qty": sale.qty, "is_virtual": True, "rule": rule},
-        now=now,
-        position=position,
-        veto=veto,
+        journal.on_order(order, "order.placed", placed, now=now, position=position, veto=veto),
     )
+    sold = {"qty": sale.qty, "price": str(filled), "is_virtual": True}
     journal.record(
-        session,
-        signal,
-        "order.filled",
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload={"qty": sale.qty, "price": str(filled), "is_virtual": True},
-        now=now,
-        veto=veto,
+        session, signal, journal.on_order(order, "order.filled", sold, now=now, veto=veto)
     )
     position.qty_open -= sale.qty
     if not full:
+        partial = {"qty": sale.qty, "price": str(filled), "rule": rule}
         journal.record(
             session,
             signal,
-            "exit.partial",
-            aggregate_type="position",
-            aggregate_id=position.id,
-            payload={"qty": sale.qty, "price": str(filled), "rule": rule},
-            now=now,
-            position=position,
-            veto=veto,
+            journal.on_position(position, "exit.partial", partial, now=now, veto=veto),
         )
         return
     position.closed_at = now
+    closed = {"price": str(filled), "rule": rule}
     journal.record(
         session,
         signal,
-        "position.closed",
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={"price": str(filled), "rule": rule},
-        now=now,
-        position=position,
-        veto=veto,
+        journal.on_position(position, "position.closed", closed, now=now, veto=veto),
     )
     write_result(session, signal, position, rule, now, high=marks.high, low=marks.low)
 

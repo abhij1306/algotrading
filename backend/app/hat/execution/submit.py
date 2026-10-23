@@ -517,13 +517,9 @@ def _event(
     journal.record(
         session,
         signal,
-        event_type,
-        payload,
-        aggregate_type="order",
-        aggregate_id=row.id,
-        position=position,
-        broker_fact=True,
-        bot_id=bot_id,
+        journal.on_order(
+            row, event_type, payload, position=position, broker_fact=True, bot_id=bot_id
+        ),
     )
 
 
