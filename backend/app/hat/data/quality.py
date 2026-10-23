@@ -42,7 +42,7 @@ from ..models import (
     HatQualityQuarantine,
 )
 from ..notify import LogNotifier, Notifier
-from ..ops.jobs import JobError, JobResult, SessionFactory
+from ..ops.jobs import JobError, JobResult, RunStatus, SessionFactory
 from ..risk.controls import sync_health
 from ..time import utc_now
 from .corporate_actions import PRICE_NEUTRAL_TYPES
@@ -210,6 +210,21 @@ def _run_id(session: Session, job: str, trade_date: date) -> uuid.UUID | None:
     return session.scalar(
         select(HatJobRun.id).where(HatJobRun.job == job, HatJobRun.trade_date == trade_date)
     )
+
+
+def gate_failed(session: Session, trade_date: date) -> bool | None:
+    """Whether the quality gate of `trade_date` failed: False when its run succeeded, True when it
+    failed, None when that run did not finish or does not exist (so entries fail closed)."""
+    status = session.scalar(
+        select(HatJobRun.status).where(
+            HatJobRun.job == JOB_QUALITY, HatJobRun.trade_date == trade_date
+        )
+    )
+    if status == RunStatus.SUCCEEDED.value:
+        return False
+    if status == RunStatus.FAILED.value:
+        return True
+    return None
 
 
 def ingest_summary(session: Session, trade_date: date) -> Mapping[str, Any] | None:

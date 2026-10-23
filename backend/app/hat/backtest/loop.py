@@ -520,7 +520,7 @@ class _Run:
         return equity, cash
 
     def _context(self, row: HatWatchlistEntry, plan: _EntryPlan, prev: date) -> SignalContext:
-        """The entry's context as live builds it (`daily.live`): sized from the night's
+        """The entry's context as live builds it (`daily.entries`): sized from the night's
         allocation, the book being the run's one sleeve; without one, the allocation inputs are
         missing and the entry is rejected for it."""
         # The free cash net of the entry's slippage and charges: the cash the shares it can
