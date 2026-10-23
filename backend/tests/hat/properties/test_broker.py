@@ -40,11 +40,11 @@ from app.hat.execution.modes import (
     request_mode,
 )
 from app.hat.execution.position_desk import LOST_ANSWER_SETTLE, Verdict, settle_verdict
-from app.hat.execution.protect import stop_confirmed
 from app.hat.execution.session import (
     SessionOwnedError,
     SessionRegistry,
 )
+from app.hat.execution.stop_plans import stop_confirmed
 from app.hat.execution.tags import encode_tag
 from app.hat.models import HatOrder
 from app.hat.risk.modes import MODE_VALUES, Mode
@@ -462,3 +462,12 @@ def test_settle_verdict(
 ) -> None:
     placed_at = None if placed_ago is None else READ_AT - placed_ago
     assert settle_verdict(placed_at, found, READ_AT, LOST_ANSWER_SETTLE, sale=sale) is verdict
+
+
+@pytest.mark.parametrize("sale", [False, True])
+def test_settle_verdict_waits_on_shares_sold(sale: bool) -> None:
+    """A stop or sale found with shares sold waits for the fill sync to adopt it with its fills,
+    however old it is."""
+    placed_at = READ_AT - timedelta(minutes=5)
+    found = settle_verdict(placed_at, True, READ_AT, LOST_ANSWER_SETTLE, filled_qty=40, sale=sale)
+    assert found is Verdict.WAIT

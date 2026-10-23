@@ -266,7 +266,8 @@ RaiseStop ==
 FollowPx == IF BrokenMode = "reset_on_follow" THEN 1 ELSE cur
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.follow  (a working stop below the current
-\* stop is modified up to it; a failed modify leaves it and is alerted)
+\* stop is modified up to it, never down: `stop_plans.raise_only`; a failed modify leaves it and
+\* is alerted)
 Follow ==
     /\ MayAct
     /\ Held
@@ -471,7 +472,7 @@ CancelAfterSale ==
                    lostGtt, saleRefused>>
     /\ UNCHANGED entryVars
 
-\* code: backend/app/hat/execution/protect.py:StopDesk._settle  (a GTT whose answer was lost is
+\* code: backend/app/hat/execution/protect.py:StopDesk._settle_gtts  (a GTT whose answer was lost is
 \* looked up in the broker's GTT book: there, it is adopted; absent, it never landed: the row
 \* ends and a held position is protected again; broken variant "never_settle": it is never
 \* looked up, the main code before PR 18)

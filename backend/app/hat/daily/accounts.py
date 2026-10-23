@@ -40,6 +40,7 @@ from ..execution.entry_timeout import EntryWatch
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
+from ..execution.mpp import MarketProtection
 from ..execution.position_desk import PositionDesk
 from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
@@ -271,13 +272,19 @@ class Desks:
             calendar=calendar,
             notifier=notifier,
         )
-        fills = FillSync(
+        mpp = MarketProtection(
             broker,
             stops,
             notifier,
             band=self._band,
-            resend=self._resend,
+            enabled=self._resend,
             page_after=self._page_after,
+        )
+        fills = FillSync(
+            broker,
+            stops,
+            notifier,
+            mpp=mpp,
             gtt_check_every=self._gtt_check_every,
             clock=clock,
         )
@@ -289,7 +296,6 @@ class Desks:
             calendar=calendar,
             notifier=notifier,
             band=self._band,
-            resend=self._resend,
         )
         router = ExecutionRouter(broker, guard, reconciler, notifier, issuer=issuer, clock=clock)
         return AccountDesk(

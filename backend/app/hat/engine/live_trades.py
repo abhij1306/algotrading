@@ -80,7 +80,7 @@ CLOSE_EVALUATED = "exit.close_evaluated"
 CLOSE_GAP = "exit.close_gap"
 CLOSE_RULE = "close_below_sma"
 _OPEN_STATES = (lifecycle.OPEN, lifecycle.PARTIALLY_EXITED)
-# An entry order the broker may still fill (`protect.WORKING`; the engine does not import it).
+# An entry order the broker may still fill (`stop_plans.WORKING`; the engine does not import it).
 _ENTRY_WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
