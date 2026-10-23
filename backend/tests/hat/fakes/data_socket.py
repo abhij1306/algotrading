@@ -166,7 +166,7 @@ def make_session(
     return session, factory
 
 
-def weekday_calendar(clock: Clock, span: int = 30) -> SessionCalendar:
+def weekday_calendar(clock: Clock, span: int = 400) -> SessionCalendar:
     """Calendar rows for every day within `span` days of the clock's IST date: weekdays trade
     09:15-15:30 IST, weekends are closed."""
     today = clock.now().astimezone(IST).date()

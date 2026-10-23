@@ -860,6 +860,14 @@ FAILED tests/hat/properties/test_feed.py::test_registry_concurrent - Exceptio [c
 
 ### PBT feed.provider_converges
 
+Break: (PR 75b) the racer now settles a race inside its own provider call as `LiveFeed` does for every owner (re-subscribe what was taken back, unsubscribe what was let go). Before, two armed races nested (a release during our subscribe, overtaken by a re-subscribe) left the provider without a held symbol that no real caller would leave, and the property failed on main (`add SBIN; arm subscribe release SBIN; arm unsubscribe re-add SBIN; add TCS`). With `regained = []` in `LiveFeed.unsubscribe` it still fails (found in one of three default-profile runs with an empty example database; the original racer in none of three):
+
+```
+E   AssertionError: assert set() == {'NSE:SBIN-EQ'}
+E     Extra items in the right set:
+E     'NSE:SBIN-EQ'
+```
+
 Break: in `app/hat/data/feed.py`, replaced `if regained: await self.subscribe(regained)` with `if regained: pass`.
 
 ```

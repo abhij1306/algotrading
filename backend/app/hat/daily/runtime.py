@@ -65,7 +65,7 @@ from ..models import (
 from ..notify import Notifier
 from ..ops.jobs import JobError, SessionFactory, recover_interrupted
 from ..ops.scheduler import HatScheduler, ScheduledJob
-from ..risk.sessions import SessionCalendar, SessionState, is_trading_day
+from ..risk.sessions import SessionCalendar, is_trading_day
 from ..settings import HatSettings, require_postgres
 from ..telegram.callbacks import ManagerFlattener, RouterDesk
 from ..telegram.client import BotClient, TelegramTransport
@@ -253,7 +253,7 @@ class HatRuntime:
 
     def is_open(self, at: datetime) -> bool:
         calendar = self._calendar
-        return calendar is not None and calendar.state(at) is SessionState.OPEN
+        return calendar is not None and calendar.is_open(at)
 
     def _sleep(self, seconds: float) -> None:
         """The ingest's wait: ends with a `JobError` as soon as HAT stops."""

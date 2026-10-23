@@ -180,11 +180,20 @@ def upsert_calendar(
 
 def session_calendar(session: Session, market_code: str = "NSE") -> SessionCalendar | None:
     """The market's `hat_trading_calendar` rows as the one session calendar every reader takes; None
-    when the market is not set up."""
-    market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == market_code))
-    if market_id is None:
+    when the market is not set up. A trading row without its own times takes the `hat_market`
+    default session (HAT-OVR-001), so every reader that counts the day as a session can open it."""
+    market = session.scalar(select(HatMarket).where(HatMarket.code == market_code))
+    if market is None:
         return None
     rows = session.scalars(
-        select(HatTradingCalendar).where(HatTradingCalendar.market_id == market_id)
+        select(HatTradingCalendar).where(HatTradingCalendar.market_id == market.id)
     )
-    return SessionCalendar.from_rows((r.day, r.is_trading, r.open_at, r.close_at) for r in rows)
+    return SessionCalendar.from_rows(
+        (
+            r.day,
+            r.is_trading,
+            r.open_at or (_to_instant(r.day, market.session_open) if r.is_trading else None),
+            r.close_at or (_to_instant(r.day, market.session_close) if r.is_trading else None),
+        )
+        for r in rows
+    )

@@ -552,14 +552,21 @@ class ConvergeMachine(RuleBasedStateMachine):
         feed = self.feed
 
         def racer() -> None:
+            # the other owner's provider call, then its own re-check after it (as `LiveFeed` does
+            # for every owner), so a race inside this call is settled by this owner
+            registry, session = feed.registry, feed.session
             if release:
-                delta = feed.registry.remove(owner, symbols)
+                delta = registry.remove(owner, symbols)
                 if delta:
-                    feed.session.unsubscribe(sorted(_provider_set(delta)))
+                    session.unsubscribe(sorted(_provider_set(delta)))
+                    if regained := {s for s in delta if registry.is_held(s)}:
+                        session.subscribe(sorted(_provider_set(regained)))
             else:
-                delta = feed.registry.add(owner, symbols)
+                delta = registry.add(owner, symbols)
                 if delta:
-                    feed.session.subscribe(sorted(_provider_set(delta)))
+                    session.subscribe(sorted(_provider_set(delta)))
+                    if released := {s for s in delta if not registry.is_held(s)}:
+                        session.unsubscribe(sorted(_provider_set(released)))
 
         return racer
 

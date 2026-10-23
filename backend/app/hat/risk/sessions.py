@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
+from functools import cached_property
 
 from ..time import as_utc, trade_date_of
 
@@ -84,9 +85,17 @@ class SessionCalendar:
         ]
         return min(opens) if opens else None
 
+    @cached_property
+    def _trading(self) -> tuple[date, ...]:
+        return tuple(sorted(day for day, row in self.days.items() if row.is_trading))
+
     def trading_days(self) -> list[date]:
         """The calendar's trading days, in date order."""
-        return sorted(day for day, row in self.days.items() if row.is_trading)
+        return list(self._trading)
+
+    def holidays(self) -> frozenset[date]:
+        """The dates the calendar holds as closed (holidays and listed weekends)."""
+        return frozenset(day for day, row in self.days.items() if not row.is_trading)
 
     def previous_trading_day(self, day: date) -> date | None:
         """The last trading day before `day`; None when the calendar holds none."""

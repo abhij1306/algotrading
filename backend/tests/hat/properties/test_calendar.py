@@ -91,25 +91,26 @@ def instant(day: date, wall: time) -> datetime:
 GRID = [time(h, m) for h in range(24) for m in (0, 15, 30, 45)] + [time(9, 15), time(15, 30)]
 
 
-def _session(row: cal.CalendarDay | None) -> tuple[time, time] | None:
-    """The session a stored row gives its day: its own times on a trading day, else none."""
-    if row is None or not row.is_trading or row.open_at is None or row.close_at is None:
+def _session(row: cal.CalendarDay | None, default: tuple[time, time]) -> tuple[time, time] | None:
+    """The session a stored row gives its day: its own times on a trading day (the market default
+    for a time it lacks), else none."""
+    if row is None or not row.is_trading:
         return None
-    return row.open_at, row.close_at
+    return row.open_at or default[0], row.close_at or default[1]
 
 
 @settings(max_examples=60)
 @given(spec=calendars())
 def test_holiday_closed(spec: CalSpec) -> None:
     """For every date with is_trading = false the calendar is CLOSED at every instant of that date;
-    a trading date is OPEN exactly from its open_at to its close_at; a date it does not hold, or a
-    trading row without its times, is UNKNOWN and never open."""
+    a trading date is OPEN exactly from its open_at to its close_at (the `hat_market` default for a
+    time the row lacks); a date it does not hold is UNKNOWN and never open."""
     open_default, close_default, rows = spec
     loaded = through_database(open_default, close_default, rows)
     for offset in range(DAYS):
         day = WINDOW_START + timedelta(days=offset)
         row = rows.get(day)
-        session = _session(row)
+        session = _session(row, (open_default, close_default))
         for wall in GRID:
             state = loaded.state(instant(day, wall))
             if row is not None and not row.is_trading:
@@ -149,7 +150,7 @@ def test_session_from_reference_data(spec: CalSpec) -> None:
     loaded = through_database(open_default, close_default, full)
     for offset in range(DAYS):
         day = WINDOW_START + timedelta(days=offset)
-        expected = _session(full.get(day))
+        expected = _session(full.get(day), (open_default, close_default))
         if rows and day not in rows:
             assert expected == ((open_default, close_default) if day.weekday() < 5 else None)
         opens = loaded.open_on(day)
@@ -194,6 +195,8 @@ def test_one_answer(spec: CalSpec, offset: int, wall: time) -> None:
     assert trading == (day in loaded.trading_days())
     if state is SessionState.OPEN:
         assert trading
+    # and back: a day counted as a session has an open the feed and risk can reach
+    assert trading == (opens is not None)
     opened = instant(WINDOW_START, time(10, 0))
     held = _days_held(loaded, opened, at)
     counted = [d for d in loaded.trading_days() if WINDOW_START <= d <= day]
