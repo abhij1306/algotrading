@@ -26,7 +26,7 @@ from ..execution.mode_changes import request_mode_change
 from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal
 from ..models import HatBot, HatBrokerAccount
 from ..risk import controls, kill
-from ..risk.modes import Mode, ModeChangeError, plan_mode_change
+from ..risk.modes import MODE_VALUES, Mode, ModeChangeError, plan_mode_change
 from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
 from ..time import trade_date_of
@@ -288,7 +288,7 @@ def _mode_refusal(
 ) -> str | None:
     """Why the change may not be queued now (HAT-TG-032, HAT-GOV-085), checked without writing:
     the gates are read as they will stand at the open the change takes effect at."""
-    if to_mode not in Mode:
+    if to_mode not in MODE_VALUES:
         return "unknown_mode"
     state = calendar.state(now)
     if state is SessionState.UNKNOWN:

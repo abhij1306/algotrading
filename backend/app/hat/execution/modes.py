@@ -39,7 +39,7 @@ from ..engine.portfolio import lifecycle
 from ..errors import HatError
 from ..models import HatBot, HatBrokerAccount, HatModeChange, HatRiskPolicyVersion
 from ..models.strategy import ACCOUNT_ACTIVE
-from ..risk.modes import Mode, ModeChange, queued_mode_at
+from ..risk.modes import MODE_VALUES, Mode, ModeChange, queued_mode_at
 from ..risk.policy import PolicyError, PolicyVersion, effective_version, parse_policy
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc, trade_date_of
@@ -108,7 +108,7 @@ def gate_refusal(requested: str, gates: Gates) -> str | None:
     """The first gate that keeps `requested` from running, or None: `unknown_mode` outside the
     three modes; for confirm and auto `no_gtt_delivery` (an inactive account or no GTT for
     delivery), `ddpi_not_confirmed`, then `weights_not_confirmed`. Shadow needs none."""
-    if requested not in Mode:
+    if requested not in MODE_VALUES:
         return UNKNOWN_MODE
     if requested == Mode.SHADOW:
         return None
@@ -173,7 +173,7 @@ def real_orders_allowed(
 def capability_gated(requested: str, gates: Gates) -> str:
     """The mode a bot runs in: shadow unless `requested` is one of the three and passes every
     gate (`gate_refusal`)."""
-    if requested not in Mode or gate_refusal(requested, gates) is not None:
+    if requested not in MODE_VALUES or gate_refusal(requested, gates) is not None:
         return Mode.SHADOW
     return requested
 
@@ -226,7 +226,7 @@ def requested_mode(session: Session, bot: HatBot, at: datetime) -> str:
     by then and not refused at its open, else the bot's stored mode; anything outside the three
     modes reads as shadow."""
     mode = queued_mode_at(bot.execution_mode, _changes(session, bot.id), at)
-    return mode if mode in Mode else Mode.SHADOW
+    return mode if mode in MODE_VALUES else Mode.SHADOW
 
 
 def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalendar | None) -> str:

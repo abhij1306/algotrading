@@ -70,7 +70,7 @@ from ..models import (
 )
 from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
-from ..risk.modes import Mode
+from ..risk.modes import MODE_VALUES, Mode
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.service import evaluate_signal
 from ..time import as_utc
@@ -251,7 +251,7 @@ def open_entry(
     backtest's fixed one), else the one `signal_confidence` reads, after the duplicate check and
     before the owner's lock. An auto signal whose label is not high is routed as confirm, an
     approval card for the owner (`modes.route_mode`, HAT-EXEC-014, D149)."""
-    if mode not in Mode:
+    if mode not in MODE_VALUES:
         raise TradeError("unknown_mode")
     lock_bot(session, request.bot_id)
     bot = session.get(HatBot, request.bot_id)

@@ -23,7 +23,11 @@ class Mode(StrEnum):
     SHADOW = "shadow"
     CONFIRM = "confirm"
     AUTO = "auto"
+# Membership of any value, a plain `str` included: `x in Mode` raises TypeError for a str
 
+# Membership of any value, a plain `str` included: `x in MODE_VALUES` raises TypeError for a str
+# before Python 3.12 (the project supports 3.11), a set of the members does not.
+MODE_VALUES: frozenset[str] = frozenset(Mode)
 
 # A config field holding a mode: validates and dumps as the plain string (pydantic `Literal`).
 ModeField = Literal[Mode.SHADOW, Mode.CONFIRM, Mode.AUTO]
@@ -44,7 +48,7 @@ def plan_mode_change(to_mode: str, requested_at: datetime, calendar: SessionCale
     """The queued change: refused unless `to_mode` is shadow, confirm or auto and the calendar
     says the market is closed at `requested_at`; effective at the first session open after it.
     An unknown calendar date, or no later open on record, is a refusal (fail closed)."""
-    if to_mode not in Mode:
+    if to_mode not in MODE_VALUES:
         raise ModeChangeError("a mode is shadow, confirm or auto")
     if calendar.state(requested_at) is not SessionState.CLOSED:
         raise ModeChangeError("a mode changes only outside market hours")

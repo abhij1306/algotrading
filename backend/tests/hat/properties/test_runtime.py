@@ -12,7 +12,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from app.hat.models import HatApproval, HatFill, HatOrder, HatPosition, HatSignal
-from app.hat.risk.modes import Mode
+from app.hat.risk.modes import MODE_VALUES, Mode
 from app.hat.runtime import position_is_virtual
 
 ENGINE = memory_engine(HatSignal, HatApproval, HatOrder, HatFill, HatPosition)
@@ -27,7 +27,7 @@ lifecycle = st.tuples(
 )
 
 
-@given(mode=st.text(max_size=12).filter(lambda m: m not in Mode))
+@given(mode=st.text(max_size=12).filter(lambda m: m not in MODE_VALUES))
 def test_unknown_mode_is_refused(mode: str) -> None:
     """A mode outside shadow, confirm and auto never yields a flag (no default to real)."""
     with pytest.raises(ValueError, match="unknown signal mode"):

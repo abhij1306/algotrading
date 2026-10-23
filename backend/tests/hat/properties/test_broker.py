@@ -36,7 +36,7 @@ from app.hat.execution.session import (
     SessionRegistry,
 )
 from app.hat.execution.tags import encode_tag
-from app.hat.risk.modes import Mode
+from app.hat.risk.modes import MODE_VALUES, Mode
 
 
 @given(
@@ -62,7 +62,7 @@ def test_confirm_and_auto_need_gtt(
     gates = Gates(status, capabilities, ddpi_confirmed=ddpi, weights_confirmed=weights)
     effective = capability_gated(mode, gates)
     gtt = status == "active" and capabilities["gtt_delivery"] is True
-    known = mode in Mode
+    known = mode in MODE_VALUES
     ready = gtt and ddpi and weights
     assert effective == (mode if known and (mode == "shadow" or ready) else "shadow")
     if not known:

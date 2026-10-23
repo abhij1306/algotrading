@@ -8,7 +8,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from app.hat.data.sessions import IST
-from app.hat.risk.modes import Mode, ModeChange, ModeChangeError, plan_mode_change, queued_mode_at
+from app.hat.risk.modes import (
+    MODE_VALUES,
+    Mode,
+    ModeChange,
+    ModeChangeError,
+    plan_mode_change,
+    queued_mode_at,
+)
 
 instants = st.datetimes(
     min_value=datetime(2026, 10, 12), max_value=datetime(2026, 10, 30), timezones=st.just(IST)
@@ -18,7 +25,7 @@ MODE = st.sampled_from(tuple(Mode))
 
 @given(st.text(max_size=6), instants)
 def test_unknown_mode_refused(mode: str, at: datetime) -> None:
-    if mode in Mode:
+    if mode in MODE_VALUES:
         return
     evening = datetime.combine(TRADE_DAY, time(20), tzinfo=IST)
     with pytest.raises(ModeChangeError):
