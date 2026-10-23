@@ -160,6 +160,27 @@ def test_dsr_published_example() -> None:
 SCORERS = ("deflated_sharpe", "family_deflated_sharpe", "pbo")
 
 
+def _imports_dsr_module(path: Path) -> bool:
+    """Whether `path` binds the module `app.hat.backtest.dsr` itself (not names from it)."""
+    package = ".".join(path.relative_to(APP_ROOT.parent).with_suffix("").parts[:-1])
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            if any(a.name == "app.hat.backtest.dsr" for a in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom):
+            parts = package.split(".")
+            base = (
+                ".".join(
+                    parts[: len(parts) - node.level + 1] + ([node.module] if node.module else [])
+                )
+                if node.level
+                else node.module or ""
+            )
+            if base == "app.hat.backtest" and any(a.name == "dsr" for a in node.names):
+                return True
+    return False
+
+
 def test_dsr_scored_only_by_runs() -> None:
     """Under `app/hat` only `backtest/runs.py` imports the DSR and PBO scorers of
     `app.hat.backtest.dsr` (`deflated_sharpe`, `family_deflated_sharpe`, `pbo`), and it scores a
@@ -174,6 +195,14 @@ def test_dsr_scored_only_by_runs() -> None:
         and any(f"app.hat.backtest.dsr.{name}" in imports_of(path) for name in SCORERS)
     )
     assert offenders == []
+    # nor imports the module whole (`import app.hat.backtest.dsr`, `from ..backtest import
+    # dsr`), through which it could call a scorer as an attribute
+    whole = sorted(
+        str(path.relative_to(APP_ROOT))
+        for path in (APP_ROOT / "hat").rglob("*.py")
+        if path not in allowed and _imports_dsr_module(path)
+    )
+    assert whole == []
     assert {f"app.hat.backtest.dsr.{name}" for name in ("family_deflated_sharpe", "pbo")} <= (
         imports_of(APP_ROOT / "hat" / "backtest" / "runs.py")
     )

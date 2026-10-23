@@ -241,14 +241,18 @@ def run_dsr(
     counted trial is scored."""
     _recorded(session, run)
     stats = _stats(run.metrics if metrics is None else metrics)
+    # one read of the family, so the trial count and the Sharpe ratios are of the same moment
+    family = session.scalars(
+        select(HatBacktestRun).where(HatBacktestRun.family_key == run.family_key)
+    ).all()
     sharpes = [
         s.sr
-        for s in (_stats(r.metrics) for r in _completed(session, run.family_key) if r.id != run.id)
+        for s in (_stats(r.metrics) for r in family if r.status == COMPLETED and r.id != run.id)
         if s is not None
     ]
     if stats is not None:
         sharpes.append(stats.sr)
-    trials = trial_count(session, run.family_key)
+    trials = len(family)
     variance = trial_variance(sharpes)
     return family_deflated_sharpe(stats, trials, variance), trials, variance
 

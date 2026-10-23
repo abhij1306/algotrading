@@ -742,8 +742,9 @@ def test_dsr_needs_recorded_run(others: list[float], sr: float, recorded: bool) 
             )
             with pytest.raises(runs.RunError, match="backtest_run_unrecorded"):
                 runs.run_dsr(session, stray)
+            result = _result(sr, 60, 1, "0")
             with pytest.raises(runs.RunError, match="backtest_run_unrecorded"):
-                runs.complete_run(session, stray, _result(sr, 60, 1, "0"), root=root)
+                runs.complete_run(session, stray, result, root=root)
             session.rollback()
             return
         run = _start(session, live, universe)
