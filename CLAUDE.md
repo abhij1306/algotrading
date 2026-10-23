@@ -69,8 +69,8 @@ engine, each even if the other failed.
   money-safety and trading rules),
   `docs/decisions.md` (decisions in force), `docs/runbook.md` (operator procedures).
 - **Implement and verify; don't build test ceremony.** Verify a change by running it for real:
-  the affected job, CLI or route on real data (`HAT_DATA_ROOT`, the local database read-only),
-  and a real backtest on real data for engine changes; put the evidence in the PR. Tests are
+  the affected job, CLI or route on real data (`HAT_DATA_ROOT`, the local database read-only);
+  never a backtest as PR verification; put the evidence in the PR. Tests are
   small and only for pure functions at their seams (money maths, parsers, state rules). Never
   write tests that run a backtest, the pipeline or a full database on generated data, and no
   deliberate-break rituals or test digests. A conformance check enforces a structural rule of
