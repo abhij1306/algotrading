@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's initi
 
 # verify-stops
 
-Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model), and that a split or bonus rescales an open position before the ex-date open instead of stopping it out. Requirement IDs (index: `docs/invariants.md`): (HAT-EXEC-050 to 053, 070 to 073), (HAT-RISK-070, 073), (HAT-SCH-081), (HAT-BOT-062), (HAT-VER-030..034, 072), (HAT-EXEC-060..066), (HAT-EXEC-140..143), (HAT-DEC-B17). The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
+Checks that every initial stop is priced from its rule exactly, on the tick grid, strictly below the entry and (for the contraction low) never wider than the configured percentage, that the exit stack evaluates top to bottom with a full exit beating partials, firing each rule once, selling fractions of the original quantity and never lowering a stop, that the database refuses to lower a position's stop or delete the position (a delete followed by an insert would restart the stop lower), and that a real position always rests on a broker stop that follows its stop up and never down (the `StopPlacement` model), and that a split or bonus rescales an open position before the ex-date open instead of stopping it out. Requirement IDs (index: `docs/invariants.md`): (to 053, 070 to 073),,,,,,,. The code behind the model is `execution/protect.py`, `execution/fills.py` and `engine/live_trades.py`; its property tests on that code (`manage.*`) are in `verify-execution`.
 
 ## Properties
 
@@ -25,10 +25,10 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT rescale.factor_exact` A stored 12-place factor of a ratio with denominator ≤ 1000 reads back exactly; a short factor that is no such ratio is refused. Harm: 0.0110 read as 11/1000 instead of 1/91.
 - `PBT rescale.pending_is_manage_only` While a position awaits its rescale the exits' view source gives it no view and a trigger of its instrument is stored Rejected `corporate_action_pending`; once rescaled both return. Harm: exits or entries on prices of the wrong scale.
 - `PBT rescale.unhandled_is_manage_only` For every action the rescale cannot handle (`other`, or a split or bonus with factor 1 or above) and ex-date around the entry day, with or without a split beside it, over repeated `ca.rescale` runs (`Nightly.rescale`): the action is never applied, a position it spans gets no exit view and is manage-only, its instrument awaits a rescale, and one `corporate_action.unhandled` names the (position, action); the split beside it is applied once. Harm: a consolidation keeps ten times the shares on an old-scale stop, or a rights issue's old stop sells at the open.
-- `PBT rescale.resolution_ends_lock` (PR 73) For every unhandled action and virtual position, with or without a second action: the owner's `resolve_action` outside market hours records one `corporate_action.resolved` as the owner's (chat id) and closes the position at the given price through `close`; a real position (`real_position_flatten`), a resolution inside a session, of an action that does not lock it, of an unknown position or without a price is refused and writes nothing. Harm: a locked shadow position stays manage-only for ever, or a real one sells or stops on an old-scale quantity the broker no longer holds.
+- `PBT rescale.resolution_ends_lock` For every unhandled action and virtual position, with or without a second action: the owner's `resolve_action` outside market hours records one `corporate_action.resolved` as the owner's (chat id) and closes the position at the given price through `close`; a real position (`real_position_flatten`), a resolution inside a session, of an action that does not lock it, of an unknown position or without a price is refused and writes nothing. Harm: a locked shadow position stays manage-only for ever, or a real one sells or stops on an old-scale quantity the broker no longer holds.
 - `PBT rescale.broker_stop_follows` After a rescale, the next sync moves every live broker stop (GTT or day stop) down to the rescaled trigger first and then to the rescaled quantity, never larger than the old size at the old trigger; while the broker refuses the larger size the stop rests at the new trigger for the old size; with no rescale nothing moves. Harm: the old GTT fires on the ex-date open.
 - `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup (or one with an unreadable row) once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
-- `PBT rescale.price_neutral_changes_nothing` (PR 47) For every set of positions and actions, adding price-neutral rows (`dividend`, `notice`, factor 1) on any ex-date leaves the manage-only set, the pending set, the rescale, the `corporate_action.unhandled` flags and the adjusted view's factors as they were without them. Harm: every dividend of a held stock makes the position manage-only with an URGENT alert, or enters the adjusted view.
+- `PBT rescale.price_neutral_changes_nothing` For every set of positions and actions, adding price-neutral rows (`dividend`, `notice`, factor 1) on any ex-date leaves the manage-only set, the pending set, the rescale, the `corporate_action.unhandled` flags and the adjusted view's factors as they were without them. Harm: every dividend of a held stock makes the position manage-only with an URGENT alert, or enters the adjusted view.
 - `PBT stops.tick_size_slabs` The tick of a price is its NSE slab (0.01 below ₹250, 0.05 to ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above, each upper bound inclusive; none for a non-positive price), and (`test_tick_size_reference_close`) a trade date's tick is set from the last close before its month, else the latest earlier close, never the day's own. Harm: a stop or GTT price off the exchange's tick grid is refused, leaving a position with no stop.
 - `TLA StopPlacement!StopAfterFill` After a real entry fill, its broker stop is placed (or resized) before any other HAT action on the position. Harm: a raised stop, a sale or a swap runs on a position the broker does not yet protect.
 - `TLA StopPlacement!AlwaysProtected` A held real position always has a working broker stop, except while a fill's stop work has not run yet, after a failure that raised an alert, or while a GTT that triggered without a fill is still unseen. Harm: a gap-down or a machine outage hits an unprotected position and nobody is told.
@@ -42,9 +42,9 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `TLA StopPlacement!SharesTracked` HAT's open quantity always equals the shares the broker holds for the position, also when part of a DAY limit entry fills after a stop fill, an exit or a flatten emptied the position (the position stays open until the broker shows the entry ended). Harm: shares bought after HAT closed the position sit at the broker untracked and with no stop.
 - `TLA StopPlacement!RestCancelledOnExit` Once a sale has emptied the position, the rest of a still-working entry has been asked to be cancelled. Harm: the remainder holds risk budget no cap counts and buys shares HAT is selling.
 - `TLA StopPlacement!EmptiedCloses` A position its sales emptied eventually closes (the broker ends the entry: the cancel, or the DAY expiry at the close), unless a late part of the entry is held. Harm: an emptied position stays open for ever and holds its slot.
-- `TLA StopPlacement!RestingSold` A GTT that triggered with its limit sale resting below the limit under a held position is eventually sold (the sync has the sale made a market sale), never left at its limit to expire at the close (HAT-EXEC-066). Harm: the stop triggered and the shares sit unsold all session while the price keeps falling.
+- `TLA StopPlacement!RestingSold` A GTT that triggered with its limit sale resting below the limit under a held position is eventually sold (the sync has the sale made a market sale), never left at its limit to expire at the close. Harm: the stop triggered and the shares sit unsold all session while the price keeps falling.
 - `PBT exits.veto_score` The veto score over the R multiples of the closed veto trades is avoided = -sum(R < 0) and missed = sum(R > 0), exactly, both non-negative, with missed - avoided the plain sum and a zero R in neither. Harm: the weekly digest tells the user their skips saved money they in fact cost.
-- `PBT exits.veto_verdict_threshold` The veto verdict is absent until 50 decisions, then "skips beat takes" exactly when the mean R of the skipped trades is below the mean R of the taken ones (compared without rounding either mean), else "skips do not beat takes", and insufficient data when either side is empty. Harm: the weekly digest tells the owner to keep vetoing (or to switch to auto) on a rounding artefact (HAT-EXEC-131).
+- `PBT exits.veto_verdict_threshold` The veto verdict is absent until 50 decisions, then "skips beat takes" exactly when the mean R of the skipped trades is below the mean R of the taken ones (compared without rounding either mean), else "skips do not beat takes", and insufficient data when either side is empty. Harm: the weekly digest tells the owner to keep vetoing (or to switch to auto) on a rounding artefact.
 
 ## Run
 
@@ -68,7 +68,7 @@ No check calls a broker or the exchange; the shadow engine properties in `test_e
 
 - A failing property prints a falsifying example (entry, low, buffer, tick for a stop; the rule stack, the position and the view for an exit). Reproduce it with the real function (`stops.plan_stop`, `exits.evaluate`). If the real code breaks the spec, that is a bug: fix it. Never weaken the property or narrow its strategy; a narrowing needs a reason under "Scope changes".
 - The oracles are written apart from the code: stops with `Fraction`, the firing conditions of the exit rules in `expected_sells` and `expected_phase` in `test_exits.py`. If the two disagree, read the code and `docs/invariants.md` before deciding which is wrong.
-- Stops are rounded down to the instrument's real tick (`data/ticks.py`, HAT-EXEC-053; `StopInputs.tick` is required, there is no default); a lower stop is never tighter than the formula. The custom rules follow the same rounding.
+- Stops are rounded down to the instrument's real tick (`data/ticks.py`, `StopInputs.tick` is required, there is no default); a lower stop is never tighter than the formula. The custom rules follow the same rounding.
 - `regime_exit` needs no price of its own: it fires on the index at night. `evaluate_position` refuses an exit with no price (`exit_without_price`) before writing anything.
 - A `StopPlacement` counterexample names its actions; each has a `\* code:` comment naming the function it stands for (`StopDesk.protect`, `follow`, `swap`, `_cancel`, `verify`, `cancel_all`, `cancel_entry`; `FillSync._apply`, `_unprotected`, `_gtt_unfilled`, `run`; `live_trades.evaluate_real_position`, `apply_exit_fill`, `close_if_emptied`). Replay the steps against that code before deciding whether the code or the model is wrong. HAT's view of a GTT that triggered without a fill is still "working" (`Booked`), as it is in the code until the sync or the verify sees the order that ended short.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
@@ -121,36 +121,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `4434244006d80b3604d034c0c8baf43ee921f649d818646da9fa92e9a9278f55`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- PR 71 (D132, D149, HAT-EXEC-015): confidence labels. `hat_signal` gains `confidence` and `confidence_basis`, fixed at creation (a Postgres trigger refuses a change), and the new table `hat_backtest_bucket` holds a completed run's trades by playbook and setup-score band; `trades.open_entry` stores the label `trades.entry_confidence` reads (`runs.signal_confidence`) or the caller's (the router's; the backtest's fixed `backtest` label). No check of this skill changed. Nothing was narrowed.
-- PR 75a: the stop raise (`raise_stop`), the trade result (`write_result`, `trade_r`, `entry_qty`) and `position_state` moved from `trades.py` to `engine/positions.py` unchanged (`verify-execution`); `test_rescale.py` reads `positions.position_state`. The stop and exit properties are unchanged and pass. Nothing was narrowed.
-- PR 73 (PR 31 follow-ups 1, 2, 12; HAT-EXEC-144): `rescale.resolve_action` is the owner's resolution of an unhandled action on a virtual position (admin `resolve-action`, `verify-portfolio`): it records `corporate_action.resolved` and closes the position. A real position is refused (code review: lifting its lock kept the old-scale quantity and stop and lifted `/flatten`'s cap at the broker's holdings); PR 31 follow-up 2 (keep a real position and end its lock) stays open. New PBT `rescale.resolution_ends_lock`. Nothing was narrowed.
-- PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).
-- PR 15c built `StopPlacement` and removed `TLA StopPlacement!StopOnlyTightens` from `KNOWN_GAPS`. The model has one real position, at most two entry fills and three stop levels; it does not model the quantity a stop covers (resizing is checked by `manage.real_fill_protected` on the real code) nor the GTT's limit price (`stops.gtt_limit_offset`). `AlwaysProtected` allows the window between a fill and its stop work, a failure that was alerted, and an unseen unfilled GTT (then `GttUnfilledAlerted` holds). `NightlyVerifyCovers` accepts an alert in place of a GTT (the broker could not be reached, or the new GTT failed). `TypeOK` has no broken variant.
-- PR 20 (audit 2026-10-22 F2) added the broker's shares (`bqty`), the working entry (`rest`), `exited` and `cancelAsked`: a sale that empties the position closes it only when no entry works, and `EntryFill` can follow it. The cancel of the remainder is asked in the sale's own step (for a stop fill the code asks it in the protect that follows the fill in the same sync); a cancel that comes too late is the interleaving of `EntryFill` before `EntryEnds`. A day stop that expires at the close under a held position with no GTT (reachable once a late fill after the swap rests on the day stop alone) puts the position back to `protecting`, as `FillSync._statuses` does with an ended stop. `EmptiedCloses` relies on the broker ending the entry (weak fairness on `EntryEnds`: the cancel, else the DAY expiry).
-- PR 25 reworded `protect.py`'s docstring and a comment (a GTT now carries its HT tag; a lost one is settled by tag first), and its review round made two `StopDesk` branches treat Fyers' -360 as not sent (`broker.CODES_NOT_SENT`: an entry-remainder cancel is tried again, and a GTT whose resize was refused for it is not cancelled). No check here changed; those two branches have no property (recorded in `verify-execution`).
-- Exits of a real position run through `live_trades.evaluate_real_position` (PR 15c), the same `exits.evaluate`; `evaluate_position` still refuses a position that is not virtual.
-- Fees are zero in the shadow engine and fills are at the price of the view; `mfe_r` and `mae_r` come from the extremes the caller passes.
-- PR 15b: veto trades (the virtual trades of skipped or expired confirm signals) run through the same exit stack and `evaluate_position` as shadow trades; their events carry `veto: true`. `trades.bot_snapshot` leaves them out of the bot's slots and stop-outs, so the stop and exit properties above, which drive shadow trades, are unchanged. `exits.veto_score` is new; the digest that reports it is PR 16.
-- PR 18 added a lost GTT answer to `StopPlacement` (`lostGtt`, `LostGttPlace`, `Settle`, `Sell`, `saleRefused`) with `LostGttSettled` (weak fairness on `Settle`: the model's GTT book is always readable, an unreadable book is `manage.lost_answers_never_freeze` on the real code) and `LostNeverBlocksSale`. The settle wait (60 s) and a lost answer on a day stop or a sale are not modelled; they are checked by `manage.lost_answers_never_freeze`. Nothing was narrowed. In the review round `protect` stopped placing or growing a stop while a sale the broker accepted still works (`make_room` gave the sale the shares; `manage.a_resting_sale_is_never_stopped_over`, its break in `verify-execution`); the model's `Sell` is atomic, so this window is not modelled.
-- PR 21 (audit 2026-10-22 F3) added the split and bonus rescale (`engine/rescale.py`). `StopPlacement` keeps one price scale: a rescale is a change of unit, not a stop move, so `StopOnlyTightens` and `BrokerStopMatchesCurrent` hold in scale-adjusted prices and the rescale is not modelled (between `ca.rescale` and the next sync the broker stop rests above the rescaled stop in new units, at the old stop in old units; the market is shut). The broker stop's move down is `StopDesk.rescaled`, checked by `rescale.broker_stop_follows`, and it moves only a position with a `position.rescaled` event. Fractional entitlements are floored (the broker pays them in cash); a factor is read back as the ratio with denominator ≤ 1000 within 1e-9 of it, or refused; only splits and bonuses with factor below 1 are applied. Nothing was narrowed.
-- PR 31 (design review 2026-10-22 item 6, option A, HAT-EXEC-142, -144): every stored action the rescale cannot handle (`rescale.unhandled_actions`) makes the position manage-only (`rescale.manage_only`, read by `ExitViews` and `awaits_rescale`) for as long as it is open, and `ca.rescale` flags it once per (position, action) with `corporate_action.unhandled` (URGENT). `StopDesk.rescaled` still reads `pending_actions`, so an unhandled action never moves a broker stop. `/flatten` caps the sale at the broker's holdings (`manage.flatten_capped_at_holdings`, in `verify-execution`). Virtual positions are flagged too (`virtual` in the payload). Option B (applying consolidations) is later. Nothing was narrowed.
-- PR 54 (plan audit G28) added `min_pct` to `below_final_contraction_low` (default 0, off) and the skip `stop_too_narrow`; the backtest's re-check at the fill price (`check_width`) applies it too. `final_contraction_low` draws a low near a 100.00 entry as well, so `min_pct` decides often. The scan's overnight plan at the pivot leaves `min_pct` to the entry (`plan_stop_at_pivot`), since a higher fill only widens a contraction stop. Nothing was narrowed.
-- PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
-- PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
-- PR 49 (HAT-EXEC-046): `StopDesk.cancel_unfilled_entry` cancels a real entry nothing of which filled (refused once a real position exists), through `_cancel_entries`, now shared with `cancel_entry`'s remainder cancel. No stop is placed or moved; `StopPlacement` is unchanged. Its property (`manage.unfilled_entry_cancelled`) and breaks are in `verify-execution`. Nothing was narrowed.
-- PR 47 (research G01, HAT-DATA-052): price-neutral actions (`dividend`, `notice`) are stored for their ex-dates; `rescale.unhandled_actions` excludes them (`PRICE_NEUTRAL_TYPES`). `StopDesk.verify` renews a GTT 300 days old (`_renewed`, `manage.verify_renews_old_gtt`), and `check_gtt` backs the 08:40 ex-date check; their properties are in `verify-execution` (`test_manage.py`). `StopPlacement` is unchanged: a renewal is a cancel and a place of the same stop while the market is shut, and a broker cancel is the model's existing GTT loss. Nothing was narrowed.
-
-- PR 36 (HAT-EXEC-042): `trades._emit` writes through the trade journal (`engine/journal.py`), `replay_state` / `replay_veto_state` moved from `trades.py` to `journal.py` (`test_exits.py` calls them there), and `daily/nightly.py` gains the `journal.check` job. The exit and stop properties are unchanged and pass; the journal's checks live in `verify-execution`. Nothing was narrowed.
+Covered digest: `3470072c91127b0d21d66461f1cdcbdb843210a87c00565d45777fb041dfbc27`
 
 ## Scratch breaks
 
-One recorded break per check (HAT-VER-072): the real code was changed as described, the check was run and failed, and the code was restored.
+One recorded break per check: the real code was changed as described, the check was run and failed, and the code was restored.
 
 ### PBT stops.final_contraction_low
 
@@ -161,61 +136,9 @@ FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Excep [c
 ============================== 1 failed in 0.20s ===============================
 ```
 
-Break: (PR 54) `min_pct` is ignored (`if min_pct > 0 and` to `if False and`).
-
-```
-E   AssertionError: assert None == 'stop_too_narrow'
-E    +  where None = StopPlan(stop=Decimal('99.0'), skip=None).skip
-E    +  and   'stop_too_narrow' = stops.SKIP_TOO_NARROW
-E   Failing explicit example: test_final_contraction_low(
-E       entry=Decimal('100'),
-E       low=Decimal('99'),
-E       buffer=Decimal('0'),
-FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Asser [cut]
-```
-
-Break: (PR 54) `min_pct` 0 is not off (the narrow check is `width <= min_pct * entry`).
-
-```
-E   AssertionError: assert None is not None
-E    +  where None = StopPlan(stop=None, skip='stop_too_narrow').stop
-E   Failing explicit example: test_final_contraction_low(
-E       entry=Decimal('100'),
-E       low=Decimal('98'),
-E       buffer=Decimal('0'),
-E       max_pct=Decimal('8'),
-FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Asser [cut]
-```
-
-Break: (PR 54) `stop_too_narrow` is left out of `trades.ENTRY_SKIP_REASONS`, so the signal would store `invalid_input`.
-
-```
-E   AssertionError: assert ('stop_too_narrow' is None or 'stop_too_narrow' in frozenset({'adtr_filter', 'corporate_action_pending', 'level_undefined', 'max_chase', 'no_live_price', 'stop_input_missing', ...}))
-E    +  where 'stop_too_narrow' = StopPlan(stop=None, skip='stop_too_narrow').skip
-E    +  and   'stop_too_narrow' = StopPlan(stop=None, skip='stop_too_narrow').skip
-E   Failing explicit example: test_final_contraction_low(
-E       entry=Decimal('100'),
-E       low=Decimal('99'),
-E       buffer=Decimal('0'),
-FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Asser [cut]
-```
-
-Break: (PR 54) the config accepts `min_pct` >= `max_pct`.
-
-```
-E   Failed: DID NOT RAISE ValidationError
-E   Failing test case: test_final_contraction_low(
-E       # The test always failed when commented parts were varied together.
-E       entry=Decimal('100'),  # or any other generated value
-E       low=Decimal('0.01'),  # or any other generated value
-E       buffer=Decimal('0'),  # or any other generated value
-E       max_pct=Decimal('0.01'),
-FAILED tests/hat/properties/test_stops.py::test_final_contraction_low - Faile [cut]
-```
-
 ### PBT stops.contraction_stop_at_the_fill
 
-Break: (PR 54) the overnight plan at the pivot applies `min_pct` (the `model_copy` dropping it removed).
+Break: the overnight plan at the pivot applies `min_pct` (the `model_copy` dropping it removed).
 
 ```
 E   AssertionError: assert Decimal('98.70') is None
@@ -235,12 +158,6 @@ Break: in `backend/app/hat/engine/stops.py`: the buffer ticks go above the day's
 ```
 FAILED tests/hat/properties/test_stops.py::test_low_of_day - ExceptionGroup:  [cut]
 ============================== 1 failed in 0.20s ===============================
-```
-
-Break: in `backend/app/hat/engine/stops.py`: `low_of_day` no longer rounds the stop down to the tick.
-
-```
-FAILED tests/hat/properties/test_stops.py::test_low_of_day - ExceptionGroup: [cut]
 ```
 
 ### PBT stops.custom_rules
@@ -469,7 +386,7 @@ State 16: <Clock ...>
 
 ### TLA StopPlacement!SharesTracked
 
-Break: the variant `close_with_rest`: a sale that empties the position closes it at once and a later entry fill is refused (the pre-PR 20 `apply_exit_fill` and `apply_entry_fill`).
+Break: the variant `close_with_rest`: a sale that empties the position closes it at once and a later entry fill is refused.
 
 ```
 Error: Invariant SharesTracked is violated.
@@ -482,7 +399,7 @@ State 5: <EntryFill ...>
 
 ### TLA StopPlacement!RestCancelledOnExit
 
-Break: the variant `keep_rest`: no sale asks the broker to cancel the rest of the entry (the pre-PR 20 code).
+Break: the variant `keep_rest`: no sale asks the broker to cancel the rest of the entry.
 
 ```
 Error: Invariant RestCancelledOnExit is violated.
@@ -513,11 +430,9 @@ State 12: <Clock ...>
 Back to state 9: <Clock ...>
 ```
 
-Break: `Spec` without `WF_vars(EntryEnds)` (the broker never ends the entry) also violates it.
-
 ### TLA StopPlacement!LostNeverBlocksSale
 
-Break: the variant `lost_blocks_sale`: `Sell` is refused while a GTT's answer is unsure (the pre-PR 18 `make_room`).
+Break: the variant `lost_blocks_sale`: `Sell` is refused while a GTT's answer is unsure.
 
 ```
 Error: Invariant LostNeverBlocksSale is violated.
@@ -531,53 +446,16 @@ State 6: <Sell ...>
 
 ### PBT rescale.preserves_position
 
-Break: in `backend/app/hat/engine/rescale.py`: `_apply` records the event but leaves the row unchanged (main before PR 21).
+Break: in `backend/app/hat/engine/rescale.py`: `_apply` records the event but leaves the row unchanged (main before).
 
 ```
 FAILED tests/hat/properties/test_rescale.py::test_preserves_position - assert [cut]
 ======================= 1 failed, 4 deselected in 0.76s ========================
 ```
 
-Break: in `backend/app/hat/engine/rescale.py`: the quantity is not scaled.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_preserves_position - assert [cut]
-```
-
-Break: in `backend/app/hat/engine/trades.py`: `_entry_qty` ignores applied rescales (R and partials on the old quantity).
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_preserves_position - Assert [cut]
-```
-
-Break: in `backend/app/hat/engine/rescale.py`: the current stop rounds up (`ROUND_CEILING`).
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_preserves_position - Assert [cut]
-```
-
 ### PBT rescale.applied_once
 
 Break: in `backend/app/hat/engine/rescale.py`: `pending_actions` ignores the actions already applied.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
-```
-
-Break: in `backend/app/hat/engine/rescale.py`: an action with ex-date on the entry day is applied (`>=`).
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
-```
-
-Break: in `backend/app/hat/engine/rescale.py`: `pending_actions` takes every action type.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
-======================= 1 failed, 5 deselected in 45.89s =======================
-```
-
-Break: in `backend/app/hat/engine/rescale.py`: `pending_actions` takes a factor above 1 (a consolidation).
 
 ```
 FAILED tests/hat/properties/test_rescale.py::test_applied_once - AssertionErr [cut]
@@ -599,92 +477,28 @@ Break: in `backend/app/hat/daily/live.py`: `ExitViews` gives a view to a positio
 FAILED tests/hat/properties/test_rescale.py::test_pending_is_manage_only - As [cut]
 ```
 
-Break: in `backend/app/hat/engine/live_entry.py`: `submit_trigger` does not skip an instrument awaiting a rescale.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_pending_is_manage_only - As [cut]
-```
-
 ### PBT rescale.unhandled_is_manage_only
 
-Break: in `backend/app/hat/daily/live.py`: `ExitViews` reads `pending_actions` only (main before PR 31).
+Break: in `backend/app/hat/daily/live.py`: `ExitViews` reads `pending_actions` only (main before).
 
 ```
 E   AssertionError: assert (ExitView(price=Decimal('10.00'), days_held=2, sma={10: Decimal('10.00')}, swing_low={}, regime_off=False) is None) == True
 E   Failing test case: test_unhandled_is_manage_only(
 ```
 
-Break: in `backend/app/hat/engine/rescale.py`: `awaits_rescale` reads `pending_actions` only.
-
-```
-E   AssertionError: assert False == True
-E    +  where False = <function awaits_rescale at 0x...>(<Session>, UUID('...'), datetime.date(2026, 10, 24))
-```
-
-Break: `_rescalable` ignores the factor (a split or bonus with factor 1 or above counts as handled).
-
-```
-E   AssertionError: assert (ExitView(price=Decimal('10.00'), ...) is None) == True
-E   Failing test case: test_unhandled_is_manage_only(
-```
-
-Break: `flag_unhandled` without the `key in done` check.
-
-```
-E   AssertionError: assert ['2026-10-22:...-10-22:other'] == ['2026-10-22:other']
-E     Left contains one more item: '2026-10-22:other'
-```
-
-Break: in `backend/app/hat/daily/nightly.py`: `rescale` does not call `flag_unhandled`.
-
-```
-E   AssertionError: assert [] == ['2026-10-22:other']
-E     Right contains one more item: '2026-10-22:other'
-```
-
 ### PBT rescale.resolution_ends_lock
 
 Check run: `test_rescale.py::test_resolution_ends_lock`.
 
-Break: (PR 73) `resolve_action` without the market-hours refusal.
+Break: `resolve_action` without the market-hours refusal.
 
 ```
     | app.hat.engine.rescale.ResolutionError: real_position_flatten
 ```
 
-Break: (PR 73) a real position is resolved (the `real_position_flatten` refusal dropped).
-
-```
-E   app.hat.engine.trades.TradeError: position_not_virtual
-```
-
-Break: (PR 73) any action key resolves (`if action not in locking` became `if False`).
-
-```
-E   AssertionError: assert 'action_not_unhandled' is None
-```
-
-Break: (PR 73) no price is accepted (the `close_price_required` refusal dropped).
-
-```
-E   sqlite3.IntegrityError: NOT NULL constraint failed: hat_fill.price
-```
-
 ### PBT rescale.broker_stop_follows
 
 Break: in `backend/app/hat/execution/manage.py`: `TradeManager.sync` does not call `_follow_rescales`.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_broker_stop_follows - Asser [cut]
-```
-
-Break: in `backend/app/hat/execution/manage.py`: `TradeManager.sync` reads the fills before following the rescale (the fill sync sizes the stop up at the old trigger).
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_broker_stop_follows - Asser [cut]
-```
-
-Break: in `backend/app/hat/execution/protect.py`: `StopDesk.rescaled` resizes the stop to the rescaled quantity in the same move (refused while the new shares are not credited, so the trigger stays on the old scale).
 
 ```
 FAILED tests/hat/properties/test_rescale.py::test_broker_stop_follows - Asser [cut]
@@ -696,24 +510,6 @@ Break: in `backend/app/hat/engine/rescale.py`: `held_and_watchlisted` leaves out
 
 ```
 FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
-```
-
-Break: in `backend/app/hat/daily/nightly.py`: a failed lookup is not alerted.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
-```
-
-Break: in `backend/app/hat/data/ingest.py`: `lookup_actions` counts a symbol with an unreadable row as looked up.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - Asser [cut]
-```
-
-Break: in `backend/app/hat/daily/nightly.py`: `ca.adjust` lets a lookup that cannot run fail the step.
-
-```
-FAILED tests/hat/properties/test_rescale.py::test_next_session_lookup - app.h [cut]
 ```
 
 ### DB governance.rescale_moves_stop
@@ -730,7 +526,7 @@ The five `rescale_function` variants in `test_db_broken_variants.py` (no rescale
 
 ### TLA StopPlacement!RestingSold
 
-Break: the variant `no_resting_market`: the sync alerts a resting sale but leaves it at its limit (the main code before PR 27).
+Break: the variant `no_resting_market`: the sync alerts a resting sale but leaves it at its limit (the main code before).
 
 ```
 Error: Temporal properties were violated.
@@ -762,20 +558,12 @@ State 25: <Clock ...>
 Back to state 16: <Protect ...>
 ```
 
-Break: `Spec` without `WF_vars(SeeResting)` (the sync never looks) also violates it.
-
 ### PBT rescale.price_neutral_changes_nothing
 
-Break: (PR 47) in `backend/app/hat/engine/rescale.py`, `unhandled_actions` no longer excludes `PRICE_NEUTRAL_TYPES` (a dividend is an unhandled action).
+Break: in `backend/app/hat/engine/rescale.py`, `unhandled_actions` no longer excludes `PRICE_NEUTRAL_TYPES` (a dividend is an unhandled action).
 
 ```
 E   AssertionError: assert (500, [], Tru...vidend'], ...) == (500, [], Fal...alse, [], ...)
 E     At index 2 diff: True != False
 ```
 
-Break: (PR 47) in `backend/app/hat/data/corporate_actions.py`, `stored_factors` keeps the price-neutral rows.
-
-```
-E   AssertionError: assert (500, [], Fal...alse, [], ...) == (500, [], Fal...alse, [], ...)
-E     At index 6 diff: [(datetime.date(2026, 10, 22), Decimal('1.0000000000'))] != []
-```

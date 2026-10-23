@@ -1,4 +1,4 @@
-"""PBT reference.* (HAT-DATA-020..026, HAT-DEC-I1): instrument identity, delisting, symbol
+"""PBT reference.*: instrument identity, delisting, symbol
 history, prefix paging, Fyers symbols, price bands and industries on the real code, with an
 in-memory SQLite database and recorded or fake MCP servers (no network)."""
 
@@ -234,7 +234,7 @@ def test_symbol_history_resolves_seed_idempotent(
         assert before.id == instrument.id
 
 
-# --- prefix paging (HAT-DATA-023) -------------------------------------------------------------
+# --- prefix paging -------------------------------------------------------------
 
 listed_symbols = st.lists(
     st.tuples(st.from_regex(r"[AB&][AB&0-9]{0,4}", fullmatch=True), st.sampled_from(["EQ", "BE"])),
@@ -322,7 +322,7 @@ def test_prefix_paging_complete_csv_fallback(count: int, data: st.DataObject) ->
 
 
 def test_listing_resolves_3121_symbols() -> None:
-    """Acceptance (PR 4): with fixtures, 3,121 symbols resolve to instruments, none unresolved."""
+    """Acceptance: with fixtures, 3,121 symbols resolve to instruments, none unresolved."""
     listing = [
         security(
             f"INE{i:09d}",
@@ -346,7 +346,7 @@ def test_listing_resolves_3121_symbols() -> None:
     )
 
 
-# --- Fyers symbols (HAT-DATA-024) ----------------------------------------------------------------
+# --- Fyers symbols ----------------------------------------------------------------
 
 weird_symbols = st.one_of(
     st.from_regex(r"[A-Z][A-Z0-9]{1,8}", fullmatch=True),
@@ -409,7 +409,7 @@ def test_fyers_symbol_roundtrip(entries: list[tuple[str, str, bool]]) -> None:
     )
 )
 def test_broker_instrument_list_comes_from_the_tables(entries: list[tuple[bool, str]]) -> None:
-    """HAT-DATA-024: the instruments the Fyers adapter reports are exactly the active instruments
+    """The instruments the Fyers adapter reports are exactly the active instruments
     that have a Fyers row, sorted, as (symbol, Fyers symbol) pairs; no index, delisted stock, other
     broker's row or unmapped symbol is in it, and the adapter returns the same list."""
     session, market_id = new_db()
@@ -449,7 +449,7 @@ def test_broker_instrument_list_comes_from_the_tables(entries: list[tuple[bool, 
     assert [(i.symbol, i.broker_symbol) for i in found] == sorted(expected)
 
 
-# --- price bands and industries (HAT-DATA-025, 026) -----------------------------------------------
+# --- price bands and industries -----------------------------------------------
 
 band_choice = st.sampled_from([Decimal(b) for b in BAND_VALUES] + [None, "skip"])
 

@@ -1,11 +1,11 @@
-"""Synthetic markets and run specs for the backtest properties (09, PR 12).
+"""Synthetic markets and run specs for the backtest properties (09).
 
 A market is a few instruments with daily OHLC paths on weekday sessions, the features
 `app.hat.data.features.compute_features` derives from them, a regime index and point-in-time
 membership. The configs are deliberately permissive (a consolidation pivot, a percent stop) so a
 short generated history makes trades; the seeds S1 and S2 run on the committed golden fixture.
 
-A night world (PR 67) holds the same paths the way production does: raw bars in a Parquet store,
+A night world holds the same paths the way production does: raw bars in a Parquet store,
 one session at a time, and a HAT database with the bot, its universe, the instruments, the
 calendar and the stored corporate actions, so the nightly job bodies (`daily.nightly.Nightly`)
 and the backtest's market loader read them as they read the real ones.
@@ -299,7 +299,7 @@ def paths(draw: st.DrawFn, count: int, *, instruments: int = 3) -> dict[str, Pri
     return found
 
 
-# --- the night world (PR 67) -------------------------------------------------------------------
+# --- the night world -------------------------------------------------------------------
 
 _INGEST_RUN = uuid.UUID(int=7)
 _USER = uuid.UUID(int=1)
@@ -499,14 +499,13 @@ def fixture_market(text: str) -> MarketData:
 
 def golden_document() -> dict[str, Any]:
     """S1 and S2 over the last sessions of the committed fixture market under the default fill
-    conventions: each seed's metrics, trades (as text), and signal and watchlist counts
-    (HAT-BT-051)."""
+    conventions: each seed's metrics, trades (as text), and signal and watchlist counts."""
     data = fixture_market((FIXTURES / "backtest_market.csv").read_text(encoding="utf-8"))
     found: dict[str, Any] = {}
     for name in GOLDEN_SEEDS:
         cfg = seed_config(name)
         start = len(data.days) - GOLDEN_SESSIONS
-        # the default conventions (PR 62): penetration fill, 20 bps, the default cost model
+        # the default conventions: penetration fill, 20 bps, the default cost model
         result = run_backtest(
             spec(cfg, data.days, slippage=DEFAULT_SLIPPAGE_BPS, start=start), data
         )

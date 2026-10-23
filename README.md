@@ -33,7 +33,7 @@ no legacy data. HAT's scheduler and live feed start only when `HAT_ENABLED=true`
 
 - `CLAUDE.md`: development guide, startup, routes, environment and the rules the code enforces
 - `docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`: module map and data flow,
-  the money-safety rules (with the `HAT-*` ID index), the decisions in force
+  the money-safety rules, the decisions in force
 - `docs/runbook.md`: operator procedures
 - `.claude/skills/`: how to run and read each area's verification (`verify-*`) and the trading
   safety rules

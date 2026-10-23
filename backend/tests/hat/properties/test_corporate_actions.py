@@ -1,4 +1,4 @@
-"""PBT corporate_actions.* (HAT-DATA-052..055, 094; HAT-DEC-B27): the adjusted view is raw times
+"""PBT corporate_actions.*: the adjusted view is raw times
 cumulative factors, volume is divided by the same factor, raw files never change, stored actions
 are the distinct keys, and split and bonus text parses to exact factors. Real store, DuckDB views
 and loaders; no network."""
@@ -118,7 +118,7 @@ def _product(actions: list[ActionFactor], iid: uuid.UUID, keep: Callable[[date],
 @given(world=worlds())
 @settings(max_examples=80)
 def test_adjusted_view(world: tuple) -> None:
-    """adj price(d) = raw x product of factors with ex_date > d (open, high, low, close);
+    """Adj price(d) = raw x product of factors with ex_date > d (open, high, low, close);
     adj prev_close(d) = raw x the same product (NSE's ex-date prev_close is already adjusted,
     F14); after the last ex-date adj = raw; and
     the raw files are byte-identical after the view is created and read."""
@@ -170,7 +170,7 @@ def test_adjusted_view_split_factor(
 @given(world=worlds())
 @settings(max_examples=80)
 def test_adjusted_volume(world: tuple) -> None:
-    """adj volume(d) = raw volume / product of factors with ex_date > d, and adj close x adj
+    """Adj volume(d) = raw volume / product of factors with ex_date > d, and adj close x adj
     volume = raw close x raw volume, exactly."""
     bars, actions = world
     with tempfile.TemporaryDirectory() as tmp:
@@ -268,7 +268,7 @@ def test_factor_parse(a: int, tenths: int, template: int) -> None:
 )
 def test_factor_parse_unparseable_is_reported(text: str, word: str) -> None:
     """Text without a usable ratio gives no factor, and an archive row with such text lands in
-    `unparsed` (when it names a split, a bonus or a consolidation, HAT-EXEC-144) and never in
+    `unparsed` (when it names a split, a bonus or a consolidation) and never in
     the records."""
     assert parse_action_text(text) is None
     csv_text = f'SYMBOL,PURPOSE,EX-DATE\nAAA,"{text.replace(chr(34), "")} {word}",14-Jun-2018\n'
@@ -373,8 +373,7 @@ def _mcp_kind(row: dict) -> str:
 )
 def test_upsert_idempotent_mcp_rows(rows: list[dict]) -> None:
     """MCP rows keep the server's factor for splits and bonuses; an action of factor 1 is kept
-    price-neutral, `dividend` for a dividend and `notice` for any other type (PR 47: its
-    ex-date is what the morning GTT check needs); zero and negative factors are reported and
+    price-neutral, `dividend` for a dividend and `notice` for any other type; zero and negative factors are reported and
     never become records."""
     result = from_mcp(uuid.UUID(int=5), rows)
     kept = [r for r in rows if r["adjustmentFactor"] > 0]
@@ -386,7 +385,7 @@ def test_upsert_idempotent_mcp_rows(rows: list[dict]) -> None:
     assert factor_to_decimal(Fraction(2, 3)) == Decimal("0.666666666667")
 
 
-# --- PR 7: which symbols get a lookup (HAT-DATA-050, 051) ------------------------------------
+# --- which symbols get a lookup ------------------------------------
 
 optional_price = st.one_of(st.none(), st.decimals(min_value="0", max_value="500", places=2))
 

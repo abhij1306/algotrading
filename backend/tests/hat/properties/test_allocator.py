@@ -1,4 +1,4 @@
-"""PBT allocator.* (HAT-PORT-050..056, HAT-DEC-B23): the nightly allocation on the real
+"""PBT allocator.*: the nightly allocation on the real
 `app.hat.engine.portfolio.allocator` and `service.run_allocation` (SQLite), against the formula
 written out independently. Money and weights are Decimal."""
 
@@ -83,7 +83,7 @@ def product_of(row: allocator.Allocation) -> Decimal:
 def test_formula_and_bounds(
     sleeves: list[SleeveInput], policy: RiskPolicy, equity: Decimal
 ) -> None:
-    """w = base x regime x health with both multipliers inside the policy bounds; a sleeve that is
+    """W = base x regime x health with both multipliers inside the policy bounds; a sleeve that is
     not live has weight 0; a weight is never above its product and equals it exactly when no cap
     binds."""
     rows = allocate(sleeves, policy, equity)
@@ -125,7 +125,7 @@ def test_bounds_from_policy(
 
 @given(SLEEVES, policies(), EQUITY)
 def test_capital_and_risk(sleeves: list[SleeveInput], policy: RiskPolicy, equity: Decimal) -> None:
-    """capital = final weight x total equity (rounded down to a paisa-fraction, never up) and
+    """Capital = final weight x total equity (rounded down to a paisa-fraction, never up) and
     the capitals together never exceed the equity; risk per trade = policy risk x regime x
     health."""
     rows = allocate(sleeves, policy, equity)
@@ -162,7 +162,7 @@ def _held(sleeves: list[SleeveInput], products: list[Decimal], cap: Decimal) -> 
 def test_virtual_allocation(
     sleeves: list[SleeveInput], policy: RiskPolicy, equity: Decimal
 ) -> None:
-    """Item 8, PR 73: a Shadow or Probation sleeve keeps weight, capital and risk 0 and gets a
+    """Item 8, a Shadow or Probation sleeve keeps weight, capital and risk 0 and gets a
     nominal allocation for its virtual entries: `virtual_risk_pct = risk_pct x regime_mult`
     (health taken as 1; 0 when the nominal capital is 0) and `virtual_capital` its nominal
     weight x equity, rounded down. The
@@ -427,7 +427,7 @@ def test_no_effect_on_open_positions(
     bots: list[tuple[str, str, str]], state: str, qty: int
 ) -> None:
     """The allocation changes no position: open positions keep their stops, quantity and state
-    (a smaller weight only limits new entries; HAT-PORT-053)."""
+    (a smaller weight only limits new entries; )."""
     engine = memory_engine()
     with Session(engine) as session:
         ids = seed_world(session, bots)
@@ -482,7 +482,7 @@ class _OpenGates:
     st.integers(100_000, 10**8).map(D),
 )
 def test_virtual_entries_sized(state: str, market: str, equity: Decimal) -> None:
-    """Item 8, HAT-PORT-050: through the nightly allocation and the live context source, a
+    """Item 8, through the nightly allocation and the live context source, a
     virtual entry of a Shadow or Probation sleeve is accepted and sized from its nominal
     allocation (equity = `virtual_capital`, risk = policy risk x regime, health 1), the bot
     routes only virtually, and the same entry made real is rejected `no_allocation`. A Live

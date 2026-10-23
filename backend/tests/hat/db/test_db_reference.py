@@ -1,4 +1,4 @@
-"""DB checks for the reference tables (HAT-SCH-022, HAT-SCH-023)."""
+"""DB checks for the reference tables."""
 
 import hat_db_rules as rules
 import pytest

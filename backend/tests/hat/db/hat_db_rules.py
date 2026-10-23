@@ -2,7 +2,7 @@
 
 A check raises AssertionError when the database does not enforce its rule. `test_db_*.py` runs
 each check against the real schema; `test_db_broken_variants.py` removes the trigger, index or
-constraint inside a transaction and requires the same check to fail (HAT-SCH-102).
+constraint inside a transaction and requires the same check to fail.
 """
 
 import threading
@@ -48,7 +48,7 @@ def scalar(conn: Connection, statement: object) -> object:
     return conn.execute(statement).scalar_one()
 
 
-# --- reference (HAT-SCH-022, HAT-SCH-023) ------------------------------------------------
+# --- reference ------------------------------------------------
 
 
 def check_reference__instrument_unique(conn: Connection) -> None:
@@ -162,7 +162,7 @@ def check_reference__band_pct_check(conn: Connection) -> None:
         )
 
 
-# --- domains (HAT-SCH-031) ---------------------------------------------------------------
+# --- domains ---------------------------------------------------------------
 
 
 def _domain_cases(conn: Connection) -> list[tuple[str, Callable[[str], None], tuple, tuple]]:
@@ -342,7 +342,7 @@ def check_governance__exposure_checks(conn: Connection) -> None:
     accepts(conn, "level L3 with counters", lambda: exposure(other, "L3", 4, 0))
 
 
-# --- portfolio (HAT-SCH-041) -------------------------------------------------------------
+# --- portfolio -------------------------------------------------------------
 
 
 def check_portfolio__unique_keys(conn: Connection) -> None:
@@ -448,7 +448,7 @@ def check_portfolio__domain_checks(conn: Connection) -> None:
         rejects(conn, f"regime state {value!r}", lambda v=value: state(v, date(2026, 2, 1)))
 
 
-# --- ops (HAT-SCH-072, HAT-SCH-071) ------------------------------------------------------
+# --- ops ------------------------------------------------------
 
 
 def check_ops__job_run_unique(conn: Connection) -> None:
@@ -535,7 +535,7 @@ def check_ops__family_key_not_null(conn: Connection) -> None:
     accepts(conn, "a backtest run with a family_key", lambda: b.backtest_run(conn, version, policy))
 
 
-# --- governance (HAT-SCH-080 .. 087) -----------------------------------------------------
+# --- governance (.. 087) -----------------------------------------------------
 
 NON_DRAFT = ("backtested", "shadow", "live", "retired")
 
@@ -816,7 +816,7 @@ def check_governance__risk_version_immutable(conn: Connection) -> None:
     )
 
 
-# --- migration (HAT-SCH-101, HAT-SCH-103) ------------------------------------------------
+# --- migration ------------------------------------------------
 
 CATALOG_QUERIES = {
     "tables": (

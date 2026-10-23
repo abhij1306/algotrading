@@ -1,4 +1,4 @@
-"""PBT announcements.* (HAT-DATA-100..104, HAT-DEC-I6, HAT-DEC-B10): the poll cadence, GUID
+"""PBT announcements.*: the poll cadence, GUID
 dedupe, unmatched items, the 24-hour match window and the rule that text never gates, on the real
 parser and store with RSS fixtures. No network."""
 
@@ -42,7 +42,7 @@ NOW = datetime(2026, 10, 21, 10, 0, tzinfo=IST)
 SYMBOL_ISINS = {"AAA": "INE000000001", "BBB": "INE000000002", "CCC": "INE000000003"}
 
 
-# --- cadence (HAT-DATA-100) ---------------------------------------------------------------------
+# --- cadence ---------------------------------------------------------------------
 
 
 @given(
@@ -121,7 +121,7 @@ def test_poll_schedule_edges() -> None:
         assert next_poll_at(at) - at == timedelta(minutes=minutes)
 
 
-# --- dedupe (HAT-DATA-101) ----------------------------------------------------------------------
+# --- dedupe ----------------------------------------------------------------------
 
 guids = st.sampled_from([f"g{i}" for i in range(8)])
 published = st.integers(0, 72 * 60).map(lambda m: NOW - timedelta(minutes=m))
@@ -197,7 +197,7 @@ def test_dedupe_recorded_fixtures() -> None:
     assert by_feed == {FEED_ANNOUNCEMENTS: 2, FEED_RESULTS: 2}
 
 
-# --- unmatched items are kept (HAT-DATA-102) ----------------------------------------------------
+# --- unmatched items are kept ----------------------------------------------------
 
 companies = st.sampled_from([*SYMBOL_ISINS, "XXX", "YYY"])
 
@@ -248,7 +248,7 @@ def test_unmatched_kept(entries: list[tuple[str, str, datetime, bool]], listed_l
                 )
 
 
-# --- the match window (HAT-DATA-103) ------------------------------------------------------------
+# --- the match window ------------------------------------------------------------
 
 AT = datetime(2026, 10, 21, 9, 20, tzinfo=IST)
 EDGE_SECONDS = [0, 1, -1, 24 * 3600, 24 * 3600 - 1, 24 * 3600 + 1]
@@ -284,7 +284,7 @@ def test_match_window(stored: list[tuple[str, str, int]], within: int) -> None:
             assert catalyst_attached(session, instrument_id, AT, within) == bool(expected)
 
 
-# --- text never gates (HAT-DATA-104) ------------------------------------------------------------
+# --- text never gates ------------------------------------------------------------
 
 free_text = (
     st.text(

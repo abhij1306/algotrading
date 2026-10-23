@@ -1,4 +1,4 @@
-"""The reference refresh against real Postgres (HAT-DATA-020, 021, 024): the unique keys the
+"""The reference refresh against real Postgres: the unique keys the
 database enforces hold through renames, delisting and a broker symbol moving between
 instruments."""
 

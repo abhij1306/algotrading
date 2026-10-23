@@ -130,7 +130,7 @@ BROKER_READS = frozenset(
         "fetch_funds",
         "fetch_gtt_orders",
         "get_positions",
-        "get_profile",  # the session check (PR 23)
+        "get_profile",  # the session check
     }
 )
 
@@ -324,8 +324,8 @@ def _trading_jobs(rig: Rig, day: date) -> set[str]:
 
 
 def _check_night(rig: Rig, day: date, source: str) -> None:
-    """The pipeline of `day` ran in its `after` order and every step succeeded (HAT-OPS-021);
-    the ingest took the day from `source` (HAT-OPS-022)."""
+    """The pipeline of `day` ran in its `after` order and every step succeeded;
+    the ingest took the day from `source`."""
     runs = {r.job: r for r in _runs(rig, day)}
     chain = [runs[name] for name in NIGHTLY_CHAIN]
     for run in chain:
@@ -345,7 +345,7 @@ def _check_trading_day_jobs(rig: Rig) -> None:
 
 
 def _check_holiday(rig: Rig) -> None:
-    """HAT-OPS-012: on the holiday only the every-day housekeeping runs."""
+    """On the holiday only the every-day housekeeping runs."""
     every = {j.name for j in rig.runtime.jobs if j.days is Days.EVERY and j.weekday is None}
     assert {r.job for r in _runs(rig, HOLIDAY)} == every
     assert _trading_jobs(rig, HOLIDAY) == every
@@ -362,7 +362,7 @@ def _signal_of(session: Session, symbol: str, market: Market) -> HatSignal | Non
 
 def _check_watchlist(rig: Rig) -> None:
     """The first night's watchlist ends the session as Triggered (S2) and Expired (S1, which
-    never triggered: HAT-EXEC-041)."""
+    never triggered: )."""
     market = rig.market
     with rig.factory() as session:
         rows = {
@@ -383,7 +383,7 @@ def _check_trades(rig: Rig) -> None:
     """Shadow entries become virtual positions. S2's trades through its stop at 10:58:35 and the
     live exits close it then (not the 15:20 close exits); the EP one stays open, its close-phase
     evaluation recorded
-    once inside 15:20-15:25 (HAT-EXEC-074, HAT-OPS-034)."""
+    once inside 15:20-15:25."""
     market = rig.market
     with rig.factory() as session:
         assert _signal_of(session, S1_NAME, market) is None
@@ -490,7 +490,7 @@ def _rig(engine: Engine, tmp_path: Path) -> Rig:
 
 
 def test_ops__simulated_day(clean_db: Engine, tmp_path: Path) -> None:
-    """DB ops.simulated_day (HAT-OPS-003, 012, 021, 022, 023): a shadow trading
+    """DB ops.simulated_day: a shadow trading
     day through `HatRuntime` with HAT enabled, on fixtures and fakes only."""
     rig = _rig(clean_db, tmp_path)
     asyncio.run(_simulate(rig))

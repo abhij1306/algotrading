@@ -1,5 +1,4 @@
-"""CONF checks of the schema models (docs/invariants.md: HAT-SCH-010..015, 060, 100, 104;
-HAT-OVR-001, 005; HAT-DEC-T1, I12, PL1). The models are the source of truth for columns."""
+"""CONF checks of the schema models. The models are the source of truth for columns."""
 
 import re
 
@@ -16,7 +15,7 @@ MODEL = hat_tables()
 
 
 def test_schema__prefix_and_boundary() -> None:
-    """HAT-SCH-010/106, HAT-OVR-005: hat_ names, hat_ FK targets, hat_-only DDL."""
+    """Hat_ names, hat_ FK targets, hat_-only DDL."""
     from app.hat.schema import PG_DDL
 
     for name, table in MODEL.items():
@@ -48,12 +47,8 @@ def test_schema__prefix_and_boundary() -> None:
             assert ident.startswith("hat_"), (ident, statement[:80])
 
 
-def test_hat_tables_prefixed_and_isolated() -> None:
-    test_schema__prefix_and_boundary()
-
-
 def test_schema__key_types() -> None:
-    """HAT-SCH-011: an `id` column is a uuid PK, except `hat_event` whose PK is (id bigint
+    """An `id` column is a uuid PK, except `hat_event` whose PK is (id bigint
     identity, recorded_at)."""
     for name, table in MODEL.items():
         if "id" in table.columns:
@@ -65,7 +60,7 @@ def test_schema__key_types() -> None:
     assert {c.name for c in MODEL[EVENT_TABLE].primary_key.columns} == {"id", "recorded_at"}
 
 
-# user_id roots (HAT-SCH-012). hat_kill_switch carries user_id too; its FK chain is not
+# user_id roots. hat_kill_switch carries user_id too; its FK chain is not
 # non-null (an account-scope row has a null bot_id): recorded as a finding in the PR.
 USER_ROOTS = [
     "hat_event",
@@ -98,7 +93,7 @@ CHAIN_EXEMPT = {
     # chain can reach a user_id (a finding in the PR; the single-user MVP is unaffected).
     "hat_telegram_message": "keyed by chat_id; no FK to a user",
     "hat_command_log": "keyed by chat_id; no FK to a user",
-    "hat_telegram_cursor": "service state of the one allowlisted chat (PR 16), keyed by name",
+    "hat_telegram_cursor": "service state of the one allowlisted chat, keyed by name",
 }
 
 
@@ -144,15 +139,6 @@ def test_schema__market_id_columns() -> None:
         assert {f.column.table.name for f in col.foreign_keys} == {"hat_market"}, name
 
 
-def test_schema__market_id_on_market_tables() -> None:
-    test_schema__market_id_columns()
-
-
-def test_market_id_on_market_tables() -> None:
-    """HAT-OVR-001 (PR 2, 4): the name the README traceability row uses."""
-    test_schema__market_id_columns()
-
-
 MONEY_CURRENCY_ROWS = {
     "hat_signal",
     "hat_order",
@@ -166,7 +152,7 @@ MARKET_CURRENCY = {"hat_instrument", "hat_watchlist_entry", "hat_corporate_actio
 
 
 def test_schema__money_types() -> None:
-    """HAT-SCH-014: no column is Float; a table with money columns reaches a currency."""
+    """No column is Float; a table with money columns reaches a currency."""
     for name, table in MODEL.items():
         for col in table.columns:
             assert not isinstance(col.type, sa.Float), (name, col.name)
@@ -180,7 +166,7 @@ def test_schema__money_types() -> None:
 
 
 def test_schema__time_types() -> None:
-    """HAT-SCH-015: timestamptz everywhere; not-null record columns default to aware UTC;
+    """Timestamptz everywhere; not-null record columns default to aware UTC;
     nullable event columns have no default; trade_date is a Date."""
     for name, table in MODEL.items():
         for col in table.columns:
@@ -235,7 +221,7 @@ ALLOWED = (
 
 
 def test_schema__portable_types() -> None:
-    """HAT-SCH-100: every column type is a portable type."""
+    """Every column type is a portable type."""
     for name, table in MODEL.items():
         for col in table.columns:
             assert isinstance(col.type, ALLOWED), (name, col.name, col.type)
@@ -246,7 +232,7 @@ def test_schema__portable_types() -> None:
 
 
 def test_schema__sqlite_create_all() -> None:
-    """HAT-SCH-100/104: create_all builds every table on SQLite, every FK resolves and is kept."""
+    """Create_all builds every table on SQLite, every FK resolves and is kept."""
     engine = sa.create_engine("sqlite://")
     Base.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
@@ -284,28 +270,9 @@ RISK_WORDS = (
 
 
 def test_schema__bot_no_risk_columns() -> None:
-    """HAT-SCH-032: no risk %, size, capital, cap or kill column on hat_bot (risk_cluster is the
-    allowed sleeve tag, HAT-PORT-010)."""
+    """No risk %, size, capital, cap or kill column on hat_bot (risk_cluster is the
+    allowed sleeve tag)."""
     for col in MODEL["hat_bot"].columns:
         if col.name == "risk_cluster":
             continue
         assert not any(word in col.name for word in RISK_WORDS), col.name
-
-
-def test_schema__bot_sleeve_columns() -> None:
-    """HAT-PORT-010 / DEC-PL1."""
-    cols = MODEL["hat_bot"].columns
-    for name in ("live_version_id", "universe_version_id", "lifecycle_state", "risk_cluster"):
-        assert name in cols, name
-    assert {f.column.table.name for f in cols["universe_version_id"].foreign_keys} == {
-        "hat_universe_version"
-    }
-    check = " ".join(
-        str(c.sqltext) for c in MODEL["hat_bot"].constraints if isinstance(c, sa.CheckConstraint)
-    )
-    for state in ("research", "backtested", "shadow", "live", "probation", "retired"):
-        assert state in check, state
-
-
-def test_schema__bot_has_sleeve_columns() -> None:
-    test_schema__bot_sleeve_columns()

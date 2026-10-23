@@ -1,4 +1,4 @@
-"""PBT scan.* (HAT-CRIT-010, HAT-PORT-023, HAT-BOT-052): the nightly scan of
+"""PBT scan.*: the nightly scan of
 `app.hat.engine.scan` and its publisher `app.hat.engine.watchlist`, against an independent
 statement of who may appear on a watchlist."""
 
@@ -143,7 +143,7 @@ def expected_ids(inputs: ScanInputs, quotes: dict[str, tuple[int, int]]) -> set[
 
 @given(worlds())
 def test_watchlist_gates(world: tuple[ScanInputs, dict[str, tuple[int, int]]]) -> None:
-    """HAT-CRIT-010: a watchlist row exists exactly for the members that traded on the scan date
+    """A watchlist row exists exactly for the members that traded on the scan date
     and pass the universe stage, the regime gate and the setup, in that order; its recorded
     stages are those three, all passed; a closed gate gives no rows; rows are best score first;
     bars dated after the scan date change nothing. Harm: a symbol shown that failed a stage, or
@@ -175,7 +175,7 @@ def test_watchlist_gates(world: tuple[ScanInputs, dict[str, tuple[int, int]]]) -
 def test_no_row_for_removed(
     world: tuple[ScanInputs, dict[str, tuple[int, int]]], data: st.DataObject
 ) -> None:
-    """HAT-PORT-023: an instrument removed from the universe produces no watchlist row, and the
+    """An instrument removed from the universe produces no watchlist row, and the
     rows of the others are unchanged. Harm: a removed stock keeps being proposed for entry
     (leaving the universe stops entries only, never an open position)."""
     inputs, _ = world
@@ -192,7 +192,7 @@ def test_no_row_for_removed(
 def test_episodic_pivot_not_scanned_overnight(
     world: tuple[ScanInputs, dict[str, tuple[int, int]]],
 ) -> None:
-    """HAT-BOT-052: the episodic-pivot playbook never produces a nightly row, though its setup
+    """The episodic-pivot playbook never produces a nightly row, though its setup
     here is the same as the scanned playbook's; its setup is built live from the pre-open scan."""
     inputs, _ = world
     rows = scan.scan_bot(EP_CONFIG, inputs).rows
@@ -206,7 +206,7 @@ def test_episodic_pivot_not_scanned_overnight(
 def test_rank_within_members(
     world: tuple[ScanInputs, dict[str, tuple[int, int]]], outsiders: list[int]
 ) -> None:
-    """HAT-CRIT-110, HAT-PORT-021: a universe rank (`momentum_rank`) is taken among the bot's
+    """A universe rank (`momentum_rank`) is taken among the bot's
     members only: feature rows of instruments outside the universe, however strong, change no
     row. Harm: another universe's leaders push this bot's stocks out of its top band (or let
     weak ones in)."""
@@ -234,7 +234,7 @@ def test_rank_within_members(
 def test_publish_once_per_day(
     world: tuple[ScanInputs, dict[str, tuple[int, int]]], data: st.DataObject
 ) -> None:
-    """HAT-CRIT-010, HAT-PORT-023: `scan_and_publish` writes the scan's rows as Watchlisted
+    """`scan_and_publish` writes the scan's rows as Watchlisted
     entries and one `watchlist.published` event, uses the bot's own universe (the caller's
     member list is replaced), and a second call for the same bot and day writes nothing."""
     inputs, quotes = world
@@ -271,7 +271,7 @@ def test_publish_once_per_day(
 def test_no_universe_publishes_nothing(
     world: tuple[ScanInputs, dict[str, tuple[int, int]]],
 ) -> None:
-    """HAT-CRIT-010 (fail closed): a bot with no universe publishes nothing and records nothing,
+    """(fail closed): a bot with no universe publishes nothing and records nothing,
     so the same day's run after the universe is assigned still publishes. Harm: an empty
     "published" watchlist blocks that day's real one."""
     inputs, _ = world

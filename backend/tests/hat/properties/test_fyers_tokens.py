@@ -1,4 +1,4 @@
-"""PBT fyers_tokens.* (HAT-OPS-051, K2): the Fyers token file is read and written by one store,
+"""PBT fyers_tokens.*: the Fyers token file is read and written by one store,
 expires at the next IST midnight, fails closed on anything it cannot trust, is written atomically
 and never shows the token. Property tests on the real `TokenStore` over a temporary directory."""
 

@@ -1,6 +1,6 @@
-"""PBT for the job framework, the HAT-off gate and the close-gap log (HAT-OPS-010, -011, -013,
--034, -070), the status route (HAT-OPS-072), the backup manifest (HAT-OPS-060) and the
-deploy-window guard (HAT-OPS-042)."""
+"""PBT for the job framework, the HAT-off gate and the close-gap log, the status route, the
+backup manifest and the
+deploy-window guard."""
 
 import asyncio
 import importlib.util
@@ -95,7 +95,7 @@ ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.]{0,63}$")
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-013 / HAT-OPS-001: nothing starts unless HAT_ENABLED is a true value
+# nothing starts unless HAT_ENABLED is a true value
 # ---------------------------------------------------------------------------------------
 
 not_true = st.one_of(
@@ -157,7 +157,7 @@ def test_disabled_starts_nothing(raw: str | None, other: dict[str, str], dialect
     dialect=st.text(max_size=12).filter(lambda name: name != "postgresql"),
 )
 def test_refuses_non_postgres(raw: str, dialect: str) -> None:
-    """HAT-OPS-002: enabled on any other dialect, `HatRuntime.start` fails closed with
+    """Enabled on any other dialect, `HatRuntime.start` fails closed with
     `HatConfigError` before a task, a log handler, its parts or the database exist."""
     settings_ = load_settings({"HAT_ENABLED": raw})
     assert settings_.enabled is True
@@ -177,7 +177,7 @@ def test_refuses_non_postgres(raw: str, dialect: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-012: trade-date jobs start only on trading days
+# trade-date jobs start only on trading days
 # ---------------------------------------------------------------------------------------
 
 CAL_START = date(2026, 1, 1)
@@ -243,7 +243,7 @@ def _ist(day: date, at: time) -> datetime:
 @settings(max_examples=12, deadline=None)
 @given(pending=st.integers(min_value=1, max_value=40))
 def test_window_not_starved(pending: int) -> None:
-    """HAT-EXEC-074 (audit money-safety-engine-ops F12): after a restart at 15:19 that starts
+    """: after a restart at 15:19 that starts
     `pending` overdue morning jobs whose bodies block, the 15:20 tick still runs `exits.close`
     inside its window, while every morning job is still running."""
     release, closed = threading.Event(), threading.Event()
@@ -293,7 +293,7 @@ def _job_engine(tmp: str) -> Engine:
     wait=st.integers(min_value=0, max_value=20),
 )
 def test_retry_after_failed_run(run_minutes: int, wait: int) -> None:
-    """HAT-OPS-021 (`retry_after`): a failed run is tried again `retry_after` after it ended,
+    """(`retry_after`): a failed run is tried again `retry_after` after it ended,
     however long it ran. Harm: the ingest that waited four hours for its data and failed at 22:01
     is started again at once, a second download and failure cycle with no back-off."""
     clock = [_ist(RESTART_DAY, time(18, 0))]
@@ -332,10 +332,10 @@ NIGHT_DAY = date(2026, 10, 20)  # a Tuesday; the 21st is a trading day too
     kind=st.sampled_from(("chained", "carry", "plain")),
 )
 def test_chain_carries_past_midnight(head_done: int, later: int, kind: str) -> None:
-    """HAT-OPS-021 (audit L6): a chained job whose `after` job succeeded late on its date is
+    """: a chained job whose `after` job succeeded late on its date is
     still started under that trade date after IST midnight, until `CARRY_UNTIL`, and never under
     the next date before its own chain ran. A job with no `after` marked `carry`
-    (`snapshot.bots`, PR 33) carries over the same way; an unmarked one does not. Harm: an
+    (`snapshot.bots`) carries over the same way; an unmarked one does not. Harm: an
     ingest that succeeds at 23:58, or a restart at 00:10, leaves no quality gate, allocation,
     scan or drawdown-kill evaluation for its day."""
     clock = [_ist(NIGHT_DAY, time(18, 0)) + timedelta(minutes=head_done)]
@@ -547,7 +547,7 @@ RUN_STATUSES = (None, *JOB_STATUSES)
 def test_entry_inputs_fail_closed(
     trading: list[bool], statuses: list[str | None], allocated: set[int], known: bool
 ) -> None:
-    """HAT-OPS-021, HAT-PORT-053: an entry on day d reads the quality state and the allocation of
+    """An entry on day d reads the quality state and the allocation of
     the night before only (the previous trading day of the calendar): the quality state is
     failed or passed only when that night's `quality.gate` run failed or succeeded, else unknown
     (entries fail closed), and the allocation is that night's row or none, never an older one;
@@ -596,7 +596,7 @@ def _allocation_row(day: date, bot: uuid.UUID) -> HatAllocationDaily:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-070: structured logs
+# structured logs
 # ---------------------------------------------------------------------------------------
 
 levels = st.sampled_from([logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR])
@@ -629,7 +629,7 @@ def test_log_records_structured(msg: str, level: int, extra: dict[str, object]) 
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-010 / HAT-OPS-011: run_job, driven as a state machine on the real code
+# run_job, driven as a state machine on the real code
 # ---------------------------------------------------------------------------------------
 
 SECRET = "password=hunter2 host=10.0.0.7 ORA-00942"
@@ -762,12 +762,12 @@ def test_job_error_codes_are_stable_codes(code: str) -> None:
     assert stored == code or stored == DEFAULT_ERROR_CODE
 
 
-# HAT-OPS-031 (PR 13: the session side): backoff and the one alert per outage
+#: backoff and the one alert per outage
 
 
 @given(st.lists(st.tuples(st.integers(min_value=0, max_value=400), st.booleans()), max_size=40))
 def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
-    """HAT-OPS-031: for every sequence of status checks, one `broker.session_lost` alert is due
+    """For every sequence of status checks, one `broker.session_lost` alert is due
     per outage, only once the outage has lasted 2 minutes, and retry delays never decrease
     within an outage (1 s, doubling, capped at 30 s)."""
     watch = SessionWatch()
@@ -804,7 +804,7 @@ def test_session_backoff_alert(steps: list[tuple[int, bool]]) -> None:
     st.integers(min_value=0, max_value=20 * 60),
 )
 def test_no_outage_before_the_login_window(steps: list[tuple[int, bool]], start: int) -> None:
-    """HAT-OPS-031 (design review item 5): an outage is counted from 08:30 IST, when the login
+    """(design review item 5): an outage is counted from 08:30 IST, when the login
     prompt goes out. Checks before it (the night after the midnight token expiry, live or not)
     never alert and reset the watch, so a session down since midnight alerts once, 2 minutes
     after the first check from 08:30, and only if it is still down then. Harm: a
@@ -836,7 +836,7 @@ def test_backoff_delay_is_monotone_and_capped(attempt: int) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-034: the 15:25 live price and the official close of each MA exit evaluation
+# the 15:25 live price and the official close of each MA exit evaluation
 # ---------------------------------------------------------------------------------------
 
 prices = st.decimals(min_value=50, max_value=150, places=2)
@@ -850,7 +850,7 @@ prices = st.decimals(min_value=50, max_value=150, places=2)
 def test_close_gap_recorded(
     marks: list[tuple[Decimal, Decimal, Decimal | None]], late: bool
 ) -> None:
-    """HAT-OPS-034: every `close_below_sma` evaluation in the close window records the live
+    """Every `close_below_sma` evaluation in the close window records the live
     price it used, fired or not; once the nightly ingest has the official close, exactly one
     `exit.close_gap` per position records that close and its gap to the live price, against the
     same position. A close the ingest does not have yet is recorded by a later run, and a run
@@ -908,7 +908,7 @@ def _events(session: Session, kind: str) -> list[HatEvent]:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-060 / HAT-OPS-042: the backup manifest and the deploy-window guard (scripts/)
+# the backup manifest and the deploy-window guard (scripts/)
 # ---------------------------------------------------------------------------------------
 
 
@@ -957,7 +957,7 @@ def _damage(path: Path, how: str, at: int) -> None:
     pick=st.integers(min_value=0, max_value=10_000),
 )
 def test_backup_manifest(files: dict[str, bytes], target: int, how: str, pick: int) -> None:
-    """HAT-OPS-060: for every file set, the manifest lists each file with its size and sha256,
+    """For every file set, the manifest lists each file with its size and sha256,
     survives a JSON round trip, matches the tar of the set member for member, and verifies clean
     at both targets; then one flipped byte, missing file or size change at either target is
     reported for that file at that target, and only there. Harm: a damaged or partial backup
@@ -1008,7 +1008,7 @@ def _in_window(now: datetime) -> bool:
 
 @given(now=guard_instants, listed=st.sampled_from((None, True, False)), force=st.booleans())
 def test_deploy_window_guard(now: datetime, listed: bool | None, force: bool) -> None:
-    """HAT-OPS-042: for every instant (in any time zone) and trading flag, a deploy is refused
+    """For every instant (in any time zone) and trading flag, a deploy is refused
     exactly when the IST time is in 08:30-15:35 on a trading day and it is not forced; a day
     the calendar does not list is a trading day iff it is a weekday (fail closed); the script
     exits non-zero exactly when refused, and a forced run inside the window appends one log
@@ -1040,7 +1040,7 @@ def test_deploy_window_guard(now: datetime, listed: bool | None, force: bool) ->
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-OPS-072: GET /api/hat/status reports what the database holds
+# GET /api/hat/status reports what the database holds
 # ---------------------------------------------------------------------------------------
 
 STATUS_JOBS = ("ingest.nightly", "scan", "exits.close")
@@ -1270,7 +1270,7 @@ def _expected_stale(world: dict) -> datetime | None:
 
 @given(world=status_worlds)
 def test_status_matches_db(world: dict) -> None:
-    """HAT-OPS-072: for every database state, GET /api/hat/status reports each bot's mode,
+    """For every database state, GET /api/hat/status reports each bot's mode,
     status and manage-only reasons, the state of every kill-switch key, the latest regime,
     today's broker session of every active account, today's job runs and the latest
     `feed.stale` of today, exactly as the rows hold them. Harm: the user believes the bot is
@@ -1353,7 +1353,7 @@ def _account_jobs(exdate_check: bool) -> dict[str, ScheduledJob]:
     )
 )
 def test_ex_date_job_behind_flag(raw: str | None) -> None:
-    """HAT-EXEC-145 (PR 47): `gtt.ex_date:<account>` is registered, at 08:40 on trading days and
+    """: `gtt.ex_date:<account>` is registered, at 08:40 on trading days and
     retried every minute, exactly when `HAT_EXDATE_GTT_CHECK` is a true value; unset (the
     default) or anything else registers no such job and leaves every other job as it was.
     Harm: the check runs on a GTT-book behaviour nobody has confirmed live, or the switch
@@ -1398,7 +1398,7 @@ class ThreadNotifier(RecordingNotifier):
     fail=st.booleans(),
 )
 def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime, fail: bool) -> None:
-    """PBT ops.subscription_limit_alerts (HAT-DATA-112; PR 73, PR 39): the runtime's
+    """PBT ops.subscription_limit_alerts: the runtime's
     `subscription_alert` turns each sync whose wanted set (the symbols and the heartbeat)
     reached the provider's limit (a further symbol would get no ticks) into one health alert
     `subscription_limit` of the trade date of the runtime's clock, and a sync below it raises

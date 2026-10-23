@@ -1,4 +1,4 @@
-"""PBT exits.* (HAT-EXEC-070..073, HAT-RISK-070, HAT-EXEC-042, HAT-EXEC-010): the exit stack of
+"""PBT exits.*: the exit stack of
 `app.hat.engine.exits` against rules written out independently, and the shadow engine of
 `app.hat.engine.trades` driven end to end on SQLite with a broker that records every call."""
 
@@ -162,7 +162,7 @@ def is_full(rule: object) -> bool:
 def test_full_beats_partial(
     stack: list, pos: PositionState, data: st.DataObject, phase: str
 ) -> None:
-    """HAT-EXEC-070: when a full exit and partials fire on one evaluation, only the full exit is
+    """When a full exit and partials fire on one evaluation, only the full exit is
     executed: the output is then exactly the one full exit the full rules alone give, for the
     whole open quantity. Whatever fires, the output never mixes a full exit with partials and
     never sells more than is open. Harm: a partial sale before a stop-out leaves the position
@@ -197,7 +197,7 @@ def test_full_beats_partial(
 def test_fire_once(
     stack: list, pos: PositionState, data: st.DataObject, phase_list: list[str]
 ) -> None:
-    """HAT-EXEC-071: over any sequence of evaluations a rule id is reported fired at most once,
+    """Over any sequence of evaluations a rule id is reported fired at most once,
     a fired rule never sells again, and the quantity sold never exceeds the original quantity.
     Harm: a partial rule that fires on every poll sells the whole position in slices."""
     seen: set[str] = set()
@@ -233,7 +233,7 @@ def test_fire_once(
 )
 @example(3, 3, 0.33)
 def test_fraction_arithmetic(original: int, open_: int, fraction: float) -> None:
-    """HAT-EXEC-072: a fraction of the original quantity is rounded down, is at least one share
+    """A fraction of the original quantity is rounded down, is at least one share
     and never more than the open quantity. Harm: a 1-share remainder that is never sold, or a
     sale larger than the position."""
     open_ = min(open_, original)
@@ -248,7 +248,7 @@ def test_fraction_arithmetic(original: int, open_: int, fraction: float) -> None
     st.lists(st.sampled_from([0.1, 0.25, 0.33, 0.5, 0.75]), min_size=1, max_size=5),
 )
 def test_fraction_arithmetic_closes_with_last_exit(original: int, fractions: list[float]) -> None:
-    """HAT-EXEC-072: partials that together reach the open quantity are one full exit, so the
+    """Partials that together reach the open quantity are one full exit, so the
     position closes with the last exit and no remainder below one share is left open."""
     stack = [
         ExitPartialAtR(rule="partial_at_r", at_r=0.5 * (i + 1), sell_fraction=f)
@@ -313,7 +313,7 @@ def test_rule_semantics(kind: int, data: st.DataObject) -> None:
 
 
 def check_rule_semantics(rule: object, pos: PositionState, data: st.DataObject, phase: str) -> None:
-    """HAT-EXEC-073, HAT-EXEC-070: each rule alone sells (or raises the stop) exactly when the
+    """Each rule alone sells (or raises the stop) exactly when the
     spec says, in the phase the spec gives it, and a disabled rule never acts; a rule never sees
     a missing price as a trigger. Harm: a rule firing early or late changes every result."""
     view = data.draw(views(pos))
@@ -358,7 +358,7 @@ def check_rule_semantics(rule: object, pos: PositionState, data: st.DataObject, 
 def test_rule_semantics_breakeven_after_partial(
     pos: PositionState, data: st.DataObject, earlier: bool, fraction: float
 ) -> None:
-    """HAT-EXEC-073: `after: partial` raises the stop to the entry price once a partial rule has
+    """`after: partial` raises the stop to the entry price once a partial rule has
     fired, in this evaluation or an earlier one, and not before."""
     stack = [
         ExitPartialAtR(rule="partial_at_r", at_r=1.0, sell_fraction=fraction),
@@ -385,7 +385,7 @@ def test_rule_semantics_breakeven_after_partial(
 def test_never_lowers_stop(
     stack: list, pos: PositionState, data: st.DataObject, phase_list: list[str]
 ) -> None:
-    """HAT-RISK-070: over any run of evaluations the stop never goes down; a new stop is always
+    """Over any run of evaluations the stop never goes down; a new stop is always
     above the current one; and a result that carries a lower stop changes nothing. Harm: a
     lower stop widens the risk the position was sized for."""
     for phase in phase_list:
@@ -423,7 +423,7 @@ def run_path(session: Session, kind: str, path: list[tuple[int, int]]) -> Trade:
 @settings(max_examples=40)
 @given(SHADOW_STACKS, paths)
 def test_shadow_rows_virtual(kind: str, path: list[tuple[int, int]]) -> None:
-    """HAT-EXEC-010, HAT-EXEC-044: a shadow trade driven from signal to close writes only virtual
+    """A shadow trade driven from signal to close writes only virtual
     orders, fills and positions, with no broker order id, no broker trade id and no fees (the
     engine imports no broker at all: CONF import_graph_boundaries); the sold quantity plus what
     stays open is the entry quantity; and
@@ -469,7 +469,7 @@ def test_shadow_rows_virtual(kind: str, path: list[tuple[int, int]]) -> None:
 @settings(max_examples=40)
 @given(SHADOW_STACKS, paths)
 def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None:
-    """HAT-EXEC-042: after every step of a shadow trade the state stored on the signal (and its
+    """After every step of a shadow trade the state stored on the signal (and its
     position) equals the fold of the trade's events over the transition table, and an event the
     table does not allow changes nothing. Harm: a state that cannot be rebuilt from the log hides
     a missed event."""
@@ -512,7 +512,7 @@ R_MULTIPLES = st.decimals(
 @example([])
 @example([Decimal(0)])
 def test_veto_score(results: list[Decimal]) -> None:
-    """HAT-EXEC-130: the veto score over the R multiples of the closed veto trades is
+    """The veto score over the R multiples of the closed veto trades is
     avoided = -sum(R < 0) and missed = sum(R > 0), exactly, with a zero R counted as a trade in
     neither sum; both are non-negative and missed - avoided is the plain sum. Harm: the weekly
     digest tells the user their skips saved money they in fact cost."""
@@ -539,7 +539,7 @@ def test_veto_score(results: list[Decimal]) -> None:
 def test_veto_verdict_threshold(
     decisions: int, skipped: list[Decimal], taken: list[Decimal]
 ) -> None:
-    """HAT-EXEC-131: the verdict exists iff there are at least 50 decisions; it compares the
+    """The verdict exists iff there are at least 50 decisions; it compares the
     mean R of the skipped trades with the mean R of the taken ones, exactly, and says the skips
     beat the takes iff the skipped trades did worse; a group with no closed trade has no mean
     and the verdict is insufficient data. Harm: a verdict drawn from too few decisions, a

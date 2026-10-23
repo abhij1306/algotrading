@@ -35,7 +35,7 @@ def event_engine(*models: type) -> Engine:
     return memory_engine(HatEvent, *models)
 
 
-# Where a command line's HAT_DATA_ROOT comes from (HAT-DATA-080): only the `.env` file, only the
+# Where a command line's HAT_DATA_ROOT comes from: only the `.env` file, only the
 # process environment, both (the environment wins), or a blank environment value over a `.env`
 # value (blank means the default).
 ROOT_SOURCES = ("env_file", "environment", "both", "blank_environment")

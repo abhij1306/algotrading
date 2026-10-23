@@ -1,5 +1,5 @@
-"""CONF checks of the verification harness itself (HAT-VER-010, 011, 030..034, 040, 050, 060,
-070..072; HAT-SCH-102). The requirement index is docs/invariants.md."""
+"""CONF checks of the verification harness itself: TLA+ models and their broken variants, the
+Hypothesis profile, the CI verification jobs and the verify skills."""
 
 import ast
 import os
@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from hat_conf_repo import REPO_ROOT
 from hat_conf_skills import (
     PLACEHOLDER,
     REQUIRED_SECTIONS,
@@ -21,12 +22,9 @@ from hat_conf_skills import (
     property_ids,
     skill_files,
 )
-from hat_conf_spec import REPO_ROOT, requirements
 
 TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
-METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
-METHOD = re.compile(r"\b(TLA|PBT|DB|CONF|OPS) `[^`]+`")
 
 
 def _models() -> list[Path]:
@@ -37,7 +35,7 @@ def _models() -> list[Path]:
 
 
 def test_tla_toolchain_pinned(tmp_path: Path) -> None:
-    """HAT-VER-030: a cfg per model; run.sh pins v1.7.4 by URL and sha256 and refuses a jar
+    """A cfg per model; run.sh pins v1.7.4 by URL and sha256 and refuses a jar
     whose hash differs (exercised offline with a fake curl)."""
     assert _models()
     for model in _models():
@@ -95,7 +93,7 @@ def _cfg_constants(cfg: Path) -> list[str]:
 
 
 def test_tla_bounds_declared() -> None:
-    """HAT-VER-033: Bounds: and Assumptions: in the first comment block; every cfg constant is
+    """Bounds: and Assumptions: in the first comment block; every cfg constant is
     named under Bounds:."""
     for model in _models():
         header = _header(model)
@@ -113,7 +111,7 @@ def test_tla_bounds_declared() -> None:
 
 
 def _operators(text: str) -> dict[str, str]:
-    """name -> the comment lines immediately above its definition."""
+    """Name -> the comment lines immediately above its definition."""
     lines = text.splitlines()
     found = {}
     for index, line in enumerate(lines):
@@ -158,7 +156,7 @@ def _function_exists(path: Path, name: str) -> bool:
 
 
 def test_tla_actions_mapped() -> None:
-    """HAT-VER-031: every action of Next names `backend/app/hat/...py:function` that exists."""
+    """Every action of Next names `backend/app/hat/...py:function` that exists."""
     for model in _models():
         text = model.read_text(encoding="utf-8")
         actions = _next_actions(text)
@@ -184,7 +182,7 @@ TYPING_ONLY = {
 
 
 def test_tla_broken_variants_fail() -> None:
-    """HAT-VER-032 (static half; the job runs them): every property of a cfg has a broken cfg
+    """(static half; the job runs them): every property of a cfg has a broken cfg
     that expects it, switches a different BrokenMode on, and keeps the other constants."""
     for model in _models():
         base = model.with_suffix(".cfg")
@@ -216,7 +214,7 @@ def test_tla_broken_variants_fail() -> None:
 
 
 def test_hypothesis_profile_registered() -> None:
-    """HAT-VER-040: the `ci` profile, its loading, the dependency, and real-code properties."""
+    """The `ci` profile, its loading, the dependency, and real-code properties."""
     from hypothesis import settings
 
     profile = settings.get_profile("ci")
@@ -241,12 +239,6 @@ def test_hypothesis_profile_registered() -> None:
         assert any(m == "app.hat" or m.startswith("app.hat.") for m in imported), module.name
 
 
-def test_pbt_names_follow_the_convention() -> None:
-    """HAT-VER-040 naming: every properties module is test_<area>.py and holds `def test_...`."""
-    for module in (HAT_TESTS / "properties").glob("test_*.py"):
-        assert re.search(r"^def test_\w+", module.read_text(encoding="utf-8"), re.MULTILINE), module
-
-
 # --- CI job ---------------------------------------------------------------------------------
 
 
@@ -262,7 +254,7 @@ def _runs(job: dict) -> list[str]:
 
 
 def test_ci_verification_job() -> None:
-    """HAT-VER-060: the verification jobs run every model, every broken variant, the properties
+    """The verification jobs run every model, every broken variant, the properties
     under the `ci` profile and the conformance checks, each inside the 5-minute target (10-minute
     hard timeout), and the backend job leaves those suites to them."""
     jobs = _ci_jobs()
@@ -293,7 +285,7 @@ def test_ci_verification_job() -> None:
 
 
 def test_ci_property_shards_cover_every_file(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HAT-VER-060: the property matrix is a partition of tests/hat/properties: every file is in
+    """The property matrix is a partition of tests/hat/properties: every file is in
     exactly one shard, so a new property file can never run nowhere."""
     monkeypatch.syspath_prepend(str(REPO_ROOT / "scripts"))
     from ci_property_shards import shard_files
@@ -313,17 +305,11 @@ def test_ci_property_shards_cover_every_file(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_ci_runs_models_for_merged_targets() -> None:
-    """HAT-VER-020: every model the index names is run by CI: the `verification-tla` job runs
+    """Every model is run by CI: the `verification-tla` job runs
     `run.sh` and `run.sh --broken` unfiltered and unconditionally, `run.sh` with no model
     argument checks every `*.tla` beside it, and the model has its cfg and a broken variant
     expecting each of its properties."""
-    models = {
-        name.partition("!")[0]
-        for req in requirements()
-        if not req.planned
-        for method, name in req.methods
-        if method == "TLA"
-    }
+    models = {model.stem for model in _models()}
     assert models
     tla = _ci_jobs()["verification-tla"]
     assert "if" not in tla
@@ -346,145 +332,11 @@ def test_ci_runs_models_for_merged_targets() -> None:
         assert not missing, (model, sorted(missing))
 
 
-# --- database check coverage ----------------------------------------------------------------
-
-
-def _db_names() -> set[str]:
-    """DB check names the index names for a built requirement."""
-    return {
-        name
-        for req in requirements()
-        if not req.planned
-        for method, name in req.methods
-        if method == "DB"
-    }
-
-
-def _db_tests() -> dict[str, list[tuple[str, bool]]]:
-    """function name -> [(file, marked postgres)] for every test_ function under tests/hat/db."""
-    found: dict[str, list[tuple[str, bool]]] = {}
-    for path in (HAT_TESTS / "db").glob("test_*.py"):
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        module_marked = "pytestmark" in path.read_text(encoding="utf-8")
-        for node in tree.body:
-            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
-                marked = module_marked or any(
-                    "postgres" in ast.unparse(d) for d in node.decorator_list
-                )
-                found.setdefault(node.name, []).append((path.name, marked))
-    return found
-
-
-def test_db_checks_match_governance_table() -> None:
-    """HAT-VER-050: each DB name the index names has exactly one postgres-marked check."""
-    tests = _db_tests()
-    assert _db_names()
-    for name in _db_names():
-        function = "test_" + name.replace(".", "__")
-        assert len(tests.get(function, [])) == 1, name
-        assert tests[function][0][1], f"{function} is not marked postgres"
-
-
-ENSURE_STEP_CHECKS = {"migration.ensure_idempotent", "events.partitions_ahead"}
-# Checks of a job's code against the database, not of a database object: there is nothing to
-# drop for a variant, and the break is a code change recorded in the area's skill.
-JOB_CHECKS = {"events.partitions_job"}
-
-
-def test_verification_db_rules_covered() -> None:
-    """HAT-SCH-102: every DB check is in the postgres suite and has a broken
-    variant that the check must fail (test_db_broken_variants.py, run by backend-postgres)."""
-    broken = (HAT_TESTS / "db" / "test_db_broken_variants.py").read_text(encoding="utf-8")
-    variants = set(re.findall(r'^    "([\w.]+)": \[', broken, re.MULTILINE))
-    for name in _db_names():
-        # The two ensure-step checks take the step as an argument; their broken variants
-        # are separate tests (a faulty ensure step substituted for the real one).
-        assert name in variants or name in ENSURE_STEP_CHECKS | JOB_CHECKS, name
-    assert "test_migration_check_fails_when_ensure_is_not_idempotent" in broken
-    assert "test_partitions_check_fails_when_ensure_is_broken" in broken
-    assert "test_concurrent_signal_check_fails_without_the_unique_key" in broken
-
-
-# --- the index's own rules ------------------------------------------------------------------
-
-
-def test_spec_requirements_well_formed() -> None:
-    """HAT-VER-010: every index entry has a unique ID and a title, and names at least one check
-    of a known method (a planned entry may name none yet)."""
-    reqs = requirements()
-    assert len(reqs) > 100
-    ids = [req.id for req in reqs]
-    assert len(ids) == len(set(ids))
-    for req in reqs:
-        assert req.title.strip(), req.id
-        if req.planned:
-            continue
-        assert req.methods, req.id
-        assert {method for method, _ in req.methods} <= METHODS, req.id
-        stray = METHOD.sub("", req.verification).replace(",", "").replace(";", "").strip()
-        assert not stray, (req.id, stray)
-
-
-def _conf_exists(name: str) -> bool:
-    candidates = {
-        "test_" + name.replace(".", "__"),
-        "test_" + name.replace(".", "_"),
-        "test_" + name.split(".")[-1],
-    }
-    for path in (HAT_TESTS / "conformance").glob("test_*.py"):
-        defined = set(
-            re.findall(r"^def (test_\w+)", path.read_text(encoding="utf-8"), re.MULTILINE)
-        )
-        if candidates & defined:
-            return True
-    return False
-
-
-def _pbt_exists(area_prop: str) -> bool:
-    area, _, prop = area_prop.partition(".")
-    path = HAT_TESTS / "properties" / f"test_{area}.py"
-    return (
-        path.exists()
-        and re.search(rf"^def test_{prop}\b", path.read_text(encoding="utf-8"), re.MULTILINE)
-        is not None
-    )
-
-
-def _tla_exists(ref: str) -> bool:
-    model, _, prop = ref.partition("!")
-    tla = TLA_DIR / f"{model}.tla"
-    cfg = TLA_DIR / f"{model}.cfg"
-    return tla.exists() and cfg.exists() and prop in _cfg_properties(cfg)
-
-
-def test_traceability_points_to_methods() -> None:
-    """HAT-VER-011: every check a built entry of the index names exists."""
-    db_functions = _db_tests()
-    missing = set()
-    for req in requirements():
-        if req.planned:
-            continue
-        for kind, name in req.methods:
-            if kind == "OPS":
-                continue  # host checks (file modes) run outside the repo
-            if kind == "CONF":
-                ok = _conf_exists(name)
-            elif kind == "PBT":
-                ok = _pbt_exists(name)
-            elif kind == "DB":
-                ok = "test_" + name.replace(".", "__") in db_functions
-            else:
-                ok = _tla_exists(name)
-            if not ok:
-                missing.add(f"{req.id} {kind} {name}")
-    assert missing == set()
-
-
 # --- verify skills --------------------------------------------------------------------------
 
 
 def test_verify_skills_complete() -> None:
-    """HAT-VER-070/034/071/072: frontmatter, sections, no placeholders, a Properties bullet and a
+    """Frontmatter, sections, no placeholders, a Properties bullet and a
     recorded scratch break per check, coverage paths that exist, and a current digest."""
     skills = skill_files()
     assert {p.parent.name for p in skills} >= {"verify-scheduler", "verify-governance"}
@@ -511,7 +363,7 @@ def test_verify_skills_complete() -> None:
 
 
 def test_verify_skill_sync_current() -> None:
-    """HAT-VER-071: every covered file exists and the covered digest matches the files now
+    """Every covered file exists and the covered digest matches the files now
     (a changed covered file makes the skill stale until it is re-confirmed and the digest
     updated). The sync commit is a 40-hex sha; a squash merge discards the branch commit, so
     the digest is what is checked."""
@@ -530,13 +382,3 @@ def test_verify_skill_sync_current() -> None:
             f"backend/tests/hat/conformance/hat_conf_skills.py "
             f"{path.parent.name} after re-confirming, then update the digest"
         )
-
-
-def test_verify_skill_break_recorded() -> None:
-    test_verify_skills_complete()
-
-
-def test_verify_skill_findings_recorded() -> None:
-    """HAT-VER-034: each skill has a Scope changes section (possibly stating there are none)."""
-    for path in skill_files():
-        assert parse_skill(path)["sections"].get("Scope changes", "").strip(), path

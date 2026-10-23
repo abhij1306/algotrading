@@ -1,4 +1,4 @@
-"""DB checks for the portfolio and ops tables (HAT-SCH-041, HAT-SCH-071, HAT-SCH-072)."""
+"""DB checks for the portfolio and ops tables."""
 
 import hat_db_rules as rules
 import pytest

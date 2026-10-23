@@ -132,7 +132,7 @@ def drive(
     """Feed `ticks` in exchange-time order (each arriving at its own instant, then the bars
     final by then are handed to the monitor, as the live step does), and finish at `until`, when
     another symbol of the feed ticks. With `from_open` each symbol is first watched from before
-    the open; with `seed` each tick also carries the exchange's (high, low) so far (PR 39).
+    the open; with `seed` each tick also carries the exchange's (high, low) so far.
     Returns the final bars and the triggers, in order."""
     bars: list[Bar] = []
     triggers: list[Trigger] = []

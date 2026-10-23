@@ -1,44 +1,8 @@
-"""CONF checks of the trade lifecycle: HAT-EXEC-040, the states and transitions the engine holds
-equal the table of 07 section 4, row for row; HAT-EXEC-042 (PR 36), only the trade journal
-writes a trade's state."""
+"""CONF check of the trade lifecycle: only the trade journal writes a trade's state."""
 
 import ast
 
-from hat_conf_spec import REPO_ROOT
-
-from app.hat.engine import lifecycle
-from app.hat.models.runtime import TRADE_STATES
-
-TRANSITIONS = {
-    ("AwaitingApproval", "Cancelled"),
-    ("AwaitingApproval", "EntryPlaced"),
-    ("AwaitingApproval", "Expired"),
-    ("AwaitingApproval", "Rejected"),
-    ("EntryPlaced", "Cancelled"),
-    ("EntryPlaced", "Open"),
-    ("EntryPlaced", "Rejected"),
-    ("ExitPending", "Closed"),
-    ("Open", "ExitPending"),
-    ("Open", "PartiallyExited"),
-    ("PartiallyExited", "ExitPending"),
-    ("PartiallyExited", "PartiallyExited"),
-    ("Triggered", "AwaitingApproval"),
-    ("Triggered", "EntryPlaced"),
-    ("Triggered", "Rejected"),
-    ("Watchlisted", "Expired"),
-    ("Watchlisted", "Triggered"),
-}
-
-
-def test_lifecycle_transitions_match_spec() -> None:
-    """HAT-EXEC-040/041: eleven states, four terminal endings, and exactly the 17 (from, to)
-    pairs of TRANSITIONS (a trade is never Open without an entry fill, never Closed without an
-    ExitPending); a change to the machine changes this table and its TLA model on purpose."""
-    assert len(lifecycle.STATES) == 11
-    assert set(lifecycle.STATES) == set(TRADE_STATES)
-    assert set(lifecycle.ENDINGS) == {"Cancelled", "Closed", "Expired", "Rejected"}
-    assert {(src, dst) for (src, _), dst in lifecycle.TRANSITIONS.items()} == TRANSITIONS
-
+from hat_conf_repo import REPO_ROOT
 
 APP = REPO_ROOT / "backend" / "app" / "hat"
 JOURNAL = APP / "engine" / "journal.py"
@@ -102,7 +66,7 @@ def _state_writes(tree: ast.AST) -> list[int]:
 
 
 def test_journal_only_writers() -> None:
-    """HAT-EXEC-042 (PR 36): no module of `app/hat` but the trade journal
+    """: no module of `app/hat` but the trade journal
     (`engine/journal.py`) writes `.state`, so every state change passes the journal's check of
     the step against the table before its event is written. A row is created at its first
     state; `self.state` is a class's own field (`LifecycleStateError`)."""

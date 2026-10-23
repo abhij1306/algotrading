@@ -1,4 +1,4 @@
-"""PBT policy.* (HAT-RISK-011, D128): the startup upkeep that moves a user still on the
+"""PBT policy.*: the startup upkeep that moves a user still on the
 withdrawn PR 10 seed to seed, on SQLite through `ensure_hat_policies`."""
 
 import uuid
@@ -83,7 +83,7 @@ def _rows(session: Session) -> list[tuple]:
 @example(states=["old_unmarked", "owner_changed"], runs=1)
 @example(states=["old_with_pending"], runs=1)
 def test_seed_supersedes_old_initial(states: list[str], runs: int) -> None:
-    """HAT-RISK-011 (PR 46, D128): for each user whose policy in force is the PR 10 seed, with
+    """: for each user whose policy in force is the PR 10 seed, with
     `weights_confirmed` false or absent and nothing pending, startup writes the current seed as the
     next version, `initial` and effective at once, supersedes the old one at that instant and
     records `risk.change_requested` and `risk.change_effective`; the new seed is nowhere more
@@ -133,7 +133,7 @@ def test_seed_supersedes_old_initial(states: list[str], runs: int) -> None:
 @example(faults=["race", "none"])
 @example(faults=["pending"])
 def test_upkeep_raises_unless_race_lost(faults: list[str]) -> None:
-    """HAT-RISK-011 (PR 46): a constraint failure while moving a user off the old seed is ignored
+    """: a constraint failure while moving a user off the old seed is ignored
     only when another process moved that user first (the version number race); any other one,
     after which the old seed is still in force (a change queued meanwhile included), is raised
     and startup fails. Harm: a

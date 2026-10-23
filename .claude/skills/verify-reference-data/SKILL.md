@@ -5,13 +5,13 @@ description: How to run, read and update the checks behind Hire a Trader's refer
 
 # verify-reference-data
 
-Checks that the instrument master keeps one stable identity per stock through renames and delistings, that old symbols resolve to the right company, that Fyers symbols never point at another stock, that a calendar holiday is closed in every order path, and that the NSE MCP client retries, limits, logs and reports errors the way the specs promise. Requirement IDs (index: `docs/invariants.md`): (HAT-DATA-010, 020..027, 030..036), (I1, I16), (HAT-OVR-001, C7).
+Checks that the instrument master keeps one stable identity per stock through renames and delistings, that old symbols resolve to the right company, that Fyers symbols never point at another stock, that a calendar holiday is closed in every order path, and that the NSE MCP client retries, limits, logs and reports errors the way the specs promise. Requirement IDs (index: `docs/invariants.md`): (..027, 030..036), (I1, I16),.
 
 ## Properties
 - `PBT mcp.retry_bounded` On the real `McpClient.call`, any sequence of transport failures makes at most 4 attempts (1 + 3 retries), waits strictly longer before each retry, and ends in a typed `McpError` rather than an empty result; a configuration error is never retried and keeps its `mcp_config` code. Harm: unbounded retries stall the nightly window, or an empty result passes as a holiday.
 - `PBT mcp.call_logged` Every attempt (success, retry or failure) writes exactly one `CallRecord` with tool, symbol count and returned date or failure code, and the `hat_job_run.calls` a job records equals the attempts. Harm: a short or stale pull cannot be diagnosed.
 - `PBT mcp.no_raw_error_text` For any error payload a transport raises, returns as a tool error or sends in an HTTP 500, no `McpError` message, repr, cause chain or log line holds a substring of it longer than 8 characters. Harm: internal URLs or tokens reach an alert, API response or Telegram.
-- `PBT mcp.session_handshake` On a fake endpoint that behaves as the live NSE servers did on 2026-10-22 (400 for a request outside an initialized session, 404 for a lost one) and answers with the recorded replies, `HttpTransport` opens a session (`initialize`, `notifications/initialized`, `Mcp-Session-Id`) before its first call and sends every call on it, never drawing a 400, and starts the handshake once more when a replica 404s one of its steps (`initialize` or `notifications/initialized`, at most one per handshake); a call whose session is lost is sent once more on a new session and returns the recorded reply, one lost twice fails with `mcp_transport` and the session is dropped; a session is kept until lost. Harm: every live MCP call fails (the bare `tools/call` of PR 4) or a third of them do (the replica 404s).
+- `PBT mcp.session_handshake` On a fake endpoint that behaves as the live NSE servers did on 2026-10-22 (400 for a request outside an initialized session, 404 for a lost one) and answers with the recorded replies, `HttpTransport` opens a session (`initialize`, `notifications/initialized`, `Mcp-Session-Id`) before its first call and sends every call on it, never drawing a 400, and starts the handshake once more when a replica 404s one of its steps (`initialize` or `notifications/initialized`, at most one per handshake); a call whose session is lost is sent once more on a new session and returns the recorded reply, one lost twice fails with `mcp_transport` and the session is dropped; a session is kept until lost. Harm: every live MCP call fails (the bare `tools/call` of) or a third of them do (the replica 404s).
 - `PBT ingest.batches_le_50` `batches` partitions any list in order into batches of at most 50 (exactly 50 but the last; 63 for 3,121 symbols), also `ingest.batches_of_50`. Harm: oversize calls are rejected and stocks go missing.
 - `PBT ingest.concurrency_bounded` For any workload and interleaving the calls in flight seen by the transport never exceed the limit (default 4). Harm: the server throttles the client and the night's data is late.
 - `PBT ingest.date_mismatch_rejected` A bulk-quote row is kept only if its date is the trade date; every other row (another, missing or unreadable date) is in the mismatch report, and every requested symbol is kept, mismatched or missing. Harm: yesterday's prices are stored as today's.
@@ -23,7 +23,7 @@ Checks that the instrument master keeps one stable identity per stock through re
 - `PBT reference.current_band` The band in force on a date is the row with the greatest `effective_from` on or before it (null = no band), always 2, 5, 10, 20 or null; the circuit-limit fallback detects exactly the band the limits imply. Harm: an EP candidate in a 5% band is treated as gap-eligible.
 - `PBT reference.current_industry` The industry in force is the latest row on or before the date, and an instrument with none is reported, never given a shared one. Harm: the per-industry cap is bypassed.
 - `PBT calendar.holiday_closed` A date with `is_trading = false` is CLOSED in the `SessionCalendar` loaded from the table at every instant, a trading date is OPEN exactly for its own session (the `hat_market` default for a time the row lacks), a date the calendar does not hold is UNKNOWN and never open, a holiday withdrawn from a refreshed snapshot is reopened, and the scheduler's trading days equal the dates with `is_trading = true` (a weekday without a row is not one). Harm: orders attempted on an exchange holiday.
-- `PBT calendar.one_answer` (HAT-OVR-001; PR 75b, audit A-F3) For every calendar and instant the readers agree with `SessionCalendar.state`: the feed connects when it is OPEN or in the pre-open from 09:00 before a trading day's open and on no day the calendar does not hold; `is_trading_day`, `trading_days` and Telegram's days held count a day exactly when the calendar holds it as a trading day, and such a day has an open. Harm: a calendar that has run out drives a daily cycle and a live feed on a day risk rejects every entry as `market_closed`.
+- `PBT calendar.one_answer` For every calendar and instant the readers agree with `SessionCalendar.state`: the feed connects when it is OPEN or in the pre-open from 09:00 before a trading day's open and on no day the calendar does not hold; `is_trading_day`, `trading_days` and Telegram's days held count a day exactly when the calendar holds it as a trading day, and such a day has an open. Harm: a calendar that has run out drives a daily cycle and a live feed on a day risk rejects every entry as `market_closed`.
 - `PBT calendar.weekday_rows` `with_weekdays` (used by `calendar.refresh`) keeps every listed holiday or special-session row as it is, stores every other weekday of the covered years as a trading day with the market's default session, and adds no weekend. Harm: the scheduler and the risk checks, which read a session only from a stored row, treat every ordinary weekday as closed.
 - `PBT calendar.session_from_reference_data` The session the engine uses on any date equals the `hat_trading_calendar` row, or the `hat_market` default that `with_weekdays` stores on a normal weekday, never a constant. Harm: hard-coded NSE hours place a P2 market's orders at the wrong time.
 - `DB reference.refresh_on_postgres` On real Postgres a refresh with renames, delisting and a broker symbol moving between instruments never trips the unique keys. Harm: the weekly refresh fails half-way and leaves the master stale.
@@ -93,41 +93,15 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `4a29d25c9c978b8548785a45d2802153758e6aca589eb7dc779b478971552283`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- K2 moved symbol conversion into `app/hat/data/symbols.py` (stateless; no `known_symbols`). `symbols.aliases_resolve` also checks that a spaced alias (`NIFTY BANK`) converts through `to_fyers` (found in review). `symbols.total_and_valid` found that a hyphenated ticker written as a Fyers symbol (`NSE:BAJAJ-AUTO-EQ`) was refused, and `FYERS_PATTERN` now accepts a hyphen in the ticker and the -BE and -BZ series. `reference.broker_instrument_list` replaces the legacy index-only instrument list with `hat_instrument` joined to `hat_broker_symbol`.
-- PR 35: `symbols.total_and_valid` found in CI that `to_db(": 0")` returned `" 0"`, which converts to `"0"`, so `to_db` was not idempotent: the ticker after the colon was not stripped. `to_db` now strips it before and after removing the series suffix; the input is pinned as an `@example` (with `"X: A -EQ"`). Break (the old code, ticker not stripped): `E   AssertionError: assert '0' == ' 0'`. Nothing was narrowed.
-
-
-- `McpClient` gained `corporate_actions`, `stock_history` and `index_history` (PR 5, HAT-DATA-094..096). Their checks live in `verify-data` (`history_build.mcp_*`, the history CONF fixtures test); the unwrapping and error rules shared with the other client methods are still checked here.
-
-- `reference.prefix_paging_complete` models the server as returning rows sorted by symbol and cut at the limit, so a symbol equal to a capped prefix comes first. The real server's order is unverified (the recorded sample is not sorted); a symbol that a capped page omits and no deeper prefix can return would be missed. The weekly job cross-checks against the equity list CSV, which reports a listed symbol with no CSV row as unresolved.
-- `reference.symbol_history_resolves` draws symbols distinct within one listing and steps seven days apart; the resolver prefers the active instrument, then series EQ, when two series of one ISIN share a symbol.
-- `reference.fyers_symbol_roundtrip` does not assert that every symbol gets a row: a symbol that does not round-trip (an alias such as LTIM) is reported, which is the property.
-- The Muhurat and Saturday special sessions are calendar rows with their own times; the NSE holiday JSON shape (`tradingDate`, `evening_session`) is `[A]`, validated on the first live download.
-- `mcp.no_raw_error_text` checks substrings of 9 or more characters; payloads that are substrings of the stable codes themselves are excluded (`assume`).
-- `mcp.no_raw_error_text` leaves out the log record's own source location (`pathname`, `filename`, `module`) when comparing, and has an `@example` of the checkout directory: on a CI runner the path holds "algotrading", which a generated payload matched once a new module shifted Hypothesis's string pool (PR 14 finding).
-- `mcp.no_raw_error_text` also leaves out the call's own inputs, the server name `nse-bhavcopy` and the tool `get_bulk_quote`, which the client logs by design, and has an `@example` of `nse-bhavc`. PR 29 finding: new string constants shifted the pool and CI drew that payload. Break: drop `nse-bhavcopy` from `LOG_FIELD_TEXT` and the example fails.
-- Postgres is checked by `refresh_on_postgres` only for the unique keys; the property tests use SQLite, where the keys are the same constraints.
-- K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten socket and single-feed checks): the reference-data checks are unchanged and still pass.
-
-- PR 7 moved the three MCP ingest properties (`batches_le_50`, `concurrency_bounded`, `date_mismatch_rejected`) from `test_ingest_mcp.py` into `test_ingest.py`, unchanged, so that every `ingest.*` check lives in one file; `McpClient` gained `probe`, `index_snapshot` and `market_breadth` (see `verify-data`).
-
-- PR 23 (live checks 2026-10-22): `HttpTransport` speaks streamable HTTP with a session, after the live servers refused the bare `tools/call`. `CONF imports.mcp_transport_only` now looks for the deferred `requests` import in the whole `HttpTransport` class (it moved from `call` to `_post_raw`). `mcp.session_handshake` drives `HttpTransport` directly (not through `McpClient`): the client's retries are `mcp.retry_bounded`'s. The success envelope (text content) is the PR 4 recorded one; the live tool results are the recorded replies.
-- PR 44: `index_history` raises the new stable code `mcp_no_data` for the server's "No data for index" answer (outside `TRANSPORT_CODES`: it is an answer, not a transport failure). Its checks live in `verify-data` (`history_build.mcp_index_source_ends_at_depth`, `CONF fixtures.index_history_no_data`, a new test in `test_conf_fixtures.py`); the reference-data checks are unchanged.
-- PR 75b (architecture audit A-F3, HAT-OVR-001): one calendar model and one loader. `SessionCalendar` (`risk/sessions.py`) is the model, `data.calendar.session_calendar` the loader; `MarketHoursPolicy`, `MarketPhase`, `MarketCalendar`, `load_calendar` and `calendar.trading_days` are deleted. The copies disagreed on a weekday with no row (the policy and `MarketCalendar` opened it, `SessionCalendar` did not): every reader now treats it as no trading day. A stored trading row without its times takes the `hat_market` default session in the loader (HAT-OVR-001), as `load_calendar` did, so no day is a session for the scheduler yet never open for risk and the feed. `calendar.holiday_closed` and `session_from_reference_data` check the session calendar; `calendar.policy_has_no_process_state` is deleted with the policy (the calendar is a frozen value passed to its readers; nothing to install); new `calendar.one_answer`.
+Covered digest: `133bbcb7512895aad87a355d4766db60854076790983835c6ead1141c937ff5f`
 
 ## Scratch breaks
 
-Each check was shown to catch a deliberate break in the real code (HAT-VER-072), then the break was removed and the check returned to passing.
+Each check was shown to catch a deliberate break in the real code, then the break was removed and the check returned to passing.
 
 ### PBT mcp.session_handshake
 
-Break: (PR 23, each tried alone) main's bare `tools/call`; no resend on 404; the resend reuses the lost session; a session lost twice is kept.
+Break: main's bare `tools/call`; no resend on 404; the resend reuses the lost session; a session lost twice is kept.
 
 Also: one handshake try only (`HANDSHAKE_TRIES = 1`): 1 failed.
 
@@ -399,7 +373,7 @@ E ? ^
 
 ### PBT calendar.holiday_closed
 
-Break: (PR 75b) `session_calendar` loads a trading row without its times as it is, not with the `hat_market` default (`r.open_at,`): the day counts as a session but never opens. Also fails `calendar.one_answer`.
+Break: `session_calendar` loads a trading row without its times as it is, not with the `hat_market` default (`r.open_at,`): the day counts as a session but never opens. Also fails `calendar.one_answer`.
 
 ```
 E   AssertionError: (datetime.date(2026, 1, 21), datetime.time(0, 0))
@@ -407,7 +381,7 @@ E   assert <SessionState.UNKNOWN: 'unknown'> is <SessionState.OPEN: 'open'>
 E   Failing test case: test_holiday_closed(
 ```
 
-Second break: (PR 75b) `is_trading_day` falls back to the weekday rule on a date with no row (`MarketCalendar.session_for` before PR 75b).
+Second break: `is_trading_day` falls back to the weekday rule on a date with no row (`MarketCalendar.session_for` before).
 
 ```
 E   assert True == False
@@ -439,7 +413,7 @@ E datetime.date(2026, 1, 20)
 
 ### PBT calendar.one_answer
 
-Break: (PR 75b) the feed connects on a date the calendar does not hold (`calendar.is_open(now) or calendar.state(now).value == "unknown"`), as `MarketHoursPolicy`'s weekday default did before PR 75b.
+Break: the feed connects on a date the calendar does not hold (`calendar.is_open(now) or calendar.state(now).value == "unknown"`), as `MarketHoursPolicy`'s weekday default did before.
 
 ```
 E   AssertionError: assert True == ((<SessionState.UNKNOWN: 'unknown'> is <SessionState.OPEN: 'open'> or False))
@@ -450,7 +424,7 @@ E       offset=1,
 E       wall=datetime.time(10, 0),
 ```
 
-Second break: (PR 75b) `is_trading_day` falls back to the weekday rule (the scheduler counting an unknown weekday): fails `test_one_answer` and `test_holiday_closed_trading_days`.
+Second break: `is_trading_day` falls back to the weekday rule (the scheduler counting an unknown weekday): fails `test_one_answer` and `test_holiday_closed_trading_days`.
 
 ```
     assert trading == (row is not None and row.is_trading)
@@ -467,7 +441,7 @@ E   Failing test case: test_weekday_rows(
 
 ### PBT calendar.session_from_reference_data
 
-Break: (PR 75b) `SessionCalendar.open_on` returns the close instead of the open.
+Break: `SessionCalendar.open_on` returns the close instead of the open.
 
 ```
 E   assert datetime.time(0, 30) == datetime.time(0, 0)

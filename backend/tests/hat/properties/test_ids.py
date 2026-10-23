@@ -1,4 +1,4 @@
-"""PBT ids.uuid7_ordered (HAT-SCH-011): uuid v7 values are well formed and strictly increasing."""
+"""PBT ids.uuid7_ordered: uuid v7 values are well formed and strictly increasing."""
 
 import threading
 import uuid

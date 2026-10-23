@@ -1,4 +1,4 @@
-"""CONF check of HAT's HTTP surface (HAT-DEC-T3): the dashboard is read-only and Telegram is the
+"""CONF check of HAT's HTTP surface: the dashboard is read-only and Telegram is the
 control surface. Every route of every router under `app/hat/api` is a GET, except the Fyers login
 routes listed in WRITE_ROUTES, and no GET route reaches a database write.
 
@@ -6,9 +6,7 @@ The app itself is never built here (`app.main` is out of bounds for `tests/hat`)
 the routers of the `app.hat.api` modules and the source of each GET endpoint. From an endpoint it
 follows every call it can resolve to a function of an `app.hat` module (the module's own helpers,
 `reads.*`, `controls.kill_state` and so on) and refuses a session write (`add`, `commit`,
-`delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`.
-
-HAT-DEC-BD5 (PR 38): every write route depends on the write guard (`app.hat.api.guard`); the app
+`delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`.: every write route depends on the write guard (`app.hat.api.guard`); the app
 wiring hands the guard the CORS frontend-origin rule; the server binds to loopback by default. The
 wiring is read from the source of `app/main.py` and `start_server.py`, which are never imported.
 """
@@ -24,13 +22,13 @@ from typing import Any
 
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
-from hat_conf_spec import REPO_ROOT
+from hat_conf_repo import REPO_ROOT
 
 import app.hat.api
 from app.hat.api import guard
 
-# The only routes that are not GET: the daily Fyers login (HAT-OPS-051, K2). It writes the token
-# file, never a HAT table, and each route depends on the write guard (HAT-DEC-BD5).
+# The only routes that are not GET: the daily Fyers login. It writes the token
+# file, never a HAT table, and each route depends on the write guard.
 WRITE_ROUTES = {
     ("POST", "/api/hat/auth/fyers/token"),
     ("POST", "/api/hat/auth/fyers/disconnect"),
@@ -125,7 +123,7 @@ def _writes_in(func: Callable[..., Any], seen: set[Callable[..., Any]]) -> list[
 
 
 def test_hat_routes_read_only() -> None:
-    """HAT-DEC-T3: every HAT route is a read (GET) except the listed Fyers login routes, the
+    """Every HAT route is a read (GET) except the listed Fyers login routes, the
     listed exemptions all exist, and no GET endpoint reaches a session write, a write statement
     or an event record. Harm: the dashboard becomes a second control surface that bypasses
     Telegram's confirmations and the risk authority."""
@@ -155,7 +153,7 @@ def _dependency_calls(route: APIRoute) -> set[object]:
 
 
 def test_hat_writes_guarded() -> None:
-    """HAT-DEC-BD5: every route under `app/hat/api` that is not a read depends on
+    """Every route under `app/hat/api` that is not a read depends on
     `guard.frontend_write`, so no write runs before the guard has refused a request from another
     site. Harm: a new POST route ships open to cross-site requests (CSRF) on the owner's browser."""
     writes = [
@@ -178,7 +176,7 @@ def _assigned(tree: ast.AST, target: str) -> list[ast.expr]:
 
 
 def test_api_loopback_no_auth_wiring() -> None:
-    """HAT-DEC-BD5: the API has no auth and relies on its bind and the write guard, so
+    """The API has no auth and relies on its bind and the write guard, so
     `start_server.py` binds `BACKEND_HOST` to 127.0.0.1 by default, and `app/main.py` sets
     `app.state.frontend_origin` to the CORS rule `is_frontend_origin` imported from
     `app.utils.origins`. Harm: the server listens on every interface with no auth, or the guard
@@ -210,7 +208,7 @@ def test_api_loopback_no_auth_wiring() -> None:
 
 
 def test_frontend_sends_write_header() -> None:
-    """HAT-DEC-BD5: the frontend API client names the guard's header and value, and sets them in
+    """The frontend API client names the guard's header and value, and sets them in
     its one write middleware. Harm: a rename on either side makes every login and logout from
     the HAT page a 403."""
     client = (REPO_ROOT / "frontend" / "lib" / "api" / "client.ts").read_text(encoding="utf-8")

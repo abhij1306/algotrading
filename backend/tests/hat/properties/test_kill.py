@@ -1,4 +1,4 @@
-"""PBT kill.* (HAT-SCH-033/034, HAT-RISK-062..065, HAT-DEC-B23..B26): kill-switch state from rows
+"""PBT kill.* (..B26): kill-switch state from rows
 and through the real service on SQLite, against an independently written model."""
 
 import uuid
@@ -258,7 +258,7 @@ def test_trip_cancels_pending_approvals(scope: str, reason: str) -> None:
         assert decisions[sb] == ("expired" if scope == "account" else None)
         expired = [e for e in session.scalars(select(HatEvent)) if e.event_type == "signal.expired"]
         assert len(expired) == (2 if scope == "account" else 1)
-        # The state follows the event (HAT-EXEC-042): cancelled ones are Expired, others wait.
+        # The state follows the event: cancelled ones are Expired, others wait.
         states = {s.id: s.state for s in session.scalars(select(HatSignal))}
         assert states[sa] == "Expired"
         assert states[sb] == ("Expired" if scope == "account" else "AwaitingApproval")
@@ -339,7 +339,7 @@ def test_drawdown_kills_from_snapshots(equities: list, rearm_first: bool) -> Non
         session.commit()
 
 
-# --- planned reallocation is not a drawdown (HAT-RISK-066) --------------------------------------
+# --- planned reallocation is not a drawdown --------------------------------------
 
 CAPITAL = st.integers(1, 10_000_000).map(lambda n: D(n) / 100)
 
@@ -469,7 +469,7 @@ NIGHT = st.tuples(st.sampled_from(("before", "late", "none")), CAPITAL)
 @example([("before", D(1000)), ("late", D(700)), ("none", D(1)), ("before", D(700))])
 @example([("before", D(1000)), ("none", D(1)), ("before", D(700))])
 def test_snapshot_latest_allocation(nights: list[tuple[str, Decimal]]) -> None:
-    """HAT-RISK-066 (PR 33): `snapshot.bots` runs at 23:30 on its own, not after `allocate`. For
+    """: `snapshot.bots` runs at 23:30 on its own, not after `allocate`. For
     every run of nights where `allocate` commits before the snapshot, after it (a late night) or
     not at all (a failed gate), each snapshot exists iff the bot has an allocation on or before
     its day, its equity (no trade results) is the capital of the latest allocation committed

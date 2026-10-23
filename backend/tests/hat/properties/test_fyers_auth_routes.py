@@ -1,4 +1,4 @@
-"""PBT fyers_auth_routes.* (HAT-OPS-051, K2; HAT-DEC-BD5, PR 38): the four `/api/hat/auth/fyers`
+"""PBT fyers_auth_routes.*: the four `/api/hat/auth/fyers`
 routes answer with fixed messages for every failure, never echo the token, the secret, the auth
 code or exception text, write no token on a failure, and report connected right after a good
 exchange. The two POSTs refuse a request that did not come from the HAT page, and `token` refuses

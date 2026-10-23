@@ -1,4 +1,4 @@
-"""Postgres fixtures for the HAT database checks (HAT-VER-050).
+"""Postgres fixtures for the HAT database checks.
 
 These run only with SMARTTRADER_PG_TESTS=1 and DB_* pointing at a throwaway database whose name
 ends in `_test` (CI's `backend-postgres` job). The HAT tables are dropped and recreated once per

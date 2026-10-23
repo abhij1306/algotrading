@@ -2,7 +2,7 @@
 
 `valid_ctx()` is a signal that every check passes: tests change one thing about it and read the
 decision of the real `evaluate_signal` (`app.hat.risk.service`). Money and weights are Decimal
-throughout (HAT-VER-041).
+throughout.
 """
 
 from __future__ import annotations

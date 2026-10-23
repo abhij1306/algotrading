@@ -1,5 +1,4 @@
-"""CONF check HAT-OVR-040: HAT owns one fake broker and one risk authority; it never adds a
-parallel version."""
+"""CONF check: one fake broker and one risk authority; no parallel version."""
 
 import ast
 from pathlib import Path
@@ -14,10 +13,6 @@ AUTHORITIES = {
 FUNCTION_AUTHORITIES = {
     "evaluate_signal": "app/hat/risk/service.py",
 }
-# Legacy classes that still exist beside HAT's: name -> the one file that may define them. None
-# are left: K4 deleted the legacy `RiskManager` and `FakeBroker`, K5b the legacy
-# `LiveMarketService`. The entry point stays so the lookalike check below still refuses them.
-LEGACY_COPIES: dict[str, str] = {}
 
 
 def _definitions(kinds: tuple[type, ...]) -> list[tuple[str, str]]:
@@ -35,12 +30,7 @@ def test_no_duplicate_fakes_or_authorities() -> None:
     definitions = _definitions((ast.ClassDef,))
     for name, home in AUTHORITIES.items():
         where = sorted(rel for cls, rel in definitions if cls == name)
-        expected = sorted({home, LEGACY_COPIES[name]} if name in LEGACY_COPIES else {home})
-        assert where == expected, (name, where)
-    for name, legacy_home in LEGACY_COPIES.items():
-        if name not in AUTHORITIES:
-            where = sorted(rel for cls, rel in definitions if cls == name)
-            assert where == [legacy_home], (name, where)
+        assert where == [home], (name, where)
     for name, home in FUNCTION_AUTHORITIES.items():
         where = sorted(
             rel for fn, rel in _definitions((ast.FunctionDef, ast.AsyncFunctionDef)) if fn == name
@@ -52,7 +42,6 @@ def test_no_duplicate_fakes_or_authorities() -> None:
         (cls, rel)
         for cls, rel in definitions
         if cls not in AUTHORITIES
-        and cls not in LEGACY_COPIES
         and (cls.endswith("RiskManager") or cls.endswith("LiveMarketService"))
     )
     assert lookalikes == [], lookalikes

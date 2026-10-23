@@ -1,4 +1,4 @@
-"""PBT retention.purge_scope (HAT-SCH-091): the purge deletes Telegram messages and command-log
+"""PBT retention.purge_scope: the purge deletes Telegram messages and command-log
 rows older than a year and nothing else."""
 
 import tempfile

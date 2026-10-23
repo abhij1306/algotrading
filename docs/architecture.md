@@ -107,7 +107,7 @@ TLA+ models in `verification/tla/` (ExecutionRouter, OrderReconciliation, StopPl
 KillSwitch, ApprovalToken, TradeLifecycle, JobScheduler, NightlyPipeline, DailyCycle,
 RegimeConfirmation, SleeveLifecycle; each with `broken/` variants), Hypothesis properties in
 `backend/tests/hat/properties/`, Postgres checks in `tests/hat/db/`, conformance checks in
-`tests/hat/conformance/` (index: `invariants.md`). The `verify-*` skills in `.claude/skills/` say
+`tests/hat/conformance/`. The `verify-*` skills in `.claude/skills/` say
 how to run and update each area and record a digest of the files they cover.
 
 CI (`.github/workflows/ci.yml`): `backend`, `backend-postgres`, `verification-tla`,

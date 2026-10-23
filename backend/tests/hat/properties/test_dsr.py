@@ -1,6 +1,6 @@
-"""PBT dsr.* (HAT-BT-030, 031, 042, 060; HAT-GOV-091; HAT-PORT-061): the deflated
+"""PBT dsr.*: the deflated
 Sharpe ratio of `app.hat.backtest.dsr` against the formula written out with `math.erf`, its
-family floors and the probability of backtest overfitting (PR 66), and the trial counting,
+family floors and the probability of backtest overfitting, and the trial counting,
 family keys, returns files, lifecycle evidence and risk-increase gate evidence of
 `app.hat.backtest.runs` on SQLite."""
 
@@ -83,7 +83,7 @@ def _slope(s: ReturnStats, sr0: float) -> float:
     return 1 - s.skew * (s.sr + sr0) / 2 + (s.kurtosis - 1) / 4 * s.sr * sr0
 
 
-# --- HAT-BT-042 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(stats(), N, V, N)
@@ -158,7 +158,7 @@ def test_bounds_and_monotonicity_bad_denominator(
     assert (got.prob, got.reason) == (0.0, UNDEFINED)
 
 
-# --- HAT-BT-042 / HAT-PORT-061: the family floors and PBO (PR 66) ------------------------------
+# --- the family floors and PBO ------------------------------
 
 
 @given(stats(), N, V)
@@ -247,7 +247,7 @@ def test_pbo_refused(case: str, noise: list[float]) -> None:
     assert pbo(matrix, blocks) is None
 
 
-# --- HAT-BT-030 / 031 / 060: runs on SQLite ---------------------------------------------------
+# --- runs on SQLite ---------------------------------------------------
 
 
 def _world(session: Session, strategies: int, universes: int) -> tuple[list, list]:
@@ -381,7 +381,7 @@ def test_evidence_cooldown_in_force(
     in_force: int | None, later: int | None, made: list[int | None]
 ) -> None:
     """The sleeve's evidence is its newest completed run made under the cooldown in force when
-    it is read (HAT-RISK-036): now for the lifecycle, the request's instant for the
+    it is read: now for the lifecycle, the request's instant for the
     risk-increase gate. A `--cooldown-sessions` sweep run, or one made before the cooldown
     changed, is skipped, and a run or a policy without the field counts as 0. With no such run
     there is no evidence. Harm: a gate is passed on a run of a rule that is not live."""
@@ -448,14 +448,14 @@ FLAGS = st.tuples(
 @example([(True, "time", True, "policy"), (True, "score", True, "policy")])  # in score order
 @example([(True, "time", True, "policy"), (True, "time", False, None)])  # recorded before PR 64
 @example([(True, "time", True, "policy"), (True, "time", True, None)])  # recorded before PR 68
-@example([(True, "time", True, "policy"), (True, "time", True, "1")])  # regime 1 (PR 68 to 69)
+@example([(True, "time", True, "policy"), (True, "time", True, "1")])  # regime 1
 def test_evidence_promoted_only(
     flags: list[tuple[bool | None, str | None, bool, str | None]],
 ) -> None:
     """The sleeve's evidence, for the lifecycle and for the risk-increase gate, is its newest
-    completed run flagged for promotion (PR 62, O5) whose slots went in the estimated trigger
-    order (`slot_order` `time`, PR 63) under the path rules (`lower_circuit`, PR 64), sized by
-    the sleeve's allocation (PR 68) under the live regime rule `policy` (`regime_mult`, PR 69):
+    completed run flagged for promotion whose slots went in the estimated trigger
+    order (`slot_order` `time`) under the path rules (`lower_circuit`, PR 64), sized by
+    the sleeve's allocation under the live regime rule `policy` (`regime_mult`):
     a sensitivity run (`touch`, 0 bps, a sweep, another slot order) or one recorded before the
     flag, the slot order, the path rules or the allocation sizing existed, or under regime rule
     `1` (as PR 68 promoted), is skipped, and with none there is no evidence. Harm: a sleeve is
@@ -555,7 +555,7 @@ def test_evidence_current_trials(later: list[tuple[float, bool]], t: int) -> Non
         session.rollback()
 
 
-# --- HAT-GOV-091: the risk-increase gate's backtest benchmark ---------------------------------
+# --- the risk-increase gate's backtest benchmark ---------------------------------
 
 R = st.integers(-300, 500).map(lambda n: Decimal(n) / 100)
 SLEEVE = st.tuples(
@@ -719,7 +719,7 @@ def test_gate_evidence(sleeves: list, discount: Decimal, step: int | None) -> No
         session.rollback()
 
 
-# --- HAT-BT-030 / HAT-BT-060: run-gated DSR, returns files, completion order, PBO (PR 66) ----
+# --- run-gated DSR, returns files, completion order, PBO ----
 
 
 def _bot_world(
@@ -931,7 +931,7 @@ GATE_FACTS = {
 def test_evidence_gate_facts(
     seed: str, dropped: set[str], weight: str, garbled: bool, policy: bool, parses: bool
 ) -> None:
-    """The lifecycle evidence carries what the rest of the gate reads (PR 69, HAT-PORT-061): the
+    """The lifecycle evidence carries what the rest of the gate reads: the
     run's first and last session, held sessions and ambiguous days, the playbooks its known gaps
     name (the EP playbook for `episodic_pivot_not_backtested`; every playbook of the version when
     the run recorded no readable gap list), the playbooks the version enables (none when its config

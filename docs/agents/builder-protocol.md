@@ -10,8 +10,7 @@ execution.
 
 Code is the source of truth; docs are a guide, not something maintained one-to-one with the code.
 Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to date --
-architecture, invariants, CLAUDE.md, decisions -- and they stay compact. A new requirement ID or
-check goes in one line in `docs/invariants.md`.
+architecture, invariants, CLAUDE.md, decisions -- and they stay compact.
 
 ## Owner rules
 
@@ -84,10 +83,9 @@ breaks is a finding: fix the code, never weaken the property.
 
 - Branch `hat/<slug>`. Conventional commits; end each commit message with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Body: summary, requirement IDs, verification and breaks, deviations, legacy changes, follow-ups. End
+- Body: summary, verification and breaks, deviations, legacy changes, follow-ups. End
   with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- Bookkeeping: a new or changed check gets its line in `docs/invariants.md` (the conformance
-  suite fails on a named check that does not exist). Delete any plan or spec you implemented.
+- Bookkeeping: delete any plan or spec you implemented.
 - Sonar (public, no token): gate
   `https://sonarcloud.io/api/qualitygates/project_status?projectKey=abhij1306_algotrading&pullRequest=<n>`,
   issues `https://sonarcloud.io/api/issues/search?componentKeys=abhij1306_algotrading&pullRequest=<n>&resolved=false`.
@@ -97,5 +95,5 @@ breaks is a finding: fix the code, never weaken the property.
 
 ## Report
 
-Above the final line: PR URL, what was built, requirement IDs, verification and breaks, how each review
+Above the final line: PR URL, what was built, verification and breaks, how each review
 finding was handled, deviations, follow-ups. Keep it short.

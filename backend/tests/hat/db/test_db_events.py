@@ -1,4 +1,4 @@
-"""DB checks for the event log (061, 066, 068, HAT-DEC-I15)."""
+"""DB checks for the event log (061, 066, 068)."""
 
 import hat_db_runtime as rules
 import pytest

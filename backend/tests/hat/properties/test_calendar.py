@@ -1,4 +1,4 @@
-"""PBT calendar.* (HAT-DATA-027, HAT-OVR-001, HAT-SCH-086, HAT-RISK-075): the one trading calendar
+"""PBT calendar.*: the one trading calendar
 (`SessionCalendar`, loaded by `session_calendar`) closes a holiday at every instant, opens a trading
 day for its own session, gives a day it does not hold no session, and every reader (the feed, the
 scheduler's trading days, Telegram's days held) answers as it does."""
@@ -144,7 +144,7 @@ def test_holiday_closed_trading_days(spec: CalSpec) -> None:
 def test_session_from_reference_data(spec: CalSpec) -> None:
     """For every market and date the session the engine uses equals the `hat_trading_calendar`
     row, or the `hat_market` default that `with_weekdays` writes on a normal weekday, never a
-    constant (HAT-OVR-001); an unlisted weekend has none."""
+    constant; an unlisted weekend has none."""
     open_default, close_default, rows = spec
     full = {d.day: d for d in cal.with_weekdays(rows.values(), open_default, close_default)}
     loaded = through_database(open_default, close_default, full)
@@ -162,7 +162,7 @@ def test_session_from_reference_data(spec: CalSpec) -> None:
             assert is_open == (expected is not None and expected[0] <= wall <= expected[1])
 
 
-@example(  # a weekday the calendar does not hold (HAT-OVR-001 left it open; the readers disagreed)
+@example(  # a weekday the calendar does not hold (left it open; the readers disagreed)
     spec=(time(9, 15), time(15, 30), {}), offset=1, wall=time(10, 0)
 )
 @settings(max_examples=80)
@@ -235,7 +235,7 @@ def test_holiday_closed_withdrawn(first: CalSpec, second: CalSpec) -> None:
             )
 
 
-# --- the next session open (HAT-SCH-086, HAT-DEC-B20) ---------------------------------------
+# --- the next session open ---------------------------------------
 
 session_instants = st.datetimes(
     min_value=datetime(2026, 10, 10), max_value=datetime(2026, 10, 31), timezones=st.just(IST)
@@ -282,7 +282,7 @@ def test_next_session_open_after_a_holiday(at: datetime) -> None:
 @settings(max_examples=60)
 @given(spec=calendars())
 def test_weekday_rows(spec: CalSpec) -> None:
-    """HAT-DATA-027 (PR 17): `with_weekdays` keeps every listed row as it is, gives every other
+    """: `with_weekdays` keeps every listed row as it is, gives every other
     weekday of the covered years a trading row with the market's default session, and adds no
     weekend: the holiday list names only the exceptions, but the scheduler and the risk checks
     read a session only from a stored row."""

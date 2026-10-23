@@ -1,8 +1,7 @@
 # Decisions in force
 
 Owner and build decisions that still bind the code. No history; a reversed decision is deleted
-here. IDs (`HAT-DEC-*`) are cited by code and checks; each has an entry in `invariants.md`.
-Numbers here are pinned by `backend/tests/hat/conformance/test_conf_risk.py` (`OWNER_SEED`).
+here.
 
 ## Product
 
@@ -84,8 +83,7 @@ Numbers here are pinned by `backend/tests/hat/conformance/test_conf_risk.py` (`O
 ## Planned, not built
 
 - Regime model v2 (HMM/GMM), `hat_fundamental` filled from XBRL, screener-driven universes, US
-  markets and broker, Zerodha and Kotak Neo adapters, multi-user (all P2/P3; `HAT-PORT-070..073`,
-  `HAT-SCH-043`).
+  markets and broker, Zerodha and Kotak Neo adapters, multi-user (all P2/P3).
 - Intraday history older than 365 days from an NSE source (Fyers Standard serves 365 days).
 - PDF summaries for approval cards and a chat MCP server: advisory only, never a gate.
 - A CLI to re-run one job for a past trade date.

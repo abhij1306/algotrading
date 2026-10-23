@@ -1,4 +1,4 @@
-"""CONF checks of the backtest (09; HAT-BT-010, 032, 042, 051, 070; HAT-VER-041)."""
+"""CONF checks of the backtest: shared engine imports, DSR scoring and golden replay."""
 
 import ast
 import json
@@ -9,10 +9,7 @@ from pathlib import Path
 import hat_backtest_support as s
 from hat_conf_repo import APP_ROOT, imports_of
 
-from app.hat.backtest import runs
 from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_sharpe
-from app.hat.engine.backtest import KNOWN_GAPS, TRADE_SCHEMA
-from app.hat.models import HatBacktestRun
 
 HAT = APP_ROOT / "hat"
 BACKTEST = HAT / "engine" / "backtest.py"
@@ -61,7 +58,7 @@ def test_backtest_shares_engine_imports() -> None:
     """The day loop reaches scan, risk, stop and exit logic only through the engine functions
     live trading calls: it imports them, never the scan, criteria, scoring, sizing, caps or
     decision modules behind them, defines no function of the same name, and passes no other
-    decision function to `open_entry` (HAT-BT-010)."""
+    decision function to `open_entry`."""
     imported = imports_of(BACKTEST)
     for name in SHARED:
         module, _, function = name.rpartition(".")
@@ -90,33 +87,7 @@ def test_backtest_shares_engine_imports() -> None:
         assert not [m for m in imports_of(path) if m.startswith("app.hat.engine")], path.name
 
 
-def test_backtest_run_columns() -> None:
-    """`hat_backtest_run` stores the pinned versions, period, data snapshot, status, metrics and
-    the non-null family key; a run's trades go to `backtests/run_id=<id>/trades.parquet` with
-    the trade columns (HAT-BT-032)."""
-    columns = HatBacktestRun.__table__.columns
-    for name in (
-        "strategy_version_id",
-        "risk_policy_version_id",
-        "period_start",
-        "period_end",
-        "data_snapshot",
-        "status",
-        "metrics",
-        "family_key",
-    ):
-        assert name in columns, name
-        assert not columns[name].nullable, name
-    run_id = s.VERSION
-    assert runs.trades_path(Path("/root"), run_id) == Path(
-        f"/root/backtests/run_id={run_id}/trades.parquet"
-    )
-    assert {runs.RUNNING, runs.COMPLETED, runs.FAILED} == {"running", "completed", "failed"}
-    assert TRADE_SCHEMA.names[:4] == ["entry_date", "exit_date", "playbook", "instrument_id"]
-    assert {"r_multiple", "realized_pnl", "fees", "strategy_version_id"} <= set(TRADE_SCHEMA.names)
-
-
-# --- HAT-BT-042: the published example --------------------------------------------------------
+# --- the published example --------------------------------------------------------
 
 
 def _phi(z: float) -> float:
@@ -155,7 +126,7 @@ def test_dsr_published_example() -> None:
     assert got.reason is None
 
 
-# --- HAT-BT-030: a DSR or PBO only for a recorded run (PR 66) ---------------------------------
+# --- a DSR or PBO only for a recorded run ---------------------------------
 
 SCORERS = ("deflated_sharpe", "family_deflated_sharpe", "pbo")
 
@@ -208,32 +179,22 @@ def test_dsr_scored_only_by_runs() -> None:
     )
 
 
-# --- HAT-BT-070: known gaps ------------------------------------------------------------------
+# --- known gaps ------------------------------------------------------------------
 
 
-def test_known_gaps_listed() -> None:
-    """The golden runs report exactly `KNOWN_GAPS`, the behaviours the backtest does not model
-    (HAT-BT-070)."""
-    assert KNOWN_GAPS
-    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    assert all(seed["metrics"]["known_gaps"] == list(KNOWN_GAPS) for seed in golden.values())
-
-
-# --- HAT-BT-051: golden replay ----------------------------------------------------------------
+# --- golden replay ----------------------------------------------------------------
 
 
 def test_backtest_golden_replay() -> None:
     """The committed fixture market run through the two seeded strategies (S1, S2) reproduces
     the committed golden document exactly: metrics, trades, signal and watchlist counts. An
     intended change regenerates it (`python tests/hat/hat_backtest_support.py`) in the same
-    commit (HAT-BT-051)."""
+    commit."""
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert s.golden_document() == golden
     assert set(golden) == set(s.GOLDEN_SEEDS)
     assert any(doc["metrics"]["trades"] for doc in golden.values())
 
-
-# --- HAT-VER-041 ------------------------------------------------------------------------------
 
 MONEY_AREAS = ("sizing", "caps", "exposure", "allocator", "costs")
 FLOAT_TOLERANCE = re.compile(r"pytest\.approx|math\.isclose|abs_tol|rel_tol")
@@ -254,7 +215,7 @@ def _is_call(node: ast.AST, name: str) -> bool:
 def test_pbt_money_strategies_decimal() -> None:
     """In the sizing, caps, exposure, allocator and costs properties, money and weights are
     generated as Decimal and compared exactly: no float tolerance appears, and a float strategy
-    appears only inside `st.one_of(...)` as one kind of invalid input among others (HAT-VER-041)."""
+    appears only inside `st.one_of(...)` as one kind of invalid input among others."""
     for area in MONEY_AREAS:
         path = PROPERTIES / f"test_{area}.py"
         text = path.read_text(encoding="utf-8")

@@ -1,4 +1,4 @@
-"""PBT for the confidence label of a signal (D132, HAT-EXEC-015, PR 71): the label rule, the
+"""PBT for the confidence label of a signal (D132): the label rule, the
 setup-score bands, the bucket statistics a completed run stores, the label a signal is created
 with and the line the owner reads on its card."""
 
@@ -277,7 +277,7 @@ def test_signal_label_from_evidence(
     same_day: bool,
     late: str,
 ) -> None:
-    """D132, HAT-EXEC-015: a signal is created with the label of its bucket (playbook, the band
+    """D132, a signal is created with the label of its bucket (playbook, the band
     of its watchlist score) in the bot's evidence run, with that bucket as its basis, and the
     same label on `signal.triggered`. No run, a playbook the run's known gaps name (EP until
     PR 70) or an unreadable gap list, or no watchlist score in a band gives low. A run completed
@@ -360,7 +360,7 @@ BASIS = st.fixed_dictionaries(
 @example(HIGH, {"reason": "lower_bound_positive", "trades": 142, "mean_r": "0.41"})
 @example(None, {})
 def test_card_shows_label(label: str | None, basis: dict[str, object]) -> None:
-    """D132, HAT-TG-023: the approval card and the shadow message carry one confidence line: the
+    """D132, the approval card and the shadow message carry one confidence line: the
     stored label (anything else reads LOW), and the bucket's trades and mean R when the basis
     has them, else "no backtest evidence" with a reason that is a plain token. Harm: the owner
     approves a trade without seeing how thin its evidence is, or free text reaches the chat."""

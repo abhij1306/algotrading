@@ -1,4 +1,4 @@
-"""PBT history_build.* (HAT-DATA-091, 092, 093, 096; HAT-DEC-I2): the whole build runs offline on
+"""PBT history_build.*: the whole build runs offline on
 generated bhavcopy zips in both formats across the 8 Jul 2024 switch. Completeness, no duplicate
 (instrument, date), a missing day reported and left empty, and a repeated or resumed run changing
 nothing."""
@@ -260,7 +260,7 @@ def test_build_offline_unresolved_security_is_reported() -> None:
         assert store.read_bars(day).height == 0
 
 
-# --- the MCP history wrappers (HAT-DATA-094, 095, 096) ---------------------------------------
+# --- the MCP history wrappers ---------------------------------------
 
 SERIES_DAYS = weekdays(date(2021, 1, 1), date(2023, 6, 30))
 
@@ -320,7 +320,7 @@ CHUNK_DAYS = 30 * 12  # the fake server's chunk for MCP_HISTORY_MONTHS
 def test_mcp_index_source_ends_at_depth(
     present: set[date], depth: date, start: date, span: int, other_error: bool
 ) -> None:
-    """PR 44: a server that keeps history only from `depth` answers an older window with its
+    """A server that keeps history only from `depth` answers an older window with its
     "No data for index" error. The chain then ends: it yields every present day from `depth` in
     [start, end] and asks nothing more. Any other `error` answer is a failure (raised as
     `mcp_bad_response`), never the end of the history."""
@@ -413,7 +413,7 @@ def test_archive_fills_before_mcp_depth(
     usual: str,
     broken: set[str],
 ) -> None:
-    """PR 44: with the MCP serving each index only from its depth (or not at all), the daily
+    """With the MCP serving each index only from its depth (or not at all), the daily
     `ind_close_all` archive fills every earlier day that has bars, under today's index names
     whatever the file calls them, and the MCP's rows win from its depth on. Only a day whose
     file NSE lacks or failed to send stays missing. Each file is fetched once for all indices,
@@ -492,7 +492,7 @@ ISOLATION_DAYS = weekdays(date(2024, 6, 24), date(2024, 6, 28))
 )
 @settings(max_examples=30, deadline=None)
 def test_index_failure_isolated(failing: dict[str, tuple[bool, int]]) -> None:
-    """PR 44: an index whose source fails (an MCP error, or anything else) is recorded with a
+    """An index whose source fails (an MCP error, or anything else) is recorded with a
     stable code and keeps the rows it gave before failing; every other index loads in full, the
     validation and the report still run, and the run (exit code and job) needs the operator
     exactly when an index failed."""
@@ -590,7 +590,7 @@ def test_mcp_corporate_actions_page(has_warning: bool, error: bool) -> None:
 )
 @settings(max_examples=25, deadline=None)
 def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: bool) -> None:
-    """PR 42: the command line hands the build the NSE calendar's non-trading dates (not the
+    """The command line hands the build the NSE calendar's non-trading dates (not the
     calendar's `holidays` method). Driving `main` over a stored calendar and a window where no
     day has a file, every NSE holiday is reported as an explained holiday and every other
     weekday as a gap, and `main` exits 1 exactly when there is a gap; another market's calendar
@@ -610,7 +610,7 @@ def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: boo
 )
 @settings(max_examples=25, deadline=None)
 def test_cli_root_and_report(marks: dict[date, bool], source: str) -> None:
-    """PR 43: the command line resolves the data root after `.env` is loaded, so a root set
+    """The command line resolves the data root after `.env` is loaded, so a root set
     only in `.env` counts, one in the environment wins and a blank one means the default; and
     the summary it prints is also appended to `history_build/report-YYYY-MM-DD.txt` under that
     root, the only directory the run writes to."""
@@ -699,7 +699,7 @@ def _drive_main(
     split=st.booleans(),
 )
 def test_archive_unparsed_reported(words: list[str], split: bool) -> None:
-    """HAT-DATA-055, HAT-EXEC-144: every archive row that names a split, a bonus or a
+    """Every archive row that names a split, a bonus or a
     consolidation without a usable ratio reaches the build report (`actions_unparsed`) and its
     summary; a parseable split beside them is still loaded. Harm: a consolidation in the
     archive leaves the adjusted history wrong and nobody is told."""

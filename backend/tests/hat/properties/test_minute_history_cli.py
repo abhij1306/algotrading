@@ -1,4 +1,4 @@
-"""PBT minute_history_cli.root_and_report (HAT-DATA-080, HAT-DATA-119): the minute-history
+"""PBT minute_history_cli.root_and_report: the minute-history
 command line, driven through `main` with only its boundaries replaced (the Fyers history call,
 the database session and the universe query).
 
@@ -29,7 +29,7 @@ from app.hat.data import minute_history
 )
 @settings(max_examples=25, deadline=None)
 def test_root_and_report(source: str, count: int, refused: bool, unmapped: int) -> None:
-    """PR 43: the command line resolves the data root after `.env` is loaded (a root set only in
+    """The command line resolves the data root after `.env` is loaded (a root set only in
     `.env` counts, one in the environment wins, a blank one means the default), keeps its lock
     and progress under it, and appends the coverage report it prints to
     `minute_history/report-YYYY-MM-DD.txt` there; it exits 1 exactly when the run stopped or a

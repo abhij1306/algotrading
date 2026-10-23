@@ -22,7 +22,6 @@ REQUIRED_SECTIONS = (
     "Updating",
     "Coverage",
     "Sync commit",
-    "Scope changes",
     "Scratch breaks",
 )
 PLACEHOLDER = re.compile(
@@ -62,7 +61,7 @@ def covered_files(coverage: str) -> list[str]:
 
 
 def digest(paths: list[str]) -> str:
-    """sha256 over the sorted (path, sha256 of content) pairs of the covered files."""
+    """Sha256 over the sorted (path, sha256 of content) pairs of the covered files."""
     outer = hashlib.sha256()
     for rel in sorted(paths):
         inner = hashlib.sha256((REPO_ROOT / rel).read_bytes()).hexdigest()

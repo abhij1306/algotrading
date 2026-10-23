@@ -1,4 +1,4 @@
-"""PBT universe.* (HAT-PORT-020..023, HAT-SCH-042): point-in-time membership, include/exclude and
+"""PBT universe.*: point-in-time membership, include/exclude and
 the interval rules, on the real `app.hat.engine.portfolio.universe` against independent models."""
 
 import uuid

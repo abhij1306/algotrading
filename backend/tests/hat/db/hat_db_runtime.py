@@ -1,7 +1,7 @@
 """Database rules of the runtime tables and the event log, each as a check
 body over a Postgres connection. Same contract as `hat_db_rules.py`: a check raises
 AssertionError when the database does not enforce its rule, and `test_db_broken_variants.py`
-requires each to fail once the trigger, index or constraint is removed (HAT-SCH-102)."""
+requires each to fail once the trigger, index or constraint is removed."""
 
 import threading
 import time
@@ -34,7 +34,7 @@ from app.hat.schema import ensure_hat_schema
 if TYPE_CHECKING:
     from app.hat.engine.trades import EntryRequest
 
-# --- runtime tables (HAT-SCH-051 .. HAT-SCH-058) -------------------------------------------
+# --- runtime tables (.. ) -------------------------------------------
 
 
 def check_runtime__signal_unique_per_day(conn: Connection) -> None:
@@ -357,7 +357,7 @@ def check_ops__snapshot_unique(conn: Connection) -> None:
     )
 
 
-# --- invariant 1 (HAT-SCH-081) --------------------------------------------------------------
+# --- invariant 1 --------------------------------------------------------------
 
 STOPS = (
     Decimal("0.0001"),
@@ -371,7 +371,7 @@ STOPS = (
 
 
 def check_governance__signal_confidence_immutable(conn: Connection) -> None:
-    """D132, HAT-EXEC-015: a signal's confidence label and basis never change after insert, and
+    """D132, a signal's confidence label and basis never change after insert, and
     the label is one of high, medium, low."""
     w = b.world(conn)
     table = m.HatSignal.__table__
@@ -475,7 +475,7 @@ def check_governance__stop_only_rises(conn: Connection) -> None:
     rejects(conn, "deleting every position", lambda: conn.execute(delete(table)))
 
 
-# --- the rescale exception to invariant 1 (HAT-SCH-081, HAT-EXEC-141) --------------------------
+# --- the rescale exception to invariant 1 --------------------------
 
 RESCALE_FROM = {"qty_open": 10, "avg_entry": "100", "initial_stop": "95", "current_stop": "98"}
 RESCALE_TO = {"qty_open": 20, "avg_entry": "50", "initial_stop": "47.5", "current_stop": "49"}
@@ -548,7 +548,7 @@ BAD_STATES = ("open", "triggered", "OPEN", "trailing", "Stopped", "", " Open")
 
 
 def check_runtime__state_domain(conn: Connection) -> None:
-    """HAT-SCH-059: `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state`
+    """`hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state`
     one of the four a position can be in; any other word is refused."""
     w = b.world(conn)
     for n, state in enumerate(SIGNAL_STATES):
@@ -704,7 +704,7 @@ def _empty_runtime(engine: Engine) -> None:
 
 
 def check_runtime__per_bot_serialised(conn: Connection) -> None:
-    """HAT-EXEC-045: two entries of one bot evaluated at the same time cannot both take the last
+    """Two entries of one bot evaluated at the same time cannot both take the last
     slot. The first holds the bot's lock between its risk decision and its insert; the second
     must wait for it, then see the first one's position and be rejected for the cap."""
     from hat_risk_support import AT, TRADE_DAY, policy_with, valid_ctx
@@ -738,7 +738,7 @@ def check_runtime__per_bot_serialised(conn: Connection) -> None:
 
 
 def check_runtime__owner_serialised(conn: Connection) -> None:
-    """HAT-RISK-030: two bots of one owner, on different broker accounts, entering at the same
+    """Two bots of one owner, on different broker accounts, entering at the same
     time cannot both fit under the global open-risk cap when it has room for one entry. The
     first holds the owner's lock between its risk decision and its insert; the second (another
     bot, so the bot lock does not serialise them) must wait for it, then see the first one's
@@ -776,7 +776,7 @@ def check_runtime__owner_serialised(conn: Connection) -> None:
 
 
 def check_runtime__publish_serialised(conn: Connection) -> None:
-    """HAT-CRIT-010, HAT-EXEC-045: two runs of one bot's nightly publish for one day at the same
+    """Two runs of one bot's nightly publish for one day at the same
     time write one `watchlist.published`. The first holds the bot's lock inside the scan, after
     its "already published?" read; the second must wait, then see the first one's event."""
     import polars as pl
@@ -1029,7 +1029,7 @@ CHECK_DAYS = (
 )
 
 
-# HAT-SCH-066 states two months ahead; the check does not read the code's constant.
+# states two months ahead; the check does not read the code's constant.
 SPEC_MONTHS_AHEAD = 2
 
 

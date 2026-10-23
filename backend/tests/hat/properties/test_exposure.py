@@ -1,4 +1,4 @@
-"""PBT exposure.* (HAT-DEC-B16, HAT-RISK-040/041/042): the L1 to L3 ladder on the real code."""
+"""PBT exposure.*: the L1 to L3 ladder on the real code."""
 
 from decimal import Decimal
 

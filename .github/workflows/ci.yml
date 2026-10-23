@@ -81,7 +81,7 @@ jobs:
       - name: pytest (postgres)
         run: python -m pytest -m postgres --durations=10
 
-  # HAT verification (HAT-VER-060), split into parallel jobs so each finishes inside 5 minutes:
+  # HAT verification, split into parallel jobs so each finishes inside 5 minutes:
   # TLC models, conformance checks, and the Hypothesis properties sharded across a matrix.
   # Not yet required checks: branch protection is configured outside this repo.
   verification-tla:

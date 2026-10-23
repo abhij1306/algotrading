@@ -1,4 +1,4 @@
-"""One auto-mode bot with a real position, for the trade-management properties (PR 15c).
+"""One auto-mode bot with a real position, for the trade-management properties.
 
 The router places the entry through the real Fyers adapter over `FakeBroker`; `fill` writes the
 broker's trade-book row for it, and `TradeManager.sync` reads it back. Nothing reaches a real
@@ -59,7 +59,7 @@ __all__ = ["TICK", "ManageRig", "at"]
 D = Decimal
 TICK = D("0.05")
 TICKER = "SBIN"
-LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here (PR 51)
+LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here
 LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True, ltp=LIVE_LTP)
 FILLED = 2  # Fyers orderbook status of a filled order
 

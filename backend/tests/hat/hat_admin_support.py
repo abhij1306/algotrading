@@ -1,4 +1,4 @@
-"""The rig of the owner's admin command line checks (HAT-OPS-091): a
+"""The rig of the owner's admin command line checks: a
 `World` runs the commands through `main` against a database (in memory for the properties,
 Postgres for the postgres suite), with a fake broker for the onboarding, a scripted backtest
 evidence and a settable clock; no network is touched.
@@ -40,7 +40,7 @@ CHAT = 4242
 # not the settings' default user, so an event filed under that default instead of the owner's
 # user is seen
 USER = uuid.UUID("00000000-0000-7000-8000-000000000073")
-EVIDENCE = lifecycle.BacktestFacts(  # passes the Backtested gate (HAT-PORT-061, PR 69)
+EVIDENCE = lifecycle.BacktestFacts(  # passes the Backtested gate
     dsr_prob=Decimal("0.99"),
     trades=250,
     expectancy=Decimal("0.3"),
@@ -168,7 +168,7 @@ def add_run(world: World, version_id: str) -> str:
             period_end=date(2025, 12, 31),
             data_snapshot={},
             status="completed",
-            metrics={"for_promotion": True, "slot_order": "time"},  # a promotion run (HAT-BT-061)
+            metrics={"for_promotion": True, "slot_order": "time"},  # a promotion run
         )
         session.add(run)
         return str(run.id)

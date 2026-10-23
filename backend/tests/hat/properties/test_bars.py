@@ -1,4 +1,4 @@
-"""PBT bars.* (HAT-DATA-111..119, HAT-DEC-I4, HAT-EXEC-120): the tick hook, 5-minute bars, the
+"""PBT bars.*: the tick hook, 5-minute bars, the
 opening range, volume pace, staleness and its health kill, triggers on final bars, persistence,
 subscriptions, gap capture and the optional minute-history loader, all on the real code.
 
@@ -153,7 +153,7 @@ def by_key(bars: Iterable[Bar]) -> dict[tuple[str, datetime], Bar]:
     return out
 
 
-# --- alignment and aggregation (HAT-DATA-113) --------------------------------------------------
+# --- alignment and aggregation --------------------------------------------------
 
 
 @given(data=st.data(), sequence=st.lists(ticks, max_size=60))
@@ -252,7 +252,7 @@ def test_alignment_boundary_instants(seconds: int, millis: int, before: int) -> 
     assert len(builder.advance(final_at)) == 1
 
 
-# --- opening range (HAT-DATA-114) --------------------------------------------------------------
+# --- opening range --------------------------------------------------------------
 
 
 @given(
@@ -319,7 +319,7 @@ def test_opening_range_fixed(
     cut=st.integers(OPEN_SOD * US, CLOSE_SOD * US),
 )
 def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut: int) -> None:
-    """PR 17 (a restart mid-session): a builder restored from the final bars a live builder made
+    """A builder restored from the final bars a live builder made
     before a restart at `cut` has the same opening range and day volume of every symbol, and a
     second restore changes nothing. Harm: after a restart past 09:20 no opening-range breakout
     can trigger for the rest of the day, and volume pace reads as a fraction of the real one."""
@@ -347,12 +347,12 @@ def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut
     for symbol in SYMBOLS:
         expected = live.opening_range(symbol, DAY) if past_first else None
         assert restored.opening_range(symbol, DAY) == expected
-        assert restored.day_low(symbol, DAY) is None  # the restart is a gap (PR 22)
+        assert restored.day_low(symbol, DAY) is None  # the restart is a gap
         if symbol not in unfinished:
             assert restored.day_volume(symbol, DAY) == live.day_volume(symbol, DAY)
 
 
-# --- complete-session state (PR 22: HAT-DATA-114, HAT-EXEC-051, HAT-BOT-071) -------------------
+# --- complete-session state -------------------
 
 PROBE = [(0, 11_000), (150, 10_100), (160, 10_300), (170, 10_000), (180, 10_400), (600, 10_500)]
 """The audit's probe (F4): a 09:15 spike to 110 HAT never saw, then prints from 09:17:30."""
@@ -454,11 +454,11 @@ def test_session_state_never_partial(
     restart: tuple[int, int] | None,
     seeded: bool,
 ) -> None:
-    """PR 22 (audit F4): whatever HAT missed of the session (a first tick after the open, a feed
+    """Whatever HAT missed of the session (a first tick after the open, a feed
     silence of 30 s or more, a restart with its downtime), the opening range it publishes is the
     one the session really had, and the day low it publishes is the real low of the day's final
     bars; otherwise it publishes none. Watched from the open with no gap it publishes both (the
-    opening range also after a restart once the first bar was stored). PR 39: with the exchange
+    opening range also after a restart once the first bar was stored). with the exchange
     range on (`seeded`, each tick carrying the session's high and low so far), the same holds,
     and a symbol first seen late, after a restart or after a feed gap, with no gap after, has
     both: the opening range when it ticked inside the first bar, the day low once that tick's
@@ -578,12 +578,12 @@ def test_session_state_never_partial(
 def test_trigger_never_uses_a_partial_session(
     steps: list[tuple[int, int, int]], watch: int, expr: str, seeded: bool
 ) -> None:
-    """PR 22 (audit F4), through the real bar builder and trigger monitor: for a candidate HAT
+    """PR 22, through the real bar builder and trigger monitor: for a candidate HAT
     first saw at `watch` seconds after 09:15, an opening-range trigger fires only at the real
     opening-range high, and a `low_of_day` stop is planned from the day's real low (less a
     tick) or not at all (`stop_input_missing`). Watched from before the open, both are exactly
     the session's; so is the stop of a late candidate whose ticks carry the exchange's high and
-    low (PR 39, `seeded`). Harm: a breakout bought under its own level, with an oversized
+    low. Harm: a breakout bought under its own level, with an oversized
     position."""
     book = trigger_support.playbook(
         trigger=[{"type": "price_breaks_level", "params": {"level": expr}}],
@@ -633,7 +633,7 @@ def test_trigger_never_uses_a_partial_session(
     )
 )
 def test_gap_record_from_its_own_day(seen: list[tuple[int, int, bool]]) -> None:
-    """PR 22 (audit F13): over a process that runs across days, every gap record of a trade date
+    """Over a process that runs across days, every gap record of a trade date
     holds that date's open: its own indicative open in 09:00-09:08, or the feed's open from a
     tick at or after 09:15 (before it the feed's open is the previous session's). Harm: `gap_up`
     runs on yesterday's open, so EP buys a stock that did not gap or misses one that did."""
@@ -661,7 +661,7 @@ def test_gap_record_from_its_own_day(seen: list[tuple[int, int, bool]]) -> None:
             assert gaps.records(day) == {}  # a later day's record drops the earlier days
 
 
-# --- volume pace (HAT-DATA-115) ----------------------------------------------------------------
+# --- volume pace ----------------------------------------------------------------
 
 
 @given(volume=st.integers(0, 10**9), offset=st.integers(0, 24 * 3600 * US))
@@ -773,7 +773,7 @@ def test_tick_volume_fallbacks(ltq: int, previous: int, rise: int, bad_volume: o
     assert tick.qty == ltq
 
 
-# --- staleness (HAT-DATA-116) ------------------------------------------------------------------
+# --- staleness ------------------------------------------------------------------
 
 
 def is_open(when: datetime) -> bool:
@@ -903,7 +903,7 @@ class Contexts:
     ),
 )
 def test_stale_feed_trips_health_kill(steps: list[tuple[str, int]]) -> None:
-    """HAT-DATA-116, HAT-RISK-063: wired as in production (staleness monitor -> EventFeedHealth
+    """Wired as in production (staleness monitor -> EventFeedHealth
     -> DataHealthKill), the account's data-health kill is tripped exactly while the feed is
     stale, so every bot is manage-only, and clears by itself when ticks resume; a trigger fired
     while the feed is stale is stored Rejected with `stale_feed` and opens nothing, one fired
@@ -965,7 +965,7 @@ def test_stale_feed_trips_health_kill(steps: list[tuple[str, int]]) -> None:
 @given(changes=st.lists(st.booleans(), min_size=1, max_size=8), data=st.data())
 @settings(max_examples=60, deadline=None)
 def test_health_kill_writes_out_of_order(changes: list[bool], data: st.DataObject) -> None:
-    """HAT-DATA-116, HAT-RISK-063 (part of `stale_feed_trips_health_kill`): the kill writes run
+    """(part of `stale_feed_trips_health_kill`): the kill writes run
     on worker threads and may run in any order; whatever the order, the account's health kill
     ends in the state of the latest change. Harm: a trip that reaches the database after its
     recovery leaves every bot manage-only on a healthy feed, or a recovery written after a
@@ -992,7 +992,7 @@ def test_health_kill_writes_out_of_order(changes: list[bool], data: st.DataObjec
     second=st.integers(-60, 600),
 )
 def test_seed_needs_ordered_prices(price: int, high: int, low: int, second: int) -> None:
-    """PR 39: a seed is taken only from a tick inside the session whose day low and high bracket
+    """A seed is taken only from a tick inside the session whose day low and high bracket
     its own price above zero (`0 < low <= price <= high`); any other leaves the opening range
     and day low as they would be without it. Harm: a garbled or stale high/low field publishes
     an opening range or a day low the session never had."""
@@ -1020,7 +1020,7 @@ def test_seed_needs_ordered_prices(price: int, high: int, low: int, second: int)
     at=st.integers(0, 290), delay=st.integers(0, 120), gap=st.integers(0, 410), first=st.booleans()
 )
 def test_delayed_seed_spoiled_by_gap(at: int, delay: int, gap: int, first: bool) -> None:
-    """PR 39 (CodeAnt): a seed covers prints only up to the earlier of its exchange time and its
+    """A seed covers prints only up to the earlier of its exchange time and its
     arrival, so a feed gap that began between the two (a delayed tick arriving after the gap)
     spoils it: neither the opening range nor the day low is published from it. Harm: prints
     the gap hid, missing from both the seed and the bars, leave a range or a low the session
@@ -1055,7 +1055,7 @@ def test_delayed_seed_spoiled_by_gap(at: int, delay: int, gap: int, first: bool)
     timeout=st.none() | st.sampled_from(["1", "30", "90", "0", "-5", "60m", ""]),
 )
 def test_live_flags_parsed(seed: str | None, silent: str | None, timeout: str | None) -> None:
-    """PR 39 (HAT-DATA-114, HAT-DATA-116), PR 49 (HAT-EXEC-046): `HAT_EXCHANGE_DAY_RANGE` turns
+    """PR 39, `HAT_EXCHANGE_DAY_RANGE` turns
     the exchange-range seed on exactly for a true value (off unset or for anything else),
     `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120, and
     `HAT_ENTRY_TIMEOUT_MINUTES` a positive whole number, else 60. Harm: unverified tick fields
@@ -1076,7 +1076,7 @@ def test_live_flags_parsed(seed: str | None, silent: str | None, timeout: str | 
     assert loaded.entry_timeout_minutes == (minutes if minutes > 0 else 60)
 
 
-# --- one symbol's silence (PR 39: HAT-DATA-116) -----------------------------------------------
+# --- one symbol's silence -----------------------------------------------
 
 SILENT_AFTER = 60  # seconds, the watch's threshold in the property
 QUIET = ["AAA", "BBB", "CCC"]
@@ -1109,7 +1109,7 @@ def test_symbol_silence_resubscribes_and_alerts(
     outage: tuple[int, int] | None,
     raises: bool,
 ) -> None:
-    """PR 39: with the heartbeat ticking, a watched symbol is subscribed again exactly when it
+    """With the heartbeat ticking, a watched symbol is subscribed again exactly when it
     has been silent for the threshold, counted from its last tick, its last resubscribe, or the
     last check at which it was not yet watched, the market closed or the feed stale; the
     symbols found at one check go in one resubscribe, and the owner gets one alert per check
@@ -1213,7 +1213,7 @@ def test_symbol_silence_resubscribes_and_alerts(
         assert later  # and an outage of 40 s or more does
 
 
-# --- triggers on final bars (HAT-EXEC-120) -----------------------------------------------------
+# --- triggers on final bars -----------------------------------------------------
 
 
 @example(
@@ -1234,10 +1234,10 @@ def test_symbol_silence_resubscribes_and_alerts(
 )
 @settings(max_examples=150, deadline=None)
 def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: int) -> None:
-    """HAT-EXEC-120, HAT-DATA-113: the trigger monitor sees only final bars. With prints
+    """The trigger monitor sees only final bars. With prints
     arriving late or out of order, a pivot breakout fires once, at the final instant (end + 2 s)
     of the first final bar in [09:20, 15:20] whose high is above the pivot and whose close is at
-    or above it (`confirm: close`, the default, PR 49), never on a print
+    or above it (`confirm: close`, the default), never on a print
     inside a bar that is still open, never from a late print the bar never took, and never at
     an instant before the bar was handed over. Harm: an entry fires on a print the 5-minute bar
     later disowns, or before the bar that justifies it exists."""
@@ -1298,7 +1298,7 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
 @settings(max_examples=25, deadline=None)
 @given(failures=st.integers(0, 4), bars=st.integers(1, 4))
 def test_failed_signal_write_retries(failures: int, bars: int) -> None:
-    """HAT-EXEC-120 (part of `trigger_only_on_final_bars`): a breakout holds on `bars`
+    """(part of `trigger_only_on_final_bars`): a breakout holds on `bars`
     consecutive final bars and the first `failures` signal writes fail. Each failed write
     releases the key, so the next final bar fires again; the first write that succeeds stores
     the day's one signal, at its own bar's final instant, and no later bar fires. Harm: a
@@ -1356,7 +1356,7 @@ def test_failed_signal_write_retries(failures: int, bars: int) -> None:
     )
 
 
-# --- listener hook (HAT-DATA-111) --------------------------------------------------------------
+# --- listener hook --------------------------------------------------------------
 
 
 class FlakyListener:
@@ -1405,7 +1405,7 @@ def test_listener_isolation(
     assert [t["seq"] for t in removed.received] == [t["seq"] for t in sent[: len(sent) // 2]]
 
 
-# --- subscriptions (HAT-DATA-112) --------------------------------------------------------------
+# --- subscriptions --------------------------------------------------------------
 
 # the heartbeat is in the pool, so inputs and other owners also hold it (the refcount)
 symbol_sets = st.frozensets(
@@ -1502,8 +1502,7 @@ def test_candidates_never_overwrite_refresh(
 )
 def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
     """For every state of watchlists, positions and candidates, the `"hat"` owner's set equals
-    watchlist | positions | candidates | the heartbeat (PR 39: from the first sync until HAT
-    releases its symbols), open positions are always in it, the provider is subscribed to
+    watchlist | positions | candidates | the heartbeat, open positions are always in it, the provider is subscribed to
     exactly the symbols some owner holds, and releasing HAT's symbols never unsubscribes a
     symbol another owner holds. A set at or above the limit raises an alert."""
     registry = SubscriptionRegistry(str.upper)
@@ -1634,7 +1633,7 @@ def test_subscription_inputs_from_database(
     assert loaded.candidates == candidates
 
 
-# --- persistence (HAT-DATA-117) ----------------------------------------------------------------
+# --- persistence ----------------------------------------------------------------
 
 
 class FlakyStore(BarStore):
@@ -1736,7 +1735,7 @@ def test_persisted_equals_live(
             assert not store.path(DAY).exists()
 
 
-# --- gap capture (HAT-DATA-118) ----------------------------------------------------------------
+# --- gap capture ----------------------------------------------------------------
 
 
 @given(
@@ -1781,7 +1780,7 @@ def test_gap_pct(
     assert gaps.records(DAY)["AAA"] == record
 
 
-# --- HAT-DEC-I4, HAT-DATA-119: the optional minute-history loader ---------------------------
+# --- the optional minute-history loader ---------------------------
 
 
 @st.composite
@@ -2235,7 +2234,7 @@ def test_minute_history_plan_clamp(raw: list[list[Any]], late: int, back: int, o
         assert _stored(store, start, end) == want
 
 
-# --- the dated live price (PR 51; ME-F6, ME-F7, MX-F11) ---------------------------------------
+# --- the dated live price ---------------------------------------
 
 LIVE_AT = datetime.combine(DAY, time(11, 0), tzinfo=IST)
 BAND_PCTS = st.sampled_from([None, *(Decimal(b) for b in (2, 5, 10, 20))])
@@ -2282,7 +2281,7 @@ def _instrument_rows(session: Session, ids: list[UUID]) -> dict[UUID, str]:
 def test_usable_price(
     price: int, age_ms: int, lower: int | None, upper: int | None, known: bool
 ) -> None:
-    """PR 51 (ME-F6, ME-F7, HAT-DATA-116): a Take, a placement or an exit acts only on a price
+    """A Take, a placement or an exit acts only on a price
     whose tick is less than the stale threshold old (30 s; one exactly 30 s old, or stamped 30 s
     or more ahead, is stale), inside the day's band where a bound is known; otherwise no price
     and a fixed reason (`price_unknown` without a tick). Harm: a 13:40 print drives a 15:21
@@ -2314,7 +2313,7 @@ def test_usable_price(
 )
 @example(ticks=[(0, 100, 0, 1), (0, 200, -5, 1)])  # a late print, 4 s older than the kept one
 def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]]) -> None:
-    """PR 51: the price book keeps, per instrument, the latest tick's price and its exchange time
+    """The price book keeps, per instrument, the latest tick's price and its exchange time
     (`exch_feed_time`), else the time it arrived, so every price HAT acts on carries the time it
     traded; a print that arrives after a newer one (by exchange time) does not replace it. Harm:
     a price that has not traded for an hour reads as current, or a late print regresses it."""
@@ -2357,7 +2356,7 @@ def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]
 def test_circuit_locks_read_the_band(
     prev: int, band: Decimal | None, tick: Decimal | None, known: bool, offset: int
 ) -> None:
-    """PR 51 (MX-F11): the lower and upper circuit locks read the stored band of the
+    """The lower and upper circuit locks read the stored band of the
     day: the lower band price is the previous close less the band, up to the tick grid; a price
     at or below it is locked at the lower circuit; no band row tells nothing (None) and an F&O
     name (no band) is never locked. The prices a live price may take are the band's, one tick
@@ -2437,7 +2436,7 @@ class _OpenGates:
 @example(price=11_006, age_s=0)  # beyond the band and its tick of slack
 @example(price=10_000, age_s=30)
 def test_exits_and_placement_read_the_checked_price(price: int | None, age_s: int) -> None:
-    """PR 51 (ME-F6, ME-F7): the exits' view and the placement check (used at a Take, an auto
+    """The exits' view and the placement check (used at a Take, an auto
     entry and a resumed one) carry the live price only when it is fresh and inside the band;
     otherwise the exits get no view (no rule fires; the broker stop still rests) and the
     placement check carries no price and the refusal's code, so no entry is placed. Harm: a

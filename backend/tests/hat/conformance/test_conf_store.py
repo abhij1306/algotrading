@@ -1,6 +1,5 @@
-"""CONF checks of the Parquet store against the spec (HAT-DATA-080, 081): where the store writes,
-which root the command lines hand it, and that every file it produces has its dataset's
-partition and exact columns."""
+"""CONF checks of the Parquet store: where it writes, which root the command lines hand it, and
+that every file it produces has its dataset's partition and exact columns."""
 
 import ast
 import inspect
@@ -16,7 +15,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 from hat_bhav_support import bar
-from hat_conf_spec import REPO_ROOT
+from hat_conf_repo import REPO_ROOT
 
 from app import paths
 from app.hat.data.bars_store import BarStore
@@ -33,7 +32,7 @@ from app.hat.settings import load_settings
 
 
 def test_store__data_root() -> None:
-    """HAT-DATA-080: the settings' default data root is `app.paths.HAT_DATA_ROOT`, defined only
+    """The settings' default data root is `app.paths.HAT_DATA_ROOT`, defined only
     there; every path the store hands out resolves under its root (a name that climbs out is
     refused); and git ignores the default location."""
     assert load_settings({}).data_root == paths.HAT_DATA_ROOT
@@ -67,7 +66,7 @@ def test_store__data_root() -> None:
 
 
 def test_store__cli_root_after_env() -> None:
-    """HAT-DATA-080 (PR 43): every HAT command line (a module run with `python -m`) takes its
+    """: every HAT command line (a module run with `python -m`) takes its
     settings from `operator_settings()`, which loads `.env` first, and never imports
     `load_settings` (under any name): `app.paths.HAT_DATA_ROOT` is read when `app.paths` is
     first imported, before anything loads `.env`. The stores have no default root, so a
@@ -103,7 +102,7 @@ def test_store__cli_root_after_env() -> None:
 
 
 def test_store__layout() -> None:
-    """HAT-DATA-081: every Parquet file the store writes sits in `<dataset>/date=YYYY-MM-DD/` and
+    """Every Parquet file the store writes sits in `<dataset>/date=YYYY-MM-DD/` and
     has exactly the columns of that dataset's declared schema."""
     spec = {DATASET_BARS: BAR_SCHEMA.names, DATASET_INDEX: INDEX_SCHEMA.names}
     with tempfile.TemporaryDirectory() as tmp:

@@ -1,4 +1,4 @@
-"""PBT scoring.* (HAT-CRIT-010, 022, 030, 031, 032, 123): how criteria combine into a stage result.
+"""PBT scoring.*: how criteria combine into a stage result.
 
 The criteria are real: setup-stage `rs_rank` instances over a one-row universe whose `rs_pct` is
 50. A hard instance passes when `min_percentile <= 50`; a score instance scores
@@ -238,7 +238,7 @@ class ProbeParams(ParamModel):
     shuffle=st.randoms(use_true_random=False),
 )
 def test_stage_levels(probes: list, shuffle) -> None:  # noqa: ANN001
-    """PBT scoring.stage_levels (HAT-CRIT-123): each criterion sees, as `ctx.levels`, the
+    """PBT scoring.stage_levels: each criterion sees, as `ctx.levels`, the
     levels the passed criteria before it reported, each key from the first to report it; the
     stage's `levels` and the levels the scan publishes are the same map; a failed result adds
     nothing, and the shared context is never changed. Harm: the gate approves one level while
@@ -288,7 +288,7 @@ EXTRA_VALUES = st.one_of(
 
 @given(extras=st.dictionaries(st.text(max_size=4), EXTRA_VALUES, max_size=6))
 def test_numeric_levels(extras: dict) -> None:
-    """PBT scoring.numeric_levels (HAT-CRIT-123): a result's levels are exactly its finite int,
+    """PBT scoring.numeric_levels: a result's levels are exactly its finite int,
     float and Decimal extras (no flag, text, list or non-finite value, a signalling NaN
     included), and reading them never raises. Harm: one odd extra aborts the nightly scan, or a
     NaN level reaches a gate."""

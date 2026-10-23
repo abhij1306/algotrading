@@ -1,4 +1,4 @@
-"""PBT bhavcopy.* (HAT-DATA-090..093, 096, 097; HAT-DEC-I2): file names, the two parsers, the
+"""PBT bhavcopy.*: file names, the two parsers, the
 resumable polite downloader, day reconciliation and the validation report, on the real code with
 in-memory zips and fake fetchers (no network)."""
 

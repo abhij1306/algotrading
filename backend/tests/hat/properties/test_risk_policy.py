@@ -1,4 +1,4 @@
-"""PBT risk_policy.cooling_off (HAT-SCH-084, HAT-GOV-091): risk increases wait 7 days."""
+"""PBT risk_policy.cooling_off: risk increases wait 7 days."""
 
 import uuid
 from datetime import UTC, datetime, timedelta

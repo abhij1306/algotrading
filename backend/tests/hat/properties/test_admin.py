@@ -1,4 +1,4 @@
-"""Properties of the owner's admin command line (HAT-OPS-091, PR 35, 73).
+"""Properties of the owner's admin command line.
 
 The commands run through `main` against an in-memory database (the rig is `hat_admin_support`);
 no network is touched.
@@ -47,7 +47,7 @@ from app.hat.models import (
 @example(waited=19)
 @example(waited=20)
 def test_first_deploy(tmp_path: Path, waited: int) -> None:
-    """PBT admin.first_deploy (HAT-OPS-091, HAT-PORT-060, HAT-BOT-084): the first-deploy
+    """PBT admin.first_deploy: the first-deploy
     runbook, run through the command line, takes a fresh database to a sleeve in Shadow that
     scans (a version and a live universe), then to Live only after 20 trading sessions of shadow
     and only on a promoted version; the owner's steps are recorded as the owner's. Harm: a fresh
@@ -161,7 +161,7 @@ def _foreign_account(world: World) -> str:
 )
 @given(case=st.sampled_from(sorted(REFUSALS)))
 def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
-    """PBT admin.refusal_writes_nothing (HAT-OPS-091): a command the services refuse exits 2
+    """PBT admin.refusal_writes_nothing: a command the services refuse exits 2
     with the fixed code of the rule that refused it on stderr and leaves every table as it was.
     Harm: a half-applied release step (a version promoted but the sleeves not moved, a universe
     published but not given to the sleeves)."""
@@ -291,7 +291,7 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
 )
 @given(in_hours=st.booleans(), later=st.integers(0, 5), no_calendar=st.booleans())
 def test_ddpi_revoked(tmp_path: Path, in_hours: bool, later: int, no_calendar: bool) -> None:
-    """PBT admin.ddpi_revoked (HAT-GOV-085, PR 73; PR 45 follow-up 2): `revoke-ddpi` withdraws
+    """PBT admin.ddpi_revoked: `revoke-ddpi` withdraws
     a DDPI confirmation at any time, inside market hours too and with no trading calendar
     loaded (it only narrows), recorded as the owner's under the account's user; the
     account's DDPI gate is off from that instant on, so its bots run shadow, and a second
@@ -334,7 +334,7 @@ def test_ddpi_revoked(tmp_path: Path, in_hours: bool, later: int, no_calendar: b
 )
 @given(other_account=st.booleans())
 def test_shadow_beside_live(tmp_path: Path, other_account: bool) -> None:
-    """PBT admin.shadow_beside_live (HAT-PORT-060, HAT-BOT-084, PR 73; PR 35 follow-ups 2, 3):
+    """PBT admin.shadow_beside_live:
     with a strategy's sleeve Live, `add-sleeve` gives the strategy a second sleeve (on the same
     account or another) that takes a new version through Research, Backtested and Shadow while
     the Live one keeps trading the live version; every assignment and the promotion's move of

@@ -29,14 +29,14 @@ incident in the PR or issue tracker).
 2. Check: `$COMPOSE ps` shows `postgres` and `backend` healthy; `curl -fsS http://127.0.0.1:8000/ping`
    answers; Telegram `/status` answers. A backend that does not come up with
    `HatConfigError: fyers_proxy_set: <variable>` in `$COMPOSE logs backend` was refused because
-   that proxy variable would carry Fyers traffic past the IPv4 pin (HAT-BRK-093): unset it for
+   that proxy variable would carry Fyers traffic past the IPv4 pin: unset it for
    the backend, or add `fyers.in` to `NO_PROXY` (and to `no_proxy` if that is set too), and start
    again.
 3. Stop (planned, outside the window): `python scripts/hat_deploy_guard.py && $COMPOSE stop backend`.
    The backend has 30 s to stop the feed, the scheduler and the engine: running job bodies get
    25 s, and any still running then are logged by name (look for `abandoned` in the log and
    check those jobs after the next start). Stop `postgres` only after the backend.
-4. Logs: `$COMPOSE logs -f backend` (one JSON object per line, HAT-OPS-070).
+4. Logs: `$COMPOSE logs -f backend` (one JSON object per line).
 5. Never `$COMPOSE down -v`: it deletes the database and data volumes.
 
 ### Morning login (daily Fyers login)
@@ -44,7 +44,7 @@ incident in the PR or issue tracker).
 1. 08:30 IST: Telegram sends the Fyers login link (`login.prompt`). Open it and log in at Fyers.
 2. Fyers redirects to the registered `REDIRECT_URI`; copy the `auth_code` from the redirected URL
    into the login dialog in the app header. Or send `POST /api/hat/auth/fyers/token` with the
-   header `X-HAT-Request: 1` (HAT-DEC-BD5) and the JSON body `{"auth_code": "<code>"}`. The token must be for the HAT Fyers account: a login
+   header `X-HAT-Request: 1` and the JSON body `{"auth_code": "<code>"}`. The token must be for the HAT Fyers account: a login
    with another Fyers user is refused once that account is onboarded.
 3. Check: the header shows Fyers connected; `/status` shows the broker session live.
 4. No entries are placed until the login is done; stops and exits that rest at the broker are not
@@ -52,11 +52,10 @@ incident in the PR or issue tracker).
 
 ### Missed login
 
-1. About 08:32 IST: if the session is still down, Telegram sends one `broker.session_lost` alert
-   (HAT-OPS-031). 09:05 IST: Telegram sends the second prompt, URGENT when real positions are
-   open (HAT-TG-021), and each bot on the account is manage-only (`broker_health`, HAT-RISK-063)
+1. About 08:32 IST: if the session is still down, Telegram sends one `broker.session_lost` alert. 09:05 IST: Telegram sends the second prompt, URGENT when real positions are
+   open, and each bot on the account is manage-only (`broker_health`)
    until the session is live. There are no entries until the login, and none that day if it
-   never comes (HAT-DEC-T14).
+   never comes.
    Only the broker-side stops protect open positions: without a session there are no ticks, no
    reconciliation and no GTT changes, so breakeven, trim and the MA exits are off.
 2. Late login: send `/login` in Telegram for a fresh link, then follow "Morning login". Entries
@@ -67,7 +66,7 @@ incident in the PR or issue tracker).
 ### First deploy: the admin command line
 
 The setup and release steps the owner runs once per database, and again for each new strategy
-version, through the local admin command line (HAT-OPS-091). `$ADMIN` stands for
+version, through the local admin command line. `$ADMIN` stands for
 `$COMPOSE exec -w /app/backend backend python -m app.hat.admin`. Each command runs in one
 transaction and prints its result as JSON (ids included); a refusal prints `refused: <code>`,
 exits 2 and writes nothing. `$ADMIN show` lists the strategies, versions and sleeves with their
@@ -82,7 +81,7 @@ refuse inside a session (`market_hours`).
 2. `$ADMIN seed-policy`: risk-policy version 1, effective now. Safe to repeat.
 3. Log in to Fyers ("Morning login"), then `$ADMIN onboard-account --account-ref <Fyers client
    id>`: the capability check (funds, positions, holdings) records the account `active` or
-   `failed` (HAT-BRK-092). Note `broker_account_id`. A `failed` account takes no sleeve: fix the
+   `failed`. Note `broker_account_id`. A `failed` account takes no sleeve: fix the
    cause and run it again.
 4. `$ADMIN seed-strategies`, then `$ADMIN seed-bots --account <broker_account_id>`: the two
    strategies with version 1 as a draft, and one sleeve per strategy in Research, in shadow mode.
@@ -95,25 +94,24 @@ refuse inside a session (`market_hours`).
 6. For each sleeve: backtest its strategy's version 1,
    `$COMPOSE exec -w /app/backend backend python -m app.hat.engine.backtest --bot <bot> --version
    <version> --from 2010-01-01 --to <last trading day> --for-promotion --regime-mult policy`; note `run_id`.
-7. `$ADMIN publish-version --version <version> --run <run_id>` (draft to backtested, HAT-BT-061),
+7. `$ADMIN publish-version --version <version> --run <run_id>` (draft to backtested),
    then `$ADMIN assign-version --bot <bot> --version <version>`: the sleeve now scans with it
    (an owner's act, recorded `sleeve.version_assigned` with the chat id).
 8. `$ADMIN promote --bot <bot> --to backtested`: refused (`backtest_gate`) unless the run's DSR
    probability is at least 0.95 with 200 or more trades, its sessions span five years
    (`backtest_span_short`), the config parses, no known gap names a playbook the version enables,
-   ambiguous days are within the cap, and it sized at the base weight under `policy` (HAT-PORT-061);
+   ambiguous days are within the cap, and it sized at the base weight under `policy`;
    the sleeve then stays in
    Research. Then `$ADMIN promote --bot <bot> --to shadow` and
    `$ADMIN shadow-version --version <version>` the same evening: the sleeve takes virtual entries
-   sized from its nominal allocation (HAT-PORT-050) and the 20 sessions start for both.
+   sized from its nominal allocation and the 20 sessions start for both.
 9. After 20 trading sessions: `$ADMIN promote-version --version <version>` (refused with
-   `shadow_days` until then, HAT-BOT-084), then `$ADMIN promote --bot <bot> --to live` (refused
+   `shadow_days` until then), then `$ADMIN promote --bot <bot> --to live` (refused
    with `version_not_live` before the version is promoted). The sleeve now has weight and asks
-   for confirm (the default, HAT-DEC-B2), but its orders stay virtual until every gate passes
-   (HAT-GOV-085): GTT delivery on the account (HAT-EXEC-012), the owner's DDPI confirmation
+   for confirm (the default), but its orders stay virtual until every gate passes: GTT delivery on the account, the owner's DDPI confirmation
    (step 9a) and a policy version with `weights_confirmed = true`. `/status` shows the
    mode a bot runs and the gate that holds it back; `/mode <bot> auto` switches a sleeve to auto,
-   where only a high-confidence signal is placed without a card (HAT-EXEC-014).
+   where only a high-confidence signal is placed without a card.
 9a. Once DDPI (or a POA) is active on the demat: `$ADMIN confirm-ddpi --account
    <account> --since <date DDPI became active> --note "<what was registered>"`, outside market
    hours (refused with `market_hours`, `ddpi_date_in_future`, `ddpi_note_required` or
@@ -126,7 +124,7 @@ refuse inside a session (`market_hours`).
     prints the paths and codes of its problems), then steps 6, 7 (publish only: a
     Live sleeve takes only a live version) and `shadow-version`; after 20 sessions,
     `promote-version` moves the sleeves of the version it replaces onto it (their open trades keep
-    their entry version, HAT-BOT-083). To shadow the new version on a sleeve of its own beside
+    their entry version). To shadow the new version on a sleeve of its own beside
     the Live one: `$ADMIN add-sleeve --strategy <strategy> --account <account>` (a sleeve in
     Research), then `$ADMIN assign-version --bot <new sleeve> --version <version>` and step 8's
     two `promote` commands for it (`backtested`, then `shadow`). The version is published and
@@ -135,9 +133,9 @@ refuse inside a session (`market_hours`).
     (`strategy_has_live_sleeve`) while another sleeve of the strategy is Live or in Probation:
     retire that one first.
 11. A sleeve in Probation that has recovered: `$ADMIN promote --bot <bot> --to live` (refused
-    with `still_failing` while it is not, HAT-PORT-060).
+    with `still_failing` while it is not).
 11a. A position locked by a corporate action HAT cannot rescale (URGENT `corporate_action.unhandled`,
-    HAT-EXEC-144): `/flatten` a real one (it sells at most the shares the broker holds). A virtual
+    ): `/flatten` a real one (it sells at most the shares the broker holds). A virtual
     one, outside market hours: `$ADMIN resolve-action --position <position> --action
     <ex-date>:<type> --close-at <price>` closes it at the ex-date's adjusted price (a real one is
     refused, `real_position_flatten`).
@@ -149,7 +147,7 @@ refuse inside a session (`market_hours`).
    A release that adds columns to `hat_allocation_daily`
    goes out after the session and before the 18:00 `allocate` of a trading day: rows written
    before the columns existed have none, so the next session's virtual entries of Shadow and
-   Probation sleeves would fail closed (`no_allocation`, HAT-PORT-050) until the night after.
+   Probation sleeves would fail closed (`no_allocation`) until the night after.
 2. Run the guard: `python scripts/hat_deploy_guard.py`. Exit 2 means refused. It treats every
    weekday as a trading day unless given `--calendar` with an export of `hat_trading_calendar`:
    `$COMPOSE exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -At -F, -c "select date, is_trading from hat_trading_calendar" > /tmp/hat_calendar.csv`.
@@ -166,9 +164,9 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 1. On start the scheduler marks any run left `running` by the previous process as interrupted, so
    it can run again (`recover_interrupted`); jobs resume from `hat_job_run` and a job that
-   already succeeded for today is not run again (HAT-OPS-010).
+   already succeeded for today is not run again.
 2. Before any entry, every account's book is reconciled with the broker's order and trade books
-   and its fills are read (HAT-OPS-003). A broker that cannot be read, or an HT order HAT does
+   and its fills are read. A broker that cannot be read, or an HT order HAT does
    not know, places no entry and sends an alert; stops and sales still go out (D118). Entries left unplaced by the previous process
    (an auto signal in Triggered, a Take whose order never went out) are placed once the
    feed is fresh, and only on their own trade date (the next date's sweep ends them Rejected
@@ -198,7 +196,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Failure: Data missing or fails the quality gate
 
 1. Alert: `quality.failed` or `ingest.failed`. The data-health kill makes the affected bots
-   manage-only: no new scans or entries; exits and stops continue (HAT-OPS-030).
+   manage-only: no new scans or entries; exits and stops continue.
 2. Look at the job rows: `select job, trade_date, status, error_code from hat_job_run where trade_date = current_date order by started_at;`
    and the backend log for the failing job.
 3. Fix the cause (source late, MCP endpoint down, a bad row). The scheduler retries a failed job
@@ -212,7 +210,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Alert: `quality.quarantined`
 
 1. One stock moved more than 20% with no stored corporate action. The gate passed; the stock is
-   out of every scan from that day on (HAT-DATA-062). The other stocks scan as usual.
+   out of every scan from that day on. The other stocks scan as usual.
 2. Look for the reason: a split or bonus not yet loaded, or real news. `python -m
    app.hat.data.quarantine list` shows every open quarantine.
 3. A corporate action with that ex-date, once stored, releases the quarantine at the next gate
@@ -224,7 +222,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Failure: 22:00 fallback fails
 
 1. Alert at 22:00: neither the MCP nor the NSE bhavcopy download has the day. No scan runs; bots
-   stay manage-only for the next session (HAT-OPS-022).
+   stay manage-only for the next session.
 2. Check NSE's site for a delayed publication and the backend log for the fallback's error code.
 3. When the file is out, a failed `ingest.nightly` is retried by the scheduler while it is still
    the same date. After midnight the scheduler does not run a past trade date again; the next
@@ -234,7 +232,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Failure: Broker session drops
 
 1. HAT retries with backoff (1 s doubling to 30 s); after 2 minutes Telegram gets one
-   `broker.session_lost` alert (HAT-OPS-031). Bots on that account are manage-only; stops rest at
+   `broker.session_lost` alert. Bots on that account are manage-only; stops rest at
    the broker.
 2. Check Fyers status and the host's internet link. If the token expired or was revoked, log in
    again ("Morning login").
@@ -243,7 +241,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 ### Broker call limits: `broker_rate_limited`
 
-1. Every Fyers call takes a slot from one call budget (HAT-BRK-082): by default 8 calls a
+1. Every Fyers call takes a slot from one call budget: by default 8 calls a
    second, 180 a minute and 5,000 a day (the Standard plan). Stops and orders go first; reads
    get 80% of each window. A call refused by the budget or answered HTTP 429 is
    `broker_rate_limited`: nothing was sent, and the fill sync reads again at its next step.
@@ -264,8 +262,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 ### Failure: Order rejected
 
-1. Alert: `order.rejected` with its reason. HAT retries a rejected order at most once
-   (HAT-OPS-032); a second rejection ends the signal.
+1. Alert: `order.rejected` with its reason. HAT retries a rejected order at most once; a second rejection ends the signal.
 2. Read the reason: price band, margin, freeze, session, unregistered IP (see "Failover drill").
 3. Fix the cause; do not place the order by hand (there is no manual trading). A rejected stop is
    placed again by the next fill sync (`stop.not_placed`); if it keeps failing, see "GTT missing".
@@ -273,7 +270,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Failure: Duplicate trigger
 
 1. A second trigger for the same bot, playbook, instrument and trade date places no second order:
-   the signal id is the idempotency key (HAT-OPS-033). Nothing to do unless an alert says a
+   the signal id is the idempotency key. Nothing to do unless an alert says a
    second order reached the broker.
 2. If one did: `/kill`, then compare `/positions` with the Fyers order book and treat it as
    "Reconciliation mismatch". Record it as a bug.
@@ -282,32 +279,31 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 1. Known gap, not an incident: MA exits at 15:25 use the live price, NSE's official close is the
    last-30-minute weighted average. Each evaluation records `exit.close_evaluated`; after the
-   nightly ingest `exit.close_gap` records the gap (HAT-OPS-034).
+   nightly ingest `exit.close_gap` records the gap.
 2. Weekly in shadow mode: review the gaps (`select payload from hat_event where event_type = 'exit.close_gap' order by created_at desc limit 50;`)
    and change the exit rule if exits are systematically biased.
 
 ### Kill switch and re-arm via Telegram
 
 1. Kill: send `/kill`. Every bot becomes manage-only and pending approvals are cancelled; exits
-   and stops keep running (HAT-TG-034). Drawdown and data-health kills trip on their own.
+   and stops keep running. Drawdown and data-health kills trip on their own.
 2. Before re-arming: find why it tripped (`/status`, the `kill.tripped` event), fix it, and check
    `/positions` shows every open position with its stop.
 3. Re-arm: send `/arm`, then press Confirm on the confirmation card (second confirmation,
-   HAT-TG-033). `kill.rearmed` is recorded. `/resume` does not lift a kill switch.
+   ). `kill.rearmed` is recorded. `/resume` does not lift a kill switch.
 4. A data-health kill re-arms automatically once the data check passes; do not `/arm` it.
 
 ### Flatten
 
 1. Only to get out of everything now: send `/flatten`, then press Confirm. HAT sells every open
-   real position through exit-only orders and records `flatten.executed` as a discipline breach
-   (HAT-TG-035).
+   real position through exit-only orders and records `flatten.executed` as a discipline breach.
 2. Check `/positions` and the Fyers positions page are both empty; `/kill` too if no new entries
    should follow.
 
 ### Reconciliation mismatch
 
 1. Alert: `reconcile.mismatch` (kind, tag or symbol, bot). Entries for that bot are blocked; HAT
-   never auto-closes or adopts a position (HAT-BRK-111).
+   never auto-closes or adopts a position.
 2. Compare the Fyers order book, trades and positions with `/positions` and `hat_order`.
 3. A broker position HAT does not know: close or keep it at Fyers yourself; it is not HAT's.
    A HAT position missing at the broker or a quantity difference: find the fill or cancel that HAT
@@ -341,7 +337,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 ### Sale unfilled
 
-1. Alert: URGENT `sale.unfilled` (HAT-EXEC-075) with a code: `sale_resting` (a market sale
+1. Alert: URGENT `sale.unfilled` with a code: `sale_resting` (a market sale
    was sent again `HAT_MPP_PAGE_AFTER` times under market price protection and still rests, only
    with `HAT_MPP_RESEND` on), `lower_circuit_locked` (the last trade is at the lower circuit: the
    sale waits in the queue and is not sent again while locked) or `band_limit` (a sale refused
@@ -355,7 +351,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 1. Alert or `/status` shows a failed job. List today's runs:
    `select job, status, error_code, started_at, finished_at from hat_job_run where trade_date = current_date order by started_at;`
 2. A failed run is retried by the scheduler every 10 minutes while it is still that date; jobs
-   after it in the chain wait for it (HAT-OPS-021). Exits and stops never wait (HAT-OPS-004).
+   after it in the chain wait for it. Exits and stops never wait.
 3. Fix the cause from the error code and the backend log, then watch the next retry succeed.
 4. A run stuck in `running` after a crash is reaped at the next start; restart only outside the
    window (deploy guard).
@@ -365,12 +361,12 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 1. For the first two weeks of live data, each trading day after 09:20, read the `gapscan` run:
    `select started_at, finished_at from hat_job_run where job = 'gapscan' and trade_date = current_date;`
 2. Record the finish time in the check log. A finish at or after 09:20:00 also raises a health
-   alert (HAT-DATA-122). If it is late on more than one day, raise the scan's latency assumption
+   alert. If it is late on more than one day, raise the scan's latency assumption
    with the owner.
 
 ### Backup and restore drill: `ops.backup_restore_drill`
 
-Nightly backup (HAT-OPS-060): a systemd timer on the host runs, at 23:30 IST, as root (it reads
+Nightly backup: a systemd timer on the host runs, at 23:30 IST, as root (it reads
 the Docker volume) with the `.env` variables loaded (`EnvironmentFile=`):
 
 ```
@@ -414,14 +410,14 @@ Monthly drill:
 1. Quarterly, outside market hours with no order expected: switch the host to the 4G/5G link.
 2. Confirm that broker order calls are refused (the failover IP is not registered with the Fyers
    app) or not attempted, that a health alert reaches Telegram over the 4G link, and that every
-   open position still shows its GTT on the Fyers GTT page (HAT-OPS-043).
+   open position still shows its GTT on the Fyers GTT page.
 3. Switch back to the static line, check `/status`, and record the drill.
 4. In a real failover during market hours: no new entries until the static line returns; do not
    force entries; broker-side stops cover the positions.
 
 ### Host checklist: `ops.host_checklist`, `host_static_ip_ups_failover`
 
-Before confirm or auto mode is enabled on any bot, and after any host change (HAT-OPS-041):
+Before confirm or auto mode is enabled on any bot, and after any host change:
 
 1. Linux host, NTP synchronised with an offset under 1 s: `timedatectl` shows
    `System clock synchronized: yes`; `chronyc tracking` (or `ntpq -p`) shows the offset.
@@ -435,7 +431,7 @@ Before confirm or auto mode is enabled on any bot, and after any host change (HA
 
 ### Env file permissions: `ops.env_permissions`, `env_file_permissions`
 
-After any change to `.env` (HAT-OPS-050):
+After any change to `.env`:
 
 1. `chmod 600 .env` and `chown <service-user>: .env`; check with `stat -c '%a %U' .env`
    (expect `600 <service-user>`).

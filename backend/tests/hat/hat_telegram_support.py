@@ -1,4 +1,4 @@
-"""A Telegram rig for the PR 16 properties: the real service, relay, notifier and reports over a
+"""A Telegram rig for the properties: the real service, relay, notifier and reports over a
 recording fake of the Bot API transport, one confirm-mode bot on one broker account, the real
 router over the Fyers adapter and `FakeBroker`, and SQLite in memory.
 
@@ -75,7 +75,7 @@ D = Decimal
 CHAT = 424242
 BOT_USERNAME = "Hat_Test_Bot"
 SECRET = bytes(range(32, 64))  # a test key of 32 bytes; the real one comes from the environment
-LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here (PR 51)
+LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here
 LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True, ltp=LIVE_LTP)
 _TICKERS = tuple(SYMBOLS)
 OWNER = load_settings(process_env()).user_id

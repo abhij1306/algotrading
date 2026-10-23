@@ -2,7 +2,7 @@
 reads, the session (`SessionModel`) that trades an auth code for a token, and the real HAT
 `FyersBroker` over the model.
 
-HAT's own copy of the fakes it needs (K1, repointed in K2): nothing here is imported from the legacy
+HAT's own copy of the fakes it needs: nothing here is imported from the legacy
 test suite, and nothing reaches the real SDK or the network.
 """
 

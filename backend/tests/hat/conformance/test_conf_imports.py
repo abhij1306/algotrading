@@ -1,5 +1,5 @@
 """CONF checks of what HAT code may reach: only the two vetted NSE MCP servers, only through
-`McpTransport` (HAT-DATA-010, HAT-DATA-030, HAT-DEC-I16)."""
+`McpTransport`."""
 
 import ast
 import inspect
@@ -47,7 +47,7 @@ def _strings(tree: ast.AST) -> set[str]:
 
 
 def test_imports__engine_data_sources() -> None:
-    """HAT-DATA-010: every MCP server name a HAT module can address is nse-bhavcopy or cm-market,
+    """Every MCP server name a HAT module can address is nse-bhavcopy or cm-market,
     and engine, risk and execution code import no research or chat MCP client."""
     assert ALLOWED_SERVERS == {"nse-bhavcopy", "cm-market"}
     for name, tree in _hat_sources().items():
@@ -62,7 +62,7 @@ def test_imports__engine_data_sources() -> None:
 
 
 def test_imports__mcp_transport_only() -> None:
-    """HAT-DATA-030: `McpClient` takes an `McpTransport`; `HttpTransport` is the one place that
+    """`McpClient` takes an `McpTransport`; `HttpTransport` is the one place that
     opens a connection to an MCP endpoint; no other HAT module touches an MCP endpoint, its env
     variable or the `tools/call` method, or imports an HTTP library while doing so."""
     parameter = inspect.signature(McpClient.__init__).parameters["transport"]
@@ -98,7 +98,7 @@ def test_imports__mcp_transport_only() -> None:
 
 
 def test_mcp_endpoints_allowlist() -> None:
-    """HAT-DEC-I16: the client can be configured only with nse-bhavcopy and cm-market; the
+    """The client can be configured only with nse-bhavcopy and cm-market; the
     environment variables are exactly the two documented in .env.example."""
     assert set(ENDPOINT_ENV) == set(ALLOWED_SERVERS)
     assert set(ENDPOINT_ENV.values()) == {"HAT_MCP_BHAVCOPY_URL", "HAT_MCP_CMMARKET_URL"}
@@ -120,19 +120,19 @@ def test_mcp_endpoints_allowlist() -> None:
     assert mcp_client.ALLOWED_SERVERS == ALLOWED_SERVERS
 
 
-# --- one live feed (HAT-DATA-110, HAT-OVR-006, HAT-DEC-I3) ----------------------------------
+# --- one live feed ----------------------------------
 
 SOCKET_MODULES = ("fyers_apiv3", "websocket", "websockets", "socketio", "aiohttp")
-# The SDK's REST models (orders, reads, login); the session and login modules import it (K2). The
-# sockets live in `fyers_apiv3.FyersWebsocket`, which only the provider module may import (K3).
+# The SDK's REST models (orders, reads, login); the session and login modules import it. The
+# sockets live in `fyers_apiv3.FyersWebsocket`, which only the provider module may import.
 REST_MODEL = "fyers_apiv3.fyersModel"
 PROVIDER_SOCKET_FILE = "data/provider/fyers_websocket.py"
 SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
 # Who may import the feed: the app's wiring (K5b deleted the legacy read side of its ticks).
 FEED_IMPORTERS = {"main.py"}
 # Outside the provider package, the one module that may import from it, and the one name it may
-# take: the minute-history download asks the Fyers session's REST history through it (HAT-DATA-119,
-# PR 41). It builds no socket and no provider session.
+# take: the minute-history download asks the Fyers session's REST history through it. It builds no
+# socket and no provider session.
 PROVIDER_IMPORTS = {
     "hat/data/minute_history.py": {
         "app.hat.data.provider.fyers_websocket",
@@ -174,7 +174,7 @@ def socket_offenders(
 
 
 def test_imports__no_second_websocket() -> None:
-    """HAT-DATA-110: the Fyers data-socket SDK is imported or constructed in exactly one module,
+    """The Fyers data-socket SDK is imported or constructed in exactly one module,
     `app/hat/data/provider/fyers_websocket.py`, and no module under `app` imports or opens any
     other broker socket or WebSocket client library; HAT's one tick input is
     `LiveFeed.add_tick_listener`, which `LiveData.attach` calls."""
@@ -253,7 +253,7 @@ def _guarded_by_hat_enabled(tree: ast.AST, callee: str) -> bool:
 
 
 def test_single_feed_import_rule() -> None:
-    """HAT-OVR-006, HAT-DEC-I3: one provider session and one feed per process. Only
+    """One provider session and one feed per process. Only
     `app/hat/data/feed.py` builds a `ProviderSession` or imports the provider session module; only
     `app/main.py` builds a `LiveFeed`, and only inside `if is_enabled()`; no other HAT module
     imports the feed or the provider (live data reaches `LiveData` through the listener hook and
@@ -309,7 +309,7 @@ PANDAS_BOUNDARY_ADAPTERS: set[str] = set()
 
 
 def test_imports__hat_polars_only() -> None:
-    """HAT-DATA-078: no module under app/hat imports pandas (or numpy-backed pandas aliases)
+    """No module under app/hat imports pandas (or numpy-backed pandas aliases)
     except the listed boundary adapters. Legacy pandas modules are not pinned (owner rule D59)."""
     offenders = {}
     for name, tree in _hat_sources().items():

@@ -1,4 +1,4 @@
-"""PBT lifecycle.* (HAT-PORT-060..065, HAT-SCH-083): the sleeve lifecycle guards on the real
+"""PBT lifecycle.*: the sleeve lifecycle guards on the real
 `app.hat.engine.portfolio.lifecycle` and `service.transition` (SQLite), against rules written
 out independently. The state machine itself is proved in verification/tla/SleeveLifecycle.tla."""
 
@@ -79,7 +79,7 @@ def backtest_facts(draw: st.DrawFn) -> BacktestFacts:
 
 
 def model_refusal(f: BacktestFacts) -> str | None:
-    """HAT-PORT-061 and D150 as a list of conditions, written without the module's helpers."""
+    """And D150 as a list of conditions, written without the module's helpers."""
     if f.dsr_prob is None or f.dsr_prob < D("0.95") or f.trades < 200:
         return "backtest_gate"
     if f.first_session is None or f.last_session is None:
@@ -132,7 +132,7 @@ PASSING = BacktestFacts(
 @example(replace(PASSING, regime_mult="1"))
 @example(replace(PASSING, dsr_prob=D("0.9499")))
 def test_backtest_refusal(facts: BacktestFacts) -> None:
-    """Research to Backtested (HAT-PORT-061, D150) passes only on evidence whose DSR probability is
+    """Research to Backtested passes only on evidence whose DSR probability is
     at least 0.95 with 200 trades (`backtest_gate`), whose sessions span five years, the last no
     more than 7 days short of the first's fifth anniversary (`backtest_span_short`), whose version's
     playbooks are known (`backtest_no_playbooks`) and whose known gaps name none of them
@@ -411,7 +411,7 @@ def test_transition_records_its_event(current: str, target: str, ev: Evidence, o
 def test_allocation_moves_a_health_zero_sleeve_to_probation(peak_cents: int, drop_pct: int) -> None:
     """In the nightly allocation a live sleeve whose last snapshot is 10% (D128) or more under
     its peak moves to Probation before the weights are written, with its event and weight 0; a
-    shallower drawdown leaves it live; a rerun moves nothing again (HAT-PORT-040, HAT-PORT-063)."""
+    shallower drawdown leaves it live; a rerun moves nothing again."""
     peak = D(peak_cents) / 100
     equity = peak * (100 - drop_pct) / 100
     engine = memory_engine()

@@ -1,4 +1,4 @@
-"""PBT for the event store (HAT-SCH-062, 063, 064, 066, 067; HAT-DEC-I15) on the real
+"""PBT for the event store on the real
 `app/hat/events.record`, over SQLite. The Postgres side (identity ids, partitions, triggers) is
 checked by `tests/hat/db`."""
 
@@ -86,7 +86,7 @@ money = st.decimals(min_value=Decimal("0.0001"), max_value=Decimal("9999.9999"),
 failure = st.sampled_from(["none", "before_state", "between", "before_commit", "bad_event"])
 
 
-# --- HAT-SCH-062: a state change and its event commit or roll back together ------------------
+# --- a state change and its event commit or roll back together ------------------
 
 
 @given(
@@ -136,7 +136,7 @@ def test_atomic_with_state(start: Decimal, steps: list[tuple[Decimal, str, bool]
         assert count_events(position_id) == expected_events
 
 
-# --- HAT-SCH-063: only the catalogue ---------------------------------------------------------
+# --- only the catalogue ---------------------------------------------------------
 
 near_misses = st.sampled_from(TYPES).flatmap(
     lambda name: st.sampled_from(
@@ -189,7 +189,7 @@ def test_every_catalogue_type_is_recorded(event_type: str) -> None:
     assert count_events(aggregate_id) == 1
 
 
-# --- HAT-SCH-064: aggregate types and correlation ---------------------------------------------
+# --- aggregate types and correlation ---------------------------------------------
 
 stream_item = st.tuples(
     st.sampled_from(TYPES),
@@ -290,7 +290,7 @@ def _linked_row(kind: str, signal_id: uuid.UUID) -> uuid.UUID:
     )
 )
 def test_correlation_links_the_signal(items: list[tuple[str, str, str]]) -> None:
-    """HAT-SCH-064 for orders and positions: an Orders or Positions event about an order or a
+    """For orders and positions: an Orders or Positions event about an order or a
     position is stored only when its correlation id is the id of the signal that row belongs to;
     another signal's id, or a row that does not exist, is refused and writes nothing."""
     for kind, event_type, correlation in items:
@@ -340,7 +340,7 @@ def test_causation_must_exist(bogus: int) -> None:
     assert count_events(aggregate_id) == 0
 
 
-# --- HAT-SCH-067: ids increase ----------------------------------------------------------------
+# --- ids increase ----------------------------------------------------------------
 
 id_step = st.sampled_from(["commit", "rollback", "new_session"])
 
@@ -389,7 +389,7 @@ def test_ids_increasing(steps: list[str]) -> None:
     assert sorted(stored) == sorted(kept)
 
 
-# --- HAT-SCH-066: partition routing (the arithmetic behind the DB check) ----------------------
+# --- partition routing (the arithmetic behind the DB check) ----------------------
 
 instants = st.datetimes(
     min_value=datetime(2000, 1, 1), max_value=datetime(2200, 12, 31), timezones=st.just(UTC)
@@ -468,7 +468,7 @@ CHAT_IDS = st.one_of(
 
 @given(st.sampled_from(sorted(ACTORS)), CHAT_IDS, st.booleans())
 def test_user_actor_chat_id(actor: str, chat_id: object, present: bool) -> None:
-    """HAT-SCH-065: `record()` writes a `user` event only when its payload carries the
+    """`record()` writes a `user` event only when its payload carries the
     Telegram chat id as an integer, and refuses it, writing nothing, otherwise; other actors
     need no chat id. The `Actor` type names exactly the catalogue's actors. Harm: skips,
     flattens and pauses cannot be counted in the discipline metrics."""

@@ -1,5 +1,5 @@
 """PBT for order tags, the Fyers payload mapping, fail-closed broker reads and idempotent
-submission (HAT-BRK-081, -090, -100, -101, -102, -112, HAT-DEC-I10, HAT-EXEC-013, HAT-SCH-053).
+submission.
 
 Every property runs the real adapter, tag encoder and order path on `FakeBroker` or a recording
 stand-in for the Fyers SDK model. Nothing reaches a real broker.
@@ -92,7 +92,7 @@ FYERS_ALLOWED = re.compile(r"^[A-Za-z0-9]{1,20}$")
 
 @given(SIGNALS, PURPOSES, SEQUENCES)
 def test_shape_and_roundtrip(signal: uuid.UUID, purpose: str, sequence: int) -> None:
-    """HAT-BRK-100: the shape regex, length 20, and the decode of what was encoded."""
+    """The shape regex, length 20, and the decode of what was encoded."""
     tag = encode_tag(signal, purpose, sequence)
     assert re.fullmatch(r"HT[EDGPFL][0-9A-Z][0-9A-HJKMNP-TV-Z]{16}", tag)
     assert len(tag) == TAG_LENGTH == 20
@@ -104,7 +104,7 @@ def test_shape_and_roundtrip(signal: uuid.UUID, purpose: str, sequence: int) -> 
 
 @given(SIGNALS, PURPOSES, SEQUENCES)
 def test_format(signal: uuid.UUID, purpose: str, sequence: int) -> None:
-    """HAT-SCH-053: `^HT[A-Za-z0-9]{18}$`, the 16-character signal part decodes to its fragment."""
+    """`^HT[A-Za-z0-9]{18}$`, the 16-character signal part decodes to its fragment."""
     tag = encode_tag(signal, purpose, sequence)
     assert re.fullmatch(r"HT[A-Za-z0-9]{18}", tag)
     assert decode_tag(tag).fragment == signal_fragment(signal)
@@ -112,7 +112,7 @@ def test_format(signal: uuid.UUID, purpose: str, sequence: int) -> None:
 
 @given(SIGNALS, PURPOSES, SEQUENCES)
 def test_encode_decode_roundtrip(signal: uuid.UUID, purpose: str, sequence: int) -> None:
-    """HAT-DEC-I10: 20 alphanumeric characters starting HT, never the terminal's ST prefix, and
+    """20 alphanumeric characters starting HT, never the terminal's ST prefix, and
     in the alphabet and length the broker accepts."""
     tag = encode_tag(signal, purpose, sequence)
     assert len(tag) == 20
@@ -139,7 +139,7 @@ def test_decode_refuses_what_is_not_a_hat_tag(text: str) -> None:
     st.integers(min_value=2, max_value=150),
 )
 def test_tags_are_unique_within_one_millisecond(clock_ms: int, count: int) -> None:
-    """HAT-BRK-100: distinct signals made in one millisecond give distinct tags for every
+    """Distinct signals made in one millisecond give distinct tags for every
     (signal, purpose, sequence), and one signal's tags never repeat across purpose or sequence."""
     generator = Uuid7Generator(clock_ms=lambda: clock_ms)
     signals = [generator.next() for _ in range(count)]
@@ -167,7 +167,7 @@ def test_a_37th_order_is_refused(signal: uuid.UUID, purpose: str, sequence: int)
 )
 @settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
 def test_sequence_counts_earlier_orders(purposes: list[str]) -> None:
-    """HAT-BRK-100: a new order's sequence is the number of earlier orders of the same signal and
+    """A new order's sequence is the number of earlier orders of the same signal and
     purpose (so a retry of one order, which reuses its tag, never moves it), and past 36 orders
     the order is refused and no row is written."""
     env = exec_env()
@@ -240,7 +240,7 @@ FYERS_TYPE = {"MARKET": 2, "LIMIT": 1, "SL-M": 3, "SL": 4}
 
 @given(valid_intents())
 def test_fyers_payload_mapping(intent: OrderIntent) -> None:
-    """HAT-BRK-090: the SDK receives exactly the documented keys with the documented values."""
+    """The SDK receives exactly the documented keys with the documented values."""
     sdk = RecordingSdk()
     result = adapter_over(sdk).place_order(intent)
     assert result.status == "placed"
@@ -266,7 +266,7 @@ def test_fyers_payload_mapping(intent: OrderIntent) -> None:
 def test_order_goes_out_under_the_stored_broker_symbol(
     intent: OrderIntent, series: str, readable: bool
 ) -> None:
-    """HAT-DATA-024, HAT-BRK-090: an order is sent under the broker symbol stored for its
+    """An order is sent under the broker symbol stored for its
     instrument (`-BE` for a trade-for-trade stock), and under the converted `-EQ` symbol when the
     stored symbols cannot be read."""
     sdk = RecordingSdk()
@@ -336,7 +336,7 @@ def test_invalid_intents_raise_before_any_sdk_call(
 
 @given(valid_intents())
 def test_intent_product_cnc(intent: OrderIntent) -> None:
-    """HAT-EXEC-013 / HAT-DEC-B24: every payload the adapter sends is CNC, and any other product
+    """Every payload the adapter sends is CNC, and any other product
     is refused before the broker."""
     sdk = RecordingSdk()
     broker = adapter_over(sdk)
@@ -366,7 +366,7 @@ def test_gtt_payloads(
     tag: str,
     other: str | None,
 ) -> None:
-    """HAT-BRK-090: the GTT place, modify and cancel payloads are exact, CNC, single-leg, and the
+    """The GTT place, modify and cancel payloads are exact, CNC, single-leg, and the
     place carries the stop's HT tag as `orderTag` (Fyers takes a tag on a GTT, recorded
     2026-10-22); a GTT without a stop_gtt HT tag is refused before any SDK call."""
     sdk = RecordingSdk()
@@ -470,7 +470,7 @@ def adapter_over_fake(fake: FakeBroker):  # noqa: ANN201
 
 @given(st.sampled_from(["circuit", "reject", "unconfirmed", "raises"]), valid_intents())
 def test_write_results_carry_no_broker_text(kind: str, intent: OrderIntent) -> None:
-    """HAT-BRK-081: a rejected, lost or raising write has a fixed code, never the broker's words."""
+    """A rejected, lost or raising write has a fixed code, never the broker's words."""
     fake = FakeBroker()
     if kind == "circuit":
         fake.circuit_open = True
@@ -566,7 +566,7 @@ foreign_tags = st.one_of(
     st.dictionaries(st.sampled_from(sorted(SYMBOLS)), st.integers(min_value=0, max_value=20)),
 )
 def test_reconcile_scope(ht, foreign, known, quantities_) -> None:  # noqa: ANN001
-    """HAT-BRK-112: for every order book mixing HT, ST and untagged orders, the result depends
+    """For every order book mixing HT, ST and untagged orders, the result depends
     only on the HT-tagged subset."""
     ht_orders = [_order(t, s) for t, s in ht]
     foreign_orders = [_order(t, s) for t, s in foreign]
@@ -634,7 +634,7 @@ BREAKAGES = st.sampled_from(["no_id", "no_qty", "no_symbol", "no_side", "side", 
     rows=[("good", None, "")], ht_broken=(encode_tag(uuid.UUID(int=1), "entry", 0), "qty"), runs=1
 )
 def test_unreadable_foreign_rows_skipped(rows, ht_broken, runs) -> None:  # noqa: ANN001
-    """HAT-BRK-112, D118 (MX-F5): an order row without an HT tag that cannot be read is skipped
+    """(MX-F5): an order row without an HT tag that cannot be read is skipped
     and counted, and the rest of the book is read; the reconciliation reports the count and
     raises one `reconcile.unreadable_row` health alert per trade date. An HT-tagged row that
     cannot be read fails the whole read. Harm: one manual order HAT does not own fails every
@@ -762,7 +762,7 @@ class OrderSubmission(RuleBasedStateMachine):
 
     @rule()
     def the_book_lags(self) -> None:
-        """Fyers' order book does not show the newest order yet (HAT-BRK-103)."""
+        """Fyers' order book does not show the newest order yet."""
         self.fake.lagging = 1
 
     @rule()
@@ -832,7 +832,7 @@ class OrderSubmission(RuleBasedStateMachine):
 
 
 def test_idempotent_order_submission() -> None:
-    """HAT-BRK-101/-102/-103: whatever sequence of sends, lost answers, crashes and order books
+    """Whatever sequence of sends, lost answers, crashes and order books
     that lag a placed order, one entry tag yields at most one broker order and one row: an entry
     of unknown outcome is adopted when the lookup finds it and never sent again otherwise."""
     run_state_machine_as_test(
@@ -887,7 +887,7 @@ def test_a_timeout_is_looked_up_before_any_retry(
     st.sets(tags_, max_size=4),
 )
 def test_a_tag_twice_at_the_broker_blocks_the_account(ht, known) -> None:  # noqa: ANN001
-    """HAT-BRK-103, HAT-BRK-111: for every order book, each HT tag the broker holds more than one
+    """For every order book, each HT tag the broker holds more than one
     order for is reported once as `duplicate_ht_order` for the whole account (the bot cannot be
     told), known to HAT or not; a tag held once is never reported so. Harm: one logical order
     reaches the broker twice and the account keeps opening positions as if nothing happened."""
@@ -917,7 +917,7 @@ DUPLICATES = st.lists(
 
 @given(tags_, DUPLICATES, st.one_of(st.none(), st.integers(min_value=0, max_value=4)))
 def test_a_duplicated_tag_is_read_one_way(tag: str, orders: list, owned: int | None) -> None:
-    """HAT-BRK-103: of the broker orders under one HT tag, a row that holds a broker order id
+    """Of the broker orders under one HT tag, a row that holds a broker order id
     reads that order only (nothing when the book does not hold it), and a row without one reads
     the first order the broker has not ended unfilled, or the first when every one is. Harm:
     a dead duplicate's status ends a live entry's signal, or a live duplicate's fills are
@@ -969,7 +969,7 @@ class LostThenKeyless(RecordingSdk):
 @given(book=KEYLESS_BOOKS, sends=st.integers(min_value=2, max_value=4))
 @settings(deadline=None)
 def test_a_keyless_book_never_reads_as_absent(book: dict, sends: int) -> None:
-    """HAT-BRK-081, HAT-BRK-102: after a lost answer, an order book that answered ok without its
+    """After a lost answer, an order book that answered ok without its
     list is unreadable, not empty: every later send raises `BrokerUnavailableError` and places
     nothing more under the tag. Harm: the lookup reads "not found" and the same order goes out
     twice (a doubled entry)."""
@@ -1044,7 +1044,7 @@ def test_refusals_happen_before_the_broker(case: dict) -> None:
 
 
 # A place the broker did not act on: its circuit open, no client, or Fyers' -360 (the day's
-# requests spent, HAT-BRK-082; the refusal FyersBroker passes on in `details`).
+# requests spent, the refusal FyersBroker passes on in `details`).
 NOT_SENT = {
     "circuit": (rejected(BROKER_CIRCUIT_OPEN), "broker_unavailable"),
     "client": (rejected(CLIENT_NOT_INITIALIZED), "broker_unavailable"),
@@ -1084,7 +1084,7 @@ def test_an_unreachable_broker_is_not_a_rejection(kind: str, times: int) -> None
 
 
 def test_a_virtual_order_never_reaches_the_broker() -> None:
-    """HAT-EXEC-010 (the adapter's half): a virtual row is refused before any broker call."""
+    """(the adapter's half): a virtual row is refused before any broker call."""
     from app.hat.models import HatOrder
 
     env = exec_env()
@@ -1132,7 +1132,7 @@ _LOST.trigger_price = Decimal("100")
 def test_a_lost_gtt_is_found_by_its_tag(
     book: tuple[SimpleNamespace, list[BrokerGtt], set[str]],
 ) -> None:
-    """HAT-EXEC-065, HAT-BRK-090: the GTT a lost stop_gtt answer settles to is one no other row
+    """The GTT a lost stop_gtt answer settles to is one no other row
     holds on the row's symbol: the one under the row's own tag when the book shows one (at any
     quantity or trigger), else one shown untagged of exactly the row's side, quantity and
     trigger; never one under another HAT GTT's tag or a foreign one. Harm: another position's
@@ -1270,7 +1270,7 @@ def test_the_purposes_match_the_database_domain() -> None:
 
 
 # ---------------------------------------------------------------------------------------------
-# HAT-EXEC-065: two senders of one reserved tag; the GTT book read
+# two senders of one reserved tag; the GTT book read
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1286,14 +1286,14 @@ def test_the_purposes_match_the_database_domain() -> None:
 def test_a_reserved_tag_is_sent_by_one_sender(
     answer: str, retry: bool, adopted: bool, purpose: str
 ) -> None:
-    """HAT-BRK-102, HAT-EXEC-065: when two senders read the same order before either stamped
+    """When two senders read the same order before either stamped
     a new attempt (a fill sync and a stop job protecting one position), whether it was never
     sent or its earlier answer was lost and the lookup found nothing (`retry`), only the one
     that stamps first calls the broker, with a new attempt time from which a lost answer's
     settle wait runs; the other sends nothing and reports what the first left. A lost answer
     that the fill sync adopted from the book in between (`adopted`: placed, its attempt time
     unchanged) is not sent again either. Only a stop is resent after a lost answer: an entry of
-    unknown outcome is refused by both senders (HAT-BRK-102). Harm: two sell stops rest for the same
+    unknown outcome is refused by both senders. Harm: two sell stops rest for the same
     shares, an entry is bought twice, or a resend still in flight is settled as absent."""
     env = exec_env()
     live_session(env)
@@ -1423,7 +1423,7 @@ class GttBookSdk(RecordingSdk):
 def test_the_gtt_book_reads_only_resting_stops(
     rows: list[tuple[dict, BrokerGtt | None]], odd: int | None
 ) -> None:
-    """HAT-EXEC-065, HAT-BRK-081: `gtts()` lists exactly the single-leg CNC GTTs that rest or
+    """`gtts()` lists exactly the single-leg CNC GTTs that rest or
     have triggered (the flat book fields, `orderInfo.leg1` or `leg1`; the live keys `tran_side`,
     `product_type` or the placement keys `side`, `productType`), each with the stop_gtt HT tag
     Fyers shows on it ("<n>:GTT<tag>") or None (untagged, a foreign tag, another purpose's HAT

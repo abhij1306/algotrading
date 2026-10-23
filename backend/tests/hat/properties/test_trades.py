@@ -1,4 +1,4 @@
-"""PBT trades.* (HAT-EXEC-045, HAT-BOT-050, HAT-BOT-083, HAT-EXEC-041, HAT-RISK-030): the entry
+"""PBT trades.*: the entry
 path of `app.hat.engine.trades` on SQLite, with the real risk checks."""
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ PLAYBOOKS = ("stage2", "momentum", "episodic", "other")
 @settings(max_examples=30)
 @given(st.lists(st.sampled_from(PLAYBOOKS), min_size=1, max_size=9))
 def test_shared_bot_cap(playbooks: list[str]) -> None:
-    """HAT-BOT-050, HAT-EXEC-045: one bot's playbooks share the bot's position cap. However the
+    """One bot's playbooks share the bot's position cap. However the
     triggers are spread over its playbooks, the accepted entries never exceed the cap, and a
     trigger is rejected for the cap exactly when the cap is full. Harm: each playbook gets its
     own cap and the bot holds a multiple of what the policy allows."""
@@ -83,7 +83,7 @@ def _owner_open_risk(session: Session) -> Decimal:
 @settings(max_examples=40)
 @given(_two_bot_triggers(), st.integers(1, 7), st.integers(1, 2499))
 def test_global_open_risk_across_bots(order: list[int], room: int, spare: int) -> None:
-    """HAT-RISK-030 through `open_entry`: two bots of one owner, on different broker accounts,
+    """Through `open_entry`: two bots of one owner, on different broker accounts,
     share the 1.5% global open-risk cap (D128). However their triggers interleave, a trigger is
     rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds
     1.5% of total equity, and is accepted otherwise; the owner never holds more. Harm: each bot
@@ -121,7 +121,7 @@ def test_global_open_risk_across_bots(order: list[int], room: int, spare: int) -
 @settings(max_examples=20)
 @given(st.lists(st.booleans(), min_size=1, max_size=6))
 def test_watchlist_expires_at_session_end(triggered: list[bool]) -> None:
-    """HAT-EXEC-041: at the session end every watchlist row that did not trigger ends Expired and
+    """At the session end every watchlist row that did not trigger ends Expired and
     one that triggered does not; the count is the number expired; a second run changes nothing."""
     engine = memory_engine()
     with Session(engine) as session:
@@ -154,7 +154,7 @@ def test_watchlist_expires_at_session_end(triggered: list[bool]) -> None:
 @settings(max_examples=20)
 @given(st.booleans(), st.booleans())
 def test_retry_returns_existing_signal(mode_changed: bool, left_universe: bool) -> None:
-    """HAT-EXEC-021: a repeated trigger for the same (bot, playbook, instrument, day) returns the
+    """A repeated trigger for the same (bot, playbook, instrument, day) returns the
     signal it already made and writes nothing, even after the bot left shadow mode or the
     instrument left the universe in between. Harm: a job retried after such a change crashes
     instead of finding the trade it already took, and its caller cannot tell it was taken."""
@@ -174,7 +174,7 @@ def test_retry_returns_existing_signal(mode_changed: bool, left_universe: bool) 
         assert session.scalar(select(func.count()).select_from(HatSignal)) == 1
 
 
-# --- HAT-RISK-036: the hard stops the cooldown reads (PR 58) --------------------------------------
+# --- the hard stops the cooldown reads --------------------------------------
 
 STOP_EVENTS = st.lists(
     st.tuples(st.integers(0, 1), st.booleans(), st.booleans(), st.integers(0, 6)), max_size=6
@@ -227,7 +227,7 @@ def test_last_hard_stop(events: list[tuple[int, bool, bool, int]], query_days: i
 @example([(0, False, False, 0)], 0)  # another exit reason
 @example([(1, True, True, 0)], 0)  # another bot's
 def test_day_counts(events: list[tuple[int, bool, bool, int]], query_days: int) -> None:
-    """PBT trades.day_counts (HAT-RISK-033, HAT-RISK-034; PR 75a): the stop-outs today the
+    """PBT trades.day_counts: the stop-outs today the
     per-bot cap reads are the bot's `hard_stop` closes, of any instrument, closed on that trade
     date; its entries today are its signals of that trade date that entered. Positions are
     opened through `open_entry` and closed by the exit stack's hard stop or by another reason,

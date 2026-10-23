@@ -1,4 +1,4 @@
-"""PBT store.* (HAT-DATA-082..084, 091): atomic partition writes, immutable raw zips, one row per
+"""PBT store.*: atomic partition writes, immutable raw zips, one row per
 (instrument, date) in `bars_daily`, and a missing day that stays missing. Real `DataStore` on a
 temporary directory; no network."""
 

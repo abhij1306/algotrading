@@ -1,4 +1,4 @@
-"""Shared setup for the broker and order-submission properties (PR 13).
+"""Shared setup for the broker and order-submission properties.
 
 Everything runs on `FakeBroker` or a recording stand-in for the Fyers SDK model, on an in-memory
 SQLite database. Nothing reaches a real broker.
@@ -35,9 +35,9 @@ from app.hat.time import utc_now
 
 USER = uuid.UUID("00000000-0000-7000-8000-000000000001")
 SYMBOLS = {"SBIN": "NSE:SBIN-EQ", "RELIANCE": "NSE:RELIANCE-EQ", "M&M": "NSE:M&M-EQ"}
-# The adapter's capabilities with GTT for delivery (verified live in PR 25): the rigs that place
+# The adapter's capabilities with GTT for delivery (verified live): the rigs that place
 # real entries store them on the account and build the adapter with them, and `replace` them to
-# turn it off (HAT-EXEC-012, HAT-BRK-092).
+# turn it off.
 GTT_READY = replace(FYERS_CAPABILITIES, gtt_delivery=True)
 
 
@@ -93,7 +93,7 @@ def exec_env(
     live_gtt: bool = True,
 ) -> ExecEnv:
     """An account and the adapter over `fake`. `stored_gtt` is the account's stored GTT for
-    delivery, `live_gtt` the adapter's (HAT-EXEC-012)."""
+    delivery, `live_gtt` the adapter's."""
     engine = memory_engine(HatEvent, HatOrder, HatBrokerAccount, HatSignal)
     session = sessionmaker(engine, expire_on_commit=False)()
     account = HatBrokerAccount(
@@ -162,7 +162,7 @@ def seed_live_sessions(
     session: Session, account_id: uuid.UUID, around: date = SESSION_DAY, span: int = 10
 ) -> None:
     """A live `hat_broker_session` for the account on every day within `span` days of `around`
-    (the router refuses an entry without one, HAT-OPS-023)."""
+    (the router refuses an entry without one)."""
     for offset in range(-span, span + 1):
         session.add(
             HatBrokerSession(
@@ -185,7 +185,7 @@ def confirm_gates(
     ddpi: bool = True,
     weights: bool = True,
 ) -> None:
-    """Set the owner's two mode gates (HAT-GOV-085): DDPI on the account, and
+    """Set the owner's two mode gates: DDPI on the account, and
     `weights_confirmed` on every stored policy version of the user (seeding version 1 first
     when the user has none). Does not commit."""
     account = session.get(HatBrokerAccount, account_id)

@@ -1,5 +1,4 @@
-"""PBT for broker accounts, the session, the capability gate and the adapter's reads
-(HAT-BRK-082, -091, -092, HAT-DEC-I8, HAT-DEC-I9, HAT-DEC-T8, HAT-EXEC-012, HAT-OPS-031)."""
+"""PBT for broker accounts, the session, the capability gate and the adapter's reads."""
 
 import uuid
 from dataclasses import replace
@@ -65,7 +64,7 @@ from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent
 def test_confirm_and_auto_need_gtt(
     mode: str, status: str, capabilities: dict, ddpi: bool, weights: bool
 ) -> None:
-    """HAT-EXEC-012, HAT-GOV-085 / HAT-DEC-I9: a bot never runs confirm or auto unless its
+    """A bot never runs confirm or auto unless its
     account is active and reports `gtt_delivery = true`, the owner has confirmed DDPI on it and
     the policy's base weights, and such a request is refused with the first gate that fails; a
     mode outside the three runs as shadow and is refused as unknown, whatever the account."""
@@ -95,7 +94,7 @@ def test_confirm_and_auto_need_gtt(
 
 @given(status=st.sampled_from(["active", "pending", "failed", "suspended"]))
 def test_the_fyers_adapter_unlocks_modes_on_an_active_account(status: str) -> None:
-    """HAT-BRK-091 with HAT-EXEC-012: the adapter reports GTT for delivery (verified live), so
+    """With the adapter reports GTT for delivery (verified live), so
     with its capabilities and the owner's two confirmations every mode runs as asked on an
     active account, and only shadow on any other; without GTT for delivery only shadow runs
     anywhere."""
@@ -120,7 +119,7 @@ reads = st.sampled_from(["funds", "positions", "holdings"])
 @given(st.one_of(st.none(), reads), st.sampled_from(["circuit", "raises"]))
 @settings(max_examples=60)
 def test_account_active_after_check(failing: str | None, how: str) -> None:
-    """HAT-BRK-092: an account is `active` exactly when funds, positions and holdings were all
+    """An account is `active` exactly when funds, positions and holdings were all
     fetched, and carries the adapter's capabilities; a failing read leaves it not active."""
     fake = FakeBroker()
     if failing is not None:
@@ -146,7 +145,7 @@ def test_account_active_after_check(failing: str | None, how: str) -> None:
 
 @given(st.text(max_size=12).filter(lambda name: name != "fyers"))
 def test_only_the_fyers_adapter_is_registered(name: str) -> None:
-    """HAT-DEC-I8: onboarding any broker but Fyers is refused, and the registry holds only Fyers."""
+    """Onboarding any broker but Fyers is refused, and the registry holds only Fyers."""
     assert set(ADAPTER_FACTORIES) == {"fyers"}
     engine = memory_engine(HatBrokerAccount)
     session = sessionmaker(engine)()
@@ -158,7 +157,7 @@ def test_only_the_fyers_adapter_is_registered(name: str) -> None:
 
 @given(st.booleans(), st.booleans(), st.booleans())
 def test_session_status_mapping(connected: bool, has_client: bool, store_error: bool) -> None:
-    """HAT-BRK-082: the mapping is total and only a readable store, a saved token and a usable
+    """The mapping is total and only a readable store, a saved token and a usable
     client give LIVE."""
     status = map_session(connected=connected, has_client=has_client, store_error=store_error)
     assert status in set(SessionStatus)
@@ -208,7 +207,7 @@ OUTAGES = [
     wait=st.sampled_from([0.0, 29.9, 30.0, 300.0]),
 )
 def test_token_refused_is_session_expired(reply: object, read: str, wait: float) -> None:
-    """HAT-BRK-082, HAT-OPS-031: whenever Fyers answers code -16 (a bad, expired or revoked
+    """Whenever Fyers answers code -16 (a bad, expired or revoked
     token), the session reads EXPIRED though the token file is still in date, and a read fails
     with `broker_session_expired`, so the outage watch alerts and asks for a login; any other
     failure is an outage: the read fails with `broker_unavailable` and the session stays LIVE.
@@ -278,7 +277,7 @@ WRITES = {
     write=st.sampled_from(sorted(WRITES)),
 )
 def test_rate_limit_is_its_own_code(read: str, write: str) -> None:
-    """HAT-BRK-082: Fyers' -360 (the plan's daily requests spent) is neither an outage nor a lost
+    """Fyers' -360 (the plan's daily requests spent) is neither an outage nor a lost
     session: a read fails closed with `broker_rate_limited`, a write is a definite refusal with
     `broker_rate_limited` (nothing was placed), the session stays LIVE, and no broker text is
     carried."""
@@ -325,7 +324,7 @@ def test_token_refused_on_a_read_ends_the_check(read: str) -> None:
 
 @given(st.lists(st.tuples(st.integers(0, 2), st.sampled_from(["acquire", "release"])), max_size=30))
 def test_one_session_owner_per_account(steps: list[tuple[int, str]]) -> None:
-    """HAT-DEC-T8: at most one owner holds a given account's session at any time."""
+    """At most one owner holds a given account's session at any time."""
     accounts = [uuid.uuid4() for _ in range(3)]
     registry = SessionRegistry()
     held: dict[int, object] = {}
@@ -383,7 +382,7 @@ CHECKS = st.lists(
 @settings(max_examples=40, deadline=None)
 @given(st.sampled_from(["empty", "gtt", "no_gtt"]), CHECKS)
 def test_session_check_refreshes_capabilities(stored: str, checks: list) -> None:
-    """HAT-BRK-092, HAT-EXEC-012: every session check rewrites the account's stored
+    """Every session check rewrites the account's stored
     capabilities to the adapter's (a local value: the session need not be live), each rewrite
     that changes them records one `broker.capabilities_changed` naming the GTT value before and
     after and the changed keys, and a refresh that fails (the adapter's answer or its own

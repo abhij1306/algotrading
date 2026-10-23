@@ -1,4 +1,4 @@
-"""PBT sizing.* (HAT-RISK-010/020/021/022, HAT-DEC-B13): the position-size formula on the real
+"""PBT sizing.*: the position-size formula on the real
 `size_position` and `evaluate_signal`. Money is Decimal; floats are refused."""
 
 import uuid
@@ -58,7 +58,7 @@ def sizing_inputs(draw: st.DrawFn) -> SizingInputs:
 
 @given(sizing_inputs())
 def test_formula_exact(inp: SizingInputs) -> None:
-    """q is the largest whole number that respects all four terms, compared exactly: it fits
+    """Q is the largest whole number that respects all four terms, compared exactly: it fits
     every term, and one more share would break at least one."""
     sized = size_position(inp)
     q = sized.quantity
@@ -136,7 +136,7 @@ def test_risk_bounded(parts: dict) -> None:
     st.decimals(min_value=D("0"), max_value=D(1), places=2),
 )
 def test_monotone(inp: SizingInputs, field: str, shrink: Decimal) -> None:
-    """q never grows when r, the ladder multiplier, p_max, ADV20, C or E decreases."""
+    """Q never grows when r, the ladder multiplier, p_max, ADV20, C or E decreases."""
     value = getattr(inp, field)
     assume(value.is_finite() and value > 0)
     smaller = value * shrink
@@ -147,7 +147,7 @@ def test_monotone(inp: SizingInputs, field: str, shrink: Decimal) -> None:
 
 @given(sizing_inputs(), st.decimals(min_value=D("0.01"), max_value=D("100"), places=2))
 def test_wider_stop_never_grows(inp: SizingInputs, extra: Decimal) -> None:
-    """q never grows when the stop moves further from the entry."""
+    """Q never grows when the stop moves further from the entry."""
     wider = inp.stop_price - extra
     assume(wider > 0)
     assert (

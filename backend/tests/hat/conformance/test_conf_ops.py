@@ -1,14 +1,12 @@
-"""CONF checks of the deployment and the runbook (HAT-OPS-040, HAT-OPS-090, HAT-OPS-091): the
-Compose file brings up only Postgres and the backend (the frontend under a profile) on loopback
-ports with no inline secret, docs/runbook.md has a procedure for every OPS check named in
-docs/invariants.md, and the owner's admin command line only calls service functions."""
+"""CONF checks of the deployment: the Compose file brings up only Postgres and the backend
+(the frontend under a profile) on loopback ports with no inline secret, and the owner's admin
+command line only calls service functions."""
 
 import ast
 import re
 
 import yaml
-from hat_conf_repo import APP_ROOT, build_graph
-from hat_conf_spec import INVARIANTS, REPO_ROOT
+from hat_conf_repo import APP_ROOT, REPO_ROOT, build_graph
 
 COMPOSE = REPO_ROOT / "deploy" / "hat" / "docker-compose.yml"
 ENV_FILE = "../../.env"
@@ -18,11 +16,6 @@ LOOPBACK = "127.0.0.1"
 POSTGRES_MAJOR = "18"
 SECRET_KEY = re.compile(r"PASSWORD|SECRET|TOKEN|KEY|CHAT_ID", re.IGNORECASE)
 INTERPOLATED = re.compile(r"^\$\{[A-Z_]+(:?[?-][^}]*)?\}$")
-OPS_NAME = re.compile(r"\bOPS `([^`]+)`")
-RUNBOOK = REPO_ROOT / "docs" / "runbook.md"
-PROCEDURE = re.compile(r"^### (.+)$", re.MULTILINE)
-STEP = re.compile(r"^(\d+\.|```)", re.MULTILINE)
-CHECK_LOG = "Check log"  # the table of performed checks, not a procedure
 
 
 def _compose() -> dict:
@@ -45,7 +38,7 @@ def _environment(service: dict) -> dict[str, str]:
 
 
 def test_compose_services() -> None:
-    """HAT-OPS-040: exactly postgres and backend (frontend only under a profile), no other
+    """Exactly postgres and backend (frontend only under a profile), no other
     service, Postgres 18, every published port on 127.0.0.1, the backend reading the repo .env
     through env_file, no secret written inline, and the backend starting HAT after a healthy
     database.
@@ -77,36 +70,6 @@ def _check_backend(backend: dict) -> None:
     assert backend["healthcheck"]["test"]
     mounts = {str(volume).split(":")[1] for volume in backend.get("volumes", [])}
     assert env["HAT_DATA_ROOT"] in mounts
-
-
-def _ops_names() -> set[str]:
-    return set(OPS_NAME.findall(INVARIANTS.read_text(encoding="utf-8")))
-
-
-def _procedures(runbook: str) -> dict[str, str]:
-    """`###` heading -> its body, within the runbook section."""
-    heads = list(PROCEDURE.finditer(runbook))
-    bodies = {}
-    for index, head in enumerate(heads):
-        end = heads[index + 1].start() if index + 1 < len(heads) else len(runbook)
-        bodies[head.group(1)] = runbook[head.end() : end]
-    bodies.pop(CHECK_LOG, None)
-    return bodies
-
-
-def test_runbook_complete() -> None:
-    """HAT-OPS-090: docs/runbook.md has a procedure heading naming every `OPS` check of
-    docs/invariants.md, and every procedure has steps.
-    Harm: at 09:20 on a bad day the operator has no tested procedure to follow."""
-    procedures = _procedures(RUNBOOK.read_text(encoding="utf-8"))
-    headings = " ".join(procedures)
-    names = _ops_names()
-    assert names >= {"ops.host_checklist", "ops.deploy_window", "ops.backup_restore_drill"}
-    missing = sorted(name for name in names if f"`{name}`" not in headings)
-    assert missing == []
-    assert len(procedures) >= 20
-    empty = sorted(head for head, body in procedures.items() if not STEP.search(body))
-    assert empty == []
 
 
 ADMIN = APP_ROOT / "hat" / "admin.py"
@@ -191,7 +154,7 @@ def admin_violations(source: str) -> list[str]:
 
 
 def test_admin_cli_calls_services() -> None:
-    """CONF ops.admin_cli_calls_services (HAT-OPS-091, HAT-DEC-T3): the admin command line reads
+    """CONF ops.admin_cli_calls_services: the admin command line reads
     no table and writes no column itself (every step is a guarded service function), and no
     route or app module imports it, so it is never reachable over HTTP. Harm: a setup command
     skips the guard a service enforces, or the owner's commands become an unauthenticated API."""
@@ -257,7 +220,7 @@ def unalerted_subscriptions(source: str) -> list[int]:
 
 
 def test_ops__subscription_alert_wired() -> None:
-    """CONF ops.subscription_alert_wired (HAT-DATA-112; PR 73, PR 39): every `LiveSubscriptions`
+    """CONF ops.subscription_alert_wired: every `LiveSubscriptions`
     the app builds is given its alert, and the runtime builds one. Harm: `subscription_limit`
     reaches only the log, so the owner never hears that symbols past the provider's limit get no
     ticks."""

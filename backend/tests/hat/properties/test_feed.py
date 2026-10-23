@@ -1,4 +1,4 @@
-"""PBT feed.* (HAT-DATA-110 to 112, HAT-DATA-123 to 127, HAT-OVR-006; K3): the one provider socket
+"""PBT feed.* (to 112 to 127): the one provider socket
 HAT owns. A state machine drives `ProviderSession` over a fake SDK socket through every connect,
 drop, SDK auto-reconnect, stop and stale callback and checks that the process never holds more than
 one open socket, replays every wanted symbol on each connect and ignores callbacks from sockets it
@@ -56,7 +56,7 @@ def _current(factory: FakeSocketFactory) -> FakeDataSocket | None:
     return live[0] if live else None
 
 
-# --- the session (HAT-DATA-123) ---
+# --- the session ---
 
 
 class SessionMachine(RuleBasedStateMachine):
@@ -230,7 +230,7 @@ class SessionMachine(RuleBasedStateMachine):
 
 
 def test_session_one_socket() -> None:
-    """HAT-OVR-006, HAT-DATA-123: for every order of start, stop, close, drop, SDK auto-reconnect,
+    """For every order of start, stop, close, drop, SDK auto-reconnect,
     error, token change and late callback, the session never holds more than one open socket and
     leaks none, replays every wanted symbol on each connect (a failing replay never fails the
     connect), builds each socket from the current token, delivers messages only from its current
@@ -305,7 +305,7 @@ def test_session_close_stops_a_backing_off_runner(late_reconnects: int) -> None:
     assert session.state is SessionState.CLOSED
 
 
-# --- ticks (HAT-DATA-111, HAT-DATA-124) ---
+# --- ticks ---
 
 numbers = st.one_of(
     st.integers(-10_000, 10_000),
@@ -409,7 +409,7 @@ def test_tick_flow(messages: list[dict[str, Any]], with_loop: bool) -> None:
     asyncio.run(scenario())
 
 
-# --- the registry (HAT-DATA-112, HAT-DATA-125) ---
+# --- the registry ---
 
 OWNERS = ["ws-1", "ws-2", "ws-3", HAT_OWNER]
 REGISTRY_SYMBOLS = ["SBIN", "TCS", "INFY", "nse:sbin-eq", "NSE:TCS-EQ", "", "reliance"]
@@ -525,7 +525,7 @@ def test_registry_concurrent(threads: int, rounds: int) -> None:
         assert sum(symbol in s for s in needed) == sum(symbol in s for s in released)
 
 
-# --- the provider follows the registry (HAT-DATA-126) ---
+# --- the provider follows the registry ---
 
 CONVERGE_SYMBOLS = ["SBIN", "TCS", "INFY", "RELIANCE", "BAD#SYM"]
 
@@ -643,7 +643,7 @@ def test_provider_converges() -> None:
     )
 
 
-# --- the Fyers login drives the feed (HAT-DATA-127) ---
+# --- the Fyers login drives the feed ---
 
 CREDS = FyersCredentials("APP-100", "SECRET", "https://app.example.test/cb")
 
@@ -742,7 +742,7 @@ def test_auth_hooks() -> None:
     )
 
 
-# --- the health monitor and the token check (HAT-DATA-118, HAT-DATA-127) ---
+# --- the health monitor and the token check ---
 
 
 @settings(max_examples=8, deadline=None)
@@ -847,7 +847,7 @@ def test_token_check_off_loop(valid: bool, is_open: bool, explicit: bool, raises
         assert status == ("started" if is_open else "market_closed")
 
 
-# --- the SDK socket factory and the token source (HAT-DATA-123) ---
+# --- the SDK socket factory and the token source ---
 
 tokens = st.from_regex(r"[A-Z0-9]{3,10}:[A-Za-z0-9._-]{5,30}", fullmatch=True)
 
@@ -952,7 +952,7 @@ def test_traceback_throttle(times: list[float]) -> None:
     assert feed_metrics.snapshot()["counters"].get(counter, 0) == suppressed
 
 
-# --- the trading calendar (HAT-DATA-127) ---
+# --- the trading calendar ---
 
 
 @example(offset=0, holidays=set(), today_is_a_holiday=True, second=10 * 3600, calendar="known")
@@ -1015,7 +1015,7 @@ def test_calendar_closed(
 @settings(max_examples=12, deadline=None)
 @given(calendar=st.sampled_from(["known", "missing", "unreadable"]), stop_at_once=st.booleans())
 def test_calendar_read_off_loop(calendar: str, stop_at_once: bool) -> None:
-    """PBT feed.calendar_read_off_loop (HAT-OVR-001; PR 75b, CodeAnt): starting the feed and the
+    """PBT feed.calendar_read_off_loop: starting the feed and the
     connect it begins read the trading calendar only off the event loop, a calendar found missing
     or unreadable is not read again by the connect that follows, and a stop before that connect
     finishes leaves no socket. Harm: a slow calendar query stalls every task on the loop (ticks,

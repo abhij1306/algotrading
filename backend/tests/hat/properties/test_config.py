@@ -1,4 +1,4 @@
-"""PBT config.hash_canonical (HAT-SCH-016): the config hash is canonical."""
+"""PBT config.hash_canonical: the config hash is canonical."""
 
 import copy
 import json
@@ -157,7 +157,7 @@ def test_hash_ignores_the_sign_of_zero(config: dict) -> None:
     assert config_hash(flipped) == config_hash(config)
 
 
-# --- the strategy config model (HAT-CRIT-020..022, HAT-BOT-050..082) --------------------------
+# --- the strategy config model --------------------------
 
 ENGINE = memory_engine()
 seed_hat_reference(ENGINE)
@@ -181,7 +181,7 @@ def codes_of(raw: dict) -> set[str]:
 
 @given(raw_configs())
 def test_instance_fields(raw: dict) -> None:
-    """PBT config.instance_fields (HAT-CRIT-020): every stored instance carries exactly the seven
+    """PBT config.instance_fields: every stored instance carries exactly the seven
     fields, parameters spelled out in full; `weight` has no effect on a hard criterion."""
     config = parse_config(raw)
     stored = config.to_json()
@@ -209,7 +209,7 @@ def test_instance_fields(raw: dict) -> None:
 
 @given(raw_configs(), st.randoms(use_true_random=False))
 def test_stage_slots(raw: dict, rnd: random.Random) -> None:
-    """PBT config.stage_slots (HAT-CRIT-021, 022): an instance only fits a section its type
+    """PBT config.stage_slots: an instance only fits a section its type
     allows, scoring only in setup; the same instances in any list order store identically."""
     config = parse_config(raw)
     for instance in all_instances(config):
@@ -246,7 +246,7 @@ def test_stage_slots(raw: dict, rnd: random.Random) -> None:
 def test_close_vs_pivot_needs_vcp(
     gate_at: int, vcp_at: int | None, gate_on: bool, vcp_on: bool, scored: bool
 ) -> None:
-    """PBT config.close_vs_pivot_needs_vcp (HAT-CRIT-123): a setup with an enabled
+    """PBT config.close_vs_pivot_needs_vcp: a setup with an enabled
     `close_vs_pivot` is valid exactly when an enabled `vcp` comes before it (S1's seed setup
     with the two moved, removed or switched off), and `close_vs_pivot` is refused in score mode.
     Harm: a config whose gate can never pass is saved, and the playbook silently stops trading;
@@ -275,7 +275,7 @@ def test_close_vs_pivot_needs_vcp(
 
 @given(raw_configs(), st.data())
 def test_invalid_never_saves(raw: dict, data: st.DataObject) -> None:
-    """PBT config.invalid_never_saves (HAT-CRIT-020, HAT-BOT-081): a config with an unknown
+    """PBT config.invalid_never_saves: a config with an unknown
     type, a wrong stage, an unknown or out-of-range parameter or a duplicate order is refused
     with a coded error and no version row or event is written."""
     leaves = param_leaves(raw)
@@ -315,7 +315,7 @@ def test_invalid_never_saves(raw: dict, data: st.DataObject) -> None:
 
 @given(raw_configs())
 def test_playbook_shape(raw: dict) -> None:
-    """PBT config.playbook_shape (HAT-BOT-050, 051): a playbook is a setup, a trigger list,
+    """PBT config.playbook_shape: a playbook is a setup, a trigger list,
     entry filters and one stop rule; the regime rule and the exit stack belong to the bot."""
     config = parse_config(raw)
     stored = config.to_json()
@@ -357,7 +357,7 @@ RISK_NAMES = sorted(
 
 @given(raw_configs(), st.sampled_from(RISK_NAMES), st.randoms(use_true_random=False))
 def test_no_risk_keys(raw: dict, key: str, rnd: random.Random) -> None:
-    """PBT config.no_risk_keys (HAT-DEC-B3, HAT-BOT-070): a config that names a risk or sizing
+    """PBT config.no_risk_keys: a config that names a risk or sizing
     key at any depth is refused with `risk_key`, however valid the rest is."""
     bad = copy.deepcopy(raw)
     inject(bad, rnd, key)
@@ -367,7 +367,7 @@ def test_no_risk_keys(raw: dict, key: str, rnd: random.Random) -> None:
 
 @given(raw_configs())
 def test_yaml_round_trip(raw: dict) -> None:
-    """PBT config.yaml_round_trip (HAT-BOT-082): export then import gives the same config and
+    """PBT config.yaml_round_trip: export then import gives the same config and
     hash, and the text is stable under a second export; the two seeds round-trip too."""
     config = parse_config(raw)
     text = export_yaml(config)
@@ -420,7 +420,7 @@ def row_of(session: Session, version_id: uuid.UUID) -> HatStrategyVersion:
 @given(st.lists(raw_configs(), min_size=1, max_size=4))
 @settings(max_examples=25, deadline=None)
 def test_save_creates_version(raws: list[dict]) -> None:
-    """PBT config.save_creates_version (HAT-BOT-080, 081, 084): each save adds one draft with
+    """PBT config.save_creates_version: each save adds one draft with
     the next number, no gaps, linked to its parent, config and hash as validated; publishing
     freezes a draft; inside the market session nothing is written."""
     with Session(ENGINE) as session:
@@ -468,9 +468,9 @@ def test_save_creates_version(raws: list[dict]) -> None:
 
 @given(st.sampled_from([None, "shadow", "confirm", "auto"]))
 def test_new_bot_mode_confirm(mode: str | None) -> None:
-    """PBT config.new_bot_mode_confirm (HAT-BOT-061, HAT-DEC-B2): a new bot asks for confirm
+    """PBT config.new_bot_mode_confirm: a new bot asks for confirm
     whatever mode its config names; asking creation for any other mode is refused. It still
-    runs shadow: its sleeve starts in research (HAT-PORT-063)."""
+    runs shadow: its sleeve starts in research."""
     with Session(ENGINE) as session:
         strategy = seed_default_strategies(session, USER)[0]
         if mode in (None, "confirm"):
@@ -499,7 +499,7 @@ def test_new_bot_mode_confirm(mode: str | None) -> None:
 @settings(max_examples=20)
 @given(st.integers(60, 99))
 def test_trade_keeps_entry_version(price: int) -> None:
-    """HAT-BOT-083: a version promoted after the entry never changes the exit rules of an open
+    """A version promoted after the entry never changes the exit rules of an open
     trade. The trade entered under a stack whose `close_below_sma` exits below 100; the bot then
     moves to a version with the stop alone; the trade still closes on that rule, and a trade
     opened after the move does not. Harm: a promotion silently rewrites the exits of positions
@@ -579,7 +579,7 @@ def released(session: Session, strategy_id: uuid.UUID, at: datetime) -> HatStrat
 @example(state="live", waited=20, replaces=True, in_hours=False)
 @example(state="shadow", waited=19, replaces=False, in_hours=False)
 def test_release_gate(state: str, waited: int, replaces: bool, in_hours: bool) -> None:
-    """PBT config.release_gate (HAT-BOT-084, HAT-GOV-083): a version goes live only from shadow,
+    """PBT config.release_gate: a version goes live only from shadow,
     outside market hours, after at least 20 trading sessions of shadow; it retires the version it
     replaces and moves that version's sleeves onto it in the same step, with one
     `strategy.promoted` event; a refusal changes nothing. A sleeve that places real orders (Live,
@@ -671,7 +671,7 @@ def test_release_gate(state: str, waited: int, replaces: bool, in_hours: bool) -
                 )
                 .order_by(HatEvent.id)
             ).all()
-            if previous is not None:  # the promotion moved the sleeve: recorded (PR 73)
+            if previous is not None:  # the promotion moved the sleeve: recorded
                 assert assigned_events[-1].payload["version_id"] == str(version.id)
                 assert assigned_events[-1].payload["replaced"] == previous.version
             before = session.scalar(select(func.count()).select_from(HatEvent))

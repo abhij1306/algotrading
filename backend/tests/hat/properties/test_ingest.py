@@ -1,9 +1,9 @@
-"""PBT ingest.* (HAT-DATA-031, 032, 036, 040..045, 048, 049; HAT-DEC-I1, I15, T6; HAT-DATA-011,
-085, 095): the MCP client's batching, concurrency and date check, the nightly ingest (probe,
+"""PBT ingest.* (..045, 048, 049; ): the MCP client's batching, concurrency and date check, the
+nightly ingest (probe,
 universe, row checks, raw write-once, outcome event, call budget, index and breadth), symbol
 renames from the stored bars, and the Parquet store both sources write.
 
-`ingest.event_and_state_atomic` is the PR 3 check: an ingest outcome and its event are written by
+`ingest.event_and_state_atomic` is a check: an ingest outcome and its event are written by
 one transaction; the nightly ingest's own hook is checked by `ingest.outcome_event`."""
 
 import dataclasses
@@ -136,7 +136,7 @@ def test_event_and_state_atomic(runs: list[tuple[str, str]]) -> None:
             assert events[0] == committed[job]
 
 
-# --- PR 5: the Parquet store and the index history (HAT-DEC-T6, HAT-DATA-011, 085, 095) -----------
+# --- the Parquet store and the index history -----------
 
 BAR_DAY = date(2024, 5, 6)
 money = st.decimals(min_value="0", max_value="99999999.9999", places=4)
@@ -307,7 +307,7 @@ def test_batches_le_50(n: int) -> None:
 
 @given(n=st.integers(0, 3300))
 def test_batches_of_50(n: int) -> None:
-    """HAT-DEC-I1: every batch but the last is exactly 50 symbols."""
+    """Every batch but the last is exactly 50 symbols."""
     parts = batches(list(range(n)))
     assert all(len(part) == 50 for part in parts[:-1])
 
@@ -387,7 +387,7 @@ def test_default_concurrency_is_four() -> None:
     assert transport.max_in_flight <= 4
 
 
-# --- PR 7: the nightly ingest (HAT-DATA-040..045, 048, 049) -------------------------------------
+# --- the nightly ingest -------------------------------------
 
 MINUTES = 60
 CUTOFF_MINUTE = 22 * MINUTES

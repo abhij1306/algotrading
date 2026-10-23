@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's Teleg
 
 # verify-telegram
 
-Checks that the bot answers only the allowlisted chat and logs every update once; that a crash never replays an update; that the ten commands are the only text the bot acts on and none of them reaches an order; that auto, re-arm and flatten need a second confirmation in time; that a Take works only through a button the service signed for that card, before it expires, within max-chase; that no token, secret or broker text reaches a message, a log or the database; and that alerts, prompts and reports say what the database says. Requirement IDs (index: `docs/invariants.md`): (HAT-TG-005..044), HAT-DEC-I11, I13, T15, B12, HAT-GOV-080..082, HAT-OVR-061, HAT-SCH-056, 065, 074, HAT-EXEC-043, HAT-OPS-071.
+Checks that the bot answers only the allowlisted chat and logs every update once; that a crash never replays an update; that the ten commands are the only text the bot acts on and none of them reaches an order; that auto, re-arm and flatten need a second confirmation in time; that a Take works only through a button the service signed for that card, before it expires, within max-chase; that no token, secret or broker text reaches a message, a log or the database; and that alerts, prompts and reports say what the database says. Requirement IDs (index: `docs/invariants.md`):, .
 
 ## Properties
 
@@ -27,12 +27,12 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.user_events_attributed` Every event a command or button records has `actor = 'user'` and the chat id, and every accepted change records one. Harm: skips, pauses and flattens are missing from the discipline metrics.
 - `PBT telegram.no_secret_in_output` No message or log record holds the bot token, the approval secret, an issued token or broker error text. Harm: a leaked secret lets an outsider control the bot or forge approvals.
 - `PBT telegram.send_only_to_allowlist` Every `sendMessage` and `editMessageReplyMarkup` goes to the allowlisted chat; another chat is never answered. Harm: trade details and buttons reach someone else.
-- `PBT telegram.login_prompt_links` 08:30 sends one link per active account once; 09:05 lists exactly the accounts with no live session, URGENT with their number of real open positions iff they hold any (PR 30); nothing on a non-trading day. Harm: a missed login blocks the day, positions sit with broker stops only and the owner is not told, or noise is ignored.
+- `PBT telegram.login_prompt_links` 08:30 sends one link per active account once; 09:05 lists exactly the accounts with no live session, URGENT with their number of real open positions iff they hold any; nothing on a non-trading day. Harm: a missed login blocks the day, positions sit with broker stops only and the owner is not told, or noise is ignored.
 - `PBT telegram.watchlist_digest_content` The digest's new and dropped symbols are the set differences and the top list is the first min(10, n) by score. Harm: the owner acts on a wrong summary.
 - `PBT telegram.card_matches_signal` The card or shadow message shows the `hat_signal` row's trigger, stop, qty and risk exactly; a card offers exactly Take and Skip, signed for that signal. Harm: the owner approves a trade other than the one placed.
-- `PBT confidence.card_shows_label` The approval card and the shadow message carry one confidence line: the stored label (anything else reads LOW) and the bucket's trades, mean R and 90% interval when the basis has them, else "no backtest evidence" with a reason that is a plain token (D132, HAT-TG-023). Harm: the owner approves a trade without seeing how thin its evidence is, or free text reaches the chat.
+- `PBT confidence.card_shows_label` The approval card and the shadow message carry one confidence line: the stored label (anything else reads LOW) and the bucket's trades, mean R and 90% interval when the basis has them, else "no backtest evidence" with a reason that is a plain token (D132). Harm: the owner approves a trade without seeing how thin its evidence is, or free text reaches the chat.
 - `PBT telegram.report_content` The 15:35 digest lists exactly the day's `signal.rejected` signals with reasons; the 15:40 report shows each bot's snapshot; every real fill, partial, close and stop move is one message. Harm: rejections, drawdowns and money moving go unseen.
-- `PBT telegram.mode_names_a_bot_and_its_gate` `/mode <mode>` without a bot is refused `bad_arguments` and writes nothing; `/mode <bot> confirm|auto` is refused with the first gate that would hold the bot back at the next open (`ddpi_not_confirmed`, then `weights_not_confirmed`), says which gate, and writes nothing, or is queued (auto after its Confirm); a name two bots share is refused `ambiguous_bot` and writes nothing, while the bot's id still names it; `/status` then shows the mode the bot runs, why it differs from the one asked for, and the queued change (HAT-TG-038, HAT-GOV-085). Harm: every bot switched at once by mistake, or a bot left in shadow with no way to tell why.
+- `PBT telegram.mode_names_a_bot_and_its_gate` `/mode <mode>` without a bot is refused `bad_arguments` and writes nothing; `/mode <bot> confirm|auto` is refused with the first gate that would hold the bot back at the next open (`ddpi_not_confirmed`, then `weights_not_confirmed`), says which gate, and writes nothing, or is queued (auto after its Confirm); a name two bots share is refused `ambiguous_bot` and writes nothing, while the bot's id still names it; `/status` then shows the mode the bot runs, why it differs from the one asked for, and the queued change. Harm: every bot switched at once by mistake, or a bot left in shadow with no way to tell why.
 - `PBT telegram.mode_outside_hours` `/mode` is refused in market hours and for unknown values, writing nothing; an accepted one queues for the next session open. Harm: switching to auto mid-session.
 - `PBT telegram.second_confirm` Auto, re-arm and flatten act only on a Confirm pressed in time, in the allowlisted chat, at most once. Harm: one message switches to auto or sells everything.
 - `PBT telegram.flatten_logged` A confirmed `/flatten` only sells, at most the open qty, even under a kill; it writes one `flatten.executed` with `actor = 'user'` and the chat id. Harm: flatten grows a position or the breach is invisible.
@@ -44,13 +44,12 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.relay_late_commit` An event whose transaction commits after the relay passed its id is relayed once if it commits within `GAP_WAIT` (an hour), and given up after; the events around it go out once each. Harm: a health alert or approval card held by a slow transaction is lost for good.
 - `PBT telegram.veto_digest_on_week_end` The weekly veto digest goes out on a trading day exactly when no later weekday of its week may still trade (a calendar holiday does not; a day the calendar lacks may). Harm: a daily "weekly" digest once the calendar runs out, or none in a holiday week.
 - `PBT telegram.token_never_persisted` No table and no HAT log record holds a raw token; the stored hash is the card token's. Harm: database or log access can approve trades.
-- `CONF telegram_command_set` HAT-DEC-I11: the accepted commands are exactly `COMMAND_SET`. Harm: an undocumented command changes state outside governance.
-- `CONF telegram__command_catalogue` HAT-TG-030: `HANDLERS`, `_ARITY` and `COMMANDS` name the same ten commands. Harm: an unreviewed control path.
-- `CONF gov__lever_catalogue` HAT-GOV-080: no command, button or API route sets price, size or stop or exits one position; Take and Skip carry only the signal. Harm: discretionary edits bypass the risk policy.
-- `CONF no_override_command` HAT-DEC-B12: no command, route or strategy config field overrides the regime gate. Harm: a discretionary override reintroduces the risk the gate removes.
-- `CONF telegram__no_webhook_no_listener` HAT-TG-010: the package binds no socket, imports no server and names no setWebhook; the client refuses any method but the four outbound ones before a request. Harm: an exposed port on the trading box.
-- `CONF telegram__no_order_import_in_text_path` HAT-TG-031: no module of the text path reaches the router, submission, the trade manager, the adapter, trades, approvals or the risk authority. Harm: free text reaches an order.
-- `CONF auto_mode_single_user` HAT-OVR-061: no API route reaches the mode code, and `/mode auto` (and its Confirm) is refused for a bot whose account is not `HAT_USER_ID`'s. Harm: orders for someone else's account without SEBI empanelment.
+- `CONF telegram__command_catalogue` `HANDLERS`, `_ARITY` and `COMMANDS` name the same ten commands. Harm: an unreviewed control path.
+- `CONF gov__lever_catalogue` no command, button or API route sets price, size or stop or exits one position; Take and Skip carry only the signal. Harm: discretionary edits bypass the risk policy.
+- `CONF no_override_command` no command, route or strategy config field overrides the regime gate. Harm: a discretionary override reintroduces the risk the gate removes.
+- `CONF telegram__no_webhook_no_listener` the package binds no socket, imports no server and names no setWebhook; the client refuses any method but the four outbound ones before a request. Harm: an exposed port on the trading box.
+- `CONF telegram__no_order_import_in_text_path` no module of the text path reaches the router, submission, the trade manager, the adapter, trades, approvals or the risk authority. Harm: free text reaches an order.
+- `CONF auto_mode_single_user` no API route reaches the mode code, and `/mode auto` (and its Confirm) is refused for a bot whose account is not `HAT_USER_ID`'s. Harm: orders for someone else's account without SEBI empanelment.
 - `PBT telegram.watchlist_digest_once` A `watchlist.digest` retry after a partial send failure sends only the digests not yet sent for the day's latest publish. Harm: the owner gets the same digest on every retry.
 
 ## Run
@@ -74,7 +73,7 @@ No check calls Telegram: `FakeTransport` (`backend/tests/hat/hat_telegram_suppor
 - A failing property prints a falsifying example. Replay it on `TgRig`: `rig.service.handle(text_update(...))` or `button_update(...)`, then read `rig.transport.calls`, `rig.log()` and `rig.places()`.
 - A TLC counterexample names its actions; each has a `\* code:` comment naming the function (`confirm.py:ask` and `take`, `commands.py:_flatten`, `manage.py:flatten`, `relay.py:message_for`, `commands.py:run_command`, `reports.py:login_prompt` and `daily_report`, `ops/scheduler.py:tick`). If the code can take the steps it is a bug; if a guard the model omits stops it, add the guard to the model and say so under "Scope changes".
 - Never weaken a property or shrink a strategy without a reason under "Scope changes".
-- Known windows, kept visible: the confirmation nonces live in memory, so a restart drops a pending Confirm (it must be asked again); since PR 32 the offset commits with the update (HAT-TG-011), so a crash before that commit delivers the update again and the handlers' idempotence keeps it from acting twice. A passing `OperationalError` leaves the offset (the poll loop backs off and the update comes again); any other failure, in the handler or before it (`_give_up` in `poll_once`), is logged as an `error` row and the offset moves past it. Open: a crash between a Take's decision commit and its entry placement leaves a decision with no entry; the update delivered again is refused `already_decided` (an `execution/` follow-up).
+- Known windows, kept visible: the confirmation nonces live in memory, so a restart drops a pending Confirm (it must be asked again); the offset commits with the update, so a crash before that commit delivers the update again and the handlers' idempotence keeps it from acting twice. A passing `OperationalError` leaves the offset (the poll loop backs off and the update comes again); any other failure, in the handler or before it (`_give_up` in `poll_once`), is logged as an `error` row and the offset moves past it. Open: a crash between a Take's decision commit and its entry placement leaves a decision with no entry; the update delivered again is refused `already_decided` (an `execution/` follow-up).
 
 ## Updating
 
@@ -121,37 +120,11 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `65afe62fa0520a7fdd41f043160af759ff3436d90f0fc5be1a91fd33ea27fe8d`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- PR 71 (D132, HAT-TG-023): the card and the shadow message gain the signal's confidence line (`render.confidence_line`, from `CardView.confidence` and `basis`, which `relay.card_view` reads from `hat_signal`). `TgRig` seeds high evidence for an auto bot (`hat_engine_support.seed_label`), so its entries are placed as before; `route` no longer takes a label. New PBT `confidence.card_shows_label`. Nothing was narrowed.
-- PR 75a: CONF `telegram.no_order_import_in_text_path` adds `engine/positions.py` to the order modules no text-path module may reach; `telegram/tokens.py`'s docstring names `trades.send_approval` (public now). `commands.addressee` names a bot only for a `/command`: a plain text with `@`, such as `@`, was dropped as `other_bot` instead of answered `not_a_command` (found by PBT `telegram.unknown_command_rejected` on main, now pinned by an `@example`). Nothing was narrowed.
-- PR 52: `ExecutionRouter.tla` splits a Take into the decision (to the new state `taken`) and its placement (`PlaceTaken`, which re-reads the session, hours, feed, gate and GTT; the max-chase re-check stays on the decision), and adds `Crash` (`verify-execution`'s `EntriesSettled`). `NoEntryWithoutSession`, `RejectNoCard` and `UserCannotRaiseRisk` pass unchanged and their broken variants still fail. No Telegram code changed.
-- PR 48: `sale.unfilled` is URGENT (`URGENT_ALERTS`), checked by `verify-execution`'s `mpp.resting_market_sale_resent` (break recorded there). No Telegram check changed.
-- PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged. The review round added `poison` updates (failing before a handler runs, caught by `_give_up`) and `flaky` ones (an `OperationalError` on the first try, retried).
-- PR 30 (design review item 5, HAT-TG-021): the 09:05 reprompt is URGENT when the logged-out accounts hold real open positions (`reads.open_real_positions`, `render.login_text(open_positions=)`); the head line carries it, so the link lines after it are unchanged. `telegram.login_prompt_links` draws real, virtual and closed positions on the first account.
-- PR 31 (design review item 6, HAT-EXEC-144): `corporate_action.unhandled` is a health event (relayed, URGENT). It is a Positions event, so `telegram.health_alert_for_every_failure` records it on a real open position row of the rig's bot (`_held_position`) with that position's signal as correlation id, as `events.record` requires. Nothing was narrowed.
-- PR 16 built this skill. The properties run one bot (confirm unless a property needs auto) on one account over SQLite and `FakeBroker`, with the HTTP layer faked; `SLOW` properties run 15 examples.
-- `telegram.report_content` first routed its refusals on a confirm bot, where the router posts a card and checks only at the Take, so no signal was ever rejected and the digest assertion was vacuous; the scratch break found it. It now routes them on an auto bot, one instrument per refusal (a signal a day per instrument), and asserts as many digest lines as refusals.
-- `telegram.user_events_attributed` and `telegram.send_only_to_allowlist` gained an `@example` each (a confirmed flatten; a Take on a live card, which clears its buttons): in 15 examples the generator reached neither reliably and the scratch breaks went unseen.
-- `telegram.mode_outside_hours`: the market-hours rule is checked twice, in `commands._mode_refusal` and in `risk/modes.plan_mode_change`; the break removes both, since either alone holds the property.
-- `CONF auto_mode_single_user` found that auto mode was not bound to `HAT_USER_ID`; `/mode auto` and its Confirm now refuse (`auto_not_owner`) a bot whose account belongs to anyone else. The rig's account belongs to the configured owner.
-- `TLA ApprovalToken!SecondConfirmRequired` models the confirmation of a lever (auto, re-arm, flatten), not the approval card; the card's signature and single use are checked on the real code (`telegram.token_forgery_rejected`, `telegram.expiry_window`).
-- Review round (before the first push): sales of one position are now serialised in `TradeManager` (`_sale_lock`, held from the "nothing else is selling" check until the order is sent), because the Telegram flatten runs on its own thread beside the tick path; `ManagerFlattener` must be given the same `TradeManager` instances the live exits use (PR 17 wiring). A flatten confirmed outside the session is refused (`market_closed`) with nothing recorded, and one position or account that fails no longer stops the others (`FlattenReport.failed`); `telegram.flatten_logged` now asserts the refusal after 15:30. The poller survives any error, a refused button answer no longer loses the reply, an unrenderable event is skipped instead of holding back the relay, a Take whose placement was refused says so, `route_by_mode` refuses confirm bots (their cards need the router's signer), and `/mode` on a day the calendar lacks says `no_calendar`. `telegram.relay_late_commit` and `telegram.veto_digest_on_week_end` were added for the relay gaps and the week-end rule, which had no check.
-- `TgRig` uses `OpenFlattener` (no positions, session open) instead of an empty `ManagerFlattener`; the real `ManagerFlattener` over `TradeManager` runs in `telegram.flatten_logged`.
-- `/cmd@other_bot` (found by a CodeAnt nitpick on PR #113): the `@bot` suffix was dropped without checking it, so in a group `/kill@another_bot` ran here. The client now also calls `getMe`; the service asks it once, when the first suffixed command arrives, and keeps the username. `telegram.other_bot_ignored` was added, and the method-allowlist CONF check now lists five methods.
-- Sonar round (PR #113): `COMMANDS` is now `tuple(_ARITY)`, so the command set is written once; the token decoder catches `ValueError` alone (`binascii.Error` is one). Behaviour is unchanged and every check here passed again. The `logging.exception` suggestions were declined: a traceback can carry broker or database text, so failures log only the exception type (HAT-TG-014).
-- PR 47 (HAT-EXEC-146): `render.URGENT_ALERTS` gains `position.series_changed`; its break is recorded under `manage.series_change_remapped` in `verify-execution`. Nothing was narrowed.
-
-- PR 36 (HAT-EXEC-042): `render.URGENT_ALERTS` gains `journal.mismatch`; its break is recorded under `journal.check_alerts` in `verify-execution`. No Telegram check changed.
-- PR 75b (architecture audit A-F3): `/positions`' days held counts the one `SessionCalendar`'s trading days (`reads._days_held`), not `MarketCalendar`'s weekday default, so a day the calendar does not hold is not counted; `calendar.one_answer` (`verify-reference-data`) checks it. No Telegram check changed.
+Covered digest: `b55214fbcb9f2fb7626b5a799dcca56206b2a2fea3ae5783df364dcfd71c5251`
 
 ## Scratch breaks
 
-Each check was shown to catch a deliberate break in the real code or model (HAT-VER-072), then the break was removed and the check passed again. TLA breaks are the models' `BrokenMode` variants, run by `run.sh --broken`; the state lines are the last steps of TLC's counterexample.
+Each check was shown to catch a deliberate break in the real code or model, then the break was removed and the check passed again. TLA breaks are the models' `BrokenMode` variants, run by `run.sh --broken`; the state lines are the last steps of TLC's counterexample.
 
 ### TLA ApprovalToken!SecondConfirmRequired
 
@@ -252,32 +225,6 @@ E     Right contains 1 more item:
 E     {'feed.stale': 1}
 ```
 
-Break: `HEALTH_EVENTS` without `broker.capabilities_changed`. (PR 29)
-
-```
-E   AssertionError: assert Counter() == Counter({'bro..._changed': 1})
-```
-
-Break: `URGENT_ALERTS` without `fill.excess`. (PR 28)
-
-```
-E   AssertionError: assert {'fill.excess...t.unverified'} <= frozenset({'g....unverified'})
-```
-
-Break: `HEALTH_EVENTS` without `corporate_action.unhandled`. (PR 31)
-
-```
-E   AssertionError: assert Counter() == Counter({'cor...nhandled': 1})
-```
-
-Break: `URGENT_ALERTS` without `corporate_action.unhandled`. (PR 31)
-
-```
-E   AssertionError: assert {'corporate_a...t.unverified'} <= frozenset({'f....unverified'})
-E     Extra items in the left set:
-E     'corporate_action.unhandled'
-```
-
 ### PBT telegram.unknown_chat_has_no_effect
 
 Break: in `service.py`, `handle` treats only a missing chat id as a stranger.
@@ -311,12 +258,6 @@ Break: in `commands.py`, `parse` drops the upper bound on argument count.
     | Failing test case: test_unknown_command_rejected(
 ```
 
-Break: (PR 75a, found by this property on main) `commands.addressee` reads an `@` suffix off any first word, not only a command's, so the text `@` was dropped as `other_bot` with no reply (fixed: only a `/command` names a bot; `@example("@", AT)` pins it).
-
-```
-E   AssertionError: assert 'other_bot' in {'bad_arguments', 'not_a_command', 'unknown_command'}
-```
-
 ### PBT telegram.other_bot_ignored
 
 Break: three in `commands.py`, each run alone: (1) `run_command` drops the `for_another_bot` check; (2) `for_another_bot` compares the suffix case-sensitively; (3) `for_another_bot` lets every suffix through while the username is unknown (fail open).
@@ -340,7 +281,7 @@ E
 
 ### PBT telegram.offset_commits_with_update
 
-Break: (PR 32) `poll_once` commits the offset past an update on its own before handling it (the PR 16 order). The Take crashed at its commit is never logged, an update crashed before it ran is dropped, and the failed handler's row never lands.
+Break: `poll_once` commits the offset past an update on its own before handling it (the order). The Take crashed at its commit is never logged, an update crashed before it ran is dropped, and the failed handler's row never lands.
 
 ```
   | ExceptionGroup: Hypothesis found 3 distinct failures in explicit examples. (3 sub-exceptions)
@@ -356,50 +297,6 @@ Break: (PR 32) `poll_once` commits the offset past an update on its own before h
     | Failing explicit example: test_offset_commits_with_update(
     |     updates=[(1, 'failing'), (1, 'stranger'), (1, 'text')],
     |     crashes=[(0, 'commit')],
-```
-
-Break: (PR 32) `handle` moves the offset before running the handler, so a Take's own commit carries it: the Take crashed at the final commit loses its log row and is never delivered again.
-
-```
-tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:725: in test_offset_commits_with_update
-E   assert []
-E   Failing explicit example: test_offset_commits_with_update(
-```
-
-Break: (PR 32) the error branch logs its row without moving the offset: the failed update comes again on every poll.
-
-```
-tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:719: in test_offset_commits_with_update
-E   assert 2 == (1 + 0)
-```
-
-Break: (PR 32) the unknown-chat refusal does not move the offset.
-
-```
-tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:720: in test_offset_commits_with_update
-E   assert 2 == 1
-```
-
-Break: (PR 32) `poll_once` lets an update that fails outside the handler's error branch raise (no `_give_up`): it comes again on every poll and holds back every later update.
-
-```
-tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:709: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:647: in handle
-tests/hat/properties/test_telegram.py:605: in handle
-tests/hat/properties/test_telegram.py:642: in _refuse_stranger
-E   ValueError: the refusal cannot be written
-```
-
-Break: (PR 32) the error branch logs a passing database error (`OperationalError`) as an `error` row and moves the offset, instead of leaving the update to come again.
-
-```
-tests/hat/properties/test_telegram.py:659: in test_offset_commits_with_update
-tests/hat/properties/test_telegram.py:718: in test_offset_commits_with_update
-E   AssertionError: assert ['u3'] == ['u2', 'u3']
 ```
 
 ### PBT telegram.user_events_attributed
@@ -444,28 +341,6 @@ Break: in `reports.py`, the reprompt lists every account.
     | Failing test case: test_login_prompt_links(
     | AssertionError: assert ['Still not l...n.test/X0001'] == []
     | Failing test case: test_login_prompt_links(
-```
-
-Break: the reprompt is never URGENT (the code before PR 30). (PR 30)
-
-```
-E   AssertionError: assert False == (1 > 0)
-E    +    where <built-in method startswith of str object> = 'Still not logged in:'.startswith
-```
-
-Break: `reads.open_real_positions` counts virtual positions too. (PR 30)
-
-```
-    | AssertionError: assert ' 1 open position(s) ' in 'URGENT: still not logged in. 2 open position(s) have broker stops only: ...'
-    | AssertionError: assert True == (0 > 0)
-```
-
-Break: the count covers every active account, not only the logged-out ones. Hypothesis did not draw it, so the property has an `@example` of a live account holding the position while another is logged out. (PR 30)
-
-```
-E   AssertionError: assert True == (0 > 0)
-E    +  where True = <built-in method startswith of str object>('URGENT')
-E   Failing explicit example: test_login_prompt_links(
 ```
 
 ### PBT telegram.watchlist_digest_content
@@ -622,17 +497,6 @@ E   Failing test case: test_token_never_persisted(
 E       # The test always failed when commented parts were varied together.
 ```
 
-### CONF telegram_command_set
-
-Break: `/buy` added to `commands.COMMANDS`.
-
-```
-E   AssertionError: assert {'/arm', '/bu... '/mode', ...} == {'/arm', '/fl...'/pause', ...}
-E
-E     Extra items in the left set:
-E     '/buy'
-```
-
 ### CONF telegram__command_catalogue
 
 Break: `/size` added to `HANDLERS`.
@@ -708,36 +572,16 @@ E   AssertionError: assert 2 == (0 + 1)
 
 ### PBT telegram.mode_names_a_bot_and_its_gate
 
-Break: (PR 45) `gate_refusal` skips the DDPI gate (also fails `router.mode_gates_hold_bots_in_shadow`, `verify-execution`).
+Break: `gate_refusal` skips the DDPI gate (also fails `router.mode_gates_hold_bots_in_shadow`, `verify-execution`).
 
 ```
 E   AssertionError: assert (True, None) == (False, 'ddpi_not_confirmed')
 E     At index 0 diff: True != False
 ```
 
-Break: (PR 45) `/mode` takes one or two arguments again (`"/mode": (1, 2)`): `/mode auto` reads `auto` as a bot name.
-
-```
-E   AssertionError: assert (False, 'unknown_bot') == (False, 'bad_arguments')
-E     At index 1 diff: 'unknown_bot' != 'bad_arguments'
-```
-
-Break: (PR 45) `render.mode_text` drops the queued change.
-
-```
-E   AssertionError: assert 'shadow (asked confirm: DDPI not confirmed); shadow from ' in (('Status\nBroker fyers X0001: live\nFeed: unknown\nAccount kill: armed\ntrend: shadow (asked confirm: DDPI not confirmed), active, regime n/a'))
-```
-
-Break: (PR 45 review) `_mode` drops the `len(bots) > 1` refusal: `/mode trend auto` with two `trend` bots queues both.
-
-```
-E   AssertionError: assert (True, None) == (False, 'ambiguous_bot')
-E     At index 0 diff: True != False
-```
-
 ### PBT confidence.card_shows_label
 
-Break: (PR 71) in `backend/app/hat/telegram/render.py`: the trade lines leave out the confidence line.
+Break: in `backend/app/hat/telegram/render.py`: the trade lines leave out the confidence line.
 
 ```
 tests/hat/properties/test_confidence.py F
@@ -753,17 +597,3 @@ E   Failing explicit example: test_card_shows_label(
 E       label=None,
 ```
 
-Break: (PR 71) in `backend/app/hat/telegram/render.py`: any label is printed as stored, so a signal without one reads NONE.
-
-```
-tests/hat/properties/test_confidence.py F
-tests/hat/properties/test_confidence.py:341: in test_card_shows_label
-    assert line.startswith(f"Confidence: {shown} - ")
-E   AssertionError: assert False
-E    +  where False = <built-in method startswith of str object>('Confidence: LOW - ')
-E    +    where <built-in method startswith of str object> = 'Confidence: NONE - no backtest evidence (no_label)'.startswith
-E   Failing explicit example: test_card_shows_label(
-E       label=None,
-E       basis={},
-E   )
-```

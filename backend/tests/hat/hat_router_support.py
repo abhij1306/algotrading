@@ -1,5 +1,5 @@
 """The execution router's test rig (`Rig`: one bot on one broker account, the real Fyers adapter
-over `FakeBroker`, the real router) and the crash injection of PR 52: `crash_after` ends the
+over `FakeBroker`, the real router) and the crash injection of `crash_after` ends the
 "process" right after its k-th step (a commit, or a broker call the broker took) the way a power
 cut would, and `restart` builds a fresh process's desks on the same database and runs its
 recovery. Shared by `properties/test_router.py` and the Postgres check
@@ -58,7 +58,7 @@ from app.hat.time import IST
 
 D = Decimal
 
-LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here (PR 51)
+LIVE_LTP = D(10**6)  # a fresh live price above every stop drawn here
 LIVE = PlacementCheck(CALENDAR, feed_stale=False, quality_failed=False, gate_on=True, ltp=LIVE_LTP)
 TICKERS = tuple(SYMBOLS)
 
