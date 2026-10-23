@@ -483,7 +483,8 @@ def test_brk__recorded_writes() -> None:
 # follow-up 3); every reader imports them from there.
 ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING", "BROKER_FYERS"}
 CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
-ACCOUNT_OWNERS = {"HatBrokerAccount", "account"}  # the model and the name every reader uses
+# the model, and any name for an account a reader uses (`account`, `acct`, `broker_account`...)
+ACCOUNT_OWNER = re.compile(r"^HatBrokerAccount$|acc(oun)?t", re.IGNORECASE)
 
 
 def _account_column(node: ast.expr) -> bool:
@@ -491,15 +492,24 @@ def _account_column(node: ast.expr) -> bool:
         isinstance(node, ast.Attribute)
         and node.attr in ("status", "broker")
         and isinstance(node.value, ast.Name)
-        and node.value.id in ACCOUNT_OWNERS
+        and ACCOUNT_OWNER.search(node.value.id) is not None
     )
 
 
 def account_literal_violations(source: str) -> list[str]:
     """What breaks the one-copy rule in a module's source: a module-level `ACCOUNT_*` status
     constant or `BROKER_FYERS` of its own, or a broker account's `status` or `broker` compared
-    with a string."""
+    with a string, written out or held in a module-level copy under another name."""
     tree = ast.parse(source)
+    copies = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
     found = [
         f"defines {target.id}"
         for node in tree.body
@@ -510,7 +520,11 @@ def account_literal_violations(source: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Compare):
             sides = [node.left, *node.comparators]
-            literal = any(isinstance(s, ast.Constant) and isinstance(s.value, str) for s in sides)
+            literal = any(
+                (isinstance(s, ast.Constant) and isinstance(s.value, str))
+                or (isinstance(s, ast.Name) and s.id in copies)
+                for s in sides
+            )
             if literal and any(_account_column(s) for s in sides):
                 found.append(f"line {node.lineno}: an account column compared with a string")
     return found
@@ -529,11 +543,14 @@ def test_brk__account_constants_one_copy() -> None:
         and (bad := account_literal_violations(path.read_text(encoding="utf-8")))
     }
     assert found == {}
-    # the checker can fail: a copy of a constant and both kinds of compared literal
+    # the checker can fail: a copy of a constant, a copy under another name, and compared
+    # literals on the model and on any account name
     bad = (
         'ACCOUNT_ACTIVE = "active"\n'
-        "def f(session, account):\n"
+        'LIVE = "active"\n'
+        "def f(session, account, acct):\n"
         '    session.scalars(select(HatBrokerAccount).where(HatBrokerAccount.status == "active"))\n'
-        '    return account.broker != "fyers"\n'
+        "    session.scalars(select(HatBrokerAccount).where(HatBrokerAccount.status == LIVE))\n"
+        '    return account.broker != "fyers" or acct.status == "active"\n'
     )
-    assert len(account_literal_violations(bad)) == 3
+    assert len(account_literal_violations(bad)) == 5

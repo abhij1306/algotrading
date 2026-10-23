@@ -1002,3 +1002,9 @@ Break: (PR 73) the runtime builds `LiveSubscriptions(registry, subscribe, unsubs
 ```
 E   AssertionError: assert {'hat/daily/r...me.py': [332]} == {}
 ```
+
+Break: (PR 73, CodeAnt) the runtime passes `None` as the alert (the first version accepted any fourth argument).
+
+```
+E   AssertionError: assert {'hat/daily/r...me.py': [346]} == {}
+```

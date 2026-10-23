@@ -364,7 +364,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `68b46fa835a6cae7ee1e7e0d2c3c357e5981bb6bceec07c38a6d68741aedaed7`
+Covered digest: `9853575f70a6cf01667db56fd799fdbefc09717fb0286a7e9ec19d27d8c57321`
 
 ## Scope changes
 
@@ -4346,4 +4346,16 @@ Break: (PR 73, review) `data/instruments.py` defines its own `BROKER_FYERS = "fy
 
 ```
 E   AssertionError: assert {'data/instru...ROKER_FYERS']} == {}
+```
+
+Break: (PR 73, CodeAnt) `telegram/reads.py` keeps its own `ACTIVE = "active"` and compares `HatBrokerAccount.status == ACTIVE` (as before the fix; the first version of the check missed a copy under another name).
+
+```
+E   AssertionError: assert {'telegram/re...th a string']} == {}
+```
+
+Break: (PR 73, CodeAnt) `daily/production.py` reads the account as `acct` and compares `acct.broker != "fyers"` (the first version knew only `account`).
+
+```
+E   AssertionError: assert {'daily/produ...th a string']} == {}
 ```

@@ -236,16 +236,37 @@ def test_admin_checker_can_fail() -> None:
 
 
 def unalerted_subscriptions(source: str) -> list[int]:
-    """The lines of every `LiveSubscriptions(...)` in a module's source built without its
-    `alert` (the fourth positional argument or the keyword)."""
+    """The lines of every `LiveSubscriptions(...)` in a module's source (by its name, an import
+    alias or `module.LiveSubscriptions`) built without its `alert` (the fourth positional
+    argument or the keyword), or with `None` for it."""
+    tree = ast.parse(source)
+    names = {"LiveSubscriptions"} | {
+        alias.asname
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name == "LiveSubscriptions" and alias.asname
+    }
+
+    def builds(func: ast.expr) -> bool:
+        if isinstance(func, ast.Name):
+            return func.id in names
+        return isinstance(func, ast.Attribute) and func.attr == "LiveSubscriptions"
+
+    def alert(call: ast.Call) -> ast.expr | None:
+        if len(call.args) >= 4:
+            return call.args[3]
+        return next((k.value for k in call.keywords if k.arg == "alert"), None)
+
     return [
         node.lineno
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "LiveSubscriptions"
-        and len(node.args) < 4
-        and not any(k.arg == "alert" for k in node.keywords)
+        and builds(node.func)
+        and (
+            (given := alert(node)) is None
+            or (isinstance(given, ast.Constant) and given.value is None)
+        )
     ]
 
 
@@ -263,7 +284,13 @@ def test_ops__subscription_alert_wired() -> None:
     }
     assert found == {}
     assert "LiveSubscriptions(" in sources["hat/daily/runtime.py"]
-    # the checker can fail: one built without its alert, one with it by keyword
+    # the checker can fail: built without its alert, with None, through an alias or the module;
+    # one with it by keyword passes
     assert unalerted_subscriptions(
-        "LiveSubscriptions(r, s, u)\nLiveSubscriptions(r, s, u, alert=a)\n"
-    ) == [1]
+        "from x import LiveSubscriptions as Subs\n"
+        "LiveSubscriptions(r, s, u)\n"
+        "LiveSubscriptions(r, s, u, alert=a)\n"
+        "LiveSubscriptions(r, s, u, alert=None)\n"
+        "Subs(r, s, u)\n"
+        "subscriptions.LiveSubscriptions(r, s, u, None)\n"
+    ) == [2, 4, 5, 6]

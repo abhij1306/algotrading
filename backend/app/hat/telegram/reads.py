@@ -29,13 +29,13 @@ from ..models import (
     HatStrategy,
     HatWatchlistEntry,
 )
+from ..models.strategy import ACCOUNT_ACTIVE
 from ..risk import controls, kill
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc, day_bounds, trade_date_of
 from . import render
 
 __all__ = [
-    "ACTIVE",
     "LIVE",
     "LoginLinks",
     "PriceSource",
@@ -52,7 +52,6 @@ __all__ = [
     "watchlist_rows",
 ]
 
-ACTIVE = "active"
 LIVE = "live"
 TOP_N = 10
 _ID_PREFIX = 6
@@ -100,7 +99,7 @@ def symbol_of(session: Session, instrument_id: uuid.UUID) -> str:
 
 def accounts(session: Session, broker: str | None = None) -> list[HatBrokerAccount]:
     """The active broker accounts (of one broker, any case), ordered by id."""
-    query = select(HatBrokerAccount).where(HatBrokerAccount.status == ACTIVE)
+    query = select(HatBrokerAccount).where(HatBrokerAccount.status == ACCOUNT_ACTIVE)
     rows = list(session.scalars(query.order_by(HatBrokerAccount.id)))
     if broker is None:
         return rows
