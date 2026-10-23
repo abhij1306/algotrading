@@ -151,30 +151,48 @@ def protect_plan(
     a send this recent may still land. `after`: the step just tried, which did not settle it;
     the plan goes on with the steps after it.
 
-    A lost GTT is never sent again (the GTT book may lag one that landed); a lost day stop is
-    looked up by its tag and sent again only when absent, once it is old enough."""
+    A lost GTT is never sent again (the GTT book may lag one that landed), and while one may
+    rest no other stop is sent; a lost day stop is looked up by its tag and sent again only when
+    absent, once it is old enough."""
 
     def due(step: ProtectStep) -> bool:
         return after is None or _PROTECT_ORDER.index(step) > _PROTECT_ORDER.index(after)
 
     if open_qty <= 0:
         return ProtectPlan(ProtectStep.CLOSED)
-    if due(ProtectStep.GTT_SELLING) and any(_gtt_selling(r) for r in rows):
-        return ProtectPlan(ProtectStep.GTT_SELLING)
-    if due(ProtectStep.EXIT_WORKING) and exit_live:
-        return ProtectPlan(ProtectStep.EXIT_WORKING)
-    if due(ProtectStep.SETTLE) and any(lost(r) and r.purpose == STOP_GTT for r in rows):
-        return ProtectPlan(ProtectStep.SETTLE)
+    lost_gtt = any(lost(r) and r.purpose == STOP_GTT for r in rows)
+    held = _held(rows, exit_live=exit_live, lost_gtt=lost_gtt, due=due)
+    if held is not None:
+        return held
     live = [r for r in rows if r.status in LIVE and r.broker_order_id]
     if due(ProtectStep.RESIZE) and live:
         resize = tuple(r for r in live if r.qty != open_qty)
         return (
             ProtectPlan(ProtectStep.RESIZE, resize) if resize else ProtectPlan(ProtectStep.COVERED)
         )
+    # A GTT its settle left lost may rest at the broker: no other stop is sent over it.
     ready = tuple(r for r in rows if _ready_to_send(r, young))
-    if due(ProtectStep.RESEND) and ready:
+    if due(ProtectStep.RESEND) and ready and not lost_gtt:
         return ProtectPlan(ProtectStep.RESEND, ready)
     return _wait_or_place(rows, day_stop=day_stop, young=young)
+
+
+def _held(
+    rows: Sequence[HatOrder],
+    *,
+    exit_live: bool,
+    lost_gtt: bool,
+    due: Callable[[ProtectStep], bool],
+) -> ProtectPlan | None:
+    """GTT_SELLING, EXIT_WORKING or SETTLE when one is due: the broker holds a sale or may hold
+    a GTT, and nothing is sized or sent until it is known."""
+    if due(ProtectStep.GTT_SELLING) and any(_gtt_selling(r) for r in rows):
+        return ProtectPlan(ProtectStep.GTT_SELLING)
+    if due(ProtectStep.EXIT_WORKING) and exit_live:
+        return ProtectPlan(ProtectStep.EXIT_WORKING)
+    if due(ProtectStep.SETTLE) and lost_gtt:
+        return ProtectPlan(ProtectStep.SETTLE)
+    return None
 
 
 def _gtt_selling(row: HatOrder) -> bool:

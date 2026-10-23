@@ -71,6 +71,15 @@ NEVER_SENT = stop(status="pending", placed_at=None)
         ([LOST_DAY_YOUNG], 100, False, None, ProtectStep.WAIT_LOST, None),  # in flight: no alert
         ([LOST_DAY], 100, False, ProtectStep.RESEND, ProtectStep.WAIT_LOST, "stop_unconfirmed"),
         ([LOST_GTT], 100, False, ProtectStep.SETTLE, ProtectStep.WAIT_LOST, "gtt_unconfirmed"),
+        # a GTT its settle left lost may rest: no day stop is sent over it
+        (
+            [LOST_GTT, LOST_DAY],
+            100,
+            False,
+            ProtectStep.SETTLE,
+            ProtectStep.WAIT_LOST,
+            "gtt_unconfirmed",
+        ),
         ([], 100, False, None, ProtectStep.PLACE_DAY, None),
         ([stop(status="cancelled")], 100, False, None, ProtectStep.PLACE_DAY, None),
     ],

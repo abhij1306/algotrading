@@ -548,8 +548,10 @@ class StopDesk:
             case ProtectStep.EXIT_WORKING:
                 return EXIT_WORKING  # `make_room` sized the stops; the sync protects the rest
             case ProtectStep.RESIZE:
-                resized = [self._resize(session, target, row, now) for row in plan.rows]
-                return PROTECTED if all(resized) else FAILED  # a refused resize is alerted
+                ok = True
+                for row in plan.rows:  # every row is resized, even after a refusal
+                    ok = self._resize(session, target, row, now) and ok
+                return PROTECTED if ok else FAILED  # a refused resize is alerted
             case ProtectStep.WAIT_LOST:
                 # A stop whose answer was lost may rest at the broker and could not be settled
                 # yet: nothing is placed on top of it; the next sync settles it.
@@ -732,26 +734,49 @@ class StopDesk:
             return True
         if row.broker_order_id is None:
             return False
-        limit: Decimal | None = None
         if row.purpose == STOP_DAY:
-            sized = {"qty": row.qty} if rescaled else {}
-            ack = self._broker.modify_order(
-                row.broker_order_id, order_type=OrderType.SL_M, trigger_price=trigger, **sized
-            )
+            refused = self._modify_day(row, trigger, rescaled=rescaled)
         else:
-            if tick is None:
-                self.alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
-                return False
-            limit = gtt_limit_price(trigger, tick)
-            size = row.qty if rescaled else target.position.qty_open
-            ack = self._broker.modify_gtt(GttModify(row.broker_order_id, size, trigger, limit))
-        if not ack.ok:
-            self.alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
+            refused = self._modify_gtt(session, target, row, trigger, tick, now, rescaled=rescaled)
+        if refused is not None:
+            self.alert(ALERT_STOP_NOT_MOVED, target, now, refused)
             return False
         row.trigger_price = trigger
-        if limit is not None:
-            row.price = limit
-            row.qty = size
-            self.order_event(session, row, target, EVENT_GTT_REFRESHED, now)
         session.commit()
         return True
+
+    def _modify_day(self, row: HatOrder, trigger: Decimal, *, rescaled: bool) -> str | None:
+        """Modify the day stop `row` to `trigger` (a rescale sends its quantity too). The code
+        of a refusal; None when the broker took it."""
+        sized = {"qty": row.qty} if rescaled else {}
+        ack = self._broker.modify_order(
+            str(row.broker_order_id), order_type=OrderType.SL_M, trigger_price=trigger, **sized
+        )
+        return None if ack.ok else ack.code
+
+    def _modify_gtt(
+        self,
+        session: Session,
+        target: StopTarget,
+        row: HatOrder,
+        trigger: Decimal,
+        tick: Decimal | None,
+        now: datetime,
+        *,
+        rescaled: bool,
+    ) -> str | None:
+        """Modify the GTT `row` to `trigger` for the open quantity (a rescale keeps the quantity
+        it covers); its limit and quantity are recorded once the broker took it. The code of a
+        refusal; None when the broker took it."""
+        if tick is None:
+            return "no_tick"
+        limit = gtt_limit_price(trigger, tick)
+        size = row.qty if rescaled else target.position.qty_open
+        ack = self._broker.modify_gtt(GttModify(str(row.broker_order_id), size, trigger, limit))
+        if not ack.ok:
+            return ack.code
+        row.trigger_price = trigger
+        row.price = limit
+        row.qty = size
+        self.order_event(session, row, target, EVENT_GTT_REFRESHED, now)
+        return None
