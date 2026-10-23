@@ -2,7 +2,7 @@
 
 A change is requested as a new `hat_risk_policy_version`: a decrease takes effect at the next
 session open, an increase no sooner than 7 days after the request and only with gate evidence,
-which by default comes from the backtest runs (`backtest.runs.gate_evidence`, HAT-GOV-091).
+which by default comes from the backtest runs (`backtest.evidence.gate_evidence`, HAT-GOV-091).
 Requesting writes `risk.change_requested`; a version taking effect writes `risk.change_effective`
 and marks the version it replaces `superseded_at`, in the same transaction. Nothing commits here.
 """
@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..backtest.evidence import gate_evidence
 from ..errors import HatError
 from ..models import HatEvent, HatRiskPolicyVersion
 from ..time import as_utc
@@ -46,9 +47,6 @@ def backtest_evidence(
     """The user's trades closed since the policy version in force at `at` took effect, against
     the discounted expectancy of the sleeves' newest completed backtest runs; None (the increase
     is refused) when no sleeve has one."""
-    # Imported here: `backtest.runs` reads `load_versions` from this module.
-    from ..backtest.runs import gate_evidence
-
     return gate_evidence(session, user_id, at)
 
 

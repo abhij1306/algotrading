@@ -15,7 +15,7 @@ from app.hat.backtest.costs import (
     load_cost_model,
     parse_cost_model,
 )
-from app.hat.engine.backtest import RunConventions, RunSpec
+from app.hat.backtest.spec import RunConventions, RunSpec
 from app.hat.engine.strategy.config import StrategyConfig, parse_config
 from app.hat.risk.policy import PolicyVersion, seed_policy
 

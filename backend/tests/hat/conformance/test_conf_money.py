@@ -9,9 +9,10 @@ BOUNDARY = "app/hat/money.py"
 # Lane E's files, left to its own PR (PR 75c follow-ups); each moves to `money.exact` with it and
 # leaves this set in the same change.
 LANE_E = {
-    "app/hat/engine/backtest.py",
+    "app/hat/backtest/__main__.py",
+    "app/hat/backtest/data.py",
+    "app/hat/backtest/loop.py",
     "app/hat/backtest/runs.py",
-    "app/hat/backtest/market.py",
     "app/hat/engine/portfolio/jobs.py",
     "app/hat/engine/portfolio/service.py",
 }

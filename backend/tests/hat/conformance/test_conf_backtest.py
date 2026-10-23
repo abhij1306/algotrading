@@ -10,7 +10,15 @@ from hat_conf_repo import APP_ROOT, imports_of
 from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_sharpe
 
 HAT = APP_ROOT / "hat"
-BACKTEST = HAT / "engine" / "backtest.py"
+BACKTEST = HAT / "backtest" / "loop.py"
+# The day loop and the modules it is split into; they alone of `backtest/` read the engine,
+# besides `runs.py`, `evidence.py` and `__main__.py`, which run, record and read the runs and
+# hold no decision.
+LOOP = tuple(
+    HAT / "backtest" / f"{name}.py"
+    for name in ("loop", "spec", "data", "ledger", "fillrules", "report")
+)
+RUNNERS = {"runs.py", "evidence.py", "__main__.py"}
 PROPERTIES = Path(__file__).resolve().parents[1] / "properties"
 
 # The engine functions the day loop must reach through, and the logic it must never import
@@ -57,12 +65,13 @@ def test_backtest_shares_engine_imports() -> None:
     decision modules behind them, defines no function of the same name, and passes no other
     decision function to `open_entry`."""
     imported = imports_of(BACKTEST)
+    loop_imports = {m for path in LOOP for m in imports_of(path)}
     for name in SHARED:
         module, _, function = name.rpartition(".")
         assert name in imported or module in imported, name
         assert function in BACKTEST.read_text(encoding="utf-8"), name
-    assert not [m for m in imported if any(m == p or m.startswith(p + ".") for p in PRIVATE)]
-    mine = _all_functions(BACKTEST)
+    assert not [m for m in loop_imports if any(m == p or m.startswith(p + ".") for p in PRIVATE)]
+    mine = {f for path in LOOP for f in _all_functions(path)}
     for module in LOGIC_MODULES:
         assert not mine & _public_functions(HAT / "engine" / f"{module}.py"), module
     # `open_entry` decides with `evaluate_signal` unless a caller passes another `decide`.
@@ -79,8 +88,8 @@ def test_backtest_shares_engine_imports() -> None:
     assert "app.hat.risk.service.evaluate_signal" in imports_of(HAT / "engine" / "trades.py")
     # the cost and fill modules choose prices only: no engine logic behind them either
     for path in sorted((HAT / "backtest").glob("*.py")):
-        if path.name in ("runs.py", "market.py"):
-            continue  # they run and record the loop; they hold no decision
+        if path in LOOP or path.name in RUNNERS:
+            continue
         assert not [m for m in imports_of(path) if m.startswith("app.hat.engine")], path.name
 
 
@@ -150,12 +159,14 @@ def _imports_dsr_module(path: Path) -> bool:
 
 
 def test_dsr_scored_only_by_runs() -> None:
-    """Under `app/hat` only `backtest/runs.py` imports the DSR and PBO scorers of
-    `app.hat.backtest.dsr` (`deflated_sharpe`, `family_deflated_sharpe`, `pbo`), and it scores a
-    run only through `run_dsr` and `family_pbo`, which read recorded runs; so no other module
-    can score a result that never became a trial (G33). Harm: a variant tried outside the
-    recorded runs reaches a gate as evidence without counting as a trial."""
-    allowed = {APP_ROOT / "hat" / "backtest" / "runs.py", APP_ROOT / "hat" / "backtest" / "dsr.py"}
+    """Under `app/hat` only `backtest/runs.py` and `backtest/evidence.py` import the DSR and PBO
+    scorers of `app.hat.backtest.dsr` (`deflated_sharpe`, `family_deflated_sharpe`, `pbo`), and
+    they score a run only through `run_dsr` and `family_pbo`, which read recorded runs; so no
+    other module can score a result that never became a trial (G33). Harm: a variant tried
+    outside the recorded runs reaches a gate as evidence without counting as a trial."""
+    allowed = {
+        APP_ROOT / "hat" / "backtest" / name for name in ("runs.py", "evidence.py", "dsr.py")
+    }
     offenders = sorted(
         str(path.relative_to(APP_ROOT))
         for path in (APP_ROOT / "hat").rglob("*.py")
@@ -171,9 +182,10 @@ def test_dsr_scored_only_by_runs() -> None:
         if path not in allowed and _imports_dsr_module(path)
     )
     assert whole == []
-    assert {f"app.hat.backtest.dsr.{name}" for name in ("family_deflated_sharpe", "pbo")} <= (
-        imports_of(APP_ROOT / "hat" / "backtest" / "runs.py")
+    assert "app.hat.backtest.dsr.family_deflated_sharpe" in imports_of(
+        APP_ROOT / "hat" / "backtest" / "evidence.py"
     )
+    assert "app.hat.backtest.dsr.pbo" in imports_of(APP_ROOT / "hat" / "backtest" / "runs.py")
 
 
 # --- known gaps ------------------------------------------------------------------

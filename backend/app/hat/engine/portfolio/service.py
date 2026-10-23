@@ -9,7 +9,7 @@ they apply are the pure ones in this package.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -17,6 +17,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hat.backtest.evidence import backtest_evidence
 from app.hat.confighash import config_hash
 from app.hat.data.calendar import session_calendar
 from app.hat.data.instruments import resolve_symbol
@@ -455,24 +456,14 @@ def sleeve_health(
     return health_of(Decimal(snap.equity), Decimal(snap.equity_peak), policy)
 
 
-BacktestEvidence = Callable[[Session, HatBot], lifecycle.BacktestFacts]
-
-
-def no_backtest_evidence(_session: Session, _bot: HatBot) -> lifecycle.BacktestFacts:
-    """No evidence: Research -> Backtested stays closed. The backtest's source is
-    `app.hat.backtest.runs.backtest_evidence` (HAT-BT-060)."""
-    return lifecycle.BacktestFacts()
-
-
 def load_evidence(
     session: Session,
     bot: HatBot,
     trade_date: date,
     policy: RiskPolicy,
-    backtest: BacktestEvidence = no_backtest_evidence,
 ) -> lifecycle.Evidence:
     """Everything the guards read for `bot` on `trade_date`."""
-    facts = backtest(session, bot)
+    facts = backtest_evidence(session, bot)
     calendar = session_calendar(session)
     entered = stage_entered_on(session, bot.id, lifecycle.PROBATION)
     health_zero = False
@@ -556,7 +547,6 @@ def owner_transition(
     *,
     trade_date: date,
     policy: RiskPolicy,
-    backtest: BacktestEvidence,
     calendar: SessionCalendar,
     chat_id: int,
     now: datetime,
@@ -593,7 +583,7 @@ def owner_transition(
         )
         if holder is not None:
             raise lifecycle.LifecycleError("strategy_has_live_sleeve")
-    evidence = load_evidence(session, bot, trade_date, policy, backtest)
+    evidence = load_evidence(session, bot, trade_date, policy)
     return transition(
         session,
         bot_id,
@@ -611,7 +601,6 @@ def advance_automatic(
     session: Session,
     trade_date: date,
     policy: RiskPolicy,
-    backtest: BacktestEvidence = no_backtest_evidence,
 ) -> list[tuple[uuid.UUID, str]]:
     """The edges the engine takes by itself: Live -> Probation when the trigger fires, and
     Probation -> Retired when its gate opens. Returns (bot, new state) for each move. Safe to
@@ -624,7 +613,7 @@ def advance_automatic(
         )
         if target is None:
             continue
-        evidence = load_evidence(session, bot, trade_date, policy, backtest)
+        evidence = load_evidence(session, bot, trade_date, policy)
         if lifecycle.guard(bot.lifecycle_state, target, evidence).allowed:
             transition(session, bot.id, target, evidence, now=now)
             moved.append((bot.id, target))
@@ -668,7 +657,6 @@ def run_allocation(
     total_equity: Decimal,
     currency: str = "INR",
     market_code: str = "NSE",
-    backtest: BacktestEvidence = no_backtest_evidence,
 ) -> AllocationReport:
     """The nightly allocation: after the regime row of `trade_date` exists, move the sleeves the
     engine moves (a health 0 sleeve into Probation, HAT-PORT-040), compute the weights and write
@@ -681,7 +669,7 @@ def run_allocation(
     if state is None:
         raise PortfolioError("allocate_no_regime")
     policy = policy_at(session, user_id, trade_date)
-    moved = advance_automatic(session, trade_date, policy, backtest)
+    moved = advance_automatic(session, trade_date, policy)
     table = regime_table(model)
     sleeves = []
     bots = session.scalars(select(HatBot).order_by(HatBot.id)).all()

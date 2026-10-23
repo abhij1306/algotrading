@@ -14,14 +14,12 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
-from app.hat.backtest.runs import backtest_evidence
 from app.hat.data.store import DATASET_BREADTH, DATASET_INDEX, DATASET_MARKET_BREADTH, DataStore
 from app.hat.errors import HatError
 from app.hat.ops.jobs import JobError, JobResult
 
 from . import regime
 from .service import (
-    BacktestEvidence,
     PortfolioError,
     ensure_regime_model,
     market_id_of,
@@ -97,7 +95,6 @@ def allocate_job(
     *,
     user_id: uuid.UUID,
     total_equity: Callable[[], Decimal],
-    backtest: BacktestEvidence = backtest_evidence,
 ) -> JobResult:
     """`allocate`: one `hat_allocation_daily` row per sleeve for `trade_date`. `total_equity` is
     the account equity source (broker funds at session start, [OWNER-PENDING] HAT-PORT-052).
@@ -108,7 +105,6 @@ def allocate_job(
             trade_date,
             user_id=user_id,
             total_equity=total_equity(),
-            backtest=backtest,
         )
     except PortfolioError as exc:
         raise JobError(exc.code) from exc

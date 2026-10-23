@@ -56,6 +56,7 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..backtest.evidence import signal_confidence
 from ..execution.modes import route_mode
 from ..execution.tags import encode_tag
 from ..ids import uuid7
@@ -336,9 +337,6 @@ def open_entry(
 
 def entry_confidence(session: Session, bot: HatBot, request: EntryRequest) -> Confidence:
     """The confidence label of the signal `request` makes (D132, HAT-EXEC-015)."""
-    # imported here: the backtest runs module imports the backtest engine, which imports this one
-    from ..backtest.runs import signal_confidence  # noqa: PLC0415
-
     return signal_confidence(
         session,
         bot,

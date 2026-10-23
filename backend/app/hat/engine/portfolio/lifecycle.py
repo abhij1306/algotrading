@@ -46,7 +46,7 @@ MIN_SPAN_YEARS = 5  # D150: the evidence run's sessions span at least five years
 SPAN_SLACK = timedelta(days=7)
 MAX_AMBIGUOUS_SHARE = Decimal("0.10")  # [OWNER-PENDING] of the sessions a trade was held
 # The regime rule the evidence run sizes under: the live regime engine's, as live sizes
-# (`engine.backtest.REGIME_MULT_POLICY`, PR 69).
+# (`backtest.spec.REGIME_MULT_POLICY`, PR 69).
 EVIDENCE_REGIME_RULE = "policy"
 SHADOW_DAYS = 20  # [A] HAT-PORT-062
 PROBATION_MONTHS = 3  # HAT-PORT-064
@@ -206,7 +206,7 @@ class BacktestFacts:
     sleeve_weight: Decimal | None = None
     base_weight: Decimal | None = None
     regime_mult: str | None = None
-    # the playbooks whose trades are not compared with the run (`runs.unbacktested`, PR 40)
+    # the playbooks whose trades are not compared with the run (`evidence.unbacktested`, PR 40)
     unbacktested: frozenset[str] = frozenset()
 
 

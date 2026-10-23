@@ -14,13 +14,13 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | Package | Holds |
 | --- | --- |
 | `data` | NSE MCP client, bhavcopy, reference data, ingest, quality gate, corporate actions, Parquet store (`store.py`, `bars_store.py`), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
-| `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, trades and shadow fills, approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle), backtest day loop |
+| `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, trades and shadow fills, approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy and its versions, sizing, caps, exposure ladder, kill switches, modes, `evaluate_signal` |
 | `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`: every sale a `SaleOrder` through one pure `sale_gate`), the fill sync in phases read, settle, commit, market, protect (`fills.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
 | `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
 | `ops` | In-process scheduler, job runner, partitions, retention |
 | `daily` | `HatRuntime` wiring, the daily job table (`daily_jobs`), nightly and intraday job bodies, production parts |
-| `backtest` | Costs, fills, deflated Sharpe, run records, metrics |
+| `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), the evidence the gates read (`evidence`, through the typed `RunMetrics`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` and `risk` import only `spec` and `evidence`, never the loop |
 | `models` | SQLAlchemy models on the shared `Base`; every table is `hat_*` |
 | `api` | Read-only dashboard routes and the Fyers login routes behind the write guard |
 
@@ -56,7 +56,7 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 ## Key seams
 
 - **Pure core shared by backtest and live:** `scan.scan_bot`, `exits.evaluate/apply`, the criteria
-  and `decide` read no clock, database or file; `engine/backtest.py` calls the same code live runs.
+  and `decide` read no clock, database or file; `backtest/loop.py` calls the same code live runs.
 - **One risk authority:** `risk/service.py:evaluate_signal` calls `decide`, the only caller of
   `size_position`. No override path exists.
 - **One path to the broker:** `execution/submit.py` (`reserve_order`, `send_order`) is the only

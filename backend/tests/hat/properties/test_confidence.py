@@ -11,8 +11,8 @@ from decimal import Decimal
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+from app.hat.backtest.report import TradeRow
 from app.hat.engine import confidence
-from app.hat.engine.backtest import TradeRow
 from app.hat.engine.confidence import (
     BANDS,
     HIGH,

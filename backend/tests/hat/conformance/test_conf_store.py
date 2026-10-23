@@ -80,7 +80,7 @@ def test_store__cli_root_after_env() -> None:
         "backend/app/hat/data/features.py",
         "backend/app/hat/data/history_build.py",
         "backend/app/hat/data/minute_history.py",
-        "backend/app/hat/engine/backtest.py",
+        "backend/app/hat/backtest/__main__.py",
     }
     for name, tree in commands.items():
         imported = {
