@@ -32,7 +32,9 @@ architecture, invariants, CLAUDE.md, decisions -- and they stay compact.
 `READY TO MERGE #<n> <head sha>` as the last line of your turn, and it is true at that sha:
 
 1. The PR does what its brief says and keeps the invariants it touches, verified as below.
-2. Every CI check passes and the SonarCloud quality gate is OK. Sonar code smells (naming,
+2. Every required check passes (`gh pr checks <n> --required`: ci.yml and SonarCloud) and the
+   SonarCloud quality gate is OK. The TLA workflow (4-6 min) is not required: don't wait for it;
+   the orchestrator checks it at merge and sends you any failure. Sonar code smells (naming,
    literals, complexity, test style) need neither a fix nor a reply; only the gate and real bugs
    count. CI still running is never a reason for BLOCKED: wait for it.
    Don't wait for CodeAnt: report
@@ -77,7 +79,7 @@ Implementation and real verification come first; testing is not proof.
   compaction or a fresh session resumes from it instead of re-reading. Send code
   exploration to subagents that return file pointers and conclusions, not file dumps. Never read
   your own session transcript.
-- **Waiting:** start the long command itself (a CI watch `gh pr checks <n> --watch`, a backtest,
+- **Waiting:** start the long command itself (a CI watch `gh pr checks <n> --watch --required`, a backtest,
   a verification run) with `run_in_background` and wait for its completion notification. Never
   `until`/`while ... sleep` loops or `pgrep -f` (it matches itself and never ends): each one
   runs to the 10-minute tool timeout, and they cost 40 builder minutes on 2026-10-23.
