@@ -74,7 +74,14 @@ from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
 from .guard import ExecutionGuard
-from .modes import AUTO, NO_GTT_DELIVERY, bot_mode, real_orders_allowed, route_mode
+from .modes import (
+    AUTO,
+    HIGH,
+    NO_GTT_DELIVERY,
+    NOT_HIGH_CONFIDENCE,
+    bot_mode,
+    real_orders_allowed,
+)
 from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
@@ -239,21 +246,18 @@ class ExecutionRouter:
         now: datetime,
         check: PlacementCheck,
         decide: trades.DECIDE = evaluate_signal,
-        confidence: str | None = None,
     ) -> trades.EntryOutcome:
         """Write the trigger's signal under its effective mode and commit; place an accepted auto
         entry under `check`, the live conditions read by the caller at `now` (the placement
-        time, not the trigger's snapshot). Auto places only a signal whose `confidence` is high;
-        any other is routed as confirm, an approval card for the owner (HAT-EXEC-014, D149).
-        Signals carry no label until the confidence labels land (D132), so every auto entry asks
-        the owner for now. A repeated trigger returns the existing signal (and resumes an auto
-        entry that a crash left unplaced)."""
+        time, not the trigger's snapshot). `open_entry` reads the signal's confidence label (D132)
+        and routes an auto one that is not high as confirm, an approval card for the owner
+        (HAT-EXEC-014, D149); placement refuses an auto signal stored without a high label. A
+        repeated trigger returns the existing signal (and resumes an auto entry that a crash
+        left unplaced)."""
         bot = session.get(HatBot, request.bot_id)
         if bot is None:
             raise positions.TradeError("unknown_bot")
-        mode = route_mode(
-            bot_mode(session, bot, request.triggered_at, request.context.calendar), confidence
-        )
+        mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
         outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
         if outcome.mode != AUTO or outcome.state != lifecycle.TRIGGERED:
             session.commit()
@@ -431,6 +435,8 @@ class ExecutionRouter:
         """Why the entry may not be placed now (a fixed code), or None."""
         if signal.trade_date != trade_date_of(now):
             return SIGNAL_EXPIRED  # its price, size and risk decision were for that session
+        if signal.mode == AUTO and signal.confidence != HIGH:
+            return NOT_HIGH_CONFIDENCE  # auto places only a high label (HAT-EXEC-014, D149)
         refusal = (
             placement_refusal(check, now, _stop_of(signal))
             or _kill_refusal(session, signal.bot_id)

@@ -49,6 +49,7 @@ from app.hat.daily.production import one_login_each
 from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE
 from app.hat.data.staleness import StalenessMonitor
 from app.hat.engine import exits, journal, lifecycle, snapshot, trades
+from app.hat.engine.confidence import Confidence
 from app.hat.engine.portfolio import lifecycle as sleeves
 from app.hat.errors import HatConfigError
 from app.hat.execution import mode_changes, modes
@@ -1312,6 +1313,37 @@ def test_auto_places_only_high_confidence(confidence: str | None) -> None:
             assert signal.state == lifecycle.AWAITING_APPROVAL
             assert session.get(HatApproval, signal.id) is not None
             assert rig.fake.calls == []
+
+
+@settings(max_examples=20, deadline=None)
+@given(st.sampled_from((modes.HIGH, "medium", "low")))
+@example("low")
+def test_placement_rechecks_confidence(label: str) -> None:
+    """HAT-EXEC-014, D149: placement reads the stored label again, so an auto signal stored
+    without a high one (written by another path) is never sent: it ends Rejected with
+    `not_high_confidence` and no broker call. Harm: the auto rule rests on one write, and a
+    medium- or low-confidence trade is bought without the owner's approval."""
+    with Session(memory_engine()) as session:
+        rig = Rig(session, mode=modes.AUTO, confidence=None)
+        request = request_for(rig.world, rig.world.instruments[0])
+        outcome = trades.open_entry(
+            session,
+            replace(request, triggered_at=AT),
+            mode=modes.AUTO,
+            confidence=Confidence(modes.HIGH, {"reason": "test"}),
+        )
+        signal = rig.signal(outcome.signal_id)
+        assert signal.mode == modes.AUTO
+        signal.confidence = label  # SQLite has no trigger: the row another path could write
+        session.commit()
+        rig.router.place_entry(session, signal.id, now=AT, check=LIVE)
+        signal = rig.signal(outcome.signal_id)
+        if label == modes.HIGH:
+            assert len(rig.places()) == 1
+        else:
+            assert rig.fake.calls == []
+            assert signal.state == lifecycle.REJECTED
+            assert _rejected_reason(session, signal.id) == modes.NOT_HIGH_CONFIDENCE
 
 
 @settings(max_examples=40, deadline=None)

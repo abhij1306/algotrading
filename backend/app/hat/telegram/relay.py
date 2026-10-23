@@ -38,6 +38,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..engine.confidence import stored_basis
 from ..models import (
     HatAnnouncement,
     HatApproval,
@@ -129,6 +130,8 @@ def card_view(session: Session, signal: HatSignal, approval: HatApproval | None)
         expires_at=as_utc(approval.expires_at) if approval is not None else None,
         headline=news[0] if news else None,
         pdf_url=news[1] if news else None,
+        confidence=signal.confidence,
+        basis=stored_basis(signal.confidence_basis),
     )
 
 

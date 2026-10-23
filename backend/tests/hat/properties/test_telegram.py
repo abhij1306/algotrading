@@ -1297,7 +1297,6 @@ def test_report_content(
                 replace(request, triggered_at=AT),
                 now=AT,
                 check=_refused_check(reason),
-                confidence="high",
             )
             session.commit()
         for back, equity, realised in snapshots:

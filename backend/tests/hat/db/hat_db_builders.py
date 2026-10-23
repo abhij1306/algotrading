@@ -191,6 +191,8 @@ def signal(conn: Connection, w: dict[str, uuid.UUID], **overrides: object) -> uu
         "mode": "shadow",
         "state": "Triggered",
         "risk_decision": {},
+        "confidence": "low",
+        "confidence_basis": {"reason": "no_run"},
     }
     values.update(overrides)
     return add(conn, m.HatSignal, **values)  # type: ignore[return-value]

@@ -370,6 +370,51 @@ STOPS = (
 )
 
 
+def check_governance__signal_confidence_immutable(conn: Connection) -> None:
+    """D132, HAT-EXEC-015: a signal's confidence label and basis never change after insert, and
+    the label is one of high, medium, low."""
+    w = b.world(conn)
+    table = m.HatSignal.__table__
+    labels = ("high", "medium", "low")
+    for n, old in enumerate(labels):
+        signal = b.signal(
+            conn,
+            w,
+            playbook=f"c{n}",
+            confidence=old,
+            confidence_basis={"reason": "r", "trades": 40},
+        )
+
+        def change(s: uuid.UUID = signal, **values: object) -> None:
+            conn.execute(update(table).where(table.c.id == s).values(**values))
+
+        for new in labels:
+            if new != old:
+                rejects(conn, f"relabelling {old} as {new}", lambda v=new: change(confidence=v))
+        rejects(
+            conn,
+            "rewriting the basis",
+            lambda: change(confidence_basis={"reason": "r", "trades": 41}),
+        )
+        rejects(
+            conn,
+            "relabelling with a state change",
+            lambda: change(state="Rejected", confidence_basis={}),
+        )
+        accepts(conn, "a state change", lambda: change(state="Rejected"))
+        accepts(conn, "the same label and basis written again", lambda o=old: change(confidence=o))
+        kept = conn.execute(
+            select(table.c.confidence, table.c.confidence_basis).where(table.c.id == signal)
+        ).one()
+        assert tuple(kept) == (old, {"reason": "r", "trades": 40})
+    for n, bad in enumerate(("HIGH", "", "none", "unknown")):
+        rejects(
+            conn,
+            f"the label {bad!r}",
+            lambda v=bad, i=n: b.signal(conn, w, playbook=f"bad{i}", confidence=v),
+        )
+
+
 def check_governance__stop_only_rises(conn: Connection) -> None:
     w = b.world(conn)
     table = m.HatPosition.__table__

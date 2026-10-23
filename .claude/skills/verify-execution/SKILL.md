@@ -149,7 +149,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT router.rejected_entry_is_retried_once` A rejected auto entry is alerted and retried once under the next tag; a second rejection ends Rejected with one `entry.not_placed` alert and no third order. Harm: a retry storm or a silent failure.
 - `PBT router.reconcile_before_first_order` The first real entry of a session reconciles first; an unreadable broker or an unknown HT order places nothing and ends the entry Rejected with an alert. Harm: an order on top of an unmatched book.
 - `PBT router.mode_gates_hold_bots_in_shadow` A Live bot on an active account with GTT for delivery runs the mode it asked for only while DDPI was confirmed on its account by the session's open (one confirmed during the session waits for the next open; one revoked holds the bot back at once) and the policy in force at the open confirms the base weights; otherwise it runs shadow and calls no broker (HAT-GOV-085). Harm: real orders before DDPI is registered (sales stall on a TPIN prompt) or before the owner set the allocation numbers.
-- `PBT router.auto_places_only_high_confidence` An accepted auto signal labelled high sends exactly one entry order; any other label, or none, goes to the owner as in confirm: a card, the signal AwaitingApproval and no broker call (HAT-EXEC-014, D149). Harm: a medium- or low-confidence trade is bought without the owner's approval.
+- `PBT router.auto_places_only_high_confidence` An accepted auto signal labelled high (by its real evidence: the rig seeds a run, a bucket and a watchlist score, or none) sends exactly one entry order; any other label, or none, goes to the owner as in confirm: a card, the signal AwaitingApproval and no broker call (HAT-EXEC-014, D149). Harm: a medium- or low-confidence trade is bought without the owner's approval.
+- `PBT router.placement_rechecks_confidence` Placement reads the stored label again: an auto signal stored without a high label is not sent and ends Rejected with `not_high_confidence` (HAT-EXEC-014, D149). Harm: the auto rule rests on one write, and a medium- or low-confidence trade is bought without the owner's approval.
 - `PBT router.open_settles_mode_changes` A change queued in the evening while every gate passed is settled at the next open by the gates as they stand then: applied (the bot row takes the mode, one `mode.applied`) or refused with the gate's code (the bot keeps its mode, one `mode.apply_refused`); a second run at the same open changes nothing (HAT-GOV-084, HAT-GOV-085). Harm: a change silently fails, or a refused change takes effect later without a request.
 - `PBT router.mode_change_takes_effect_next_session` A change queued outside hours routes nothing differently before the next open (the evening and the next pre-open included) and everything after; one asked in hours is refused and writes nothing; the open applies it to the bot row once. Harm: a bot switches to real orders mid-session.
 - `PBT manage.real_fill_protected` Each entry fill the sync reads (one or several partial fills, at any time of the session or after the close) is followed, before any other broker write, by the position's stop: placed for the open quantity when none rests (an intraday SL-M SELL before 15:25, a GTT from 15:25 on), resized when one does, its trigger on the tick and never above the stop; a stop the broker refuses twice is alerted and placed by the next sync; a resize it refuses is alerted and sent again by the next sync. Harm: a filled position sits at the broker with no stop, or a stop for fewer shares than it holds.
@@ -342,6 +343,8 @@ Execution router and approvals (PR 15b):
 - `backend/app/hat/execution/modes.py`
 - `backend/app/hat/execution/mode_changes.py`
 - `backend/app/hat/engine/approvals.py`
+- `backend/app/hat/engine/confidence.py`
+- `backend/app/hat/backtest/runs.py`: `signal_confidence`
 - `backend/app/hat/notify.py`
 - `backend/tests/hat/properties/test_router.py`
 - `backend/tests/hat/hat_router_support.py`
@@ -367,12 +370,13 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `519ca9cd036f7345378e3fd0c25c1bef6c9a43166a80c829e4c15c6b3bf63084`
+Covered digest: `fe3d16402eb577ec5276003a0d1d731c3b074b58ac07619059d1533d2362ef6a`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, D149, HAT-EXEC-014, HAT-EXEC-015): `open_entry` reads each trigger's confidence label (`trades.entry_confidence`) after the duplicate check and before the owner's lock, stores it, and routes an auto signal that is not high as confirm (`modes.route_mode`); `route` no longer takes a label, and placement refuses an auto signal stored without a high label (`not_high_confidence`, new PBT `router.placement_rechecks_confidence`). The rigs (`hat_router_support.Rig`, `hat_manage_support`, `TgRig`) seed the evidence that gives the label (`hat_engine_support.seed_label`), so `router.auto_places_only_high_confidence` now runs on the real lookup: high evidence places, medium, low and no evidence go to approval. Nothing was narrowed.
 - PR 75a (architecture audit F2): `engine/trades.py` split. `engine/snapshot.py` holds the reads an entry decision takes (`owner_slots`, `bot_snapshot`, `day_counts`, `last_hard_stop`, `entry_price_of`, `HARD_STOP`, which `live_trades` and `manage` read; the unused `risk_inputs` is deleted); `engine/positions.py` what shadow and real exits share (`TradeError`, `exit_rules_of`, `entry_qty`, `trade_r`, `is_veto`, `signal_and_bot`, `raise_stop`, `write_result`, `position_state`); `trades.py` keeps entries, the approval card (`send_approval`, public now), the virtual order, fill and exit engine, veto trades, `reject_signal` and `expire_watchlist`. `_emit` is gone (callers use `journal.record`), as is `_day_bounds` (`time.day_bounds`). `live_trades` imports no `trades` name. Code moved byte for byte; every property here is unchanged and passes, and the existing checks still catch breaks in the moved code (below). New: PBT `trades.day_counts`, since no check caught a wrong stop-out count (a swapped day window passed every property and DB check). A stop raise that records `stop.moved` but leaves `current_stop` (`positions.raise_stop`) is caught only by PBT `backtest.raised_stop_dip` (`verify-backtest`; not by `test_manage`, `test_exits`, `test_trades`, `test_stops`, `test_router` or `test_rescale`). Nothing was narrowed. The backtest reads `positions.position_state`; it still calls the entries and the virtual engine through `trades` (follow-up: `entries.py`, `shadow.py`).
 - PR 73b (PR 38 follow-ups 1-3, PR 25 follow-up 6, PR 45 follow-up 7): the account check of a login moved into `FyersAuthService` (a required `account_refs` lookup, `active_fyers_refs` in production, read after the answer and before the save); `exchange` lost its `accept_user` keyword, the route its `_account_check`, and the adapter's `complete_login` maps `WrongAccountError` to `wrong_account` and `AccountsUnreadableError` to `accounts_unreadable`. The account status and broker values live in `models/strategy.py` (`submit`, `accounts`, `modes`, `daily/accounts`, `daily/production` and the dashboard import them). `fyers_ipv4.require_direct_fyers` refuses the production start while a proxy would carry Fyers traffic; the oracle (real `requests`) found that `*` among other `NO_PROXY` entries bypasses nothing. `fyers_auth_routes.token_for_another_account_refused` is unchanged in what it asserts. The data socket is not pinned to IPv4 (a read path). Nothing was narrowed.
 - PR 73 (PR 45 follow-up 2): `accounts.revoke_ddpi` withdraws the owner's DDPI confirmation at any time (`account_unknown`, `ddpi_note_required`, `ddpi_not_confirmed`), clearing the flag and its time and writing `broker.ddpi_revoked`; `account_gates` reads it at once, so a revoked flag narrows the mode from the next routing decision. Its properties are `admin.ddpi_revoked` and the postgres run of the runbook (`verify-portfolio`). Nothing was narrowed.
@@ -3510,6 +3514,38 @@ Break: (PR 45) `route_mode` lets a medium signal place in auto (`confidence not 
 E   AssertionError: assert 'auto' == 'confirm'
 E     - confirm
 E     + auto
+```
+
+Break: (PR 71) in `backend/app/hat/engine/trades.py`: `open_entry` routes every auto signal as high, whatever its evidence.
+
+```
+tests/hat/properties/test_router.py F
+tests/hat/properties/test_router.py:1312: in test_auto_places_only_high_confidence
+    assert outcome.mode == signal.mode == modes.CONFIRM
+E   AssertionError: assert 'auto' == 'confirm'
+E     - confirm
+E     + auto
+E   Failing explicit example: test_auto_places_only_high_confidence(
+E       confidence=None,
+E   )
+```
+
+### PBT router.placement_rechecks_confidence
+
+Break: (PR 71) in `backend/app/hat/execution/router.py`: placement no longer reads the stored label.
+
+```
+tests/hat/properties/test_router.py F
+tests/hat/properties/test_router.py:1344: in test_placement_rechecks_confidence
+    assert rig.fake.calls == []
+E   AssertionError: assert [('get_profil [cut]LIMIT',  [cut]})] == []
+E     Left contains 2 more items, first extra item: ('get_profile', None)
+E     Full diff:
+E     - []
+E     + [
+E     +     (
+E     +         'get_profile',
+E     +         None,
 ```
 
 ### PBT router.open_settles_mode_changes

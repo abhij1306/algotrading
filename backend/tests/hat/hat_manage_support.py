@@ -15,7 +15,14 @@ from types import SimpleNamespace
 from typing import Any
 
 from hat.fakes.broker import FakeBroker
-from hat_engine_support import TRADE_DAY, USER, World, request_for, seed_engine_world
+from hat_engine_support import (
+    TRADE_DAY,
+    USER,
+    World,
+    request_for,
+    seed_engine_world,
+    seed_label,
+)
 from hat_exec_support import (
     GTT_READY,
     SYMBOLS,
@@ -29,6 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.engine import trades
+from app.hat.engine.confidence import HIGH
 from app.hat.execution.fills import FillSync, SaleBand
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.manage import TradeManager
@@ -111,6 +119,7 @@ class ManageRig:
             )
         )
         seed_live_sessions(session, self.account_id)
+        seed_label(session, self.world, HIGH)  # auto places the entry (D149)
         session.flush()
         confirm_gates(session, self.account_id, USER)
         session.commit()
@@ -166,7 +175,6 @@ class ManageRig:
             trades.EntryRequest(**{**vars(request), "triggered_at": when}),
             now=when,
             check=LIVE,
-            confidence="high",
         )
         assert self.entry_row(outcome.signal_id) is not None, "auto placed the entry"
         return outcome

@@ -171,6 +171,7 @@ from ..risk.policy import PolicyError, PolicyVersion, parse_policy
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import as_utc, trade_date_of
 from . import exits, lifecycle, positions, trades, trigger, watchlist
+from .confidence import BACKTEST_CONFIDENCE
 from .portfolio import regime as regime_v1
 from .portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
 from .portfolio.health import Health
@@ -1142,7 +1143,10 @@ class _Run:
             skip_reason=plan.skip,
             criteria=plan.filters,
         )
-        outcome = trades.open_entry(self.session, request, fills=self.spec.fills)
+        # a backtest signal has no evidence of its own: its label is low, `backtest`
+        outcome = trades.open_entry(
+            self.session, request, fills=self.spec.fills, confidence=BACKTEST_CONFIDENCE
+        )
         signal = self.session.get(HatSignal, outcome.signal_id)
         if signal is None or outcome.duplicate:
             return

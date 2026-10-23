@@ -200,6 +200,8 @@ def seed_pending_approval(session: Session, bot_id: uuid.UUID) -> uuid.UUID:
         mode="confirm",
         state="AwaitingApproval",  # the card is out: a kill moves it to Expired
         risk_decision={},
+        confidence="low",
+        confidence_basis={"reason": "no_run"},
     )
     session.add(signal)
     session.flush()

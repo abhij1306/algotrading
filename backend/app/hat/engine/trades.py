@@ -56,6 +56,7 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..execution.modes import route_mode
 from ..execution.tags import encode_tag
 from ..ids import uuid7
 from ..models import (
@@ -74,6 +75,7 @@ from ..risk.service import evaluate_signal
 from ..time import as_utc
 from . import exits, journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
+from .confidence import LABELS, UNKNOWN_LABEL, Confidence
 from .positions import TradeError, is_veto, position_state, raise_stop, signal_and_bot, write_result
 from .snapshot import day_counts, entry_price_of, last_hard_stop, owner_slots
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
@@ -236,6 +238,7 @@ def open_entry(
     fills: FillModel = SHADOW_FILLS,
     mode: str = SHADOW,
     issue: TokenIssuer | None = None,
+    confidence: Confidence | None = None,
 ) -> EntryOutcome:
     """Evaluate one trigger and route an accepted one by `mode`, the bot's effective mode, in one
     transaction holding the bot's lock and then its owner's (HAT-EXEC-020, HAT-EXEC-021,
@@ -245,7 +248,12 @@ def open_entry(
 
     A repeated trigger for the same (bot, playbook, instrument, day) returns the existing
     signal and writes nothing. A rejection is stored as a signal in state `Rejected` with its
-    reason (shown in the daily digest only, HAT-EXEC-043)."""
+    reason (shown in the daily digest only, HAT-EXEC-043).
+
+    The signal stores its confidence label (D132, HAT-EXEC-015): `confidence` when given (the
+    backtest's fixed one), else the one `signal_confidence` reads, after the duplicate check and
+    before the owner's lock. An auto signal whose label is not high is routed as confirm, an
+    approval card for the owner (`modes.route_mode`, HAT-EXEC-014, D149)."""
     if mode not in MODES:
         raise TradeError("unknown_mode")
     lock_bot(session, request.bot_id)
@@ -259,6 +267,12 @@ def open_entry(
         return EntryOutcome(
             existing.id, existing.state, None, None, duplicate=True, mode=existing.mode
         )
+    # read before the owner's lock, so the owner's other bots never wait on it
+    if confidence is None:
+        confidence = entry_confidence(session, bot, request)
+    if confidence.label not in LABELS:  # fail closed: an unknown label is stored as low
+        confidence = Confidence.low(UNKNOWN_LABEL)
+    mode = route_mode(mode, confidence.label)  # auto places only high (HAT-EXEC-014, D149)
     policy = _entry_policy(session, bot, request)
     base = request.context
     lock_owner(session, bot.user_id)  # after the duplicate check: a retry waits on no other bot
@@ -294,6 +308,8 @@ def open_entry(
     signal = _signal_row(
         request, bot, policy, decision, signal_id, mode, trigger, accepted=accepted
     )
+    signal.confidence = confidence.label
+    signal.confidence_basis = dict(confidence.basis)
     session.add(signal)
     session.flush()
     journal.record(
@@ -302,7 +318,7 @@ def open_entry(
         SIGNAL_TRIGGERED,
         aggregate_type="signal",
         aggregate_id=signal.id,
-        payload=_triggered_payload(request, mode, trigger, entry),
+        payload=_triggered_payload(request, mode, trigger, entry, signal.confidence),
         now=request.triggered_at,
     )
     if not accepted:
@@ -318,6 +334,21 @@ def open_entry(
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     return _route_accepted(
         session, signal, bot, decision, entry, request.triggered_at, fills, issue
+    )
+
+
+def entry_confidence(session: Session, bot: HatBot, request: EntryRequest) -> Confidence:
+    """The confidence label of the signal `request` makes (D132, HAT-EXEC-015)."""
+    # imported here: the backtest runs module imports the backtest engine, which imports this one
+    from ..backtest.runs import signal_confidence  # noqa: PLC0415
+
+    return signal_confidence(
+        session,
+        bot,
+        request.playbook,
+        request.instrument_id,
+        request.trade_date,
+        request.triggered_at,
     )
 
 
@@ -382,12 +413,13 @@ def _signal_row(
 
 
 def _triggered_payload(
-    request: EntryRequest, mode: str, trigger: Decimal, entry: Decimal
+    request: EntryRequest, mode: str, trigger: Decimal, entry: Decimal, confidence: str
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "playbook": request.playbook,
         "trigger_price": str(trigger),
         "mode": mode,
+        "confidence": confidence,
     }
     if request.criteria or mode != SHADOW:
         payload["entry_price"] = str(entry)

@@ -30,6 +30,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.login_prompt_links` 08:30 sends one link per active account once; 09:05 lists exactly the accounts with no live session, URGENT with their number of real open positions iff they hold any (PR 30); nothing on a non-trading day. Harm: a missed login blocks the day, positions sit with broker stops only and the owner is not told, or noise is ignored.
 - `PBT telegram.watchlist_digest_content` The digest's new and dropped symbols are the set differences and the top list is the first min(10, n) by score. Harm: the owner acts on a wrong summary.
 - `PBT telegram.card_matches_signal` The card or shadow message shows the `hat_signal` row's trigger, stop, qty and risk exactly; a card offers exactly Take and Skip, signed for that signal. Harm: the owner approves a trade other than the one placed.
+- `PBT confidence.card_shows_label` The approval card and the shadow message carry one confidence line: the stored label (anything else reads LOW) and the bucket's trades, mean R and 90% interval when the basis has them, else "no backtest evidence" with a reason that is a plain token (D132, HAT-TG-023). Harm: the owner approves a trade without seeing how thin its evidence is, or free text reaches the chat.
 - `PBT telegram.report_content` The 15:35 digest lists exactly the day's `signal.rejected` signals with reasons; the 15:40 report shows each bot's snapshot; every real fill, partial, close and stop move is one message. Harm: rejections, drawdowns and money moving go unseen.
 - `PBT telegram.mode_names_a_bot_and_its_gate` `/mode <mode>` without a bot is refused `bad_arguments` and writes nothing; `/mode <bot> confirm|auto` is refused with the first gate that would hold the bot back at the next open (`ddpi_not_confirmed`, then `weights_not_confirmed`), says which gate, and writes nothing, or is queued (auto after its Confirm); a name two bots share is refused `ambiguous_bot` and writes nothing, while the bot's id still names it; `/status` then shows the mode the bot runs, why it differs from the one asked for, and the queued change (HAT-TG-038, HAT-GOV-085). Harm: every bot switched at once by mistake, or a bot left in shadow with no way to tell why.
 - `PBT telegram.mode_outside_hours` `/mode` is refused in market hours and for unknown values, writing nothing; an accepted one queues for the next session open. Harm: switching to auto mid-session.
@@ -62,6 +63,7 @@ verification/tla/run.sh ExecutionRouter && verification/tla/run.sh --broken Exec
 verification/tla/run.sh JobScheduler && verification/tla/run.sh --broken JobScheduler
 cd backend
 CI=1 python -m pytest tests/hat/properties/test_telegram.py -q --no-cov   # FakeTransport, FakeBroker, SQLite
+CI=1 python -m pytest tests/hat/properties/test_confidence.py -k card_shows_label -q --no-cov
 python -m pytest tests/hat/conformance/test_conf_telegram.py -q --no-cov
 ```
 
@@ -102,6 +104,7 @@ Code under check:
 Checks:
 - `backend/tests/hat/hat_telegram_support.py`
 - `backend/tests/hat/properties/test_telegram.py`
+- `backend/tests/hat/properties/test_confidence.py`
 - `backend/tests/hat/conformance/test_conf_telegram.py`
 
 Models (their Telegram actions):
@@ -118,12 +121,13 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `51346db434f9b613261dc277d372e34d83436cf77b9dd686d22f759ec98a1ba5`
+Covered digest: `c040ffe76911a312a315cb33f37e1aba7adcd49a317c324bfcacaca4a9311345`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, HAT-TG-023): the card and the shadow message gain the signal's confidence line (`render.confidence_line`, from `CardView.confidence` and `basis`, which `relay.card_view` reads from `hat_signal`). `TgRig` seeds high evidence for an auto bot (`hat_engine_support.seed_label`), so its entries are placed as before; `route` no longer takes a label. New PBT `confidence.card_shows_label`. Nothing was narrowed.
 - PR 75a: CONF `telegram.no_order_import_in_text_path` adds `engine/positions.py` to the order modules no text-path module may reach; `telegram/tokens.py`'s docstring names `trades.send_approval` (public now). `commands.addressee` names a bot only for a `/command`: a plain text with `@`, such as `@`, was dropped as `other_bot` instead of answered `not_a_command` (found by PBT `telegram.unknown_command_rejected` on main, now pinned by an `@example`). Nothing was narrowed.
 - PR 52: `ExecutionRouter.tla` splits a Take into the decision (to the new state `taken`) and its placement (`PlaceTaken`, which re-reads the session, hours, feed, gate and GTT; the max-chase re-check stays on the decision), and adds `Crash` (`verify-execution`'s `EntriesSettled`). `NoEntryWithoutSession`, `RejectNoCard` and `UserCannotRaiseRisk` pass unchanged and their broken variants still fail. No Telegram code changed.
 - PR 48: `sale.unfilled` is URGENT (`URGENT_ALERTS`), checked by `verify-execution`'s `mpp.resting_market_sale_resent` (break recorded there). No Telegram check changed.
@@ -728,4 +732,37 @@ Break: (PR 45 review) `_mode` drops the `len(bots) > 1` refusal: `/mode trend au
 ```
 E   AssertionError: assert (True, None) == (False, 'ambiguous_bot')
 E     At index 0 diff: True != False
+```
+
+### PBT confidence.card_shows_label
+
+Break: (PR 71) in `backend/app/hat/telegram/render.py`: the trade lines leave out the confidence line.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:365: in test_card_shows_label
+    assert line in render.card_text(card).splitlines()
+E   AssertionError: assert 'Confidence: LOW - no backtest evidence (no_label)' in ['Approval needed', 'ABC (pb)', 'Entry 100.00  Stop 95.00  Qty 1', 'Risk 5.00  1R/share 5.00  2R target 110.00']
+E    +  where ['Approval needed', 'ABC (pb)', 'Entry 100.00  Stop 95.00  Qty 1', 'Risk 5.00  1R/share 5.00  2R target 110.00'] = <built-in method splitlines of str object>()
+E    +    where <built-in method splitlines of str object> = 'Approval needed\nABC (pb)\nEntry 100.00  Stop 95.00  Qty 1\nRisk 5.00  1R/share 5.00  2R target 110.00'.splitlines
+E    +      where 'Approval needed\nABC (pb)\nEntry 100.00  Stop 95.00  Qty 1\nRisk 5.00  1R/share 5.00  2R target 110.00' = <function card_text>(CardView(signal_id=UUID('ab94daaf-d29e-47e6-84a0-96c40 [cut]
+E    +        where <function card_text> = render.card_text
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_card_shows_label(
+E       label=None,
+```
+
+Break: (PR 71) in `backend/app/hat/telegram/render.py`: any label is printed as stored, so a signal without one reads NONE.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:341: in test_card_shows_label
+    assert line.startswith(f"Confidence: {shown} - ")
+E   AssertionError: assert False
+E    +  where False = <built-in method startswith of str object>('Confidence: LOW - ')
+E    +    where <built-in method startswith of str object> = 'Confidence: NONE - no backtest evidence (no_label)'.startswith
+E   Failing explicit example: test_card_shows_label(
+E       label=None,
+E       basis={},
+E   )
 ```

@@ -292,6 +292,8 @@ def _seed_lists(session: Session, count: int) -> None:
                 mode=SHADOW,
                 state="Triggered",
                 risk_decision={},
+                confidence="low",
+                confidence_basis={"reason": "no_run"},
             )
         )
         session.add(

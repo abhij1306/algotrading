@@ -31,6 +31,7 @@ __all__ = [
     "ORDER_PURPOSES",
     "ORDER_SIDES",
     "ORDER_STATUSES",
+    "SIGNAL_CONFIDENCES",
     "SIGNAL_MODES",
     "HatApproval",
     "HatFill",
@@ -47,6 +48,8 @@ INSTRUMENT_ID = "hat_instrument.id"
 SIGNAL_ID = "hat_signal.id"
 
 SIGNAL_MODES = ("shadow", "confirm", "auto")
+# `app.hat.engine.confidence.LABELS` (D132, PR 71)
+SIGNAL_CONFIDENCES = ("high", "medium", "low")
 ORDER_PURPOSES = ("entry", "stop_day", "stop_gtt", "exit_partial", "exit_full", "flatten")
 ORDER_SIDES = ("buy", "sell")
 APPROVAL_DECISIONS = ("take", "skip", "expired")
@@ -108,6 +111,9 @@ class HatSignal(Base):
         CheckConstraint("qty >= 0", name="ck_hat_signal_qty"),
         CheckConstraint(in_values("mode", SIGNAL_MODES), name="ck_hat_signal_mode"),
         CheckConstraint(in_values("state", TRADE_STATES), name="hat_signal_state_check"),
+        CheckConstraint(
+            in_values("confidence", SIGNAL_CONFIDENCES), name="hat_signal_confidence_check"
+        ),
         Index("hat_signal_bot_date", "bot_id", "trade_date"),
     )
 
@@ -129,6 +135,10 @@ class HatSignal(Base):
     # Trade lifecycle state; `app.hat.engine.lifecycle` moves it with its event.
     state = Column(Text, nullable=False)
     risk_decision = Column(JsonB, nullable=False)
+    # The confidence label and the bucket evidence it was read from (D132, PR 71); written at
+    # creation and never changed (a trigger refuses it on Postgres).
+    confidence = Column(Text, nullable=False)
+    confidence_basis = Column(JsonB, nullable=False)
 
 
 class HatSignalAnnouncement(Base):

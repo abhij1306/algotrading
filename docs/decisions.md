@@ -13,7 +13,13 @@ Numbers here are pinned by `backend/tests/hat/conformance/test_conf_risk.py` (`O
 - **Modes (B1, B2).** Each bot is `shadow`, `confirm` or `auto`. A new bot asks for confirm and runs
   shadow until its sleeve is Live, its account is active with GTT delivery and DDPI confirmed, and
   the owner confirmed the policy weights. Auto places only high-confidence signals without a card;
-  it is a personal switch, never a product feature. No manual trading, no order route, no manual
+  it is a personal switch, never a product feature.
+- **Confidence labels (D132, D149).** A signal's label is fixed when it triggers, from its bucket
+  (playbook, setup-score band 0.60-0.75 / 0.75-0.90 / 0.90-1.00) in the bot's evidence run that
+  had completed by then: high is at least 30 trades with a positive 90% lower bound of mean R
+  (raw, undiscounted); low is no evidence, fewer than 30 trades or a mean at or below 0 R; medium
+  is the rest. Auto places only high; medium and low go to the owner. The 30 trades, the band
+  edges and the raw mean are owner-pending defaults. No manual trading, no order route, no manual
   exit button.
 - **Delivery only (B24).** Every real order is CNC. Long only. One entry per position, never add
   to winners (B20) or losers.

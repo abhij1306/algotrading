@@ -53,6 +53,8 @@ def write_trade(mode: str, decision: str, purposes: list[str], fills: int) -> uu
                 mode=mode,
                 state="Open",
                 risk_decision={},
+                confidence="low",
+                confidence_basis={"reason": "no_run"},
             )
         )
         if mode == "confirm":

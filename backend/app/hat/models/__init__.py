@@ -4,7 +4,7 @@ Importing this package registers every HAT table on `Base.metadata`, so `create_
 them (SQLite in tests, Postgres in production).
 """
 
-from .backtest import HatBacktestRun
+from .backtest import HatBacktestBucket, HatBacktestRun
 from .events import HatEvent
 from .ops import (
     HatBrokerSession,
@@ -75,6 +75,7 @@ __all__ = [
     "HatWatchlistEntry",
     "HatAllocationDaily",
     "HatAnnouncement",
+    "HatBacktestBucket",
     "HatBacktestRun",
     "HatBot",
     "HatBrokerAccount",

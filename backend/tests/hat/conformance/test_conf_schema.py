@@ -251,7 +251,7 @@ def test_schema__sqlite_create_all() -> None:
     Base.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
     assert set(MODEL) <= names
-    assert len(MODEL) == 43
+    assert len(MODEL) == 44
     inspector = sa.inspect(engine)
     for name, table in MODEL.items():
         declared = {(f.parent.name, f.column.table.name) for f in table.foreign_keys}

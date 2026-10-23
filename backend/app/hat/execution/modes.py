@@ -52,6 +52,7 @@ __all__ = [
     "HIGH",
     "MODES",
     "NO_GTT_DELIVERY",
+    "NOT_HIGH_CONFIDENCE",
     "SHADOW",
     "WEIGHTS_NOT_CONFIRMED",
     "Gates",
@@ -80,6 +81,7 @@ NO_GTT_DELIVERY = "no_gtt_delivery"
 DDPI_NOT_CONFIRMED = "ddpi_not_confirmed"
 WEIGHTS_NOT_CONFIRMED = "weights_not_confirmed"
 HIGH = "high"  # the confidence label auto places (D132, D149)
+NOT_HIGH_CONFIDENCE = "not_high_confidence"  # an auto signal stored without a high label
 
 
 class ModeRefusedError(HatError):
