@@ -14,8 +14,11 @@ fresh builder on its branch.
 
 ## Start a builder
 
-Start a PR as soon as what it depends on has merged, at most two at once. The brief is short and
-outcome-only (no step lists; the protocol covers how):
+Start a PR as soon as what it depends on has merged, at most two at once. Put two small related
+plan items in one brief rather than two PRs: each PR carries about 20 minutes of fixed cost
+(start-up reading, CI, review, merge). Keep behaviour changes apart from pure refactors. The
+brief is short and outcome-only (no step lists; the protocol covers how), and names the
+verification the change needs (see the protocol's sizing rule):
 
 ```text
 <title>, branch hat/<slug>. Goal: <outcome>. Scope: <files or areas>.
@@ -41,12 +44,12 @@ sending a prompt; the first check catches a builder that already finished, and t
 lets it pick the prompt up so an old report line isn't read as new.
 
 ```bash
-n=<slug>; sleep 30; while true; do
-  herdr agent read $n --source recent-unwrapped --lines 15 | grep -E 'READY TO MERGE #|BLOCKED #' && break
-  herdr agent wait $n --until working --timeout 3600000 >/dev/null 2>&1
-  herdr agent wait $n --until idle --until done --until blocked --timeout 14400000 >/dev/null 2>&1
-done
+herdr pane wait-output <pane> --source recent-unwrapped \
+  --regex '^[ ●]*READY TO MERGE #<range>( [0-9a-f]{7,})?\s*$|^[ ●]*BLOCKED #<range>: '   # run_in_background
 ```
+
+Don't message a builder mid-PR with news that doesn't invalidate its work (main moved, a data
+root changed, a later plan): it restarts verification to absorb it. Put it in the next brief.
 
 Answer BLOCKED yourself when it's reversible; ask the owner only for real product calls.
 

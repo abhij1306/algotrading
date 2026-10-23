@@ -32,7 +32,10 @@ architecture, invariants, CLAUDE.md, decisions -- and they stay compact.
 `READY TO MERGE #<n> <head sha>` as the last line of your turn, and it is true at that sha:
 
 1. The PR does what its brief says and keeps the invariants it touches, verified as below.
-2. Every CI check passes and the SonarCloud quality gate is OK. Don't wait for CodeAnt: report
+2. Every CI check passes and the SonarCloud quality gate is OK. Sonar code smells (naming,
+   literals, complexity, test style) need neither a fix nor a reply; only the gate and real bugs
+   count. CI still running is never a reason for BLOCKED: wait for it.
+   Don't wait for CodeAnt: report
    READY once CI and Sonar are green, and fix any CodeAnt finding that arrives before merge.
 3. Every real bug found by you, Sonar or CodeAnt is fixed. A Sonar or CodeAnt finding (inline
    comment or PR Risk) you judge not to be a real bug gets a reply saying why. Cosmetic findings
@@ -46,8 +49,12 @@ Implementation and real verification come first; testing is not proof.
 
 - Read your diff against the invariants it touches (`trading-safety` for the order path).
 - Run the change for real: the affected job, CLI or route against real data (`HAT_DATA_ROOT`,
-  the local database read-only), and a real backtest on real data for engine changes. Paste the
-  commands and the key output in the PR under "Verification".
+  the local database read-only). Paste the commands and the key output in the PR under
+  "Verification".
+- Size it to the change, and run it **once**, after the code is final. A refactor needs one base vs
+  head comparison on a narrow window (one bot, at most a year); an engine behaviour change needs
+  the backtest the brief names. Multi-year backtests are the orchestrator's real-data runs, not PR
+  evidence, unless the brief asks. Don't re-run after a review fix that doesn't change behaviour.
 - Tests only where cheap and meaningful: small pure functions at their seams (money maths,
   parsers, state rules). No new TLA+ models, Hypothesis suites or deliberate-break records
   unless the brief asks. Never a test that runs a backtest, the pipeline or a full database on
@@ -70,10 +77,13 @@ Implementation and real verification come first; testing is not proof.
   compaction or a fresh session resumes from it instead of re-reading. Send code
   exploration to subagents that return file pointers and conclusions, not file dumps. Never read
   your own session transcript.
-- **Waiting:** wait on CI with `gh pr checks <n> --watch` under `run_in_background`; never
-  foreground `sleep`, never `pgrep -f` loops (they match themselves and never end).
-- **Rebase** only when the orchestrator says you're next to merge: rebase onto `origin/main`,
-  keep both sides in shared files, rerun the pre-push check, `git push --force-with-lease`, report READY again.
+- **Waiting:** start the long command itself (a CI watch `gh pr checks <n> --watch`, a backtest,
+  a verification run) with `run_in_background` and wait for its completion notification. Never
+  `until`/`while ... sleep` loops or `pgrep -f` (it matches itself and never ends): each one
+  runs to the 10-minute tool timeout, and they cost 40 builder minutes on 2026-10-23.
+- **Rebase** once, just before reporting READY: if `origin/main` moved, rebase onto it, keep
+  both sides in shared files, rerun the pre-push check, `git push --force-with-lease`, wait for
+  CI. Not on every merge to main while you work: each rebase costs a CI run.
 
 ## PR
 
