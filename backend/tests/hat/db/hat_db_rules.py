@@ -57,12 +57,12 @@ def check_reference__instrument_unique(conn: Connection) -> None:
     b.instrument(conn, market)
     rejects(
         conn,
-        "a second instrument with the same (market, isin, series)",
+        "a second instrument with the same (market, isin)",
         lambda: b.instrument(conn, market, symbol="ZZZ", name="Other", face_value=10),
     )
-    accepts(conn, "same isin, other series", lambda: b.instrument(conn, market, series="BE"))
+    rejects(conn, "same isin, other series", lambda: b.instrument(conn, market, series="BE"))
     other = b.market(conn)
-    accepts(conn, "same isin and series, other market", lambda: b.instrument(conn, other))
+    accepts(conn, "same isin, other market", lambda: b.instrument(conn, other))
 
 
 def check_reference__broker_symbol_unique(conn: Connection) -> None:

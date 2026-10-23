@@ -43,13 +43,20 @@ class HatMarket(Base):
 
 
 class HatInstrument(Base):
+    """One security, identified by its ISIN (audit D5). `series` is the series it trades under
+    now, the one its broker symbol names; `series_since` is the day a listing refresh first saw
+    it (None: since listing) and `previous_series` the one before. The series of each past day is
+    on that day's `bars_daily_raw` row."""
+
     __tablename__ = "hat_instrument"
-    __table_args__ = (UniqueConstraint("market_id", "isin", "series"),)
+    __table_args__ = (UniqueConstraint("market_id", "isin"),)
 
     id = uuid_pk()
     market_id = fk("hat_market.id")
     isin = Column(Text, nullable=False)
     series = Column(Text, nullable=False)
+    series_since = Column(Date)
+    previous_series = Column(Text)
     symbol = Column(Text, nullable=False)
     name = Column(Text, nullable=False)
     face_value = Column(Money, nullable=False)

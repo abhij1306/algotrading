@@ -442,10 +442,10 @@ class ExitViews:
     a split or bonus rescale: its prices are on the old scale, so no exit fires from the action
     alone (HAT-EXEC-142); nor ever once it spans an action the rescale cannot handle (a
     consolidation, a rights issue, a demerger): it is manage-only until the owner resolves it
-    (HAT-EXEC-144); nor while its instrument has moved to another series (EQ to BE): its prices
-    stopped with the old series, so it is manage-only until the owner resolves it
-    (HAT-EXEC-146). The price is `LivePrices.price`: one the stale threshold old or outside the
-    day's band gives no view, so no exit fires on it (PR 51; the broker stop still rests)."""
+    (HAT-EXEC-144); nor once its instrument has moved to another series (EQ to BE) while it was
+    held: it is manage-only until the owner resolves it (HAT-EXEC-146). The price is
+    `LivePrices.price`: one the stale threshold old or outside the day's band gives no view, so
+    no exit fires on it (PR 51; the broker stop still rests)."""
 
     def __init__(
         self,
@@ -468,7 +468,7 @@ class ExitViews:
             logger.warning("position %s spans a corporate action not rescaled", position.id)
             return None
         if series_changed(session, position) is not None:
-            logger.warning("position %s is on a series its instrument has left", position.id)
+            logger.warning("position %s was opened before its series changed", position.id)
             return None
         signal = session.get(HatSignal, position.signal_id)
         if signal is None:
