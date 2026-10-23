@@ -16,11 +16,12 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   HAT-OPS-034). The body refuses to run outside the window and sends no sale after 15:30.
 - **`gtt.swap`** (`swap_stops`, ~15:25) and **`gtt.verify`** (`verify_stops`, nightly): through
   the `StopDesk`; the verify first reads the broker's fills so a position the GTT sold is closed.
-- **`gtt.ex_date`** (`check_ex_date_gtts`, 08:40, PR 47, behind `HAT_EXDATE_GTT_CHECK`): every
-  open real position with a stored action of ex-date today or the next session, or whose
-  instrument changed series, has its GTT checked against the broker's GTT book and is protected
-  again when the broker cancelled it (HAT-EXEC-145). A series change is alerted URGENT
-  (`position.series_changed`, HAT-EXEC-146) by this check and by every nightly verify.
+- **`gtt.check`** (`check_gtts`, 08:40, HAT-EXEC-145, P1): the day's first read of the broker's
+  GTT book, by the fill sync's own GTT check (`FillSync` step 6c, every few minutes after): a GTT
+  the broker cancelled (an ex-date, a series change, the owner in the Fyers app) is ended and the
+  position protected again. A position whose instrument changed series is alerted URGENT
+  (`position.series_changed`, HAT-EXEC-146; also by every nightly verify) and its GTT under the
+  old series' symbol replaced.
 - **Session end** (`end_session`): an entry whose order the broker's book does not hold after a
   successful read (its outcome was unknown) ends its signal Rejected with `entry_not_found`; a
   DAY limit cannot fill after the close. (An entry first found already ended is settled when it
@@ -68,7 +69,6 @@ from ..engine.rescale import unhandled_actions
 from ..events import record
 from ..models import (
     HatBot,
-    HatCorporateAction,
     HatFill,
     HatInstrument,
     HatOrder,
@@ -211,6 +211,7 @@ class FlattenReport:
 class StopsReport:
     done: int = 0
     failed: list[uuid.UUID] = field(default_factory=list)
+    unread: bool = False  # the fills or the GTT book could not be read (`check_gtts`)
 
 
 class TradeManager:
@@ -866,14 +867,16 @@ class TradeManager:
                 report.failed.append(position.id)
         return report
 
-    def sync(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport | None:
+    def sync(
+        self, session: Session, account_id: uuid.UUID, now: datetime, *, check_gtts: bool = False
+    ) -> SyncReport | None:
         """Bring down to its stop the broker stop of any position a split or bonus rescaled,
         then read the broker's fills into HAT's book (never waiting for a reconciliation). The
         trigger moves first: the fill sync resizes a stop to the open quantity at its trigger, and
         a full-size stop at the old trigger would sell the position at the open."""
         self._follow_rescales(session, account_id, now)
         try:
-            report = self._fills.run(session, account_id, now)
+            report = self._fills.run(session, account_id, now, check_gtts=check_gtts)
         except BrokerUnavailableError:
             return None
         self._resend_sales(session, report, now)
@@ -983,20 +986,7 @@ class TradeManager:
                 report.done += 1
         return report
 
-    # --- gtt.ex_date (08:40, behind a flag) and series changes --------------------------------
-
-    def _near_ex_date(self, session: Session, now: datetime) -> set[uuid.UUID]:
-        """The instruments with a stored action (any type, a dividend's too) of ex-date today or
-        the next session."""
-        today = trade_date_of(now)
-        upto = (self._calendar.next_trading_day(today) if self._calendar else None) or today
-        return set(
-            session.scalars(
-                select(HatCorporateAction.instrument_id).where(
-                    HatCorporateAction.ex_date >= today, HatCorporateAction.ex_date <= upto
-                )
-            )
-        )
+    # --- gtt.check (08:40) and series changes ------------------------------------------------
 
     def _alert_series_change(self, session: Session, position: HatPosition, now: datetime) -> bool:
         """URGENT `position.series_changed` for an open position whose instrument moved to
@@ -1019,45 +1009,34 @@ class TradeManager:
         )
         return True
 
-    def check_ex_date_gtts(
-        self, session: Session, account_id: uuid.UUID, now: datetime
-    ) -> StopsReport:
-        """The `gtt.ex_date` job body (HAT-EXEC-145, HAT-EXEC-146): the broker cancels a resting
-        GTT before any ex-date and on a series change, so each open real position with a stored
-        action of ex-date today or the next session, or whose instrument changed series, has its
-        GTT checked against the broker's GTT book (`StopDesk.check_gtt`) and is protected again
-        when it is gone. The fills are read first, as the verify does; while the fills or the GTT
-        book cannot be read, or a GTT's lost answer cannot be settled, each such position is
-        alerted `gtt.unverified`, nothing is placed, and the run fails so the scheduler tries
-        again. A GTT the broker refuses is alerted (`stop.not_placed`) and does not fail the run:
-        retrying it every minute would spend the signal's tags, and from 09:15 the fill sync
-        places the intraday stop. Any other position is not looked at."""
+    def check_gtts(self, session: Session, account_id: uuid.UUID, now: datetime) -> StopsReport:
+        """The `gtt.check` job body (HAT-EXEC-145, HAT-EXEC-146): a fill sync that reads the
+        broker's GTT book whatever its cadence (`FillSync` step 6c ends and replaces each GTT the
+        broker dropped), then each open real position whose instrument changed series is alerted
+        and its GTT checked against the same book (`StopDesk.check_gtt` replaces one under the old
+        series' symbol). The run fails, so the scheduler tries again, while the fills or the GTT
+        book cannot be read (nothing is placed or ended then) or a position is left unprotected;
+        a GTT the broker refuses is alerted (`stop.not_placed`) and the fill sync tries again."""
         report = StopsReport()
-        near = self._near_ex_date(session, now)
-        checked = [
+        synced = self.sync(session, account_id, now, check_gtts=True)
+        # after the sync, so a position its fills closed is not alerted
+        moved = [
             position
             for position in self.open_positions(session, account_id)
-            if self._alert_series_change(session, position, now) or position.instrument_id in near
+            if self._alert_series_change(session, position, now)
         ]
-        if not checked:
+        if synced is None or synced.gtt_book is None or synced.gtt_read_at is None:
+            report.unread = True
             return report
-        fresh = self.sync(session, account_id, now) is not None
-        book: set[str] | None = None
-        if fresh:
-            try:
-                book = {gtt.gtt_id for gtt in self._broker.gtts()}
-            except BrokerUnavailableError:
-                book = None
-        for position in checked:
-            if book is None:
-                reason = "gtt_book_unread" if fresh else "fills_unread"
-                self._desk.unverified(session, position.id, now, reason)
+        report.failed.extend(synced.gtt_unprotected)
+        report.done += len(synced.protected)
+        for position in moved:
+            outcome = self._desk.check_gtt(
+                session, position.id, now, synced.gtt_book, synced.gtt_read_at
+            )
+            if outcome in (UNVERIFIED, FAILED):
                 report.failed.append(position.id)
-                continue
-            outcome = self._desk.check_gtt(session, position.id, now, book)
-            if outcome == UNVERIFIED:
-                report.failed.append(position.id)
-            elif outcome in (VERIFIED, REPLACED):
+            elif outcome == REPLACED:
                 report.done += 1
         return report
 

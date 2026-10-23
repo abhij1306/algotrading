@@ -38,6 +38,14 @@ book raises and nothing is written) and then, for one broker account:
    shows at the market but still resting is asked to go at the market again at each sync; a
    sale of an instrument locked at its lower circuit is left in the queue and alerted once, and
    the owner is paged URGENT once a sale has missed `page_after` times (`sale.unfilled`);
+6c. (P1, HAT-EXEC-145) every `gtt_check_every` (`HAT_GTT_CHECK_MINUTES`, default 5), and on
+   every run the 08:40 `gtt.check` asks for, reads the broker's GTT book before the order book
+   and compares it with the GTTs HAT believes rest (`protect.stop_confirmed`). A GTT a good read
+   no longer holds, with no sale of it in the order book (one that triggered is the fill sync's
+   to attribute), was cancelled or expired by the broker: `StopDesk.check_gtt` ends it, alerts it
+   once (`gtt.missing`) and protects the position again at once, so the engine's own hard stop
+   is no longer held back for it. A GTT book that cannot be read changes nothing and is alerted
+   once (`gtt.unverified`, code `gtt_book_unread`) until a read succeeds;
 7. closes each position its sales emptied while its entry still worked, once the broker's book
    shows the entry ended or its trade date passed (`live_trades.close_if_emptied`); while it
    still works, the cancel of its remainder is asked unless it was already (F2). A late fill of
@@ -71,18 +79,29 @@ from ..events import record
 from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..time import as_utc, trade_date_of
-from .broker import BrokerOrder, BrokerTrade, HatBroker, OrderType, Side
+from .broker import (
+    BrokerOrder,
+    BrokerTrade,
+    BrokerUnavailableError,
+    HatBroker,
+    OrderType,
+    Side,
+)
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     ALERT_GTT_UNFILLED,
+    ALERT_GTT_UNVERIFIED,
     EVENT_GTT_TRIGGERED,
     EXIT_WORKING,
+    FAILED,
     LIVE,
     STOP_DAY,
     STOP_GTT,
     UNSURE,
+    UNVERIFIED,
     WORKING,
     StopDesk,
+    stop_confirmed,
 )
 from .submit import (
     EXIT_SALES,
@@ -107,6 +126,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+GTT_CHECK_EVERY = timedelta(minutes=5)  # the GTT book read by the fill sync (P1)
 
 ENTRY = "entry"
 ALERT_FILL_REFUSED = "fill.refused"
@@ -202,6 +223,11 @@ class SyncReport:
     # and those HAT cancelled to send again that ended in this sync.
     resting: list[tuple[uuid.UUID, BrokerOrder]] = field(default_factory=list)
     resend: list[uuid.UUID] = field(default_factory=list)
+    # P1: the GTT ids of the GTT book this sync read, and when (None: not read, or unreadable),
+    # and the positions whose dropped GTT could not be replaced yet.
+    gtt_book: frozenset[str] | None = None
+    gtt_read_at: datetime | None = None
+    gtt_unprotected: list[uuid.UUID] = field(default_factory=list)
 
 
 def _resend_due(session: Session, row: HatOrder) -> bool:
@@ -238,6 +264,7 @@ class FillSync:
         band: SaleBand | None = None,
         resend: bool = False,
         page_after: int = 3,
+        gtt_check_every: timedelta = GTT_CHECK_EVERY,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
@@ -252,13 +279,23 @@ class FillSync:
         self._refused_trades: set[str] = set()
         self._unmarketed: set[str] = set()  # resting GTT sales whose conversion was alerted
         self._working_since: dict[str, datetime] = {}  # a GTT's sale first seen working
+        self._gtt_check_every = gtt_check_every
+        self._gtts_read_at: datetime | None = None  # the last good GTT-book read (by `now`)
+        self._gtt_unread_alerted = False  # until a read succeeds again
 
-    def run(self, session: Session, account_id: uuid.UUID, now: datetime) -> SyncReport:
-        """One pass over the broker's books. Raises BrokerUnavailableError when either book
-        cannot be read (nothing is written then)."""
+    def run(
+        self, session: Session, account_id: uuid.UUID, now: datetime, *, check_gtts: bool = False
+    ) -> SyncReport:
+        """One pass over the broker's books. Raises BrokerUnavailableError when the order or the
+        trade book cannot be read (nothing is written then); an unreadable GTT book only skips
+        step 6c. `check_gtts` reads the GTT book whether or not it is due."""
+        report = SyncReport()
+        if check_gtts or self._gtts_due(now):
+            # read before the order book: a GTT that triggered before this read has its sale there
+            report.gtt_read_at = self._clock.now()
+            report.gtt_book = self._read_gtts(account_id, now)
         orders = self._broker.orders()
         trades = self._broker.trades()
-        report = SyncReport()
         rows = {
             row.tag: row
             for row in session.scalars(
@@ -269,6 +306,36 @@ class FillSync:
         }
         book = TagBook.of(orders)
         self._adopt(session, rows, book, now, report)
+        self._trades(session, account_id, rows, trades, now, report)
+        self._statuses(session, rows, book, now, report)
+        self._sales(session, rows, book, now, report)
+        self._gtt_sales(session, account_id, orders, now, report)
+        if report.gtt_book is not None and report.gtt_read_at is not None:
+            self._check_gtts(
+                session, account_id, orders, report.gtt_book, report.gtt_read_at, now, report
+            )
+            self._gtts_read_at = now
+        for position_id in self._unprotected(session, account_id) - report.protected:
+            self._protect(session, position_id, now, report)
+        for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
+            # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
+            # once settled, a stop that landed is cancelled, so it never rests under no shares.
+            self._desk.cancel_all(session, position_id, now)
+        for position_id in self._emptied(session, account_id):
+            self._close_emptied(session, position_id, now)
+        return report
+
+    def _trades(
+        self,
+        session: Session,
+        account_id: uuid.UUID,
+        rows: dict[str, HatOrder],
+        trades: Iterable[BrokerTrade],
+        now: datetime,
+        report: SyncReport,
+    ) -> None:
+        """Steps 2 and 3: each trade of an HT-tagged order, then each sale of a triggered GTT."""
+        trades = list(trades)
         for trade in trades:
             row = rows.get(trade.tag) if trade.tag else None
             if row is not None:
@@ -278,8 +345,16 @@ class FillSync:
             gtt = gtts.of(trade)
             if gtt is not None and trade.side is Side.SELL:
                 self._apply_gtt_trade(session, gtt, trade, now, report)
-        self._statuses(session, rows, book, now, report)
-        self._sales(session, rows, book, now, report)
+
+    def _gtt_sales(
+        self,
+        session: Session,
+        account_id: uuid.UUID,
+        orders: Iterable[BrokerOrder],
+        now: datetime,
+        report: SyncReport,
+    ) -> None:
+        """Step 5 over the order book: each triggered GTT's sale that ended short or rests."""
         gtts = self._working_gtts(session, account_id)
         for order in orders:
             gtt = gtts.of(order)
@@ -296,15 +371,6 @@ class FillSync:
             for order_id, since in self._working_since.items()
             if order_id in working
         }
-        for position_id in self._unprotected(session, account_id) - report.protected:
-            self._protect(session, position_id, now, report)
-        for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
-            # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
-            # once settled, a stop that landed is cancelled, so it never rests under no shares.
-            self._desk.cancel_all(session, position_id, now)
-        for position_id in self._emptied(session, account_id):
-            self._close_emptied(session, position_id, now)
-        return report
 
     def _close_emptied(self, session: Session, position_id: uuid.UUID, now: datetime) -> None:
         """Step 7 for one position (one failing leaves the others closed)."""
@@ -490,6 +556,58 @@ class FillSync:
         # (later in this sync, or the next) it is protected again.
         if self._desk.protect(session, position_id, now) != EXIT_WORKING:
             report.protected.add(position_id)
+
+    # --- 6c. the GTT book ---------------------------------------------------------------------
+
+    def _gtts_due(self, now: datetime) -> bool:
+        """The last GTT check is `gtt_check_every` old (a sync that failed did not check)."""
+        return self._gtts_read_at is None or now - self._gtts_read_at >= self._gtt_check_every
+
+    def _read_gtts(self, account_id: uuid.UUID, now: datetime) -> frozenset[str] | None:
+        """The ids of the GTTs the broker's book shows, or None (alerted once) when it cannot be
+        read; an unread book is read again at the next sync."""
+        try:
+            book = frozenset(gtt.gtt_id for gtt in self._broker.gtts())
+        except BrokerUnavailableError as exc:
+            if not self._gtt_unread_alerted:
+                self._gtt_unread_alerted = True
+                self._notifier.alert(
+                    ALERT_GTT_UNVERIFIED,
+                    trade_date_of(now),
+                    {"account_id": str(account_id), "code": "gtt_book_unread"},
+                )
+            logger.warning("GTT book of account %s unread: %s", account_id, exc.code)
+            return None
+        self._gtt_unread_alerted = False
+        return book
+
+    def _check_gtts(
+        self,
+        session: Session,
+        account_id: uuid.UUID,
+        orders: Iterable[BrokerOrder],
+        book: frozenset[str],
+        read_at: datetime,
+        now: datetime,
+        report: SyncReport,
+    ) -> None:
+        """Step 6c: each position with a live GTT the book read at `read_at` no longer holds
+        and no sale of it in the order book is checked and protected again by the desk."""
+        gtts = self._working_gtts(session, account_id)
+        triggered = {gtt.id for order in orders if (gtt := gtts.of(order)) is not None}
+        gone = {
+            row.position_id
+            for row, _symbol in gtts.by_tag.values()
+            if row.id not in triggered
+            and row.position_id is not None
+            and stop_confirmed(row, book, read_at, self._desk.settle_after) is False
+        }
+        for position_id in sorted(gone):
+            outcome = self._desk.check_gtt(session, position_id, now, book, read_at)
+            if outcome in (FAILED, UNVERIFIED):
+                report.gtt_unprotected.append(position_id)
+            else:
+                report.protected.add(position_id)
 
     # --- 4. statuses ----------------------------------------------------------------------------
 

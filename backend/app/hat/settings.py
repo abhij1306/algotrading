@@ -1,8 +1,8 @@
 """HAT settings from environment variables (HAT-OPS-001, HAT-OVR-007, HAT-OVR-052).
 
 `HAT_ENABLED` defaults to false, so a developer machine or a test run never starts a HAT task.
-`HAT_EXDATE_GTT_CHECK` (PR 47) defaults to false: the 08:40 `gtt.ex_date` check is registered only
-once the O2(b) live check confirms how the broker treats a GTT on an ex-date (HAT-EXEC-145).
+`HAT_GTT_CHECK_MINUTES` (P1) is how often the fill sync reads the broker's GTT book to find a GTT
+the broker cancelled (default 5; HAT-EXEC-145).
 `HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE` and `_PER_DAY` (PR 50, HAT-BRK-082) are the broker
 call budget: defaults 8, 180 and 5,000 (the Standard plan counts every call); `_PER_DAY` 0 or
 `off` is no day cap, and an unreadable value is the default.
@@ -41,7 +41,6 @@ class HatSettings:
     enabled: bool
     user_id: uuid.UUID
     data_root: Path
-    exdate_gtt_check: bool = False
     broker_calls_per_second: int = 8
     broker_calls_per_minute: int = 180
     broker_calls_per_day: int | None = 5000
@@ -51,6 +50,7 @@ class HatSettings:
     symbol_silent_seconds: int = 120
     entry_timeout_minutes: int = 60
     duckdb_memory: str = DEFAULT_DUCKDB_MEMORY
+    gtt_check_minutes: int = 5
 
 
 def _is_true(raw: str | None) -> bool:
@@ -93,7 +93,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         enabled=_is_true(source.get("HAT_ENABLED")),
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
-        exdate_gtt_check=_is_true(source.get("HAT_EXDATE_GTT_CHECK")),
         broker_calls_per_second=_calls(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8) or 8,
         broker_calls_per_minute=_calls(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180) or 180,
         broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
@@ -103,6 +102,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
         entry_timeout_minutes=_calls(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60) or 60,
         duckdb_memory=_memory(source.get("HAT_DUCKDB_MEMORY")),
+        gtt_check_minutes=_calls(source.get("HAT_GTT_CHECK_MINUTES"), 5) or 5,
     )
 
 

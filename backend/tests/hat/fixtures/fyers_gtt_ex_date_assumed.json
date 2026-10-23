@@ -1,8 +1,0 @@
-{
-  "_note": "ASSUMED, not recorded live. How the Fyers GTT book shows a single-leg CNC GTT the broker cancelled before a corporate-action ex-date or on a series change. Each shape is applied to the book row of a resting HAT GTT (fakes/broker.py _gtt_row, recorded live 2026-10-22). `cancelled`: the row stays with ord_status 1, as a cancel by HAT leaves it. `dropped`: the row leaves the book. `unknown_status`: the row stays with a status code the adapter does not know, so the whole book read fails closed. The O2(b) live check on a dividend and a split ex-date must confirm: (1) which of these shapes Fyers shows, and from what time; (2) whether a GTT can be placed before the 09:15 open on the ex-date; (3) whether Fyers instead keeps or adjusts the GTT (then the check finds it resting and does nothing). Until then `gtt.ex_date` stays off (HAT_EXDATE_GTT_CHECK).",
-  "shapes": {
-    "cancelled": {"ord_status": 1},
-    "dropped": null,
-    "unknown_status": {"ord_status": 99}
-  }
-}

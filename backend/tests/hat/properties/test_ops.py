@@ -11,10 +11,9 @@ import re
 import shutil
 import tempfile
 import threading
-import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from unittest import mock
 from zoneinfo import ZoneInfo
 
@@ -24,10 +23,8 @@ from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.hat.clock import SYSTEM_CLOCK, FixedClock
-from app.hat.daily.intraday import Intraday
-from app.hat.daily.nightly import NightlyDeps
-from app.hat.daily.runtime import ALERT_POOL, HatRuntime, daily_jobs, subscription_alert
+from app.hat.clock import FixedClock
+from app.hat.daily.runtime import ALERT_POOL, HatRuntime, subscription_alert
 from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
 from app.hat.errors import HatConfigError
 from app.hat.execution.session import (
@@ -47,7 +44,6 @@ from app.hat.ops.jobs import (
 )
 from app.hat.ops.scheduler import Days, HatScheduler, ScheduledJob, due, runs_on
 from app.hat.settings import load_settings
-from app.hat.telegram.reports import Reports
 from app.hat.time import IST, trade_date_of
 from app.paths import PROJECT_ROOT
 from app.utils.env_loader import TRUE_VALUES
@@ -468,73 +464,6 @@ def test_deploy_window_guard(now: datetime, listed: bool | None, force: bool) ->
 REGIMES = ("bull_quiet", "bull_volatile", "correction", "bear")
 ACCOUNT = "account"
 TRIPPED = "tripped"
-
-
-def _account_jobs(exdate_check: bool) -> dict[str, ScheduledJob]:
-    """The jobs `daily_jobs` registers for one broker account (stand-ins never called)."""
-    account = uuid.UUID(int=1)
-    nightly = NightlyDeps(**dict.fromkeys(NightlyDeps.__dataclass_fields__))
-    nightly.clock = SYSTEM_CLOCK
-    intraday = Intraday(
-        **dict.fromkeys(
-            (
-                "session_factory",
-                "clock",
-                "book",
-                "prices",
-                "live",
-                "service",
-                "subscriptions",
-                "shadow",
-                "notifier",
-                "gap_client",
-                "calendar",
-            )
-        )
-    )
-    desks = SimpleNamespace(managers=lambda: [(account, None)])
-    jobs = daily_jobs(
-        nightly,
-        intraday,
-        desks,  # type: ignore[arg-type]
-        None,  # type: ignore[arg-type]
-        Reports(None, None),  # type: ignore[arg-type]
-        exdate_check=exdate_check,
-    )
-    return {job.name.replace(str(account), "<account>"): job for job in jobs}
-
-
-@settings(max_examples=30)
-@given(
-    raw=st.one_of(
-        not_true,
-        st.sampled_from(sorted(TRUE_VALUES)).flatmap(
-            lambda v: st.sampled_from([v, v.upper(), f" {v} "])
-        ),
-    )
-)
-def test_ex_date_job_behind_flag(raw: str | None) -> None:
-    """: `gtt.ex_date:<account>` is registered, at 08:40 on trading days and
-    retried every minute, exactly when `HAT_EXDATE_GTT_CHECK` is a true value; unset (the
-    default) or anything else registers no such job and leaves every other job as it was.
-    Harm: the check runs on a GTT-book behaviour nobody has confirmed live, or the switch
-    turns it on without the job ever being scheduled."""
-    env = {} if raw is None else {"HAT_EXDATE_GTT_CHECK": raw}
-    flag = load_settings(env).exdate_gtt_check
-    assert flag == (raw is not None and raw.strip().lower() in TRUE_VALUES)
-    jobs = _account_jobs(flag)
-    plain = _account_jobs(False)
-    job = jobs.get("gtt.ex_date:<account>")
-    assert (job is not None) == flag
-    assert {n: (j.at, j.after) for n, j in jobs.items() if n != "gtt.ex_date:<account>"} == {
-        n: (j.at, j.after) for n, j in plain.items()
-    }
-    if job is not None:
-        assert (job.at, job.days, job.retry_after) == (
-            time(8, 40),
-            Days.TRADING,
-            timedelta(minutes=1),
-        )
 
 
 class ThreadNotifier(RecordingNotifier):

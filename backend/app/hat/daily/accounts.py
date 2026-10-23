@@ -36,7 +36,7 @@ from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.entry_timeout import EntryWatch
-from ..execution.fills import FillSync, SaleBand, watch_closely
+from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
 from ..execution.protect import StopDesk
@@ -212,12 +212,14 @@ class Desks:
         band: SaleBand | None = None,
         resend: bool = False,
         page_after: int = 3,
+        gtt_check_every: timedelta = GTT_CHECK_EVERY,
     ) -> None:
         self._session_factory = session_factory
         # PR 48: the day's lower band for sales, and `HAT_MPP_RESEND` with its page threshold
         self._band = band
         self._resend = resend
         self._page_after = page_after
+        self._gtt_check_every = gtt_check_every  # the fill sync's GTT-book read (P1)
         self._clock = clock  # the guards' trade date and every order stamp
         self._registry = SessionRegistry()
         self.by_account: dict[uuid.UUID, AccountDesk] = {}
@@ -269,6 +271,7 @@ class Desks:
             band=self._band,
             resend=self._resend,
             page_after=self._page_after,
+            gtt_check_every=self._gtt_check_every,
             clock=clock,
         )
         manager = TradeManager(
@@ -459,19 +462,13 @@ def account_jobs(
     session_factory: SessionFactory,
     views: ViewSource,
     clock: Clock,
-    *,
-    exdate_check: bool = False,
 ) -> tuple[ScheduledJob, ...]:
-    """Each account's `exits.close`, `gtt.swap`, `gtt.verify` and `trade.end_session` jobs, and
-    `gtt.ex_date` with `exdate_check` (PR 47); the names carry the account id, so two accounts
-    never share a `hat_job_run` row."""
+    """Each account's `gtt.check`, `exits.close`, `gtt.swap`, `gtt.verify` and
+    `trade.end_session` jobs; the names carry the account id, so two accounts never share a
+    `hat_job_run` row."""
     jobs: list[ScheduledJob] = []
     for account_id, manager in desks.managers():
-        jobs.extend(
-            trade_jobs(
-                manager, session_factory, account_id, views, clock, exdate_check=exdate_check
-            )
-        )
+        jobs.extend(trade_jobs(manager, session_factory, account_id, views, clock))
 
         def end(_day: date, m: TradeManager = manager, a: uuid.UUID = account_id) -> JobResult:
             with session_factory() as session:

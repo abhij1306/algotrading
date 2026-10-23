@@ -1,6 +1,7 @@
 """PBT for broker accounts, the session, the capability gate and the adapter's reads."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -38,11 +39,13 @@ from app.hat.execution.modes import (
     capability_gated,
     request_mode,
 )
+from app.hat.execution.protect import stop_confirmed
 from app.hat.execution.session import (
     SessionOwnedError,
     SessionRegistry,
 )
 from app.hat.execution.tags import encode_tag
+from app.hat.models import HatOrder
 from app.hat.risk.modes import MODE_VALUES, Mode
 
 
@@ -403,3 +406,36 @@ def test_onboarding_status_keeps_the_status_through_an_outage(
 )
 def test_earlier_sale_verdict(qty_open: int, held: int, row_qty: int, verdict: str) -> None:
     assert earlier_sale_verdict(qty_open, held, row_qty) == verdict
+
+
+READ_AT = datetime(2026, 10, 23, 5, 0, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("status", "gtt_id", "placed_ago", "book", "confirmed"),
+    [
+        ("placed", "g1", timedelta(hours=1), {"g1", "g2"}, True),  # present: rests
+        ("partially_filled", "g1", timedelta(days=3), {"g1"}, True),
+        ("placed", "g1", timedelta(hours=1), {"g2"}, False),  # absent after a good read: gone
+        ("placed", "g1", timedelta(hours=1), set(), False),
+        ("placed", "g1", timedelta(hours=1), None, None),  # unreadable book: nothing known
+        ("placed", "g1", timedelta(seconds=30), set(), None),  # too young for the book
+        ("placed", "g1", -timedelta(seconds=5), set(), None),  # placed after the read
+        ("placed", "g1", None, set(), None),  # never stamped
+        ("unconfirmed", None, timedelta(hours=1), set(), None),  # lost answer: settle_lost's
+        ("cancelled", "g1", timedelta(hours=1), set(), None),  # already ended
+    ],
+)
+def test_stop_confirmed(
+    status: str,
+    gtt_id: str | None,
+    placed_ago: timedelta | None,
+    book: set[str] | None,
+    confirmed: bool | None,
+) -> None:
+    row = HatOrder(
+        status=status,
+        broker_order_id=gtt_id,
+        placed_at=None if placed_ago is None else READ_AT - placed_ago,
+    )
+    assert stop_confirmed(row, book, READ_AT) is confirmed

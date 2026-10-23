@@ -94,7 +94,7 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 | 00:30 / 01:00 | events.partitions, retention.purge |
 | 07:00-07:45 | calendar.refresh, bands.nightly (Saturday 09:00 reference.weekly) |
 | 08:30, 09:05 | Telegram login prompts (no entries until logged in) |
-| 08:40-08:45 | ca.rescale open positions, live.prepare |
+| 08:40-08:45 | ca.rescale open positions, gtt.check (GTT book; the fill sync re-reads it every 5 min), live.prepare |
 | 09:15-09:20 | modes.apply (queued mode changes), gapscan |
 | 09:20-15:20 | triggers, routing, stops on fill |
 | 15:20-15:25 | exits.close (MA exits on live price); 15:25 gtt.swap |
