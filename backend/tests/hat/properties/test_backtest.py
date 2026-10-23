@@ -26,10 +26,14 @@ from sqlalchemy.orm import Session
 
 from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.backtest.fills import (
+    AMBIGUOUS_OPTIMISTIC,
+    AMBIGUOUS_PESSIMISTIC,
+    AMBIGUOUS_RULES,
     ENTRY_FILL_RULES,
     FILL_PATH,
     GAP_THROUGH_RULE,
     PENETRATION,
+    SUSPENSION_SESSIONS,
     TOUCH,
     TRIGGER_PROXY,
     entry_fill,
@@ -59,6 +63,7 @@ from app.hat.engine.backtest import (
     compute_metrics,
     config_digest,
     industry_on,
+    lower_circuit_locked,
     pre_break_low,
     run_backtest,
     trades_parquet,
@@ -818,8 +823,9 @@ SLIPPAGES = st.sampled_from([D(0), D("-0"), D(5), DEFAULT_SLIPPAGE_BPS, D("20.0"
 @example({s.instrument(0): [(100.0, 101.0, 99.0, 100.0)] * SESSIONS}, TOUCH, D(20), True)
 def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool) -> None:
     """Every run's metrics record its fill path (open, low, high, close), entry fill rule,
-    gap-through rule (min(open, stop)), trigger proxy, slippage, cost model and slot order
-    (`time` by default, PR 63), whether it is
+    gap-through rule (min(open, stop)), trigger proxy, slippage, cost model, slot order
+    (`time` by default, PR 63) and path rules (PR 64: the ambiguous-day rule, `optimistic` by
+    default, the lower-circuit carry and the suspension markdown), whether it is
     flagged for promotion, and `config_digest`, the hash of exactly those conventions; a
     `touch` run also reports the touch gap. A run flagged for promotion at a slippage of 0, or
     under `touch`, is refused. Harm: runs under different fill conventions read as comparable
@@ -842,6 +848,9 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
         "slippage_bps": "0" if bps == 0 else format(bps.normalize(), "f"),  # -0 too
         "cost_model": fills.model.to_json(),
         "slot_order": SLOT_ORDER_TIME,  # the default (PR 63)
+        "ambiguous": AMBIGUOUS_OPTIMISTIC,  # the defaults of PR 64
+        "lower_circuit": "carry_to_next_unlocked_open",
+        "suspension_markdown": {"after_sessions": SUSPENSION_SESSIONS, "band_pct": "5"},
     }
     assert {k: metrics[k] for k in recorded} == recorded
     assert metrics["for_promotion"] is promote
@@ -851,21 +860,33 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
 
 SLOT_ORDERS = st.sampled_from([SLOT_ORDER_TIME, SLOT_ORDER_SCORE, "random:0", "random:7"])
 CONVENTIONS = st.tuples(
-    st.sampled_from(ENTRY_FILL_RULES), SLIPPAGES, st.sampled_from(["zero", "default"]), SLOT_ORDERS
+    st.sampled_from(ENTRY_FILL_RULES),
+    SLIPPAGES,
+    st.sampled_from(["zero", "default"]),
+    SLOT_ORDERS,
+    st.sampled_from(AMBIGUOUS_RULES),
+    st.sampled_from([0, SUSPENSION_SESSIONS, 20]),
 )
 
 
 @given(CONVENTIONS, CONVENTIONS)
 def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
     """Two runs' `config_digest`s are equal exactly when their entry fill rule, slippage (20
-    and 20.0 bps alike, -0 and 0 alike), cost model and slot order (PR 63) are. Harm: a run
-    under other conventions passes for a rerun, or a rerun reads as another convention."""
+    and 20.0 bps alike, -0 and 0 alike), cost model, slot order (PR 63), ambiguous-day rule and
+    bar-less sessions before the markdown (PR 64) are. Harm: a run under other conventions
+    passes for a rerun, or a rerun reads as another convention."""
 
-    def spec(rule: str, bps: D, model: str, slots: str) -> object:
+    def spec(rule: str, bps: D, model: str, slots: str, ambiguous: str, after: int) -> object:
         fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_model(), D(0))
         fills = BacktestFills(fills.model, bps)
         base = s.spec(s.config(), DAYS, fills=fills)
-        return dataclasses.replace(base, entry_fill_rule=rule, slot_order=slots)
+        return dataclasses.replace(
+            base,
+            entry_fill_rule=rule,
+            slot_order=slots,
+            ambiguous=ambiguous,
+            suspension_sessions=after,
+        )
 
     same = tuple(a) == tuple(b)  # Decimal(20) == Decimal("20.0")
     assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
@@ -1020,6 +1041,229 @@ def test_slot_order_applied(paths: dict, rule: str, fill: str) -> None:
         for sig in signals:
             assert not (refused and sig.state == "Open")
             refused = refused or sig.reason == "max_positions"
+
+
+# --- HAT-BT-021 / 022: path pessimism (PR 64) ---------------------------------------------------
+
+# A market of one instrument: a flat consolidation at 100 (pivot 101) for the warm-up, then a
+# break that enters at 101.01 under penetration, with a 5% stop at 95.95 (1R = 5.06).
+_FLAT = [(100.0, 101.0, 99.0, 100.0)] * s.WARM_UP
+_BREAK = (100.0, 104.0, 99.5, 103.0)
+_ENTRY, _STOP = D("101.01"), D("95.95")
+_ONE_R = _ENTRY + (_ENTRY - _STOP)  # the breakeven rule moves the stop to the entry here
+_HOLD = (105.0, 106.0, 104.0, 105.0)  # a day no exit rule acts on
+
+
+def _path_run(path: list[tuple[float, ...]], **kw: object) -> tuple[BacktestResult, MarketData]:
+    data = s.market({s.instrument(0): path}, DAYS)
+    spec = dataclasses.replace(s.spec(s.config(), DAYS, fills=s.zero_fills()), **kw)
+    return run_backtest(spec, data), data
+
+
+def _sells(result: BacktestResult) -> list:
+    return [f for f in result.fills if f.side == "sell"]
+
+
+@given(
+    st.integers(10_400, 11_000),  # the high, in paise: around 1R (106.07), below 2R (111.13)
+    st.integers(9_600, 10_400),  # the low, above the initial stop
+    st.integers(0, 600),  # the open above the low (kept below 1R)
+    st.integers(10_076, 11_000),  # the close, above the 5-session SMA
+    st.sampled_from(AMBIGUOUS_RULES),
+)
+@settings(max_examples=25, deadline=None)
+@example(10_750, 10_101, 300, 10_500, AMBIGUOUS_PESSIMISTIC)  # the low at the raised stop
+@example(10_750, 10_101, 300, 10_500, AMBIGUOUS_OPTIMISTIC)
+@example(10_750, 10_050, 300, 10_090, AMBIGUOUS_OPTIMISTIC)  # the close below it: exits either way
+@example(10_500, 10_050, 300, 10_200, AMBIGUOUS_PESSIMISTIC)  # no raise: not ambiguous
+def test_raised_stop_dip(high: int, low: int, up: int, close: int, rule: str) -> None:
+    """The day after an entry, the breakeven rule raises the stop to the entry on the way up
+    when the high reaches 1R. The day is ambiguous exactly when the stop was raised, the low
+    reaches the raised stop and the close is above it; every run counts it (`ambiguous_days`).
+    The raised stop fills at its price that day when the close is at or below it, or, under
+    `pessimistic`, when the low reaches it; otherwise the position is held. Harm: a breakeven
+    rule reads as never losing a winner the daily bar cannot show was kept, or a stop the close
+    went through is not taken."""
+    h, l_, c = D(high) / 100, D(low) / 100, D(close) / 100
+    o = min(l_ + D(up) / 100, h, _ONE_R - D("0.01"))
+    c = max(min(c, h), l_)
+    day = (float(o), float(h), float(l_), float(c))
+    result, _ = _path_run([*_FLAT, _BREAK, day, *[_HOLD] * 11], ambiguous=rule)
+    trade = result.trades[0]
+    assert (trade.entry_price, trade.initial_stop) == (_ENTRY, _STOP)
+    raised = h >= _ONE_R
+    ambiguous = raised and l_ <= _ENTRY < c
+    assert result.metrics["ambiguous_days"] == int(ambiguous)
+    assert result.metrics["ambiguous"] == rule
+    exits_at_stop = raised and (c <= _ENTRY or (ambiguous and rule == AMBIGUOUS_PESSIMISTIC))
+    sold = [f for f in _sells(result) if f.day == DAYS[s.WARM_UP + 1]]
+    assert [f.price for f in sold] == ([_ENTRY] if exits_at_stop else [])
+
+
+@given(s.paths(SESSIONS))
+@RUNS
+def test_raised_stop_dip_rules_agree(paths: dict) -> None:
+    """On a market without an ambiguous day the two ambiguous-day rules make the same trades,
+    and each run counts the ambiguous days it saw. Harm: the rule changes a run it has no day
+    to act on."""
+    data = s.market(paths, DAYS)
+    runs = {
+        rule: run_backtest(dataclasses.replace(s.spec(s.config(), DAYS), ambiguous=rule), data)
+        for rule in AMBIGUOUS_RULES
+    }
+    counts = {rule: r.metrics["ambiguous_days"] for rule, r in runs.items()}
+    assert (counts[AMBIGUOUS_OPTIMISTIC] == 0) is (counts[AMBIGUOUS_PESSIMISTIC] == 0)
+    if counts[AMBIGUOUS_OPTIMISTIC] == 0:
+        assert runs[AMBIGUOUS_OPTIMISTIC].trades == runs[AMBIGUOUS_PESSIMISTIC].trades
+
+
+def _band_lower(prev_close: D, band: D, tick: D) -> D:
+    raw = prev_close * (100 - band) / 100
+    return -floor_to_tick(-raw, tick)  # up to the tick grid
+
+
+@given(PRICE, st.sampled_from(NSE_BANDS), TICKS)
+@example(D(100), D(5), D("0.05"))
+@example(D("1.01"), D(2), D("0.05"))
+def test_lower_circuit_inferred(prev_close: D, band: D, tick: D) -> None:
+    """A session is pinned at its lower circuit when it traded at one price all day, below the
+    previous close and within one tick of an NSE band's lower price under it (2, 5, 10 or 20%,
+    rounded up to the tick): a session that moved, closed at or above the previous close or sat
+    between bands is not; without a previous close or a tick the state is unknown (None). Harm:
+    the backtest sells at a locked lower band, where live finds no buyer, or carries a stop on
+    a day that traded."""
+    lower = _band_lower(prev_close, band, tick)
+
+    def at(price: D) -> tuple[D, D, D, D]:
+        return (price, price, price, price)
+
+    for price in (lower - tick, lower, lower + tick):
+        if 0 < price < prev_close and lower < prev_close:
+            assert lower_circuit_locked(at(price), prev_close, tick) is True
+        moved = (price + tick, price + tick, price, price)
+        assert lower_circuit_locked(moved, prev_close, tick) is False
+    assert lower_circuit_locked(at(prev_close), prev_close, tick) is False
+    between = _band_lower(prev_close, band - D("0.5"), tick)
+    near = any(
+        (w := _band_lower(prev_close, b, tick)) < prev_close and abs(between - w) <= tick
+        for b in NSE_BANDS
+    )
+    expected = 0 < between < prev_close and near
+    assert lower_circuit_locked(at(between), prev_close, tick) is expected
+    assert lower_circuit_locked(at(lower), None, tick) is None
+    assert lower_circuit_locked(at(lower), prev_close, None) is None
+
+
+@given(
+    st.sampled_from([D(2), D(5), D(10), D(20)]),
+    st.integers(1, 3),
+    st.integers(7_000, 10_400),  # the next open, in paise
+)
+@settings(max_examples=25, deadline=None)
+@example(D(10), 1, 9_000)  # pinned below the stop, then an open below it
+@example(D(5), 2, 9_650)  # pinned below the stop, then a low through it
+@example(D(5), 1, 10_000)  # pinned above the stop
+def test_lower_circuit_carry(band: D, locked: int, reopen: int) -> None:
+    """The day after an entry the stock is pinned at its lower band (one price all day, a band
+    under the previous close) for `locked` sessions. Nothing is sold on a pinned session, and
+    each counts in `lower_circuit_days`; the stop waits for the next session not pinned and
+    fills there at min(open, stop) when its open or low reaches it. Harm: the backtest
+    sells at a locked lower band, where live finds no buyer, so a gap-down crash costs it less
+    than it costs live."""
+    path: list[tuple[float, ...]] = [*_FLAT, _BREAK]
+    prev = D(repr(_BREAK[3]))
+    pinned: list[D] = []
+    for _ in range(locked):
+        lower = _band_lower(prev, band, D("0.01"))
+        path.append((float(lower),) * 4)
+        pinned.append(lower)
+        prev = lower
+    o = D(reopen) / 100
+    path.append((float(o), float(o + 2), float(o - 1), float(o + 1)))
+    path += [_HOLD] * (SESSIONS - len(path))
+    result, _ = _path_run(path)
+    locked_days = DAYS[s.WARM_UP + 1 : s.WARM_UP + 1 + locked]
+    assert result.metrics["lower_circuit_days"] == locked
+    assert not [f for f in _sells(result) if f.day in locked_days]
+    fill = stop_fill(o, o - 1, _STOP)  # the next day's way down, its low a rupee under the open
+    if fill is not None:
+        first = [f for f in _sells(result) if f.day == DAYS[s.WARM_UP + 1 + locked]]
+        assert [f.price for f in first] == [fill]
+
+
+@given(st.integers(0, 10), st.integers(0, 12))
+@settings(max_examples=25, deadline=None)
+@example(10, 0)  # bar-less from the second session after the entry, marked from the next
+@example(0, 12)  # bar-less for 12 sessions: carried at the last close
+def test_suspension_markdown(traded: int, after: int) -> None:
+    """A held stock with no bars after `traded` sessions past its entry, and not delisted, is
+    carried at its last close for `after` sessions without a bar, then marked 5% lower per
+    further session (floored to the tick, never below it nor above the last close): in the
+    equity curve each session and at the period end, where the position closes at that mark.
+    Harm: a suspended position is carried at a stale price for months, so a stock that never
+    trades again reads as worth its last close."""
+    path = [*_FLAT, _BREAK, *[_HOLD] * traded]
+    result, _ = _path_run(path, suspension_sessions=after)
+    last_close = D(repr(path[-1][3]))
+    (trade,) = result.trades
+    buy = next(f for f in result.fills if f.side == "buy")
+    cash = D(result.metrics["initial_equity"]) - buy.qty * buy.price
+    seen = len(path) - 1  # the index of the last session with a bar
+
+    def mark(n: int) -> D:
+        excess = n - seen - after
+        if excess <= 0:
+            return last_close
+        raw = last_close * D("0.95") ** excess
+        return min(last_close, max(floor_to_tick(raw, D("0.01")), D("0.01")))
+
+    for day, value in result.equity:
+        n = DAYS.index(day)
+        if n >= seen:
+            assert value == cash + buy.qty * mark(n)
+    assert trade.exit_reason == "end_of_period"
+    assert _sells(result)[-1].price == mark(SESSIONS - 1)
+
+
+@given(
+    st.text(max_size=12) | st.sampled_from(AMBIGUOUS_RULES), st.integers(-3, 300) | st.booleans()
+)
+@example("Pessimistic", 5)
+@example(AMBIGUOUS_PESSIMISTIC, True)
+@example(AMBIGUOUS_OPTIMISTIC, 251)
+@example(AMBIGUOUS_OPTIMISTIC, 6)  # past the default: refused for promotion only
+def test_path_rules_refused(rule: str, after: int) -> None:
+    """A run's ambiguous-day rule is `optimistic` or `pessimistic` and its bar-less sessions
+    before the markdown a whole number from 0 to 250; anything else is refused before the run
+    (`backtest_bad_ambiguous_rule`, `backtest_bad_suspension`), and a run flagged for promotion
+    with more than the default 5 (`backtest_promotion_late_suspension`). Harm: a run under an
+    unknown rule reads as the default, a negative count marks a trading stock down, or a
+    promotion carries a suspended position at its stale close."""
+    good_rule = rule in AMBIGUOUS_RULES
+    good_after = not isinstance(after, bool) and 0 <= after <= 250
+    if good_rule and good_after:
+        check_conventions(
+            PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
+        )
+        if after <= SUSPENSION_SESSIONS:
+            check_conventions(
+                PENETRATION, DEFAULT_SLIPPAGE_BPS, True, ambiguous=rule, suspension_sessions=after
+            )
+        else:  # a promotion run marks a bar-less position down no later than the default
+            with pytest.raises(BacktestError, match="backtest_promotion_late_suspension"):
+                check_conventions(
+                    PENETRATION,
+                    DEFAULT_SLIPPAGE_BPS,
+                    True,
+                    ambiguous=rule,
+                    suspension_sessions=after,
+                )
+        return
+    code = "backtest_bad_ambiguous_rule" if not good_rule else "backtest_bad_suspension"
+    with pytest.raises(BacktestError, match=code):
+        check_conventions(
+            PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
+        )
 
 
 # --- HAT-BT-061 -------------------------------------------------------------------------------

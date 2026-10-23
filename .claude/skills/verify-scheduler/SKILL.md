@@ -147,12 +147,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `dd3ae4b2ce3e6686552c461be9e304d47a9140628a19e2124efd980207d70ca9`
+Covered digest: `40b6fe1efdbce269589db9fef684d39377ed8bac7c2c7e4b12b670512bac2bc9`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 64: `MERGED_PRS` gains 64; no scheduler check changed.
 - PR 63: `MERGED_PRS` gains 63; no scheduler check changed.
 - PR 62: `MERGED_PRS` gains 62; no scheduler check changed.
 - PR 52: `daily/accounts.py:Desks.recover` remembers a Take left unplaced as well as an auto entry in Triggered (`_left_unplaced`), and `resume_entries` also takes the signals whose placement raised in this process (`ExecutionRouter.take_stranded`); checked by `verify-execution`'s `router.crash_resumes_entry_once` (breaks recorded there). The `expire` job is unchanged (every minute); its sweep now also ends an earlier trade date's stranded entry. No job or schedule changed.

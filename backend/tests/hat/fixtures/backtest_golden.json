@@ -1,11 +1,13 @@
 {
  "momentum-breakout-ep": {
   "metrics": {
+   "ambiguous": "optimistic",
+   "ambiguous_days": 0,
    "avg_loss_r": "-1.239610",
    "avg_mae_r": "-1.280487",
    "avg_mfe_r": "0.802551",
    "avg_win_r": null,
-   "config_digest": "c10cee34e8d9da36a80cbb573170c371ff843699699399a3a45753304bede9c7",
+   "config_digest": "35313a50103c896052a928fbf5dfc2b22b49fce00c63b8eb703da20af768de29",
    "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
@@ -27,11 +29,11 @@
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",
     "upper_circuit_inferred_from_bar",
-    "lower_circuit_not_modelled",
     "multipliers_fixed_at_one",
-    "suspension_not_marked",
     "entry_day_low_estimated"
    ],
+   "lower_circuit": "carry_to_next_unlocked_open",
+   "lower_circuit_days": 0,
    "max_drawdown": 0.003919469000000064,
    "net_pnl": "-3919.4690",
    "rejections": {
@@ -52,6 +54,10 @@
    "slot_order": "time",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
    "sum_r": "-2.479219",
+   "suspension_markdown": {
+    "after_sessions": 5,
+    "band_pct": "5"
+   },
    "total_return": -0.003919469000000064,
    "trades": 2,
    "trigger_proxy": "daily_bar_level_break",
@@ -98,11 +104,13 @@
  },
  "stage2-contraction-breakout": {
   "metrics": {
+   "ambiguous": "optimistic",
+   "ambiguous_days": 0,
    "avg_loss_r": null,
    "avg_mae_r": "-0.044215",
    "avg_mfe_r": "9.509382",
    "avg_win_r": "7.588381",
-   "config_digest": "c10cee34e8d9da36a80cbb573170c371ff843699699399a3a45753304bede9c7",
+   "config_digest": "35313a50103c896052a928fbf5dfc2b22b49fce00c63b8eb703da20af768de29",
    "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
@@ -124,11 +132,11 @@
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",
     "upper_circuit_inferred_from_bar",
-    "lower_circuit_not_modelled",
     "multipliers_fixed_at_one",
-    "suspension_not_marked",
     "entry_day_low_estimated"
    ],
+   "lower_circuit": "carry_to_next_unlocked_open",
+   "lower_circuit_days": 0,
    "max_drawdown": 0.003351427253432626,
    "net_pnl": "9860.7678",
    "rejections": {
@@ -149,6 +157,10 @@
    "slot_order": "time",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
    "sum_r": "7.588381",
+   "suspension_markdown": {
+    "after_sessions": 5,
+    "band_pct": "5"
+   },
    "total_return": 0.009860767800000003,
    "trades": 1,
    "trigger_proxy": "daily_bar_level_break",
