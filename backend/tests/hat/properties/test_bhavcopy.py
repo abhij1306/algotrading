@@ -40,7 +40,7 @@ ANY_WEEKDAY = st.one_of(OLD_DAYS, NEW_DAYS)
 @given(day=ANY_WEEKDAY)
 def test_format_by_date(day: date) -> None:
     """Every weekday from 2010-01-01 to today gets the old URL up to 2024-07-05 and the UDiFF URL
-    from 2024-07-08, with the date fields written as in the 02 §9 table."""
+    from 2024-07-08, with the date fields written as in table."""
     url = archive_url(day)
     if day <= date(2024, 7, 5):
         month = day.strftime("%b").upper()

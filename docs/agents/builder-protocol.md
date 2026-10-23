@@ -1,10 +1,17 @@
 # HAT builder protocol
 
-You build one plan PR, in your own git worktree and herdr tab, and take it to merge-ready. The
-orchestrator merges. Your brief gives the goal, scope and follow-ups; `docs/agents/plan.md` has the
-roadmap and `docs/specs/hat/` the specs. Read `CLAUDE.md`, and
+You build one PR, in your own git worktree and herdr tab, and take it to merge-ready. The
+orchestrator merges. Your brief gives the goal, scope and follow-ups. Read `CLAUDE.md`, the
+canonical docs it lists (`docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`), and
 `.claude/skills/trading-safety/SKILL.md` for anything touching orders, risk, positions, brokers or
 execution.
+
+## Docs rule
+
+Code is the source of truth; docs are a guide, not something maintained one-to-one with the code.
+Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to date --
+architecture, invariants, CLAUDE.md, decisions -- and they stay compact. A new requirement ID or
+check goes in one line in `docs/invariants.md`.
 
 ## Owner rules
 
@@ -14,16 +21,17 @@ execution.
 - Never ask CodeAnt to re-review, in any form. CodeAnt Nitpicks need no reply, but a real bug is
   fixed in this PR wherever it was spotted (a Nitpick, your own review, a test); never defer one.
 - No example-based unit tests for HAT code (see Verification).
-- **Legacy is debt.** Where pre-HAT code or tests conflict with the specs, change or delete them;
-  no shims. List it under "Legacy changes" in the PR.
-- If the plan is wrong or blocked, pick the option most faithful to the specs, list it under
-  "Deviations", and keep going. Don't stop to ask about anything reversible.
+- **Legacy is debt.** Where old code or tests conflict with the invariants and decisions, change
+  or delete them; no shims. List it under "Legacy changes" in the PR.
+- If the brief is wrong or blocked, pick the option most faithful to `docs/invariants.md` and
+  `docs/decisions.md`, list it under "Deviations", and keep going. Don't stop to ask about anything
+  reversible.
 
 ## Done means
 
 `READY TO MERGE #<n> <head sha>` as the last line of your turn, and it is true at that sha:
 
-1. The PR does what its plan section and spec IDs say, verified as below.
+1. The PR does what its brief says and keeps the invariants it touches, verified as below.
 2. Every CI check passes and the SonarCloud quality gate is OK.
 3. Every real bug found by you, Sonar or CodeAnt is fixed. A Sonar or CodeAnt finding (inline
    comment or PR Risk) you judge not to be a real bug gets a reply saying why. Cosmetic findings
@@ -33,7 +41,7 @@ If you can't get there, end with `BLOCKED #<n>: <reason and what you tried>`.
 
 ## Verification
 
-Prove the spec's properties on the real code, following
+Prove the invariants on the real code, following
 https://raw.githubusercontent.com/cursor/plugins/main/pstack/skills/create-formal-verification-skill/SKILL.md:
 
 - ordering, concurrency and state machines: a TLA+ model in `verification/tla/` with broken `.cfg`
@@ -63,23 +71,23 @@ breaks is a finding: fix the code, never weaken the property.
   rebase, rerun the pre-push check above and nothing more.
 - **Tests while iterating:** run the one test you are working on, default Hypothesis profile.
 - **Context:** keep `HANDOFF.md` in your worktree current (goal, done, next, open findings) so a
-  compaction or a fresh session resumes from it instead of re-reading. Send spec and code
+  compaction or a fresh session resumes from it instead of re-reading. Send code
   exploration to subagents that return file pointers and conclusions, not file dumps. Never read
   your own session transcript.
 - **Waiting:** wait on CI with `gh pr checks <n> --watch` under `run_in_background`; never
   foreground `sleep`, never `pgrep -f` loops (they match themselves and never end).
 - **Rebase** only when the orchestrator says you're next to merge: rebase onto `origin/main`,
-  keep both sides in shared files (`MERGED_PRS`, `LATER`, verify skills), rerun the pre-push
+  keep both sides in shared files (`docs/invariants.md`, verify skills), rerun the pre-push
   check (including the `--stale` step), `git push --force-with-lease`, report READY again.
 
 ## PR
 
-- Branch `hat/prNN-<slug>`. Conventional commits; end each commit message with
+- Branch `hat/<slug>`. Conventional commits; end each commit message with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Body: summary, spec IDs, verification and breaks, deviations, legacy changes, follow-ups. End
+- Body: summary, requirement IDs, verification and breaks, deviations, legacy changes, follow-ups. End
   with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
-- Bookkeeping: add your PR to `MERGED_PRS` in `test_conf_verification.py` and adjust `LATER` in
-  `test_conf_schema.py`. `KNOWN_GAPS` may only shrink.
+- Bookkeeping: a new or changed check gets its line in `docs/invariants.md` (the conformance
+  suite fails on a named check that does not exist). Delete any plan or spec you implemented.
 - Sonar (public, no token): gate
   `https://sonarcloud.io/api/qualitygates/project_status?projectKey=abhij1306_algotrading&pullRequest=<n>`,
   issues `https://sonarcloud.io/api/issues/search?componentKeys=abhij1306_algotrading&pullRequest=<n>&resolved=false`.
@@ -89,5 +97,5 @@ breaks is a finding: fix the code, never weaken the property.
 
 ## Report
 
-Above the final line: PR URL, what was built, spec IDs, verification and breaks, how each review
-finding was handled, deviations, follow-ups for later PRs. Keep it short.
+Above the final line: PR URL, what was built, requirement IDs, verification and breaks, how each review
+finding was handled, deviations, follow-ups. Keep it short.

@@ -1,4 +1,4 @@
-"""PBT mpp.* (HAT-EXEC-066, HAT-EXEC-075, 07 §6 step 3; PR 48): HAT's sales under SEBI market
+"""PBT mpp.* (HAT-EXEC-066, HAT-EXEC-075; PR 48): HAT's sales under SEBI market
 price protection, which turns a market sale into a protected limit that can rest unfilled. The
 real fill sync and trade manager on SQLite, through the real Fyers adapter over `FakeBroker`; the
 order-book shape of a protected sale is the assumed fixture `fyers_mpp_sale_assumed.json` (the
@@ -125,7 +125,7 @@ def _events(session: Session, rows: list[HatOrder], kind: str) -> int:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-075, 07 §6 step 3: a market sale resting unfilled is sent again fresh
+# HAT-EXEC-075, step 3: a market sale resting unfilled is sent again fresh
 # ---------------------------------------------------------------------------------------
 
 
@@ -218,7 +218,7 @@ def test_resting_market_sale_resent(
 
 
 # ---------------------------------------------------------------------------------------
-# 07 §6 step 3 (G03 live): a sale at the lower circuit waits in the queue
+# (G03 live): a sale at the lower circuit waits in the queue
 # ---------------------------------------------------------------------------------------
 
 

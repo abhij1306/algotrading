@@ -1,4 +1,4 @@
-"""Database rules of the runtime tables and the event log (03-schema §5, §6, §8), each as a check
+"""Database rules of the runtime tables and the event log, each as a check
 body over a Postgres connection. Same contract as `hat_db_rules.py`: a check raises
 AssertionError when the database does not enforce its rule, and `test_db_broken_variants.py`
 requires each to fail once the trigger, index or constraint is removed (HAT-SCH-102)."""
@@ -799,7 +799,7 @@ def check_runtime__publish_serialised(conn: Connection) -> None:
             connection.execute(text("TRUNCATE hat_event, hat_watchlist_entry, hat_bot CASCADE"))
 
 
-# --- event log (HAT-SCH-060, 061, 066, 068) -------------------------------------------------
+# --- event log (061, 066, 068) -------------------------------------------------
 
 APPEND_ONLY_MESSAGE = "hat_event is append-only"
 

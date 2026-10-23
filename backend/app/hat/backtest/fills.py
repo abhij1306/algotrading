@@ -1,10 +1,10 @@
-"""The daily-bar fill proxies (09 §2, HAT-BT-020, HAT-BT-021): pure and exact.
+"""The daily-bar fill proxies (HAT-BT-020, HAT-BT-021): pure and exact.
 
 Daily bars cannot show where in the day a level broke, so the backtest assumes one documented
 path through each day: **open, then low, then high, then close** (the adverse move first). An
 entry trigger is a break of the setup's level on the way up; a stop is hit on the way down; a
 close-based exit fills at the official close. The gap between this proxy and live fills is
-measured in shadow mode (PLAN Q4).
+measured in shadow mode.
 
 The run records these conventions (`FILL_PATH`, the entry fill rule, `GAP_THROUGH_RULE`,
 `TRIGGER_PROXY`) in its metrics and `config_digest` (PR 62). The default entry rule is

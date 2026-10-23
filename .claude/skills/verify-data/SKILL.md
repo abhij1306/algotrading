@@ -1,13 +1,13 @@
 ---
 name: verify-data
-description: How to run, read and update the checks behind Hire a Trader's historical data build, the bhavcopy parsers for both NSE file formats, the Parquet store and its DuckDB views, corporate-action loading and the adjusted-price view, the index history load, and the daily features (polars indicators, percentiles, breadth, the incremental `features` job). Use before and after any change to backend/app/hat/data/store.py, bhavcopy.py, corporate_actions.py, history_build.py, features.py, backend/app/hat/data/ratios.py, the history methods of mcp_client.py, or the data build and features sections of docs/specs/hat/02-data.md.
+description: How to run, read and update the checks behind Hire a Trader's historical data build, the bhavcopy parsers for both NSE file formats, the Parquet store and its DuckDB views, corporate-action loading and the adjusted-price view, the index history load, and the daily features (polars indicators, percentiles, breadth, the incremental `features` job). Use before and after any change to backend/app/hat/data/store.py, bhavcopy.py, corporate_actions.py, history_build.py, features.py, backend/app/hat/data/ratios.py, the history methods of mcp_client.py, or the data build and features.
 ---
 
 # verify-data
 
-Checks that the 2010-to-today build writes each trading day once, in the right format era, with exact prices; that Parquet files are written atomically and raw files never change; that the adjusted view equals raw prices times the product of later factors, exactly; that corporate actions load once however many sources and reruns bring them; and that the build is idempotent and resumable. Specs: `docs/specs/hat/02-data.md` §8, §9 (HAT-DATA-011 source schema, 052..055, 080..085, 090..097), `01-decisions.md` (T6, B27, I2), `00-overview.md` (HAT-OVR-052).
+Checks that the 2010-to-today build writes each trading day once, in the right format era, with exact prices; that Parquet files are written atomically and raw files never change; that the adjusted view equals raw prices times the product of later factors, exactly; that corporate actions load once however many sources and reruns bring them; and that the build is idempotent and resumable. Requirement IDs (index: `docs/invariants.md`): (HAT-DATA-011 source schema, 052..055, 080..085, 090..097), (T6, B27, I2), (HAT-OVR-052).
 
-The features half (PR 6) checks that every feature of date d uses bars up to d only and equals its §7 definition on adjusted bars; that `rs_pct`, `mom_rank` and breadth are the specified percentiles and counts; that a split changes no feature; that an incremental run equals a full rebuild; and that the job is idempotent. Specs: `02-data.md` §7 (HAT-DATA-070..078), `01-decisions.md` (T11).
+The features half (PR 6) checks that every feature of date d uses bars up to d only and equals its documented definition on adjusted bars; that `rs_pct`, `mom_rank` and breadth are the specified percentiles and counts; that a split changes no feature; that an incremental run equals a full rebuild; and that the job is idempotent. Requirement IDs (index: `docs/invariants.md`): (HAT-DATA-070..078), (T11).
 
 ## Properties
 
@@ -66,7 +66,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `CONF store.cli_root_after_env` Every module run with `python -m` under `app/hat` (at least `features`, `history_build`, `minute_history` and the backtest) calls `operator_settings()` and never imports `load_settings` under any name, and `DataStore` and `BarStore` have no default root. Harm: a command ignores a data root set only in `.env`, because `app.paths.HAT_DATA_ROOT` is read before `.env` is loaded.
 - `CONF store.layout` Every Parquet file sits in `<dataset>/date=YYYY-MM-DD/`. Harm: DuckDB partition pruning and the views miss files.
 - `PBT features.no_lookahead` Features and breadth of every date d are identical after any bar dated after d is changed, dropped, or more bars are appended (any universe, gaps, ties). Harm: backtests use future data and report edge live trading cannot have.
-- `PBT features.formulas` SMA 10/20/50/150/200, 52-week high and low, ADR20, ADTR20, ADV20, turnover20 and ret21/63/126/252 equal a direct Fraction evaluation of the §7 definitions within 1e-9 relative, and are null exactly when the window is not full, over histories with gaps, short and long series. Harm: a wrong ADV or ADTR changes position size and entry filters on every trade.
+- `PBT features.formulas` SMA 10/20/50/150/200, 52-week high and low, ADR20, ADTR20, ADV20, turnover20 and ret21/63/126/252 equal a direct Fraction evaluation of the feature definitions within 1e-9 relative, and are null exactly when the window is not full, over histories with gaps, short and long series. Harm: a wrong ADV or ADTR changes position size and entry filters on every trade.
 - `PBT features.turnover_input` A bar's turnover input is close x volume when its traded value is null and the traded value when it is not, bar by bar. Harm: the 10 crore liquidity filter admits illiquid stocks.
 - `PBT features.split_invariant` A split stored with its factor, with raw prices before the ex-date divided by it, leaves every price feature, return and percentile of every date as in the unsplit series. Harm: every split looks like a crash and corrupts RS ranks.
 - `PBT features.rs_pct` On every date rs_pct is null outside the universe or below 253 bars, else 100 x average rank / count in [0, 100] of 0.4 r3 + 0.2 r6 + 0.2 r9 + 0.2 r12, and a strictly greater weighted return never has a smaller rs_pct (ties share the average rank). Harm: the RS filter admits laggards or rejects leaders.
@@ -79,7 +79,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT features.changed_inputs_rebuild_everything` After a full run, a new corporate action or a new universe, even when the next run stops at an earlier date, leaves no stale date once a later run without a limit follows: every date equals a fresh full rebuild. Harm: part of history keeps the old split adjustment or the old universe's percentiles.
 - `PBT features.job_idempotent` The `features` body run twice writes nothing the second time; a crash at any write followed by re-runs ends with the same files and values as an uninterrupted run. Harm: a re-run after a lost job record corrupts or skips dates.
 - `PBT features.pandas_equivalence` SMA50/150/200 equal the frozen `stage2_metrics` averages (`backend/tests/hat/fixtures/rs_oracle.json`) and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
-- `CONF features.schema` Every written features partition has exactly the §7 columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
+- `CONF features.schema` Every written features partition has exactly the `FEATURE_NAMES` columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
 - `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters; none is left since PR 12 moved `backtest/metrics.py` to polars. Harm: two indicator implementations diverge.
 
 ## Run
@@ -96,7 +96,7 @@ DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTR
   $CAP python -m pytest -m postgres tests/hat/db/test_db_corporate_actions.py -q --no-cov
 ```
 
-No check touches the network: the downloader, the MCP client and the validation source are injected fakes, and the recorded MCP answers are in `tests/hat/fixtures/mcp_*_history.json` and `mcp_corporate_actions.json`. The real 2010-to-today backfill is an ops step (`02-data.md` §9), not a check.
+No check touches the network: the downloader, the MCP client and the validation source are injected fakes, and the recorded MCP answers are in `tests/hat/fixtures/mcp_*_history.json` and `mcp_corporate_actions.json`. The real 2010-to-today backfill is an ops step, not a check.
 
 ## Bug or model error
 
@@ -112,11 +112,11 @@ No check touches the network: the downloader, the MCP client and the validation 
 
 ## Updating
 
-- A new source format or column: change the spec table, the parser and `tests/hat/hat_bhav_support.py` (the renderers) together; `parsers_agree` fails until both formats agree.
-- A new dataset: add its schema and partition rule to `store.py` and the spec's dataset table; `CONF store.layout` covers every Parquet file the store writes.
+- A new source format or column: change the parser and `tests/hat/hat_bhav_support.py` (the renderers) together; `parsers_agree` fails until both formats agree.
+- A new dataset: add its schema and partition rule to `store.py`; `CONF store.layout` covers every Parquet file the store writes.
 - A new corporate-action kind: add its wording template to `test_corporate_actions.py` and the parser together.
 - After re-confirming everything, update the sync commit and digest: `python backend/tests/hat/conformance/hat_conf_skills.py verify-data` prints the digest.
-- A new or changed feature: change the §7 table, `store.FEATURE_NAMES`, `_per_instrument` and the naive reference in `test_features.py` together; `CONF features.schema` fails until the spec and the schema agree. Bump nothing else: the next run rebuilds with `--full`.
+- A new or changed feature: change `store.FEATURE_NAMES`, `_per_instrument` and the naive reference in `test_features.py` together; `CONF features.schema` fails until the names and the schema agree. Bump nothing else: the next run rebuilds with `--full`.
 - Full-history rebuild: `python -m app.hat.data.features --full` (needs the database for the corporate actions). Measured on synthetic data, 3,000 instruments x 2,500 dates (7.5M rows), chunks of 63 dates, 500 instruments per batch: 180 seconds, peak 1.4 GB, under the 2 GB cap; the 4,150 dates of 2010 to today are expected to take about 5 to 6 minutes. A nightly run of one date takes about a second plus the lookback read.
 
 ## Coverage
@@ -158,7 +158,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `e1f872d71e87bc6486ea0204757156d5045d6fb8aebafc8904d67f6ef164f1c4`
+Covered digest: `6c4de610e2541e0bb33593e55088846fb068ad017b073c5094022dd0f06f7678`
 
 ## Scope changes
 

@@ -1,5 +1,5 @@
-"""A trade's position as the shadow engine and the real path both read and close it (07 §4, §6;
-HAT-EXEC-070..074, HAT-SCH-057, HAT-BOT-083; architecture audit F2).
+"""A trade's position as the shadow engine and the real path both read and close it
+(HAT-EXEC-070..074, HAT-SCH-057, HAT-BOT-083).
 
 `trades` (virtual positions) and `live_trades` (real ones) share these and nothing else: the
 pinned exit stack and the position as the exit rules read it, a stop raise, and the one trade

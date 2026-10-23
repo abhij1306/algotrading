@@ -1,5 +1,5 @@
-"""The Telegram service's rows: cursors, the command log and the sent-message links (03 §7;
-HAT-TG-011, HAT-TG-012, HAT-SCH-074). Each function works in the caller's transaction."""
+"""The Telegram service's rows: cursors, the command log and the sent-message links
+(HAT-TG-011, HAT-TG-012, HAT-SCH-074). Each function works in the caller's transaction."""
 
 from __future__ import annotations
 

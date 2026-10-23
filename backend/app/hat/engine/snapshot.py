@@ -1,4 +1,4 @@
-"""The snapshot the caps read (07 §4, HAT-RISK-030, HAT-RISK-036; architecture audit F2).
+"""The snapshot the caps read (HAT-RISK-030, HAT-RISK-036).
 
 What an entry decision needs from the database, read in the caller's transaction under the bot's
 lock (and, for an entry, the owner's): the slots of the owner's bots, the bot's entries and

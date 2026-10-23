@@ -1,8 +1,8 @@
 """The trade lifecycle against the database: per-bot serialisation, entries, the approval card,
-the virtual (shadow) order, fill and exit engine and veto trades (07 §4, HAT-EXEC-040..044,
+the virtual (shadow) order, fill and exit engine and veto trades (HAT-EXEC-040..044,
 HAT-SCH-057, HAT-BOT-083). The reads an entry decision takes are `snapshot`'s; what the shadow
 engine shares with real positions (`live_trades`), the exit stack's inputs, a stop raise and the
-trade result, is `positions`' (PR 75a, architecture audit F2).
+trade result, is `positions`' (PR 75a).
 
 Every function works in the caller's open transaction and never commits. A state change and the
 event that explains it are written together, so a replay of the events always reproduces the

@@ -1,4 +1,4 @@
-"""The exit stack (07 §7, HAT-EXEC-070..073, HAT-RISK-070, HAT-DEC-B19): pure and exact.
+"""The exit stack (HAT-EXEC-070..073, HAT-RISK-070, HAT-DEC-B19): pure and exact.
 
 `evaluate` reads one position, one price view and the bot's ordered rules, and returns what to
 do: at most one full exit or an ordered list of partials, and a stop that can only rise. It

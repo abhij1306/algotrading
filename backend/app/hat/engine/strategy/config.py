@@ -1,4 +1,4 @@
-"""The strategy config model: nine stages, playbooks, criterion instances (04 §1-§3, §5, §8).
+"""The strategy config model: nine stages, playbooks, criterion instances.
 
 A config is data: criterion instances for universe, setup, trigger and entry filters, one regime
 rule, one stop rule per playbook and an exit stack. It holds no risk, size or capital number
@@ -168,7 +168,7 @@ class CloseAboveSma(_Rule):
 class FastAboveSlow(_Rule):
     fast: int = Field(default=10, ge=2, le=400)
     slow: int = Field(default=20, ge=2, le=400)
-    # Both SMAs above their value 3 sessions earlier: owner default (plan audit N7, §6 item 10);
+    # Both SMAs above their value 3 sessions earlier: owner default;
     # one session let a single down tick of the slow SMA flip the gate for a night.
     rising_days: int = Field(default=3, ge=1, le=252)
 

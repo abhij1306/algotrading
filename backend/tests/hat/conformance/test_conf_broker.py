@@ -15,7 +15,6 @@ import yaml
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
-from hat_conf_spec import SPEC_DIR
 
 from app.hat.engine import trades
 from app.hat.engine.strategy.config import StrategyConfig
@@ -31,16 +30,26 @@ DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
 BROKER_FORBIDDEN = ("app.brokers", "fyers_apiv3", "app.hat.execution.fyers_adapter")
 
 
-def _spec_methods() -> set[str]:
-    """The method names of the §8 table in 07-execution-and-brokers.md."""
-    text = (SPEC_DIR / "07-execution-and-brokers.md").read_text(encoding="utf-8")
-    section = text[text.index("## §8 Broker interface") : text.index("#### HAT-BRK-080")]
-    methods = set()
-    for line in section.splitlines():
-        if line.startswith("| `"):
-            first_cell = line.split("|")[1]
-            methods.update(re.findall(r"`(\w+)(?:\([^`]*\))?`", first_cell))
-    return methods
+BROKER_METHODS = {
+    "cancel_gtt",
+    "cancel_order",
+    "capabilities",
+    "complete_login",
+    "funds",
+    "gtts",
+    "holdings",
+    "instruments",
+    "login_url",
+    "modify_gtt",
+    "modify_order",
+    "order_updates",
+    "orders",
+    "place_gtt_stop",
+    "place_order",
+    "positions",
+    "session_status",
+    "trades",
+}
 
 
 def _protocol_methods() -> set[str]:
@@ -53,15 +62,13 @@ def _protocol_methods() -> set[str]:
 
 
 def test_brk__interface_methods() -> None:
-    """HAT-BRK-080: the protocol's method set equals the §8 table."""
-    expected = _spec_methods()
-    assert len(expected) == 18, sorted(expected)
-    assert _protocol_methods() == expected
+    """HAT-BRK-080: the protocol's method set is the 18 listed in BROKER_METHODS (a change to
+    the broker interface changes this set on purpose)."""
+    assert _protocol_methods() == BROKER_METHODS
 
 
 def test_broker_interface_methods() -> None:
-    """HAT-DEC-I7: the protocol is exactly §8 and the Fyers adapter implements every method."""
-    assert _protocol_methods() == _spec_methods()
+    """HAT-DEC-I7: the Fyers adapter implements every method of the protocol with its signature."""
     for name in _protocol_methods():
         assert callable(getattr(FyersHatBroker, name, None)), name
     for name in _protocol_methods():
@@ -365,7 +372,7 @@ def test_exec__default_mode_confirm() -> None:
     the database, a new bot cannot be created in another mode, the entry path routes shadow
     unless told otherwise, a mode outside the three reads as shadow, and confirm with any gate
     missing reads as shadow. The strategy config's `execution_mode` is not read for a bot's mode;
-    its seeds still say shadow (06 §1 note in 07 HAT-EXEC-011)."""
+    its seeds still say shadow (note in 07 HAT-EXEC-011)."""
     seeds = sorted(SEEDS_DIR.glob("*.yaml"))
     assert seeds
     for path in seeds:

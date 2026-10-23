@@ -1,6 +1,6 @@
 ------------------------------ MODULE SleeveLifecycle ------------------------------
 (***************************************************************************)
-(* The sleeve lifecycle and its guards (05 §6, HAT-PORT-060..064, 034, 040,*)
+(* The sleeve lifecycle and its guards (HAT-PORT-060..064, 034, 040,*)
 (* 063; HAT-SCH-083).                                                      *)
 (*                                                                         *)
 (* One sleeve. State: research, backtested, shadow, live, probation,       *)

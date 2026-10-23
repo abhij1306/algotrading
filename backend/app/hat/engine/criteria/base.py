@@ -1,9 +1,9 @@
 """The criterion contract: a pure function over daily bars returning `(passed, score, value,
-reason)` (HAT-CRIT-021, 04 §4).
+reason)` (HAT-CRIT-021).
 
 Every function reads its input only through `EvalContext`. The context exposes the instrument's
 bars dated on or before the evaluation date and nothing later, so a result can never depend on
-a later row (the common purity rule of 04 §4). A required input that is null or absent fails
+a later row (the common purity rule). A required input that is null or absent fails
 closed: `passed = False`, reason `no_data`.
 
 Threshold comparisons on prices and volumes are exact: floats are read as the decimal their

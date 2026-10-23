@@ -1,4 +1,4 @@
-"""One trading desk per active broker account (PR 17; 07 §2-§6, 10-ops §1 HAT-OPS-003).
+"""One trading desk per active broker account (PR 17, HAT-OPS-003).
 
 A desk holds the account's one broker session (`SessionRegistry`: one owner per account, and
 every broker call of the desk goes through it), its `ExecutionGuard` (no entry is placed before
@@ -75,7 +75,7 @@ END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
 RECONCILE_FAILED = "reconcile.failed"
 BROKER_HEALTH = "broker_health"
-# The fill sync's cadence when nothing is watched closely (10-ops §3); the runtime's `sync` step
+# The fill sync's cadence when nothing is watched closely; the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
 FILL_SYNC_EVERY = timedelta(minutes=1)
 

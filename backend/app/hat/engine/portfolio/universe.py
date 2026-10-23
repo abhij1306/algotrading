@@ -1,4 +1,4 @@
-"""Universe membership as pure rules (05 §2, HAT-PORT-021..023, HAT-SCH-042).
+"""Universe membership as pure rules (HAT-PORT-021..023, HAT-SCH-042).
 
 A universe is a set of instruments over time: each membership is a half-open interval
 [effective_from, effective_to) of one instrument, and the members on a date are exactly the

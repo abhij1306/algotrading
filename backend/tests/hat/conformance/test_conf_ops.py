@@ -1,14 +1,14 @@
 """CONF checks of the deployment and the runbook (HAT-OPS-040, HAT-OPS-090, HAT-OPS-091): the
 Compose file brings up only Postgres and the backend (the frontend under a profile) on loopback
-ports with no inline secret, docs/specs/hat/10-ops.md §9 has a procedure for every OPS check and
-every §4 failure case, and the owner's admin command line only calls service functions."""
+ports with no inline secret, docs/runbook.md has a procedure for every OPS check named in
+docs/invariants.md, and the owner's admin command line only calls service functions."""
 
 import ast
 import re
 
 import yaml
 from hat_conf_repo import APP_ROOT, build_graph
-from hat_conf_spec import REPO_ROOT, SPEC_DIR
+from hat_conf_spec import INVARIANTS, REPO_ROOT
 
 COMPOSE = REPO_ROOT / "deploy" / "hat" / "docker-compose.yml"
 ENV_FILE = "../../.env"
@@ -19,7 +19,7 @@ POSTGRES_MAJOR = "18"
 SECRET_KEY = re.compile(r"PASSWORD|SECRET|TOKEN|KEY|CHAT_ID", re.IGNORECASE)
 INTERPOLATED = re.compile(r"^\$\{[A-Z_]+(:?[?-][^}]*)?\}$")
 OPS_NAME = re.compile(r"\bOPS `([^`]+)`")
-FAILURE_BULLET = re.compile(r"^- \*\*(.+?)\*\* →", re.MULTILINE)
+RUNBOOK = REPO_ROOT / "docs" / "runbook.md"
 PROCEDURE = re.compile(r"^### (.+)$", re.MULTILINE)
 STEP = re.compile(r"^(\d+\.|```)", re.MULTILINE)
 CHECK_LOG = "Check log"  # the table of performed checks, not a procedure
@@ -79,17 +79,8 @@ def _check_backend(backend: dict) -> None:
     assert env["HAT_DATA_ROOT"] in mounts
 
 
-def _section(text: str, heading: str) -> str:
-    start = text.index(heading)
-    end = text.find("\n## ", start + len(heading))
-    return text[start:] if end < 0 else text[start:end]
-
-
 def _ops_names() -> set[str]:
-    names = set()
-    for path in SPEC_DIR.glob("*.md"):
-        names.update(OPS_NAME.findall(path.read_text(encoding="utf-8")))
-    return names
+    return set(OPS_NAME.findall(INVARIANTS.read_text(encoding="utf-8")))
 
 
 def _procedures(runbook: str) -> dict[str, str]:
@@ -104,21 +95,16 @@ def _procedures(runbook: str) -> dict[str, str]:
 
 
 def test_runbook_complete() -> None:
-    """HAT-OPS-090: 10-ops §9 has a procedure heading naming every `OPS` check used anywhere in
-    docs/specs/hat/ and one for every failure bullet of §4, and every procedure has steps.
+    """HAT-OPS-090: docs/runbook.md has a procedure heading naming every `OPS` check of
+    docs/invariants.md, and every procedure has steps.
     Harm: at 09:20 on a bad day the operator has no tested procedure to follow."""
-    text = (SPEC_DIR / "10-ops.md").read_text(encoding="utf-8")
-    runbook = _section(text, "## §9 Runbook")
-    procedures = _procedures(runbook)
+    procedures = _procedures(RUNBOOK.read_text(encoding="utf-8"))
     headings = " ".join(procedures)
     names = _ops_names()
     assert names >= {"ops.host_checklist", "ops.deploy_window", "ops.backup_restore_drill"}
     missing = sorted(name for name in names if f"`{name}`" not in headings)
     assert missing == []
-    failures = FAILURE_BULLET.findall(_section(text, "## §4 Failure handling"))
-    assert len(failures) >= 6
-    uncovered = sorted(f for f in failures if f.lower() not in headings.lower())
-    assert uncovered == []
+    assert len(procedures) >= 20
     empty = sorted(head for head, body in procedures.items() if not STEP.search(body))
     assert empty == []
 

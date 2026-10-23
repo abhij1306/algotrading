@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's Teleg
 
 # verify-telegram
 
-Checks that the bot answers only the allowlisted chat and logs every update once; that a crash never replays an update; that the ten commands are the only text the bot acts on and none of them reaches an order; that auto, re-arm and flatten need a second confirmation in time; that a Take works only through a button the service signed for that card, before it expires, within max-chase; that no token, secret or broker text reaches a message, a log or the database; and that alerts, prompts and reports say what the database says. Specs: `docs/specs/hat/08-telegram.md` (HAT-TG-005..044), HAT-DEC-I11, I13, T15, B12, HAT-GOV-080..082, HAT-OVR-061, HAT-SCH-056, 065, 074, HAT-EXEC-043, HAT-OPS-071.
+Checks that the bot answers only the allowlisted chat and logs every update once; that a crash never replays an update; that the ten commands are the only text the bot acts on and none of them reaches an order; that auto, re-arm and flatten need a second confirmation in time; that a Take works only through a button the service signed for that card, before it expires, within max-chase; that no token, secret or broker text reaches a message, a log or the database; and that alerts, prompts and reports say what the database says. Requirement IDs (index: `docs/invariants.md`): (HAT-TG-005..044), HAT-DEC-I11, I13, T15, B12, HAT-GOV-080..082, HAT-OVR-061, HAT-SCH-056, 065, 074, HAT-EXEC-043, HAT-OPS-071.
 
 ## Properties
 
@@ -43,7 +43,7 @@ Checks that the bot answers only the allowlisted chat and logs every update once
 - `PBT telegram.relay_late_commit` An event whose transaction commits after the relay passed its id is relayed once if it commits within `GAP_WAIT` (an hour), and given up after; the events around it go out once each. Harm: a health alert or approval card held by a slow transaction is lost for good.
 - `PBT telegram.veto_digest_on_week_end` The weekly veto digest goes out on a trading day exactly when no later weekday of its week may still trade (a calendar holiday does not; a day the calendar lacks may). Harm: a daily "weekly" digest once the calendar runs out, or none in a holiday week.
 - `PBT telegram.token_never_persisted` No table and no HAT log record holds a raw token; the stored hash is the card token's. Harm: database or log access can approve trades.
-- `CONF telegram_command_set` HAT-DEC-I11: the accepted commands are exactly the 08 §3 table. Harm: an undocumented command changes state outside governance.
+- `CONF telegram_command_set` HAT-DEC-I11: the accepted commands are exactly `COMMAND_SET`. Harm: an undocumented command changes state outside governance.
 - `CONF telegram__command_catalogue` HAT-TG-030: `HANDLERS`, `_ARITY` and `COMMANDS` name the same ten commands. Harm: an unreviewed control path.
 - `CONF gov__lever_catalogue` HAT-GOV-080: no command, button or API route sets price, size or stop or exits one position; Take and Skip carry only the signal. Harm: discretionary edits bypass the risk policy.
 - `CONF no_override_command` HAT-DEC-B12: no command, route or strategy config field overrides the regime gate. Harm: a discretionary override reintroduces the risk the gate removes.
@@ -76,7 +76,7 @@ No check calls Telegram: `FakeTransport` (`backend/tests/hat/hat_telegram_suppor
 
 ## Updating
 
-- A new command: the 08 §3 table first, then `COMMANDS`, `_ARITY` and `HANDLERS` together (`telegram_command_set` and `telegram__command_catalogue` compare them), a property for its effect, and a scratch break.
+- A new command: `COMMAND_SET` in `test_conf_telegram.py` first, then `COMMANDS`, `_ARITY` and `HANDLERS` together (`telegram_command_set` and `telegram__command_catalogue` compare them), a property for its effect, and a scratch break.
 - A new button: a prefix in `tokens.py` or `confirm.py`, its dispatch in `callbacks.run_callback`, and `gov__lever_catalogue` (it lists the buttons and their arguments).
 - A new Bot API method: add it to `ALLOWED_METHODS` only if it is outbound and needed; `telegram__no_webhook_no_listener` pins the set.
 - A new scheduled message: a job in `reports.telegram_jobs`, its window in `JobScheduler.tla` (`Prompt`, `Reprompt`, `Report`), a broken variant, and a property in `test_telegram.py`.
@@ -118,7 +118,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `afcaed837047b70fb9f99351dd6661b5d00d0425f15d462d494eb6d4d9508bab`
+Covered digest: `51346db434f9b613261dc277d372e34d83436cf77b9dd686d22f759ec98a1ba5`
 
 ## Scope changes
 

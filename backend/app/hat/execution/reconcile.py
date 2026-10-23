@@ -1,4 +1,4 @@
-"""Reconciliation of the broker's book with HAT's (HAT-BRK-110, -111, -112; HAT-OPS-003; 07 §11).
+"""Reconciliation of the broker's book with HAT's (HAT-BRK-110, -111, -112; HAT-OPS-003).
 
 On startup, before the first order of a session, and periodically, the broker's HT-tagged orders
 and the positions it holds are matched to `hat_order` and `hat_position`. No entry is placed on a
@@ -14,7 +14,7 @@ Delivery positions: the broker shows a settled delivery in holdings and today's 
 signed net position. The quantity compared is the holding plus today's signed net CNC quantity
 per symbol (MX-F8): a buy today adds, a sale today of a holding subtracts, so a holding sold in
 full reads as 0. A same-day buy shown in both would count twice and read as a mismatch, which
-fails closed. [verify] on a live account (owner step, PLAN Q8).
+fails closed. [verify] on a live account (owner step).
 """
 
 from __future__ import annotations

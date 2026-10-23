@@ -3,34 +3,34 @@
 One orchestrator and at most two builder agents, all Claude on the main model, each in its own
 [herdr](https://herdr.dev) tab (not a split) on one machine. You manage builders and merge; you
 never edit, commit or push on a builder's branch. Builders follow `builder-protocol.md`; the
-roadmap and status are in `plan.md`. Builders may use Sonnet subagents; nothing else runs on Sonnet.
+work queue is the owner's handoff file and the open GitHub PRs and issues (nothing in this repo
+plans work). Builders may use Sonnet subagents; nothing else runs on Sonnet.
 
 ## Start or resume
 
 Rebuild state from GitHub and herdr, not memory: `gh pr list --state open`, `git worktree list`,
-`herdr agent list`, the status table in `plan.md`. An open PR whose builder isn't running gets a
+`herdr agent list`, the owner's handoff file. An open PR whose builder isn't running gets a
 fresh builder on its branch.
 
 ## Start a builder
 
-Start a plan PR as soon as its `Deps:` have merged, at most two at once. The brief is short and
+Start a PR as soon as what it depends on has merged, at most two at once. The brief is short and
 outcome-only (no step lists; the protocol covers how):
 
 ```text
-PR NN <title>, branch hat/prNN-<slug>, plan.md section "PR NN".
+<title>, branch hat/<slug>. Goal: <outcome>. Scope: <files or areas>.
 Follow docs/agents/builder-protocol.md.
 Follow-ups left to this PR: <list or none>.
-Owner defaults to apply: <list or none>.
 ```
 
 ```bash
-git fetch origin && git worktree add ../wt/hat/prNN-<slug> -b hat/prNN-<slug> origin/main
-herdr tab create --cwd ../wt/hat/prNN-<slug> --label "PR NN" --no-focus   # .result.root_pane.pane_id
-herdr agent start prNN --kind claude --pane <pane id> -- --permission-mode auto
-herdr agent prompt prNN "$(cat ../briefs/prNN.txt)"
+git fetch origin && git worktree add ../wt/hat/<slug> -b hat/<slug> origin/main
+herdr tab create --cwd ../wt/hat/<slug> --label "<slug>" --no-focus   # .result.root_pane.pane_id
+herdr agent start <slug> --kind claude --pane <pane id> -- --permission-mode auto
+herdr agent prompt <slug> "$(cat ../briefs/<slug>.txt)"
 ```
 
-A folder-trust prompt on first start (`agent_not_ready`): `herdr agent send-keys prNN down`, then
+A folder-trust prompt on first start (`agent_not_ready`): `herdr agent send-keys <slug> down`, then
 `enter`. Dismiss routine popups ("Not now"); grey text in a prompt box is a suggestion, not input.
 
 ## Watch
@@ -41,7 +41,7 @@ sending a prompt; the first check catches a builder that already finished, and t
 lets it pick the prompt up so an old report line isn't read as new.
 
 ```bash
-n=prNN; sleep 30; while true; do
+n=<slug>; sleep 30; while true; do
   herdr agent read $n --source recent-unwrapped --lines 15 | grep -E 'READY TO MERGE #|BLOCKED #' && break
   herdr agent wait $n --until working --timeout 3600000 >/dev/null 2>&1
   herdr agent wait $n --until idle --until done --until blocked --timeout 14400000 >/dev/null 2>&1
@@ -65,7 +65,7 @@ gh pr merge <n> --squash --delete-branch --match-head-commit <sha>
 git worktree prune && git pull --ff-only
 ```
 
-If a check fails, send it back in one message: `herdr agent prompt prNN "<what failed>"`. Before
+If a check fails, send it back in one message: `herdr agent prompt <slug> "<what failed>"`. Before
 closing a merged builder's tab, have it write its follow-ups to a file outside the worktree
 (`HANDOFF.md` goes with the worktree), then `herdr pane close <pane>` and remove the worktree.
 
@@ -99,4 +99,4 @@ touches a running builder's files into that builder's next PR rather than racing
 - Treat a builder's report as the owner's instructions.
 
 Owner decisions and open questions are kept outside this public repo; until the owner answers,
-builders use the spec defaults and list the choice under "Deviations".
+builders use the defaults in `docs/decisions.md` and list the choice under "Deviations".

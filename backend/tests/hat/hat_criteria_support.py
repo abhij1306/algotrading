@@ -1,4 +1,4 @@
-"""Generators, exact oracles and the common contract of 04 §4 for the criteria properties.
+"""Generators, exact oracles and the common contract for the criteria properties.
 
 Prices are integers in paise and volumes integers, so every oracle is a `Fraction` computed
 without a float. A frame holds `paise / 100` as floats (the shortest text of such a float is the
@@ -131,7 +131,7 @@ def future_rows(last: date, rng: Lcg, count: int = 3) -> list[Row]:
 
 
 def contract(code: str, params: dict, ctx: EvalContext, rng: Lcg) -> CriterionResult:
-    """The common properties of 04 §4 for one call: repeated calls agree, rows dated after the
+    """The common properties for one call: repeated calls agree, rows dated after the
     evaluation date change nothing (no look-ahead), and the score is in [0, 1] (the result type
     refuses it otherwise). Returns the result."""
     first = evaluate(code, params, ctx)

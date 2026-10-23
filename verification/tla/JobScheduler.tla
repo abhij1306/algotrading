@@ -1,6 +1,6 @@
 ------------------------------ MODULE JobScheduler ------------------------------
 (***************************************************************************)
-(* Job idempotency and the scheduler start gate (10-ops §2, 03-schema §7). *)
+(* Job idempotency and the scheduler start gate.  *)
 (*                                                                         *)
 (* One key (job, trade_date) is modelled; keys are independent because the *)
 (* unique row is per key. NWorkers callers race on it, through the         *)
@@ -12,7 +12,7 @@
 (* a failure there; the body refuses outside the window; a sale it decides *)
 (* is sent only while the clock at sending is before 15:30.                *)
 (*                                                                         *)
-(* A third part models the Telegram day (08 §2, PR 16): its clock passes   *)
+(* A third part models the Telegram day (PR 16): its clock passes   *)
 (* 08:30, 09:05 and 15:30; the broker login comes and goes; the 08:30      *)
 (* prompt, the 09:05 reprompt and the after-close reports each run once,   *)
 (* send only on a trading day, and the reprompt only while logged out.     *)

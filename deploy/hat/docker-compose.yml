@@ -1,4 +1,4 @@
-# Hire a Trader deployment (docs/specs/hat/10-ops.md §5, HAT-OPS-040).
+# Hire a Trader deployment (docs/runbook.md, HAT-OPS-040).
 #
 # Run from the repository root, outside 08:30-15:35 IST on trading days (HAT-OPS-042):
 #   python scripts/hat_deploy_guard.py && \

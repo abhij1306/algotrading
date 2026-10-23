@@ -1,4 +1,4 @@
-"""The two nightly jobs of the portfolio layer: `regime` then `allocate` (05 §3, §5; 10 §3).
+"""The two nightly jobs of the portfolio layer: `regime` then `allocate`.
 
 Each body runs inside `run_job` (which records the run once per trade date) and in the caller's
 transaction; the caller commits. A body fails with a stable `JobError` code when an input is

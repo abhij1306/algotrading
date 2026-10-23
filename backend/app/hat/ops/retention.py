@@ -1,4 +1,4 @@
-"""Retention (03-schema §9, HAT-SCH-091, HAT-TG-050).
+"""Retention (HAT-SCH-091, HAT-TG-050).
 
 Telegram messages and the command log are kept one year. Events, signals, orders, positions and
 results are kept forever, and so are Parquet bars, features and raw bhavcopy zips: this module

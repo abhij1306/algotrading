@@ -1,4 +1,4 @@
-"""The Telegram `Notifier`: HAT's health alerts reach the allowlisted chat (08 §2; HAT-TG-024,
+"""The Telegram `Notifier`: HAT's health alerts reach the allowlisted chat (HAT-TG-024,
 HAT-DEC-T15, HAT-DATA-065, HAT-OPS-071).
 
 It replaces `LogNotifier` for the alerts the router, the trade manager, the stop desk, fill sync,

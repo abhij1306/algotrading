@@ -105,7 +105,7 @@ class BotView(BaseModel):
     id: uuid.UUID
     name: str
     execution_mode: str  # the mode asked for (`hat_bot.execution_mode` or a change now due)
-    effective_mode: str  # the mode an entry is routed by now (07 §1)
+    effective_mode: str  # the mode an entry is routed by now
     mode_reason: str | None  # why they differ: `sleeve_<state>` or a gate's code (HAT-GOV-085)
     pending_mode: str | None  # a queued change still waiting for its session open
     pending_from: datetime | None

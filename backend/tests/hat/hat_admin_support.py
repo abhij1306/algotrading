@@ -1,4 +1,4 @@
-"""The rig of the owner's admin command line checks (10 §9 "First deploy", HAT-OPS-091): a
+"""The rig of the owner's admin command line checks (HAT-OPS-091): a
 `World` runs the commands through `main` against a database (in memory for the properties,
 Postgres for the postgres suite), with a fake broker for the onboarding, a scripted backtest
 evidence and a settable clock; no network is touched.

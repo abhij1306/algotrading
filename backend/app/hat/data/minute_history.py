@@ -2,7 +2,7 @@
 
 The loader asks the broker's history endpoint for 1-minute candles, aggregates them to the
 5-minute bars of `bars_5m` and writes them with `BarStore`. Without it the episodic-pivot
-playbook is not backtested (09 §1): daily bars cannot show an opening range.
+playbook is not backtested: daily bars cannot show an opening range.
 
 A 1-minute candle stands for the prints of its minute: the open at the minute's start, then the
 high and the low, then the close in its last second, the minute's volume carried by the open.
@@ -591,7 +591,7 @@ def _attempt(
 
 
 def history_universe(session: Session) -> tuple[dict[str, uuid.UUID], int]:
-    """The active NSE EQ/BE instruments (02 §2, the trading universe) by their Fyers symbol, and
+    """The active NSE EQ/BE instruments (the trading universe) by their Fyers symbol, and
     how many active members have no Fyers symbol (they cannot be asked for)."""
     rows = session.execute(
         select(HatInstrument.id, HatBrokerSymbol.broker_symbol)

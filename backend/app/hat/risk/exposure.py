@@ -1,4 +1,4 @@
-"""Progressive exposure: the ladder L1 to L3 (06 §4, HAT-RISK-040/041/042).
+"""Progressive exposure: the ladder L1 to L3 (HAT-RISK-040/041/042).
 
 A bot starts at L1 and moves up one level after `up_after_wins` consecutive winners and down one
 after `down_after_losses` consecutive losers. A level move resets both counters; an outcome of

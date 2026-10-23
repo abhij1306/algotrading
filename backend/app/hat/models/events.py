@@ -1,4 +1,4 @@
-"""`hat_event`: the append-only event log (03-schema §6).
+"""`hat_event`: the append-only event log.
 
 On Postgres the table is range-partitioned monthly on `recorded_at` and the trigger
 `hat_event_no_update` (`app/hat/schema.py`) rejects every UPDATE and DELETE. The primary key is

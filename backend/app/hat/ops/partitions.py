@@ -1,4 +1,4 @@
-"""Monthly partitions of `hat_event` (HAT-SCH-066, 10 §2 job `events.partitions`).
+"""Monthly partitions of `hat_event` (HAT-SCH-066, job `events.partitions`).
 
 `hat_event` is range-partitioned on `recorded_at`, which is UTC. A partition holds one UTC
 month: [first day 00:00 UTC, first day of the next month 00:00 UTC). An insert with no matching

@@ -4,7 +4,7 @@
 thread or I/O of its own, so a property can drive any tick sequence. It is single-threaded by
 contract: the live service calls it only from the event-loop thread.
 
-Rules (02-data §11, "Bar builder rules"):
+Rules ("Bar builder rules"):
 
 - A bar starts at the session open (09:15 IST) plus a whole number of 5-minute widths. A tick at
   exchange time `t` belongs to exactly the bar starting at `open + 5 min * floor((t - open) /

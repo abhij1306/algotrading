@@ -1,4 +1,4 @@
-"""The owner's admin command line (10 §9 "First deploy", HAT-OPS-091, PR 35).
+"""The owner's admin command line (HAT-OPS-091, PR 35).
 
     python -m app.hat.admin <command> [options]
 
@@ -11,7 +11,7 @@ itself.
 Commands, in first-deploy order:
 
     show                                      strategies, versions and sleeves, with their ids
-    seed-policy                               risk-policy version 1 (06 §1)
+    seed-policy                               risk-policy version 1
     onboard-account --account-ref REF         capability check of the broker account (HAT-BRK-092)
     seed-strategies                           the two strategies, version 1 as a draft
     seed-bots --account ID                    one sleeve per strategy on an active account

@@ -685,7 +685,7 @@ def test_unreadable_foreign_rows_skipped(rows, ht_broken, runs) -> None:  # noqa
 @example(holding=100, bought=0, sold=100, intraday=0)  # a holding sold in full today
 @example(holding=100, bought=0, sold=40, intraday=0)  # part of a holding sold today
 def test_held_quantity_nets_today(holding: int, bought: int, sold: int, intraday: int) -> None:
-    """07 §11, MX-F8: the quantity reconciled per symbol is the holding plus today's signed net
+    """MX-F8: the quantity reconciled per symbol is the holding plus today's signed net
     CNC position, read through the adapter: a buy today adds, a sale today of a holding
     subtracts (a holding sold in full reads as 0) and an intraday position is not counted.
     [verify] the holdings and positions shapes on a live account. Harm: a holding a GTT sold
@@ -1155,7 +1155,7 @@ def test_a_lost_gtt_is_found_by_its_tag(
 
 
 def test_a_pending_gtt_is_not_retried_after_a_lost_answer() -> None:
-    """07 §10: an unconfirmed GTT is not placed again, though it carries its tag: Fyers does not
+    """An unconfirmed GTT is not placed again, though it carries its tag: Fyers does not
     enforce tag uniqueness and its GTT book can lag one that landed, so it is settled against the
     book once old enough (`StopDesk.settle_lost`), never sent again."""
     from app.hat.execution.submit import UnresolvedOrderError

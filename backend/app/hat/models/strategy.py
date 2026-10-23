@@ -1,4 +1,4 @@
-"""Strategy, risk policy and bot tables (03-schema §3).
+"""Strategy, risk policy and bot tables.
 
 A strategy holds versions; a bot deploys one live version to one broker account; the risk
 policy is a separate versioned record that holds every risk number. A bot has no risk columns.
@@ -168,7 +168,7 @@ class HatBrokerAccount(Base):
     capabilities = Column(JsonB, nullable=False)
     status = Column(Text, nullable=False)
     # The owner's word that DDPI (or a POA) is registered on the demat, so a CNC sale goes
-    # through without a TPIN prompt (plan audit O1, D154). Set only through the admin command
+    # through without a TPIN prompt. Set only through the admin command
     # line, with the time and a dated note; until then no bot on the account runs confirm or
     # auto (HAT-GOV-085).
     ddpi_confirmed = Column(Boolean, nullable=False, default=False, server_default=text("false"))

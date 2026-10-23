@@ -1,4 +1,4 @@
-"""Risk-policy changes as database operations (06 §9, HAT-GOV-090..094).
+"""Risk-policy changes as database operations (HAT-GOV-090..094).
 
 A change is requested as a new `hat_risk_policy_version`: a decrease takes effect at the next
 session open, an increase no sooner than 7 days after the request and only with gate evidence,
@@ -59,7 +59,7 @@ class PolicyChangeError(HatError):
 def seed_initial_policy(
     session: Session, user_id: uuid.UUID, now: datetime
 ) -> HatRiskPolicyVersion:
-    """Version 1 (`direction = initial`), effective now, with the 06 §1 seed; a no-op that returns
+    """Version 1 (`direction = initial`), effective now, with seed; a no-op that returns
     the first version when one exists. Writes both governance events."""
     first = session.scalars(
         select(HatRiskPolicyVersion).where(

@@ -1,7 +1,7 @@
 ---------------------------- MODULE NightlyPipeline ----------------------------
 (***************************************************************************)
-(* The nightly ingest window and the pipeline behind it (10 §3, 02 §4,    *)
-(* §6): probe from 18:00 every 10 minutes, fetch only after a matching     *)
+(* The nightly ingest window and the pipeline behind it:     *)
+(* probe from 18:00 every 10 minutes, fetch only after a matching     *)
 (* probe, the bhavcopy fallback at 22:00, then quality gate, features,     *)
 (* regime, allocate, scan and watchlist digest in that order, with the     *)
 (* corporate-action adjustment after the ingest whatever the gate decides  *)

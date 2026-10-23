@@ -32,7 +32,9 @@ no legacy data. HAT's scheduler and live feed start only when `HAT_ENABLED=true`
 ## Documentation
 
 - `CLAUDE.md`: development guide, startup, routes, environment and the rules the code enforces
-- `docs/specs/hat/README.md`: the HAT specs, the source of truth for the product
+- `docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`: module map and data flow,
+  the money-safety rules (with the `HAT-*` ID index), the decisions in force
+- `docs/runbook.md`: operator procedures
 - `.claude/skills/`: how to run and read each area's verification (`verify-*`) and the trading
   safety rules
 
@@ -64,8 +66,8 @@ pnpm build
 ```
 
 Backend tests are verification suites (Hypothesis properties, TLA+ models, Postgres and
-conformance checks); see `CLAUDE.md` for the commands and `docs/specs/hat/11-verification.md` for
-the method.
+conformance checks); see `CLAUDE.md` for the commands and `docs/invariants.md` for the
+index of checks.
 
 ### SonarQube
 Pass the SonarQube URL at scan time instead of hardcoding it in `sonar-project.properties`.

@@ -1,4 +1,4 @@
-"""The live trading day (10-ops §3 steps 1-6, PR 17): what the trigger, the router, the exits and
+"""The live trading day (PR 17): what the trigger, the router, the exits and
 the Telegram commands read while the market is open.
 
 - `PriceBook`: the feed's last trade per instrument with its exchange time (a `LiveData` tick
@@ -142,7 +142,7 @@ class PriceBook:
 
 
 def band_bounds(daily: DailyInputs) -> tuple[Decimal | None, Decimal | None]:
-    """The lowest and highest price the day's band lets trade (02 §2), a tick wider each way
+    """The lowest and highest price the day's band lets trade, a tick wider each way
     for the exchange's own rounding of the band; None for a bound not known (no band row, an
     F&O name, no previous close)."""
     slack = daily.tick if daily.tick is not None and daily.tick > 0 else Decimal(0)
@@ -155,7 +155,7 @@ def band_bounds(daily: DailyInputs) -> tuple[Decimal | None, Decimal | None]:
 
 class SaleBands:
     """The day's lower band of an instrument for its sales (PR 48, `fills.SaleBand`): the lower
-    circuit price from the stored band (02 §2), and whether the last trade the feed gave is at it
+    circuit price from the stored band, and whether the last trade the feed gave is at it
     (the instrument is locked at its lower circuit). A locked instrument trades seldom, so its
     last trade is read whatever its age."""
 
@@ -306,7 +306,7 @@ def _open_notional(session: Session, bot_id: uuid.UUID, virtual: bool) -> Decima
 
 class LiveContexts:
     """The `ContextSource` of live entries. Equity is the sleeve's allocation capital plus its
-    realised P&L (06 §2) in the bot's mode; free cash is the broker's available funds for a real
+    realised P&L in the bot's mode; free cash is the broker's available funds for a real
     entry and the sleeve's equity less its open virtual positions for a shadow one. A virtual
     entry of a Shadow or Probation sleeve (weight 0) is sized from its nominal allocation
     (`virtual_capital`, `virtual_risk_pct`, health 1; HAT-PORT-050); a real entry never is."""

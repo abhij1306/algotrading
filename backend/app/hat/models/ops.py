@@ -1,4 +1,4 @@
-"""Ops tables (03-schema §7): job runs and quality-gate results (PR 2); broker sessions,
+"""Ops tables: job runs and quality-gate results (PR 2); broker sessions,
 Telegram messages, the command log and daily bot snapshots (PR 3); the Telegram cursors
 (PR 16); the quality quarantine (PR 33)."""
 
@@ -57,7 +57,7 @@ class HatJobRun(Base):
 
 
 class HatQualityCheck(Base):
-    """Gate results that block scans (02 §6)."""
+    """Gate results that block scans."""
 
     __tablename__ = "hat_quality_check"
     __table_args__ = (
@@ -72,7 +72,7 @@ class HatQualityCheck(Base):
 
 class HatQualityQuarantine(Base):
     """An unexplained big mover kept out of the scans from `since` until a corporate action with
-    that ex-date is stored or the owner clears it (02 §6, HAT-DATA-062)."""
+    that ex-date is stored or the owner clears it (HAT-DATA-062)."""
 
     __tablename__ = "hat_quality_quarantine"
     __table_args__ = (

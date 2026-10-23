@@ -1,4 +1,4 @@
-"""Scheduled messages (08 §2; HAT-TG-021, HAT-TG-022, HAT-TG-024, HAT-EXEC-130, -131; the model
+"""Scheduled messages (HAT-TG-021, HAT-TG-022, HAT-TG-024, HAT-EXEC-130, -131; the model
 is `verification/tla/JobScheduler.tla`, LoginPromptOrder and ReportsAfterClose).
 
 | Job | When (IST) | Sends |

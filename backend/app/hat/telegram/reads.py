@@ -1,4 +1,4 @@
-"""Read-only queries behind the Telegram commands and reports (08 §2, §3; HAT-TG-022, -024,
+"""Read-only queries behind the Telegram commands and reports (HAT-TG-022, -024,
 -037). Nothing here writes: `/status`, `/positions`, `/watchlist` and `/login` change no table
 (HAT-TG-037), and the scheduled reports only read what they summarise.
 """

@@ -305,7 +305,7 @@ def evidences(draw: st.DrawFn) -> Evidence:
 
 
 def model_allowed(current: str, target: str, ev: Evidence, by_owner: bool) -> bool:
-    """The rules of 05 §6 as one table, written without the module's helpers' structure."""
+    """The rules as one table, written without the module's helpers' structure."""
     if (current, target) not in lifecycle.EDGES:
         return False
     if (current, target) == ("research", "backtested"):

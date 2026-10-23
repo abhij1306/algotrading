@@ -1,4 +1,4 @@
-"""Initial stop rules (07 §5, HAT-EXEC-050..052, HAT-BOT-062): pure and exact.
+"""Initial stop rules (HAT-EXEC-050..052, HAT-BOT-062): pure and exact.
 
 Every rule returns a `StopPlan`: a stop price, or a skip with a fixed reason. A stop is valid only
 when it is strictly between 0 and the entry price (HAT-RISK-073), and every stop is rounded down

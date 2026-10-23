@@ -1,5 +1,5 @@
-"""The trigger monitor: live trigger and entry-filter evaluation on final 5-minute bars (07 §12,
-HAT-EXEC-120..122, HAT-CRIT-115..122, HAT-BOT-052, HAT-BOT-071).
+"""The trigger monitor: live trigger and entry-filter evaluation on final 5-minute bars
+(HAT-EXEC-120..122, HAT-CRIT-115..122, HAT-BOT-052, HAT-BOT-071).
 
 Pure and synchronous, like the bar builder it listens to: `TriggerMonitor.on_bar` takes one final
 bar and returns the triggers it fired, and reads only the candidates it was given and the bar
@@ -23,7 +23,7 @@ Rules:
   The level of an opening-range expression does not exist before the first bar is final, so
   nothing fires before 09:20 (HAT-CRIT-119, HAT-BOT-071).
 - The entry is a LIMIT at the larger of the level and the bar's close, rounded up to the tick, so
-  it never buys below the level it broke (`entry_limit`, PR 49, plan audit N1); `max_chase`
+  it never buys below the level it broke (`entry_limit`, PR 49); `max_chase`
   checks that price.
 - At the trigger the initial stop is computed with the instrument's real tick (HAT-EXEC-053),
   then the entry filters run in their configured order; `max_chase` always runs, with the
@@ -396,7 +396,7 @@ def evaluate_trigger(
 
 
 def entry_limit(level: Decimal, price: Decimal, tick: Decimal | None) -> Decimal:
-    """The entry LIMIT price at a trigger (PR 49, plan audit N1): the larger of the level and the
+    """The entry LIMIT price at a trigger (PR 49): the larger of the level and the
     live price (the trigger bar's close), rounded up to the tick when it is known, so the order
     never buys below the level it broke."""
     limit = max(level, price)

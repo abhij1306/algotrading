@@ -1,5 +1,5 @@
 """CONF checks of the Parquet store against the spec (HAT-DATA-080, 081): where the store writes,
-which root the command lines hand it, and that every file it produces has the §8 dataset's
+which root the command lines hand it, and that every file it produces has its dataset's
 partition and exact columns."""
 
 import ast
@@ -16,23 +16,20 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 from hat_bhav_support import bar
-from hat_conf_spec import REPO_ROOT, SPEC_DIR
+from hat_conf_spec import REPO_ROOT
 
 from app import paths
 from app.hat.data.bars_store import BarStore
-from app.hat.data.store import DATASET_BARS, DATASET_INDEX, DataStore, IndexRow, StoreError
+from app.hat.data.store import (
+    BAR_SCHEMA,
+    DATASET_BARS,
+    DATASET_INDEX,
+    INDEX_SCHEMA,
+    DataStore,
+    IndexRow,
+    StoreError,
+)
 from app.hat.settings import load_settings
-
-SECTION8_ROW = re.compile(r"^\| `([\w]+)/` \| `date=` \| ([^|]+) \|", re.MULTILINE)
-
-
-def _spec_columns() -> dict[str, list[str]]:
-    text = (SPEC_DIR / "02-data.md").read_text(encoding="utf-8")
-    section = text[text.index("## §8 Parquet layout") :]
-    return {
-        name: [c.strip().split(" (")[0] for c in cols.split(",")]
-        for name, cols in SECTION8_ROW.findall(section)
-    }
 
 
 def test_store__data_root() -> None:
@@ -107,9 +104,8 @@ def test_store__cli_root_after_env() -> None:
 
 def test_store__layout() -> None:
     """HAT-DATA-081: every Parquet file the store writes sits in `<dataset>/date=YYYY-MM-DD/` and
-    has exactly the columns the §8 table lists for that dataset."""
-    spec = _spec_columns()
-    assert {DATASET_BARS, DATASET_INDEX} <= set(spec)
+    has exactly the columns of that dataset's declared schema."""
+    spec = {DATASET_BARS: BAR_SCHEMA.names, DATASET_INDEX: INDEX_SCHEMA.names}
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
         day = date(2024, 5, 6)

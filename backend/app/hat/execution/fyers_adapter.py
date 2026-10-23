@@ -1,4 +1,4 @@
-"""The Fyers adapter behind `HatBroker` (HAT-DEC-BD2, HAT-BRK-081, -090, -091; 07 §9).
+"""The Fyers adapter behind `HatBroker` (HAT-DEC-BD2, HAT-BRK-081, -090, -091).
 
 It wraps `FyersBroker` (place, modify, cancel, the circuit breaker, the guarded timeout,
 `SUBMIT_UNCONFIRMED`, and the GTT calls it makes through the Fyers SDK), `FyersSession` (is the
@@ -114,7 +114,7 @@ CODE_INVALID_RESPONSE = "broker_response_invalid"
 CODE_OK = "ok"
 
 # Fyers documents a 1-20 alphanumeric orderTag. GTT for delivery was verified on the live account
-# on 2026-10-22 (HAT-BRK-091, PLAN Q8): a single-leg CNC sell GTT was placed (with and without a
+# on 2026-10-22 (HAT-BRK-091): a single-leg CNC sell GTT was placed (with and without a
 # tag), read in the GTT book, modified and cancelled (`tests/hat/fixtures/fyers_live_writes.json`).
 FYERS_CAPABILITIES = Capabilities(
     gtt_delivery=True,

@@ -1130,7 +1130,7 @@ KILLS = st.sampled_from(tuple(KILL_REASON))
 @settings(max_examples=30, deadline=None)
 @given(KILLS, st.sampled_from(("none", "pending", UNCONFIRMED)))
 def test_refused_entry_is_not_sent(kill: str, reserved: str) -> None:
-    """HAT-EXEC-020, 06 §6: an auto entry whose bot became manage-only after its risk check (a
+    """HAT-EXEC-020,: an auto entry whose bot became manage-only after its risk check (a
     kill switch or a pause, in the gap between the signal's commit and the placement) sends
     nothing. A reserved order that never reached the broker is cancelled and the signal ends
     Rejected with the reason; one that may have reached it is only left to reconciliation: it

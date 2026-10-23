@@ -1,4 +1,4 @@
-"""The text commands (08 §3; HAT-TG-030..037, HAT-DEC-I11, HAT-GOV-080).
+"""The text commands (HAT-TG-030..037, HAT-DEC-I11, HAT-GOV-080).
 
 The command set is closed: exactly the ten in `COMMANDS`, each with a fixed argument shape;
 anything else is refused with no state change (HAT-TG-030). No command takes a price, a size or

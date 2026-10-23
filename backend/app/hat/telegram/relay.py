@@ -1,4 +1,4 @@
-"""The event relay: what the event log says, sent to the chat (08 §2; HAT-TG-023, HAT-TG-024,
+"""The event relay: what the event log says, sent to the chat (HAT-TG-023, HAT-TG-024,
 HAT-DEC-T15, HAT-EXEC-043; the model is `verification/tla/ExecutionRouter.tla`, RejectNoCard).
 
 The relay reads `hat_event` in id order from its cursor (`hat_telegram_cursor` `events`) and

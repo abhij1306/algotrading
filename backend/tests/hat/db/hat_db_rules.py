@@ -1,4 +1,4 @@
-"""The database rules of 03-schema §8, each as a check body over a Postgres connection.
+"""The database rules of each as a check body over a Postgres connection.
 
 A check raises AssertionError when the database does not enforce its rule. `test_db_*.py` runs
 each check against the real schema; `test_db_broken_variants.py` removes the trigger, index or

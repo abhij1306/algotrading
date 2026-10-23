@@ -1,4 +1,4 @@
-"""The backtest fill and cost model (09 §2, HAT-BT-022, HAT-BT-023, HAT-BT-024): exact and pure.
+"""The backtest fill and cost model (HAT-BT-022, HAT-BT-023, HAT-BT-024): exact and pure.
 
 A simulated fill is moved against the trade by the run's slippage, then charged the statutory
 and exchange costs of a delivery (CNC) trade. Every rate lives in a versioned cost-model file

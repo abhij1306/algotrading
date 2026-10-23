@@ -1,4 +1,4 @@
-"""Broker fills into HAT's book (07 §4, §6, §11; HAT-EXEC-060, -062, HAT-BRK-111; PR 15c).
+"""Broker fills into HAT's book (HAT-EXEC-060, -062, HAT-BRK-111; PR 15c).
 
 `FillSync.run` reads the broker's order book and trade book (both fail closed: an unreadable
 book raises and nothing is written) and then, for one broker account:
@@ -20,7 +20,7 @@ book raises and nothing is written) and then, for one broker account:
    next evaluation retries it once; its second rejection raises `exit.not_placed` (HAT-EXEC-075);
 5. raises `gtt.unfilled` for such a GTT's SELL order (by its tag, or untagged on its symbol) that
    ended (cancelled, rejected, expired) short of its quantity: the GTT triggered and did not fill
-   (07 §6 step 3).
+   .
    The GTT is ended and the position protected again. The broker order id is kept on the
    `order.cancelled` event, so the alert is raised once; while the GTT's own sale (at its limit
    price and quantity) still works short of its quantity a minute after it was first seen (the
@@ -127,7 +127,7 @@ LOWER_CIRCUIT_LOCKED = "lower_circuit_locked"  # alert code: no re-send while lo
 
 
 class SaleBand(Protocol):
-    """The day's lower price band of an instrument, read from the stored band (02 §2, PR 51)."""
+    """The day's lower price band of an instrument, read from the stored band (PR 51)."""
 
     def lower(self, session: Session, instrument_id: uuid.UUID, now: datetime) -> Decimal | None:
         """The lower circuit price; None when the band or previous close is unknown."""
@@ -143,7 +143,7 @@ def watch_closely(session: Session, account_id: uuid.UUID, now: datetime) -> boo
     its signals of this trade date may still fill (one of an earlier session ended at its close),
     or a stop of an open real position was sent and its answer is not in yet (pending or
     unconfirmed: the next sync settles it). A stop the broker refused is retried once a minute,
-    never faster, so a refusal does not spend the tag's sequence (07 §10)."""
+    never faster, so a refusal does not spend the tag's sequence."""
     entry = (
         select(HatOrder.id)
         .join(HatSignal, HatSignal.id == HatOrder.signal_id)

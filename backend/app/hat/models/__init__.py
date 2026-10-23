@@ -1,4 +1,4 @@
-"""HAT SQLAlchemy models on the shared `app.base.Base` (03-schema §10).
+"""HAT SQLAlchemy models on the shared `app.base.Base`.
 
 Importing this package registers every HAT table on `Base.metadata`, so `create_all` builds
 them (SQLite in tests, Postgres in production).

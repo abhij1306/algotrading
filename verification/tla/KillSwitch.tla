@@ -1,6 +1,6 @@
 ------------------------------ MODULE KillSwitch ------------------------------
 (***************************************************************************)
-(* Kill switches, pause and manage-only (06 §6, §8; 03 §3).                *)
+(* Kill switches, pause and manage-only.            *)
 (*                                                                         *)
 (* One account and NBots bots. A bot is manage-only (takes no new entry)   *)
 (* when the account kill is tripped, its own kill is tripped, its health   *)

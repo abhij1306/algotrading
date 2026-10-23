@@ -1,4 +1,4 @@
-"""The trade-management jobs of the daily cycle (10-ops §3 job table: `exits.close` 15:20-15:25,
+"""The trade-management jobs of the daily cycle (job table: `exits.close` 15:20-15:25,
 `gtt.swap` ~15:25, `gtt.verify` nightly; HAT-EXEC-061, -063, -074, HAT-OPS-024). PR 15 holds
 their logic; PR 17 registers them with the scheduler for each broker account. `gtt.ex_date`
 (08:40, HAT-EXEC-145, PR 47) is registered only with `exdate_check` on (`HAT_EXDATE_GTT_CHECK`),
@@ -63,7 +63,7 @@ def trade_jobs(
     *,
     exdate_check: bool = False,
 ) -> tuple[ScheduledJob, ...]:
-    """The jobs of one broker account, at their 10-ops §3 times; `gtt.ex_date` only with
+    """The jobs of one broker account, at their times; `gtt.ex_date` only with
     `exdate_check`."""
 
     def close(_day: date) -> JobResult:

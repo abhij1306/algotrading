@@ -1,4 +1,4 @@
-"""NSE tick sizes by price (HAT-EXEC-053; 07 §5).
+"""NSE tick sizes by price (HAT-EXEC-053).
 
 Since 15 April 2025 the NSE cash-market tick of an equity depends on its price: 0.01 below ₹250,
 0.05 up to ₹1,000, 0.10 up to ₹5,000, 0.50 up to ₹10,000, 1.00 up to ₹20,000 and 5.00 above.

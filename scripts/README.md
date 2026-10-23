@@ -11,7 +11,7 @@ Active helpers only (run from repo root):
   (size and sha256 of every file) and re-verified at both; exit 1 on any mismatch.
   `hat_backup.py verify SET_DIR` re-checks one set. Targets default to `HAT_BACKUP_LOCAL` and
   `HAT_BACKUP_REMOTE`; the password reaches `pg_dump` only via `PGPASSWORD`/`~/.pgpass`
-  (HAT-OPS-060, runbook in `docs/specs/hat/10-ops.md` §9)
+  (HAT-OPS-060, runbook in `docs/runbook.md`)
 - `hat_deploy_guard.py [--calendar FILE] [--force --reason TEXT]` exits 2 between 08:30 and
   15:35 IST on a trading day (every weekday unless the calendar export says otherwise) and 0
   otherwise; a forced run is logged to `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl` (HAT-OPS-042).

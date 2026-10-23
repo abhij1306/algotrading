@@ -1,6 +1,6 @@
-"""PBT costs.* (09 §2, HAT-BT-022, HAT-BT-023): slippage and statutory charges of
+"""PBT costs.* (HAT-BT-022, HAT-BT-023): slippage and statutory charges of
 `app.hat.backtest.costs` on generated cost models and fills, in Decimal and compared exactly,
-against the rules of 09 §2 written out here."""
+against the rules written out here."""
 
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any

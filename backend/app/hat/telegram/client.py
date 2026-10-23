@@ -1,4 +1,4 @@
-"""The Telegram Bot API client (08 §1, §2; HAT-TG-010, HAT-TG-014, HAT-TG-020).
+"""The Telegram Bot API client (HAT-TG-010, HAT-TG-014, HAT-TG-020).
 
 Outbound HTTPS only: `getMe` (the bot's own username), `getUpdates` long polling, `sendMessage`,
 `answerCallbackQuery` and `editMessageReplyMarkup`. No webhook is ever registered and no socket

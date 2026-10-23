@@ -1,4 +1,4 @@
-"""The order in which a day's triggers take the open slots (09 §2, HAT-BT-026): pure.
+"""The order in which a day's triggers take the open slots (HAT-BT-026): pure.
 
 Live takes candidates in the order they trigger, so on a capped day (more triggers than open
 slots) the first breaks get the slots. Daily bars cannot show that order, so the backtest

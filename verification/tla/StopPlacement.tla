@@ -1,7 +1,6 @@
 ---------------------------- MODULE StopPlacement ----------------------------
 (***************************************************************************)
-(* Broker-side stops of one real position (07 §6; 01 B17; 03 §8; 06 §7;   *)
-(* 10-ops §3).                                                             *)
+(* Broker-side stops of one real position (HAT-DEC-B17).                                          *)
 (*                                                                         *)
 (* An entry fill gets an intraday stop order before anything else touches  *)
 (* the position (a stop that already rests is resized instead). The stop   *)

@@ -1,6 +1,6 @@
 ---------------------------- MODULE ExecutionRouter ----------------------------
 (***************************************************************************)
-(* The execution router (07 §1-§3, §13; 06 §6-§7; 01 B1, B11, B20, I9).    *)
+(* The execution router (HAT-DEC-B1, B11, B20, I9).    *)
 (*                                                                         *)
 (* One bot on one broker account, NSignals triggers on one instrument,     *)
 (* sessions that open and close without end. A trigger passes the one risk *)

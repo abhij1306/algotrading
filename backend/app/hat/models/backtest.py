@@ -1,7 +1,7 @@
-"""`hat_backtest_run` (03-schema §7).
+"""`hat_backtest_run`.
 
 Created in PR 2 rather than PR 3 because strategy and universe versions reference it
-(HAT-SCH-104). Trades go to `backtests/run_id=.../trades.parquet` (02 §8).
+(HAT-SCH-104). Trades go to `backtests/run_id=.../trades.parquet`.
 """
 
 from sqlalchemy import Column, Date, Text

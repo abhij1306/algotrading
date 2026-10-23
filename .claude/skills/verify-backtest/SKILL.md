@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's backt
 
 # verify-backtest
 
-Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/hat/backtest/`) tells the truth about a strategy version: it runs the live scan, risk and exit code rather than copies, it never reads the future or forgets dead stocks, its fills are never better than the market allowed and pay every charge, every run is a counted trial, the deflated Sharpe ratio matches the published formula and is recomputed when the family grows, and the same inputs always give the same bytes. Specs: `docs/specs/hat/09-backtest.md` (HAT-BT-010 to 061), `06-risk-and-governance.md` (HAT-GOV-091, the gate evidence), `11-verification.md` (HAT-VER-041).
+Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/hat/backtest/`) tells the truth about a strategy version: it runs the live scan, risk and exit code rather than copies, it never reads the future or forgets dead stocks, its fills are never better than the market allowed and pay every charge, every run is a counted trial, the deflated Sharpe ratio matches the published formula and is recomputed when the family grows, and the same inputs always give the same bytes. Requirement IDs (index: `docs/invariants.md`): (HAT-BT-010 to 061), (HAT-GOV-091, the gate evidence), (HAT-VER-041).
 
 ## Properties
 
@@ -52,8 +52,8 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.robustness_metrics` For generated trades and an equity curve, `exposure` (sessions inside some entry..exit span over all sessions; `held_sessions` their count and `first_session`/`last_session` the curve's ends, PR 69), `longest_drawdown_sessions` (the longest run below the running peak of the curve from the initial equity), `mar` (times the drawdown depth gives `cagr`), `tail_trimmed_r` (the mean R without the best ceil(1, 5, 10 % of the trades)) and `cost_share` (fees over net P&L + fees) equal their definitions (HAT-BT-040, HAT-BT-041, PR 65). Harm: the tuning report shows an idle, long-underwater, outlier-driven or cost-eaten strategy as robust.
 - `PBT backtest.deterministic` Two runs of the same market, with rows, features, members and mappings shuffled, give byte-identical trade files and equal metrics JSON, including the known-gaps list (HAT-BT-050). Harm: evidence cannot be reproduced, so a promotion cannot be audited.
 - `PBT backtest.version_status_requires_run` A draft becomes `backtested` only with a completed run of that same version flagged for promotion (`metrics.for_promotion`, PR 62) with `slot_order` `time` (PR 63); a running, failed, foreign or unflagged run, or one in another slot order or recorded before PR 63, is refused and leaves the draft untouched (HAT-BT-061). Harm: a version is promoted on a run that never finished, on another version's evidence, or on perfect fills.
-- `CONF backtest.backtest_run_columns` `hat_backtest_run` has non-null pinned versions, period, snapshot, status, metrics and family key; trades go to `backtests/run_id=<id>/trades.parquet` with the 09 §3 columns; the statuses are `running`, `completed`, `failed` (HAT-BT-032). Harm: a run cannot be traced to its inputs or its trades file.
-- `CONF backtest.known_gaps_listed` Spec 09 §7's gap table (HAT-BT-070) lists exactly `KNOWN_GAPS`, in order, and the golden runs report that list (PR 61). Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
+- `CONF backtest.backtest_run_columns` `hat_backtest_run` has non-null pinned versions, period, snapshot, status, metrics and family key; trades go to `backtests/run_id=<id>/trades.parquet` with the `TRADE_SCHEMA` columns; the statuses are `running`, `completed`, `failed` (HAT-BT-032). Harm: a run cannot be traced to its inputs or its trades file.
+- `CONF backtest.known_gaps_listed` The committed golden runs (HAT-BT-070) report exactly `KNOWN_GAPS`. Harm: a gap the loop has is not reported, so the evidence reads as more faithful than it is.
 - `CONF backtest.backtest_golden_replay` The committed fixture market (`tests/hat/fixtures/backtest_market.csv`) run through S1 and S2 reproduces `tests/hat/fixtures/backtest_golden.json` exactly (HAT-BT-051). Harm: a silent engine change shifts every sleeve's evidence.
 - `PBT costs.slippage_adverse` A buy fills at p × (1 + s/10000) rounded up to 4 places, a sell at p × (1 − s/10000) rounded down and never below 0.0001 (HAT-BT-022). Harm: rounding hands the backtest a better price than any fill.
 - `PBT costs.slippage_adverse_net` A round trip's net P&L does not rise with slippage. Harm: more slippage makes a strategy look better.
@@ -107,14 +107,14 @@ No check touches the network, Fyers or the HAT database: a run's ledger is an in
 - `backtest.nightly_scan_parity` failing means the nightly job (`daily.market.scan_inputs`, `Nightly.features`, `Nightly.scan`) and the loop (`backtest.market.load_market`, `_Run._publish`) read different inputs: the bar window, the adjusted view's actions, the features partition, the index closes or the members. The night world is `hat_backtest_support.night_world` and `store_session` (raw prices over a split's factor before its ex-date). `backtest.nightly_no_lookahead` failing means a nightly read is not bounded by the scan date. `backtest.features_digest_pinned` failing means the loader's check and the features job's recorded digest disagree (`data.features.inputs_digest`, `STATE_FILE`).
 - `CONF backtest.backtest_shares_engine_imports` names the private module imported or the function redefined: call the live function instead (add a parameter to it, as `fills` was added to `open_entry`, rather than copying it).
 - `CONF backtest.backtest_golden_replay` failing after an intended change: check the diff of the regenerated golden file line by line, explain it in the PR, and commit it with the change. Unexplained diffs are bugs.
-- `dsr.*` failures print the stats (SR, T, skew, kurtosis), N and V; recompute with the formula in 09 §4. The SR-monotonicity property holds only where the slope is non-negative; a counterexample outside that region is the formula, not the code.
+- `dsr.*` failures print the stats (SR, T, skew, kurtosis), N and V; recompute with the deflated-Sharpe formula in `backtest/dsr.py`. The SR-monotonicity property holds only where the slope is non-negative; a counterexample outside that region is the formula, not the code.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
 
 ## Updating
 
-- A new exit or entry behaviour belongs in the live engine (`trades.py`, `exits.py`, `stops.py`); the loop only feeds it prices. Change `fills.py` only for a new price proxy, with its 09 §2 text.
+- A new exit or entry behaviour belongs in the live engine (`trades.py`, `exits.py`, `stops.py`); the loop only feeds it prices. Change `fills.py` only for a new price proxy, and say so in this skill.
 - A rate change is a new cost-model file `cost_models/<version>.yaml` with a new version; never edit a published one (runs record its digest).
-- A new known gap goes into `KNOWN_GAPS`, the module docstring of `engine/backtest.py` and 09 §7 together.
+- A new known gap goes into `KNOWN_GAPS` and the module docstring of `engine/backtest.py` together, and the golden is regenerated.
 - The golden fixture market was generated once (a random walk with an accumulation, flag and breakout per instrument; parameters ADV=0.025, ADV_DAYS=22, FLAG=0.006, FLAG_DAYS=6, SIDE_DAYS=20, recorded in the PR 12 description) and is frozen; regenerate only the golden JSON, not the market, for an engine change.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-backtest` prints the digest.
 
@@ -145,7 +145,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `42b71a506226b34ac84513b5fc6cd222b974759009f08602b1e8b62007a9fa44`
+Covered digest: `a84c37e7cc424e76a2e7c5c9cad28de91a5feec80588d43b781bfdfeecb5b302`
 
 ## Scope changes
 
@@ -159,7 +159,7 @@ Covered digest: `42b71a506226b34ac84513b5fc6cd222b974759009f08602b1e8b62007a9fa4
 - PR 63 (G11): a day's watchlist reaches the triggers in the run's slot order (`backtest/slots.py`, `engine.backtest._slots`): `time` (default; gap overs first, then (level - open) / open ascending, ties by score), `score` (the PR 12 order) or `random:K` (the score order ordered by the SHA-256 of `K:<date>:<place>`). `RunSpec.slot_order`, `--slot-order`, `backtest_bot(slot_order=)`; `check_conventions` refuses an unknown rule (`backtest_bad_slot_order`) and a promotion run off `time` (`backtest_promotion_off_time_order`); the command line validates `--slot-order` itself. Under `touch` an open at the level is a gap over (it fills at the open). `runs._latest_run` (the evidence) reads only promotion runs with `slot_order` `time`, and `publish_version` takes only such a run (CodeAnt on PR 63), so every run before PR 63 (score order) stops counting and a sleeve needs one new `--for-promotion` run (code review of PR 63). `conventions()` gains `slot_order`, so `config_digest` changes for every run. The golden replay's trades and metrics are unchanged (the fixture has no capped day); both seeds gain `slot_order: time` and a new `config_digest`.
 - PR 62 (G08, G09, G34, N14; O5): the fill conventions are pessimistic by default and recorded. `fills.entry_fill` takes the instrument's tick and a rule: `penetration_1_tick` (default; the high must reach the first tick-grid price above the level, and the fill is that price: level + tick on the grid, the next grid price for an off-grid adjusted level) or `touch` (the PR 12 rule, `RunSpec.entry_fill_rule`, `--entry-fill touch`). The tick is read only for a penetration from below (open at or under the level, high above it); without one that day skips as `stop_input_missing`. The entry-day split breaks at the entry price. `costs.DEFAULT_SLIPPAGE_BPS` = 20 is the default of the command line and `backtest_bot`. `engine.backtest.check_conventions` (called by `backtest_bot` before recording and by `run_backtest`) refuses an unknown rule, and a run flagged for promotion (`RunSpec.for_promotion`, `--for-promotion`) at 0 bps or under `touch`. `publish_version` takes only a run whose metrics say `for_promotion: true`, and `runs._latest_run` (the lifecycle's and the risk-increase gate's evidence) reads only such runs (code review of PR 62: a sensitivity run must not become the evidence). Metrics gain `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `for_promotion` and `config_digest`; `slippage_bps` is normalised (20.0 and -0 record as 20 and 0). `entry_fills_on_touch` left `KNOWN_GAPS` (a `touch` run reports it as `TOUCH_GAP`). The monotone-rule-stack assumption of `first_trigger` is documented (09 HAT-BT-021, N14). The golden now replays the defaults (penetration, 20 bps): S1's entry 2393.98 to 2398.788 (the grid price 2394.00 on the 0.10 tick, plus 20 bps), `expectancy_r` 8.0036 to 7.5884, `net_pnl` 9938.51 to 9860.77; S2's entries 837.33/838.34 to 839.0247/840.0267 (837.35/838.35 on the 0.05 tick, plus 20 bps), `net_pnl` -3047.66 to -3919.47, `expectancy_r` -1.2216 to -1.2396; both gain the six new metric keys and lose `entry_fills_on_touch` from `known_gaps`.
 - PR 58: the loop reads the per-instrument cooldown (HAT-RISK-036) through `trades.open_entry`, as live does; `engine.backtest.with_cooldown` and `--cooldown-sessions` (`runs.backtest_bot(cooldown_sessions=)`) replace N in the run's copy of the policy, refused as `backtest_bad_cooldown` outside [0, 250], and every run records `metrics.cooldown_sessions`; `runs.backtest_evidence` (`_latest_run`) reads only runs made under the cooldown in force (code review of PR 58: a sweep run must not become the sleeve's evidence). The golden gained that key (0) only; no trade changed.
-- PR 61: the loop runs the playbook's entry filters at each trigger through `trigger.evaluate_entry_filters` (moved out of `trigger.plan_entry`, behaviour unchanged): `adtr_filter` on the planned stop with ADTR(20) as of the session before, and `max_chase` with the upper circuit inferred from the entry price and the bar (`upper_circuit_locked`: the day's high, above the previous close, within a tick of an NSE band's upper price); a failure is a Rejected signal with the filter's type, counted in `metrics.rejections`. `KNOWN_GAPS` grew from 4 to 11 codes (09 §7, HAT-BT-070). The golden was regenerated: S2's 2025-07-08 trade (entry 639.09, stop 612.60, width 26.49 against 1.0 x ADTR 24.92) is now Rejected `adtr_filter`, so S2 has one trade fewer (`net_pnl` -4358.17 to -3047.66, `avg_loss_r` -1.165 to -1.222); S1 and S2 gain the seven new gap codes and S2 `rejections: {adtr_filter: 1}`.
+- PR 61: the loop runs the playbook's entry filters at each trigger through `trigger.evaluate_entry_filters` (moved out of `trigger.plan_entry`, behaviour unchanged): `adtr_filter` on the planned stop with ADTR(20) as of the session before, and `max_chase` with the upper circuit inferred from the entry price and the bar (`upper_circuit_locked`: the day's high, above the previous close, within a tick of an NSE band's upper price); a failure is a Rejected signal with the filter's type, counted in `metrics.rejections`. `KNOWN_GAPS` grew from 4 to 11 codes (HAT-BT-070). The golden was regenerated: S2's 2025-07-08 trade (entry 639.09, stop 612.60, width 26.49 against 1.0 x ADTR 24.92) is now Rejected `adtr_filter`, so S2 has one trade fewer (`net_pnl` -4358.17 to -3047.66, `avg_loss_r` -1.165 to -1.222); S1 and S2 gain the seven new gap codes and S2 `rejections: {adtr_filter: 1}`.
 - PR 60: the entry day is split at the break (`pre_break_low`): a low-of-day stop is planned from the low before the break (5-minute bars, else max(day low, min(open, level x (1 - adr20/100)))), a gap-over entry under it is skipped without 5-minute bars (`gap_over_no_intraday`), as is one with neither 5-minute bars nor adr20 (`stop_input_missing`; an adr20 of 0 is a value, not a gap), the low after the break can stop the trade out on the entry day (recorded at 09:45, after the 09:30 entry) and seeds the MAE, and an empty contraction plan skips as `stop_too_wide`. The golden was regenerated: S2's 2025-07-08 entry now plans its stop from the estimated pre-break low (602.90 to 612.60, qty 34 to 47) and the day's later low stops it out that day (r -0.0055 to -1.0526, MAE -1.0), moving S2's `avg_loss_r` (-0.816 to -1.165), `sum_r` (-2.45 to -3.50) and `net_pnl` (-3054.42 to -4358.17); S1 and S2 gain the `entry_day_low` metric. The backtest loader does not read `bars_5m` yet, so a CLI run skips every S2 gap over.
 - PR 54: the loop's re-check of a contraction stop at the fill price (`check_width`) also applies the rule's `min_pct` (`stop_too_narrow`, default 0 = off; property in `verify-stops`). The seeds' golden replay is unchanged by the S1 `close_vs_pivot` criterion.
 - Rebased onto PR 15a (HAT-EXEC-053): the loop plans stops with the instrument's NSE slab tick from `data.ticks`, read from the adjusted closes (live reads unadjusted ones; spec 09 HAT-BT-020 design). The golden was regenerated: the scan's planned stop now uses the next session's slab tick (PR 15a, `scan.next_session_tick`): one trade's ~₹2,300 stock sits on the 0.10 tick, so its initial stop moved from 2290.55 to 2290.50, with the R, P&L and return figures that follow. The golden runs only contraction stops (planned by the scan), so `backtest.stop_on_instrument_tick` is what pins the loop's own tick.
@@ -171,7 +171,7 @@ Covered digest: `42b71a506226b34ac84513b5fc6cd222b974759009f08602b1e8b62007a9fa4
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 73: `strategy/versions.py` gains the `sleeve.version_assigned` event and `add_sleeve` (checked in `verify-criteria` and `verify-portfolio`); nothing the backtest reads changed. Nothing was narrowed.
-- `dsr.bounds_and_monotonicity_in_sr` holds on the domain where the slope 1 − γ3 (SR + SR0)/2 + ((γ4 − 1)/4) SR × SR0 is non-negative at both ends. Finding: outside it a higher SR with a heavy skew scores lower; that is the paper's formula (recorded in 09 §4), and the code is not changed.
+- `dsr.bounds_and_monotonicity_in_sr` holds on the domain where the slope 1 − γ3 (SR + SR0)/2 + ((γ4 − 1)/4) SR × SR0 is non-negative at both ends. Finding: outside it a higher SR with a heavy skew scores lower; that is the paper's formula (recorded in the skill), and the code is not changed.
 - `dsr.bounds_and_monotonicity_bad_denominator` found that a radicand of float noise around 0 gave DSR = 1.0; `RADICAND_FLOOR` (1e-12) now scores it undefined. With real moments the radicand is bounded below by a square (it is never negative), so the property generates moments below that bound (γ4 = 1, γ3 ≥ 1/SR).
 - `backtest.entry_fill_proxy_chase` draws the max chase from 0.5%, 1% and 5%: the generated opens gap up by at most 3%, so a 5% chase alone could never bite (found by its scratch break, which first survived).
 - `backtest.no_lookahead` mutates bars and index closes after d; features are derived from the bars by `compute_features`, so they follow. Corporate actions and membership changes after d are covered by the adjusted view (`verify-data`) and `backtest.survivorship_free`.
@@ -1472,27 +1472,13 @@ E    +    and   PosixPath('/root') = Path('/root')
 
 ### CONF backtest.known_gaps_listed
 
-Break: (PR 61) in `backend/app/hat/engine/backtest.py`: `suspension_not_marked` dropped from `KNOWN_GAPS`.
+Break: in `backend/app/hat/engine/backtest.py`: `entry_day_low_estimated` dropped from `KNOWN_GAPS`.
 
 ```
 tests/hat/conformance/test_conf_backtest.py F
-tests/hat/conformance/test_conf_backtest.py:167: in test_known_gaps_listed
-    assert tuple(codes) == KNOWN_GAPS
-E   AssertionError: assert ('trigger_is_...at_open', ...) == ('trigger_is_...at_open', ...)
-```
-
-Break: (PR 64) in `backend/app/hat/engine/backtest.py`: `KNOWN_GAPS` keeps `suspension_not_marked`, which the spec's table no longer lists.
-
-```
-tests/hat/conformance/test_conf_backtest.py F
-tests/hat/conformance/test_conf_backtest.py:167: in test_known_gaps_listed
-    assert tuple(codes) == KNOWN_GAPS
-E   AssertionError: assert ('trigger_is_ [cut]rom_bar',  [cut]) == ('trigger_is_ [cut]rom_bar',  [cut])
-E     At index 7 diff: 'entry_day_low_estimated' != 'suspension_not_marked'
-E     Right contains one more item: 'entry_day_low_estimated'
-E     Full diff:
-E       (
-E           'trigger_is_level_break_only',
+tests/hat/conformance/test_conf_backtest.py:219: in test_known_gaps_listed
+E   assert False
+E    +  where False = all(<generator object test_known_gaps_listed.<locals>.<genexpr> at 0x7f14ccb233e0>)
 ```
 
 ### CONF backtest.backtest_golden_replay

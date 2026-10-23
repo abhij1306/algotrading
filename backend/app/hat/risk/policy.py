@@ -1,4 +1,4 @@
-"""Risk-policy governance rules that are pure functions (06 §1, 03-schema §8).
+"""Risk-policy governance rules that are pure functions .
 
 Imports nothing from the database, broker or models, so the rule is the same in the app, in
 the backtest and in the property tests.
@@ -43,7 +43,7 @@ def require_cooling_off(direction: str, requested_at: datetime, effective_from: 
         raise CoolingOffError("a risk increase must take effect at least 7 days after request")
 
 
-# --- The policy record (06 §1, HAT-RISK-010, HAT-RISK-011) -----------------------------------
+# --- The policy record (HAT-RISK-010, HAT-RISK-011) -----------------------------------
 
 LEVELS = ("L1", "L2", "L3")
 STRATEGY_KEYS = ("stage2-contraction-breakout", "momentum-breakout-ep")
@@ -102,7 +102,7 @@ class LadderLevel:
 
 @dataclass(frozen=True)
 class RiskPolicy:
-    """Every risk number of the account, as typed values (06 §1). Money is Decimal, counts int."""
+    """Every risk number of the account, as typed values. Money is Decimal, counts int."""
 
     risk_pct: Decimal
     p_max: Mapping[str, Decimal]
@@ -127,7 +127,7 @@ class RiskPolicy:
     health_half_mult: Decimal
     # Sessions an instrument is refused after a bot's hard stop of it (HAT-RISK-036); 0 is off.
     cooldown_sessions: int = 0
-    # The owner has set `base_weight` and `cluster_cap` as real numbers (06 §1, 06:47): until
+    # The owner has set `base_weight` and `cluster_cap` as real numbers (06:47): until
     # then no bot runs confirm or auto (HAT-GOV-085). Not a risk number: it sizes nothing.
     weights_confirmed: bool = False
 
@@ -168,7 +168,7 @@ class RiskPolicy:
         }
 
 
-# The top-level fields of the policy document: exactly the 06 §1 table (CONF
+# The top-level fields of the policy document: exactly table (CONF
 # risk.policy_schema_fields). Nothing else may appear, and none may be missing.
 POLICY_FIELDS = (
     "risk_pct",
@@ -193,7 +193,7 @@ POLICY_FIELDS = (
 # and as no cooldown, the value every policy had before PR 58.
 OPTIONAL_FIELDS: Mapping[str, object] = {"weights_confirmed": False, "cooldown_sessions": 0}
 
-# The initial seed (version 1, direction "initial"): the 06 §1 seed column.
+# The initial seed (version 1, direction "initial"): seed column.
 SEED_POLICY: dict[str, Any] = {
     "risk_pct": "0.0025",
     "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},

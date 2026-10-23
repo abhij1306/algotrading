@@ -1,4 +1,4 @@
-"""Runtime tables (03-schema §5): watchlist, signals, approvals, orders, fills, positions and
+"""Runtime tables: watchlist, signals, approvals, orders, fills, positions and
 trade results.
 
 Every signal records the exact strategy and risk-policy version that produced it, so any trade
@@ -50,7 +50,7 @@ SIGNAL_MODES = ("shadow", "confirm", "auto")
 ORDER_PURPOSES = ("entry", "stop_day", "stop_gtt", "exit_partial", "exit_full", "flatten")
 ORDER_SIDES = ("buy", "sell")
 APPROVAL_DECISIONS = ("take", "skip", "expired")
-# The 11 trade-lifecycle states of 07 §4 (D18, Q16) in table order; a position holds the last four
+# The 11 trade-lifecycle states (D18, Q16) in table order; a position holds the last four
 # active ones and Closed. `app.hat.engine.lifecycle` owns the transitions (CONF
 # `lifecycle_transitions_match_spec` compares them).
 TRADE_STATES = (
@@ -126,7 +126,7 @@ class HatSignal(Base):
     currency = Column(Currency, nullable=False)
     # The mode in force when the signal triggered.
     mode = Column(Text, nullable=False)
-    # Trade lifecycle state (07 §4); `app.hat.engine.lifecycle` moves it with its event.
+    # Trade lifecycle state; `app.hat.engine.lifecycle` moves it with its event.
     state = Column(Text, nullable=False)
     risk_decision = Column(JsonB, nullable=False)
 
@@ -183,7 +183,7 @@ class HatOrder(Base):
     order_type = Column(Text, nullable=False)
     price = Column(Money)
     trigger_price = Column(Money)
-    # 20 characters: `HT` + purpose code + signal encoding (PLAN C12; 07 §10).
+    # 20 characters: `HT` + purpose code + signal encoding.
     tag = Column(Text, nullable=False)
     # Null until the broker confirms; always null when virtual.
     broker_order_id = Column(Text)

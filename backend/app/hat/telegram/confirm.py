@@ -1,4 +1,4 @@
-"""Second confirmations for `/mode … auto`, `/arm` and `/flatten` (08 §3; HAT-TG-033,
+"""Second confirmations for `/mode … auto`, `/arm` and `/flatten` (HAT-TG-033,
 HAT-GOV-082; the model is `verification/tla/ApprovalToken.tla`, SecondConfirmRequired).
 
 The command does nothing but ask: the reply carries one Confirm button whose callback data is a

@@ -1,4 +1,4 @@
-"""Universe criteria (04 §4, HAT-CRIT-100..104): which instruments may be considered at all."""
+"""Universe criteria (HAT-CRIT-100..104): which instruments may be considered at all."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ class AdrMinParams(ParamModel):
 
 def adr_min(ctx: EvalContext, params: AdrMinParams) -> CriterionResult:
     """HAT-CRIT-104: the mean of 100 x (high / low - 1) over the last `days` sessions is at
-    least `pct` (`adr20` of 02 §7 for the default 20 days)."""
+    least `pct` (`adr20` for the default 20 days)."""
     bars = ctx.history
     ranges = daily_range_pct(bars.high, bars.low)
     n = params.days

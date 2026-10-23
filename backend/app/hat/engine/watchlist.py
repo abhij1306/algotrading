@@ -1,5 +1,5 @@
 """Publishing the nightly scan: `hat_watchlist_entry` rows and the `watchlist.published` event
-(04 §1, HAT-DEC-T12, 07 §4).
+(HAT-DEC-T12).
 
 `scan_and_publish` runs the pure `scan.scan_bot` for one bot and writes its rows and one event in
 the caller's transaction. It is idempotent: a bot's watchlist for a trade date is written once, so

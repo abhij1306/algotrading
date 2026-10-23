@@ -2,5 +2,5 @@
 -r requirements.txt
 pytest==9.1.1
 pytest-cov==7.1.0
-hypothesis==6.170.5  # HAT property tests (docs/specs/hat/11-verification.md)
+hypothesis==6.170.5  # HAT property tests (docs/invariants.md)
 pytest-xdist==3.8.0

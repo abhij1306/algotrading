@@ -3,44 +3,41 @@ equal the table of 07 section 4, row for row; HAT-EXEC-042 (PR 36), only the tra
 writes a trade's state."""
 
 import ast
-import re
 
-from hat_conf_spec import REPO_ROOT, SPEC_DIR
+from hat_conf_spec import REPO_ROOT
 
 from app.hat.engine import lifecycle
 from app.hat.models.runtime import TRADE_STATES
 
-
-def _section() -> str:
-    text = (SPEC_DIR / "07-execution-and-brokers.md").read_text(encoding="utf-8")
-    start = text.index("## §4 Trade lifecycle")
-    return text[start : text.index("#### HAT-EXEC-040", start)]
-
-
-def _rows(section: str, header: str) -> list[list[str]]:
-    lines = section[section.index(header) :].splitlines()[2:]
-    rows = []
-    for line in lines:
-        if not line.startswith("|"):
-            break
-        rows.append([c.strip() for c in line.strip().strip("|").split(" | ")])
-    return rows
+TRANSITIONS = {
+    ("AwaitingApproval", "Cancelled"),
+    ("AwaitingApproval", "EntryPlaced"),
+    ("AwaitingApproval", "Expired"),
+    ("AwaitingApproval", "Rejected"),
+    ("EntryPlaced", "Cancelled"),
+    ("EntryPlaced", "Open"),
+    ("EntryPlaced", "Rejected"),
+    ("ExitPending", "Closed"),
+    ("Open", "ExitPending"),
+    ("Open", "PartiallyExited"),
+    ("PartiallyExited", "ExitPending"),
+    ("PartiallyExited", "PartiallyExited"),
+    ("Triggered", "AwaitingApproval"),
+    ("Triggered", "EntryPlaced"),
+    ("Triggered", "Rejected"),
+    ("Watchlisted", "Expired"),
+    ("Watchlisted", "Triggered"),
+}
 
 
 def test_lifecycle_transitions_match_spec() -> None:
-    section = _section()
-    states = [r[1] for r in _rows(section, "| # | State | Kind |")]
-    kinds = {r[1]: r[2].split(" ")[0] for r in _rows(section, "| # | State | Kind |")}
-    assert len(states) == 11
-    assert set(states) == set(lifecycle.STATES) == set(TRADE_STATES)
-    assert {s for s, k in kinds.items() if k == "ending"} == set(lifecycle.ENDINGS)
-    spec_pairs = set()
-    for src, dst, *_ in _rows(section, "| From | To | Driving event | Condition |"):
-        if src == "(none)":
-            continue
-        spec_pairs |= {(re.sub(r"\s+", "", s), dst) for s in src.split(",")}
-    code_pairs = {(src, dst) for (src, _), dst in lifecycle.TRANSITIONS.items()}
-    assert code_pairs == spec_pairs
+    """HAT-EXEC-040/041: eleven states, four terminal endings, and exactly the 17 (from, to)
+    pairs of TRANSITIONS (a trade is never Open without an entry fill, never Closed without an
+    ExitPending); a change to the machine changes this table and its TLA model on purpose."""
+    assert len(lifecycle.STATES) == 11
+    assert set(lifecycle.STATES) == set(TRADE_STATES)
+    assert set(lifecycle.ENDINGS) == {"Cancelled", "Closed", "Expired", "Rejected"}
+    assert {(src, dst) for (src, _), dst in lifecycle.TRANSITIONS.items()} == TRANSITIONS
 
 
 APP = REPO_ROOT / "backend" / "app" / "hat"
@@ -105,7 +102,7 @@ def _state_writes(tree: ast.AST) -> list[int]:
 
 
 def test_journal_only_writers() -> None:
-    """HAT-EXEC-042 (PR 36, architecture audit F1): no module of `app/hat` but the trade journal
+    """HAT-EXEC-042 (PR 36): no module of `app/hat` but the trade journal
     (`engine/journal.py`) writes `.state`, so every state change passes the journal's check of
     the step against the table before its event is written. A row is created at its first
     state; `self.state` is a class's own field (`LifecycleStateError`)."""

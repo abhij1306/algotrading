@@ -62,7 +62,7 @@ D = Decimal
 EX_DAY = TRADE_DAY + timedelta(days=1)  # Thursday: the ex-date after an entry on Wednesday
 MORNING = datetime.combine(EX_DAY, time(8, 40), tzinfo=IST)
 OPEN = datetime.combine(EX_DAY, time(9, 16), tzinfo=IST)
-# Split a -> b gives b / a; a bonus of x for y held gives y / (x + y) (02 §5, HAT-DATA-055).
+# Split a -> b gives b / a; a bonus of x for y held gives y / (x + y) (HAT-DATA-055).
 RATIOS = st.sampled_from(
     [
         (TYPE_SPLIT, Fraction(1, 2)),

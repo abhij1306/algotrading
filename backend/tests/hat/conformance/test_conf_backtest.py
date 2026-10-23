@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 import hat_backtest_support as s
-from hat_conf_repo import APP_ROOT, REPO_ROOT, imports_of
+from hat_conf_repo import APP_ROOT, imports_of
 
 from app.hat.backtest import runs
 from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_sharpe
@@ -93,7 +93,7 @@ def test_backtest_shares_engine_imports() -> None:
 def test_backtest_run_columns() -> None:
     """`hat_backtest_run` stores the pinned versions, period, data snapshot, status, metrics and
     the non-null family key; a run's trades go to `backtests/run_id=<id>/trades.parquet` with
-    the trade columns of 09 §3 (HAT-BT-032)."""
+    the trade columns (HAT-BT-032)."""
     columns = HatBacktestRun.__table__.columns
     for name in (
         "strategy_version_id",
@@ -212,12 +212,9 @@ def test_dsr_scored_only_by_runs() -> None:
 
 
 def test_known_gaps_listed() -> None:
-    """Spec 09 §7's gap table lists exactly `KNOWN_GAPS`, in order, and the golden runs report
-    that list (HAT-BT-070)."""
-    spec = (REPO_ROOT / "docs" / "specs" / "hat" / "09-backtest.md").read_text(encoding="utf-8")
-    section = spec[spec.index("#### HAT-BT-070") :]
-    codes = re.findall(r"^\| `([a-z_]+)` \|", section, re.MULTILINE)
-    assert tuple(codes) == KNOWN_GAPS
+    """The golden runs report exactly `KNOWN_GAPS`, the behaviours the backtest does not model
+    (HAT-BT-070)."""
+    assert KNOWN_GAPS
     golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
     assert all(seed["metrics"]["known_gaps"] == list(KNOWN_GAPS) for seed in golden.values())
 

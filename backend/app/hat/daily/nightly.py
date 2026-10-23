@@ -1,4 +1,4 @@
-"""The nightly and housekeeping job bodies of the daily cycle (10-ops §3, PR 17).
+"""The nightly and housekeeping job bodies of the daily cycle (PR 17).
 
 Each body is the PR's job logic called with its real inputs: the ingest polls the NSE MCP from
 18:00 and falls back to the bhavcopy at 22:00 (PR 7), then `quality.gate` → `ca.adjust` →
@@ -465,7 +465,7 @@ def _without(inputs: ScanInputs, excluded: set[str]) -> ScanInputs:
 
 
 def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
-    """The nightly pipeline and the housekeeping jobs at their 10-ops §3 times (IST)."""
+    """The nightly pipeline and the housekeeping jobs at their times (IST)."""
     n = Nightly(deps)
     chain = (
         (JOB_QUALITY, n.quality_gate),

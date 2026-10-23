@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 from hat_conf_repo import APP_ROOT, build_graph, reaches, repo_files
-from hat_conf_spec import REPO_ROOT, SPEC_DIR
+from hat_conf_spec import REPO_ROOT
 from sqlalchemy import Engine, create_engine, event, select
 from sqlalchemy.pool import StaticPool
 
@@ -138,7 +138,7 @@ def _dotted(node: ast.expr) -> str | None:
 
 
 def test_no_private_imports() -> None:
-    """CONF no_private_imports (07 §4; PR 75a, architecture audit F2): no module under `app/hat`
+    """CONF no_private_imports (PR 75a): no module under `app/hat`
     imports an underscore name from another HAT module or reads one off a HAT module it imported.
     A module's interface is its public names. Harm: `live_trades` imported seven private helpers
     of the shadow engine, so a refactor of shadow trading could change real-position accounting
@@ -191,7 +191,6 @@ def test_hat_package_in_backend() -> None:
         "backend/app/hat/",
         "backend/tests/hat/",
         "verification/",
-        "docs/specs/hat/",
         ".claude/skills/verify-",
     )
     stray = []
@@ -318,23 +317,19 @@ def test_seed_market_nse() -> None:
     assert (nse.session_open.isoformat(), nse.session_close.isoformat()) == ("09:15:00", "15:30:00")
 
 
-def _secret_variables() -> list[str]:
-    text = (SPEC_DIR / "10-ops.md").read_text(encoding="utf-8")
-    table = text[text.index("`HAT_TELEGRAM_TOKEN`") - 200 : text.index("#### HAT-OPS-050")]
-    return re.findall(r"^\| `(HAT_[A-Z_]+)`", table, re.MULTILINE)
+SECRET_VARIABLES = [
+    "HAT_TELEGRAM_TOKEN",
+    "HAT_TELEGRAM_CHAT_ID",
+    "HAT_APPROVAL_SECRET",
+    "HAT_MCP_BHAVCOPY_URL",
+    "HAT_MCP_CMMARKET_URL",
+]
 
 
 def test_ops_no_secrets_in_repo() -> None:
     """HAT-OPS-050 / DEC-T13: no file holds a value for a HAT variable and .env.example lists
     each of them with an empty value."""
-    names = _secret_variables()
-    assert set(names) >= {
-        "HAT_TELEGRAM_TOKEN",
-        "HAT_TELEGRAM_CHAT_ID",
-        "HAT_APPROVAL_SECRET",
-        "HAT_MCP_BHAVCOPY_URL",
-        "HAT_MCP_CMMARKET_URL",
-    }
+    names = SECRET_VARIABLES
     assign = re.compile(r"\b(" + "|".join(names) + r")[ \t]*[=:][ \t]*[\"']?([^\s\"'#]+)")
     offenders = []
     for path in repo_files():
@@ -343,8 +338,8 @@ def test_ops_no_secrets_in_repo() -> None:
         ):
             continue
         rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel.startswith("docs/specs/hat/") or rel.startswith("backend/tests/hat/conformance/"):
-            continue  # the spec and this check name the variables without values
+        if rel.startswith("backend/tests/hat/conformance/"):
+            continue  # this check names the variables without values
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:

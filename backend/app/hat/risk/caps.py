@@ -1,4 +1,4 @@
-"""Caps and invariants as pure predicates (06 §3, §5, §7; HAT-RISK-030..036, 050, 070..076).
+"""Caps and invariants as pure predicates (HAT-RISK-030..036, 050, 070..076).
 
 Each predicate answers one question about a new entry and holds no state. A cap can only reject
 an entry; it never applies to an exit (the exit path in `decision.py` does not call any of

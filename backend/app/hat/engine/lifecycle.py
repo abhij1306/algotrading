@@ -1,4 +1,4 @@
-"""The trade lifecycle as a pure state machine (07 §4, HAT-EXEC-040..044; D18, Q16).
+"""The trade lifecycle as a pure state machine (HAT-EXEC-040..044; D18, Q16).
 
 Eleven states, four of them endings. A trade moves only along `TRANSITIONS`, one row per line of
 the spec's table, and its state is the fold of its events over that table: the state stored on
@@ -64,7 +64,7 @@ ACTIVE_STATES = (
 ENDINGS = (CLOSED, REJECTED, EXPIRED, CANCELLED)
 STATES = (*ACTIVE_STATES, *ENDINGS)
 INITIAL_STATE = WATCHLISTED
-# The states that hold one of a bot's position slots (the per-bot caps count them, 06 §3).
+# The states that hold one of a bot's position slots (the per-bot caps count them).
 HOLDING_STATES = (ENTRY_PLACED, OPEN, PARTIALLY_EXITED, EXIT_PENDING)
 # The states a `hat_position` row takes (HAT-SCH-059).
 POSITION_STATES = (OPEN, PARTIALLY_EXITED, EXIT_PENDING, CLOSED)
@@ -100,7 +100,7 @@ TRANSITIONS: dict[tuple[str, str], str] = {
 _EXIT_PURPOSES = frozenset({"exit_partial", "exit_full", "flatten"})
 # The payload flag of the `order.filled` that stands for the "(exit order placed)" step when no
 # HAT exit order was placed: the first fill of a broker stop (the stop triggered), or a fill
-# that empties a position some other way (07 §4, "full exit rule fires or stop triggers").
+# that empties a position some other way ("full exit rule fires or stop triggers").
 EXIT_TRIGGERED = "exit_triggered"
 # The payload flag of a broker fact the table had no row for when it was recorded (a retried
 # sale's `order.placed` while the trade is already ExitPending): kept in the log, never a step

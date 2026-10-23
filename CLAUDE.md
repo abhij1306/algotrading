@@ -37,7 +37,7 @@ configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`
    database that is not PostgreSQL, a proxy variable that would carry Fyers traffic
    (`fyers_proxy_set`) and a bad Telegram configuration, reconciles every broker
    account before anything is placed, then starts the scheduler with the daily cycle
-   (`daily_jobs`, the 10-ops §3 job table), the live feed (`app/hat/data/feed.py`, the one Fyers
+   (`daily_jobs`, the job table), the live feed (`app/hat/data/feed.py`, the one Fyers
    data socket, built in `main.py`), the periodic loop (session watch, fill sync, approval expiry,
    reconciliation, live exits, announcements) and the Telegram poller and relay.
 
@@ -61,18 +61,21 @@ engine, each even if the other failed.
 
 ---
 
-## Specs and Repo Rules
+## Docs and Repo Rules
 
-- **The specs are the source of truth** for `backend/app/hat/`: `docs/specs/hat/README.md`. Where
-  repo code and the specs conflict, the specs win. Every HAT PR names the requirement IDs it
-  implements. A change to HAT behaviour changes the spec first, in the same PR.
+- **Code is the source of truth; docs are a guide, not something maintained one-to-one with the
+  code. Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to
+  date -- architecture, invariants, CLAUDE.md, decisions -- and they stay compact.** The canonical
+  docs: `docs/architecture.md` (module map, data flow, seams), `docs/invariants.md` (the
+  money-safety and trading rules, plus the index of `HAT-*` IDs that code, tests and skills cite),
+  `docs/decisions.md` (decisions in force), `docs/runbook.md` (operator procedures).
 - **Verification, not unit tests.** HAT code is proved with TLA+ models (`verification/tla/`),
   Hypothesis properties (`backend/tests/hat/properties/`), Postgres checks
-  (`backend/tests/hat/db/`) and CONF checks (`backend/tests/hat/conformance/`), as
-  `docs/specs/hat/11-verification.md` describes. Do not write example-based unit tests for HAT
-  code; show each new check failing on a deliberate break. The `verify-*` skills in
-  `.claude/skills/` say how to run, read and update each area, and record a digest of the files
-  they cover: after changing a covered file, re-confirm the area and refresh the digest with
+  (`backend/tests/hat/db/`) and CONF checks (`backend/tests/hat/conformance/`). Do not write
+  example-based unit tests for HAT code; show each new check failing on a deliberate break. A new
+  check or ID gets one line in `docs/invariants.md`. The `verify-*` skills in `.claude/skills/` say
+  how to run, read and update each area, and record a digest of the files they cover: after
+  changing a covered file, re-confirm the area and refresh the digest with
   `python backend/tests/hat/conformance/hat_conf_skills.py <skill>`.
 - **Trading safety.** Read `.claude/skills/trading-safety/SKILL.md` before touching orders, risk,
   positions, brokers or execution. Never call real Fyers, NSE or Telegram endpoints from tests.
@@ -175,17 +178,17 @@ an `aiohttp` that does not build on Python 3.14.
 
 ## Contribution Workflow
 
-1. Plan changes, starting from the spec.
+1. Read the invariants and decisions that touch your change.
 2. Implement with checks (properties, models, DB and CONF checks).
 3. Run the quality checks above.
-4. Update `docs/specs/hat/` for any HAT behaviour or interface change.
+4. Update the canonical docs only where architecture, an invariant or a decision changed; delete
+   any plan or spec the change finishes.
 5. Submit.
 
 ---
 
 ## Agent Workflow
 
-The HAT MVP is built by an orchestrator agent and up to two builder agents in herdr tabs. On a new
-machine: run `claude --permission-mode auto` inside herdr, then `/hat-orchestrator`. Orchestrator guide:
-`docs/agents/orchestrator.md`. Builder rules: `docs/agents/builder-protocol.md`. Roadmap and
-status: `docs/agents/plan.md`.
+The HAT build is run by an orchestrator agent and up to two builder agents in herdr tabs. On a new
+machine: run `claude --permission-mode auto` inside herdr, then `/hat-orchestrator`. Orchestrator
+guide: `docs/agents/orchestrator.md`. Builder rules: `docs/agents/builder-protocol.md`.

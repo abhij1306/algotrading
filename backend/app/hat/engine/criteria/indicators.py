@@ -1,4 +1,4 @@
-"""Exact window arithmetic shared by the daily criteria (02 §7 definitions on adjusted bars).
+"""Exact window arithmetic shared by the daily criteria (definitions on adjusted bars).
 
 A window is the last `n` values of a series and is usable only when it is full and has no null,
 as for the feature columns. Sums are `Decimal` over `dec(value)`, so every comparison is exact.

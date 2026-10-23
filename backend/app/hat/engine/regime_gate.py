@@ -1,5 +1,5 @@
 """The strategy regime gate: one binary rule per bot over an index close series (HAT-BOT-053,
-HAT-RISK-050, 04 §1 stage 2).
+HAT-RISK-050, stage 2).
 
 Pure and exact: closes are Decimals, the SMA comparisons are made on sums (no division), and a
 series too short for the rule's lookback gives False (fail closed: no entries without evidence).

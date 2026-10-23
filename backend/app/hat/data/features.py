@@ -1,6 +1,6 @@
 """Daily features on adjusted bars, computed with polars (HAT-DATA-070..078, HAT-DEC-T11).
 
-    features_daily/date=YYYY-MM-DD/part-features.parquet   one row per instrument (02 §7)
+    features_daily/date=YYYY-MM-DD/part-features.parquet   one row per instrument
     breadth_daily/date=YYYY-MM-DD/part-breadth.parquet     one row per day (HAT-DATA-076)
 
 `compute_features` is a pure function of a bar frame. Every feature of date d is a function of the
@@ -177,7 +177,7 @@ def compute_features(
     `bars` has the `BAR_COLUMNS` (instrument_id as text, date, doubles; `traded_value` null where
     unknown). `universe` is the instruments the percentile columns and breadth rank and count
     (default: every instrument with a bar); other instruments get null `rs_pct` and `mom_rank`.
-    `features` has `date`, `instrument_id` and the 17 §7 feature columns; `breadth` has `date`
+    `features` has `date`, `instrument_id` and the 17 feature columns; `breadth` has `date`
     and the `BREADTH_SCHEMA` columns. The first rows of an instrument have null windows, so the
     caller passes the lookback rows and `from_date`. `batch` computes the per-instrument columns
     that many instruments at a time to bound memory; it changes no value.

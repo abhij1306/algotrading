@@ -1,7 +1,7 @@
 ------------------------------ MODULE DailyCycle ------------------------------
 (***************************************************************************)
-(* The order of one trade date's jobs as the scheduler starts them (10 §3, *)
-(* 05 §5): the intraday sequence (HAT-OPS-023) and the nightly regime ->   *)
+(* The order of one trade date's jobs as the scheduler starts them:   *)
+(* the intraday sequence (HAT-OPS-023) and the nightly regime ->   *)
 (* allocate step (HAT-PORT-053). A job starts only on its date, at or      *)
 (* after its time, before the end of its window, and only once every job   *)
 (* it is registered `after` has succeeded for the same trade date          *)
@@ -191,7 +191,7 @@ TypeOK ==
     /\ posQty \in 0..1
     /\ weight \in {"old", "new"}
 
-\* The intraday jobs start in the order of 10 §3 (login prompt, live preparation, pre-open gap
+\* The intraday jobs start in the order (login prompt, live preparation, pre-open gap
 \* capture, gap scan, the 09:20 gate refresh, MA exits, GTT swap, session end, reports); no
 \* exits.close run starts once gtt.swap has; every entry order is placed inside 09:20-15:20,
 \* after today's gate refresh and with a live broker session.

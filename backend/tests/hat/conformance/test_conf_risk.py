@@ -1,9 +1,10 @@
 """CONF checks of the risk policy and the single risk authority (HAT-RISK-010/011/052/100/103,
-HAT-DEC-B14, HAT-BOT-072). The expected fields and seed values are read from the 06 §1 table in
-the spec markdown, not restated here."""
+HAT-DEC-B14, HAT-BOT-072). The seed values are the owner's numbers, pinned here and in
+docs/decisions.md; a change to either is a deliberate, reviewed one."""
 
 import ast
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 import pytest
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT
-from hat_conf_spec import REPO_ROOT, SPEC_DIR
+from hat_conf_spec import REPO_ROOT
 from sqlalchemy.orm import Session
 
 from app.hat.risk.policy import (
@@ -25,51 +26,55 @@ from app.hat.risk.policy import (
     seed_policy,
 )
 
-MEANING: dict[str, str] = {}
-SPEC_06 = (SPEC_DIR / "06-risk-and-governance.md").read_text(encoding="utf-8")
+OWNER_SEED = json.loads(
+    """
+{
+    "risk_pct": "0.0025",
+    "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},
+    "adv_cap_pct": "0.01",
+    "global_open_risk_pct": "0.015",
+    "max_open_positions": 6,
+    "max_positions_per_industry": 2,
+    "max_entries_per_day": 3,
+    "max_stopouts_per_day": 3,
+    "cooldown_sessions": 0,
+    "exposure_ladder": {
+        "L1": {"max_positions": 2, "risk_mult": "0.5"},
+        "L2": {"max_positions": 4, "risk_mult": "1.0"},
+        "L3": {"max_positions": 6, "risk_mult": "1.0"},
+        "up_after_wins": 2,
+        "down_after_losses": 2
+    },
+    "kill": {"account_drawdown_pct": "0.10", "bot_drawdown_pct": "0.10"},
+    "base_weight": {"S1": "0.50", "S2": "0.50"},
+    "cluster_cap": "1.00",
+    "multiplier_bounds": {"lo": "0.25", "hi": "1.0"},
+    "health_bands": {"half_dd": "0.08", "zero_dd": "0.10", "full_mult": "1.0", "half_mult": "0.5"},
+    "weights_confirmed": true
+}
+"""
+)
 BACKEND = REPO_ROOT / "backend"
 
 
-def _section1_rows() -> dict[str, str]:
-    """Field cell (backticks stripped, split on `, `) -> seed cell, from the §1 table."""
-    block = SPEC_06[SPEC_06.index("## §1") : SPEC_06.index("#### HAT-RISK-010")]
-    rows = {}
-    for line in block.splitlines():
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) >= 3 and cells[0].startswith("`"):
-            rows[cells[0]] = cells[2]
-            MEANING[cells[0]] = cells[1]
-    return rows
-
-
 def _spec_paths() -> list[str]:
-    """Every dotted field path named in the first column of the §1 table."""
+    """Every dotted field path of the policy document (the seed shows the nesting)."""
     paths = []
-    for cell in _section1_rows():
-        paths.extend(re.findall(r"`([\w.\-]+)`", cell))
+    for key, value in OWNER_SEED.items():
+        paths.append(key)
+        if isinstance(value, dict):
+            paths.extend(f"{key}.{inner}" for inner in value)
     return paths
 
 
-def _number(cell: str) -> Decimal:
-    return Decimal(re.match(r"\s*([0-9.]+)", cell).group(1))  # type: ignore[union-attr]
-
-
 def test_risk__policy_schema_fields() -> None:
-    """HAT-RISK-010: the policy document's fields are exactly the §1 table's, and a document with
+    """HAT-RISK-010: the policy document's fields are exactly the seed's, and a document with
     an extra or a missing field is refused, except an optional one (`weights_confirmed`), which
     reads as its fail-closed default."""
-    spec_top = {path.split(".")[0] for path in _spec_paths()}
+    spec_top = set(OWNER_SEED)
     assert spec_top == set(POLICY_FIELDS)
     doc = seed_policy().to_json()
     assert set(doc) == spec_top
-    nested = {}
-    for path in _spec_paths():
-        head, _, tail = path.partition(".")
-        if tail:
-            nested.setdefault(head, set()).add(tail)
-    assert set(doc["p_max"]) == nested["p_max"]
-    assert set(doc["kill"]) == nested["kill"]
-    assert set(doc["base_weight"]) == nested["base_weight"]
     extra = {**doc, "extra": 1}
     with pytest.raises(PolicyError):
         parse_policy(extra)
@@ -97,70 +102,14 @@ def test_risk__no_risk_keys_in_strategy_schema() -> None:
 
 
 def test_risk__initial_seed_equals_spec() -> None:
-    """HAT-RISK-011: the seeded policy equals the §1 seed column field by field."""
-    rows = _section1_rows()
+    """HAT-RISK-011: the seeded policy is the owner's seed, field by field."""
     doc = seed_policy().to_json()
-
-    def row(field: str) -> str:
-        return next(v for k, v in rows.items() if f"`{field}`" in k)
-
-    assert Decimal(doc["risk_pct"]) == _number(row("risk_pct")) == Decimal("0.0025")
-    for key in doc["p_max"]:
-        assert Decimal(doc["p_max"][key]) == _number(row(f"p_max.{key}"))
-    for name in ("adv_cap_pct", "global_open_risk_pct", "cluster_cap"):
-        assert Decimal(doc[name]) == _number(row(name)), name
-    for name in (
-        "max_open_positions",
-        "max_positions_per_industry",
-        "max_entries_per_day",
-        "max_stopouts_per_day",
-        "cooldown_sessions",
-    ):
-        assert doc[name] == int(_number(row(name))), name
-    assert Decimal(doc["kill"]["account_drawdown_pct"]) == _number(row("kill.account_drawdown_pct"))
-    assert Decimal(doc["kill"]["bot_drawdown_pct"]) == _number(row("kill.bot_drawdown_pct"))
-    assert doc["weights_confirmed"] is True  # 0.50/0.50 and 1.00 confirmed (plan audit §6 item 9)
-    assert row("weights_confirmed").split("|")[0].strip().startswith("true")
-    weights = re.findall(r"[0-9.]+", row("base_weight.S1"))[:2]
-    assert [Decimal(doc["base_weight"][k]) for k in ("S1", "S2")] == [Decimal(w) for w in weights]
-    low, high = re.findall(r"[0-9.]+", row("multiplier_bounds"))[:2]
-    assert (Decimal(doc["multiplier_bounds"]["lo"]), Decimal(doc["multiplier_bounds"]["hi"])) == (
-        Decimal(low),
-        Decimal(high),
-    )
-    row("exposure_ladder")
-    ladder = next(v for k, v in MEANING.items() if "`exposure_ladder`" in k)
-    levels = re.findall(r"L(\d) (\d+) pos / ([0-9.]+)x", ladder)
-    assert [(f"L{n}", int(p), Decimal(m)) for n, p, m in levels] == [
-        (
-            k,
-            doc["exposure_ladder"][k]["max_positions"],
-            Decimal(doc["exposure_ladder"][k]["risk_mult"]),
-        )
-        for k in ("L1", "L2", "L3")
-    ]
-    up, down = re.findall(r"(?:up|down) after (\d+)", ladder)
-    assert (
-        doc["exposure_ladder"]["up_after_wins"],
-        doc["exposure_ladder"]["down_after_losses"],
-    ) == (
-        int(up),
-        int(down),
-    )
-    section5 = SPEC_06[SPEC_06.index("## §4") : SPEC_06.index("## §5")]
-    assert "L1" in section5
-    assert "L3" in section5
-    health = doc["health_bands"]
-    assert (Decimal(health["half_dd"]), Decimal(health["zero_dd"])) == (
-        Decimal("0.08"),
-        Decimal("0.10"),
-    )  # "8% / 10% -> 1.0 / 0.5 / 0" (§1, health_bands; Probation band 10%, D128)
-    assert (Decimal(health["full_mult"]), Decimal(health["half_mult"])) == (1, Decimal("0.5"))
+    assert doc == OWNER_SEED
     assert parse_policy(doc) == seed_policy()
 
 
 def test_initial_risk_policy_seed() -> None:
-    """HAT-DEC-B14: seeding writes version 1, direction initial, effective at once, with the §1
+    """HAT-DEC-B14: seeding writes version 1, direction initial, effective at once, with the seed
     policy and both governance events, and seeding again changes nothing."""
     from hat_support import memory_engine
     from sqlalchemy import select

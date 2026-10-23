@@ -1,5 +1,5 @@
 """Mode changes: queued outside market hours for the next session open, settled at that open
-(HAT-GOV-084, HAT-GOV-085, HAT-SCH-086; 06 §8). The only code that writes a bot's mode; no API
+(HAT-GOV-084, HAT-GOV-085, HAT-SCH-086). The only code that writes a bot's mode; no API
 route reaches it (CONF `auto_mode_single_user`). The reads are `modes.py`."""
 
 from __future__ import annotations

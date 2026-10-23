@@ -1,5 +1,5 @@
 """PBT policy.* (HAT-RISK-011, D128): the startup upkeep that moves a user still on the
-withdrawn PR 10 seed to the 06 §1 seed, on SQLite through `ensure_hat_policies`."""
+withdrawn PR 10 seed to seed, on SQLite through `ensure_hat_policies`."""
 
 import uuid
 from datetime import datetime, timedelta
@@ -84,7 +84,7 @@ def _rows(session: Session) -> list[tuple]:
 @example(states=["old_with_pending"], runs=1)
 def test_seed_supersedes_old_initial(states: list[str], runs: int) -> None:
     """HAT-RISK-011 (PR 46, D128): for each user whose policy in force is the PR 10 seed, with
-    `weights_confirmed` false or absent and nothing pending, startup writes the §1 seed as the
+    `weights_confirmed` false or absent and nothing pending, startup writes the current seed as the
     next version, `initial` and effective at once, supersedes the old one at that instant and
     records `risk.change_requested` and `risk.change_effective`; the new seed is nowhere more
     permissive than the old. Any other policy, a pending change, no policy and every later run

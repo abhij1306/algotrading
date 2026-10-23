@@ -1,4 +1,4 @@
-"""DB checks for the governance rules the database enforces (03-schema §8)."""
+"""DB checks for the governance rules the database enforces."""
 
 import hat_db_rules as rules
 import pytest

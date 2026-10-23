@@ -27,7 +27,7 @@ from .sessions import SessionCalendar
 
 # A limit entry further than this percent from the last traded price is out of band. It is the
 # value the legacy risk manager used (`max_price_deviation_pct`); it is a constant, not a policy
-# field, because the policy document's fields are fixed by 06 §1 (HAT-RISK-010).
+# field, because the policy document's fields are fixed by (HAT-RISK-010).
 MAX_PRICE_DEVIATION_PCT = Decimal(20)
 _PRECISION = 120  # wide enough that no product of a plausible input is rounded
 

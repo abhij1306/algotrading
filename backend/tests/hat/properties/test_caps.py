@@ -688,7 +688,7 @@ def test_fail_closed_naive_time_and_no_policy() -> None:
 # --- HAT-GOV-090/093: increase or decrease ---
 
 # field path -> (a more permissive value, a more restrictive value), written out literally from the
-# 06 §1 table; a higher number is more permissive except for `up_after_wins`.
+# table; a higher number is more permissive except for `up_after_wins`.
 PATHS = {
     ("risk_pct",): ("0.003", "0.002"),
     ("p_max", S1): ("0.25", "0.15"),

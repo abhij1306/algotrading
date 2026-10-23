@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 from fastapi import APIRouter
 from hat_conf_repo import APP_ROOT, build_graph, reaches
-from hat_conf_spec import SPEC_DIR
 from hat_risk_support import CALENDAR
 from hat_telegram_support import BOT, CHAT, OWNER, TRADE_DAY, TgRig, button_update, ist, text_update
 from pydantic import BaseModel
@@ -55,15 +54,18 @@ RISK_WORDS = re.compile(
 )
 
 
-def _spec_commands() -> set[str]:
-    """The first-column commands of the 08 §3 table."""
-    text = (SPEC_DIR / "08-telegram.md").read_text(encoding="utf-8")
-    section = text[text.index("## §3 Commands") : text.index("#### HAT-TG-030")]
-    found = set()
-    for line in section.splitlines():
-        if line.startswith("| `"):
-            found.update(re.findall(r"`(/\w+)", line.split("|")[1]))
-    return found
+COMMAND_SET = {
+    "/arm",
+    "/flatten",
+    "/kill",
+    "/login",
+    "/mode",
+    "/pause",
+    "/positions",
+    "/resume",
+    "/status",
+    "/watchlist",
+}
 
 
 def _sources(root: Path) -> list[Path]:
@@ -137,9 +139,9 @@ def _field_names(model: type[BaseModel], seen: set[type] | None = None) -> set[s
 
 
 def test_telegram_command_set() -> None:
-    """HAT-DEC-I11: the accepted commands are exactly the 08 §3 list (the parser is shown to
-    refuse a command the spec does not name)."""
-    assert set(commands.COMMANDS) == _spec_commands()
+    """HAT-DEC-I11: the accepted commands are exactly COMMAND_SET (the parser is shown to
+    refuse any other)."""
+    assert set(commands.COMMANDS) == COMMAND_SET
     assert len(commands.COMMANDS) == 10
     for command in commands.COMMANDS:
         assert commands.parse(command if command != "/mode" else "/mode trend shadow") is not None
