@@ -205,7 +205,7 @@ to an artefact that exists.
 | HAT-DATA-074 | [02](02-data.md) | 6 | PBT `features.rs_pct` |
 | HAT-DATA-075 | [02](02-data.md) | 6 | PBT `features.mom_rank` |
 | HAT-DATA-076 | [02](02-data.md) | 6 | PBT `features.breadth` |
-| HAT-DATA-077 | [02](02-data.md) | 6 | PBT `features.incremental_equals_full` |
+| HAT-DATA-077 | [02](02-data.md) | 6, 67 | PBT `features.incremental_equals_full`, PBT `backtest.features_digest_pinned` |
 | HAT-DATA-078 | [02](02-data.md) | 6 | CONF `imports.hat_polars_only` |
 | HAT-DATA-080 | [02](02-data.md) | 5, 43 | CONF `store.data_root`, CONF `store.cli_root_after_env`, PBT `history_build.cli_root_and_report`, PBT `minute_history_cli.root_and_report` |
 | HAT-DATA-081 | [02](02-data.md) | 5, 6, 12, 14 | CONF `store.layout` |
@@ -523,8 +523,8 @@ to an artefact that exists.
 | HAT-TG-044 | [08](08-telegram.md) | 16 | PBT `telegram.token_never_persisted` |
 | HAT-TG-045 | [08](08-telegram.md) | 15 | TLA `ExecutionRouter!SkipBecomesShadow` |
 | HAT-TG-050 | [08](08-telegram.md) | 3 | PBT `telegram.retention_purge` |
-| HAT-BT-010 | [09](09-backtest.md) | 11, 12 | CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity` |
-| HAT-BT-011 | [09](09-backtest.md) | 12 | PBT `backtest.no_lookahead` |
+| HAT-BT-010 | [09](09-backtest.md) | 11, 12, 67 | CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity`, PBT `backtest.nightly_scan_parity` |
+| HAT-BT-011 | [09](09-backtest.md) | 12, 67 | PBT `backtest.no_lookahead`, PBT `backtest.nightly_no_lookahead` |
 | HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time` |
 | HAT-BT-013 | [09](09-backtest.md) | 12 | PBT `backtest.version_pinned` |
 | HAT-BT-020 | [09](09-backtest.md) | 12, 60, 62, 63, 64 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide` |

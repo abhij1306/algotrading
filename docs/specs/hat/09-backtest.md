@@ -9,20 +9,22 @@ One engine runs backtest and live (T12). Backtests are the first stage of every 
 #### HAT-BT-010: Backtest calls the same scan, risk and exit code as live
 - **Statement:** The backtest day loop calls the same universe/setup scan, `evaluate_signal` sizing and caps, stop rules and exit-stack functions that live trading calls; it has no copies of them.
 - **Source:** MA "Decisions register" (T12 one engine for backtest and live); MA "Boundary rules" (criteria library keeps backtest and live on one code path); PLAN PR 12.
-- **PR:** 11, 12
-- **Verification:** CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity`
+- **PR:** 11, 12, 67
+- **Verification:** CONF `backtest_shares_engine_imports`, PBT `backtest.scan_parity`, PBT `backtest.nightly_scan_parity`
 - **Acceptance:**
   - Property: for every generated feature frame and trade date, the watchlist produced by the backtest loop equals the watchlist produced by the live nightly scan for the same bot version, universe version and date. Harm: backtest evidence describes a strategy that never runs live.
   - Property: the import graph of `app/hat/engine/backtest` reaches scan, sizing and exit logic only through the same functions the live path imports. Harm: a fix applied to one path silently diverges from the other.
+  - Property (PR 67): for every generated market held as the nightly ingest stores it (raw bars in the Parquet store, a split of one instrument ex-dated on or before the next session and stored on any night from the one before its ex-date through d), the watchlist the nightly job publishes on night d (`Nightly.features`, then `Nightly.scan`, over the store as it stood that night) equals the watchlist the backtest loop publishes for the next session, run later from the store (`load_market`) after the later sessions and their features. Harm: the backtest scans inputs the nightly job never reads (another window, unadjusted prices, other features), so its evidence describes a strategy that never runs live.
 - **Design (PR 12):** the loop drives the live functions (`watchlist.scan_and_publish`, `trades.open_entry`, `trades.evaluate_position`, `trades.close_position`, `trades.expire_watchlist`, `stops.plan_stop`, `stops.check_width`) on a private ledger: an in-memory SQLite database with the shadow engine's schema, holding the run's one bot, its pinned version, its point-in-time universe and the virtual signals, orders, fills, positions and trade results. The ledger never touches the HAT database and nothing in it reaches a broker. Each simulated date d runs, in order: the nightly scan of d's previous session published as d's watchlist; the nightly and live exit rules of each open position along d's path (§2); the entries; the 15:25 close rules at the official close; the delisting closes (HAT-BT-012); the session-end watchlist expiry. The exposure ladder is simulated with each backtest trade counted as a real one; kill switches are not (their re-arm is manual), and a sleeve's allocation is the policy's risk per trade with regime and health multipliers of 1. These gaps are listed in every run's `metrics.known_gaps` (§7).
 
 #### HAT-BT-011: No look-ahead
 - **Statement:** Every decision the backtest makes for trade date d uses only bars, features, corporate actions, universe membership and regime state dated <= d (with intraday triggers on d using only d's own prices up to the trigger).
 - **Source:** BL "Stock universes" (point-in-time); BL "Regime model v2" (features known at close t, used from t+1); DS "Historical data build"; T12.
-- **PR:** 12
-- **Verification:** PBT `backtest.no_lookahead`
+- **PR:** 12, 67
+- **Verification:** PBT `backtest.no_lookahead`, PBT `backtest.nightly_no_lookahead`
 - **Acceptance:**
   - Property: for every generated market history and every date d, mutating any data dated after d leaves all of the backtest's decisions (watchlists, signals, fills, exits) on or before d unchanged. Harm: the backtest uses information the market did not have, and every sleeve looks better than it is.
+  - Property (PR 67): a truncation replay of the nightly job: for every generated market, night d and instrument, replaying night d's features and scan on a store that already holds the later sessions (another future for that instrument, other index closes, the later nights' features) publishes the same watchlist (levels, score, ADTR and criteria results) as night d did on the store cut at d. Harm: the nightly path, which the backtest shares (HAT-BT-010), reads a later bar, index close or feature partition, so a replayed signal is not one the market could have produced that night.
 - **Design (PR 12):** d's watchlist is the nightly scan of d's previous session, run on the bars, features and index closes dated on or before that session; the scan's window holds 700 sessions, more than the 652 the longest criterion reads, so it equals a scan of the full history.
 
 #### HAT-BT-012: Survivorship-free, adjusted data

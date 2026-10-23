@@ -22,6 +22,7 @@ import pytest
 from hat_support import memory_engine
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
+from polars.testing import assert_frame_equal
 from sqlalchemy.orm import Session
 
 from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
@@ -42,6 +43,8 @@ from app.hat.backtest.fills import (
 from app.hat.backtest.market import load_market
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.confighash import config_hash
+from app.hat.data.corporate_actions import stored_factors
+from app.hat.data.features import STATE_FILE, inputs_digest, run_features
 from app.hat.data.store import (
     DATASET_FEATURES,
     DATASET_SCHEMAS,
@@ -93,6 +96,7 @@ RUNS = settings(
 CLOSE_EXITS = {"close_below_sma", "time_stop", "partial_after_days", "trailing_swing_low"}
 PRICE = st.integers(100, 100_000).map(lambda n: D(n) / 100)  # 1.00 .. 1000.00 on the paise grid
 DAYS = s.sessions(SESSIONS)
+SPLITS = st.sampled_from(["0.5", "0.25"])
 
 
 def _run(data: MarketData, **kw: object) -> BacktestResult:
@@ -134,6 +138,65 @@ def test_scan_parity(paths: dict) -> None:
         _assert_parity(result, data, day)
 
 
+def _split_nights(night: int, raw: tuple[int, int, str]) -> tuple[int, int, D]:
+    """(ex-date session, arrival night, factor) of a split known by night `night`: ex-dated on
+    or before the next session, stored on the night before its ex-date or any later night."""
+    ex = 1 + raw[0] % (night + 1)
+    first = ex - 1
+    return ex, first + raw[1] % (night - first + 1), D(raw[2])
+
+
+@given(
+    s.paths(SESSIONS),
+    st.integers(s.WARM_UP - 1, SESSIONS - 2),
+    st.tuples(st.integers(0, SESSIONS), st.integers(0, SESSIONS), SPLITS),
+)
+@RUNS
+def test_nightly_scan_parity(paths: dict, night: int, raw: tuple[int, int, str]) -> None:
+    """The watchlist the nightly job publishes on night d (`Nightly.features`, then
+    `Nightly.scan`, over the store as it stood that night: raw bars through d, the corporate
+    actions stored by then, a split of the first instrument arriving by d and forcing a features
+    rebuild) equals the backtest
+    loop's watchlist for the next session, run later from the store (`load_market`) after the
+    later sessions and nights (G38)."""
+    cfg = s.config()
+    split = _split_nights(night, raw)
+    target = s.instrument(0)
+    splits = {target: (DAYS[split[0]], split[2])}
+    nxt = DAYS[night + 1]
+    with tempfile.TemporaryDirectory() as tmp:
+        world = s.night_world(Path(tmp), cfg, sorted(paths), DAYS)
+        for n in range(night + 1):
+            s.store_session(world.store, paths, DAYS, n, splits=splits)
+            if n == split[1] - 1:
+                world.nightly(DAYS[n]).features(DAYS[n])  # the night before the split arrives
+            if n == split[1]:
+                world.store_split(target, splits[target])
+        nightly = world.nightly(DAYS[night])
+        nightly.features(DAYS[night])
+        nightly.scan(DAYS[night])
+        published = [row[:5] for row in world.watchlist(nxt)]
+        for n in range(night + 1, SESSIONS):
+            s.store_session(world.store, paths, DAYS, n, splits=splits)
+        world.nightly(DAYS[-1]).features(DAYS[-1])
+        with world.session() as session:
+            data, _ = load_market(
+                world.store,
+                session,
+                universe_id=world.universe_id,
+                index=s.INDEX,
+                start=DAYS[s.WARM_UP],
+                end=DAYS[-1],
+            )
+    result = run_backtest(s.spec(cfg, data.days), data)
+    ran = sorted(
+        (w.playbook, w.instrument_id, w.score, w.pivot, w.planned_stop)
+        for w in result.watchlists
+        if w.trade_date == nxt
+    )
+    assert ran == published
+
+
 # --- HAT-BT-011 -------------------------------------------------------------------------------
 
 
@@ -164,6 +227,45 @@ def test_no_lookahead(base: dict, other: dict, cut: int, index: list[int]) -> No
     first = _run(s.market(base, DAYS, index=closes))
     second = _run(s.market(mutated, DAYS, index=changed))
     assert _upto(first, day) == _upto(second, day)
+
+
+@given(
+    s.paths(SESSIONS),
+    s.paths(SESSIONS),
+    st.integers(s.WARM_UP - 1, SESSIONS - 2),
+    st.integers(0, 2),
+    st.lists(st.integers(900, 1100), min_size=SESSIONS, max_size=SESSIONS),
+)
+@RUNS
+def test_nightly_no_lookahead(
+    base: dict, other: dict, night: int, pick: int, index: list[int]
+) -> None:
+    """Truncation replay of the nightly job: night d's features and scan, replayed on a store
+    that already holds the later sessions (another future for a random instrument, other index
+    closes, the later nights' features), publish the same watchlist (levels, score, ADTR and
+    criteria results) as night d did on the store cut at d (G39)."""
+    cfg = s.config()
+    symbol = sorted(base)[pick % len(base)]
+    future = next(iter(other.values()))
+    mutated = {
+        i: p[: night + 1] + future[night + 1 :] if i == symbol else p for i, p in base.items()
+    }
+    closes = [1000.0 + n for n in range(night + 1)] + [float(c) for c in index[night + 1 :]]
+    nxt = DAYS[night + 1]
+    with tempfile.TemporaryDirectory() as tmp:
+        cut = s.night_world(Path(tmp) / "cut", cfg, sorted(base), DAYS)
+        for n in range(night + 1):
+            s.store_session(cut.store, base, DAYS, n)
+        cut.nightly(DAYS[night]).features(DAYS[night])
+        cut.nightly(DAYS[night]).scan(DAYS[night])
+        later = s.night_world(Path(tmp) / "later", cfg, sorted(base), DAYS)
+        for n in range(SESSIONS):
+            s.store_session(later.store, mutated, DAYS, n, index=closes)
+        later.nightly(DAYS[-1]).features(DAYS[-1])
+        replay = later.nightly(DAYS[night])
+        replay.features(DAYS[night])
+        replay.scan(DAYS[night])
+        assert later.watchlist(nxt) == cut.watchlist(nxt)
 
 
 # --- HAT-BT-012 -------------------------------------------------------------------------------
@@ -1488,6 +1590,8 @@ def test_market_point_in_time(rows: list[tuple[str, int, bool]], end_n: int) -> 
                 [{"instrument_id": i} for i in sorted(listed)], schema=schema
             )
             store.write_partition(DATASET_FEATURES, day, "features", table)
+        state = store.root / DATASET_FEATURES / STATE_FILE
+        state.write_text(json.dumps({"inputs_digest": inputs_digest([], None)}), encoding="utf-8")
         data, _ = load_market(
             store, session, universe_id=universe, index=s.INDEX, start=start, end=end
         )
@@ -1499,3 +1603,72 @@ def test_market_point_in_time(rows: list[tuple[str, int, bool]], end_n: int) -> 
         for day in LOAD_DAYS:
             want = [name for since, name in sorted(history) if since <= day][-1]
             assert industry_on(data, iid, day) == want
+
+
+# --- HAT-DATA-077: the features the loop reads are the night's ----------------------------------
+
+
+@given(
+    s.paths(SESSIONS),
+    st.sampled_from(["none", "before", "after"]),
+    st.booleans(),
+    st.integers(1, SESSIONS - 1),
+    SPLITS,
+)
+@RUNS
+def test_features_digest_pinned(
+    paths: dict, arrival: str, ranked: bool, ex: int, factor: str
+) -> None:
+    """The backtest loads only the features the nightly job wrote for the stored corporate
+    actions over every instrument: with a split stored after the last features run, or after a
+    rebuild ranked over a narrower universe, `load_market` refuses (`backtest_features_stale`);
+    otherwise it loads, its snapshot records the job's digest, and the features it read equal a
+    full rebuild over the same bars and actions (G42)."""
+    cfg = s.config()
+    target = s.instrument(0)
+    splits = {} if arrival == "none" else {target: (DAYS[ex], D(factor))}
+    middle = SESSIONS // 2
+    with tempfile.TemporaryDirectory() as tmp:
+        world = s.night_world(Path(tmp) / "night", cfg, sorted(paths), DAYS)
+        for n in range(SESSIONS):
+            s.store_session(world.store, paths, DAYS, n, splits=splits)
+            if n == middle:
+                world.nightly(DAYS[n]).features(DAYS[n])
+        if arrival == "before":
+            world.store_split(target, splits[target])
+        world.nightly(DAYS[-1]).features(DAYS[-1])
+        if arrival == "after":
+            world.store_split(target, splits[target])
+        with world.session() as session:
+            actions = stored_factors(session)
+            if ranked:
+                run_features(world.store, actions, universe={target})
+            period = {
+                "universe_id": world.universe_id,
+                "index": s.INDEX,
+                "start": DAYS[s.WARM_UP],
+                "end": DAYS[-1],
+            }
+            if ranked or arrival == "after":
+                with pytest.raises(BacktestError) as refused:
+                    load_market(world.store, session, **period)  # type: ignore[arg-type]
+                assert refused.value.code == "backtest_features_stale"
+                return
+            data, snapshot = load_market(world.store, session, **period)  # type: ignore[arg-type]
+        fresh = DataStore(Path(tmp) / "fresh")
+        for n in range(SESSIONS):
+            s.store_session(fresh, paths, DAYS, n, splits=splits)
+        run_features(fresh, actions, full=True)
+        rebuilt = pl.concat(
+            fresh.read_partition(DATASET_FEATURES, day).with_columns(pl.lit(day).alias("date"))
+            for day in sorted({*data.features["date"].to_list()})
+        ).with_columns(pl.col("instrument_id").cast(pl.String))
+    assert snapshot["actions_digest"] == inputs_digest(actions, None)
+    key = ["date", "instrument_id"]
+    assert_frame_equal(
+        data.features.sort(key),
+        rebuilt.select(data.features.columns).sort(key),
+        check_exact=False,
+        rel_tol=1e-9,
+        abs_tol=1e-12,
+    )

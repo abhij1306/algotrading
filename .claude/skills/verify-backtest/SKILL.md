@@ -11,9 +11,12 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 
 - `CONF backtest.backtest_shares_engine_imports` The day loop imports the live engine functions (`scan_and_publish`, `open_entry`, `evaluate_position`, `close_position`, `expire_watchlist`, `plan_stop`, `check_width`), never the scan, criteria, scoring, sizing, caps or decision modules behind them, defines no function named like the live logic, and passes no other `decide` to `open_entry`; the cost and fill modules import no engine code (HAT-BT-010). Harm: a fix applied to the live path silently diverges from the backtest, and the evidence describes a strategy that never runs live.
 - `PBT backtest.scan_parity` The watchlist the loop publishes for each simulated date equals the live `scan_bot` of the previous session run directly on the same market (same rows, pivots, stops, scores within 1e-6). Harm: the backtest trades setups the live scan would not find.
+- `PBT backtest.nightly_scan_parity` The watchlist the nightly job publishes on night d (`Nightly.features`, then `Nightly.scan`, over a store holding raw bars through d and a split of the first instrument stored by d, ex-dated on or before the next session) equals the loop's watchlist for the next session, the loop run later from the store through `load_market` (same rows, levels and scores; HAT-BT-010, G38). Harm: the backtest scans inputs the nightly job never reads (another window, unadjusted prices, other features), so its evidence describes a strategy that never runs live.
 - `PBT backtest.no_lookahead` Replacing every bar and index close after a date d leaves every watchlist, signal, fill, closed trade and equity point on or before d unchanged (HAT-BT-011). Harm: the backtest uses prices the market had not printed, and every sleeve looks better than it is.
+- `PBT backtest.nightly_no_lookahead` Replaying night d's features and scan on a store that already holds later sessions (another future for a random instrument, other index closes, the later nights' features) publishes the same watchlist, ADTR and criteria results included, as night d on the store cut at d (HAT-BT-011, G39). Harm: the nightly path the backtest shares reads a later bar, index close or feature partition, so a replayed signal is not one the market could have produced that night.
 - `PBT backtest.survivorship_free` An instrument that stops trading at session x is scanned as a member before x, no fill of it is dated after its last bar, and every position in it closes no later than that bar (HAT-BT-012). Harm: dead stocks vanish from the test and returns are overstated.
 - `PBT backtest.market_point_in_time` `load_market` reads bars and index closes up to the period's end only; an instrument delisted by the end has its last bar on or before its delisting as its last traded session, one delisted later has none; industry classifications come with their effective dates and `industry_on` gives the one in force on each day (HAT-BT-011, HAT-BT-012). Harm: a run closes a live stock as delisted, or a later reclassification changes an earlier industry-cap decision.
+- `PBT backtest.features_digest_pinned` `load_market` refuses (`backtest_features_stale`) unless the features digest the last complete `features` run stored equals `inputs_digest(stored_factors, None)` (a split stored after the last run, or a rebuild ranked over a narrower universe, is refused); when it loads, the snapshot's `actions_digest` is that digest and the features it read equal a full rebuild over the same bars and actions (HAT-DATA-077, G42). Harm: a run mixes prices adjusted for a split with features computed before it or over another universe, which the nightly scan never sees.
 - `PBT backtest.version_pinned` Every signal and trade carries the run's strategy and risk-policy versions, and the metrics name them (HAT-BT-013). Harm: evidence cannot be tied to the version being promoted.
 - `PBT backtest.entry_fill_proxy` A gap over (open above the level) fills at the open under either rule; otherwise the default `penetration_1_tick` fills at the first tick-grid price above the level (level + tick on the grid, the next grid price for an off-grid adjusted level) when the high reaches it and `touch` at the level when the high reaches the level, else no entry; penetration never fills where touch does not nor below its price, and without a tick there is no penetration entry (HAT-BT-020, PR 62). Harm: the backtest buys breakouts live never sees trade, at a better price than live pays.
 - `PBT backtest.entry_fill_proxy_chase` In a run under either entry rule (drawn), every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at that rule's proxy price on the instrument's tick and within max chase of the level, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses, or ignores the rule a run asked for.
@@ -97,6 +100,7 @@ No check touches the network, Fyers or the HAT database: a run's ledger is an in
 
 - A failing run-level property prints the generated paths (open, high, low, close per session per instrument). Rebuild the market with `hat_backtest_support.market(paths, sessions(34))` and run `run_backtest` on it; the result holds the watchlists, signals, fills, trades and equity to compare. If the real loop breaks the rule, that is a finding: fix the loop, never the property.
 - `backtest.scan_parity` failing means the loop fed the scan different inputs than the live nightly scan gets (the bar window, the features date, the index closes, the members). The independent scan is `hat_backtest_support.scan_watch`; keep it independent of the loop.
+- `backtest.nightly_scan_parity` failing means the nightly job (`daily.market.scan_inputs`, `Nightly.features`, `Nightly.scan`) and the loop (`backtest.market.load_market`, `_Run._publish`) read different inputs: the bar window, the adjusted view's actions, the features partition, the index closes or the members. The night world is `hat_backtest_support.night_world` and `store_session` (raw prices over a split's factor before its ex-date). `backtest.nightly_no_lookahead` failing means a nightly read is not bounded by the scan date. `backtest.features_digest_pinned` failing means the loader's check and the features job's recorded digest disagree (`data.features.inputs_digest`, `STATE_FILE`).
 - `CONF backtest.backtest_shares_engine_imports` names the private module imported or the function redefined: call the live function instead (add a parameter to it, as `fills` was added to `open_entry`, rather than copying it).
 - `CONF backtest.backtest_golden_replay` failing after an intended change: check the diff of the regenerated golden file line by line, explain it in the PR, and commit it with the change. Unexplained diffs are bugs.
 - `dsr.*` failures print the stats (SR, T, skew, kurtosis), N and V; recompute with the formula in 09 §4. The SR-monotonicity property holds only where the slope is non-negative; a counterexample outside that region is the formula, not the code.
@@ -137,10 +141,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `444c27663110b11bc4b55e8afe42a74a79b3370f4d7802b1f82bee1e0e04a745`
+Covered digest: `852aa9943323120cd40d8cd8484fdae5dc5f6c8b195facb2d1f77fb8e16cc00c`
 
 ## Scope changes
 
+- PR 67 (G38, G39, G42): the nightly path against the loop. `backtest.market.load_market` refuses `backtest_features_stale` unless the features job's stored digest (`features_daily/_state.json`) equals `inputs_digest(stored_factors, None)`, and records it as `actions_digest`. New PBT `backtest.nightly_scan_parity` (HAT-BT-010), `backtest.nightly_no_lookahead` (HAT-BT-011) and `backtest.features_digest_pinned` (HAT-DATA-077), on a night world (`hat_backtest_support.store_session`, `night_world`, `NightWorld`: raw bars in a Parquet store and a HAT database the nightly job bodies read). `backtest.market_point_in_time` writes the job's digest next to its partitions; its assertions are unchanged. No property failed on main. Nothing was narrowed.
 - PR 66 (G33, N15): trial accounting. `runs.run_dsr` (replacing `runs.deflate`) scores only a recorded run (`backtest_run_unrecorded` otherwise, `complete_run` too) through `dsr.family_deflated_sharpe` (N >= `MIN_TRIALS` 5, V >= `VARIANCE_FLOOR` 0.25 / 252); `metrics.dsr` gains `trials_floor` and `variance_floor`. `complete_run` writes `returns.parquet` (`RETURNS_SCHEMA`: date, equity, ret; `returns_path`, `read_returns`) and records `metrics.completed_at` and `metrics.pbo` (`family_pbo`: CSCV `dsr.pbo`, `PBO_BLOCKS` 8, over the family's completed runs with a returns file on their shared sessions). `_latest_run` orders by completion (`_completion`: `completed_at`, else the uuid7 start). New PBT `dsr.family_floors`, `dsr.pbo_ranked_variants`, `dsr.pbo_two_variants`, `dsr.pbo_refused`, `dsr.dsr_needs_recorded_run`, `dsr.returns_persisted`, `dsr.evidence_latest_by_completion`, `dsr.family_pbo_recorded` and CONF `dsr_scored_only_by_runs`; `dsr.evidence_current_trials` compares with the floored DSR. `dsr.pbo_ranked_variants` needs every block to vary: a half without volatility scores every variant 0, so the shift no longer orders them (found by the property). Code review of PR 66: `family_pbo` counts a re-run whose series equals an earlier one's once (`runs` vs `variants`; a deterministic re-run scored every split overfit), skips a returns file it cannot read (`read_returns` gives None) and says `pbo_unscorable` for a non-finite series; `complete_run` computes the DSR (`run_dsr(metrics=)`), PBO and completion time before its one status change, so a failure cannot leave a completed run half-written; a close at or below 0 gives a null next return. CodeAnt on PR 66: `run_dsr` takes the trial count and the Sharpe ratios from one read of the family (a sibling completing between two reads made them disagree), and CONF `dsr_scored_only_by_runs` also refuses a whole-module import of `dsr`. The pure formula's properties and the golden replay are unchanged. Nothing was narrowed.
 - PR 65 (G35, N10): run metrics. `compute_metrics` adds `exposure`, `cagr`, `mar`, `longest_drawdown_sessions`, `tail_trimmed_r` (`top_1pct`, `top_5pct`, `top_10pct`; `TAIL_TRIM_PCTS`) and `cost_share` from the new functions of `backtest/metrics.py` (verify-standalone), and `conventions`, the `conventions()` block `config_digest` hashes (the flat keys stay, the evidence filters read them). `TradeRow.score` (last field, default None) is the score of the watchlist row the trade entered from (`_trades` joins on playbook, instrument and trade date), and `TRADE_SCHEMA` gains a nullable float `score` column after the existing ones. `playbook` and the skip counts (`metrics.skips`) predate PR 65 (a deviation note in HAT-BT-032). New PBT `backtest.robustness_metrics`; `backtest.trades_match_metrics` and `backtest.fill_conventions_recorded` gain the score and the block. The golden replay's trades are unchanged; each gains `score`, and both seeds' metrics gain the seven keys; `config_digest` is unchanged. Code review of PR 65: `cagr` (`_cagr`) is null rather than a crash when the final equity is not positive or a short run's extrapolation overflows, and `mar` then too; the score comes from the sorted watchlist rows `_watch_rows` already reads (one read; a repeated key resolves the same each run); `conventions()` is built once per run. Nothing was narrowed.
 - PR 64 (G14, G03, G32): path pessimism (HAT-BT-021). A stop the way up raised (`_up_leg` records the stop before it) whose day's low reaches it while the close stays above is an ambiguous day (`fills.raised_stop_dip`): every run counts them (`metrics.ambiguous_days`), and under `ambiguous` `pessimistic` (`RunSpec.ambiguous`, `--ambiguous`, `RunConventions.ambiguous`) the close phase fills the raised stop at its price; the default `optimistic` holds it. A session pinned at its lower band (`lower_circuit_locked`: open = high = low = close within a tick of a band's lower price under the previous close) skips the position's open, way down, way up and close phase, so its stop fills at the next session not pinned (`metrics.lower_circuit_days`). A bar-less position is marked by `fills.suspended_mark` (its last close for `suspension_sessions` sessions, default 5, `--suspension-sessions`, then 5% lower per session) in the equity curve and its period-end close. `check_conventions` refuses an unknown rule (`backtest_bad_ambiguous_rule`), a count outside 0..250 (`backtest_bad_suspension`) and, for a promotion run, a count above the default 5 (`backtest_promotion_late_suspension`); `runs._latest_run` (the evidence) reads only runs whose metrics carry `lower_circuit`, so a promotion run made before PR 64 stops counting (code review of PR 64; `publish_version` is unchanged, a follow-up). The entry's `last_prices` (caps and exposure) use the same suspension mark as the equity, the mark never rises above the last close, a pinned session the close phase skips counts too, and the raised-stop record lives on `_Held` (code review of PR 64). `backtest_bot` takes the entry fill rule, slot order, ambiguous-day rule and bar-less sessions as one `runs.RunConventions` (Sonar S107: 15 parameters). `conventions()` gains `ambiguous`, `lower_circuit` and `suspension_markdown`, so `config_digest` changes for every run. `lower_circuit_not_modelled` and `suspension_not_marked` left `KNOWN_GAPS` (11 to 9 codes). The golden replay's trades are unchanged (the fixture has no ambiguous, pinned or bar-less day); both seeds gain the three conventions, `ambiguous_days: 0`, `lower_circuit_days: 0` and a new `config_digest`, and lose the two gap codes. `hat_backtest_support` is unchanged.
@@ -199,6 +204,22 @@ tests/hat/properties/test_backtest.py:87: in _assert_parity
 
 Re-run after the CodeAnt review made the property check every simulated date of a run, not one drawn date: the same break still fails.
 
+### PBT backtest.nightly_scan_parity
+
+Break: (PR 67) in `backend/app/hat/daily/market.py`: `scan_inputs` reads the bars without the stored corporate actions (`store.connect()`), so the night after a split scans unadjusted prices.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:197: in test_nightly_scan_parity
+    assert ran == published
+E   AssertionError: assert [('default',  [cut]l('76.0000'))] == [('default',  [cut]l('76.0000'))]
+E     At index 0 diff: ('default', '00000000-0000-0000-0000-000000001000', Decimal('0.7669542296'), Decimal('119.0600'), Decimal('113.1000')) != ('default', '00000000-0000-0000-0000-000000001000', Dec [cut]
+E     Full diff:
+E       [
+E           (
+E               'default',
+```
+
 ### PBT backtest.no_lookahead
 
 Break: in `backend/app/hat/engine/backtest.py`: the scan's regime reads every index close of the period, later ones included.
@@ -211,6 +232,22 @@ tests/hat/properties/test_backtest.py:102: in test_no_lookahead
 tests/hat/properties/test_backtest.py:117: in test_no_lookahead
     assert _upto(first, day) == _upto(second, day)
 E   AssertionError: assert {'watch': [Wa...des': [], ...} == {'watch': [],...des': [], ...}
+```
+
+### PBT backtest.nightly_no_lookahead
+
+Break: (PR 67) in `backend/app/hat/daily/market.py`: `scan_inputs` reads the regime index closes through `date.max` instead of the scan date.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:268: in test_nightly_no_lookahead
+    assert later.watchlist(nxt) == cut.watchlist(nxt)
+E   AssertionError: assert [] == [('default',  [cut].0000'),  [cut])]
+E     Right contains one more item: ('default', '00000000-0000-0000-0000-000000001000', Decimal('1.0000000000'), Decimal('80.0000'), Decimal('76.0000'), Decimal('0.0000'),  [cut])
+E     Full diff:
+E     + []
+E     - [
+E     -     (
 ```
 
 ### PBT backtest.survivorship_free
@@ -254,6 +291,36 @@ tests/hat/properties/test_backtest.py F
 tests/hat/properties/test_backtest.py:449: in test_market_point_in_time
 tests/hat/properties/test_backtest.py:531: in test_market_point_in_time
 E   AssertionError: assert 'ind-b' == 'ind-a'
+```
+
+Break: (PR 67) in `backend/app/hat/engine/backtest.py`: `industry_on` takes the newest classification whatever the day (re-run after the test gained the job's digest).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1605: in test_market_point_in_time
+    assert industry_on(data, iid, day) == want
+E   AssertionError: assert 'ind-b' == 'ind-a'
+E     - ind-a
+E     ?     ^
+E     + ind-b
+E     ?     ^
+E   Failing test case: test_market_point_in_time(
+```
+
+### PBT backtest.features_digest_pinned
+
+Break: (PR 67) in `backend/app/hat/backtest/market.py`: `load_market` skips the digest check (`if False:`).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1653: in test_features_digest_pinned
+    with pytest.raises(BacktestError) as refused:
+E   Failed: DID NOT RAISE BacktestError
+E   Failing test case: test_features_digest_pinned(
+E       paths={'00000000-0000-0000-0000-000000001000': [(80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
 ```
 
 ### PBT backtest.version_pinned

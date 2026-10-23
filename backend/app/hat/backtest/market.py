@@ -4,12 +4,15 @@ Bars come from the adjusted view of the Parquet store (`bars_daily`: raw bars ti
 corporate-action factors), features from the `features_daily` partitions the nightly job wrote,
 the regime index from `index_daily`, and membership from the universe's intervals, delisted
 instruments included. Nothing is filtered by what happened later: the day loop reads each input
-only up to the date it decides for.
+only up to the date it decides for. The features must be the ones the nightly job wrote for the
+corporate actions the bars are adjusted with: the job's stored inputs digest must equal the
+digest of the stored actions over the whole store (HAT-DATA-077, PR 67).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import uuid
 from bisect import bisect_left
 from collections.abc import Iterable
@@ -22,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.corporate_actions import stored_factors
-from ..data.features import inputs_digest
+from ..data.features import STATE_FILE, inputs_digest
 from ..data.store import DATASET_BARS, DATASET_FEATURES, DataStore
 from ..engine.backtest import LOOKBACK_SESSIONS, BacktestError, MarketData
 from ..engine.portfolio.universe import Interval
@@ -94,6 +97,15 @@ def _features(store: DataStore, days: Iterable[date]) -> pl.DataFrame:
     )
 
 
+def _features_digest(store: DataStore) -> str | None:
+    """The inputs digest the last complete `features` run recorded; None when none did."""
+    try:
+        text = (store.root / DATASET_FEATURES / STATE_FILE).read_text(encoding="utf-8")
+        return json.loads(text).get("inputs_digest")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
 def _content_digest(market: MarketData) -> str:
     """sha256 of what the run read: the bars, features, index closes, membership intervals and
     industry history, each in a fixed order. Two snapshots with the same row counts but
@@ -124,13 +136,19 @@ def load_market(
 ) -> tuple[MarketData, dict[str, Any]]:
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
     read, for `hat_backtest_run.data_snapshot`). Raises `BacktestError` when the store has no
-    session in the period or no features."""
+    session in the period or no features, and `backtest_features_stale` when the features were
+    not written for the stored corporate actions over every instrument (the nightly job's
+    digest, `universe` None): the loop would read prices adjusted one way and features computed
+    another, which the nightly scan never does."""
     days = [d for d in store.days(DATASET_BARS) if d <= end]
     first = bisect_left(days, start)
     if first >= len(days):
         raise BacktestError("backtest_no_data")
     window = days[max(0, first - LOOKBACK_SESSIONS) :]
     actions = stored_factors(session)
+    expected = inputs_digest(actions, None)
+    if _features_digest(store) != expected:
+        raise BacktestError("backtest_features_stale")
     members = _members(session, universe_id)
     instruments = {m.instrument_id for m in members}
     with store.connect(actions) as con:
@@ -170,7 +188,7 @@ def load_market(
         "index": index,
         "index_points": len(closes),
         "members": len(members),
-        "actions_digest": inputs_digest(actions, None),
+        "actions_digest": expected,
         "content_digest": _content_digest(market),
     }
     return market, snapshot
