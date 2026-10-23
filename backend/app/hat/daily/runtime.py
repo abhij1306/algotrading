@@ -184,17 +184,12 @@ def daily_jobs(
     desks: Desks,
     views: ExitViews,
     reports: Reports,
-    *,
-    exdate_check: bool = False,
 ) -> tuple[ScheduledJob, ...]:
-    """Every job of the daily cycle (the job table, `CONF ops.job_registry`); the
-    flagged `gtt.ex_date` only with `exdate_check` (`HAT_EXDATE_GTT_CHECK`, PR 47)."""
+    """Every job of the daily cycle (the job table, `CONF ops.job_registry`)."""
     return (
         *nightly_jobs(nightly),
         *intraday_jobs(intraday),
-        *account_jobs(
-            desks, nightly.session_factory, views, nightly.clock, exdate_check=exdate_check
-        ),
+        *account_jobs(desks, nightly.session_factory, views, nightly.clock),
         *telegram_jobs(reports),
     )
 
@@ -325,6 +320,7 @@ class HatRuntime:
             band=SaleBands(self.prices, self.book),
             resend=self.settings.mpp_resend,
             page_after=self.settings.mpp_page_after,
+            gtt_check_every=timedelta(minutes=self.settings.gtt_check_minutes),
         )
         feed_stale = self._feed_stale
         self.live_prices = LivePrices(self.prices, self.book, clock)
@@ -387,14 +383,7 @@ class HatRuntime:
             digest=self.reports.send_watchlist_digest,
             on_loaded=self.book.reset,
         )
-        self.jobs = daily_jobs(
-            nightly,
-            self.intraday,
-            self.desks,
-            self.views,
-            self.reports,
-            exdate_check=self.settings.exdate_gtt_check,
-        )
+        self.jobs = daily_jobs(nightly, self.intraday, self.desks, self.views, self.reports)
         self.scheduler = HatScheduler(self.jobs, sf, clock, trading=self.trading)
 
     async def _recover(self) -> None:

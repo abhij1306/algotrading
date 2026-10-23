@@ -7,7 +7,7 @@ instrument. A position opened on the old row keeps it: its prices stop, its Fyer
 successor, the active instrument of the same market and ISIN under another series. While it has
 one, the position is manage-only (its exits see no view, `daily/live.py:ExitViews`), its broker
 stops go out under the successor's symbol (`StopDesk._target`), and the morning GTT check
-(`TradeManager.check_ex_date_gtts`) alerts it URGENT on each run until the owner resolves it.
+(`TradeManager.check_gtts`) alerts it URGENT on each run until the owner resolves it.
 
 ASM and GSM are surveillance lists, not series: the instrument master holds no such flag, so
 they are not seen here.

@@ -314,10 +314,13 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 1. Alerts: `gtt.missing`, `gtt.unverified`, `gtt.swap_failed` or `stop.not_placed`. `gtt.verify`
    at 23:00 refreshes and re-places GTTs (and renews one 300 days old); `gtt.swap` at 15:25
-   retries every minute and keeps the intraday stop until the GTT is confirmed. With
-   `HAT_EXDATE_GTT_CHECK` on, `gtt.ex_date` at 08:40 re-places a GTT the broker cancelled before
-   an ex-date (code `gtt_cancelled_by_broker`); a refused one is covered by the intraday stop from
-   09:15.
+   retries every minute and keeps the intraday stop until the GTT is confirmed. `gtt.check` at
+   08:40, and the fill sync every `HAT_GTT_CHECK_MINUTES` (5) after, read the Fyers GTT book: a GTT
+   the broker cancelled (ex-date, series change, a cancel in the Fyers app) is ended (code
+   `gtt_cancelled_by_broker`) and replaced at once, a GTT outside the session and an intraday stop
+   inside it; a refused replacement is retried at each sync, and meanwhile the engine sells on its
+   own hard stop. An unreadable GTT book changes nothing and raises `gtt.unverified`
+   (`gtt_book_unread`) once until a read succeeds.
 2. Check the Fyers GTT page against `/positions`: every open real position needs one GTT at its
    current stop.
 3. If the broker keeps refusing: check the session (log in again), the price band and the
@@ -327,7 +330,7 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Series change
 
 1. Alert: URGENT `position.series_changed` (symbol, old and new series, Fyers symbol or
-   `unmapped`), at 08:40 (with `HAT_EXDATE_GTT_CHECK` on) and at every 23:00 `gtt.verify`.
+   `unmapped`), at the 08:40 `gtt.check` and at every 23:00 `gtt.verify`.
 2. The position is manage-only: no exit rule runs on it, and its broker stops go out under the new
    series' Fyers symbol (a GTT still under the old symbol is cancelled and placed again).
    `unmapped` means no Fyers symbol is stored for the new series (BZ has none): no stop is sent

@@ -38,7 +38,8 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
   No entry on a trade date before that date's first reconciliation succeeded; a mismatch blocks
   entries and never auto-closes or auto-adopts a position.
 - **Every real position has a resting broker stop** (intraday stop, then GTT overnight), re-verified
-  nightly; a lost broker answer never freezes a position and is settled against the broker's book.
+  nightly; the GTT book is read at 08:40 and every few minutes by the fill sync, and a GTT the
+  broker dropped is ended and replaced at once (an unreadable book changes nothing); a lost broker answer never freezes a position and is settled against the broker's book.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). A drawdown or
   manual kill re-arms by hand with a second confirmation; a health kill clears itself.
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored only as hashes;

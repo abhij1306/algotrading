@@ -30,11 +30,13 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   is alerted (`gtt.unverified`) and nothing is placed, since the old GTT may still rest there.
   A GTT placed `GTT_RENEW_AFTER` (300 days) ago or more is cancelled and placed again (the
   broker expires a GTT after a year, and a modify may not reset that clock; PR 47).
-- **Before the open, around an ex-date** (`check_gtt`, PR 47, HAT-EXEC-145): Fyers cancels a
-  resting GTT before a corporate action's ex-date (a dividend's too) and on a series change. A
-  live GTT the broker's GTT book no longer holds is ended `cancelled`, alerted (`gtt.missing`)
-  and the position protected again: a GTT before the open, else (refused, or once the session is
-  open) the fill sync's intraday stop from 09:15.
+- **A GTT the broker dropped** (`check_gtt`, HAT-EXEC-145, P1): Fyers cancels a resting GTT
+  before a corporate action's ex-date (a dividend's too) and on a series change, and the owner
+  can cancel one in the Fyers app. The broker's GTT book is read at 08:40 and by the fill sync
+  every few minutes; a live GTT a good read no longer holds (`stop_confirmed`) is ended
+  `cancelled`, alerted once (`gtt.missing`) and the position protected again at once: a GTT
+  outside the session, an intraday stop inside it. Until then the engine would trust it as the
+  hard stop (`TradeManager._broker_stop_rests`); once ended, the engine sells on its own.
 - **A series change** (`_target`, HAT-EXEC-146): a position whose instrument moved to another
   series (EQ to BE) has its stops placed under the successor's symbol (`series.successor`).
 - **A lost answer** (`settle_lost`, HAT-EXEC-065): a stop whose placement answer was lost is
@@ -119,6 +121,7 @@ __all__ = [
     "TickSource",
     "UNSURE",
     "broker_trigger",
+    "stop_confirmed",
 ]
 
 logger = logging.getLogger(__name__)
@@ -141,6 +144,7 @@ LOST_ANSWER_SETTLE = timedelta(seconds=60)
 # placed, and a modify may not reset that clock (research G24; [verify on a live account]).
 CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
 GTT_RENEW_AFTER = timedelta(days=300)
+GTT_CANCELLED_BY_BROKER = "gtt_cancelled_by_broker"  # a good GTT-book read no longer holds it
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
@@ -171,6 +175,24 @@ def broker_trigger(stop: Decimal, tick: Decimal | None) -> Decimal:
     if tick is None or not tick.is_finite() or tick <= 0:
         return stop
     return (stop / tick).to_integral_value(rounding=ROUND_FLOOR) * tick
+
+
+def stop_confirmed(
+    row: HatOrder,
+    book: Collection[str] | None,
+    read_at: datetime,
+    settle_after: timedelta = LOST_ANSWER_SETTLE,
+) -> bool | None:
+    """Whether the broker's GTT book (`book`: the ids it shows resting or triggered, read at
+    `read_at`) confirms the live GTT `row` rests: True when it holds the id, False when a good
+    read does not (the broker cancelled or expired it). None leaves the row as it is: the book
+    could not be read, the row is not a live GTT the broker gave an id, or it was placed less
+    than `settle_after` before the read (the book may not show it yet)."""
+    if book is None or row.status not in LIVE or not row.broker_order_id:
+        return None
+    if row.placed_at is None or read_at - as_utc(row.placed_at) < settle_after:
+        return None
+    return row.broker_order_id in book
 
 
 @dataclass(frozen=True)
@@ -232,6 +254,11 @@ class StopDesk:
     def _stop_lock(self, position_id: uuid.UUID) -> threading.RLock:
         with self._stop_locks_guard:
             return self._stop_locks.setdefault(position_id, threading.RLock())
+
+    @property
+    def settle_after(self) -> timedelta:
+        """How long after its send a stop counts as answered (`settle_lost`, `stop_confirmed`)."""
+        return self._settle_after
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows)."""
@@ -328,7 +355,12 @@ class StopDesk:
 
     @staticmethod
     def _order_event(
-        session: Session, row: HatOrder, target: _Target, event_type: str, now: datetime
+        session: Session,
+        row: HatOrder,
+        target: _Target,
+        event_type: str,
+        now: datetime,
+        reason: str | None = None,
     ) -> None:
         record(
             session,
@@ -342,6 +374,7 @@ class StopDesk:
                 "broker_order_id": row.broker_order_id,
                 "qty": row.qty,
                 "trigger_price": None if row.trigger_price is None else str(row.trigger_price),
+                **({} if reason is None else {"reason": reason}),
             },
             correlation_id=target.signal.id,
             bot_id=target.signal.bot_id,
@@ -927,14 +960,20 @@ class StopDesk:
 
     @_serialised
     def check_gtt(
-        self, session: Session, position_id: uuid.UUID, now: datetime, book: Collection[str]
+        self,
+        session: Session,
+        position_id: uuid.UUID,
+        now: datetime,
+        book: Collection[str],
+        read_at: datetime,
     ) -> str:
-        """Before the open around an ex-date or a series change (HAT-EXEC-145): `book` holds
-        the ids of the GTTs the broker's GTT book shows (resting or triggered). A live GTT of the
-        position the book does not hold was cancelled by the broker: it is ended `cancelled`,
-        alerted (`gtt.missing`, code `gtt_cancelled_by_broker`) and the position protected again
-        (`protect`: a GTT outside the session, an intraday stop inside it; a refused GTT is
-        alerted `stop.not_placed` and the fill sync places the intraday stop from 09:15). A GTT
+        """The position's GTT against the broker's GTT book (HAT-EXEC-145): `book` holds the ids
+        the book showed (resting or triggered) when it was read at `read_at`. A live GTT of the
+        position a good read does not hold (`stop_confirmed`) was cancelled or expired by the
+        broker: it is ended `cancelled` (reason `gtt_cancelled_by_broker` on its event), alerted
+        (`gtt.missing`) and the position protected again (`protect`: a GTT outside the session,
+        an intraday stop inside it; a refused one is alerted `stop.not_placed` and the fill sync
+        tries again). One placed too recently for the book to show counts as resting. A GTT
         whose answer was lost is settled first; one still unsure is alerted (`gtt.unverified`)
         and nothing is placed on top of it. A position still awaiting a split or bonus rescale
         gets nothing yet (UNVERIFIED, so the job tries again; `ca.rescale` alerts it): a GTT at
@@ -951,7 +990,11 @@ class StopDesk:
             gtts = [r for r in self.stops_of(session, position.id) if r.purpose == STOP_GTT]
         live = [row for row in gtts if row.status in LIVE and row.broker_order_id]
         stale = [row for row in live if self._old_series(session, target, row)]
-        if any(row.broker_order_id in book for row in live if row not in stale):
+        if any(
+            stop_confirmed(row, book, read_at, self._settle_after) is not False
+            for row in live
+            if row not in stale
+        ):
             return VERIFIED
         if any(self.lost(row) for row in gtts):
             self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
@@ -964,10 +1007,12 @@ class StopDesk:
                 return UNVERIFIED
         live = [row for row in live if row.status in LIVE]  # the broker cancelled these
         if live:
-            self._alert(ALERT_GTT_MISSING, target, now, "gtt_cancelled_by_broker")
+            self._alert(ALERT_GTT_MISSING, target, now, GTT_CANCELLED_BY_BROKER)
             for row in live:
                 row.status = "cancelled"
-                self._order_event(session, row, target, "order.cancelled", now)
+                self._order_event(
+                    session, row, target, "order.cancelled", now, GTT_CANCELLED_BY_BROKER
+                )
             session.commit()
         outcome = self.protect(session, position_id, now)
         if outcome == PLACED:
