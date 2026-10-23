@@ -35,8 +35,10 @@ from app.hat.backtest.dsr import (
     return_stats,
     trial_variance,
 )
-from app.hat.engine.backtest import BacktestResult
+from app.hat.engine.backtest import KNOWN_GAPS, BacktestResult
 from app.hat.engine.portfolio.lifecycle import DEFAULT_DISCOUNT, discounted_benchmark
+from app.hat.engine.scan import EP_PLAYBOOK
+from app.hat.engine.strategy.versions import seed_config
 from app.hat.models import (
     HatBacktestRun,
     HatBot,
@@ -346,7 +348,8 @@ def _result(
     promoted: bool | None = True,
     slots: str | None = "time",
     path: bool = True,
-    regime_mult: str | None = "1",
+    regime_mult: str | None = "policy",
+    extra: dict | None = None,
 ) -> BacktestResult:
     metrics: dict[str, object] = {
         "trades": trades,
@@ -363,7 +366,7 @@ def _result(
         metrics["lower_circuit"] = "carry_to_next_unlocked_open"
     if regime_mult is not None:  # None: a run recorded before PR 68 (sized off the account)
         metrics["regime_mult"] = regime_mult
-    return BacktestResult((), (), (), (), (), {}, metrics)
+    return BacktestResult((), (), (), (), (), {}, {**metrics, **(extra or {})})
 
 
 COOLDOWNS = st.sampled_from([None, 0, 3, 5])  # None: a run or a user without the field
@@ -439,25 +442,24 @@ FLAGS = st.tuples(
 
 @given(st.lists(FLAGS, max_size=5))
 @settings(max_examples=30, deadline=None)
-@example([(True, "time", True, "1"), (False, "time", True, "1")])  # a sensitivity run newer
+@example([(True, "time", True, "policy"), (False, "time", True, "policy")])  # sensitivity, newer
 @example([(None, None, False, None)])  # a run recorded before PR 62
-@example([(True, "time", True, "1"), (True, None, False, None)])  # recorded before PR 63
-@example([(True, "time", True, "1"), (True, "score", True, "1")])  # a promotion run in score order
-@example([(True, "time", True, "1"), (True, "time", False, None)])  # recorded before PR 64
-@example([(True, "time", True, "1"), (True, "time", True, None)])  # recorded before PR 68
-@example([(True, "time", True, "1"), (True, "time", True, "policy")])  # the regime variant
+@example([(True, "time", True, "policy"), (True, None, False, None)])  # recorded before PR 63
+@example([(True, "time", True, "policy"), (True, "score", True, "policy")])  # in score order
+@example([(True, "time", True, "policy"), (True, "time", False, None)])  # recorded before PR 64
+@example([(True, "time", True, "policy"), (True, "time", True, None)])  # recorded before PR 68
+@example([(True, "time", True, "policy"), (True, "time", True, "1")])  # regime 1 (PR 68 to 69)
 def test_evidence_promoted_only(
     flags: list[tuple[bool | None, str | None, bool, str | None]],
 ) -> None:
     """The sleeve's evidence, for the lifecycle and for the risk-increase gate, is its newest
     completed run flagged for promotion (PR 62, O5) whose slots went in the estimated trigger
     order (`slot_order` `time`, PR 63) under the path rules (`lower_circuit`, PR 64), sized by
-    the sleeve's allocation at regime rule `1` (`regime_mult`, PR 68): a sensitivity run
-    (`touch`, 0 bps, a sweep, another slot order, the regime variant) or one recorded before
-    the flag, the slot order, the path rules or the allocation sizing existed is skipped, and
-    with none
-    there is no evidence. Harm: a sleeve is promoted, or its risk raised, on perfect or
-    optimistic fills."""
+    the sleeve's allocation (PR 68) under the live regime rule `policy` (`regime_mult`, PR 69):
+    a sensitivity run (`touch`, 0 bps, a sweep, another slot order) or one recorded before the
+    flag, the slot order, the path rules or the allocation sizing existed, or under regime rule
+    `1` (as PR 68 promoted), is skipped, and with none there is no evidence. Harm: a sleeve is
+    promoted, or its risk raised, on perfect or optimistic fills."""
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         strategies, universes = _world(session, 1, 1)
@@ -486,7 +488,7 @@ def test_evidence_promoted_only(
         want = [
             n + 1
             for n, (flag, slots, path, sizing) in enumerate(flags)
-            if flag is True and slots == "time" and path and sizing == "1"
+            if flag is True and slots == "time" and path and sizing == "policy"
         ]
         facts = runs.backtest_evidence(session, bot)
         assert facts.trades == (want[-1] if want else 0)
@@ -901,4 +903,85 @@ def test_family_pbo_skips_unreadable(garbage: bytes) -> None:
             1,
             "pbo_too_few_variants",
         )
+        session.rollback()
+
+
+GATE_FACTS = {
+    "first_session": "2019-01-01",
+    "last_session": "2024-12-31",
+    "held_sessions": 400,
+    "ambiguous_days": 12,
+    "known_gaps": list(KNOWN_GAPS),
+    "sleeve_weight": "0.5",
+}
+
+
+@given(
+    st.sampled_from(["stage2-contraction-breakout", "momentum-breakout-ep"]),
+    st.sets(st.sampled_from(sorted(GATE_FACTS))),
+    st.sampled_from(["0.5", "0.25", "x"]),
+    st.booleans(),
+    st.booleans(),
+    st.booleans(),
+)
+@settings(max_examples=30, deadline=None)
+@example("momentum-breakout-ep", set(), "0.5", False, True, True)  # S2 enables the EP playbook
+@example("stage2-contraction-breakout", {"known_gaps"}, "0.5", False, True, True)  # no gap list
+@example("stage2-contraction-breakout", set(), "0.5", True, True, True)  # malformed metrics
+def test_evidence_gate_facts(
+    seed: str, dropped: set[str], weight: str, garbled: bool, policy: bool, parses: bool
+) -> None:
+    """The lifecycle evidence carries what the rest of the gate reads (PR 69, HAT-PORT-061): the
+    run's first and last session, held sessions and ambiguous days, the playbooks its known gaps
+    name (the EP playbook for `episodic_pivot_not_backtested`; every playbook of the version when
+    the run recorded no readable gap list), the playbooks the version enables (none when its config
+    does not parse), the run's sleeve weight and regime rule, and the base weight of the version's
+    own sleeve in the policy in force (none without a policy). A fact the run did not record, or
+    recorded malformed, is absent; none raises. Harm: the gate passes a sleeve on a fact the run
+    never recorded, or on another version's playbooks."""
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        strategies, universes = _world(session, 1, 1)
+        strategy, (live, _) = strategies[0]
+        config = seed_config(seed)
+        live.config = config.to_json() if parses else {}
+        universe = universes[0]
+        uv = HatUniverseVersion(
+            universe_id=universe.id, version=1, status="live", definition={}, config_hash="h"
+        )
+        session.add(uv)
+        session.flush()
+        user = uuid.uuid4()
+        if policy:  # the sleeves' base weights differ, so the evidence reads its own
+            row = seed_initial_policy(session, user, datetime(2026, 1, 1, tzinfo=UTC))
+            row.policy = {**row.policy, "base_weight": {"S1": "0.60", "S2": "0.40"}}
+            session.flush()
+        bot = _sleeve_bot(session, user, strategy, live.id, uv)
+        recorded = {k: v for k, v in GATE_FACTS.items() if k not in dropped}
+        if "sleeve_weight" in recorded:
+            recorded["sleeve_weight"] = weight
+        if garbled:  # a malformed date and gap list fail closed, never raise
+            recorded = {
+                **recorded,
+                **{k: "2020-13-01" for k in ("first_session", "last_session") if k in recorded},
+                **({"known_gaps": [{"code": 1}]} if "known_gaps" in recorded else {}),
+            }
+        run = _start(session, live, universe)
+        runs.complete_run(session, run, _result(0.1, 60, 5, "0.4", extra=recorded), root=Path(tmp))
+        facts = runs.backtest_evidence(session, bot)
+        enabled = frozenset(p.name for p in config.playbooks) if parses else frozenset()
+        assert facts.playbooks == enabled
+        readable = "known_gaps" in recorded and not garbled
+        assert facts.gapped_playbooks == (frozenset({EP_PLAYBOOK}) if readable else enabled)
+        first, last = (
+            None if garbled or recorded.get(k) is None else date.fromisoformat(recorded[k])
+            for k in ("first_session", "last_session")
+        )
+        assert (facts.first_session, facts.last_session) == (first, last)
+        assert facts.held_sessions == recorded.get("held_sessions", 0)
+        assert facts.ambiguous_days == recorded.get("ambiguous_days")
+        raw = recorded.get("sleeve_weight")
+        assert facts.sleeve_weight == (None if raw in (None, "x") else Decimal(raw))
+        base = {"stage2-contraction-breakout": "0.60", "momentum-breakout-ep": "0.40"}[seed]
+        assert facts.base_weight == (Decimal(base) if policy and parses else None)
+        assert facts.regime_mult == "policy"
         session.rollback()

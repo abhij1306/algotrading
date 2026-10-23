@@ -139,16 +139,22 @@ def longest_drawdown(equity: Sequence[float] | pl.Series) -> int:
     return longest
 
 
-def exposure(sessions: Sequence[date], held: Sequence[tuple[date, date]]) -> float:
-    """The share of `sessions` on which at least one position was held: a session within some
-    (entry date, exit date) span, both ends included; 0.0 without sessions."""
-    if not sessions:
-        return 0.0
+def held_sessions(sessions: Sequence[date], held: Sequence[tuple[date, date]]) -> int:
+    """How many of `sessions` at least one position was held on: a session within some
+    (entry date, exit date) span, both ends included."""
     days = sorted(sessions)
     invested: set[int] = set()
     for a, b in held:
         invested.update(range(bisect_left(days, a), bisect_right(days, b)))
-    return len(invested) / len(days)
+    return len(invested)
+
+
+def exposure(sessions: Sequence[date], held: Sequence[tuple[date, date]]) -> float:
+    """The share of `sessions` on which at least one position was held (`held_sessions`); 0.0
+    without sessions."""
+    if not sessions:
+        return 0.0
+    return held_sessions(sessions, held) / len(sessions)
 
 
 def mar_ratio(cagr: float, drawdown: float) -> float | None:
