@@ -127,7 +127,7 @@ Init ==
     /\ userRisk = FALSE
     /\ lost = [s \in Signals |-> FALSE]
 
-\* The effective mode (modes.bot_mode / effective_mode): confirm and auto need GTT.
+\* The effective mode (modes.bot_mode / capability_gated): confirm and auto need GTT.
 Effective ==
     IF BrokenMode # "no_gtt_gate" /\ mode # "shadow" /\ ~gtt THEN "shadow" ELSE mode
 
