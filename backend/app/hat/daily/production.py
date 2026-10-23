@@ -35,7 +35,7 @@ from ..settings import HatSettings, process_env
 from ..telegram.client import HttpsTransport
 from ..telegram.config import telegram_settings
 from .nightly import TextSources
-from .runtime import Feed, RuntimeParts
+from .assembly import Feed, RuntimeParts
 
 __all__ = ["one_login_each", "production_parts"]
 

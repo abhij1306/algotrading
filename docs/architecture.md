@@ -19,7 +19,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`: every sale a `SaleOrder` through one pure `sale_gate`), the fill sync in phases read, settle, commit, market, protect (`fills.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
 | `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
 | `ops` | In-process scheduler, job runner, partitions, retention |
-| `daily` | `HatRuntime` wiring, the daily job table (`daily_jobs`), nightly and intraday job bodies, production parts |
+| `daily` | `HatRuntime` lifecycle (`runtime.py`: start, recover, stop), the wiring into one frozen `Assembly` (`assembly.py`) with the daily job table (`daily_jobs`), the periodic loops (`periodic.py`), nightly and intraday job bodies, production parts |
 | `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), the evidence the gates read (`evidence`, through the typed `RunMetrics`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` and `risk` import only `spec` and `evidence`, never the loop |
 | `models` | SQLAlchemy models on the shared `Base`; every table is `hat_*` |
 | `api` | Read-only dashboard routes and the Fyers login routes behind the write guard |
@@ -91,7 +91,7 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   (immutable), `index_daily`, `features_daily`, `breadth_daily`, `market_breadth`, 5-minute bars
   (`bars_5m`, raw basis; the minute-history loader's refusals in `bars_5m_rejects`).
 
-## Daily cycle (IST, trading days; `daily/runtime.py:daily_jobs`)
+## Daily cycle (IST, trading days; `daily/assembly.py:daily_jobs`)
 
 | Time | Job |
 | --- | --- |
@@ -106,14 +106,17 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 | 18:00 on | the nightly chain above |
 | 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots (drawdown kills at the close marks) |
 
-Every job has a deadline after its time (`daily/runtime.py:JOB_DEADLINES`); a job that fails,
+Every job has a deadline after its time (`daily/assembly.py:JOB_DEADLINES`); a job that fails,
 misses its deadline or runs past it raises one URGENT alert per job and trade date
 (`job.failed`, `job.missed`, `job.running_long`). A calendar with no trading day more than a week
 ahead alerts `calendar.short` daily.
 
-Periodic loop beside the jobs: session watch, fill sync, approval expiry, reconciliation (5 min),
-live exits of shadow positions, the drawdown kills on equity marked to market (every minute of
-the session), announcements poll, the calendar check.
+Periodic loops beside the jobs (`daily/periodic.py`), each its own task every 5 s: `exits` (live
+exits of virtual and real positions, the drawdown kills on equity marked to market every minute,
+stale-entry cancels; while the market is open), `housekeeping` (calendar check; session watch,
+fill sync, approval expiry, reconciliation every 5 min, resume of stranded entries) and the
+announcements poll. The scheduler tick raises URGENT `periodic.stalled` when `exits` or
+`housekeeping` has not started a pass for 60 s while the market is open.
 
 ## Verification layout
 

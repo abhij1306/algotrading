@@ -1,7 +1,7 @@
 """The in-process asyncio scheduler (T7). `HatRuntime` creates it, only when HAT is enabled
 (HAT-OPS-013).
 
-PR 2 built the loop; PR 17 registers the daily cycle (`app/hat/daily/runtime.py:daily_jobs`)
+PR 2 built the loop; PR 17 registers the daily cycle (`app/hat/daily/assembly.py:daily_jobs`)
 and adds what the cycle needs: the trade date passed to each body, the calendar (a trade-date
 job starts only on a trading day of `hat_trading_calendar`, HAT-OPS-012), job order (a job with
 `after` starts only once each of those jobs has succeeded for the same trade date, HAT-OPS-021,
@@ -22,7 +22,7 @@ that night's trade date, until `CARRY_UNTIL`: a nightly chain whose head finishe
 ingest succeeded at 23:58) completes for its own date instead of being dropped.
 
 P5 (audit R1): every job has a `deadline`, the time after `at` by which its run must have
-succeeded (`daily/runtime.py:JOB_DEADLINES` is the one table of them). The owner gets one alert
+succeeded (`daily/assembly.py:JOB_DEADLINES` is the one table of them). The owner gets one alert
 per job and trade date (`overdue`, `_alert`): `job.failed` when a run fails, `job.missed` when the
 deadline passes with no success and nothing running (never started, or failed and not run again),
 `job.running_long` when a body is still running at its deadline. A job that never started
@@ -30,6 +30,9 @@ because a job it waits on (`after`) has not succeeded is not alerted: that job i
 these is the only one: the run row's `alerted_at` keeps it across retries and restarts, and the
 scheduler's memory covers a job that has no row yet (so a restart may repeat that one). An alert
 never raises into the loop.
+
+A8 (audit R5): each tick also calls the runtime's `watch` (`daily/periodic.py:Heartbeats.check`,
+`periodic.stalled` for a periodic loop that stopped beating); it never raises into the loop.
 """
 
 from __future__ import annotations
@@ -67,6 +70,7 @@ JOB_RUNNING_LONG = "job.running_long"
 
 JobBody = Callable[[date], JobResult | None]
 TradingDay = Callable[[date], bool]
+Watch = Callable[[datetime], object]
 
 
 class Days(StrEnum):
@@ -189,6 +193,7 @@ class HatScheduler:
         *,
         trading: TradingDay | None = None,
         notifier: Notifier | None = None,
+        watch: Watch | None = None,
     ) -> None:
         names = [job.name for job in jobs]
         if len(set(names)) != len(names):
@@ -198,6 +203,7 @@ class HatScheduler:
         self._clock = clock
         self._trading: TradingDay = trading or (lambda _day: True)
         self._notifier: Notifier = notifier or LogNotifier()
+        self._watch = watch
         self._alerted: set[tuple[str, date]] = set()
         self._attempted: dict[tuple[str, date], datetime] = {}
         self._running: dict[str, asyncio.Task[None]] = {}
@@ -283,7 +289,17 @@ class HatScheduler:
             self._running_day[job.name] = trade_date
             started.append(task)
         await asyncio.to_thread(self._sweep, now, succeeded)
+        if self._watch is not None:
+            try:
+                await asyncio.to_thread(self._watch, now)
+            except Exception:
+                logger.exception("scheduler watch failed")
         return started
+
+    def note_failed(self, name: str, day: date, ended: datetime) -> None:
+        """A run of `name` for `day` failed outside the scheduler at `ended` (the restart's
+        arming of the day): its retry waits the job's `retry_after`, as a scheduled failure's."""
+        self._attempted[(name, day)] = ended
 
     def _sweep(self, now: datetime, succeeded: Mapping[date, Collection[str]]) -> None:
         """One alert for each job past its deadline today or for the night before (`overdue`)."""
