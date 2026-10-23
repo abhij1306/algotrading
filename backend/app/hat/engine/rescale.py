@@ -22,8 +22,10 @@ consolidation, factor 1 or above) changes no share count HAT can know: it is nev
 the position is manage-only for good instead (HAT-EXEC-144, design review item 6, option A):
 `manage_only` holds it, so its exits see no view and its instrument takes no entry, the broker
 stop is left as it is, and `ca.rescale` records one URGENT `corporate_action.unhandled` per
-(position, action). The owner resolves it (a `/flatten` sells at most the shares the broker
-holds).
+(position, action). The owner resolves it: a `/flatten` sells at most the shares the broker
+holds, or, for a virtual position, `resolve_action` (the admin command line's
+`resolve-action`, PR 73) records `corporate_action.resolved` and closes it virtually at the
+price the owner gives (the ex-date's adjusted price, PR 31 follow-ups 1 and 12).
 
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
@@ -42,9 +44,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
+from ..errors import HatError
 from ..events import record
 from ..models import HatCorporateAction, HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
 from ..notify import Notifier
+from ..risk.sessions import SessionCalendar, SessionState
 from ..time import as_utc, trade_date_of
 from .botlock import lock_bot
 
@@ -52,7 +56,9 @@ __all__ = [
     "ALERT_ACTION_PENDING",
     "ALERT_ACTION_UNCHECKED",
     "EVENT_RESCALED",
+    "EVENT_RESOLVED",
     "EVENT_UNHANDLED",
+    "ResolutionError",
     "SKIP_ACTION_PENDING",
     "Scaled",
     "applied_factors",
@@ -63,6 +69,7 @@ __all__ = [
     "manage_only",
     "pending_actions",
     "rescale_open_positions",
+    "resolve_action",
     "scale_position",
     "scale_qty",
     "unhandled_actions",
@@ -72,6 +79,8 @@ logger = logging.getLogger(__name__)
 
 EVENT_RESCALED = "position.rescaled"
 EVENT_UNHANDLED = "corporate_action.unhandled"
+EVENT_RESOLVED = "corporate_action.resolved"
+CLOSE_REASON = "corporate_action"  # the exit reason of a virtual position closed on resolution
 ALERT_ACTION_PENDING = "corporate_action.pending"
 ALERT_ACTION_UNCHECKED = "corporate_action.unchecked"  # a next-session lookup failed
 SKIP_ACTION_PENDING = "corporate_action_pending"
@@ -362,3 +371,73 @@ def rescale_open_positions(
             failed.append(position_id)
             notifier.alert(ALERT_ACTION_PENDING, day, {"position_id": str(position_id)})
     return applied, failed
+
+
+class ResolutionError(HatError):
+    """The owner's resolution of a locked position was refused; `code` names the rule."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def resolve_action(
+    session: Session,
+    position_id: uuid.UUID,
+    action: str,
+    *,
+    price: Decimal | None,
+    close: Callable[[HatPosition, Decimal], bool],
+    calendar: SessionCalendar,
+    chat_id: int,
+    now: datetime,
+) -> HatPosition:
+    """The owner resolves one unhandled action (`<ex-date>:<type>`, as its
+    `corporate_action.unhandled` names it) of an open virtual position (PR 73; PR 31 follow-ups
+    1, 12): records `corporate_action.resolved` as the owner's (`actor = user`, the allowlisted
+    chat, `via = cli`) and closes the position at `price` (the
+    ex-date's adjusted price the owner reads; `close` sells it virtually and writes its trade
+    result). Outside market hours, under the bot's lock. Refused, writing nothing: inside a
+    session (`market_hours`), an unknown or closed position (`position_unknown`), a real one
+    (`real_position_flatten`: its quantity and stop are on the old scale, and lifting the lock
+    would also lift `/flatten`'s cap at the shares the broker holds, so it is resolved by
+    `/flatten`), an action that does not lock it (`action_not_unhandled`) and a missing or
+    non-positive price (`close_price_required`)."""
+    if calendar.state(now) is not SessionState.CLOSED:
+        raise ResolutionError("market_hours")
+    position = session.get(HatPosition, position_id)
+    if position is None:
+        raise ResolutionError("position_unknown")
+    lock_bot(session, position.bot_id)
+    session.refresh(position)
+    if position.closed_at is not None:
+        raise ResolutionError("position_unknown")
+    if not position.is_virtual:
+        raise ResolutionError("real_position_flatten")
+    locking = {
+        _key(a.ex_date, a.action_type)
+        for a in unhandled_actions(session, position, trade_date_of(now))
+    }
+    if action not in locking:
+        raise ResolutionError("action_not_unhandled")
+    if price is None or not price.is_finite() or price <= 0:
+        raise ResolutionError("close_price_required")
+    record(
+        session,
+        aggregate_type="position",
+        aggregate_id=position.id,
+        event_type=EVENT_RESOLVED,
+        actor="user",
+        payload={
+            "action": action,
+            "price": str(price),
+            "chat_id": chat_id,
+            "via": "cli",
+        },
+        correlation_id=position.signal_id,
+        bot_id=position.bot_id,
+        occurred_at=now,
+    )
+    session.flush()
+    close(position, price)
+    return position

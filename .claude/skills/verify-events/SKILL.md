@@ -84,12 +84,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `b43d4859c078876e30ef34434d9782c82bbe5d7cbb375b160ad320e29209d188`
+Covered digest: `2903568dc25db25804a563ec9fa6d615d6a6274731c2b9c6e72bf81a38545729`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73: the catalogue gains `corporate_action.resolved` (Positions), `sleeve.version_assigned` (Portfolio) and `broker.ddpi_revoked` (Sessions): 48 types. Nothing was narrowed.
 - PR 32 changed `test_telegram.py` (the HAT-TG-011 offset property, checked by `verify-telegram`); `telegram.retention_purge`, the check covered here, is unchanged and passes.
 - `watchlist.published` carries no correlation id: it belongs to a bot and a day, not to one signal, although 03 §6 puts it in the Signals group. `record()` and `events.correlation` exempt it. Recorded as a finding in the PR.
 - `record()` requires `payload.chat_id` for `actor = user` but does not decide which event types are user-initiated: that is the Telegram layer's call (PR 16, HAT-SCH-065).
@@ -269,6 +270,13 @@ tests/hat/conformance/test_conf_events.py:14: in test_events__catalogue
 E   AssertionError: assert {'Data': ('in...closed'), ...} == {'Data': ('in...closed'), ...}
 E     Differing items:
 E     {'Orders': ('order.placed', ..., 'gtt.refreshed', ...)} != {'Orders': ('order.placed', ..., 'gtt.refreshed')}
+```
+
+Break: (PR 73) `broker.ddpi_revoked` dropped from `EVENT_GROUPS`. Check run: `test_conf_events.py::test_events__catalogue`.
+
+```
+    assert EVENT_GROUPS == spec
+E   AssertionError: assert {'Data': ('in...p', ...), ...} == {'Data': ('in...p', ...), ...}
 ```
 
 ### CONF schema.runtime_columns, event_columns, indexes

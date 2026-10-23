@@ -1,193 +1,43 @@
-"""Properties of the owner's admin command line (10 §9 "First deploy", HAT-OPS-091, PR 35).
+"""Properties of the owner's admin command line (10 §9 "First deploy", HAT-OPS-091, PR 35, 73).
 
-The commands run through `main` against an in-memory database, with a fake broker for the
-onboarding, a scripted backtest evidence and a settable clock; no network is touched.
+The commands run through `main` against an in-memory database (the rig is `hat_admin_support`);
+no network is touched.
 """
 
 from __future__ import annotations
 
-import io
-import json
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
-from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
-from decimal import Decimal
+from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
-from hat.fakes.broker import FakeBroker
-from hat.hat_live_support import add_instrument
-from hat.hat_mcp_support import seed_market
-from hat.hat_risk_support import calendar_around
-from hat.hat_support import memory_engine
+from hat.hat_admin_support import (
+    CHAT,
+    START,
+    SYMBOLS,
+    World,
+    add_run,
+    at,
+    constituents_csv,
+    deploy_to_shadow,
+    new_world,
+    night,
+    snapshot,
+    trading_days_after,
+)
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import Engine, func, select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy import func, select, update
 
-from app.base import Base
-from app.hat.admin import AdminDeps, main
-from app.hat.data.sessions import IST
 from app.hat.engine.portfolio import lifecycle
 from app.hat.engine.strategy.versions import seed_text
-from app.hat.execution.fyers_adapter import FyersHatBroker
+from app.hat.execution import modes
 from app.hat.models import (
-    HatBacktestRun,
     HatBot,
+    HatBrokerAccount,
     HatEvent,
+    HatMarket,
     HatStrategyVersion,
-    HatTradingCalendar,
 )
-from app.hat.time import as_utc
-
-START = date(2026, 11, 2)  # a Monday
-CALENDAR = calendar_around(START + timedelta(days=30), span=40)
-SYMBOLS = ("AAA", "BBB", "CCC", "DDD")
-CHAT = 4242
-USER = uuid.UUID("00000000-0000-7000-8000-000000000001")
-EVIDENCE = lifecycle.BacktestFacts(
-    dsr_prob=Decimal("0.99"), trades=250, expectancy=Decimal("0.3"), trials=1
-)
-
-
-def at(day: date, hour: int) -> datetime:
-    """An IST wall-clock hour as UTC (SQLite keeps no offset, so the clock hands out UTC)."""
-    return datetime.combine(day, time(hour, 0), tzinfo=IST).astimezone(UTC)
-
-
-def night(day: date) -> datetime:
-    return at(day, 20)
-
-
-def trading_days_after(day: date, count: int) -> date:
-    """The `count`-th trading session after `day` on the test calendar."""
-    later = [d for d in CALENDAR.trading_days() if d > day]
-    return later[count - 1]
-
-
-@dataclass
-class World:
-    engine: Engine
-    tmp: Path
-    now: datetime = field(default_factory=lambda: night(START))
-    env: dict[str, str] = field(default_factory=lambda: {"HAT_TELEGRAM_CHAT_ID": str(CHAT)})
-    evidence: lifecycle.BacktestFacts = EVIDENCE
-
-    def session(self) -> Session:
-        return sessionmaker(self.engine, expire_on_commit=False)()
-
-    @contextmanager
-    def scope(self) -> Iterator[Session]:
-        session = self.session()
-        try:
-            yield session
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    def deps(self) -> AdminDeps:
-        return AdminDeps(
-            user_id=USER,
-            files=self.tmp,
-            scope=self.scope,
-            broker_for=lambda _name: FyersHatBroker(FakeBroker(), instruments=lambda: []),  # type: ignore[arg-type]
-            evidence=lambda _s, _b: self.evidence,
-            env=self.env,
-            clock=lambda: self.now,
-        )
-
-    def run(self, *argv: str) -> tuple[int, Any, str]:
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            code = main(list(argv), self.deps())
-        return code, (json.loads(out.getvalue()) if code == 0 else None), err.getvalue()
-
-    def ok(self, *argv: str) -> Any:  # noqa: ANN401 - the command's JSON
-        code, result, err = self.run(*argv)
-        assert code == 0, (argv, err)
-        return result
-
-
-def new_world(tmp: Path) -> World:
-    engine = memory_engine()
-    with Session(engine) as session:
-        market_id = seed_market(session)
-        for day, row in CALENDAR.days.items():
-            session.add(
-                HatTradingCalendar(
-                    market_id=market_id,
-                    day=day,
-                    is_trading=row.is_trading,
-                    open_at=as_utc(row.open_at) if row.open_at else None,
-                    close_at=as_utc(row.close_at) if row.close_at else None,
-                )
-            )
-        for symbol in SYMBOLS:
-            add_instrument(session, market_id, symbol, isin_of(symbol))
-        session.commit()
-    return World(engine, tmp)
-
-
-def isin_of(symbol: str) -> str:
-    return f"INE00000{SYMBOLS.index(symbol)}A01" if symbol in SYMBOLS else "INE999999A01"
-
-
-def constituents_csv(
-    tmp: Path, symbols: tuple[str, ...], isins: dict[str, str] | None = None
-) -> Path:
-    path = tmp / f"nifty-{uuid.uuid4().hex}.csv"
-    isin = {s: isin_of(s) for s in symbols} | (isins or {})
-    rows = "".join(f"{s} Ltd,Finance,{s},EQ,{isin[s]}\n" for s in symbols)
-    path.write_text("Company Name,Industry,Symbol,Series,ISIN Code\n" + rows, "utf-8")
-    return path
-
-
-def add_run(world: World, version_id: str) -> str:
-    """A completed backtest run of the version (the backtest itself is HAT-BT's)."""
-    with world.scope() as session:
-        run = HatBacktestRun(
-            id=uuid.uuid4(),
-            strategy_version_id=uuid.UUID(version_id),
-            risk_policy_version_id=uuid.uuid4(),
-            family_key="probe",
-            period_start=date(2025, 1, 1),
-            period_end=date(2025, 12, 31),
-            data_snapshot={},
-            status="completed",
-            metrics={"for_promotion": True, "slot_order": "time"},  # a promotion run (HAT-BT-061)
-        )
-        session.add(run)
-        return str(run.id)
-
-
-def deploy_to_shadow(world: World) -> tuple[str, str]:
-    """The runbook up to a sleeve in Shadow on a version in its shadow period: (bot, version)."""
-    world.ok("seed-policy")
-    account = world.ok("onboard-account", "--account-ref", "XA00000")
-    assert account["status"] == "active"
-    strategies = world.ok("seed-strategies")["strategies"]
-    bots = world.ok("seed-bots", "--account", account["broker_account_id"])["bots"]
-    csv = constituents_csv(world.tmp, SYMBOLS[:3])
-    universe = world.ok(
-        "publish-universe", "--constituents", csv.name, "--as-of", START.isoformat()
-    )
-    assert universe["members"] == 3
-    assert sorted(universe["bots"]) == sorted(bots)
-    shown = world.ok("show")
-    strategy_id = strategies["stage2-contraction-breakout"]
-    bot = next(b["id"] for b in shown["bots"] if b["strategy_id"] == strategy_id)
-    version = next(s for s in shown["strategies"] if s["id"] == strategy_id)["versions"][0]["id"]
-    world.ok("publish-version", "--version", version, "--run", add_run(world, version))
-    world.ok("assign-version", "--bot", bot, "--version", version)
-    world.ok("promote", "--bot", bot, "--to", "backtested")
-    world.ok("promote", "--bot", bot, "--to", "shadow")
-    world.ok("shadow-version", "--version", version)
-    return bot, version
 
 
 @settings(
@@ -252,15 +102,6 @@ def test_first_deploy(tmp_path: Path, waited: int) -> None:
             assert event.payload["via"] == "cli"
 
 
-def snapshot(world: World) -> dict[str, list[str]]:
-    """Every row of every table, as text: what a refused command must leave unchanged."""
-    with world.engine.connect() as conn:
-        return {
-            t.name: sorted(repr(tuple(r)) for r in conn.execute(select(t)))
-            for t in Base.metadata.sorted_tables
-        }
-
-
 REFUSALS = {
     "promote_live_from_shadow": "version_not_live",
     "promote_version_early": "shadow_days",
@@ -276,6 +117,7 @@ REFUSALS = {
     "universe_in_hours": "market_hours",
     "isin_mismatch": "unknown_symbols: BBB(INE123456A01)",
     "bots_on_unknown_account": "account_not_active",
+    "bots_on_foreign_account": "account_not_active",
     "draft_in_hours": "market_hours",
     "draft_bad_utf8": "config_unreadable",
     "file_outside_admin": "file_outside_admin",
@@ -285,11 +127,37 @@ REFUSALS = {
     "ddpi_blank_note": "ddpi_note_required",
     "ddpi_twice": "ddpi_already_confirmed",
     "ddpi_unknown_account": "account_not_active",
+    "revoke_unconfirmed": "ddpi_not_confirmed",
+    "revoke_blank_note": "ddpi_note_required",
+    "revoke_unknown_account": "account_unknown",
+    "sleeve_unknown_strategy": "unknown_strategy",
+    "sleeve_unknown_account": "account_not_active",
+    "sleeve_foreign_account": "account_not_active",
+    "resolve_unknown_position": "position_unknown",
+    "resolve_in_hours": "market_hours",
+    "assign_no_owner_chat": "no_owner_chat",
 }
 
 
-@settings(
-    max_examples=30, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+def _foreign_account(world: World) -> str:
+    """An active account of another user: no sleeve of the owner's may be bound to it."""
+    with world.scope() as session:
+        account = HatBrokerAccount(
+            user_id=uuid.uuid4(),
+            broker="fyers",
+            account_ref="XF0073",
+            capabilities={},
+            status="active",
+        )
+        session.add(account)
+        session.flush()
+        return str(account.id)
+
+
+@settings(  # every case: Hypothesis does not repeat a case, so this enumerates them
+    max_examples=len(REFUSALS),
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(case=st.sampled_from(sorted(REFUSALS)))
 def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
@@ -342,6 +210,8 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
         argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
     elif case == "bots_on_unknown_account":
         argv = ("seed-bots", "--account", str(uuid.uuid4()))
+    elif case == "bots_on_foreign_account":
+        argv = ("seed-bots", "--account", _foreign_account(world))
     elif case in ("draft_in_hours", "draft_bad_utf8"):
         config = world.tmp / f"draft-{uuid.uuid4().hex}.yaml"
         config.write_text(seed_text("stage2-contraction-breakout"), "utf-8")
@@ -370,6 +240,36 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
         else:
             account = str(uuid.uuid4())
         argv = ("confirm-ddpi", "--account", account, "--since", since, "--note", note)
+    elif case.startswith("revoke_"):
+        with world.scope() as session:
+            account = str(session.get_one(HatBot, uuid.UUID(bot)).broker_account_id)
+        note = "   " if case == "revoke_blank_note" else "DDPI withdrawn"
+        if case == "revoke_unknown_account":
+            account = str(uuid.uuid4())
+        argv = ("revoke-ddpi", "--account", account, "--note", note)
+    elif case.startswith("sleeve_"):
+        with world.scope() as session:
+            account = str(session.get_one(HatBot, uuid.UUID(bot)).broker_account_id)
+        if case == "sleeve_unknown_strategy":
+            argv = ("add-sleeve", "--strategy", str(uuid.uuid4()), "--account", account)
+        elif case == "sleeve_foreign_account":
+            argv = (
+                "add-sleeve",
+                "--strategy",
+                str(strategy_id),
+                "--account",
+                _foreign_account(world),
+            )
+        else:
+            argv = ("add-sleeve", "--strategy", str(strategy_id), "--account", str(uuid.uuid4()))
+    elif case.startswith("resolve_"):
+        if case == "resolve_in_hours":
+            world.now = at(START + timedelta(days=1), 11)
+        argv = ("resolve-action", "--position", str(uuid.uuid4()), "--action", "2026-11-03:other")
+        argv = (*argv, "--close-at", "101.5")
+    elif case == "assign_no_owner_chat":
+        world.env = {}
+        argv = ("assign-version", "--bot", bot, "--version", version)
     elif case == "universe_unknown_bot":
         csv = constituents_csv(world.tmp, SYMBOLS)
         argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
@@ -384,3 +284,110 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
     assert snapshot(world) == before
     with world.scope() as session:
         assert session.scalar(select(func.count()).select_from(HatEvent)) > 0
+
+
+@settings(
+    max_examples=10, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(in_hours=st.booleans(), later=st.integers(0, 5), no_calendar=st.booleans())
+def test_ddpi_revoked(tmp_path: Path, in_hours: bool, later: int, no_calendar: bool) -> None:
+    """PBT admin.ddpi_revoked (HAT-GOV-085, PR 73; PR 45 follow-up 2): `revoke-ddpi` withdraws
+    a DDPI confirmation at any time, inside market hours too and with no trading calendar
+    loaded (it only narrows), recorded as the owner's under the account's user; the
+    account's DDPI gate is off from that instant on, so its bots run shadow, and a second
+    revocation is refused. Harm: DDPI withdrawn at the broker while HAT still places real
+    sales that need a TPIN, and a stop that cannot sell."""
+    world = new_world(tmp_path)
+    bot, _ = deploy_to_shadow(world)
+    with world.scope() as session:
+        account = str(session.get_one(HatBot, uuid.UUID(bot)).broker_account_id)
+    world.ok("confirm-ddpi", "--account", account, "--since", START.isoformat(), "--note", "on")
+    day = trading_days_after(START, 1 + later)
+    world.now = at(day, 11) if in_hours else night(day)
+    if no_calendar:  # the market's calendar can't be read (`no_calendar` for the other acts)
+        with world.scope() as session:
+            session.execute(update(HatMarket).values(code="XNSE"))
+    result = world.ok("revoke-ddpi", "--account", account, "--note", "withdrawn at the DP")
+    assert result == {"broker_account_id": account, "ddpi_confirmed": False}
+    with world.scope() as session:
+        row = session.get_one(HatBrokerAccount, uuid.UUID(account))
+        assert row.ddpi_note == f"revoked {day.isoformat()}: withdrawn at the DP"
+        for instant in (world.now, world.now + timedelta(days=later + 1)):
+            assert modes.account_gates(session, row, instant).ddpi_confirmed is False
+        events = session.scalars(
+            select(HatEvent).where(HatEvent.event_type == "broker.ddpi_revoked")
+        ).all()
+        assert [(e.actor, e.payload["chat_id"], e.payload["via"]) for e in events] == [
+            ("user", CHAT, "cli")
+        ]
+        assert [e.user_id for e in events] == [row.user_id]
+        confirmed = session.scalars(
+            select(HatEvent.user_id).where(HatEvent.event_type == "broker.ddpi_confirmed")
+        ).all()
+        assert confirmed == [row.user_id]
+    code, _, err = world.run("revoke-ddpi", "--account", account, "--note", "again")
+    assert (code, err) == (2, "refused: ddpi_not_confirmed\n")
+
+
+@settings(
+    max_examples=6, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+)
+@given(other_account=st.booleans())
+def test_shadow_beside_live(tmp_path: Path, other_account: bool) -> None:
+    """PBT admin.shadow_beside_live (HAT-PORT-060, HAT-BOT-084, PR 73; PR 35 follow-ups 2, 3):
+    with a strategy's sleeve Live, `add-sleeve` gives the strategy a second sleeve (on the same
+    account or another) that takes a new version through Research, Backtested and Shadow while
+    the Live one keeps trading the live version; every assignment and the promotion's move of
+    the Live sleeve are recorded as the owner's `sleeve.version_assigned`; and the second sleeve
+    never goes Live while the first holds the strategy, even once its version is live. Harm: a
+    new version has no way to shadow beside the live one, or two sleeves of one strategy trade
+    real money and take its base weight twice."""
+    world = new_world(tmp_path)
+    bot, v1 = deploy_to_shadow(world)
+    world.now = night(trading_days_after(START, lifecycle.SHADOW_DAYS))
+    world.ok("promote-version", "--version", v1)
+    world.ok("promote", "--bot", bot, "--to", "live")
+    with world.scope() as session:
+        live = session.get_one(HatBot, uuid.UUID(bot))
+        strategy_id, account = str(live.strategy_id), str(live.broker_account_id)
+    if other_account:
+        account = world.ok("onboard-account", "--account-ref", "XA00001")["broker_account_id"]
+    sleeve = world.ok("add-sleeve", "--strategy", strategy_id, "--account", account)
+    assert sleeve["lifecycle_state"] == lifecycle.RESEARCH
+    second = sleeve["bot_id"]
+    config = world.tmp / "v2.yaml"
+    config.write_text(seed_text("stage2-contraction-breakout"), "utf-8")
+    v2 = world.ok("save-draft", "--strategy", strategy_id, "--config", config.name)["version_id"]
+    world.ok("publish-version", "--version", v2, "--run", add_run(world, v2))
+    world.ok("assign-version", "--bot", second, "--version", v2)
+    world.ok("promote", "--bot", second, "--to", "backtested")
+    world.ok("promote", "--bot", second, "--to", "shadow")
+    world.ok("shadow-version", "--version", v2)
+    with world.scope() as session:
+        assert str(session.get_one(HatBot, uuid.UUID(bot)).live_version_id) == v1
+        assert session.get_one(HatBot, uuid.UUID(bot)).lifecycle_state == lifecycle.LIVE
+    code, _, err = world.run("promote", "--bot", second, "--to", "live")
+    assert (code, err) == (2, "refused: version_not_live\n")
+    started = trading_days_after(START, lifecycle.SHADOW_DAYS)
+    world.now = night(trading_days_after(started, lifecycle.SHADOW_DAYS))
+    world.ok("promote-version", "--version", v2)
+    code, _, err = world.run("promote", "--bot", second, "--to", "live")
+    assert (code, err) == (2, "refused: strategy_has_live_sleeve\n")
+    with world.scope() as session:
+        assert str(session.get_one(HatBot, uuid.UUID(bot)).live_version_id) == v2
+        assert session.get_one(HatBot, uuid.UUID(second)).lifecycle_state == lifecycle.SHADOW
+        assigned = session.scalars(
+            select(HatEvent)
+            .where(HatEvent.event_type == "sleeve.version_assigned")
+            .order_by(HatEvent.occurred_at, HatEvent.id)
+        ).all()
+        moves = [
+            (str(e.aggregate_id), e.payload["version_id"], e.payload["replaced"]) for e in assigned
+        ]
+        assert moves == [(bot, v1, None), (second, v2, None), (bot, v2, 1)]
+        for event in assigned:
+            assert (event.actor, event.payload["chat_id"], event.payload["via"]) == (
+                "user",
+                CHAT,
+                "cli",
+            )

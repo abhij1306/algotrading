@@ -5,7 +5,7 @@ written out independently. Money and weights are Decimal."""
 import math
 import uuid
 from datetime import UTC, datetime, time, timedelta
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, Decimal, localcontext
 
 import pytest
 from hat_engine_support import seed_engine_world
@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.daily.live import LiveContexts
 from app.hat.engine.portfolio import allocator, regime, service
-from app.hat.engine.portfolio.allocator import SleeveInput, allocate
+from app.hat.engine.portfolio.allocator import Allocation, SleeveInput, allocate
 from app.hat.engine.portfolio.health import Health
 from app.hat.execution.modes import bot_mode
 from app.hat.models import (
@@ -138,24 +138,77 @@ def test_capital_and_risk(sleeves: list[SleeveInput], policy: RiskPolicy, equity
     assert sum((r.capital for r in rows), D(0)) <= equity
 
 
+def _held(sleeves: list[SleeveInput], products: list[Decimal], cap: Decimal) -> list[Decimal]:
+    """An oracle of the two caps: each cluster's sum, then the book's, scaled down to its limit
+    in proportion and rounded down to 12 places."""
+
+    def down(ws: list[Decimal], limit: Decimal) -> list[Decimal]:
+        total = sum(ws, D(0))
+        if total <= limit:
+            return ws
+        with localcontext() as ctx:
+            ctx.prec = 120
+            return [(w * limit / total).quantize(D("1E-12"), rounding=ROUND_DOWN) for w in ws]
+
+    out = list(products)
+    for c in {s.cluster for s in sleeves}:
+        idx = [i for i, s in enumerate(sleeves) if s.cluster == c]
+        for i, w in zip(idx, down([out[i] for i in idx], cap), strict=True):
+            out[i] = w
+    return down(out, D(1))
+
+
 @given(SLEEVES, policies(), EQUITY)
 def test_virtual_allocation(
     sleeves: list[SleeveInput], policy: RiskPolicy, equity: Decimal
 ) -> None:
-    """Item 8: a Shadow or Probation sleeve keeps weight, capital and risk 0 and gets a nominal
-    allocation for its virtual entries, `virtual_capital = base x regime_mult x equity` (rounded
-    down, never capped) and `virtual_risk_pct = risk_pct x regime_mult` (health taken as 1);
-    every other sleeve has none. Harm: a sleeve in shadow books no paper trades, so it never
-    earns its way to Live, or a Probation sleeve keeps trading real money."""
-    for s, r in zip(sleeves, allocate(sleeves, policy, equity), strict=True):
-        if s.lifecycle_state in ("shadow", "probation"):
-            assert (r.final_weight, r.capital, r.risk_pct) == (0, 0, 0)
-            exact = r.base_weight * r.regime_mult * equity
-            assert r.virtual_capital == exact.quantize(D("0.0001"), rounding=ROUND_DOWN)
-            assert r.virtual_risk_pct == policy.risk_pct * r.regime_mult
-        else:
+    """Item 8, PR 73: a Shadow or Probation sleeve keeps weight, capital and risk 0 and gets a
+    nominal allocation for its virtual entries: `virtual_risk_pct = risk_pct x regime_mult`
+    (health taken as 1; 0 when the nominal capital is 0) and `virtual_capital` its nominal
+    weight x equity, rounded down. The
+    nominal weight is `base x regime_mult` held to the cluster cap and the whole book with the
+    other strategies' Live weights, as if the sleeve alone were Live in place of its strategy's
+    other sleeves: never above `base x regime_mult`, equal to it when no cap binds, the same
+    whatever other sleeves are in shadow; every other sleeve has none, and no real weight
+    changes. Harm: a sleeve in shadow books no paper trades, so it never earns its way to Live;
+    its uncapped paper book outgrows equity; or a new version shadowing its strategy's Live
+    sleeve is sized on the strategy's base weight counted twice, so its P&L cannot be compared;
+    or a sleeve with no nominal capital trades on its realised paper P&L alone."""
+    rows = allocate(sleeves, policy, equity)
+    real = [s for s in sleeves if s.lifecycle_state not in ("shadow", "probation")]
+    for s, r in zip(sleeves, rows, strict=True):
+        if s.lifecycle_state not in ("shadow", "probation"):
             assert r.virtual_capital is None
             assert r.virtual_risk_pct is None
+            continue
+        assert (r.final_weight, r.capital, r.risk_pct) == (0, 0, 0)
+        assert r.virtual_capital is not None
+        funded = policy.risk_pct * r.regime_mult if r.virtual_capital > 0 else 0
+        assert r.virtual_risk_pct == funded
+        mine = r.base_weight * r.regime_mult
+        assert 0 <= r.virtual_capital <= (mine * equity).quantize(D("0.0001"), rounding=ROUND_DOWN)
+        others = [o for o in real if o.sleeve != s.sleeve]
+        products = [mine, *(_product(rows, o) for o in others)]
+        held = _held([s, *others], products, policy.cluster_cap)[0]
+        assert r.virtual_capital == (held * equity).quantize(D("0.0001"), rounding=ROUND_DOWN)
+        binds = sum(products, D(0)) > 1 or any(
+            sum((p for x, p in zip([s, *others], products, strict=True) if x.cluster == c), D(0))
+            > policy.cluster_cap
+            for c in {x.cluster for x in [s, *others]}
+        )
+        if not binds:
+            exact = (mine * equity).quantize(D("0.0001"), rounding=ROUND_DOWN)
+            assert r.virtual_capital == exact
+        alone = allocate([s, *real], policy, equity)[0]  # no other sleeve in shadow
+        assert alone.virtual_capital == r.virtual_capital
+    live = {r.bot_id: r.final_weight for r in allocate(real, policy, equity)}
+    assert all(r.final_weight == live[r.bot_id] for r in rows if r.bot_id in live)
+
+
+def _product(rows: list[Allocation], sleeve: SleeveInput) -> Decimal:
+    """A sleeve's uncapped real product, base x regime x health, from its allocation row."""
+    r = next(x for x in rows if x.bot_id == sleeve.bot_id)
+    return r.base_weight * r.regime_mult * r.health_mult
 
 
 @given(

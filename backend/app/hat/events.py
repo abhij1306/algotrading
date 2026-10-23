@@ -73,6 +73,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "exit.close_gap",
         "position.rescaled",
         "corporate_action.unhandled",
+        "corporate_action.resolved",
     ),
     "Control": (
         "mode.change_requested",
@@ -90,12 +91,18 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "risk.change_requested",
         "risk.change_effective",
     ),
-    "Portfolio": ("sleeve.lifecycle_changed", "regime.state_recorded", "allocation.computed"),
+    "Portfolio": (
+        "sleeve.lifecycle_changed",
+        "sleeve.version_assigned",
+        "regime.state_recorded",
+        "allocation.computed",
+    ),
     "Sessions": (
         "broker.logged_in",
         "broker.session_lost",
         "broker.capabilities_changed",
         "broker.ddpi_confirmed",
+        "broker.ddpi_revoked",
         "feed.stale",
     ),
 }

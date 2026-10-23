@@ -910,9 +910,10 @@ def test_policy_change_emits_event(steps: list) -> None:
 
 @given(st.sampled_from(("raise", "lower")))
 def test_policy_change_inside_session_or_without_evidence_is_refused(kind: str) -> None:
-    """A change requested inside market hours, an increase without evidence (the default source,
-    the backtest runs, has no completed run: HAT-GOV-091) and a request with no session open to
-    take effect at are refused, and write nothing."""
+    """A change requested inside market hours, the owner's request without its chat id (PR 73),
+    an increase without evidence (the default source, the backtest runs, has no completed run:
+    HAT-GOV-091) and a request with no session open to take effect at are refused, and write
+    nothing."""
     with Session(DB_ENGINE) as session:
         try:
             seed_initial_policy(session, USER, AT - timedelta(days=1))
@@ -926,6 +927,16 @@ def test_policy_change_inside_session_or_without_evidence_is_refused(kind: str) 
                     proposed=proposed,
                     calendar=LONG_CALENDAR,
                     requested_at=AT,
+                    chat_id=1,
+                )
+            with pytest.raises(PolicyChangeError):  # the owner's request names its chat
+                request_policy_change(
+                    session,
+                    user_id=USER,
+                    proposed=proposed,
+                    calendar=LONG_CALENDAR,
+                    requested_at=evening,
+                    evidence=lambda _s, _u, _at: PASSING,
                 )
             if kind == "raise":
                 with pytest.raises(GateError):

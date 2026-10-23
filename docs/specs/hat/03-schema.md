@@ -774,11 +774,11 @@ create trigger hat_event_no_update before update or delete on hat_event
 | Data | `ingest.completed`, `ingest.failed`, `quality.failed`, `gapscan.completed` |
 | Signals | `watchlist.published`, `signal.triggered`, `signal.rejected`, `signal.approved`, `signal.skipped`, `signal.expired` |
 | Orders | `order.placed`, `order.rejected`, `order.filled`, `order.cancelled`, `gtt.placed`, `gtt.refreshed`, `gtt.triggered` |
-| Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled`, `corporate_action.unhandled` |
+| Positions | `position.opened`, `stop.moved`, `exit.partial`, `position.closed`, `exit.close_evaluated`, `exit.close_gap`, `position.rescaled`, `corporate_action.unhandled`, `corporate_action.resolved` |
 | Control | `mode.change_requested`, `mode.applied`, `mode.apply_refused`, `bot.paused`, `bot.resumed`, `kill.tripped`, `kill.rearmed`, `flatten.executed` |
 | Governance | `strategy.version_created`, `strategy.promoted`, `risk.change_requested`, `risk.change_effective` |
-| Portfolio | `sleeve.lifecycle_changed`, `regime.state_recorded`, `allocation.computed` |
-| Sessions | `broker.logged_in`, `broker.session_lost`, `broker.capabilities_changed`, `broker.ddpi_confirmed`, `feed.stale` |
+| Portfolio | `sleeve.lifecycle_changed`, `sleeve.version_assigned`, `regime.state_recorded`, `allocation.computed` |
+| Sessions | `broker.logged_in`, `broker.session_lost`, `broker.capabilities_changed`, `broker.ddpi_confirmed`, `broker.ddpi_revoked`, `feed.stale` |
 
 Every user-initiated event carries `actor = user` and the Telegram chat ID in the payload (an owner step of the local admin command line, 10 §9, carries the allowlisted chat's ID and `via = cli`), so discipline metrics (skips, flattens, pauses) come straight from this table. `events.record()` takes `actor` as the type `Actor` (the four values of the check) and refuses a user event whose payload has no integer `chat_id`.
 
@@ -809,10 +809,10 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
 #### HAT-SCH-063: Event types are exactly the MVP catalogue
 - **Statement:** `record()` accepts only the event types in the catalogue above; adding one requires a spec change here.
 - **Source:** SCH "Event types (MVP)"; PLAN PR 3 ("the event catalogue matches spec 03 §6 exactly").
-- **PR:** 3, 9
+- **PR:** 3, 9, 73
 - **Verification:** CONF `events.catalogue`, PBT `events.unknown_type_rejected`
 - **Acceptance:**
-  - Property: the set of event types known to `app/hat/events.py` equals the 45 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092, and `corporate_action.unhandled` from PR 31, a position spanning an action the rescale cannot handle, HAT-EXEC-144, and `mode.applied`, `mode.apply_refused` and `broker.ddpi_confirmed` from PR 45, what a session open did with a queued mode change and the owner's DDPI confirmation, HAT-GOV-085). Harm: code and audits disagree on what can happen.
+  - Property: the set of event types known to `app/hat/events.py` equals the 48 types in the catalogue table (35 of the MVP list, plus `exit.close_evaluated` and `exit.close_gap` from PR 15c, HAT-OPS-034, `gapscan.completed` from PR 17, the gap scan's record for a restart, and `position.rescaled` from PR 21, a split or bonus applied to an open position, HAT-EXEC-141, and `gtt.triggered` from PR 27, a GTT whose sale rests below its limit, HAT-EXEC-066, and `broker.capabilities_changed` from PR 29, the adapter's capabilities rewritten on the account, HAT-BRK-092, and `corporate_action.unhandled` from PR 31, a position spanning an action the rescale cannot handle, HAT-EXEC-144, and `mode.applied`, `mode.apply_refused` and `broker.ddpi_confirmed` from PR 45, what a session open did with a queued mode change and the owner's DDPI confirmation, HAT-GOV-085, and `corporate_action.resolved`, `sleeve.version_assigned` and `broker.ddpi_revoked` from PR 73, the owner's resolution of a locked position (HAT-EXEC-144), assignment of a version to a sleeve (HAT-BOT-084) and withdrawal of DDPI (HAT-GOV-085)). Harm: code and audits disagree on what can happen.
   - Property: for every string not in the catalogue, `record()` raises and writes nothing. Harm: a typo creates an event that no discipline metric or replay will ever read.
 
 #### HAT-SCH-064: Aggregate types and correlation

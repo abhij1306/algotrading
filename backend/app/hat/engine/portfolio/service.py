@@ -578,6 +578,20 @@ def owner_transition(
         )
         if version is None or version.status != "live":
             raise lifecycle.LifecycleError("version_not_live")
+        # one sleeve of a strategy holds real money: a second would take its base weight twice.
+        # The strategy row's lock orders two owners promoting sibling sleeves at once: the
+        # second reads the first's committed Live sleeve (the engine's own edges never enter
+        # Live, so this is the one way in).
+        session.get(HatStrategy, bot.strategy_id, with_for_update=True)
+        holder = session.scalar(
+            select(HatBot.id).where(
+                HatBot.strategy_id == bot.strategy_id,
+                HatBot.id != bot.id,
+                HatBot.lifecycle_state.in_((lifecycle.LIVE, lifecycle.PROBATION)),
+            )
+        )
+        if holder is not None:
+            raise lifecycle.LifecycleError("strategy_has_live_sleeve")
     evidence = load_evidence(session, bot, trade_date, policy, backtest)
     return transition(
         session,

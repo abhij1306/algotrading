@@ -25,6 +25,7 @@ Checks that every initial stop is priced from its rule exactly, on the tick grid
 - `PBT rescale.factor_exact` A stored 12-place factor of a ratio with denominator ≤ 1000 reads back exactly; a short factor that is no such ratio is refused. Harm: 0.0110 read as 11/1000 instead of 1/91.
 - `PBT rescale.pending_is_manage_only` While a position awaits its rescale the exits' view source gives it no view and a trigger of its instrument is stored Rejected `corporate_action_pending`; once rescaled both return. Harm: exits or entries on prices of the wrong scale.
 - `PBT rescale.unhandled_is_manage_only` For every action the rescale cannot handle (`other`, or a split or bonus with factor 1 or above) and ex-date around the entry day, with or without a split beside it, over repeated `ca.rescale` runs (`Nightly.rescale`): the action is never applied, a position it spans gets no exit view and is manage-only, its instrument awaits a rescale, and one `corporate_action.unhandled` names the (position, action); the split beside it is applied once. Harm: a consolidation keeps ten times the shares on an old-scale stop, or a rights issue's old stop sells at the open.
+- `PBT rescale.resolution_ends_lock` (PR 73) For every unhandled action and virtual position, with or without a second action: the owner's `resolve_action` outside market hours records one `corporate_action.resolved` as the owner's (chat id) and closes the position at the given price through `close`; a real position (`real_position_flatten`), a resolution inside a session, of an action that does not lock it, of an unknown position or without a price is refused and writes nothing. Harm: a locked shadow position stays manage-only for ever, or a real one sells or stops on an old-scale quantity the broker no longer holds.
 - `PBT rescale.broker_stop_follows` After a rescale, the next sync moves every live broker stop (GTT or day stop) down to the rescaled trigger first and then to the rescaled quantity, never larger than the old size at the old trigger; while the broker refuses the larger size the stop rests at the new trigger for the old size; with no rescale nothing moves. Harm: the old GTT fires on the ex-date open.
 - `PBT rescale.next_session_lookup` `ca.adjust` looks up exactly the held and watchlisted symbols for the next session, stores what comes back and alerts each failed lookup (or one with an unreadable row) once without failing, and with no MCP client still succeeds and alerts once. Harm: the split is first seen after the ex-date close.
 - `PBT rescale.price_neutral_changes_nothing` (PR 47) For every set of positions and actions, adding price-neutral rows (`dividend`, `notice`, factor 1) on any ex-date leaves the manage-only set, the pending set, the rescale, the `corporate_action.unhandled` flags and the adjusted view's factors as they were without them. Harm: every dividend of a held stock makes the position manage-only with an URGENT alert, or enters the adjusted view.
@@ -120,12 +121,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `17d1b3abdc80c0bee4b8f55846a930e299e8fa94989264f5ce54ca02076f9a47`
+Covered digest: `edaca512b99439395153962de25ecf2be306710659fc5abe9e44dcf5a7007e80`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73 (PR 31 follow-ups 1, 2, 12; HAT-EXEC-144): `rescale.resolve_action` is the owner's resolution of an unhandled action on a virtual position (admin `resolve-action`, `verify-portfolio`): it records `corporate_action.resolved` and closes the position. A real position is refused (code review: lifting its lock kept the old-scale quantity and stop and lifted `/flatten`'s cap at the broker's holdings); PR 31 follow-up 2 (keep a real position and end its lock) stays open. New PBT `rescale.resolution_ends_lock`. Nothing was narrowed.
 - PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).
 - PR 15c built `StopPlacement` and removed `TLA StopPlacement!StopOnlyTightens` from `KNOWN_GAPS`. The model has one real position, at most two entry fills and three stop levels; it does not model the quantity a stop covers (resizing is checked by `manage.real_fill_protected` on the real code) nor the GTT's limit price (`stops.gtt_limit_offset`). `AlwaysProtected` allows the window between a fill and its stop work, a failure that was alerted, and an unseen unfilled GTT (then `GttUnfilledAlerted` holds). `NightlyVerifyCovers` accepts an alert in place of a GTT (the broker could not be reached, or the new GTT failed). `TypeOK` has no broken variant.
 - PR 20 (audit 2026-10-22 F2) added the broker's shares (`bqty`), the working entry (`rest`), `exited` and `cancelAsked`: a sale that empties the position closes it only when no entry works, and `EntryFill` can follow it. The cancel of the remainder is asked in the sale's own step (for a stop fill the code asks it in the protect that follows the fill in the same sync); a cancel that comes too late is the interleaving of `EntryFill` before `EntryEnds`. A day stop that expires at the close under a held position with no GTT (reachable once a late fill after the swap rests on the day stop alone) puts the position back to `protecting`, as `FillSync._statuses` does with an ended stop. `EmptiedCloses` relies on the broker ending the entry (weak fairness on `EntryEnds`: the cancel, else the DAY expiry).
@@ -636,6 +638,34 @@ Break: in `backend/app/hat/daily/nightly.py`: `rescale` does not call `flag_unha
 ```
 E   AssertionError: assert [] == ['2026-10-22:other']
 E     Right contains one more item: '2026-10-22:other'
+```
+
+### PBT rescale.resolution_ends_lock
+
+Check run: `test_rescale.py::test_resolution_ends_lock`.
+
+Break: (PR 73) `resolve_action` without the market-hours refusal.
+
+```
+    | app.hat.engine.rescale.ResolutionError: real_position_flatten
+```
+
+Break: (PR 73) a real position is resolved (the `real_position_flatten` refusal dropped).
+
+```
+E   app.hat.engine.trades.TradeError: position_not_virtual
+```
+
+Break: (PR 73) any action key resolves (`if action not in locking` became `if False`).
+
+```
+E   AssertionError: assert 'action_not_unhandled' is None
+```
+
+Break: (PR 73) no price is accepted (the `close_price_required` refusal dropped).
+
+```
+E   sqlite3.IntegrityError: NOT NULL constraint failed: hat_fill.price
 ```
 
 ### PBT rescale.broker_stop_follows
