@@ -263,6 +263,7 @@ _SANDBOX_USER = uuid.UUID(int=1)
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
+_ONE = Decimal(1)
 _FINEST_TICK = Decimal("0.01")  # the NSE tick below ₹250 (`data.ticks`), the finest slab
 # The instants of a simulated day (IST): a later step of the day has a later instant.
 _AT_NIGHT = time(16, 0)
@@ -1315,7 +1316,8 @@ class _Run:
     def _mark(self, day: date) -> None:
         equity, held_value = self._marked(day)
         self.equity.append((day, equity))
-        self.invested.append(held_value / equity if equity > 0 else _ZERO)
+        # at most 1: a cash-bound entry's slippage and charges can overdraw the cash a little
+        self.invested.append(min(held_value / equity, _ONE) if equity > 0 else _ZERO)
 
     # --- the result --------------------------------------------------------------------------
 
@@ -1664,14 +1666,14 @@ def compute_metrics(
 
 def sleeve_weight(spec: RunSpec) -> Decimal:
     """The run's sleeve weight (HAT-BT-014): `spec.sleeve_weight`, else the policy's base
-    weight of the strategy's sleeve; `backtest_no_base_weight` when the policy has none, and
-    `backtest_weight_above_cluster_cap` above the policy's cluster cap, which the allocator
-    would silently cut it to."""
+    weight of the strategy's sleeve; `backtest_no_base_weight` when the policy has none or
+    gives it 0 (a policy may), and `backtest_weight_above_cluster_cap` above the policy's
+    cluster cap, which the allocator would silently cut it to."""
     policy = spec.policy.policy
     weight = spec.sleeve_weight
     if weight is None:
         weight = policy.base_weight.get(sleeve_key(spec.config.bot))
-        if weight is None:
+        if weight is None or weight <= 0:
             raise BacktestError("backtest_no_base_weight")
     if weight > policy.cluster_cap:
         raise BacktestError("backtest_weight_above_cluster_cap")

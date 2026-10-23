@@ -1868,28 +1868,29 @@ def test_invested_share(paths: dict) -> None:
         st.floats(0.01, 1.0),
     ),
     st.sampled_from([*REGIME_MULT_RULES, "Policy", "0.5", ""]),
-    st.booleans(),
+    st.sampled_from([D("0.50"), None, D(0)]),
     st.sampled_from([D(1), D("0.4")]),
     st.booleans(),
 )
-@example(D(0), REGIME_MULT_ONE, True, D(1), False)
-@example(D("1.0001"), REGIME_MULT_ONE, True, D(1), False)
-@example(D(1), REGIME_MULT_POLICY, True, D(1), False)
-@example(None, REGIME_MULT_ONE, False, D(1), False)  # no base weight for the sleeve
-@example(D("0.5"), REGIME_MULT_ONE, True, D("0.4"), False)  # above the cluster cap
-@example(None, REGIME_MULT_ONE, True, D("0.4"), False)  # the base weight above it too
-@example(D("0.5"), REGIME_MULT_ONE, True, D(1), True)  # promotion off the base weight
-@example(None, REGIME_MULT_POLICY, True, D(1), True)  # promotion on the regime variant
-@example(None, REGIME_MULT_ONE, True, D(1), True)  # promotion as live sizes it
+@example(D(0), REGIME_MULT_ONE, D("0.50"), D(1), False)
+@example(D("1.0001"), REGIME_MULT_ONE, D("0.50"), D(1), False)
+@example(D(1), REGIME_MULT_POLICY, D("0.50"), D(1), False)
+@example(None, REGIME_MULT_ONE, None, D(1), False)  # no base weight for the sleeve
+@example(None, REGIME_MULT_ONE, D(0), D(1), False)  # a base weight of 0
+@example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # above the cluster cap
+@example(None, REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # the base weight above it too
+@example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion off the base weight
+@example(None, REGIME_MULT_POLICY, D("0.50"), D(1), True)  # promotion on the regime variant
+@example(None, REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion as live sizes it
 def test_sizing_conventions_refused(
-    weight: object, rule: str, has_base: bool, cap: D, promote: bool
+    weight: object, rule: str, base: D | None, cap: D, promote: bool
 ) -> None:
     """A sleeve weight that is not a Decimal in (0, 1] is refused (`backtest_bad_sleeve_weight`),
     as is a regime rule other than `1` and `policy` (`backtest_bad_regime_mult`); a run for
     promotion is refused with a weight of its own (`backtest_promotion_off_base_weight`) or
     the `policy` variant (`backtest_promotion_regime_variant`); with no weight given, a policy
-    without the sleeve's base weight is refused (`backtest_no_base_weight`), and a weight
-    above the policy's cluster cap, which the allocator would cut, is refused
+    without the sleeve's base weight, or with one of 0, is refused (`backtest_no_base_weight`),
+    and a weight above the policy's cluster cap, which the allocator would cut, is refused
     (`backtest_weight_above_cluster_cap`); otherwise the run records the weight used,
     normalised (HAT-BT-014). Harm: a run sized on a weight of 0, above the whole account, above
     what the allocator gives or on a guess passes for evidence, or a promotion rides on a
@@ -1899,7 +1900,7 @@ def test_sizing_conventions_refused(
         policy,
         policy=dataclasses.replace(
             policy.policy,
-            base_weight=dict(policy.policy.base_weight) if has_base else {},
+            base_weight={} if base is None else dict.fromkeys(policy.policy.base_weight, base),
             cluster_cap=cap,
         ),
     )
@@ -1912,7 +1913,7 @@ def test_sizing_conventions_refused(
     good_weight = weight is None or (
         isinstance(weight, D) and weight.is_finite() and 0 < weight <= 1
     )
-    used = D("0.50") if weight is None else weight
+    used = base if weight is None else weight
     if not good_weight:
         code = "backtest_bad_sleeve_weight"
     elif rule not in REGIME_MULT_RULES:
@@ -1921,7 +1922,7 @@ def test_sizing_conventions_refused(
         code = "backtest_promotion_off_base_weight"
     elif promote and rule != REGIME_MULT_ONE:
         code = "backtest_promotion_regime_variant"
-    elif weight is None and not has_base:
+    elif weight is None and (base is None or base == 0):
         code = "backtest_no_base_weight"
     elif used > cap:  # type: ignore[operator]
         code = "backtest_weight_above_cluster_cap"
