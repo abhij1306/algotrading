@@ -195,7 +195,8 @@ def test_lookup_actions_fixture_unread_row_fails_symbol() -> None:
     """The recorded INFY `get_corporate_actions` page with a second row whose factor the server
     left out (`mcp_corporate_actions_unread.json`): the lookup keeps the readable dividend and
     fails the symbol, for the nightly lookup and the history build alike (one `lookup_actions`;
-    the old history loader counted it as a success). An incomplete page fails it too."""
+    the old history loader counted it as a success). An incomplete page fails it too, and so does
+    a row that is not an object (the client cannot read it at all)."""
     page = fixture_json("mcp_corporate_actions_unread.json")
     warned = {**fixture_json("mcp_corporate_actions.json"), "warning": "partial"}
     client = McpClient(ScriptedTransport([page, warned]), sleep=lambda _s: None)
@@ -207,3 +208,9 @@ def test_lookup_actions_fixture_unread_row_fails_symbol() -> None:
     partial = lookup_actions(client, {"INFY": 1}, *span)
     assert partial.failed == ["INFY"]
     assert partial.records == []
+    recorded = fixture_json("mcp_corporate_actions.json")
+    odd = {**recorded, "actions": [*recorded["actions"], "SPLIT 5:1"]}  # a row that is no object
+    client = McpClient(ScriptedTransport([odd]), sleep=lambda _s: None)
+    found = lookup_actions(client, {"INFY": 1}, *span)
+    assert found.failed == ["INFY"]
+    assert len(found.records) == 1

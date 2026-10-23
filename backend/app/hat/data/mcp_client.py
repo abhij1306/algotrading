@@ -491,8 +491,9 @@ class McpClient:
         actions = data.get("actions")
         if not isinstance(actions, list):
             raise McpError(CODE_BAD_RESPONSE, attempts=1)
+        rows = [a for a in actions if isinstance(a, dict)]
         return CorporateActionPage(
-            [a for a in actions if isinstance(a, dict)], incomplete="warning" in data
+            rows, incomplete="warning" in data, unreadable=len(actions) - len(rows)
         )
 
     def probe(self, trade_date: date, symbol: str = PROBE_SYMBOL) -> date | None:
@@ -596,6 +597,7 @@ class BreadthSnapshot:
 class CorporateActionPage:
     actions: list[dict[str, Any]]
     incomplete: bool
+    unreadable: int = 0  # rows that were not an object: an action that could not be read
 
 
 def client_from_env(env: Mapping[str, str]) -> McpClient | None:

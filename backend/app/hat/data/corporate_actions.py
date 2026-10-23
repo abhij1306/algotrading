@@ -237,8 +237,9 @@ def lookup_actions(
     client: McpClient, instruments: Mapping[str, object], from_date: date, to_date: date
 ) -> ActionLookup:
     """`get_corporate_actions` for each symbol (to its instrument id) over the dates, on the
-    client's pool. An incomplete page gives no record; a page with an unread row keeps the rows
-    it could read and fails its symbol."""
+    client's pool. An incomplete page gives no record; a page with an unread row (one `from_mcp`
+    cannot parse, or one that is not an object at all) keeps the rows it could read and fails its
+    symbol."""
 
     def one(symbol: str) -> Callable[[], tuple[str, Normalised | None]]:
         def run() -> tuple[str, Normalised | None]:
@@ -248,7 +249,10 @@ def lookup_actions(
                 return symbol, None
             if page.incomplete:
                 return symbol, None
-            return symbol, from_mcp(instruments[symbol], page.actions)
+            found = from_mcp(instruments[symbol], page.actions)
+            # a row the client could not read as an object is an unread action, not "none"
+            found.unparsed.extend(["<unreadable row>"] * page.unreadable)
+            return symbol, found
 
         return run
 
