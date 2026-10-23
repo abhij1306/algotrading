@@ -236,21 +236,6 @@ def adjusted_series(points: Iterable[SnapshotPoint]) -> list[EquityPoint]:
     return out
 
 
-def account_series(bot_snapshots: Iterable[tuple[datetime, Decimal]]) -> list[EquityPoint]:
-    """Account equity points from per-bot snapshots `(time, equity)`: the equity of each time is
-    the sum over bots, and the peak is the running maximum of those sums."""
-    totals: dict[datetime, Decimal] = {}
-    for at, equity in bot_snapshots:
-        key = as_utc(at)
-        totals[key] = totals.get(key, Decimal(0)) + equity
-    points = []
-    peak: Decimal | None = None
-    for at in sorted(totals):
-        peak = totals[at] if peak is None else max(peak, totals[at])
-        points.append(EquityPoint(at, totals[at], peak))
-    return points
-
-
 # --- Mark-to-market equity (P5, owner decision X9) ---------------------------------------------
 
 

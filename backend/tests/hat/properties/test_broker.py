@@ -342,40 +342,6 @@ def test_an_owner_serialises_its_broker_calls() -> None:
     assert max(overlap) == 1
 
 
-book_rows = st.dictionaries(
-    st.sampled_from(["A", "B", "C"]),
-    st.tuples(st.sampled_from([6, 2, 1, 5]), st.integers(min_value=0, max_value=4)),
-    max_size=3,
-)
-
-
-@given(st.lists(book_rows, min_size=1, max_size=8))
-def test_order_updates_report_each_change_once(polls: list[dict]) -> None:
-    """The adapter's polling stream reports an order when its status or fill changed since the
-    last successful poll (or it is new), and nothing for an unchanged book."""
-    fake = FakeBroker()
-    broker = FyersHatBroker(fake, instruments=lambda: [])  # type: ignore[arg-type]
-    previous: dict[str, tuple[int, int]] = {}
-    for book in polls:
-        fake.orders = [
-            {
-                "id": order_id,
-                "orderTag": "HTE0AAAAAAAAAAAAAAAA",
-                "symbol": SYMBOLS["SBIN"],
-                "side": 1,
-                "qty": 100,
-                "filledQty": filled,
-                "status": status,
-                "productType": "CNC",
-            }
-            for order_id, (status, filled) in book.items()
-        ]
-        updated = {u.order_id for u in broker.order_updates()}
-        assert updated == {i for i, row in book.items() if previous.get(i) != row}
-        assert broker.order_updates() == []  # the same book again reports nothing
-        previous = dict(book)
-
-
 @given(st.sampled_from(["orders", "trades", "positions", "holdings", "funds"]))
 def test_reads_raise_when_the_sdk_replies_with_an_error(read: str) -> None:
     from hat.fakes.fyers_sdk import RecordingSdk

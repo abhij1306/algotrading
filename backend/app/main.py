@@ -13,14 +13,10 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import JSONResponse, Response
-from sqlalchemy.exc import DBAPIError
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.responses import JSONResponse
 
-from .utils.db_errors import db_error_summary, find_db_unavailable_error, is_db_unavailable
 from .utils.env_loader import load_dotenv
-from .utils.logger import get_logger, log_warning_throttled, safe_log_value, setup_logging
+from .utils.logger import get_logger, setup_logging
 
 setup_logging()
 logger = get_logger("main")
@@ -28,72 +24,37 @@ logger = get_logger("main")
 load_dotenv()
 
 # E402 is suppressed below: the modules read the environment at import, so load_dotenv() runs first.
-from .config import config  # noqa: E402
-from .exceptions import DatabaseUnavailableError  # noqa: E402
 from .hat.api import dashboard as hat_dashboard  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
 from .hat.settings import is_enabled  # noqa: E402
-from .utils.origins import FrontendCORSMiddleware, is_frontend_origin  # noqa: E402
-
-
-def _install_windows_reset_handler(loop: asyncio.AbstractEventLoop) -> None:
-    """Suppress noisy expected WinError 10054 transport disconnect callbacks on Windows."""
-    default_handler = loop.default_exception_handler
-
-    def _handler(event_loop: asyncio.AbstractEventLoop, context: dict) -> None:
-        exc = context.get("exception")
-        message = context.get("message", "")
-        handle = context.get("handle")
-        if (
-            isinstance(exc, ConnectionResetError)
-            and getattr(exc, "winerror", None) == 10054
-            and "_ProactorBasePipeTransport._call_connection_lost" in str(handle)
-        ):
-            logger.debug("Ignored expected Windows connection reset during transport shutdown")
-            return
-        if (
-            isinstance(exc, ConnectionResetError)
-            and getattr(exc, "winerror", None) == 10054
-            and "_call_connection_lost" in message
-        ):
-            logger.debug("Ignored expected Windows connection reset callback")
-            return
-        default_handler(context)
-
-    loop.set_exception_handler(_handler)
+from .utils.origins import ALLOWED_ORIGINS, FrontendCORSMiddleware, is_frontend_origin  # noqa: E402
 
 
 def _ensure_database_schema() -> None:
-    """Create the schema and probe the DB; raise DatabaseUnavailableError if it is down."""
+    """Create the schema and probe the database."""
     from sqlalchemy import text
 
     from . import database
 
-    try:
-        database.init_db()
-        with database.engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-    except Exception as exc:
-        if not is_db_unavailable(exc):
-            raise
-        raise DatabaseUnavailableError() from None
+    database.init_db()
+    with database.engine.connect() as connection:
+        connection.execute(text("SELECT 1"))
 
 
 async def _init_database() -> None:
-    """Create the schema. With the database down: one clear log line, no traceback and no
-    password, and the app keeps serving (requests answer 503) unless HAT is enabled, which
-    refuses to start without its database."""
+    """Create the schema. Without its database the app does not start: one clear log line, no
+    driver text and no password, then the startup fails."""
     from .database import describe_database_target
 
     try:
         await asyncio.to_thread(_ensure_database_schema)
-    except DatabaseUnavailableError:
+    except Exception as exc:
         logger.error(
-            "[ERROR] Database unreachable at %s (start Postgres)", describe_database_target()
+            "[ERROR] Database unreachable at %s (%s; start Postgres)",
+            describe_database_target(),
+            type(exc).__name__,
         )
-        if is_enabled():
-            raise
-        return
+        raise RuntimeError("database unavailable") from None
     logger.info("[OK] Database ready")
 
 
@@ -170,7 +131,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Shutdown: the HAT runtime, then the database engine, each even if the other failed."""
     loop = asyncio.get_running_loop()
     app.state.loop = loop
-    _install_windows_reset_handler(loop)
     await _init_database()
     await _start_hat(app)
     try:
@@ -226,65 +186,13 @@ app = FastAPI(
 )
 
 
-# Exception handlers
-#
-# Handlers registered for a specific exception class run in Starlette's
-# ExceptionMiddleware, which returns the response without re-raising. Only the
-# catch-all Exception handler runs in ServerErrorMiddleware, which re-raises after
-# responding (uvicorn then prints the traceback). A down database therefore gets its
-# own handlers so each request costs one throttled warning line, not a traceback.
+# The catch-all handler: a fixed body, the error only in the server log. Errors never carry
+# broker or database text.
 INTERNAL_ERROR_BODY = {"error": {"code": "INTERNAL_ERROR", "message": "Server error"}}
-
-
-def _db_unavailable_response(request: Request, exc: BaseException) -> JSONResponse:
-    db_exc = find_db_unavailable_error(exc)
-    log_warning_throttled(
-        logger,
-        "http.database_unavailable",
-        "Database unavailable: %s %s -> 503 (%s)",
-        request.method,
-        safe_log_value(request.url.path),
-        safe_log_value(db_error_summary(db_exc)) if db_exc is not None else "unreachable",
-    )
-    error = DatabaseUnavailableError()
-    return JSONResponse(status_code=error.status_code, content=error.to_dict())
-
-
-@app.exception_handler(DatabaseUnavailableError)
-async def database_unavailable_handler(
-    request: Request, exc: DatabaseUnavailableError
-) -> JSONResponse:
-    return _db_unavailable_response(request, exc)
-
-
-@app.exception_handler(DBAPIError)
-async def dbapi_exception_handler(request: Request, exc: DBAPIError) -> JSONResponse:
-    """503 when the database is unreachable. Any other driver error (a SQL bug such as
-    ProgrammingError or IntegrityError) stays a 500, with its traceback logged once."""
-    if is_db_unavailable(exc):
-        return _db_unavailable_response(request, exc)
-    logger.error(
-        "Unhandled database error on %s %s",
-        request.method,
-        safe_log_value(request.url.path),
-        exc_info=exc,
-    )
-    return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
-
-
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_with_db_check(request: Request, exc: StarletteHTTPException) -> Response:
-    """Routers often wrap failures as `raise HTTPException(...) from exc`; when the
-    wrapped error is a down database, answer 503 DATABASE_UNAVAILABLE instead."""
-    if is_db_unavailable(exc):
-        return _db_unavailable_response(request, exc)
-    return await http_exception_handler(request, exc)
 
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    if is_db_unavailable(exc):
-        return _db_unavailable_response(request, exc)
     logger.error("Unhandled: %s", exc, exc_info=True)
     return JSONResponse(status_code=500, content=INTERNAL_ERROR_BODY)
 
@@ -292,7 +200,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # CORS: the configured origins plus any http loopback origin (utils/origins.py).
 app.add_middleware(
     FrontendCORSMiddleware,
-    allow_origins=list(config.ALLOWED_ORIGINS),
+    allow_origins=list(ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

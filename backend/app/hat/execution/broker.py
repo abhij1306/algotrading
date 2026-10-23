@@ -32,7 +32,6 @@ __all__ = [
     "BrokerFunds",
     "BrokerGtt",
     "BrokerHolding",
-    "BrokerLoginError",
     "BrokerOrder",
     "BrokerPosition",
     "BrokerTrade",
@@ -42,12 +41,10 @@ __all__ = [
     "GttRequest",
     "GttResult",
     "HatBroker",
-    "Instrument",
     "InvalidIntentError",
     "OrderBook",
     "OrderIntent",
     "OrderType",
-    "OrderUpdate",
     "PlaceResult",
     "SessionStatus",
     "Side",
@@ -79,13 +76,6 @@ class BrokerUnavailableError(BrokerError):
     """The broker could not answer (timeout, circuit open, error payload, no session)."""
 
     def __init__(self, code: str = CODE_UNAVAILABLE) -> None:
-        super().__init__(code)
-
-
-class BrokerLoginError(BrokerError):
-    """The login code was refused or the token could not be stored."""
-
-    def __init__(self, code: str = "login_failed") -> None:
         super().__init__(code)
 
 
@@ -267,29 +257,11 @@ class BrokerFunds:
     total: Decimal
 
 
-@dataclass(frozen=True)
-class Instrument:
-    symbol: str  # database symbol
-    broker_symbol: str
-
-
-@dataclass(frozen=True)
-class OrderUpdate:
-    order_id: str
-    tag: str | None
-    status: str
-    filled_qty: int
-
-
 @runtime_checkable
 class HatBroker(Protocol):
     """The methods of exactly."""
 
     def capabilities(self) -> Capabilities: ...
-
-    def login_url(self) -> str: ...
-
-    def complete_login(self, code: str) -> SessionStatus: ...
 
     def session_status(self) -> SessionStatus: ...
 
@@ -324,7 +296,3 @@ class HatBroker(Protocol):
     def holdings(self) -> list[BrokerHolding]: ...
 
     def funds(self) -> BrokerFunds: ...
-
-    def instruments(self) -> list[Instrument]: ...
-
-    def order_updates(self) -> list[OrderUpdate]: ...

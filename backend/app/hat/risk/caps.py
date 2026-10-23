@@ -9,12 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 
 from .exposure import max_positions
 from .policy import RiskPolicy
-from .sessions import SessionCalendar, SessionState
+from .sessions import SessionCalendar
 
 # The documented max-chase default per strategy (HAT-CRIT-122) and the fallback for any other
 # strategy (OWNER-PENDING: the stricter value). Percentages, not fractions.
@@ -23,7 +23,6 @@ MAX_CHASE_BY_STRATEGY = {
     "stage2-contraction-breakout": Decimal(5),
     "momentum-breakout-ep": Decimal(2),
 }
-FEED_STALE_AFTER_SECONDS = 30  # HAT-DATA-116
 
 
 @dataclass(frozen=True)
@@ -100,11 +99,6 @@ def regime_gate_open(gate_on: bool) -> bool:
 def stop_valid(entry: Decimal, stop: Decimal) -> bool:
     """HAT-RISK-073 and HAT-RISK-022: a stop strictly between 0 and the entry price."""
     return 0 < stop < entry
-
-
-def session_open(calendar: SessionCalendar, at: datetime) -> SessionState:
-    """HAT-RISK-075: the session state at `at` from the calendar (never from DEV_MODE)."""
-    return calendar.state(at)
 
 
 def effective_max_chase_pct(configured: Decimal | None, strategy_key: str) -> Decimal:

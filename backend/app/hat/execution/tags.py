@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import re
 import uuid
-from dataclasses import dataclass
 
 from ..errors import HatError
 
@@ -31,14 +30,11 @@ __all__ = [
     "TAG_LENGTH",
     "TAG_PATTERN",
     "TAG_PREFIX",
-    "DecodedTag",
     "TagError",
     "TagExhaustedError",
-    "decode_tag",
     "encode_tag",
     "is_gtt_tag",
     "is_hat_tag",
-    "signal_fragment",
 ]
 
 TAG_PREFIX = "HT"
@@ -57,7 +53,6 @@ PURPOSE_LETTERS: dict[str, str] = {
     "exit_full": "F",
     "flatten": "L",
 }
-_LETTER_PURPOSES = {letter: purpose for purpose, letter in PURPOSE_LETTERS.items()}
 
 TAG_PATTERN = re.compile(r"^HT[EDGPFL][0-9A-Z][0-9A-HJKMNP-TV-Z]{16}$")
 
@@ -70,14 +65,7 @@ class TagExhaustedError(TagError):
     """A (signal, purpose) already has 36 orders: the 37th is refused (fail closed)."""
 
 
-@dataclass(frozen=True)
-class DecodedTag:
-    purpose: str
-    sequence: int
-    fragment: int  # the 80-bit signal fragment
-
-
-def signal_fragment(signal_id: uuid.UUID) -> int:
+def _signal_fragment(signal_id: uuid.UUID) -> int:
     """The lowest 80 bits of the signal's uuid."""
     return signal_id.int & ((1 << FRAGMENT_BITS) - 1)
 
@@ -100,7 +88,9 @@ def encode_tag(signal_id: uuid.UUID, purpose: str, sequence: int) -> str:
         raise TagError("sequence must be a non-negative integer")
     if sequence > MAX_SEQUENCE:
         raise TagExhaustedError("order sequence exhausted for this signal and purpose")
-    return f"{TAG_PREFIX}{letter}{SEQUENCE_ALPHABET[sequence]}{_base32(signal_fragment(signal_id))}"
+    return (
+        f"{TAG_PREFIX}{letter}{SEQUENCE_ALPHABET[sequence]}{_base32(_signal_fragment(signal_id))}"
+    )
 
 
 def is_hat_tag(tag: object) -> bool:
@@ -111,17 +101,3 @@ def is_hat_tag(tag: object) -> bool:
 def is_gtt_tag(tag: object) -> bool:
     """True for a HAT tag of a GTT stop (purpose `stop_gtt`)."""
     return isinstance(tag, str) and is_hat_tag(tag) and tag[2] == PURPOSE_LETTERS["stop_gtt"]
-
-
-def decode_tag(tag: str) -> DecodedTag:
-    """Purpose, sequence and signal fragment of a HAT tag; TagError for anything else."""
-    if not is_hat_tag(tag):
-        raise TagError("not a HAT order tag")
-    value = 0
-    for char in tag[4:]:
-        value = (value << 5) | BASE32_ALPHABET.index(char)
-    return DecodedTag(
-        purpose=_LETTER_PURPOSES[tag[2]],
-        sequence=SEQUENCE_ALPHABET.index(tag[3]),
-        fragment=value,
-    )

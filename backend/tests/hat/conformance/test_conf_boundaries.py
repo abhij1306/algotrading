@@ -18,7 +18,6 @@ CRITERIA_FORBIDDEN = (
     "app.hat.execution",
     "app.database",
     "sqlalchemy.orm",
-    "app.routers",
     "app.hat.telegram",
     "fastapi",
 )

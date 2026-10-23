@@ -142,7 +142,7 @@ REGIME_RULES = ("close_above_sma_and_rising", "sma_fast_above_slow_both_rising")
 
 
 class Regime(Model):
-    """HAT-BOT-053 (evaluated in PR 11): one index and one rule with parameters."""
+    """HAT-BOT-053: one index and one rule with parameters."""
 
     index: Literal["NIFTY 500", "NIFTY SMALLCAP 250"]
     rule: Literal["close_above_sma_and_rising", "sma_fast_above_slow_both_rising"]
@@ -464,10 +464,6 @@ def parse_config(raw: Mapping[str, Any]) -> StrategyConfig:
         raise ConfigError(_problems(error)) from None
 
 
-def config_json(raw: Mapping[str, Any]) -> dict[str, Any]:
-    return parse_config(raw).to_json()
-
-
 __all__ = [
     "DEFAULT_PLAYBOOK",
     "DEFAULT_THRESHOLD",
@@ -478,7 +474,6 @@ __all__ = [
     "Playbook",
     "SetupStage",
     "StrategyConfig",
-    "config_json",
     "parse_config",
     "risk_key_paths",
 ]

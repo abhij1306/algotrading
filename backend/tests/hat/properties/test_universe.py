@@ -106,34 +106,24 @@ def test_sync_reaches_the_target(ops: list, target: set, day: date) -> None:
     assert universe.members_on(rows, day) == target
 
 
+def intervals_valid(rows: list[Interval]) -> bool:
+    """Every interval has effective_from before effective_to (when set), and the intervals of
+    one instrument do not overlap (HAT-SCH-042)."""
+    by_instrument: dict[uuid.UUID, list[Interval]] = {}
+    for row in rows:
+        if row.effective_to is not None and row.effective_from >= row.effective_to:
+            return False
+        by_instrument.setdefault(row.instrument_id, []).append(row)
+    for items in by_instrument.values():
+        ordered = sorted(items, key=lambda r: r.effective_from)
+        for earlier, later in zip(ordered, ordered[1:], strict=False):
+            if earlier.effective_to is None or earlier.effective_to > later.effective_from:
+                return False
+    return True
+
+
 @given(OPS)
 def test_membership_intervals(ops: list) -> None:
     """Whatever edits are applied or refused, every instrument's intervals stay ordered, non
     empty and non overlapping."""
-    assert universe.intervals_valid(apply_ops(ops))
-
-
-@given(st.sampled_from(POOL), DAYS, st.integers(-5, 5), st.integers(0, 5))
-def test_membership_intervals_detects_bad_rows(
-    instrument: uuid.UUID, day: date, length: int, gap: int
-) -> None:
-    """An empty or reversed interval, or two intervals of one instrument that overlap, are not
-    valid."""
-    end = day + timedelta(days=length)
-    assert universe.intervals_valid([Interval(instrument, day, end)]) == (length > 0)
-    first = Interval(instrument, day, day + timedelta(days=3))
-    second = Interval(instrument, day + timedelta(days=3 - gap), None)
-    assert universe.intervals_valid([first, second]) == (gap == 0)
-
-
-@given(st.sets(INSTRUMENTS), st.sets(INSTRUMENTS), st.sets(INSTRUMENTS))
-def test_leave_no_force_sell(before: set, after: set, open_positions: set) -> None:
-    """Leaving the universe blocks new entries and never forces a sale: a position in a
-    departed instrument keeps its own exit, and no exit is ever ordered by the change."""
-    change = universe.membership_change(before, after, open_positions)
-    assert change.forced_exits == frozenset()
-    assert change.blocked_entries == before - after
-    assert change.running_to_exit == (before - after) & open_positions
-    entered = universe.entries_allowed(POOL, after)
-    assert not set(entered) & (before - after)
-    assert set(entered) == set(POOL) & after
+    assert intervals_valid(apply_ops(ops))

@@ -45,22 +45,6 @@ def members_on(rows: Iterable[Interval], day: date) -> frozenset[UUID]:
     return frozenset(r.instrument_id for r in rows if active_on(r, day))
 
 
-def intervals_valid(rows: Iterable[Interval]) -> bool:
-    """Every interval has effective_from before effective_to (when set), and the intervals of
-    one instrument do not overlap (HAT-SCH-042)."""
-    by_instrument: dict[UUID, list[Interval]] = {}
-    for row in rows:
-        if row.effective_to is not None and row.effective_from >= row.effective_to:
-            return False
-        by_instrument.setdefault(row.instrument_id, []).append(row)
-    for items in by_instrument.values():
-        ordered = sorted(items, key=lambda r: r.effective_from)
-        for earlier, later in zip(ordered, ordered[1:], strict=False):
-            if earlier.effective_to is None or earlier.effective_to > later.effective_from:
-                return False
-    return True
-
-
 def add_member(rows: Iterable[Interval], instrument_id: UUID, day: date) -> list[Interval]:
     """`rows` with `instrument_id` a member from `day`. Already a member on `day`: no change.
     A `day` before the end of the instrument's recorded history is refused (no rewriting the
@@ -105,26 +89,3 @@ def plan_sync(
     now = members_on(rows, day)
     wanted = frozenset(target)
     return wanted - now, now - wanted
-
-
-@dataclass(frozen=True)
-class MembershipChange:
-    """What a change of membership does. It never sells: `forced_exits` is always empty."""
-
-    blocked_entries: frozenset[UUID]  # left the universe: no new entry
-    running_to_exit: frozenset[UUID]  # open positions in them: they keep their own exits
-    forced_exits: frozenset[UUID] = frozenset()
-
-
-def membership_change(
-    before: Collection[UUID], after: Collection[UUID], open_positions: Collection[UUID]
-) -> MembershipChange:
-    """Leaving the universe stops entries and never forces a sale (HAT-PORT-023)."""
-    left = frozenset(before) - frozenset(after)
-    return MembershipChange(left, left & frozenset(open_positions))
-
-
-def entries_allowed(candidates: Iterable[UUID], members: Collection[UUID]) -> list[UUID]:
-    """The candidates that may be entered: members only, in their order."""
-    allowed = frozenset(members)
-    return [c for c in candidates if c in allowed]

@@ -23,7 +23,6 @@ from app.hat.engine.strategy.config import (
     Instance,
     Playbook,
     StrategyConfig,
-    config_json,
     parse_config,
 )
 from app.hat.engine.strategy.versions import (
@@ -34,7 +33,7 @@ from app.hat.engine.strategy.versions import (
     seed_text,
     start_shadow,
 )
-from app.hat.engine.strategy.yamlio import export_yaml, import_yaml
+from app.hat.engine.strategy.yamlio import import_yaml
 from app.hat.models import HatBacktestRun, HatStrategyVersion
 from app.hat.risk.policy import POLICY_FIELDS
 from app.hat.schema import seed_hat_reference
@@ -273,23 +272,25 @@ def test_no_risk_keys(raw: dict, key: str, rnd: random.Random) -> None:
     parse_config(raw)  # the clean one still passes
 
 
+def dump_yaml(config: StrategyConfig) -> str:
+    """The canonical config as YAML text, every default explicit and keys in model order."""
+    return yaml.safe_dump(config.to_json(), sort_keys=False, allow_unicode=True)
+
+
 @given(raw_configs())
 def test_yaml_round_trip(raw: dict) -> None:
-    """PBT config.yaml_round_trip: export then import gives the same config and
-    hash, and the text is stable under a second export; the two seeds round-trip too."""
+    """PBT config.yaml_round_trip: the canonical config dumped as YAML imports to the same
+    config and hash; the two seeds round-trip too."""
     config = parse_config(raw)
-    text = export_yaml(config)
-    again = import_yaml(text)
+    again = import_yaml(dump_yaml(config))
     assert again.hash() == config.hash()
     assert again.to_json() == config.to_json()
-    assert export_yaml(again) == text
-    assert config_json(yaml.safe_load(text)) == config.to_json()
 
 
 @pytest.mark.parametrize("name", SEED_NAMES)
 def test_yaml_round_trip_seed(name: str) -> None:
     config = seed_config(name)
-    assert import_yaml(export_yaml(config)).hash() == config.hash()
+    assert import_yaml(dump_yaml(config)).hash() == config.hash()
     assert import_yaml(seed_text(name)).hash() == config.hash()
 
 

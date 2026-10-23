@@ -7,7 +7,7 @@ whatever happens next (HAT-BT-030); it ends `completed`, with its metrics and `t
 `evidence.family_key`).
 
 A completed run stores its DSR at its completion (`evidence.run_dsr`: only a recorded run is
-scored, PR 66, G33), writes its daily returns (`returns.parquet`, next to `trades.parquet`) and
+scored, G33), writes its daily returns (`returns.parquet`, next to `trades.parquet`) and
 records when it completed (`metrics.completed_at`) and the family's probability of backtest
 overfitting over the variants with a returns file (`metrics.pbo`).
 """
@@ -25,7 +25,7 @@ from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.store import DataStore, atomic_replace
@@ -60,13 +60,11 @@ __all__ = [
     "complete_run",
     "fail_run",
     "family_pbo",
-    "family_sharpes",
     "read_returns",
     "record_backtest",
     "returns_path",
     "start_run",
     "trades_path",
-    "trial_count",
 ]
 
 RUNNING = "running"
@@ -80,7 +78,7 @@ def trades_path(root: Path, run_id: uuid.UUID) -> Path:
 
 
 def returns_path(root: Path, run_id: uuid.UUID) -> Path:
-    """`backtests/run_id=<id>/returns.parquet`: the run's daily returns (PR 66)."""
+    """`backtests/run_id=<id>/returns.parquet`: the run's daily returns."""
     return root / "backtests" / f"run_id={run_id}" / "returns.parquet"
 
 
@@ -112,7 +110,7 @@ def _returns_parquet(result: BacktestResult) -> bytes:
 
 
 def read_returns(root: Path, run_id: uuid.UUID) -> dict[date, float] | None:
-    """A run's daily returns by date; None when it has no returns file (a run before PR 66) or
+    """A run's daily returns by date; None when it has no returns file (an older run) or
     the file cannot be read as one (`RETURNS_SCHEMA`)."""
     path = returns_path(root, run_id)
     if not path.is_file():
@@ -132,14 +130,6 @@ def read_returns(root: Path, run_id: uuid.UUID) -> dict[date, float] | None:
     }
 
 
-def trial_count(session: Session, family: str) -> int:
-    """The family's trials: every run recorded for it, whatever its status (HAT-BT-030)."""
-    count = session.scalar(
-        select(func.count()).select_from(HatBacktestRun).where(HatBacktestRun.family_key == family)
-    )
-    return int(count or 0)
-
-
 def _completed(session: Session, family: str) -> list[HatBacktestRun]:
     return list(
         session.scalars(
@@ -150,16 +140,6 @@ def _completed(session: Session, family: str) -> list[HatBacktestRun]:
     )
 
 
-def family_sharpes(session: Session, family: str) -> list[float]:
-    """The per-period Sharpe ratios of the family's completed runs, oldest first. A run that
-    failed or whose returns had no Sharpe ratio counts as a trial but adds no variance."""
-    return [
-        s.sr
-        for s in (RunMetrics.from_json(r.metrics).returns for r in _completed(session, family))
-        if s is not None
-    ]
-
-
 def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any]:
     return {
         "prob": str(Decimal(repr(deflated.prob)).quantize(DSR_PLACES)),
@@ -167,7 +147,7 @@ def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any
         "reason": deflated.reason,
         "trials": trials,
         "variance": variance,
-        # the floors the probability was read through (PR 66, N15)
+        # the floors the probability was read through (N15)
         "trials_floor": MIN_TRIALS,
         "variance_floor": VARIANCE_FLOOR,
     }
@@ -282,7 +262,7 @@ def complete_run(
 
 
 def bucket_rows(run_id: uuid.UUID, result: BacktestResult) -> list[HatBacktestBucket]:
-    """The run's confidence buckets (D132, PR 71): its closed trades by playbook and setup-score
+    """The run's confidence buckets (D132): its closed trades by playbook and setup-score
     band, as `engine.confidence.buckets` counts them."""
     return [
         HatBacktestBucket(
@@ -347,7 +327,7 @@ def record_backtest(
 class RunRequest:
     """One backtest of a sleeve (`backtest_bot`): its strategy version (the live one unless
     `version_id` names another of the same strategy), the period, the fills (slippage and cost
-    model), the cooldown replacing the policy's for a sweep (PR 58), whether the run may
+    model), the cooldown replacing the policy's for a sweep, whether the run may
     evidence a version, and its conventions."""
 
     bot_id: uuid.UUID

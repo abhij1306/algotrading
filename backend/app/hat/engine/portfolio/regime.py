@@ -8,7 +8,7 @@ confirmed state. Money-like numbers are `Decimal`. The model of the confirmation
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -57,7 +57,7 @@ class RegimeError(HatError):
 @dataclass(frozen=True)
 class RegimeInputs:
     """The three inputs of one trade date. `ad_ratio` (advance/decline) is recorded when the
-    ingest has it (PR 7) and does not enter the v1 classification."""
+    ingest has it and does not enter the v1 classification."""
 
     close: Decimal
     sma50: Decimal
@@ -191,16 +191,6 @@ def confirm_step(previous: Confirmation | None, raw: str, days: int = CONFIRM_DA
     return Confirmation(confirmed, raw, run)
 
 
-def confirm_sequence(raws: Iterable[str], days: int = CONFIRM_DAYS) -> list[Confirmation]:
-    """`confirm_step` over a whole series of raw states."""
-    out: list[Confirmation] = []
-    previous: Confirmation | None = None
-    for raw in raws:
-        previous = confirm_step(previous, raw, days)
-        out.append(previous)
-    return out
-
-
 # --- Multipliers (HAT-PORT-033) ---------------------------------------------------------------
 
 
@@ -211,23 +201,6 @@ def multiplier_for(state: str, table: Mapping[str, Decimal] = DEFAULT_MULTIPLIER
         return table[state]
     except KeyError:
         raise RegimeError("regime_unknown_state") from None
-
-
-def derive_multipliers(
-    estimates: Mapping[str, Decimal], shrink: Decimal, lo: Decimal, hi: Decimal
-) -> dict[str, Decimal]:
-    """A replacement multiplier table from backtested per-state estimates, shrunk toward 1.0
-    (`estimate + shrink x (1 - estimate)`) and held within the policy bounds [lo, hi]. With
-    `shrink` in [0, 1] a value lies between its estimate and 1.0 unless a bound holds it."""
-    if not Decimal(0) <= shrink <= Decimal(1) or lo > hi:
-        raise RegimeError("regime_bad_shrink")
-    out = {}
-    for state in STATES:
-        if state not in estimates:
-            raise RegimeError("regime_unknown_state")
-        value = estimates[state] + shrink * (Decimal(1) - estimates[state])
-        out[state] = min(max(value, lo), hi)
-    return out
 
 
 def rules_v1_config() -> dict[str, Any]:

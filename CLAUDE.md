@@ -31,7 +31,7 @@ configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`
 
 1. Get the event loop.
 2. Create the database schema (`init_db`). If the database is down, one log line says so and the
-   app keeps serving (requests answer 503) unless `HAT_ENABLED` is true, which refuses to start.
+   app does not start, whatever `HAT_ENABLED` says.
 3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
    (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
    database that is not PostgreSQL, a proxy variable that would carry Fyers traffic
@@ -167,8 +167,8 @@ an `aiohttp` that does not build on Python 3.14.
 - **The server exits at start:** run `python backend/start_server.py` in a terminal for the
   traceback; install dependencies with `python scripts/install_backend_deps.py`; check that port
   8000 is free.
-- **"Database unreachable" in the log:** start PostgreSQL and check the `DB_*` variables. With
-  `HAT_ENABLED=true` the server will not start until the database answers.
+- **"Database unreachable" in the log:** start PostgreSQL and check the `DB_*` variables. The
+  server will not start until the database answers.
 - **Fyers shows disconnected:** the token lasts until midnight IST. Log in again from the app
   header.
 

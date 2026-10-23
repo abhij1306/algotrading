@@ -1,16 +1,33 @@
 """Which browser origins count as the Hire a Trader frontend.
 
-One rule for the CORS middleware: an origin in config.ALLOWED_ORIGINS (CORS_ORIGINS), or any
+One rule for the CORS middleware: an origin in ALLOWED_ORIGINS (CORS_ORIGINS), or any
 http loopback origin on any port, so a frontend served on another local port (the Vite dev server
 moves off 3000 when it is taken) keeps working.
 A loopback page is already local; the rule exists to keep pages on other sites out.
 """
 
+import os
 from urllib.parse import urlsplit
 
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..config import config
+from .env_loader import load_dotenv
+
+load_dotenv()
+
+# The frontend origins (the Vite dev server ports) allowed by CORS. Override with CORS_ORIGINS,
+# a comma-separated list.
+DEFAULT_ALLOWED_ORIGINS = (
+    "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://127.0.0.1:3001"
+)
+
+
+def parse_origins(raw: str) -> tuple[str, ...]:
+    """Split a comma-separated origin list, dropping blanks and stray whitespace."""
+    return tuple(origin.strip() for origin in raw.split(",") if origin.strip())
+
+
+ALLOWED_ORIGINS = parse_origins(os.getenv("CORS_ORIGINS", DEFAULT_ALLOWED_ORIGINS))
 
 # The serialized opaque origin browsers send from sandboxed iframes and file:// pages.
 OPAQUE_ORIGIN = "null"
@@ -47,7 +64,7 @@ def is_frontend_origin(origin: str) -> bool:
     """
     if origin == OPAQUE_ORIGIN:
         return False
-    return origin in config.ALLOWED_ORIGINS or is_loopback_origin(origin)
+    return origin in ALLOWED_ORIGINS or is_loopback_origin(origin)
 
 
 class FrontendCORSMiddleware(CORSMiddleware):

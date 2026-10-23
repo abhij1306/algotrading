@@ -41,15 +41,15 @@ from app.hat.execution.submit import (
     find_gtt,
 )
 from app.hat.execution.tags import (
+    BASE32_ALPHABET,
     MAX_SEQUENCE,
     PURPOSE_LETTERS,
+    SEQUENCE_ALPHABET,
     TAG_LENGTH,
     TAG_PATTERN,
     TagExhaustedError,
-    decode_tag,
     encode_tag,
     is_hat_tag,
-    signal_fragment,
 )
 from app.hat.ids import Uuid7Generator, uuid7
 from app.hat.models.runtime import ORDER_PURPOSES, ORDER_STATUSES, HatOrder
@@ -64,6 +64,19 @@ UUID7 = st.builds(
 )
 SIGNALS = st.one_of(ANY_UUID, UUID7)
 FYERS_ALLOWED = re.compile(r"^[A-Za-z0-9]{1,20}$")
+LETTER_PURPOSES = {letter: purpose for purpose, letter in PURPOSE_LETTERS.items()}
+
+
+def decode(tag: str) -> tuple[str, int, int]:
+    """(purpose, sequence, 80-bit signal fragment) of a HAT tag, read back from its characters."""
+    fragment = 0
+    for char in tag[4:]:
+        fragment = (fragment << 5) | BASE32_ALPHABET.index(char)
+    return LETTER_PURPOSES[tag[2]], SEQUENCE_ALPHABET.index(tag[3]), fragment
+
+
+def fragment_of(signal: uuid.UUID) -> int:
+    return signal.int & ((1 << 80) - 1)
 
 
 # --- tag shape ------------------------------------------------------------------------------
@@ -75,10 +88,7 @@ def test_shape_and_roundtrip(signal: uuid.UUID, purpose: str, sequence: int) -> 
     tag = encode_tag(signal, purpose, sequence)
     assert re.fullmatch(r"HT[EDGPFL][0-9A-Z][0-9A-HJKMNP-TV-Z]{16}", tag)
     assert len(tag) == TAG_LENGTH == 20
-    decoded = decode_tag(tag)
-    assert (decoded.purpose, decoded.sequence) == (purpose, sequence)
-    assert decoded.fragment == signal.int & ((1 << 80) - 1)
-    assert decoded.fragment == signal_fragment(signal)
+    assert decode(tag) == (purpose, sequence, fragment_of(signal))
 
 
 @given(SIGNALS, PURPOSES, SEQUENCES)
@@ -86,7 +96,7 @@ def test_format(signal: uuid.UUID, purpose: str, sequence: int) -> None:
     """`^HT[A-Za-z0-9]{18}$`, the 16-character signal part decodes to its fragment."""
     tag = encode_tag(signal, purpose, sequence)
     assert re.fullmatch(r"HT[A-Za-z0-9]{18}", tag)
-    assert decode_tag(tag).fragment == signal_fragment(signal)
+    assert decode(tag)[2] == fragment_of(signal)
 
 
 @given(SIGNALS, PURPOSES, SEQUENCES)
@@ -100,16 +110,13 @@ def test_encode_decode_roundtrip(signal: uuid.UUID, purpose: str, sequence: int)
     assert not tag.startswith("ST")
     assert FYERS_ALLOWED.fullmatch(tag)
     assert len(tag) <= FYERS_CAPABILITIES.tag_max_len
-    assert decode_tag(tag).purpose == purpose
+    assert decode(tag)[0] == purpose
 
 
 @given(st.text(max_size=30))
-def test_decode_refuses_what_is_not_a_hat_tag(text: str) -> None:
-    """A string that is not exactly the tag shape is never decoded (nor read as HAT's)."""
+def test_only_the_tag_shape_is_a_hat_tag(text: str) -> None:
+    """A string that is not exactly the tag shape is never read as HAT's."""
     assert is_hat_tag(text) == bool(TAG_PATTERN.fullmatch(text))
-    if not is_hat_tag(text):
-        with pytest.raises(Exception, match="not a HAT order tag"):
-            decode_tag(text)
 
 
 @given(
@@ -150,7 +157,7 @@ tags_ = st.builds(encode_tag, SIGNALS, PURPOSES, SEQUENCES)
 gtt_tags = st.builds(encode_tag, SIGNALS, st.just("stop_gtt"), SEQUENCES)
 # Tags a GTT is refused with: none, another purpose's HAT tag, a foreign one
 not_gtt_tags = st.one_of(
-    st.none(), tags_.filter(lambda t: decode_tag(t).purpose != "stop_gtt"), st.just("MYSTOP1")
+    st.none(), tags_.filter(lambda t: decode(t)[0] != "stop_gtt"), st.just("MYSTOP1")
 )
 
 
@@ -271,7 +278,7 @@ def test_invalid_intents_raise_before_any_sdk_call(
 
 @given(valid_intents(), st.sampled_from(["price", "trigger_price"]), st.sampled_from([float, str]))
 def test_float_intent_price_refused(intent: OrderIntent, field: str, form: type) -> None:
-    """PBT tags.float_intent_price_refused (trading-safety rule 8; PR 75c): an intent whose price
+    """PBT tags.float_intent_price_refused (trading-safety rule 8): an intent whose price
     or trigger is a float or text, even one equal to a valid price, raises InvalidIntentError
     before the SDK is called; the same intent with the Decimal is placed. Harm: a float's binary
     rounding, or text such as "1_5", reaches an order price unseen."""
