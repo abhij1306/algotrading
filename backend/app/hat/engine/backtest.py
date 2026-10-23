@@ -85,18 +85,21 @@ is not backtested, close-based exits fill at the official close, kill switches a
 (the exposure ladder is), and a sleeve's health multiplier is 1 (its regime multiplier too, unless
 the run applies the policy's).
 
-Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one
-sleeve with the live allocator (`portfolio.allocator.allocate`) over the account's equity at the
-night's close, at the run's sleeve weight (`sleeve_weight`, by default the policy's base weight
-of the sleeve), and d's entries are sized from that allocation as live sizes them: the sleeve's
-capital as equity and the allocation's risk per trade. The regime multiplier is 1 (`regime_mult`
-`1`, the default; the allocator clamps it to the policy's bounds) or the live regime engine's
-(`policy`: v1's inputs, 3-day confirmation and default table, warmed up over the sessions before
-the period, then the allocator's smoothing); a night whose regime inputs are missing makes no
+Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one sleeve
+with the live allocator (`portfolio.allocator.allocate`) over the account's equity at the night's
+close, at the run's sleeve weight (`sleeve_weight`, by default the policy's base weight of the
+sleeve), and d's entries are sized from that allocation as live sizes them: the sleeve's capital as
+equity and the allocation's risk per trade. The free cash an entry is sized on is the account's cash
+net of the entry's slippage and charges (`BacktestFills.affordable`), and a buy whose value plus
+charges exceeds the cash is refused as the broker refuses it, so cash never goes negative and an
+entry after it runs out is a cash rejection (`size_zero_cash`). The regime multiplier is 1
+(`regime_mult` `1`, the default; the allocator clamps it to the policy's bounds) or the live regime
+engine's (`policy`: v1's inputs, 3-day confirmation and default table, warmed up over the sessions
+before the period, then the allocator's smoothing); a night whose regime inputs are missing makes no
 allocation, so the next day's entries are rejected for the missing input, as live rejects them.
-Percentage metrics are of the whole account, of which the sleeve is `sleeve_weight`; the run
-records the weight and the rule beside them (`pct_basis`), and the mean share of the account
-held in positions (`invested_share`). R statistics do not depend on either.
+Percentage metrics are of the whole account, of which the sleeve is `sleeve_weight`; the run records
+the weight and the rule beside them (`pct_basis`), and the mean share of the account held in
+positions (`invested_share`). R statistics do not depend on either.
 
 The command line runs a sleeve's strategy version over the Parquet store and records the run
 (`app.hat.backtest.runs`): `python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD
@@ -945,7 +948,10 @@ class _Run:
         """The entry's context as live builds it (`daily.live`): sized from the night's
         allocation, the book being the run's one sleeve; without one, the allocation inputs are
         missing and the entry is rejected for it."""
-        cash = self._cash()
+        # The free cash net of the entry's slippage and charges: the cash the shares it can
+        # afford take at the entry price, so no size the cash term allows overdraws the account
+        # (a broker refuses that order); with no cash left the entry is a cash rejection.
+        cash = self.spec.fills.affordable(self._cash(), plan.price) * plan.price
         allocation = self.allocations.get(row.trade_date)
         capital = None if allocation is None else allocation.capital
         instrument_id = str(row.instrument_id)
@@ -1145,7 +1151,10 @@ class _Run:
         )
         # a backtest signal has no evidence of its own: its label is low, `backtest`
         outcome = trades.open_entry(
-            self.session, request, fills=self.spec.fills, confidence=BACKTEST_CONFIDENCE
+            self.session,
+            request,
+            fills=self.spec.fills.within(self._cash()),
+            confidence=BACKTEST_CONFIDENCE,
         )
         signal = self.session.get(HatSignal, outcome.signal_id)
         if signal is None or outcome.duplicate:

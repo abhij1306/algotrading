@@ -13,6 +13,7 @@ from hypothesis import strategies as st
 from app.hat.backtest.costs import (
     MAX_SLIPPAGE_BPS,
     BacktestFills,
+    CashBoundFills,
     CostError,
     charges,
     check_slippage,
@@ -135,3 +136,41 @@ def test_charges_contract_float_rates(rate: object) -> None:
     reaches money."""
     with pytest.raises(CostError):
         parse_cost_model({"version": "x", "gst_rate": rate, "components": []})
+
+
+@pytest.mark.parametrize(
+    ("cash", "price", "bps"),
+    [
+        (D("100000"), D("250.05"), D(20)),
+        (D("1000000"), D("0.5"), D(20)),
+        (D("12345.67"), D("12345.67"), D(0)),
+        (D("500"), D("499.9"), D(20)),
+        (D("0"), D("10"), D(20)),
+        (D("-1"), D("10"), D(20)),
+    ],
+)
+def test_affordable_is_the_largest_quantity_whose_outlay_fits(cash: D, price: D, bps: D) -> None:
+    """The cash a backtest entry is sized on is net of its slippage and charges: the quantity
+    `affordable` returns fits the cash with both, and one more share does not."""
+    fills = BacktestFills(load_cost_model(), bps)
+    qty = fills.affordable(cash, price)
+    assert qty >= 0
+    if qty:
+        filled, fees = fills.fill("buy", qty, price)
+        assert fills.outlay(qty, price) == filled * qty + fees <= cash
+    assert fills.outlay(qty + 1, price) > cash
+    assert qty <= max(cash, D(0)) // price  # never more than the cash term without the reserve
+
+
+def test_cash_bound_fills_refuse_an_overdraw() -> None:
+    """A buy whose value plus charges exceeds the cash is refused, as the broker refuses it; a
+    buy that fits and every sell fill as the run's fills do."""
+    fills = BacktestFills(load_cost_model(), D(20))
+    price = D("100")
+    qty = fills.affordable(D("10000"), price)
+    bound = fills.within(D("10000"))
+    assert isinstance(bound, CashBoundFills)
+    assert bound.fill("buy", qty, price) == fills.fill("buy", qty, price)
+    assert bound.fill("sell", qty + 1, price) == fills.fill("sell", qty + 1, price)
+    with pytest.raises(CostError, match="cost_cash_overdraw"):
+        bound.fill("buy", qty + 1, price)
