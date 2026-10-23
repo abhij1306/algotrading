@@ -63,6 +63,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine import exits, live_trades, snapshot, trades
+from ..engine.botlock import lock_bot
 from ..engine.rescale import unhandled_actions
 from ..events import record
 from ..models import (
@@ -93,6 +94,7 @@ from .protect import (
     VERIFIED,
     StopDesk,
 )
+from .reconcile import broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
 from .submit import (
     EXIT_SALES,
@@ -371,7 +373,7 @@ class TradeManager:
         try:
             holdings = self._broker.holdings()
         except BrokerUnavailableError:
-            logger.warning("holdings unreadable")
+            logger.warning("holdings unreadable: flatten sells the open quantity")
             return None
         out: dict[str, int] = {}
         for holding in holdings:
@@ -630,11 +632,18 @@ class TradeManager:
         Sold, or unsure: the sales end `filled` (their fills are not in today's book), the open
         quantity drops to the shares held (`position.qty_corrected`, never raised), the stop is
         resized to it (cancelled at none) and the owner is told once
-        (`sale.settled_from_holdings`); the exit then sells what is held. False,
-        with nothing changed, when the holdings cannot be read."""
-        held = self._held_shares()
-        if held is None:
+        (`sale.settled_from_holdings`); the exit then sells what is held. The shares held are
+        the holdings plus today's net CNC position (`broker_quantities`, as reconciliation
+        reads them), so another position bought today counts on both sides. Runs under the
+        bot's lock, as fills do, on the position re-read. False, with nothing changed, when
+        the holdings or positions cannot be read."""
+        try:
+            held = broker_quantities(self._broker.positions(), self._broker.holdings())
+        except BrokerUnavailableError:
+            logger.warning("holdings unreadable: lost sales of an earlier session wait")
             return False
+        lock_bot(session, position.bot_id)
+        session.refresh(position)
         symbol = str(
             session.scalar(
                 select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)

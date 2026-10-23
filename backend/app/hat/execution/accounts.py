@@ -89,11 +89,15 @@ def _onboard(
     session: Session, broker: HatBroker, user_id: uuid.UUID, broker_name: str, account_ref: str
 ) -> HatBrokerAccount:
     account = session.execute(
-        select(HatBrokerAccount).where(
+        select(HatBrokerAccount)
+        .where(
             HatBrokerAccount.user_id == user_id,
             HatBrokerAccount.broker == broker_name,
             HatBrokerAccount.account_ref == account_ref,
         )
+        # the row is held until the commit, so a concurrent onboarding (another process) waits
+        # and its status never overwrites a newer check's
+        .with_for_update()
     ).scalar_one_or_none()
     if account is None:
         account = HatBrokerAccount(
