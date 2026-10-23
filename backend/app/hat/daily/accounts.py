@@ -57,7 +57,7 @@ from ..execution.session import (
 from ..models import HatApproval, HatBot, HatBrokerAccount, HatPosition, HatSignal
 from ..models.strategy import ACCOUNT_ACTIVE
 from ..notify import LogNotifier, Notifier
-from ..ops.jobs import JobResult, SessionFactory
+from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
 from ..ops.trade_jobs import job_name, trade_jobs
 from ..risk.controls import sync_health
@@ -330,6 +330,31 @@ class Desks:
     def release(self) -> None:
         for desk in self.by_account.values():
             desk.owner.release()
+
+    def funds(self, account_id: uuid.UUID) -> Decimal | None:
+        """The account's available broker funds (the entry context's); None when unreadable."""
+        desk = self.by_account.get(account_id)
+        if desk is None:
+            return None
+        try:
+            return desk.broker.funds().available
+        except Exception:
+            logger.warning("broker funds unreadable", extra={"account_id": str(account_id)})
+            return None
+
+    def total_equity(self, _day: date) -> Decimal:
+        """[OWNER-PENDING] HAT-PORT-052: the broker funds of every active account, read when the
+        allocation runs. Fails the job when there is no account or one cannot be read."""
+        desks = list(self.by_account.values())
+        if not desks:
+            raise JobError("equity_unavailable")
+        total = Decimal(0)
+        for desk in desks:
+            try:
+                total += desk.broker.funds().total
+            except Exception as exc:
+                raise JobError("equity_unavailable") from exc
+        return total
 
     # --- restart recovery (HAT-OPS-003) ------------------------------------------------------
 

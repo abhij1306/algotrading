@@ -215,7 +215,7 @@ def test_ops__subscription_alert_wired() -> None:
         name: lines for name, text in sources.items() if (lines := unalerted_subscriptions(text))
     }
     assert found == {}
-    assert "LiveSubscriptions(" in sources["hat/daily/runtime.py"]
+    assert "LiveSubscriptions(" in sources["hat/daily/assembly.py"]
     # the checker can fail: built without its alert, with None, through an alias or the module;
     # one with it by keyword passes
     assert unalerted_subscriptions(

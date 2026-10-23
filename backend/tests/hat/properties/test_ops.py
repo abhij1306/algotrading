@@ -24,7 +24,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
-from app.hat.daily.runtime import ALERT_POOL, HatRuntime, subscription_alert
+from app.hat.daily.assembly import ALERT_POOL, subscription_alert
+from app.hat.daily.periodic import PERIODIC_STALLED, STALL_AFTER, Heartbeats, stalled
+from app.hat.daily.runtime import HatRuntime
 from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
 from app.hat.errors import HatConfigError
 from app.hat.execution.session import (
@@ -112,7 +114,7 @@ def test_disabled_starts_nothing(raw: str | None, other: dict[str, str], dialect
     started, task_count = asyncio.run(start())
     assert started is False
     assert task_count == 1  # only this coroutine itself
-    assert runtime.scheduler is None
+    assert runtime.assembly is None
     assert touched == []
     assert hat_logger.handlers == handlers_before
 
@@ -559,3 +561,54 @@ def test_calendar_short() -> None:
     assert calendar_short(cal(), today)
     assert calendar_short(cal(date(2026, 12, 31)), today)
     assert not calendar_short(cal(date(2027, 1, 1)), today)
+
+
+# --- the periodic watchdog (A8, audit R5) ---
+
+
+def test_stalled_names_only_beats_older_than_the_limit() -> None:
+    """A loop is stalled once its heartbeat is more than `STALL_AFTER` old, not at it."""
+    now = datetime(2026, 10, 23, 5, 0, tzinfo=UTC)
+    beats = {
+        "exits": now - STALL_AFTER - timedelta(seconds=1),
+        "housekeeping": now - STALL_AFTER,
+    }
+    assert stalled(beats, now) == ["exits"]
+    assert stalled({}, now) == []
+
+
+def test_heartbeats_alert_once_per_stall_while_open() -> None:
+    """`periodic.stalled` is raised once for a stalled loop while the market is open, again
+    after it beat in time and stalled anew, and never while the market is closed."""
+    start = datetime(2026, 10, 23, 5, 0, tzinfo=UTC)
+    market = {"open": True}
+    notifier = RecordingNotifier()
+    beats = Heartbeats(notifier, lambda _at: market["open"])
+    beats.beat("exits", start)
+    beats.beat("housekeeping", start)
+    late = start + timedelta(seconds=61)
+    beats.beat("exits", late)
+    assert beats.check(late) == ["housekeeping"]
+    assert beats.check(late + timedelta(seconds=30)) == ["housekeeping"]
+    assert [(c, d["loop"]) for c, _, d in notifier.alerts] == [(PERIODIC_STALLED, "housekeeping")]
+    beats.beat("housekeeping", late + timedelta(seconds=40))
+    assert beats.check(late + timedelta(seconds=45)) == []
+    assert beats.check(late + timedelta(seconds=200)) == ["exits", "housekeeping"]
+    assert len(notifier.alerts) == 3
+    market["open"] = False
+    assert beats.check(late + timedelta(seconds=900)) == []
+    assert len(notifier.alerts) == 3
+
+
+def test_a_failure_noted_outside_the_scheduler_waits_its_retry() -> None:
+    """A run that failed outside the scheduler (the restart's arming, `note_failed`) is tried
+    again only `retry_after` after it ended, not on the first tick."""
+    day = date(2026, 10, 23)
+    failed = datetime.combine(day, time(10, 0), tzinfo=IST)
+    job = ScheduledJob(
+        "live.prepare", time(8, 45), lambda _d: None, retry_after=timedelta(minutes=1)
+    )
+    scheduler = HatScheduler([job])
+    scheduler.note_failed(job.name, day, failed)
+    assert scheduler.due_jobs(failed + timedelta(seconds=30), {day: set()}) == []
+    assert scheduler.due_jobs(failed + timedelta(minutes=1), {day: set()}) == [(job, day)]

@@ -5,285 +5,43 @@ that is not PostgreSQL (HAT-OPS-002) and a bad Telegram configuration (HAT-TG-04
 task exists, then starts in the restart-safe order of HAT-OPS-003:
 
 1. reap the job runs a previous process left running, and read the trading calendar;
-2. build one desk per active broker account and reconcile each before anything is placed, read
-   its fills (a fill without a working stop is protected) and note the auto entries left in
-   Triggered: the periodic loop places them once the feed is fresh (no tick since the start
-   reads as stale) and the account has reconciled;
+2. build the assembly (`daily/assembly.py`): one desk per active broker account, reconciled
+   before anything is placed, its fills read (a fill without a working stop is protected) and
+   the auto entries left in Triggered noted: the periodic housekeeping places them once the feed
+   is fresh (no tick since the start reads as stale) and the account has reconciled;
 3. on a trading day from 08:45, arm the day (watchlist candidates, subscriptions, keys already
    fired);
 4. attach the live data to the feed and start the feed;
-5. start the scheduler with every job of the daily cycle, the periodic loop (session watch, fill
-   sync, approval expiry, live exits, reconciliation, announcements) and the Telegram poller and
-   relay.
+5. start the scheduler with every job of the daily cycle, the periodic loops (`daily/periodic.py`:
+   exits, housekeeping, announcements) and the Telegram poller and relay.
 
-`stop` ends them in reverse, each step even if another failed. Everything outside HAT's own code
-(the feed, the Telegram transport, the brokers, the NSE sources) comes in through `RuntimeParts`,
-so the simulated day runs the same assembly over fakes.
+`stop` ends them in reverse, each step even if another failed. `assembly` is None until the
+assembly is built; a start that failed before then stops only the feed.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import dataclasses
 import logging
 import threading
-import uuid
-from collections.abc import Awaitable, Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from decimal import Decimal
-from typing import Any, Protocol
-
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from collections.abc import Awaitable, Callable
+from datetime import date, datetime
 
 from ..clock import SYSTEM_CLOCK, Clock
-from ..data.announcements import INTRADAY_FEEDS, poll_all, poll_interval
-from ..data.bars_store import BarStore
-from ..data.bhavcopy import Fetcher
-from ..data.calendar import session_calendar
-from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
-from ..data.mcp_client import McpClient
-from ..data.quality import JOB_QUALITY
-from ..data.staleness import SilenceWatch
-from ..data.store import DataStore
-from ..data.subscriptions import HAT_OWNER, LiveSubscriptions, SubscriptionRegistry
-from ..engine.live_entry import DataHealthKill, TriggerService
-from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB
-from ..engine.strategy.config import StrategyConfig, parse_config
-from ..engine.trigger import TriggerMonitor, locked_upper_circuit
-from ..execution.broker import HatBroker
-from ..execution.entry_timeout import EntryWatch
-from ..execution.router import PlacementCheck
 from ..logs import configure_hat_logging
-from ..models import (
-    HatBot,
-    HatBrokerAccount,
-    HatInstrument,
-    HatSignal,
-    HatStrategyVersion,
-)
-from ..notify import Notifier
-from ..ops.jobs import JobError, SessionFactory, recover_interrupted, reopen, run_job
-from ..ops.scheduler import DEFAULT_DEADLINE, HatScheduler, ScheduledJob
-from ..ops.trade_jobs import EXITS_CLOSE, GTT_CHECK, GTT_SWAP, GTT_VERIFY
-from ..risk.sessions import SessionCalendar, calendar_short, is_trading_day
+from ..ops.jobs import JobError, RunStatus, SessionFactory, recover_interrupted, reopen, run_job
 from ..settings import HatSettings, require_postgres
-from ..telegram.callbacks import ManagerFlattener, RouterDesk
-from ..telegram.client import BotClient, TelegramTransport
-from ..telegram.config import TelegramSettings
-from ..telegram.confirm import PendingConfirmations
-from ..telegram.notifier import TelegramNotifier
-from ..telegram.reads import LoginLinks
-from ..telegram.relay import EventRelay
-from ..telegram.reports import Reports, telegram_jobs
-from ..telegram.service import TelegramService, run_relay
-from ..telegram.tokens import ApprovalSigner
+from ..telegram.service import run_relay
 from ..time import IST, trade_date_of, utc_now
-from .accounts import END_SESSION, Desks, account_jobs
-from .intraday import (
-    EXITS_CLOSE_SHADOW,
-    GAPSCAN,
-    LIVE_PREPARE,
-    MODES_APPLY,
-    PREPARE_AT,
-    WATCHLIST_EXPIRE,
-    Intraday,
-    intraday_jobs,
-)
-from .live import (
-    ExitViews,
-    GateBoard,
-    LiveContexts,
-    LivePrices,
-    LiveRoute,
-    PriceBook,
-    SaleBands,
-    ShadowExits,
-    stale_feed,
-)
-from .market import DailyBook
-from .nightly import (
-    BANDS_NIGHTLY,
-    CA_ADJUST,
-    CA_RESCALE,
-    CALENDAR_REFRESH,
-    CLOSE_GAPS,
-    EVENTS_PARTITIONS,
-    FEATURES,
-    INGEST_NIGHTLY,
-    JOURNAL_CHECK,
-    REFERENCE_WEEKLY,
-    RETENTION_PURGE,
-    SCAN,
-    SNAPSHOT_BOTS,
-    WATCHLIST_DIGEST,
-    NightlyDeps,
-    TextSources,
-    nightly_jobs,
-)
+from .assembly import Assembly, Feed, RuntimeParts, TradingCalendar, build
+from .intraday import LIVE_PREPARE, PREPARE_AT
+from .periodic import Periodic, watch_sessions
 
-__all__ = [
-    "ALERT_POOL",
-    "STEP_SECONDS",
-    "HatRuntime",
-    "RuntimeParts",
-    "daily_jobs",
-    "subscription_alert",
-]
+__all__ = ["HatRuntime"]
 
 logger = logging.getLogger(__name__)
 
-STEP_SECONDS = 5.0  # the periodic loop: live exits on the latest prices
-MINUTE = timedelta(minutes=1)
-RECONCILE_EVERY = timedelta(minutes=5)
-CALENDAR_EVERY = timedelta(minutes=10)
-DRAWDOWN_EVERY = MINUTE  # the drawdown kills on equity marked to market (P5, X9)
-ALERT_CALENDAR_SHORT = "calendar.short"
 STOPPING = "hat_stopping"
-
-
-# one worker for the subscription alert: a sync runs on a job thread under the subscriptions'
-# lock, and a notifier blocks on its transport
-ALERT_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hat-alert")
-
-
-def subscription_alert(notifier: Notifier, clock: Clock) -> Callable[[str], None]:
-    """`LiveSubscriptions`' alert as a health alert of today's trade date (`subscription_limit`:
-    the wanted set reached the provider's symbol limit, HAT-DATA-112; PR 73, PR 39), sent on
-    `ALERT_POOL`, never on the caller's thread (the loop, or a job holding the subscriptions'
-    lock). A failed send is logged by its error type."""
-
-    def send(code: str, day: date) -> None:
-        try:
-            notifier.alert(code, day, {})
-        except Exception as exc:  # the alert is best effort; the log keeps the type only
-            logger.warning("subscription alert not sent: %s", type(exc).__name__)
-
-    def alert(code: str) -> None:
-        ALERT_POOL.submit(send, code, trade_date_of(clock.now()))
-
-    return alert
-
-
-class Feed(Protocol):
-    """What the runtime needs of the live feed (`data.feed.LiveFeed`)."""
-
-    registry: SubscriptionRegistry
-
-    def add_tick_listener(
-        self, listener: Callable[[dict[str, Any]], None]
-    ) -> Callable[[], None]: ...
-
-    async def subscribe(self, symbols: list[str]) -> None: ...
-
-    async def unsubscribe(self, symbols: list[str]) -> None: ...
-
-    def start(
-        self, loop: asyncio.AbstractEventLoop, *, prevalidated_token: bool | None = None
-    ) -> str: ...
-
-    async def stop(self) -> None: ...
-
-    @property
-    def is_connected(self) -> bool: ...
-
-
-@dataclass
-class RuntimeParts:
-    """Everything outside HAT's code. Production builds them in `production_parts`; the
-    simulated day passes fixtures, `FakeBroker` and a recording Telegram transport."""
-
-    store: DataStore
-    feed: Feed
-    telegram: TelegramSettings
-    transport: TelegramTransport
-    broker_for: Callable[[HatBrokerAccount], HatBroker | None]
-    mcp: Callable[[], McpClient | None]
-    bhavcopy: Callable[[], Fetcher]
-    sources: TextSources
-    bar_store: BarStore | None = None
-    announcements: Callable[[str], str] | None = None
-    links: LoginLinks | None = None
-    sleep: Callable[[float], None] | None = None  # the ingest's wait; default: wall clock
-    prevalidated_token: bool | None = None
-
-
-# How long after its time (`at`) each job's run has to have succeeded before the owner is told
-# (P5, `ops/scheduler.py:overdue`), by the job's name without its account. The one table of
-# deadlines; a job not in it gets `DEFAULT_DEADLINE`. Each is set by what waits on the job.
-_NIGHTLY_DONE = timedelta(hours=6, minutes=30)  # the chain from 18:00 by 00:30
-JOB_DEADLINES: Mapping[str, timedelta] = {
-    INGEST_NIGHTLY: timedelta(hours=4, minutes=30),  # its wait ends at 22:00
-    CA_ADJUST: _NIGHTLY_DONE,
-    JOB_QUALITY: _NIGHTLY_DONE,
-    FEATURES: _NIGHTLY_DONE,
-    REGIME_JOB: _NIGHTLY_DONE,
-    ALLOCATE_JOB: _NIGHTLY_DONE,
-    SCAN: _NIGHTLY_DONE,
-    WATCHLIST_DIGEST: _NIGHTLY_DONE,
-    CLOSE_GAPS: _NIGHTLY_DONE,
-    SNAPSHOT_BOTS: timedelta(hours=1),  # 23:30: the drawdown kills of the day
-    JOURNAL_CHECK: timedelta(hours=1),
-    GTT_VERIFY: timedelta(hours=1),  # 23:00
-    CALENDAR_REFRESH: timedelta(hours=1),
-    BANDS_NIGHTLY: timedelta(hours=1),  # 07:45: the bands before the pre-open
-    CA_RESCALE: timedelta(minutes=20),  # 08:40: before the 09:00 pre-open
-    GTT_CHECK: timedelta(minutes=20),  # 08:40: before the open
-    LIVE_PREPARE: timedelta(minutes=15),  # 08:45: armed by the pre-open
-    MODES_APPLY: timedelta(minutes=10),
-    GAPSCAN: timedelta(minutes=10),  # window 09:16-09:20
-    EXITS_CLOSE: timedelta(minutes=10),  # window 15:20-15:25
-    EXITS_CLOSE_SHADOW: timedelta(minutes=10),
-    GTT_SWAP: timedelta(minutes=15),  # 15:25: the overnight stops are GTTs
-    WATCHLIST_EXPIRE: timedelta(minutes=30),
-    END_SESSION: timedelta(minutes=30),
-    REFERENCE_WEEKLY: timedelta(hours=2),
-    EVENTS_PARTITIONS: timedelta(hours=1),
-    RETENTION_PURGE: timedelta(hours=2),
-}
-
-
-def with_deadlines(
-    jobs: tuple[ScheduledJob, ...], deadlines: Mapping[str, timedelta] = JOB_DEADLINES
-) -> tuple[ScheduledJob, ...]:
-    """`jobs` with their deadline from `deadlines`, by the name before any `:account`."""
-    return tuple(
-        dataclasses.replace(
-            job, deadline=deadlines.get(job.name.split(":", 1)[0], DEFAULT_DEADLINE)
-        )
-        for job in jobs
-    )
-
-
-def daily_jobs(
-    nightly: NightlyDeps,
-    intraday: Intraday,
-    desks: Desks,
-    views: ExitViews,
-    reports: Reports,
-) -> tuple[ScheduledJob, ...]:
-    """Every job of the daily cycle (the job table, `CONF ops.job_registry`), each with its
-    deadline."""
-    return with_deadlines(
-        (
-            *nightly_jobs(nightly),
-            *intraday_jobs(intraday),
-            *account_jobs(desks, nightly.session_factory, views, nightly.clock),
-            *telegram_jobs(reports),
-        )
-    )
-
-
-def _configs(session: Session) -> list[StrategyConfig]:
-    versions = session.scalars(
-        select(HatStrategyVersion)
-        .join(HatBot, HatBot.live_version_id == HatStrategyVersion.id)
-        .where(HatBot.status == "active")
-    )
-    return [parse_config(v.config) for v in versions]
 
 
 class HatRuntime:
@@ -304,35 +62,13 @@ class HatRuntime:
         self._halt = threading.Event()  # long job bodies (the ingest's wait) end on it
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task[None]] = []
-        self._calendar: SessionCalendar | None = None
-        self._last: dict[str, datetime] = {}
-        self._calendar_alerted: date | None = None
+        self.calendar = TradingCalendar(session_factory)
+        self._feed: Feed | None = None  # stopped on stop once the parts exist
+        self.assembly: Assembly | None = None
         self.started = False
-        self.scheduler: HatScheduler | None = None
-
-    # --- reading --------------------------------------------------------------------------
 
     def _now(self) -> datetime:
         return utc_now(self.clock)
-
-    def calendar(self) -> SessionCalendar | None:
-        """The trading calendar, cached (read again by the periodic loop off the event loop)."""
-        return self._calendar
-
-    def _read_calendar(self) -> SessionCalendar | None:
-        with self._session_factory() as session:
-            self._calendar = session_calendar(session)
-        desks = getattr(self, "desks", None)
-        if desks is not None:
-            desks.use_calendar(self._calendar)
-        return self._calendar
-
-    def trading(self, day: date) -> bool:
-        return is_trading_day(self._calendar, day)
-
-    def is_open(self, at: datetime) -> bool:
-        calendar = self._calendar
-        return calendar is not None and calendar.is_open(at)
 
     def _sleep(self, seconds: float) -> None:
         """The ingest's wait: ends with a `JobError` as soon as HAT stops."""
@@ -351,332 +87,87 @@ class HatRuntime:
         require_postgres(self._dialect_name)
         # reads the Telegram settings (a bad one refuses the start) and builds the HTTP clients
         parts = await asyncio.to_thread(self._parts)
+        self._feed = parts.feed
         configure_hat_logging()
         reaped = await asyncio.to_thread(recover_interrupted, self._session_factory)
         if reaped:
             logger.warning("recovered %d interrupted job runs", reaped)
-        await asyncio.to_thread(self._read_calendar)
+        await asyncio.to_thread(self.calendar.read)
         # the desks read the accounts and build the brokers: blocking, so off the loop
-        await asyncio.to_thread(self._build, parts, asyncio.get_running_loop())
-        await self._recover()
-        self._start_live(parts)
-        self._start_tasks()
+        assembly = await asyncio.to_thread(
+            build,
+            parts,
+            self.settings,
+            self._session_factory,
+            self.clock,
+            asyncio.get_running_loop(),
+            self.calendar,
+            sleep=self._sleep,
+        )
+        self.assembly = assembly
+        await self._recover(assembly)
+        assembly.live.attach(parts.feed)
+        parts.feed.start(asyncio.get_running_loop(), prevalidated_token=parts.prevalidated_token)
+        self._start_tasks(assembly)
         self.started = True
         logger.info("HAT runtime started")
         return True
 
-    def _build(self, parts: RuntimeParts, loop: asyncio.AbstractEventLoop) -> None:
-        sf = self._session_factory
-        clock = self.clock
-        self.parts = parts
-        self.client = BotClient(parts.transport, parts.telegram.chat_id)
-        self.signer = ApprovalSigner(parts.telegram.approval_secret)
-        self.notifier = TelegramNotifier(self.client, sf)
-        self.book = DailyBook(parts.store, sf, _configs)
-        self.prices = PriceBook()
-        self.gates = GateBoard(parts.store)
-        subscribe, unsubscribe = threadsafe_provider(parts.feed, loop)
-        registry = parts.feed.registry
-        self.live = LiveData(
-            health=EventFeedHealth(sf, DataHealthKill(sf, clock)),
-            is_open=self.is_open,
-            clock=clock,
-            store=parts.bar_store,
-            instrument_ids=self._instrument_ids,
-            exchange_range=self.settings.exchange_day_range,
-            silence=SilenceWatch(
-                self.is_open,
-                silence_alert(self.notifier),
-                subscribe,
-                silent_after=timedelta(seconds=self.settings.symbol_silent_seconds),
-            ),
-            watched=lambda: registry.symbols_of(HAT_OWNER),
-        )
-        self.live.add_tick_listener(self.prices.on_tick)
-        self.desks = Desks(
-            sf,
-            parts.broker_for,
-            self.notifier,
-            issuer=self.signer.issue,
-            calendar=self.calendar,
-            tick_for=lambda _s, p: self.book.day(trade_date_of(self._now())).tick(p.instrument_id),
-            clock=self.clock,
-            band=SaleBands(self.prices, self.book),
-            resend=self.settings.mpp_resend,
-            page_after=self.settings.mpp_page_after,
-            gtt_check_every=timedelta(minutes=self.settings.gtt_check_minutes),
-        )
-        feed_stale = self._feed_stale
-        self.live_prices = LivePrices(self.prices, self.book, clock)
-        self.route = LiveRoute(
-            self.desks.router, self.gates, feed_stale, clock, self.calendar, self.live_prices
-        )
-        contexts = LiveContexts(
-            self.gates, self.settings.user_id, feed_stale, self._funds, self.calendar
-        )
-        self.service = TriggerService(
-            TriggerMonitor(self.live.builder), sf, contexts, feed_stale, self.route
-        )
-        self.live.add_bar_listener(self.service.on_bar)
-        # PR 49: an unfilled entry is cancelled on a failed break or after the timeout
-        self.entries = EntryWatch(timedelta(minutes=self.settings.entry_timeout_minutes))
-        self.live.add_bar_listener(self.entries.on_bar)
-        self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
-        self.shadow = ShadowExits(sf, self.views, self.desks.managed)
-        self.subscriptions = LiveSubscriptions(
-            registry, subscribe, unsubscribe, subscription_alert(self.notifier, clock)
-        )
-        self.intraday = Intraday(
-            session_factory=sf,
-            clock=clock,
-            book=self.book,
-            prices=self.prices,
-            live=self.live,
-            service=self.service,
-            subscriptions=self.subscriptions,
-            shadow=self.shadow,
-            notifier=self.notifier,
-            gap_client=parts.mcp,
-            calendar=self.calendar,
-        )
-        self.reports = Reports(self.client, sf, links=parts.links, clock=clock)
-        self.telegram = TelegramService(
-            self.client,
-            sf,
-            signer=self.signer,
-            confirmations=PendingConfirmations(),
-            desk=RouterDesk(self.desks.router, self._take_inputs),
-            flattener=ManagerFlattener(self.desks.managers),
-            links=parts.links,
-            price=self.prices.price,
-            feed=self._feed_state,
-            clock=clock,
-        )
-        self.relay = EventRelay(self.client, sf, self.signer, clock)
-        nightly = NightlyDeps(
-            store=parts.store,
-            session_factory=sf,
-            clock=clock,
-            user_id=self.settings.user_id,
-            mcp=parts.mcp,
-            bhavcopy=parts.bhavcopy,
-            sources=parts.sources,
-            total_equity=self._total_equity,
-            sleep=parts.sleep or self._sleep,
-            notifier=self.notifier,
-            digest=self.reports.send_watchlist_digest,
-            on_loaded=self.book.reset,
-        )
-        self.jobs = daily_jobs(nightly, self.intraday, self.desks, self.views, self.reports)
-        self.scheduler = HatScheduler(
-            self.jobs, sf, clock, trading=self.trading, notifier=self.notifier
-        )
-
-    async def _recover(self) -> None:
+    async def _recover(self, assembly: Assembly) -> None:
         """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh
         feed: `resume_entries`), then arm a day already under way (a restart after 08:45 on a
         trading day)."""
         now = self._now()
-        await asyncio.to_thread(self._watch_sessions, now)
-        await asyncio.to_thread(self.desks.recover, now)
+        await asyncio.to_thread(watch_sessions, assembly, now)
+        await asyncio.to_thread(assembly.desks.recover, now)
         today = trade_date_of(now)
-        if self.trading(today) and now.astimezone(IST).time() >= PREPARE_AT:
+        if self.calendar.trading(today) and now.astimezone(IST).time() >= PREPARE_AT:
             try:
                 # before the feed starts (the bar builder is the loop thread's once it does): the
                 # bars stored before the restart give back the opening ranges and day volumes
-                await asyncio.to_thread(self.live.restore, today)
+                await asyncio.to_thread(assembly.live.restore, today)
             except Exception:  # the scheduler's `live.prepare` arms the day without them
                 logger.exception("restoring the day's bars on restart failed")
                 return
-            await asyncio.to_thread(self._arm, today)
+            await asyncio.to_thread(self._arm, assembly, today)
 
-    def _arm(self, today: date) -> None:
+    def _arm(self, assembly: Assembly, today: date) -> None:
         """Arm a day under way once, through the job ledger, so the scheduler finds
         `live.prepare` succeeded and does not run it again on the live feed (wiping the prices
         and swapping the trigger monitor). A run an earlier process recorded armed only that
         process, so it is reopened and run again here. A failed run is the scheduler's to
-        retry; until then the day stays unarmed (no entries), exits still run."""
+        retry after the job's `retry_after`, as a scheduled failure is; until then the day stays
+        unarmed (no entries), exits still run."""
         sf = self._session_factory
         try:
             reopen(LIVE_PREPARE, today, sf)
-            run_job(LIVE_PREPARE, today, lambda: self.intraday.prepare(today), session_factory=sf)
+            outcome = run_job(
+                LIVE_PREPARE, today, lambda: assembly.intraday.prepare(today), session_factory=sf
+            )
         except Exception:
             logger.exception("arming the day on restart failed")
+            return
+        if outcome.status is RunStatus.FAILED:
+            logger.warning("arming the day on restart failed: %s", outcome.error)
+            assembly.scheduler.note_failed(LIVE_PREPARE, today, self._now())
 
-    def _start_live(self, parts: RuntimeParts) -> None:
-        self.live.attach(parts.feed)
-        parts.feed.start(asyncio.get_running_loop(), prevalidated_token=parts.prevalidated_token)
-
-    def _start_tasks(self) -> None:
-        assert self.scheduler is not None
-        self.scheduler.start()
+    def _start_tasks(self, assembly: Assembly) -> None:
+        assembly.scheduler.start()
         loop = asyncio.get_running_loop()
         for work in (
-            self.live.run(),
-            self._periodic_loop(),
-            self.telegram.run(self._stop),
-            run_relay(self.relay, self._stop),
+            assembly.live.run(),
+            *Periodic(assembly, self.clock).loops(self._stop),
+            assembly.telegram.run(self._stop),
+            run_relay(assembly.relay, self._stop),
         ):
             self._tasks.append(loop.create_task(work))
-
-    # --- the periodic steps ---------------------------------------------------------------
-
-    def _due(self, name: str, now: datetime, every: timedelta) -> bool:
-        last = self._last.get(name)
-        if last is not None and now - last < every:
-            return False
-        self._last[name] = now
-        return True
-
-    def periodic(self, now: datetime) -> None:
-        """One pass of the periodic work (blocking: runs off the loop). Each part fails alone."""
-        steps: list[tuple[str, timedelta, Callable[[], object]]] = [
-            ("calendar", CALENDAR_EVERY, lambda: self._check_calendar(now)),
-        ]
-        if self.trading(trade_date_of(now)):
-            steps += [
-                ("sessions", MINUTE, lambda: self._watch_sessions(now)),
-                ("sync", timedelta(0), lambda: self.desks.sync_due(now)),
-                ("expire", MINUTE, lambda: self.desks.expire_all(now)),
-                ("reconcile", RECONCILE_EVERY, lambda: self.desks.reconcile_all(now)),
-                (
-                    "resume",
-                    timedelta(0),
-                    lambda: self.desks.resume_entries(now, self.route.check, self._feed_stale),
-                ),
-            ]
-            if self.is_open(now):
-                steps.extend(
-                    [
-                        ("exits", timedelta(0), lambda: self._live_exits(now)),
-                        (
-                            "drawdown",
-                            DRAWDOWN_EVERY,
-                            lambda: self.intraday.drawdown(now, self.settings.user_id),
-                        ),
-                        (
-                            "entries",
-                            timedelta(0),
-                            lambda: self.desks.cancel_stale_entries(now, self.entries),
-                        ),
-                    ]
-                )
-        if self.parts.announcements is not None:
-            steps.append(("announcements", poll_interval(now), lambda: self._poll(now)))
-        for name, every, step in steps:
-            if not self._due(name, now, every):
-                continue
-            try:
-                step()
-            except Exception:
-                logger.exception("periodic step %s failed", name)
-
-    def _check_calendar(self, now: datetime) -> None:
-        """Read the calendar again, and tell the owner once a day while it holds no trading day
-        more than a week ahead (`calendar.short`): the trade-date jobs stop when it runs out."""
-        calendar = self._read_calendar()
-        today = trade_date_of(now)
-        if calendar_short(calendar, today) and self._calendar_alerted != today:
-            self._calendar_alerted = today
-            last = calendar.trading_days()[-1:] if calendar is not None else []
-            self.notifier.alert(
-                ALERT_CALENDAR_SHORT, today, {"last": last[0].isoformat() if last else "none"}
-            )
-
-    def _watch_sessions(self, now: datetime) -> None:
-        if self.trading(trade_date_of(now)):
-            self.desks.watch_sessions(now)
-
-    def _poll(self, now: datetime) -> None:
-        fetch = self.parts.announcements
-        if fetch is not None:
-            poll_all(INTRADAY_FEEDS, fetch, self._session_factory, now=now)
-
-    def _live_exits(self, now: datetime) -> int:
-        """The live exit rules: every virtual position, then each account's real positions
-        through its `TradeManager` (stops follow, sales go out)."""
-        done = self.shadow.run(now)
-        for account_id, manager in self.desks.managers():
-            if not manager.orders_allowed(now):
-                continue
-            with self._session_factory() as session:
-                for position in manager.open_positions(session, account_id):
-                    view = self.views(session, position)
-                    if view is None:
-                        continue
-                    try:
-                        manager.on_price(session, position.id, view, now)
-                        done += 1
-                    except Exception:
-                        session.rollback()
-                        logger.exception("live exits of position %s failed", position.id)
-        return done
-
-    async def _periodic_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                await asyncio.to_thread(self.periodic, self._now())
-            except Exception:
-                logger.exception("periodic pass failed")
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(self._stop.wait(), STEP_SECONDS)
-
-    # --- inputs ---------------------------------------------------------------------------
-
-    def _feed_stale(self) -> bool:
-        return stale_feed(self.live.staleness, self._now())
-
-    def _feed_state(self) -> str:
-        if self._feed_stale():
-            return "stale"
-        return "connected" if self.parts.feed.is_connected else "disconnected"
-
-    def _instrument_ids(self) -> Mapping[str, uuid.UUID]:
-        with self._session_factory() as session:
-            return {
-                s: i for i, s in session.execute(select(HatInstrument.id, HatInstrument.symbol))
-            }
-
-    def _funds(self, account_id: uuid.UUID) -> Decimal | None:
-        desk = self.desks.by_account.get(account_id)
-        if desk is None:
-            return None
-        try:
-            return desk.broker.funds().available
-        except Exception:
-            logger.warning("broker funds unreadable", extra={"account_id": str(account_id)})
-            return None
-
-    def _total_equity(self, _day: date) -> Decimal:
-        """[OWNER-PENDING] HAT-PORT-052: the broker funds of every active account, read when the
-        allocation runs. Fails the job when there is no account or one cannot be read."""
-        desks = list(self.desks.by_account.values())
-        if not desks:
-            raise JobError("equity_unavailable")
-        total = Decimal(0)
-        for desk in desks:
-            try:
-                total += desk.broker.funds().total
-            except Exception as exc:
-                raise JobError("equity_unavailable") from exc
-        return total
-
-    def _take_inputs(
-        self, session: Session, signal: HatSignal, now: datetime
-    ) -> tuple[Decimal | None, bool | None, PlacementCheck]:
-        check = self.route.check(session, signal.bot_id, signal.instrument_id, now)
-        price, locked = check.ltp, None  # the checked live price (PR 51), as at placement
-        if price is not None:
-            daily = self.book.day(trade_date_of(now)).daily(session, signal.instrument_id)
-            locked = locked_upper_circuit(price, daily)
-        return price, locked, check
 
     # --- stop -----------------------------------------------------------------------------
 
     async def stop(self) -> None:
         """Stop in reverse order; each step runs even if an earlier one failed."""
-        if self.scheduler is not None:
-            self.scheduler.begin_stop()  # the halt fails the ingest's wait: not an alert
+        if self.assembly is not None:
+            self.assembly.scheduler.begin_stop()  # the halt fails the ingest's wait: not an alert
         self._halt.set()
         self._stop.set()
         steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
@@ -699,25 +190,25 @@ class HatRuntime:
         await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _stop_scheduler(self) -> None:
-        if self.scheduler is not None:
-            await self.scheduler.stop()
+        if self.assembly is not None:
+            await self.assembly.scheduler.stop()
 
     async def _stop_feed(self) -> None:
         """Detach, release the subscriptions and stop the feed; after a start that failed part
-        way each step runs on what was built, and the feed is always stopped."""
-        parts = getattr(self, "parts", None)
-        if parts is None:
+        way the feed is still stopped."""
+        if self._feed is None:
             return
-        for name, step in (("live", "detach"), ("subscriptions", "release_all")):
-            built = getattr(self, name, None)
-            if built is None:
-                continue
-            try:
-                getattr(built, step)()
-            except Exception as exc:
-                logger.warning("HAT stop step %s failed: %s", name, type(exc).__name__)
-        await parts.feed.stop()
+        if self.assembly is not None:
+            for name, step in (
+                ("live", self.assembly.live.detach),
+                ("subscriptions", self.assembly.subscriptions.release_all),
+            ):
+                try:
+                    step()
+                except Exception as exc:
+                    logger.warning("HAT stop step %s failed: %s", name, type(exc).__name__)
+        await self._feed.stop()
 
     async def _release(self) -> None:
-        if hasattr(self, "desks"):
-            await asyncio.to_thread(self.desks.release)  # closes broker sessions: blocking
+        if self.assembly is not None:
+            await asyncio.to_thread(self.assembly.desks.release)  # closes broker sessions
