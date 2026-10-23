@@ -66,13 +66,14 @@ from decimal import ROUND_FLOOR, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.rescale import applied_factors, pending_actions
 from ..errors import HatError
 from ..events import record
 from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
+from ..time import IST, as_utc, day_bounds, trade_date_of
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import (
     CODES_NOT_SENT,
@@ -211,17 +212,17 @@ class StopDesk:
         calendar: SessionCalendar | None = None,
         notifier: Notifier | None = None,
         settle_after: timedelta = LOST_ANSWER_SETTLE,
-        wall: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._guard = guard
         self._tick_for = tick_for
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
-        # A lost answer is settled `settle_after` after its send, by the wall clock the send was
+        # A lost answer is settled `settle_after` after its send, by the clock the send was
         # stamped with (`placed_at`), not the caller's `now`.
         self._settle_after = settle_after
-        self._wall = wall
+        self._clock = clock
         # Entries whose remainder the broker was asked to cancel (`cancel_entry`): not asked again.
         self._entry_cancels: set[uuid.UUID] = set()
         # One re-entrant lock per position around what places a stop (`_serialised`).
@@ -395,6 +396,7 @@ class StopDesk:
                 tag,
                 symbol=target.symbol,
                 bot_id=target.signal.bot_id,
+                clock=self._clock,
                 tick_size=tick,
             )
         except OrderRefusedError as exc:
@@ -469,7 +471,7 @@ class StopDesk:
     def _settled_long_enough(self, row: HatOrder) -> bool:
         if row.placed_at is None:
             return True
-        return self._wall() - as_utc(row.placed_at) >= self._settle_after
+        return self._clock.now() - as_utc(row.placed_at) >= self._settle_after
 
     def settle_lost(self, session: Session, position_id: uuid.UUID) -> None:
         """Settle every stop of the position whose answer was lost (see `_settle`)."""
@@ -519,7 +521,8 @@ class StopDesk:
                 if found_order is None:
                     end_lost_order(session, row)
                 else:
-                    adopt_broker_order(session, row, found_order, bot_id)
+                    adopt_broker_order(session, row, found_order, bot_id, clock=self._clock)
+
                 session.commit()
 
     @staticmethod
@@ -682,7 +685,7 @@ class StopDesk:
         position = session.get(HatPosition, position_id)
         if position is None:
             return
-        self._cancel_entries(session, position.signal_id, trade_date_of(self._wall()))
+        self._cancel_entries(session, position.signal_id, trade_date_of(self._clock.now()))
 
     def cancel_unfilled_entry(self, session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
         """Cancel the signal's real entry while nothing of it has filled (PR 49): its break
@@ -901,7 +904,7 @@ class StopDesk:
         leaves it resting and refreshed as any other, and the next night tries again. One whose
         new trigger would rest below the old (a coarser tick, F24) is not renewed."""
         # by the wall clock the placement was stamped with, as a settle reads it
-        if row.placed_at is None or self._wall() - as_utc(row.placed_at) < GTT_RENEW_AFTER:
+        if row.placed_at is None or self._clock.now() - as_utc(row.placed_at) < GTT_RENEW_AFTER:
             return False
         if row.trigger_price is not None and goal < Decimal(row.trigger_price):
             return False

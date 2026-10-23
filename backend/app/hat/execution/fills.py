@@ -64,6 +64,7 @@ from typing import Protocol
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..engine import live_trades
 from ..engine.positions import TradeError
 from ..events import record
@@ -237,9 +238,11 @@ class FillSync:
         band: SaleBand | None = None,
         resend: bool = False,
         page_after: int = 3,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._desk = desk
+        self._clock = clock  # stamps the orders it adopts
         self._notifier = notifier or LogNotifier()
         self._band = band
         self._resend = resend  # HAT_MPP_RESEND (PR 48)
@@ -332,7 +335,9 @@ class FillSync:
         for row in rows.values():
             found = book.for_row(row) if row.status in UNSURE else None
             if found is not None:
-                adopt_broker_order(session, row, found, self._bot_of(session, row))
+                adopt_broker_order(
+                    session, row, found, self._bot_of(session, row), clock=self._clock
+                )
                 session.commit()
                 report.adopted += 1
                 self._sale_ended(session, row, found, now)

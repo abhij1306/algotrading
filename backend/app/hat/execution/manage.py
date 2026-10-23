@@ -61,6 +61,7 @@ from time import monotonic
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..engine import exits, live_trades, snapshot, trades
 from ..engine.rescale import unhandled_actions
 from ..models import (
@@ -74,7 +75,7 @@ from ..models import (
 )
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, as_utc, trade_date_of, utc_now
+from ..time import IST, as_utc, trade_date_of
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import ALERT_SALE_UNFILLED, RESTING_AFTER, FillSync, SaleBand, SyncReport
 from .guard import ExecutionGuard
@@ -147,6 +148,18 @@ STALE = "stale"
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
 
 
+class _RunClock:
+    """A run's clock: the caller's `start` plus the monotonic seconds the run has taken."""
+
+    def __init__(self, start: datetime, ticker: Callable[[], float]) -> None:
+        self._start = start
+        self._ticker = ticker
+        self._began = ticker()
+
+    def now(self) -> datetime:
+        return self._start + timedelta(seconds=self._ticker() - self._began)
+
+
 def in_close_window(now: datetime) -> bool:
     """15:20 <= now < 15:25 IST."""
     local = now.astimezone(IST).time()
@@ -191,10 +204,10 @@ class TradeManager:
         *,
         calendar: SessionCalendar | None,
         notifier: Notifier | None = None,
-        clock: Callable[[], datetime] | None = None,
+        sending: Clock | None = None,
         ticker: Callable[[], float] = monotonic,
         settle_after: timedelta = LOST_ANSWER_SETTLE,
-        wall: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
         band: SaleBand | None = None,
         resend: bool = False,
     ) -> None:
@@ -206,13 +219,14 @@ class TradeManager:
         self._fills = fills
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
-        # The time a sale is sent at: `clock` when given, else the caller's `now` plus the time
-        # the run has taken so far (`ticker`, monotonic seconds).
-        self._clock = clock
+        # The time a sale is sent at: `sending` when given, else the caller's `now` plus the
+        # time the run has taken so far (`ticker`, monotonic seconds).
+        self._sending = sending
         self._ticker = ticker
-        # A sale whose answer was lost is looked up `settle_after` after its send (wall clock).
+        # A sale whose answer was lost is looked up `settle_after` after its send; `clock`
+        # stamps the sends and is the one those waits are read by.
         self._settle_after = settle_after
-        self._wall = wall
+        self._clock = clock
         # One sale of a position at a time across threads: the live tick path, the close job
         # and the Telegram flatten all sell through `_sell_qty`, whose "nothing else is selling"
         # check and reservation must not interleave (each sale holds its position's lock from
@@ -267,13 +281,12 @@ class TradeManager:
         """Run the live rules of one real position on a price event and carry them out."""
         return self._evaluate(session, position_id, view, "live", now, self._sending_clock(now))
 
-    def _sending_clock(self, now: datetime) -> Callable[[], datetime]:
+    def _sending_clock(self, now: datetime) -> Clock:
         """The clock a run reads at each sale: a close run that started at 15:24 and is still
         sending at 15:30 sends nothing more (HAT-EXEC-074)."""
-        if self._clock is not None:
-            return self._clock
-        start = self._ticker()
-        return lambda: now + timedelta(seconds=self._ticker() - start)
+        if self._sending is not None:
+            return self._sending
+        return _RunClock(now, self._ticker)
 
     def _evaluate(
         self,
@@ -282,7 +295,7 @@ class TradeManager:
         view: exits.ExitView,
         phase: exits.Phase,
         now: datetime,
-        sending: Callable[[], datetime],
+        sending: Clock,
     ) -> exits.Evaluation:
         result = live_trades.evaluate_real_position(session, position_id, view, phase, now)
         session.commit()
@@ -368,7 +381,7 @@ class TradeManager:
         position_id: uuid.UUID,
         action: exits.ExitAction,
         now: datetime,
-        sending: Callable[[], datetime],
+        sending: Clock,
     ) -> SendOutcome | None:
         position = session.get(HatPosition, position_id)
         if position is None:
@@ -399,7 +412,7 @@ class TradeManager:
         rule: str,
         rule_ids: Sequence[str],
         now: datetime,
-        sending: Callable[[], datetime],
+        sending: Clock,
     ) -> SendOutcome | None:
         """Sell `qty` of a real position at market under `purpose` (an exit or a flatten), when
         nothing else is selling it, the session allows it and the stop made room. Every refusal
@@ -422,7 +435,7 @@ class TradeManager:
         rule: str,
         rule_ids: Sequence[str],
         now: datetime,
-        sending: Callable[[], datetime],
+        sending: Clock,
     ) -> SendOutcome | None:
         if position.closed_at is not None:
             return None
@@ -450,7 +463,7 @@ class TradeManager:
             return None
         # Checked at the moment of sending: a close job that started at 15:24 still sends
         # nothing from 15:30 on (HAT-EXEC-074).
-        if not self._orders_allowed(sending()):
+        if not self._orders_allowed(sending.now()):
             self._not_placed(signal, position, "market_closed", now)
             return None
         rejected = rejected_sales(session, signal.id, purpose, now)
@@ -572,22 +585,23 @@ class TradeManager:
             elif found.filled_qty > 0:
                 waiting = True
             else:
-                adopt_broker_order(session, row, found, bot_id)
+                adopt_broker_order(session, row, found, bot_id, clock=self._clock)
             session.commit()
         if stale:
             return STALE
         return WAIT if waiting else SETTLED
 
     def _young(self, row: HatOrder) -> bool:
-        """Sent less than `settle_after` ago (wall clock): its answer may still be on its way."""
+        """Sent less than `settle_after` ago: its answer may still be on its way."""
         return (
-            row.placed_at is not None and self._wall() - as_utc(row.placed_at) < self._settle_after
+            row.placed_at is not None
+            and self._clock.now() - as_utc(row.placed_at) < self._settle_after
         )
 
     def _earlier_session(self, row: HatOrder) -> bool:
-        """The order was sent on an earlier trade date than today's (by the wall clock)."""
+        """The order was sent on an earlier trade date than today's."""
         return row.placed_at is not None and trade_date_of(as_utc(row.placed_at)) < trade_date_of(
-            self._wall()
+            self._clock.now()
         )
 
     def _send_sale(
@@ -617,6 +631,7 @@ class TradeManager:
                     tag,
                     symbol=request.symbol,
                     bot_id=signal.bot_id,
+                    clock=self._clock,
                     rule=rule,
                 )
             except (OrderRefusedError, BrokerUnavailableError) as exc:
@@ -706,7 +721,7 @@ class TradeManager:
         position: HatPosition,
         views: ViewSource,
         now: datetime,
-        sending: Callable[[], datetime],
+        sending: Clock,
         report: CloseReport,
     ) -> None:
         view = views(session, position)

@@ -49,6 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.expression import Exists
 
+from ..clock import Clock
 from ..engine import journal, lifecycle, live_trades, trades
 from ..errors import HatError
 from ..events import record
@@ -251,22 +252,23 @@ def resolve_by_tag(broker: HatBroker, tag: str) -> BrokerOrder | None:
 
 
 def adopt_broker_order(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None, *, clock: Clock
 ) -> None:
     """Record a broker order found by tag on its row (no commit). An entry first found already
-    ended with nothing filled ends its signal at once."""
+    ended with nothing filled ends its signal at once. `clock` stamps a first-known attempt and
+    the entry's rejection."""
     first_knowledge = row.status in ("pending", "unconfirmed")
     row.broker_order_id = found.order_id
     row.status = found.status
     if row.placed_at is None:
-        row.placed_at = utc_now()
+        row.placed_at = utc_now(clock)
     if not first_knowledge:
         return
     if found.status in _PLACED_STATES or (row.purpose == ENTRY and found.filled_qty > 0):
         # An entry that filled in part before it ended was placed: its fills open the position.
         _event(session, row, bot_id, _placed_event(row))
     elif row.purpose == ENTRY and found.status in _ENTRY_ENDINGS:
-        _end_adopted_entry(session, row, found, bot_id)
+        _end_adopted_entry(session, row, found, bot_id, clock)
     elif _sale_ended_short(row, found):
         _sale_not_sold(session, row, found, bot_id)
     elif found.status == "rejected":
@@ -276,7 +278,7 @@ def adopt_broker_order(
 
 
 def _end_adopted_entry(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None, clock: Clock
 ) -> None:
     """An entry first found already cancelled, expired or rejected, nothing filled. In
     EntryPlaced its signal ends as a broker update would end it; before that (the send's answer
@@ -288,7 +290,7 @@ def _end_adopted_entry(
         return
     _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
     if row.signal_id is not None:
-        trades.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now())
+        trades.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now(clock))
 
 
 def _entry_ended(
@@ -562,7 +564,7 @@ def _check_allowed(
 
 
 def _lookup_before_retry(
-    session: Session, broker: HatBroker, row: HatOrder, tag: str, bot_id: uuid.UUID
+    session: Session, broker: HatBroker, row: HatOrder, tag: str, bot_id: uuid.UUID, clock: Clock
 ) -> SendOutcome | None:
     """An attempt was made before: ask the broker for the tag. An order found is adopted and
     returned; None means the book has none and the same tag may be placed again (a stop or a
@@ -575,7 +577,7 @@ def _lookup_before_retry(
         if row.purpose == ENTRY:
             raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
         return None
-    adopt_broker_order(session, row, found, bot_id)
+    adopt_broker_order(session, row, found, bot_id, clock=clock)
     session.commit()
     return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
 
@@ -617,11 +619,11 @@ def _call_broker(
     return outcome.status, outcome.broker_order_id, outcome.code
 
 
-def _claim_attempt(session: Session, row: HatOrder, earlier: datetime | None) -> bool:
-    """Stamp a new attempt of `row` (now) in one conditional UPDATE on the attempt and status
-    this sender read (`earlier`, None before the first): False when another sender (a thread
-    or process holding the same tag) stamped one since, so its call may be in flight, or the
-    fill sync adopted the order from the book (placed, its attempt time unchanged)."""
+def _claim_attempt(session: Session, row: HatOrder, earlier: datetime | None, clock: Clock) -> bool:
+    """Stamp a new attempt of `row` (at `clock`'s now) in one conditional UPDATE on the attempt
+    and status this sender read (`earlier`, None before the first): False when another sender
+    (a thread or process holding the same tag) stamped one since, so its call may be in flight,
+    or the fill sync adopted the order from the book (placed, its attempt time unchanged)."""
     same = HatOrder.placed_at.is_(None) if earlier is None else HatOrder.placed_at == earlier
     claimed = session.execute(
         update(HatOrder)
@@ -631,7 +633,7 @@ def _claim_attempt(session: Session, row: HatOrder, earlier: datetime | None) ->
             HatOrder.status == row.status,
             HatOrder.broker_order_id.is_(None),
         )
-        .values(placed_at=utc_now())
+        .values(placed_at=utc_now(clock))
         .execution_options(synchronize_session=False)
     )
     session.commit()
@@ -647,18 +649,20 @@ def send_order(
     *,
     symbol: str,
     bot_id: uuid.UUID,
+    clock: Clock,
     tick_size: Decimal | None = None,
     rule: str | None = None,
 ) -> SendOutcome:
     """Send the reserved order `tag` to the broker, at most once per tag. Safe to call again.
-    `rule` names the exit rule of a sale; it is kept on the order's `order.placed` event."""
+    `clock` stamps each attempt (`placed_at`). `rule` names the exit rule of a sale; it is kept
+    on the order's `order.placed` event."""
     row = _row(session, tag)
     if row.status in _ENDED:
         return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
     _check_allowed(session, broker, guard, row, bot_id)
 
     if row.status == "unconfirmed" or row.placed_at is not None:
-        adopted = _lookup_before_retry(session, broker, row, tag, bot_id)
+        adopted = _lookup_before_retry(session, broker, row, tag, bot_id, clock)
         if adopted is not None:
             return adopted
         # The lookup returned absent: the same tag may be placed again.
@@ -666,7 +670,7 @@ def send_order(
     earlier_attempt = row.placed_at
     # The attempt is stamped before the call, so a crash is seen as unknown; each attempt is
     # stamped anew, so a lost answer's settle wait runs from the send that may be in flight.
-    if not _claim_attempt(session, row, earlier_attempt):
+    if not _claim_attempt(session, row, earlier_attempt, clock):
         # Another sender stamped this tag since this one read it: its call may be in flight, so
         # this one sends nothing and reports what that send left (unconfirmed while it is out).
         status = "unconfirmed" if row.status in ("pending", "unconfirmed") else row.status

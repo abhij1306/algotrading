@@ -29,9 +29,10 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import Notifier
-from ..time import trade_date_of, utc_now
+from ..time import trade_date_of
 from .broker import BrokerHolding, BrokerOrder, BrokerPosition, HatBroker
 from .guard import ExecutionGuard
 from .submit import TagBook, adopt_broker_order
@@ -156,20 +157,18 @@ MISMATCH_ALERT = "reconcile.mismatch"
 UNREADABLE_ROW_ALERT = "reconcile.unreadable_row"
 
 
-def _today() -> date:
-    return trade_date_of(utc_now())
-
-
-def notifier_sink(notifier: Notifier, today: Callable[[], date] = _today) -> AlertSink:
+def notifier_sink(notifier: Notifier, clock: Clock = SYSTEM_CLOCK) -> AlertSink:
     """The reconciliation's alert sink over a `Notifier` (Telegram from PR 16, the log until
-    then): one `reconcile.mismatch` health alert per new mismatch, carrying its kind, the tag or
-    symbol it is about and the bot (`account` when the bot cannot be told). Fixed words only,
-    never broker text."""
+    then): one `reconcile.mismatch` health alert per new mismatch, dated by `clock`, carrying
+    its kind, the tag or symbol it is about and the bot (`account` when the bot cannot be told).
+    Fixed words only, never broker text."""
 
     def alert(mismatch: Mismatch) -> None:
         bot = str(mismatch.bot_id) if mismatch.bot_id is not None else "account"
         notifier.alert(
-            MISMATCH_ALERT, today(), {"kind": mismatch.kind, "key": mismatch.key, "bot_id": bot}
+            MISMATCH_ALERT,
+            trade_date_of(clock.now()),
+            {"kind": mismatch.kind, "key": mismatch.key, "bot_id": bot},
         )
 
     return alert
@@ -184,9 +183,11 @@ class ReconciliationService:
         guard: ExecutionGuard,
         alert: AlertSink = _log_alert,
         notifier: Notifier | None = None,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._guard = guard
+        self._clock = clock  # stamps the orders it adopts
         self._alert = alert
         self._notifier = notifier
         self._alerted: set[tuple[str, str, uuid.UUID | None]] = set()
@@ -216,7 +217,7 @@ class ReconciliationService:
                 bot_id = session.execute(
                     select(HatSignal.bot_id).where(HatSignal.id == row.signal_id)
                 ).scalar_one_or_none()
-                adopt_broker_order(session, row, found, bot_id)
+                adopt_broker_order(session, row, found, bot_id, clock=self._clock)
                 adopted.append(row.tag)
         session.commit()
 

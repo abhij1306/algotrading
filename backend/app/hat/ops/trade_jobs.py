@@ -16,9 +16,9 @@ started from 15:25 on (`ScheduledJob.until`); its body also refuses to run outsi
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable
-from datetime import date, datetime, time, timedelta
+from datetime import date, time, timedelta
 
+from ..clock import Clock
 from ..execution.manage import EXITS_CLOSE_FROM, EXITS_CLOSE_UNTIL, TradeManager, ViewSource
 from ..execution.protect import SWAP_AT
 from .jobs import JobError, JobResult, SessionFactory
@@ -46,8 +46,6 @@ GTT_SWAP_AT = SWAP_AT
 GTT_VERIFY_AT = time(23, 0)  # nightly, after the ingest window's 22:00 fallback
 CLOSE_RETRY = timedelta(minutes=1)
 
-Clock = Callable[[], datetime]
-
 
 def job_name(base: str, account_id: uuid.UUID) -> str:
     """The job's name for one broker account."""
@@ -68,7 +66,7 @@ def trade_jobs(
 
     def close(_day: date) -> JobResult:
         with session_factory() as session:
-            report = manager.close_exits(session, account_id, views, clock())
+            report = manager.close_exits(session, account_id, views, clock.now())
         if report.refused is not None:
             raise JobError(report.refused)
         if report.failed:
@@ -77,21 +75,21 @@ def trade_jobs(
 
     def swap(_day: date) -> JobResult:
         with session_factory() as session:
-            report = manager.swap_stops(session, account_id, clock())
+            report = manager.swap_stops(session, account_id, clock.now())
         if report.failed:
             raise JobError("gtt_swap_incomplete")
         return JobResult(rows=report.done)
 
     def verify(_day: date) -> JobResult:
         with session_factory() as session:
-            report = manager.verify_stops(session, account_id, clock())
+            report = manager.verify_stops(session, account_id, clock.now())
         if report.failed:
             raise JobError("gtt_verify_incomplete")
         return JobResult(rows=report.done)
 
     def ex_date(_day: date) -> JobResult:
         with session_factory() as session:
-            report = manager.check_ex_date_gtts(session, account_id, clock())
+            report = manager.check_ex_date_gtts(session, account_id, clock.now())
         if report.failed:
             raise JobError("gtt_ex_date_incomplete")
         return JobResult(rows=report.done)

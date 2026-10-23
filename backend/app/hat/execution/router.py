@@ -55,6 +55,7 @@ from decimal import Decimal
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..data.live import PRICE_UNKNOWN
 from ..engine import approvals, lifecycle, positions, snapshot, trades
 from ..models import (
@@ -220,9 +221,11 @@ class ExecutionRouter:
         reconciler: ReconciliationService,
         notifier: Notifier | None = None,
         issuer: trades.TokenIssuer | None = None,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._guard = guard
+        self._clock = clock  # stamps each entry's send
         self._reconciler = reconciler
         self._notifier = notifier or LogNotifier()
         # Signs each approval card's token (the Telegram signer). Without one a confirm card
@@ -495,7 +498,13 @@ class ExecutionRouter:
         rejection that may still be retried."""
         try:
             sent = send_order(
-                session, self._broker, self._guard, tag, symbol=symbol, bot_id=signal.bot_id
+                session,
+                self._broker,
+                self._guard,
+                tag,
+                symbol=symbol,
+                bot_id=signal.bot_id,
+                clock=self._clock,
             )
         except (OrderRefusedError, BrokerUnavailableError) as exc:
             code = exc.code if isinstance(exc, OrderRefusedError) else "broker_unavailable"

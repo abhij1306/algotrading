@@ -9,7 +9,7 @@ every Bot API call; `FakeBroker` records every broker call.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -30,6 +30,7 @@ from hat_support import memory_engine
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.hat.clock import Clock, FixedClock
 from app.hat.engine import trades
 from app.hat.engine.confidence import HIGH
 from app.hat.execution.fyers_adapter import FyersHatBroker
@@ -173,7 +174,7 @@ class TgRig:
         self,
         *,
         mode: str = "confirm",
-        clock: Callable[[], datetime] | None = None,
+        clock: Clock | None = None,
         price: Decimal | None = None,
         secret: bytes = SECRET,
         fake: FakeBroker | None = None,
@@ -183,7 +184,7 @@ class TgRig:
     ) -> None:
         self.engine = memory_engine()
         self.factory = sessionmaker(self.engine, expire_on_commit=False)
-        self.now = AT
+        self.clock = FixedClock(AT)
         self.price = D(100) if price is None else price
         self.locked: bool | None = False
         with self.factory() as session:
@@ -255,7 +256,7 @@ class TgRig:
             confirmations=self.confirmations,
             desk=self.desk,
             flattener=self.flattener,
-            clock=clock or (lambda: self.now),
+            clock=clock or self.clock,
         )
 
     def route(self, instrument: int = 0, at: datetime = AT, **ctx: object) -> trades.EntryOutcome:
@@ -277,8 +278,12 @@ class TgRig:
     def places(self) -> list[dict]:
         return self.fake.calls_named("place_order")
 
+    @property
+    def now(self) -> datetime:
+        return self.clock.now()
+
     def at(self, moment: datetime) -> TgRig:
-        self.now = moment
+        self.clock.set(moment)
         return self
 
     def later(self, seconds: float) -> datetime:

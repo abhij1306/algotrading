@@ -41,6 +41,7 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..data.bars import Bar
 from ..data.gapscan import Gapper, is_candidate
 from ..execution.modes import AUTO, CONFIRM, bot_mode
@@ -445,11 +446,11 @@ class DataHealthKill:
     def __init__(
         self,
         session_factory: Callable[[], Session],
-        now: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
         submit: Callable[[Callable[[], None]], None] | None = None,
     ) -> None:
         self._session_factory = session_factory
-        self._now = now
+        self._clock = clock
         self._submit = submit or TriggerService._submit
         self._last: datetime | None = None
         self._seq = 0
@@ -459,7 +460,7 @@ class DataHealthKill:
     def __call__(self, stale: bool) -> None:
         # Each change gets an instant after the previous one: a trip and a recovery at the same
         # instant would read as tripped (a tie favours the trip), leaving the kill on.
-        at = self._now()
+        at = utc_now(self._clock)
         if self._last is not None and at <= self._last:
             at = self._last + _INSTANT
         self._last = at

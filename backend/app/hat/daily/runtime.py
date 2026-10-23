@@ -117,7 +117,7 @@ STOPPING = "hat_stopping"
 ALERT_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hat-alert")
 
 
-def subscription_alert(notifier: Notifier, now: Callable[[], datetime]) -> Callable[[str], None]:
+def subscription_alert(notifier: Notifier, clock: Clock) -> Callable[[str], None]:
     """`LiveSubscriptions`' alert as a health alert of today's trade date (`subscription_limit`:
     the wanted set reached the provider's symbol limit, HAT-DATA-112; PR 73, PR 39), sent on
     `ALERT_POOL`, never on the caller's thread (the loop, or a job holding the subscriptions'
@@ -130,7 +130,7 @@ def subscription_alert(notifier: Notifier, now: Callable[[], datetime]) -> Calla
             logger.warning("subscription alert not sent: %s", type(exc).__name__)
 
     def alert(code: str) -> None:
-        ALERT_POOL.submit(send, code, trade_date_of(now()))
+        ALERT_POOL.submit(send, code, trade_date_of(clock.now()))
 
     return alert
 
@@ -299,7 +299,7 @@ class HatRuntime:
         subscribe, unsubscribe = threadsafe_provider(parts.feed, loop)
         registry = parts.feed.registry
         self.live = LiveData(
-            health=EventFeedHealth(sf, DataHealthKill(sf, lambda: utc_now(clock))),
+            health=EventFeedHealth(sf, DataHealthKill(sf, clock)),
             is_open=self.is_open,
             clock=clock,
             store=parts.bar_store,
@@ -321,7 +321,7 @@ class HatRuntime:
             issuer=self.signer.issue,
             calendar=self.calendar,
             tick_for=lambda _s, p: self.book.day(trade_date_of(self._now())).tick(p.instrument_id),
-            today=lambda: trade_date_of(self._now()),
+            clock=self.clock,
             band=SaleBands(self.prices, self.book),
             resend=self.settings.mpp_resend,
             page_after=self.settings.mpp_page_after,
@@ -344,7 +344,7 @@ class HatRuntime:
         self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
         self.shadow = ShadowExits(sf, self.views, self.desks.managed)
         self.subscriptions = LiveSubscriptions(
-            registry, subscribe, unsubscribe, subscription_alert(self.notifier, self._now)
+            registry, subscribe, unsubscribe, subscription_alert(self.notifier, clock)
         )
         self.intraday = Intraday(
             session_factory=sf,
@@ -359,7 +359,7 @@ class HatRuntime:
             gap_client=parts.mcp,
             calendar=self.calendar,
         )
-        self.reports = Reports(self.client, sf, links=parts.links, clock=self._now)
+        self.reports = Reports(self.client, sf, links=parts.links, clock=clock)
         self.telegram = TelegramService(
             self.client,
             sf,
@@ -370,9 +370,9 @@ class HatRuntime:
             links=parts.links,
             price=self.prices.price,
             feed=self._feed_state,
-            clock=self._now,
+            clock=clock,
         )
-        self.relay = EventRelay(self.client, sf, self.signer, self._now)
+        self.relay = EventRelay(self.client, sf, self.signer, clock)
         nightly = NightlyDeps(
             store=parts.store,
             session_factory=sf,
@@ -395,7 +395,7 @@ class HatRuntime:
             self.reports,
             exdate_check=self.settings.exdate_gtt_check,
         )
-        self.scheduler = HatScheduler(self.jobs, sf, self._now, trading=self.trading)
+        self.scheduler = HatScheduler(self.jobs, sf, clock, trading=self.trading)
 
     async def _recover(self) -> None:
         """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh

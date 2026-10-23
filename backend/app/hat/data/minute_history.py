@@ -43,6 +43,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..errors import HatError
 from ..models import HatBrokerSymbol, HatInstrument, HatMarket
 from ..models.strategy import BROKER_FYERS
@@ -217,12 +218,7 @@ class HistoryLimits:
         return self.max_candles if self.max_candles is not None else 400 * self.chunk_days
 
 
-Clock = Callable[[], datetime]
 Sleep = Callable[[float], None]
-
-
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
 
 
 @dataclass
@@ -303,7 +299,7 @@ class CallPacer:
         limits: HistoryLimits,
         progress: Progress,
         *,
-        clock: Clock = _utc_now,
+        clock: Clock = SYSTEM_CLOCK,
         sleep: Sleep = time.sleep,
     ) -> None:
         self._limits = limits
@@ -315,17 +311,17 @@ class CallPacer:
         self.made = 0
 
     def today(self) -> date:
-        return self._clock().astimezone(IST).date()
+        return self._clock.now().astimezone(IST).date()
 
     def call(self, history: HistoryCall, request: dict[str, str]) -> object:
-        now = self._clock()
+        now = self._clock.now()
         while True:
             while self._recent and self._recent[0] <= now - _WINDOW:
                 self._recent.popleft()
             if len(self._recent) < self._limits.per_minute:
                 break
             self._sleep((self._recent[0] + _WINDOW - now).total_seconds())
-            now = self._clock()
+            now = self._clock.now()
         day = now.astimezone(IST).date().isoformat()  # after any wait: the day the call is made
         if self._progress.calls.get(day, 0) >= self._limits.per_day:
             raise MinuteHistoryError("history_daily_limit")

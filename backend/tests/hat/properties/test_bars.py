@@ -1410,7 +1410,7 @@ def test_minute_history_budget(
                     end,
                     limits=limits,
                     progress=progress,
-                    pacer=CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep),
+                    pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
                 )
             )
         for i, at in enumerate(instants):
@@ -1506,7 +1506,7 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
                 chunk_days=1, per_minute=10**6, per_day=budget or 1, failures_in_row=4
             ),
             progress=progress,
-            pacer=CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep),
+            pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
         )
         done = set(Progress.load(path).done)
         assert done == set(stopped.days)
@@ -1524,7 +1524,7 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
             pacer=CallPacer(
                 HistoryLimits(chunk_days=1, per_minute=10**6),
                 progress,
-                clock=clock.now,
+                clock=clock,
                 sleep=clock.sleep,
             ),
             resume=True,
@@ -1574,7 +1574,7 @@ def test_minute_history_plan_clamp(raw: list[list[Any]], late: int, back: int, o
             end,
             limits=limits,
             progress=progress,
-            pacer=CallPacer(limits, progress, clock=clock.now, sleep=clock.sleep),
+            pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
         )
         if other and back:
             assert report.available_from is None

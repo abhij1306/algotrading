@@ -38,6 +38,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.confidence import stored_basis
 from ..models import (
     HatAnnouncement,
@@ -227,7 +228,7 @@ class EventRelay:
         client: BotClient,
         session_factory: sessionmaker[Session] | Callable[[], Session],
         signer: ApprovalSigner,
-        clock: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._client = client
         self._factory = session_factory
@@ -238,7 +239,7 @@ class EventRelay:
 
     def run_once(self) -> int:
         """Relay the settled events after the cursor; return how many messages were sent."""
-        now = self._clock()
+        now = utc_now(self._clock)
         sent = 0
         with self._factory() as session:
             if session.get(HatTelegramCursor, store.EVENTS) is None:

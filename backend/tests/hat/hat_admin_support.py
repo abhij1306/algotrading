@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.base import Base
 from app.hat.admin import AdminDeps, main
+from app.hat.clock import FixedClock
 from app.hat.data.sessions import IST
 from app.hat.engine.portfolio import lifecycle
 from app.hat.execution.fyers_adapter import FyersHatBroker
@@ -105,7 +106,7 @@ class World:
             broker_for=lambda _name: FyersHatBroker(FakeBroker(), instruments=lambda: []),  # type: ignore[arg-type]
             evidence=lambda _s, _b: self.evidence,
             env=self.env,
-            clock=lambda: self.now,
+            clock=FixedClock(self.now),
         )
 
     def run(self, *argv: str) -> tuple[int, Any, str]:

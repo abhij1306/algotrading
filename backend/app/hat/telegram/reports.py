@@ -24,6 +24,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..data.calendar import session_calendar
 from ..engine import approvals
 from ..engine.watchlist import EVENT_PUBLISHED
@@ -81,7 +82,7 @@ class Reports:
         session_factory: sessionmaker[Session] | Callable[[], Session],
         *,
         links: reads.LoginLinks | None = None,
-        clock: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._client = client
         self._factory = session_factory
@@ -99,7 +100,7 @@ class Reports:
             kind=kind,
             ref_id=ref_id,
             message_id=message_id,
-            sent_at=self._clock(),
+            sent_at=utc_now(self._clock),
         )
         session.commit()
 
@@ -110,7 +111,7 @@ class Reports:
         no live `hat_broker_session` today, URGENT when those accounts hold real open positions
         (their app-side exits are off until the login). Nothing on a non-trading day or when
         every account is logged in."""
-        now = self._clock()
+        now = utc_now(self._clock)
         day = trade_date_of(now)
         with self._factory() as session:
             if not is_trading_day(session_calendar(session), day):
@@ -131,7 +132,7 @@ class Reports:
     # --- after the close (HAT-TG-024) ----------------------------------------------------------
 
     def rejection_digest(self) -> JobResult:
-        day = trade_date_of(self._clock())
+        day = trade_date_of(utc_now(self._clock))
         with self._factory() as session:
             if not is_trading_day(session_calendar(session), day):
                 return JobResult(rows=0)
@@ -190,7 +191,7 @@ class Reports:
         """15:40: per bot open risk, realised R and equity vs peak from its latest
         `hat_daily_bot_snapshot`; the last night's `gtt.verify` runs; the close gaps (live
         price at 15:25 against the official close) recorded for the previous trading day."""
-        day = trade_date_of(self._clock())
+        day = trade_date_of(utc_now(self._clock))
         with self._factory() as session:
             calendar = session_calendar(session)
             if not is_trading_day(calendar, day):
@@ -209,7 +210,7 @@ class Reports:
     def veto_digest(self) -> JobResult:
         """On the week's last trading day: avoided and missed R of the week's closed veto
         trades (HAT-EXEC-130) and, after 50 decisions, the verdict (HAT-EXEC-131)."""
-        day = trade_date_of(self._clock())
+        day = trade_date_of(utc_now(self._clock))
         with self._factory() as session:
             if not is_week_end(session_calendar(session), day):
                 return JobResult(rows=0)
