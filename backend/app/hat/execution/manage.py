@@ -74,6 +74,7 @@ from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, trade_date_of
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
+from .gtt_upkeep import GttUpkeep
 from .guard import ExecutionGuard
 from .position_desk import Verdict
 from .protect import (
@@ -225,6 +226,7 @@ class TradeManager:
         self._band = band  # the day's lower band, for a sale refused twice (PR 48)
         self._guard = guard
         self._desk = desk
+        self._upkeep = GttUpkeep(desk)  # the swap, nightly verify and GTT-book check
         # The position locks and the settle wait the stop desk uses; its clock stamps the sends.
         self._positions = desk.positions
         self._clock = desk.positions.clock
@@ -825,7 +827,7 @@ class TradeManager:
         """The `gtt.swap` job body: every open real position's intraday stop becomes a GTT."""
         report = StopsReport()
         for position in self.open_positions(session, account_id):
-            outcome = self._desk.swap(session, position.id, now)
+            outcome = self._upkeep.swap(session, position.id, now)
             if outcome == SWAPPED:
                 report.done += 1
             elif outcome != CLOSED:
@@ -883,9 +885,9 @@ class TradeManager:
         for position in self.open_positions(session, account_id):
             self._alert_series_change(session, position, now)
             outcome = (
-                self._desk.verify(session, position.id, now)
+                self._upkeep.verify(session, position.id, now)
                 if fresh
-                else self._desk.unverified(session, position.id, now, "fills_unread")
+                else self._upkeep.unverified(session, position.id, now, "fills_unread")
             )
             if outcome == FAILED:
                 report.failed.append(position.id)
@@ -919,7 +921,7 @@ class TradeManager:
         """The `gtt.check` job body (HAT-EXEC-145, HAT-EXEC-146): a fill sync that reads the
         broker's GTT book whatever its cadence (`FillSync` step 6c ends and replaces each GTT the
         broker dropped), then each open real position whose instrument changed series is alerted
-        and its GTT checked against the same book (`StopDesk.check_gtt` replaces one under the old
+        and its GTT checked against the same book (`GttUpkeep.check_gtt` replaces one under the old
         series' symbol). The run fails, so the scheduler tries again, while the fills or the GTT
         book cannot be read (nothing is placed or ended then) or a position is left unprotected;
         a GTT the broker refuses is alerted (`stop.not_placed`) and the fill sync tries again."""
@@ -937,7 +939,7 @@ class TradeManager:
         report.failed.extend(synced.gtt_unprotected)
         report.done += len(synced.protected)
         for position in moved:
-            outcome = self._desk.check_gtt(
+            outcome = self._upkeep.check_gtt(
                 session, position.id, now, synced.gtt_book, synced.gtt_read_at
             )
             if outcome in (UNVERIFIED, FAILED):

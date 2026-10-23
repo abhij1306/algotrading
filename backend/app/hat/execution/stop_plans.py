@@ -159,9 +159,7 @@ def protect_plan(
 
     if open_qty <= 0:
         return ProtectPlan(ProtectStep.CLOSED)
-    if due(ProtectStep.GTT_SELLING) and any(
-        r.purpose == STOP_GTT and r.status == "partially_filled" for r in rows
-    ):
+    if due(ProtectStep.GTT_SELLING) and any(_gtt_selling(r) for r in rows):
         return ProtectPlan(ProtectStep.GTT_SELLING)
     if due(ProtectStep.EXIT_WORKING) and exit_live:
         return ProtectPlan(ProtectStep.EXIT_WORKING)
@@ -173,23 +171,38 @@ def protect_plan(
         return (
             ProtectPlan(ProtectStep.RESIZE, resize) if resize else ProtectPlan(ProtectStep.COVERED)
         )
-    ready = tuple(
-        r
-        for r in rows
-        if r.status in UNSURE
-        and (not lost(r) or (r.purpose == STOP_DAY and not young(r.placed_at)))
-    )
+    ready = tuple(r for r in rows if _ready_to_send(r, young))
     if due(ProtectStep.RESEND) and ready:
         return ProtectPlan(ProtectStep.RESEND, ready)
+    return _wait_or_place(rows, day_stop=day_stop, young=young)
+
+
+def _gtt_selling(row: HatOrder) -> bool:
+    return row.purpose == STOP_GTT and row.status == "partially_filled"
+
+
+def _ready_to_send(row: HatOrder, young: Callable[[datetime | None], bool]) -> bool:
+    """A stop reserved and never sent, or a day stop whose answer was lost, old enough to be
+    looked up by its tag and sent again only when absent."""
+    if row.status not in UNSURE:
+        return False
+    return not lost(row) or (row.purpose == STOP_DAY and not young(row.placed_at))
+
+
+def _wait_or_place(
+    rows: Sequence[HatOrder], *, day_stop: bool, young: Callable[[datetime | None], bool]
+) -> ProtectPlan:
+    """WAIT_LOST while a lost answer may rest at the broker (alerted only once one is no longer
+    in flight: alerting a young one on every sync would only add noise); else a new stop."""
     unsure = [r for r in rows if lost(r)]
-    if unsure:
-        # Only an answer the settle could not decide is alerted: a young one is still in flight.
-        reason = None
-        if not all(young(r.placed_at) for r in unsure):
-            gtt = any(r.purpose == STOP_GTT for r in unsure)
-            reason = "gtt_unconfirmed" if gtt else "stop_unconfirmed"
-        return ProtectPlan(ProtectStep.WAIT_LOST, reason=reason)
-    return ProtectPlan(ProtectStep.PLACE_DAY if day_stop else ProtectStep.PLACE_GTT)
+    if not unsure:
+        return ProtectPlan(ProtectStep.PLACE_DAY if day_stop else ProtectStep.PLACE_GTT)
+    if all(young(r.placed_at) for r in unsure):
+        return ProtectPlan(ProtectStep.WAIT_LOST)
+    gtt = any(r.purpose == STOP_GTT for r in unsure)
+    return ProtectPlan(
+        ProtectStep.WAIT_LOST, reason="gtt_unconfirmed" if gtt else "stop_unconfirmed"
+    )
 
 
 # --- the nightly verify ---------------------------------------------------------------------------

@@ -39,7 +39,7 @@ book raises and nothing is written) and then, for one broker account:
    every run the 08:40 `gtt.check` asks for, reads the broker's GTT book before the order book
    and compares it with the GTTs HAT believes rest (`stop_plans.stop_confirmed`). A GTT a good read
    no longer holds, with no sale of it in the order book (one that triggered is the fill sync's
-   to attribute), was cancelled or expired by the broker: `StopDesk.check_gtt` ends it, alerts it
+   to attribute), was cancelled or expired by the broker: `GttUpkeep.check_gtt` ends it, alerts it
    once (`gtt.missing`) and protects the position again at once, so the engine's own hard stop
    is no longer held back for it. A GTT book that cannot be read changes nothing and is alerted
    once (`gtt.unverified`, code `gtt_book_unread`) until a read succeeds;
@@ -84,6 +84,7 @@ from .broker import (
     OrderType,
     Side,
 )
+from .gtt_upkeep import GttUpkeep
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     ALERT_GTT_UNFILLED,
@@ -235,6 +236,7 @@ class FillSync:
     ) -> None:
         self._broker = broker
         self._desk = desk
+        self._upkeep = GttUpkeep(desk)  # the swap, nightly verify and GTT-book check
         self._clock = clock  # stamps the orders it adopts
         self._notifier = notifier or LogNotifier()
         self.mpp = mpp  # market price protection (PR 48), shared with the `TradeManager`
@@ -565,7 +567,7 @@ class FillSync:
             and stop_confirmed(row, book, read_at, self._desk.positions.settle_after) is False
         }
         for position_id in sorted(gone):
-            outcome = self._desk.check_gtt(session, position_id, now, book, read_at)
+            outcome = self._upkeep.check_gtt(session, position_id, now, book, read_at)
             if outcome in (FAILED, UNVERIFIED):
                 report.gtt_unprotected.append(position_id)
             else:

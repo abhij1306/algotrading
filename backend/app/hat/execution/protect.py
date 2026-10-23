@@ -15,23 +15,9 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 - **When the stop rises** (`follow`): the working stop is modified up to the new price (day:
   `modify_order`; GTT: `modify_gtt`, event `gtt.refreshed`), never down (`raise_only`), at the
   stop rounded down to the tick (`broker_trigger`).
-- **At ~15:25** (`swap`): the GTT is placed first and the intraday stop is cancelled only once
-  the GTT is confirmed placed; a GTT that fails leaves the intraday stop working and raises
-  `gtt.swap_failed`. A position with a working exit order is not swapped (its exit comes first).
-- **Nightly** (`verify`): every open real position's GTT is refreshed to the current stop
-  (`gtt.refreshed`). A GTT the broker no longer knows (triggered, cancelled or never confirmed)
-  is alerted (`gtt.missing`) and placed again; when the broker cannot be reached the position
-  is alerted (`gtt.unverified`) and nothing is placed, since the old GTT may still rest there.
-  A GTT placed `GTT_RENEW_AFTER` (300 days) ago or more is cancelled and placed again (the
-  broker expires a GTT after a year, and a modify may not reset that clock; PR 47).
-- **A GTT the broker dropped** (`check_gtt`, HAT-EXEC-145, P1): Fyers cancels a resting GTT
-  before a corporate action's ex-date (a dividend's too) and on a series change, and the owner
-  can cancel one in the Fyers app. The broker's GTT book is read at 08:40 and by the fill sync
-  every few minutes; a live GTT a good read no longer holds (`stop_confirmed`) is ended
-  `cancelled`, alerted once (`gtt.missing`) and the position protected again at once: a GTT
-  outside the session, an intraday stop inside it. Until then the engine would trust it as the
-  hard stop (`TradeManager._broker_stop_rests`); once ended, the engine sells on its own.
-- **A series change** (`_target`, HAT-EXEC-146): a position whose instrument moved to another
+- **The GTT upkeep** (`gtt_upkeep.GttUpkeep`): the 15:25 swap, the nightly verify and the
+  check against the broker's GTT book, over the write steps below.
+- **A series change** (`target`, HAT-EXEC-146): a position whose instrument moved to another
   series (EQ to BE) after it opened has its stops placed under the instrument's current symbol
   (`series.series_changed`).
 - **A lost answer** (`settle_lost`, HAT-EXEC-065): once `settle_after` has passed since its
@@ -43,7 +29,9 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   sale, the safe way round).
 
 The pure planners in `stop_plans` (`protect_plan`, `verify_plan`, `raise_only`) decide; `StopDesk`
-reads the rows, carries a step out and plans again when the broker leaves it open.
+reads the rows, carries a step out and plans again when the broker leaves it open. Its write
+steps (`target`, `settled_stops`, `place`, `resend`, `cancel`, `alert`, `order_event`) are the
+ones `GttUpkeep` uses; every caller holds the position's lock (`position_desk.serialised`).
 
 Every order goes through `submit.reserve_order` and `submit.send_order` (trading-safety rule 1);
 modifies and cancels go straight to the `HatBroker` contract with the broker id `send_order`
@@ -53,14 +41,12 @@ codes only, never broker text.
 
 from __future__ import annotations
 
-import functools
 import logging
 import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, time
 from decimal import Decimal
-from typing import TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -71,10 +57,9 @@ from ..events import record
 from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, as_utc, day_bounds, trade_date_of
+from ..time import IST, day_bounds, trade_date_of
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import (
-    CODES_NOT_SENT,
     AckResult,
     BrokerUnavailableError,
     GttModify,
@@ -85,24 +70,19 @@ from .broker import (
 from .entry_cancel import EntryCancel
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
-from .position_desk import PositionDesk, Verdict
+from .position_desk import PositionDesk, Verdict, serialised
 from .series import broker_symbol, series_changed
 from .stop_plans import (
     LIVE,
     STOP_DAY,
     STOP_GTT,
-    UNSURE,
     WORKING,
     ProtectPlan,
     ProtectStep,
-    VerifyStep,
     broker_trigger,
-    live_gtts,
     lost,
     protect_plan,
     raise_only,
-    stop_confirmed,
-    verify_plan,
 )
 from .submit import (
     EXIT_SALES,
@@ -140,7 +120,6 @@ EVENT_GTT_TRIGGERED = "gtt.triggered"
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
 CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
-GTT_CANCELLED_BY_BROKER = "gtt_cancelled_by_broker"  # a good GTT-book read no longer holds it
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
@@ -166,7 +145,7 @@ TickSource = Callable[[Session, HatPosition], Decimal | None]
 
 
 @dataclass(frozen=True)
-class _Target:
+class StopTarget:
     """What a position's stop order is placed for."""
 
     position: HatPosition
@@ -176,24 +155,6 @@ class _Target:
     # The series changed and the new series has no stored Fyers symbol (a BZ stock): the
     # adapter would fall back to the old `-EQ` symbol, so no stop is sent (HAT-EXEC-146).
     unmapped: bool = False
-
-
-_R = TypeVar("_R")
-
-
-def _serialised(method: Callable[..., _R]) -> Callable[..., _R]:
-    """Hold the position's write lock (`PositionDesk.lock`) for the call. The fill sync, the
-    sales and the jobs run on their own threads over one desk: without it, two could see no
-    working stop and each place one, or one place a stop while a sale it made room for is sent."""
-
-    @functools.wraps(method)
-    def locked(
-        self: StopDesk, session: Session, position_id: uuid.UUID, *args: object, **kwargs: object
-    ) -> _R:
-        with self._positions.lock(position_id, method.__name__):
-            return method(self, session, position_id, *args, **kwargs)
-
-    return locked
 
 
 class StopDesk:
@@ -224,6 +185,15 @@ class StopDesk:
     def positions(self) -> PositionDesk:
         """The account's position locks and settle wait, shared with its `TradeManager`."""
         return self._positions
+
+    @property
+    def broker(self) -> HatBroker:
+        """The account's broker, for the GTT upkeep's modifies (`gtt_upkeep`)."""
+        return self._broker
+
+    def tick(self, session: Session, position: HatPosition) -> Decimal | None:
+        """The instrument's tick for the position's stop prices."""
+        return self._tick_for(session, position)
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows)."""
@@ -294,7 +264,7 @@ class StopDesk:
             and now.astimezone(IST).time() < SWAP_AT
         )
 
-    def _target(self, session: Session, position_id: uuid.UUID) -> _Target:
+    def target(self, session: Session, position_id: uuid.UUID) -> StopTarget:
         position = session.get(HatPosition, position_id)
         if position is None or position.is_virtual:
             raise HatError("not a real position")
@@ -310,15 +280,15 @@ class StopDesk:
             raise HatError("position without signal, bot or instrument")
         moved = series_changed(session, position)
         unmapped = moved is not None and broker_symbol(session, moved.id) is None
-        return _Target(position, signal, bot.broker_account_id, symbol, unmapped)
+        return StopTarget(position, signal, bot.broker_account_id, symbol, unmapped)
 
     # --- events and alerts --------------------------------------------------------------------
 
     @staticmethod
-    def _order_event(
+    def order_event(
         session: Session,
         row: HatOrder,
-        target: _Target,
+        target: StopTarget,
         event_type: str,
         now: datetime,
         reason: str | None = None,
@@ -342,7 +312,7 @@ class StopDesk:
             occurred_at=now,
         )
 
-    def _alert(self, code: str, target: _Target, now: datetime, reason: str) -> None:
+    def alert(self, code: str, target: StopTarget, now: datetime, reason: str) -> None:
         self._notifier.alert(
             code,
             trade_date_of(now),
@@ -356,7 +326,7 @@ class StopDesk:
 
     # --- placing ------------------------------------------------------------------------------
 
-    def _request(self, target: _Target, purpose: str, tick: Decimal | None) -> OrderRequest:
+    def _request(self, target: StopTarget, purpose: str, tick: Decimal | None) -> OrderRequest:
         position = target.position
         trigger = broker_trigger(Decimal(position.current_stop), tick)
         gtt = purpose == STOP_GTT
@@ -375,7 +345,7 @@ class StopDesk:
         )
 
     def _send(
-        self, session: Session, target: _Target, tag: str, tick: Decimal | None
+        self, session: Session, target: StopTarget, tag: str, tick: Decimal | None
     ) -> SendOutcome | str:
         """One send of a reserved stop: the outcome, or a refusal code (nothing was sent, or it
         cannot be told)."""
@@ -411,10 +381,10 @@ class StopDesk:
             row.status = "cancelled"
             session.commit()
 
-    def _place(
+    def place(
         self,
         session: Session,
-        target: _Target,
+        target: StopTarget,
         purpose: str,
         now: datetime,
         alert: str = ALERT_STOP_NOT_PLACED,
@@ -424,7 +394,7 @@ class StopDesk:
         sync (a day stop is looked up by its tag; a GTT waits for the nightly verify). A failure
         raises `alert`."""
         if target.unmapped:
-            self._alert(alert, target, now, CODE_SERIES_UNMAPPED)  # no tag spent
+            self.alert(alert, target, now, CODE_SERIES_UNMAPPED)  # no tag spent
             return False
         tick = self._tick_for(session, target.position)
         reason = "broker_rejected"
@@ -433,36 +403,36 @@ class StopDesk:
                 tag = reserve_order(session, self._request(target, purpose, tick))
             except HatError as exc:  # no limit price, the 37th tag, a failed reservation
                 session.rollback()
-                self._alert(alert, target, now, getattr(exc, "code", "reservation_failed"))
+                self.alert(alert, target, now, getattr(exc, "code", "reservation_failed"))
                 return False
             sent = self._send(session, target, tag, tick)
             if isinstance(sent, str):
-                self._alert(alert, target, now, sent)
+                self.alert(alert, target, now, sent)
                 return False
             if sent.status in LIVE:
                 return True
             if sent.status != "rejected":
-                self._alert(alert, target, now, sent.code)  # unconfirmed: told, left to sync
+                self.alert(alert, target, now, sent.code)  # unconfirmed: told, left to sync
                 return False
             reason = sent.code
-        self._alert(alert, target, now, reason)
+        self.alert(alert, target, now, reason)
         return False
 
-    def _resend(self, session: Session, target: _Target, row: HatOrder) -> bool:
+    def resend(self, session: Session, target: StopTarget, row: HatOrder) -> bool:
         """Send a stop reserved earlier whose outcome is not known yet (by its own tag)."""
         sent = self._send(session, target, row.tag, self._tick_for(session, target.position))
         return not isinstance(sent, str) and sent.status in LIVE
 
     # --- lost answers (HAT-EXEC-065) ---------------------------------------------------------
 
-    @_serialised
+    @serialised
     def settle_lost(self, session: Session, position_id: uuid.UUID) -> None:
         """Settle every stop of the position whose answer was lost (`_settled_stops`)."""
         if any(lost(row) for row in self.stops_of(session, position_id)):
-            self._settled_stops(session, self._target(session, position_id))
+            self.settled_stops(session, self.target(session, position_id))
 
-    def _settled_stops(
-        self, session: Session, target: _Target, purpose: str | None = None
+    def settled_stops(
+        self, session: Session, target: StopTarget, purpose: str | None = None
     ) -> list[HatOrder]:
         """The position's working stops, after settling those whose answer was lost (of
         `purpose` only, when given)."""
@@ -479,7 +449,7 @@ class StopDesk:
             self._settle_days(session, target, days)
         return self.stops_of(session, target.position.id)
 
-    def _settle_gtts(self, session: Session, target: _Target, rows: list[HatOrder]) -> None:
+    def _settle_gtts(self, session: Session, target: StopTarget, rows: list[HatOrder]) -> None:
         """Lost GTTs old enough against the broker's GTT book (`find_gtt`, `settle_verdict`):
         found is adopted as placed; absent after a good read never landed and ends `expired`. An
         unreadable book leaves them as they are."""
@@ -498,7 +468,7 @@ class StopDesk:
                 end_lost_order(session, row)
             session.commit()
 
-    def _settle_days(self, session: Session, target: _Target, rows: list[HatOrder]) -> None:
+    def _settle_days(self, session: Session, target: StopTarget, rows: list[HatOrder]) -> None:
         """Lost day stops old enough against the broker's order book by their tags
         (`settle_verdict`): found is adopted; found with shares sold waits for the fill sync,
         which adopts it with its fills; absent after a good read never landed and ends
@@ -532,11 +502,11 @@ class StopDesk:
 
     # --- protect, resize, cancel --------------------------------------------------------------
 
-    @_serialised
+    @serialised
     def protect(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
         """After a fill: make the broker stop cover the open quantity (HAT-EXEC-060), one step
         of `protect_plan` at a time. A closed position's working stops are cancelled."""
-        target = self._target(session, position_id)
+        target = self.target(session, position_id)
         position = target.position
         open_qty = 0 if position.closed_at is not None else position.qty_open
         exit_live = open_qty > 0 and self.exit_working(session, position.id, LIVE)
@@ -554,17 +524,17 @@ class StopDesk:
 
         step = plan()
         if step.step is ProtectStep.SETTLE:
-            rows = self._settled_stops(session, target, STOP_GTT)
+            rows = self.settled_stops(session, target, STOP_GTT)
             step = plan(ProtectStep.SETTLE)
         if step.step is ProtectStep.RESEND:
-            if any(self._resend(session, target, row) for row in step.rows):
+            if any(self.resend(session, target, row) for row in step.rows):
                 return PROTECTED
             rows = self.stops_of(session, position.id)
             step = plan(ProtectStep.RESEND)
         return self._carry_out(session, target, step, now)
 
     def _carry_out(
-        self, session: Session, target: _Target, plan: ProtectPlan, now: datetime
+        self, session: Session, target: StopTarget, plan: ProtectPlan, now: datetime
     ) -> str:
         """The outcome of a `protect_plan` step that needs no further plan."""
         match plan.step:
@@ -584,19 +554,19 @@ class StopDesk:
                 # A stop whose answer was lost may rest at the broker and could not be settled
                 # yet: nothing is placed on top of it; the next sync settles it.
                 if plan.reason is not None:
-                    self._alert(ALERT_STOP_NOT_PLACED, target, now, plan.reason)
+                    self.alert(ALERT_STOP_NOT_PLACED, target, now, plan.reason)
                 return FAILED
             case ProtectStep.PLACE_DAY | ProtectStep.PLACE_GTT:
                 purpose = STOP_DAY if plan.step is ProtectStep.PLACE_DAY else STOP_GTT
-                return PLACED if self._place(session, target, purpose, now) else FAILED
+                return PLACED if self.place(session, target, purpose, now) else FAILED
             case _:
                 raise AssertionError(f"protect step {plan.step} not carried out")
 
-    def _resize(self, session: Session, target: _Target, row: HatOrder, now: datetime) -> bool:
+    def _resize(self, session: Session, target: StopTarget, row: HatOrder, now: datetime) -> bool:
         return self._resize_to(session, target, row, target.position.qty_open, now)
 
     def _resize_to(
-        self, session: Session, target: _Target, row: HatOrder, qty: int, now: datetime
+        self, session: Session, target: StopTarget, row: HatOrder, qty: int, now: datetime
     ) -> bool:
         trigger = Decimal(row.trigger_price) if row.trigger_price is not None else None
         if trigger is None or row.broker_order_id is None:
@@ -608,33 +578,33 @@ class StopDesk:
         else:
             tick = self._tick_for(session, target.position)
             if tick is None:
-                self._alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
+                self.alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
                 return False
             ack = self._broker.modify_gtt(
                 GttModify(row.broker_order_id, qty, trigger, gtt_limit_price(trigger, tick))
             )
         if not ack.ok:
-            self._alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
+            self.alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
             return False
         row.qty = qty
         if row.purpose == STOP_GTT:
-            self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
+            self.order_event(session, row, target, EVENT_GTT_REFRESHED, now)
         session.commit()
         return True
 
-    @_serialised
+    @serialised
     def cancel_all(self, session: Session, position_id: uuid.UUID, now: datetime) -> int:
         """Cancel the working stops of a position that has nothing left to protect (a stop
         resting under a sold position could sell shares that are not there). Returns how many
         the broker confirmed cancelled."""
-        target = self._target(session, position_id)
+        target = self.target(session, position_id)
         cancelled = 0
-        for row in self._settled_stops(session, target):  # a lost stop that landed is cancelled
-            if self._cancel(session, target, row, now):
+        for row in self.settled_stops(session, target):  # a lost stop that landed is cancelled
+            if self.cancel(session, target, row, now):
                 cancelled += 1
         return cancelled
 
-    def _cancel(self, session: Session, target: _Target, row: HatOrder, now: datetime) -> bool:
+    def cancel(self, session: Session, target: StopTarget, row: HatOrder, now: datetime) -> bool:
         if row.status == "pending" and row.placed_at is None:
             row.status = "cancelled"  # never sent
             session.commit()
@@ -649,7 +619,7 @@ class StopDesk:
             logger.warning("stop %s not cancelled (%s)", row.tag, ack.code)
             return False
         row.status = "cancelled"
-        self._order_event(session, row, target, "order.cancelled", now)
+        self.order_event(session, row, target, "order.cancelled", now)
         session.commit()
         return True
 
@@ -660,7 +630,7 @@ class StopDesk:
         holds, so it can never sell more than the position."""
         return self._broker.modify_order(broker_order_id, order_type=OrderType.MARKET)
 
-    @_serialised
+    @serialised
     def cancel_entry(self, session: Session, position_id: uuid.UUID) -> None:
         """Ask the broker to cancel the unfilled rest of the position's entry
         (`EntryCancel.cancel_rest`): a fill that lands before the cancel is recorded against a
@@ -670,7 +640,7 @@ class StopDesk:
             return
         self.entries.cancel_rest(session, position.signal_id, trade_date_of(self._clock.now()))
 
-    @_serialised
+    @serialised
     def make_room(self, session: Session, position_id: uuid.UUID, keep: int, now: datetime) -> bool:
         """Before a sale: shrink the position's resting stops to the `keep` shares that stay
         (cancel them when none stay), since a broker holds the shares a resting CNC sell covers
@@ -679,28 +649,28 @@ class StopDesk:
         is alerted and the sale waits. A failed sale is protected again by
         the next sync. A stop whose answer was lost is settled first; one still unknown is
         skipped (HAT-EXEC-065)."""
-        target = self._target(session, position_id)
+        target = self.target(session, position_id)
         if keep <= 0:
             self.cancel_entry(session, position_id)  # never holds the sale back
-        rows = self._settled_stops(session, target)
+        rows = self.settled_stops(session, target)
         done = True
         for row in rows:
             if row.qty <= keep or lost(row):
                 continue
             if keep <= 0 or row.status not in LIVE:
-                done = self._cancel(session, target, row, now) and done
+                done = self.cancel(session, target, row, now) and done
             else:
                 done = self._resize_to(session, target, row, keep, now) and done
         return done
 
     # --- follow the stop up -------------------------------------------------------------------
 
-    @_serialised
+    @serialised
     def follow(self, session: Session, position_id: uuid.UUID, now: datetime) -> bool:
         """Move every working broker stop up to the position's current stop (HAT-EXEC-064).
         A broker stop is never moved down (`raise_only`). True when every working stop is at the
         target."""
-        target = self._target(session, position_id)
+        target = self.target(session, position_id)
         position = target.position
         if position.closed_at is not None or position.qty_open <= 0:
             return True
@@ -714,7 +684,7 @@ class StopDesk:
             done = self._move(session, target, row, goal, tick, now) and done
         return done
 
-    @_serialised
+    @serialised
     def rescaled(self, session: Session, position_id: uuid.UUID, now: datetime) -> bool:
         """After a split or bonus rescaled the position (`position.rescaled`, HAT-EXEC-143): move
         every live broker stop resting above the rescaled stop down to it, keeping the quantity
@@ -723,7 +693,7 @@ class StopDesk:
         stop. Waits while a sale is working. The only move down a broker stop makes
         (`raise_only(rescaled=True)`), and only for a rescaled position. True when no stop is left
         above the position's stop."""
-        target = self._target(session, position_id)
+        target = self.target(session, position_id)
         position = target.position
         if position.closed_at is not None or position.qty_open <= 0:
             return True
@@ -744,7 +714,7 @@ class StopDesk:
     def _move(
         self,
         session: Session,
-        target: _Target,
+        target: StopTarget,
         row: HatOrder,
         goal: Decimal,
         tick: Decimal | None,
@@ -770,228 +740,18 @@ class StopDesk:
             )
         else:
             if tick is None:
-                self._alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
+                self.alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
                 return False
             limit = gtt_limit_price(trigger, tick)
             size = row.qty if rescaled else target.position.qty_open
             ack = self._broker.modify_gtt(GttModify(row.broker_order_id, size, trigger, limit))
         if not ack.ok:
-            self._alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
+            self.alert(ALERT_STOP_NOT_MOVED, target, now, ack.code)
             return False
         row.trigger_price = trigger
         if limit is not None:
             row.price = limit
             row.qty = size
-            self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
+            self.order_event(session, row, target, EVENT_GTT_REFRESHED, now)
         session.commit()
         return True
-
-    # --- the 15:25 swap -----------------------------------------------------------------------
-
-    @_serialised
-    def swap(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
-        """Replace the intraday stop with a GTT for the night (HAT-EXEC-061): the GTT first, the
-        intraday stop cancelled only once the GTT is confirmed placed."""
-        target = self._target(session, position_id)
-        position = target.position
-        if position.closed_at is not None or position.qty_open <= 0:
-            return CLOSED
-        if self.exit_working(session, position.id):
-            return EXIT_WORKING  # the sale comes first; the job tries the swap again
-        has_gtt = self._has_live_gtt(session, position.id)
-        if not has_gtt:
-            self._settled_stops(session, target, STOP_GTT)
-            has_gtt = self._has_live_gtt(session, position.id)
-            unsure = self._unsure_gtts(session, position.id)
-            has_gtt = has_gtt or any(self._resend(session, target, row) for row in unsure)
-            if not has_gtt and unsure:
-                self._alert(ALERT_GTT_SWAP_FAILED, target, now, "gtt_unconfirmed")
-                return FAILED
-        if not has_gtt and not self._place(session, target, STOP_GTT, now, ALERT_GTT_SWAP_FAILED):
-            return FAILED  # the intraday stop keeps working; alerted
-        # Every day stop is cancelled, even after one fails. A day stop not cancelled (refused,
-        # or its outcome unknown) would sell the same shares as the GTT: the job fails and tries
-        # the cancel again.
-        cancelled = True
-        for row in self.stops_of(session, position.id):
-            if row.purpose == STOP_DAY and not self._cancel(session, target, row, now):
-                cancelled = False
-        return SWAPPED if cancelled else FAILED
-
-    def _has_live_gtt(self, session: Session, position_id: uuid.UUID) -> bool:
-        return any(
-            row.purpose == STOP_GTT and row.broker_order_id
-            for row in self.stops_of(session, position_id, *LIVE)
-        )
-
-    def _unsure_gtts(self, session: Session, position_id: uuid.UUID) -> list[HatOrder]:
-        return [r for r in self.stops_of(session, position_id, *UNSURE) if r.purpose == STOP_GTT]
-
-    # --- the nightly verify -------------------------------------------------------------------
-
-    def _old_series(self, session: Session, target: _Target, row: HatOrder) -> bool:
-        """The GTT went out under the old series' symbol of a position whose instrument changed
-        series (HAT-EXEC-146): placed on or before the day the refresh saw the new series
-        (`series_since`). That symbol takes no order, so a GTT the broker still lists under it
-        protects nothing. The weekly refresh runs on a Saturday, when no GTT is placed; one placed
-        on that day is counted old, so at worst it is placed again once. With no Fyers symbol for
-        the new series nothing could replace it, so it is left for the owner (the URGENT alert
-        says `unmapped`)."""
-        moved = None if target.unmapped else series_changed(session, target.position)
-        if moved is None:
-            return False
-        if row.placed_at is None or moved.series_since is None:
-            return True
-        return trade_date_of(as_utc(row.placed_at)) <= moved.series_since
-
-    @_serialised
-    def check_gtt(
-        self,
-        session: Session,
-        position_id: uuid.UUID,
-        now: datetime,
-        book: Collection[str],
-        read_at: datetime,
-    ) -> str:
-        """The position's GTT against the broker's GTT book (HAT-EXEC-145): `book` holds the ids
-        the book showed (resting or triggered) when it was read at `read_at`. A live GTT of the
-        position a good read does not hold (`stop_confirmed`) was cancelled or expired by the
-        broker: it is ended `cancelled` (reason `gtt_cancelled_by_broker` on its event), alerted
-        (`gtt.missing`) and the position protected again (`protect`: a GTT outside the session,
-        an intraday stop inside it; a refused one is alerted `stop.not_placed` and the fill sync
-        tries again). One placed too recently for the book to show counts as resting. A GTT
-        whose answer was lost is settled first; one still unsure is alerted (`gtt.unverified`)
-        and nothing is placed on top of it. A position still awaiting a split or bonus rescale
-        gets nothing yet (UNVERIFIED, so the job tries again; `ca.rescale` alerts it): a GTT at
-        its old-scale stop would rest above the ex-date price and sell at the open. A GTT still
-        listed under the old series' symbol (HAT-EXEC-146) is cancelled and placed again under
-        the new one; a refused cancel is alerted (`gtt.unverified`) and nothing is placed."""
-        target = self._target(session, position_id)
-        position = target.position
-        if position.closed_at is not None or position.qty_open <= 0:
-            return CLOSED
-        gtts = [r for r in self._settled_stops(session, target, STOP_GTT) if r.purpose == STOP_GTT]
-        live = [row for row in gtts if row.status in LIVE and row.broker_order_id]
-        stale = [row for row in live if self._old_series(session, target, row)]
-        if any(
-            stop_confirmed(row, book, read_at, self._positions.settle_after) is not False
-            for row in live
-            if row not in stale
-        ):
-            return VERIFIED
-        if any(lost(row) for row in gtts):
-            self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
-            return UNVERIFIED
-        if pending_actions(session, position, trade_date_of(now)):
-            return UNVERIFIED
-        for row in stale:
-            if row.broker_order_id in book and not self._cancel(session, target, row, now):
-                self._alert(ALERT_GTT_UNVERIFIED, target, now, "series_cancel_refused")
-                return UNVERIFIED
-        live = [row for row in live if row.status in LIVE]  # the broker cancelled these
-        if live:
-            self._alert(ALERT_GTT_MISSING, target, now, GTT_CANCELLED_BY_BROKER)
-            for row in live:
-                row.status = "cancelled"
-                self._order_event(
-                    session, row, target, "order.cancelled", now, GTT_CANCELLED_BY_BROKER
-                )
-            session.commit()
-        outcome = self.protect(session, position_id, now)
-        if outcome == PLACED:
-            return REPLACED
-        return VERIFIED if outcome == PROTECTED else FAILED
-
-    def unverified(
-        self, session: Session, position_id: uuid.UUID, now: datetime, reason: str
-    ) -> str:
-        """The verify could not run for the position (its fills unread): `gtt.unverified` is
-        alerted and its stops are left as they are."""
-        target = self._target(session, position_id)
-        self._alert(ALERT_GTT_UNVERIFIED, target, now, reason)
-        return FAILED
-
-    @_serialised
-    def verify(self, session: Session, position_id: uuid.UUID, now: datetime) -> str:
-        """Confirm the position's GTT rests at the broker at the current stop (HAT-EXEC-063,
-        HAT-OPS-024), one step of `verify_plan` at a time: refreshed, else alerted and placed
-        again. A GTT under the old series' symbol (HAT-EXEC-146), or placed `GTT_RENEW_AFTER` ago
-        (research G24; the market is shut at the nightly verify, so nothing can trigger
-        meanwhile), is cancelled and placed again; a refused cancel leaves it to the next step."""
-        target = self._target(session, position_id)
-        position = target.position
-        if position.closed_at is not None or position.qty_open <= 0:
-            return CLOSED
-        tick = self._tick_for(session, position)
-        goal = broker_trigger(Decimal(position.current_stop), tick)
-        gtts = [r for r in self._settled_stops(session, target, STOP_GTT) if r.purpose == STOP_GTT]
-        live = live_gtts(gtts)
-        old_series = bool(live) and tick is not None and self._old_series(session, target, live[-1])
-        step: VerifyStep | None = None
-        while True:
-            step = verify_plan(
-                gtts,
-                None if tick is None else goal,
-                old_series=old_series,
-                wall=self._clock.now(),  # the clock the placement was stamped with
-                after=step,
-            )
-            if step not in (VerifyStep.REPLACE_OLD_SERIES, VerifyStep.RENEW):
-                break
-            if self._cancel(session, target, live[-1], now):
-                return REPLACED if self._place(session, target, STOP_GTT, now) else FAILED
-        if step is VerifyStep.NO_TICK:
-            # No GTT price can be set without the tick: told, and nothing is ended or placed.
-            self._alert(ALERT_GTT_UNVERIFIED, target, now, "no_tick")
-            return UNVERIFIED
-        if step is VerifyStep.UNSURE:
-            # A GTT whose answer was lost that the GTT book could not settle (unreadable, or
-            # sent too recently) may rest at the broker: told, and nothing is placed.
-            self._alert(ALERT_GTT_UNVERIFIED, target, now, "gtt_unconfirmed")
-            return UNVERIFIED
-        if step is VerifyStep.REFRESH and tick is not None:
-            refreshed = self._refresh(session, target, live[-1], goal, tick, now)
-            if refreshed is not None:
-                return refreshed
-        # No GTT rests at the broker (none, cancelled above, triggered or ended): alert and place
-        # a new one. A row left open is ended first so it is never sent again.
-        self._alert(ALERT_GTT_MISSING, target, now, "no_active_gtt")
-        for row in gtts:
-            if row.status in WORKING:
-                row.status = "expired"
-        session.commit()
-        return REPLACED if self._place(session, target, STOP_GTT, now) else FAILED
-
-    def _refresh(
-        self,
-        session: Session,
-        target: _Target,
-        row: HatOrder,
-        goal: Decimal,
-        tick: Decimal,
-        now: datetime,
-    ) -> str | None:
-        """Modify the resting GTT `row` to the open quantity at `raise_only`'s trigger for
-        `goal`: VERIFIED once done, UNVERIFIED (alerted) when it may still rest unchanged, None
-        once the broker confirmed it cancelled (it is placed again)."""
-        current = Decimal(row.trigger_price) if row.trigger_price is not None else None
-        trigger = raise_only(current, goal)
-        # A coarser tick that floors the stop below the resting trigger leaves the trigger, and
-        # its limit, where they are (F24).
-        keep = trigger != goal
-        limit = gtt_limit_price(trigger, tick)
-        if keep and row.price is not None:
-            limit = Decimal(row.price)
-        qty = target.position.qty_open
-        ack = self._broker.modify_gtt(GttModify(str(row.broker_order_id), qty, trigger, limit))
-        if ack.ok:
-            row.qty, row.trigger_price, row.price = qty, trigger, limit
-            self._order_event(session, row, target, EVENT_GTT_REFRESHED, now)
-            session.commit()
-            return VERIFIED
-        # A GTT kept above the new tick's floor is never replaced by a lower one; one that may
-        # still rest at the broker is never doubled, since two could sell the same shares twice.
-        if keep or ack.code in CODES_NOT_SENT or not self._cancel(session, target, row, now):
-            self._alert(ALERT_GTT_UNVERIFIED, target, now, ack.code)
-            return UNVERIFIED
-        return None

@@ -6,7 +6,8 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
 
 ## Six trading invariants (no configuration can change them)
 
-1. A stop is never moved further from price (`current_stop` only rises).
+1. A stop is never moved further from price (`current_stop` only rises; a resting broker stop
+   moves only where `execution/stop_plans.raise_only` allows, down only for a split or bonus).
 2. No order adds to a losing position, and a bot never adds to an open position.
 3. No entry without a stop price below the entry price.
 4. No entry when the day's data or the live feed is stale, or the instrument's own last price is

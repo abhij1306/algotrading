@@ -16,7 +16,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | `data` | NSE MCP client, bhavcopy, reference data, ingest, quality gate, corporate actions, Parquet store (`store.py`, `bars_store.py`), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, trades and shadow fills, approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle), backtest day loop |
 | `risk` | Risk policy and its versions, sizing, caps, exposure ladder, kill switches, modes, `evaluate_signal` |
-| `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py`), trade management (`manage.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
+| `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
 | `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
 | `ops` | In-process scheduler, job runner, partitions, retention |
 | `daily` | `HatRuntime` wiring, the daily job table (`daily_jobs`), nightly and intraday job bodies, production parts |

@@ -19,18 +19,27 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Protocol, TypeVar
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..time import as_utc, trade_date_of
 
-__all__ = ["LOST_ANSWER_SETTLE", "PositionDesk", "Verdict", "found_verdict", "settle_verdict"]
+__all__ = [
+    "LOST_ANSWER_SETTLE",
+    "PositionDesk",
+    "Verdict",
+    "found_verdict",
+    "serialised",
+    "settle_verdict",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -117,3 +126,28 @@ class PositionDesk:
         return settle_verdict(
             placed_at, found, self.clock.now(), self.settle_after, filled_qty=filled_qty, sale=sale
         )
+
+
+class _Positioned(Protocol):
+    @property
+    def positions(self) -> PositionDesk: ...
+
+
+_R = TypeVar("_R")
+
+
+def serialised(method: Callable[..., _R]) -> Callable[..., _R]:
+    """Hold the position's write lock (`PositionDesk.lock`) for a method called as
+    `(self, session, position_id, ...)` on an object with the account's `positions`. The fill
+    sync, the sales and the jobs run on their own threads over one desk: without it, two could
+    see no working stop and each place one, or one place a stop while a sale it made room for is
+    sent."""
+
+    @functools.wraps(method)
+    def locked(
+        self: _Positioned, session: object, position_id: uuid.UUID, *args: object, **kwargs: object
+    ) -> _R:
+        with self.positions.lock(position_id, method.__name__):
+            return method(self, session, position_id, *args, **kwargs)
+
+    return locked

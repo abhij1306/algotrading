@@ -286,7 +286,7 @@ Follow ==
                    verifyDone, nightAlert, replaceTried, lostGtt, saleRefused>>
     /\ UNCHANGED entryVars
 
-\* code: backend/app/hat/execution/protect.py:StopDesk.swap  (the GTT first; a failed GTT leaves
+\* code: backend/app/hat/execution/gtt_upkeep.py:GttUpkeep.swap  (the GTT first; a failed GTT leaves
 \* the day stop working and is alerted; the job tries again a minute later, after the close too)
 SwapPlaceGtt ==
     /\ phase \in {"swap", "after"}
@@ -321,7 +321,7 @@ SwapPlaceGtt ==
                    replaceTried, saleRefused>>
     /\ UNCHANGED entryVars
 
-\* code: backend/app/hat/execution/protect.py:StopDesk._cancel  (the day stop is cancelled once
+\* code: backend/app/hat/execution/protect.py:StopDesk.cancel  (the day stop is cancelled once
 \* the GTT is confirmed; broken variant "cancel_first": before)
 SwapCancelDay ==
     /\ phase = "swap"
@@ -506,7 +506,7 @@ Sell ==
     /\ UNCHANGED <<cur, phase, pc, alerted, lastPx, lowered, cancelledEarly, swapTried,
                    swapFailed, verifyDone, nightAlert, replaceTried, lostGtt>>
 
-\* code: backend/app/hat/execution/protect.py:StopDesk.verify  (a GTT whose answer was lost is
+\* code: backend/app/hat/execution/gtt_upkeep.py:GttUpkeep.verify  (a GTT whose answer was lost is
 \* settled first; refresh the GTT to the current stop; a GTT the broker does not confirm is
 \* alerted and placed again; an unreachable broker is alerted and nothing is placed)
 Verify ==
