@@ -26,7 +26,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.raised_stop_dip_rules_agree` On generated markets both rules count an ambiguous day or neither does, and with none they make the same trades (HAT-BT-021, PR 64). Harm: the rule changes a run it has no day to act on, or one rule hides the days the other counts.
 - `PBT backtest.lower_circuit_inferred` A session at one price all day, below the previous close and within one tick of an NSE band's lower price (2, 5, 10, 20%, rounded up to the tick) is pinned at its lower circuit; a session that moved, closed at or above the previous close or sat between bands is not; no previous close or tick is unknown (HAT-BT-021, G03, PR 64). Harm: the backtest sells at a locked lower band, or carries a stop on a day that traded.
 - `PBT backtest.lower_circuit_carry` The day after an entry the stock is pinned at a drawn band for one to three sessions: no sale is dated on a pinned session, each counts in `metrics.lower_circuit_days`, and the stop fills at the next session not pinned by `stop_fill` (min(open, stop) when its open or low reaches the stop) (HAT-BT-021, G03, PR 64). Harm: a gap-down crash costs the backtest less than it costs live.
-- `PBT backtest.suspension_markdown` A held stock with no bars after a drawn session, not delisted, is carried at its last close for `suspension_sessions` (drawn 0..12) sessions without a bar, then marked 5% lower per further session (floored to the tick, never below it nor above the last close), in every equity point and in its end-of-period close (HAT-BT-021, G32, PR 64). Harm: a suspended position is carried at a stale price for months.
+- `PBT backtest.suspension_markdown` A held stock with no bars after a drawn session, not delisted, is carried at its last close for `suspension_sessions` (drawn 0..12) sessions without a bar, then marked 5% lower per further session (floored to the tick, never below it nor above the last close), in every equity point and in its end-of-period close, whose MAE reaches the mark (HAT-BT-021, G32, PR 64). Harm: a suspended position is carried at a stale price for months.
 - `PBT backtest.path_rules_refused` An ambiguous-day rule other than `optimistic` or `pessimistic` is refused `backtest_bad_ambiguous_rule`, and bar-less sessions that are not a whole number in 0..250 (a boolean included) `backtest_bad_suspension`, by `check_conventions`, and a run flagged for promotion with more than the default 5 `backtest_promotion_late_suspension` (PR 64). Harm: a run under an unknown rule reads as the default, a negative count marks a trading stock down, or a promotion carries a suspended position at its stale close.
 - `PBT backtest.stop_on_instrument_tick` Every opened entry's stop is entry x 0.95 rounded down to the instrument's NSE tick of the trade date (`data.ticks.tick_for_date` on the closes before it), with prices scaled into the 0.01 and the 0.10 slab (HAT-BT-020 design, HAT-EXEC-053). Harm: backtest stops sit on a grid the live trigger never uses, so backtest and live risk differ.
 - `PBT backtest.pre_break_low` The entry day's low before the break is the lowest low of the 5-minute bars up to the first one that reaches the level, and the low after it the lowest of the later bars (or a day low they miss); without them it is max(day low, min(open, level x (1 - adr20/100))), with the day low after the break only when lower (HAT-BT-020 design, PR 60). Harm: a low-of-day stop reads a low made after the entry.
@@ -126,7 +126,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `4186a1c670fd8a43c791351926c054c031eca1b1d87bba9f21327292779eb7be`
+Covered digest: `a089a3fe5812f35472b83d92a51b91db46462ae169cfe897d629cb0d5015294c`
 
 ## Scope changes
 
@@ -671,6 +671,20 @@ E    +  and   Decimal('99.75') = <function test_suspension_markdown.<locals>.mar
 E   Failing explicit example: test_suspension_markdown(
 E       traded=10,
 E       after=0,
+```
+
+Break: (PR 64) in `backend/app/hat/engine/backtest.py`: the period-end close at a suspension mark leaves the excursion low where the traded bars left it, so the MAE misses the mark (CodeAnt on PR 64).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1229: in test_suspension_markdown
+    assert trade.mae_r <= ((mark(SESSIONS - 1) - trade.entry_price) / risk).quantize(D("1e-6"))
+E   AssertionError: assert Decimal('0E-10') <= Decimal('-1.235178')
+E    +  where Decimal('0E-10') = TradeRow(entry_date=datetime.date(2025, 2, 4), exit_date=datetime.date(2025, 2, 20), playbook='default', instrument_id [cut]n_id=UUID('00000000-0000-7000-8000-00000000 [cut]
+E    +  and   Decimal('-1.235178') = <built-in method quantize of decimal.Decimal object>(Decimal('0.000001'))
+E    +    where <built-in method quantize of decimal.Decimal object> = ((Decimal('94.76') - Decimal('101.0100')) / Decimal('5.0600')).quantize
+E    +      where Decimal('94.76') = <function test_suspension_markdown.<locals>.mark>((34 - 1))
+E    +      and   Decimal('101.0100') = TradeRow(entry_date=datetime.date(2025, 2, 4), exit_date=datetime.date(2025, 2, 20), playbook='default', instrument_id [cut]n_id=UUID('00000000-0000-7000-8000-0 [cut]
 ```
 
 ### PBT backtest.path_rules_refused

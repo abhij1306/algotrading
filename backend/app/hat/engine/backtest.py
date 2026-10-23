@@ -1138,6 +1138,7 @@ class _Run:
         for position in self._open_positions():
             held = self.held[position.id]
             price = self._mark_price(held.instrument_id, last, Decimal(position.avg_entry))
+            held.low = min(held.low, price)  # a suspension mark below the traded lows is the MAE
             self._close(position, price, END_OF_PERIOD, _at(last, _AT_END, 30))
         self.session.flush()
         if self.equity:

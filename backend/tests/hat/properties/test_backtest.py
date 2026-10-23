@@ -1199,7 +1199,8 @@ def test_suspension_markdown(traded: int, after: int) -> None:
     """A held stock with no bars after `traded` sessions past its entry, and not delisted, is
     carried at its last close for `after` sessions without a bar, then marked 5% lower per
     further session (floored to the tick, never below it nor above the last close): in the
-    equity curve each session and at the period end, where the position closes at that mark.
+    equity curve each session and at the period end, where the position closes at that mark
+    and its MAE reaches it.
     Harm: a suspended position is carried at a stale price for months, so a stock that never
     trades again reads as worth its last close."""
     path = [*_FLAT, _BREAK, *[_HOLD] * traded]
@@ -1223,6 +1224,9 @@ def test_suspension_markdown(traded: int, after: int) -> None:
             assert value == cash + buy.qty * mark(n)
     assert trade.exit_reason == "end_of_period"
     assert _sells(result)[-1].price == mark(SESSIONS - 1)
+    # the excursion reaches the mark it closes at (the MAE is never above it)
+    risk = trade.entry_price - trade.initial_stop
+    assert trade.mae_r <= ((mark(SESSIONS - 1) - trade.entry_price) / risk).quantize(D("1e-6"))
 
 
 @given(
