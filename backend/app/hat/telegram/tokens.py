@@ -9,7 +9,7 @@ signal id and the expiry (whole epoch seconds), cut to 128 bits. The 55 characte
 Telegram's 64-byte callback limit.
 
 The card itself has one token, `card_token` (the same MAC over the signal id and expiry with
-the card tag). It is issued when the approval is written (`trades._send_approval` calls
+the card tag). It is issued when the approval is written (`trades.send_approval` calls
 `ApprovalSigner.issue`) and only its sha256 is stored, as `hat_approval.token_hash`. A button is
 accepted only when its MAC verifies, the approval of its signal exists, its expiry is that
 approval's `expires_at`, and the stored hash equals the hash of the card token recomputed under

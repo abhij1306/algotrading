@@ -392,8 +392,8 @@ to an artefact that exists.
 | HAT-RISK-030 | [06](06-risk-and-governance.md) | 10, 19, 46 | PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised` |
 | HAT-RISK-031 | [06](06-risk-and-governance.md) | 10 | PBT `caps.max_positions` |
 | HAT-RISK-032 | [06](06-risk-and-governance.md) | 10 | PBT `caps.industry` |
-| HAT-RISK-033 | [06](06-risk-and-governance.md) | 10 | PBT `caps.daily_entries` |
-| HAT-RISK-034 | [06](06-risk-and-governance.md) | 10 | PBT `caps.daily_stopouts` |
+| HAT-RISK-033 | [06](06-risk-and-governance.md) | 10, 75 | PBT `caps.daily_entries`, PBT `trades.day_counts` |
+| HAT-RISK-034 | [06](06-risk-and-governance.md) | 10, 75 | PBT `caps.daily_stopouts`, PBT `trades.day_counts` |
 | HAT-RISK-035 | [06](06-risk-and-governance.md) | 10 | PBT `caps.exits_never_blocked` |
 | HAT-RISK-036 | [06](06-risk-and-governance.md) | 58 | PBT `caps.cooldown`, PBT `caps.cooldown_input_fails_closed`, PBT `caps.cooldown_shortening_is_increase`, PBT `trades.last_hard_stop`, PBT `backtest.cooldown_applied`, PBT `dsr.evidence_cooldown_in_force` |
 | HAT-RISK-040 | [06](06-risk-and-governance.md) | 10 | PBT `exposure.ladder_transitions` |

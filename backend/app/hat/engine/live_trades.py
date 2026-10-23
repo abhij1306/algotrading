@@ -38,27 +38,24 @@ from sqlalchemy.orm import Session
 
 from ..ids import uuid7
 from ..models import HatEvent, HatFill, HatOrder, HatPosition, HatSignal
-from ..time import as_utc, trade_date_of
-from . import exits, lifecycle
+from ..time import as_utc, day_bounds, trade_date_of
+from . import exits, journal, lifecycle
 from .botlock import lock_bot
-from .trades import (
+from .positions import (
     TradeError,
-    _day_bounds,
-    _emit,
-    _is_veto,
-    _log_ignored,
-    _raise_stop,
-    _signal_and_bot,
-    _write_result,
     exit_rules_of,
+    is_veto,
     position_state,
+    raise_stop,
+    signal_and_bot,
+    write_result,
 )
+from .snapshot import HARD_STOP
 
 __all__ = [
     "CLOSE_EVALUATED",
     "CLOSE_GAP",
     "EXIT_PURPOSES",
-    "HARD_STOP",
     "STOP_PURPOSES",
     "BrokerFill",
     "apply_entry_fill",
@@ -78,7 +75,6 @@ logger = logging.getLogger(__name__)
 ENTRY = "entry"
 STOP_PURPOSES = ("stop_day", "stop_gtt")
 EXIT_PURPOSES = ("exit_partial", "exit_full", "flatten")
-HARD_STOP = "hard_stop"
 CLOSE_EVALUATED = "exit.close_evaluated"
 CLOSE_GAP = "exit.close_gap"
 CLOSE_RULE = "close_below_sma"
@@ -193,7 +189,7 @@ def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) ->
     if position is not None and position.closed_at is not None:
         raise TradeError("position_closed")
     _insert_fill(session, order, fill)
-    _emit(
+    journal.record(
         session,
         signal,
         "order.filled",
@@ -241,7 +237,7 @@ def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) ->
     session.flush()
     order.position_id = position.id
     session.flush()
-    _emit(
+    journal.record(
         session,
         signal,
         "position.opened",
@@ -302,7 +298,7 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
         # The stop triggered (or the position emptied without a full exit order): that is the
         # exit order placed of 07 §4.
         payload[lifecycle.EXIT_TRIGGERED] = True
-    _emit(
+    journal.record(
         session,
         signal,
         "order.filled",
@@ -316,7 +312,7 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
     rule = _exit_rule_of(session, order)
     if remaining > 0 or entry_working(session, signal.id, fill.at):
         if order.purpose == "exit_partial" and signal.state in _OPEN_STATES:
-            _emit(
+            journal.record(
                 session,
                 signal,
                 "exit.partial",
@@ -341,7 +337,7 @@ def _close(
     at: datetime,
 ) -> None:
     position.closed_at = at
-    _emit(
+    journal.record(
         session,
         signal,
         "position.closed",
@@ -351,7 +347,7 @@ def _close(
         now=at,
         position=position,
     )
-    _write_result(session, signal, position, rule, at, high=None, low=None)
+    write_result(session, signal, position, rule, at, high=None, low=None)
     session.flush()
 
 
@@ -441,15 +437,15 @@ def evaluate_real_position(
     position = _locked_real_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return exits.Evaluation()
-    signal, _ = _signal_and_bot(session, position)
+    signal, _ = signal_and_bot(session, position)
     rules, state = position_state(session, position)
     result = exits.evaluate(rules, state, view, phase)
     if result.actions and view.price is None:
         raise TradeError("exit_without_price")
     if result.new_stop is not None and result.new_stop > state.current_stop:
-        _raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
+        raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
     for rule_id, reason in result.ignored:
-        _log_ignored(rule_id, reason)  # never applied (HAT-RISK-070)
+        logger.info("exit rule %s ignored: %s", rule_id, reason)  # never applied (HAT-RISK-070)
     selling = {rid for action in result.actions for rid in action.rule_ids}
     instant = [rid for rid in result.fired if rid not in selling]
     position.rules_fired = sorted({*(position.rules_fired or []), *instant})
@@ -491,7 +487,7 @@ def record_close_evaluation(
     position = session.get(HatPosition, position_id)
     if position is None:
         raise TradeError("unknown_position")
-    signal, _ = _signal_and_bot(session, position)
+    signal, _ = signal_and_bot(session, position)
     rules = exit_rules_of(session, signal)
     close_rules = [
         (exits.rule_id(index, rule), rule)
@@ -506,7 +502,7 @@ def record_close_evaluation(
         for _, rule in close_rules
         if rule.sma in view.sma  # type: ignore[union-attr]
     }
-    _emit(
+    journal.record(
         session,
         signal,
         CLOSE_EVALUATED,
@@ -521,7 +517,7 @@ def record_close_evaluation(
             "is_virtual": bool(position.is_virtual),
         },
         now=now,
-        veto=_is_veto(signal, position),
+        veto=is_veto(signal, position),
     )
     return True
 
@@ -547,7 +543,7 @@ def record_close_gaps(
     close of the position's instrument (`closes`, from the nightly ingest) and its gap to the
     live price used (`exit.close_gap`, against the same position). An instrument without a close
     is left for a later run. Returns the number of gaps recorded."""
-    start, end = _day_bounds(trade_date)
+    start, end = day_bounds(trade_date)
     rows = session.execute(
         select(HatEvent.aggregate_id, HatEvent.event_type, HatEvent.payload).where(
             HatEvent.event_type.in_((CLOSE_EVALUATED, CLOSE_GAP)),
@@ -572,11 +568,11 @@ def record_close_gaps(
         official = closes.get(position.instrument_id)
         if official is None or not official.is_finite() or official <= 0:
             continue
-        signal, _ = _signal_and_bot(session, position)
+        signal, _ = signal_and_bot(session, position)
         live = Decimal(str(data["live_price"]))
         gap = official - live
         sma = {int(k): Decimal(str(v)) for k, v in (data.get("sma") or {}).items()}
-        _emit(
+        journal.record(
             session,
             signal,
             CLOSE_GAP,
@@ -592,7 +588,7 @@ def record_close_gaps(
                 "below_sma_close": sorted(str(n) for n, level in sma.items() if official < level),
             },
             now=now,
-            veto=_is_veto(signal, position),
+            veto=is_veto(signal, position),
         )
         done.add(aggregate)
         recorded += 1

@@ -115,6 +115,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `DB runtime.per_bot_serialised` Two real transactions of one bot, the first holding between its risk decision and its insert, end with one accepted entry and one rejected for the cap; the second waits on the bot's advisory lock. Harm: the cap is read before the other entry is visible and exceeded.
 - `PBT trades.global_open_risk_across_bots` (HAT-RISK-030; the cap is 1.5% since PR 46, D128) Two bots of one owner on different broker accounts, triggers interleaved in any order through `open_entry`: a trigger is rejected with `global_open_risk` exactly when the open risk of both bots plus its own exceeds 1.5% of total equity, is accepted otherwise, and the owner never holds more. Harm: each bot reads only its own positions, so N bots hold N x 1.5%.
 - `PBT trades.last_hard_stop` (HAT-RISK-036, PR 58) Positions opened through `open_entry` and closed by the exit stack's hard stop or by another reason, on the bot or another bot of the owner, in the instrument or another, on later days: the cooldown's history is the trade date of the bot's latest `hard_stop` close of the instrument at or before the trigger, and nothing else. Harm: the cooldown bars the wrong name, misses the stop that should bar it, or reads a stop the bot has not had yet.
+- `PBT trades.day_counts` (HAT-RISK-033, HAT-RISK-034, PR 75a) Positions opened through `open_entry` and closed by the exit stack's hard stop or by another reason, on the bot or another bot of the owner, on later days: `snapshot.day_counts` reads the bot's entered signals of the trade date and its `hard_stop` closes of any instrument closed on that date, nothing of another reason, day or bot. Harm: the stop-out cap bars a bot for a stop it did not have, or misses the stops that should bar it.
 - `DB runtime.owner_serialised` (HAT-RISK-030) Two real transactions of different bots of one owner (on different broker accounts), the first holding between its risk decision and its insert, with global open-risk room for one entry, end with one accepted and one rejected; the second waits on the owner's advisory lock. Harm: two bots' triggers in one instant both fit on one snapshot and together exceed the cap.
 - `DB runtime.state_domain` `hat_signal.state` holds one of the 11 lifecycle states and `hat_position.state` one of the four a position can be in; any other word is refused. Harm: a typo or an old lowercase state silently drops a trade out of every state-based count.
 - `TLA ExecutionRouter!RouteByMode` Each routed signal takes the route of the mode it was routed by: shadow a virtual position, confirm a card (a real order only after a Take), auto a real order. Harm: a signal is routed under the wrong mode.
@@ -321,6 +322,8 @@ Trade lifecycle (PR 11):
 - `verification/tla/TradeLifecycle.tla` and `verification/tla/TradeLifecycle.cfg`
 - `verification/tla/broken/TradeLifecycle__no_lock.cfg`, `verification/tla/broken/TradeLifecycle__state_without_event.cfg`, `verification/tla/broken/TradeLifecycle__skip_exit_pending.cfg`, `verification/tla/broken/TradeLifecycle__virtual_skips_exit_pending.cfg`, `verification/tla/broken/TradeLifecycle__reopen.cfg`, `verification/tla/broken/TradeLifecycle__result_late.cfg`, `verification/tla/broken/TradeLifecycle__exits_use_live.cfg`, `verification/tla/broken/TradeLifecycle__exit_stalls.cfg`
 - `backend/app/hat/engine/trades.py`
+- `backend/app/hat/engine/snapshot.py`
+- `backend/app/hat/engine/positions.py`
 - `backend/app/hat/engine/botlock.py`
 - `backend/app/hat/engine/lifecycle.py`
 - `backend/app/hat/models/runtime.py`
@@ -364,16 +367,17 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `9853575f70a6cf01667db56fd799fdbefc09717fb0286a7e9ec19d27d8c57321`
+Covered digest: `830e6a91170b939589d7262327f152383dfea393fdf47ec04d922ad5fec40454`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 75a (architecture audit F2): `engine/trades.py` split. `engine/snapshot.py` holds the reads an entry decision takes (`owner_slots`, `bot_snapshot`, `day_counts`, `last_hard_stop`, `entry_price_of`, `HARD_STOP`, which `live_trades` and `manage` read; the unused `risk_inputs` is deleted); `engine/positions.py` what shadow and real exits share (`TradeError`, `exit_rules_of`, `entry_qty`, `trade_r`, `is_veto`, `signal_and_bot`, `raise_stop`, `write_result`, `position_state`); `trades.py` keeps entries, the approval card (`send_approval`, public now), the virtual order, fill and exit engine, veto trades, `reject_signal` and `expire_watchlist`. `_emit` is gone (callers use `journal.record`), as is `_day_bounds` (`time.day_bounds`). `live_trades` imports no `trades` name. Code moved byte for byte; every property here is unchanged and passes, and the existing checks still catch breaks in the moved code (below). New: PBT `trades.day_counts`, since no check caught a wrong stop-out count (a swapped day window passed every property and DB check). A stop raise that records `stop.moved` but leaves `current_stop` (`positions.raise_stop`) is caught only by PBT `backtest.raised_stop_dip` (`verify-backtest`; not by `test_manage`, `test_exits`, `test_trades`, `test_stops`, `test_router` or `test_rescale`). Nothing was narrowed. The backtest reads `positions.position_state`; it still calls the entries and the virtual engine through `trades` (follow-up: `entries.py`, `shadow.py`).
 - PR 73b (PR 38 follow-ups 1-3, PR 25 follow-up 6, PR 45 follow-up 7): the account check of a login moved into `FyersAuthService` (a required `account_refs` lookup, `active_fyers_refs` in production, read after the answer and before the save); `exchange` lost its `accept_user` keyword, the route its `_account_check`, and the adapter's `complete_login` maps `WrongAccountError` to `wrong_account` and `AccountsUnreadableError` to `accounts_unreadable`. The account status and broker values live in `models/strategy.py` (`submit`, `accounts`, `modes`, `daily/accounts`, `daily/production` and the dashboard import them). `fyers_ipv4.require_direct_fyers` refuses the production start while a proxy would carry Fyers traffic; the oracle (real `requests`) found that `*` among other `NO_PROXY` entries bypasses nothing. `fyers_auth_routes.token_for_another_account_refused` is unchanged in what it asserts. The data socket is not pinned to IPv4 (a read path). Nothing was narrowed.
 - PR 73 (PR 45 follow-up 2): `accounts.revoke_ddpi` withdraws the owner's DDPI confirmation at any time (`account_unknown`, `ddpi_note_required`, `ddpi_not_confirmed`), clearing the flag and its time and writing `broker.ddpi_revoked`; `account_gates` reads it at once, so a revoked flag narrows the mode from the next routing decision. Its properties are `admin.ddpi_revoked` and the postgres run of the runbook (`verify-portfolio`). Nothing was narrowed.
 - PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
-- PR 58: `trades.open_entry` fills `SignalContext.hard_stop_days` from `trades.last_hard_stop` (the bot's latest `hard_stop` close of the instrument at or before the trigger, a veto trade's excluded as in `_day_counts`). `trades.last_hard_stop` generates no veto trade (a virtual trade of a skipped confirm signal); the exclusion is the same `_NOT_VETO` filter the daily stop-out count uses.
+- PR 58: `trades.open_entry` fills `SignalContext.hard_stop_days` from `snapshot.last_hard_stop` (the bot's latest `hard_stop` close of the instrument at or before the trigger, a veto trade's excluded as in `snapshot.day_counts`). `snapshot.last_hard_stop` generates no veto trade (a virtual trade of a skipped confirm signal); the exclusion is the same `_NOT_VETO` filter the daily stop-out count uses.
 - PR 49 (plan audit N1, G19, G20; HAT-EXEC-046): New `execution/entry_timeout.py`: `cancel_reason` (a final bar after the trigger bar closed below the level, or the timeout since placement) and `EntryWatch` (a `LiveData` bar listener keeping the day's closes in memory; `due` names an account's EntryPlaced signals of today), run by `Desks.cancel_stale_entries` in the periodic pass while the market is open; the cancel is `StopDesk.cancel_unfilled_entry` (refused once a real position exists or an entry order shows a part fill), which shares the remainder cancel `_cancel_entries` with `cancel_entry` (true only when the broker took a cancel). `due` reads the signal's state (its first fill opens it) and the order's status (`placed`: not a rejected earlier attempt, not a part fill); the desk reads the position and the order's status; each guard was seen failing alone. `Desks.cancel_stale_entries` isolates each signal's cancel. A placement or Take after the price fell back under the level is not refused (a fresh-context review found a `price_below_level` refusal rejected a valid break on a one-tick dip and nearly every `confirm: high` signal, so it was dropped). Not covered by a property: the runtime wiring (the bar listener and the `entries` step; the Postgres simulated day runs shadow bots only), and a restart forgets the closes before it (the timeout still ends such an entry). Nothing was narrowed.
 - PR 52 (audit T-F4, T-F7, T-F15; HAT-EXEC-023, -030, HAT-OPS-003): `_send_entry` reads the stored rejection count before it reserves a new tag, so a resume after the second rejection ends the signal `order_rejected` instead of sending a third order. `route` and `take` commit and place through `_place_committed`, which remembers a signal whose commit or placement raised (`take_stranded`, drained by `Desks.resume_entries`); `daily/accounts.py:_left_unplaced` (was `_left_triggered`) also finds a Take left in AwaitingApproval with decision `take`. `place_entry` refuses an undecided card (`_taken`): it found that a resume of an AwaitingApproval signal could place a card nobody took. `expire` ends Rejected `signal_expired` a real entry of an earlier trade date left waiting, cancelling first an order reserved and never sent and leaving one that may have reached the broker to reconciliation. The sweep was already scheduled (`daily/runtime.py`, `expire` every minute: T-F15's wiring part); the idempotency is a property here and on PostgreSQL. The router `Rig` moved from `test_router.py` to `hat_router_support.py` (with `crash_after`, `restart`, `desks_for`), shared with the Postgres checks. The Postgres checks seed the shared rig with the foreign-key triggers off for that connection (`session_replication_role = replica`; the seed writes rows before the rows they reference, which SQLite never checks) and run with them on. The seed (`_seeded`) uses a session bound to one dedicated connection and resets it before it returns to the pool: a plain session takes a new pooled connection after each commit, and CI caught the setting leaking to a pooled connection (`test_db_runtime.py::test_governance__stop_only_rises` then saw no trigger). `clean_db` asserts after each check that every pooled connection runs `origin` (it failed on 3 of 3 local runs before the fix). `ExecutionRouter.tla`: Take now decides to a new state `taken` and `PlaceTaken` places it; a per-signal `lost` flag and `Crash` model the lost in-process placement; `Place`/`PlaceTaken` are weakly fair over all variables while the router's other actions keep their fairness over `routerVars`; new property `EntriesSettled` and broken variant `no_resume`. The state space grew from 823,680 to 982,080 distinct states (local run 67 s to 123 s). `OrderReconciliation.tla`'s `Reserve` comment names the router's rejection count check (the model already keeps retries across `Restart`). FakeBroker keeps no order book, so an entry the broker accepted and whose answer was lost is never found by the tag lookup in these properties (left to reconciliation: follow-up). Review round (/code-review): `place_entry` runs under the router's `_placing` lock and re-reads the signal, since the trigger path, a Take and the periodic resume share one router per account and two placements that both read no open tag reserved two tags (a cross-process race is out of scope: one runtime places); `route` again returns the state after placement and keeps the shadow position's id (the branch swap had lost both; `routes_by_mode` now asserts them); a resume that raises is given back to the router for the next pass; one signal's failure no longer stops the sweep (`_end_stranded`, under `_placing`); the recovery and the sweep share one predicate (`router.unplaced_entry`: Triggered and auto, or a passed Take). Declined: bounding the sweep's scan to recent dates (the stranded rows are few; a row of unknown outcome is re-read each minute until reconciliation moves it) and replacing the in-memory stranded set with a query (the set only adds the in-process failures; recovery re-reads the database). Nothing was narrowed.
 - PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
@@ -1754,6 +1758,13 @@ FAILED tests/hat/properties/test_exits.py::test_shadow_rows_virtual - assert  [c
 ============================== 1 failed in 29.97s ==============================
 ```
 
+
+Break: (PR 75a) `positions.trade_r` (moved from `trades`) flips the sign of the P&L.
+
+```
+E   AssertionError: assert Decimal('8.0000000000') == Decimal('-8.000000')
+```
+
 ### PBT trades.shared_bot_cap
 
 Break: in `backend/app/hat/engine/trades.py`: the snapshot the caps read has no open positions.
@@ -1762,6 +1773,13 @@ Break: in `backend/app/hat/engine/trades.py`: the snapshot the caps read has no 
 E   AssertionError: assert 5 == 4
 FAILED tests/hat/properties/test_trades.py::test_shared_bot_cap - AssertionEr [cut]
 ============================== 1 failed in 2.16s ===============================
+```
+
+
+Break: (PR 75a) `snapshot._slots` (moved from `trades`) reads no open positions (`, False` added to the position filter); `trades.global_open_risk_across_bots` fails too.
+
+```
+E   AssertionError: assert 5 == 4
 ```
 
 ### PBT config.trade_keeps_entry_version
@@ -1812,7 +1830,7 @@ Break: (PR 58) in `backend/app/hat/engine/trades.py`: the instrument filter drop
 ```
 tests/hat/properties/test_trades.py F
 tests/hat/properties/test_trades.py:220: in test_last_hard_stop
-    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+    assert snapshot.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
 E   assert (datetime.date(2026, 10, 21),) == ()
 ```
 
@@ -1821,7 +1839,7 @@ Break: (PR 58) in `backend/app/hat/engine/trades.py`: the exit-reason filter dro
 ```
 tests/hat/properties/test_trades.py F
 tests/hat/properties/test_trades.py:220: in test_last_hard_stop
-    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+    assert snapshot.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
 E   assert (datetime.date(2026, 10, 21),) == ()
 ```
 
@@ -1830,7 +1848,7 @@ Break: (PR 58) in `backend/app/hat/engine/trades.py`: the bot filter dropped, so
 ```
 tests/hat/properties/test_trades.py F
 tests/hat/properties/test_trades.py:220: in test_last_hard_stop
-    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+    assert snapshot.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
 E   assert (datetime.date(2026, 10, 21),) == ()
 ```
 
@@ -1839,8 +1857,23 @@ Break: (PR 58) in `backend/app/hat/engine/trades.py`: the at-or-before-the-trigg
 ```
 tests/hat/properties/test_trades.py F
 tests/hat/properties/test_trades.py:220: in test_last_hard_stop
-    assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+    assert snapshot.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
 E   assert (datetime.date(2026, 10, 24),) == (datetime.date(2026, 10, 21),)
+```
+
+
+### PBT trades.day_counts
+
+Break: (PR 75a) the day window swapped in `snapshot.day_counts` (`start, end = day_bounds(trade_date)` became `end, start = ...`), so no stop-out is counted. It passed every other property and DB check (`test_trades`, `test_router`, `test_journal`, `test_lifecycle`, `test_caps`, `test_backtest`, `test_db_broken_variants`): the gap this property closes.
+
+```
+E   assert (1, 0) == (1, 1)
+```
+
+Break: (PR 75a) the exit-reason filter dropped, so a `time_stop` close counts as a stop-out.
+
+```
+E   assert (1, 1) == (1, 0)
 ```
 
 ### DB runtime.owner_serialised

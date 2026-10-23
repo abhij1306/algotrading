@@ -1,5 +1,8 @@
-"""The trade lifecycle against the database: per-bot serialisation, entries, the virtual (shadow)
-fill engine, exits and the trade result (07 §4, HAT-EXEC-040..044, HAT-SCH-057, HAT-BOT-083).
+"""The trade lifecycle against the database: per-bot serialisation, entries, the approval card,
+the virtual (shadow) order, fill and exit engine and veto trades (07 §4, HAT-EXEC-040..044,
+HAT-SCH-057, HAT-BOT-083). The reads an entry decision takes are `snapshot`'s; what the shadow
+engine shares with real positions (`live_trades`), the exit stack's inputs, a stop raise and the
+trade result, is `positions`' (PR 75a, architecture audit F2).
 
 Every function works in the caller's open transaction and never commits. A state change and the
 event that explains it are written together, so a replay of the events always reproduces the
@@ -50,36 +53,30 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Protocol
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..errors import HatError
 from ..execution.tags import encode_tag
 from ..ids import uuid7
 from ..models import (
     HatApproval,
     HatBot,
-    HatEvent,
     HatFill,
-    HatIndustry,
     HatOrder,
     HatPosition,
     HatSignal,
-    HatStrategyVersion,
-    HatTradeResult,
     HatWatchlistEntry,
 )
-from ..risk import controls
-from ..risk.caps import OpenPosition, effective_max_chase_pct
+from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
 from ..risk.policy import PolicyVersion, effective_version
-from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
-from ..time import as_utc, day_bounds, trade_date_of
+from ..time import as_utc
 from . import exits, journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
+from .positions import TradeError, is_veto, position_state, raise_stop, signal_and_bot, write_result
+from .snapshot import day_counts, entry_price_of, last_hard_stop, owner_slots
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
-from .strategy.config import ExitRule, parse_config
 from .watchlist import bot_universe_members
 
 __all__ = [
@@ -88,20 +85,14 @@ __all__ = [
     "EntryOutcome",
     "EntryRequest",
     "FillModel",
-    "TradeError",
-    "owner_slots",
-    "bot_snapshot",
     "close_position",
-    "entry_price_of",
     "evaluate_position",
     "expire_watchlist",
     "lock_bot",
     "open_entry",
     "open_veto_trade",
-    "position_state",
     "reject_signal",
-    "risk_inputs",
-    "trade_r",
+    "send_approval",
 ]
 
 logger = logging.getLogger(__name__)
@@ -115,18 +106,6 @@ APPROVAL_WINDOW = timedelta(minutes=5)
 # Issues an approval card's token from (signal id, expires_at); `telegram.tokens.ApprovalSigner`.
 TokenIssuer = Callable[[uuid.UUID, datetime], str]
 VETO = journal.VETO  # the payload flag of a veto trade's events
-# An accepted auto signal rests in Triggered until the router places its order: it holds a slot.
-_SLOT_PENDING_STATES = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL, lifecycle.ENTRY_PLACED)
-_ENTERED_STATES = (
-    lifecycle.TRIGGERED,
-    lifecycle.AWAITING_APPROVAL,
-    lifecycle.ENTRY_PLACED,
-    lifecycle.OPEN,
-    lifecycle.PARTIALLY_EXITED,
-    lifecycle.EXIT_PENDING,
-    lifecycle.CLOSED,
-)
-HARD_STOP = "hard_stop"
 # Why a trigger was skipped before the risk check: the initial stop could not be set, or an entry
 # filter failed (HAT-EXEC-122). They are stored as the signal's REJECT reason, like a risk reason.
 ENTRY_SKIP_REASONS = frozenset(
@@ -144,7 +123,6 @@ ENTRY_SKIP_REASONS = frozenset(
 )
 _ZERO = Decimal(0)
 SIGNAL_TRIGGERED = journal.SIGNAL_TRIGGERED
-_RATIO_PLACES = Decimal("0.000001")
 
 
 class FillModel(Protocol):
@@ -164,211 +142,6 @@ class _ShadowFills:
 # The backtest passes its own model (slippage and charges, `app.hat.backtest.costs`); the shadow
 # engine and the backtest otherwise fill through the same functions (HAT-BT-010).
 SHADOW_FILLS: FillModel = _ShadowFills()
-
-
-class TradeError(HatError):
-    """A lifecycle operation was refused; `code` is a fixed word and carries no data."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
-# --- the snapshot the caps read ---------------------------------------------------------------
-
-
-def _day_bounds(day: date) -> tuple[datetime, datetime]:
-    return day_bounds(day)
-
-
-def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
-    row = session.scalar(
-        select(HatIndustry.industry)
-        .where(HatIndustry.instrument_id == instrument_id, HatIndustry.effective_from <= day)
-        .order_by(HatIndustry.effective_from.desc())
-        .limit(1)
-    )
-    return row or "unknown"
-
-
-# A veto trade is a virtual position of a confirm or auto signal (see `_is_veto`).
-_NOT_VETO = or_(HatPosition.is_virtual.is_(False), HatSignal.mode == SHADOW)
-
-
-def _slots(
-    session: Session,
-    bot_ids: Sequence[uuid.UUID] | Select[tuple[uuid.UUID]],
-    trade_date: date,
-    last_prices: dict[uuid.UUID, Decimal] | None,
-) -> list[OpenPosition]:
-    """The slots of the bots in `bot_ids`, read now, each carrying its own bot.
-
-    A slot is an open position, or a signal whose entry is triggered, placed or awaiting
-    approval and has no position yet. A veto trade (the virtual trade of a skipped or expired
-    confirm signal, HAT-EXEC-032) is scored only and holds no slot. A position with no price in
-    `last_prices` is valued at its entry.
-
-    The pending signals are read before the positions: another bot's fill (under that bot's
-    lock only) can turn a pending signal into a position between the two reads, and in this
-    order it is then counted twice, never missed."""
-    prices = last_prices or {}
-    pending = session.scalars(
-        select(HatSignal).where(
-            HatSignal.bot_id.in_(bot_ids), HatSignal.state.in_(_SLOT_PENDING_STATES)
-        )
-    ).all()
-    slots: list[OpenPosition] = []
-    for position in session.scalars(
-        select(HatPosition)
-        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
-        .where(HatPosition.bot_id.in_(bot_ids), HatPosition.closed_at.is_(None), _NOT_VETO)
-    ):
-        entry = Decimal(position.avg_entry)
-        slots.append(
-            OpenPosition(
-                bot_id=position.bot_id,
-                instrument_id=position.instrument_id,
-                industry=_industry_of(session, position.instrument_id, trade_date),
-                qty=position.qty_open,
-                avg_entry=entry,
-                last_price=prices.get(position.instrument_id, entry),
-                current_stop=Decimal(position.current_stop),
-                is_virtual=position.is_virtual,
-            )
-        )
-    for signal in pending:
-        entry = entry_price_of(session, signal)  # the planned price, not the level broken
-        slots.append(
-            OpenPosition(
-                bot_id=signal.bot_id,
-                instrument_id=signal.instrument_id,
-                industry=_industry_of(session, signal.instrument_id, trade_date),
-                qty=signal.qty,
-                avg_entry=entry,
-                last_price=prices.get(signal.instrument_id, entry),
-                current_stop=Decimal(signal.stop_price),
-                is_virtual=signal.mode == SHADOW,
-            )
-        )
-    return slots
-
-
-def owner_slots(
-    session: Session,
-    user_id: uuid.UUID,
-    trade_date: date,
-    last_prices: dict[uuid.UUID, Decimal] | None = None,
-) -> list[OpenPosition]:
-    """The slots of every bot of the owner, real and virtual, on every broker account
-    (HAT-RISK-030): the global open-risk cap sums the ones of the entry's mode, the per-bot caps
-    the entry's bot's own."""
-    bots = select(HatBot.id).where(HatBot.user_id == user_id)
-    return _slots(session, bots, trade_date, last_prices)
-
-
-def bot_snapshot(
-    session: Session,
-    bot_id: uuid.UUID,
-    trade_date: date,
-    last_prices: dict[uuid.UUID, Decimal] | None = None,
-) -> tuple[list[OpenPosition], int, int]:
-    """(slots, entries today, stop-outs today) for the bot, read now (slots as `_slots`). A veto
-    trade's stop-out is not the bot's. These are the bot's own slots only: an entry decision
-    reads `owner_slots`, since the global open-risk cap sums every bot."""
-    slots = _slots(session, [bot_id], trade_date, last_prices)
-    entries, stopouts = _day_counts(session, bot_id, trade_date)
-    return slots, entries, stopouts
-
-
-def _day_counts(session: Session, bot_id: uuid.UUID, trade_date: date) -> tuple[int, int]:
-    """(entries today, stop-outs today) for the bot."""
-    entries = session.scalar(
-        select(func.count())
-        .select_from(HatSignal)
-        .where(
-            HatSignal.bot_id == bot_id,
-            HatSignal.trade_date == trade_date,
-            HatSignal.state.in_(_ENTERED_STATES),
-        )
-    )
-    start, end = _day_bounds(trade_date)
-    stopouts = session.scalar(
-        select(func.count())
-        .select_from(HatTradeResult)
-        .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
-        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
-        .where(
-            HatPosition.bot_id == bot_id,
-            HatPosition.closed_at >= start,
-            HatPosition.closed_at < end,
-            HatTradeResult.exit_reason == HARD_STOP,
-            _NOT_VETO,
-        )
-    )
-    return int(entries or 0), int(stopouts or 0)
-
-
-def last_hard_stop(
-    session: Session, bot_id: uuid.UUID, instrument_id: uuid.UUID, at: datetime
-) -> tuple[date, ...]:
-    """The trade date of the bot's latest `hard_stop` close of the instrument at or before `at`,
-    as the cooldown reads it (HAT-RISK-036); empty when there is none. A veto trade's stop-out is
-    not the bot's, as for the daily stop-out count."""
-    closed = session.scalar(
-        select(func.max(HatPosition.closed_at))
-        .select_from(HatTradeResult)
-        .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
-        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
-        .where(
-            HatPosition.bot_id == bot_id,
-            HatPosition.instrument_id == instrument_id,
-            HatPosition.closed_at <= at,
-            HatTradeResult.exit_reason == HARD_STOP,
-            _NOT_VETO,
-        )
-    )
-    return () if closed is None else (trade_date_of(as_utc(closed)),)
-
-
-def risk_inputs(session: Session, bot_id: uuid.UUID, user_id: uuid.UUID) -> dict[str, object]:
-    """The fields of a `SignalContext` that the database holds: the kill state, the exposure
-    ladder and the risk-policy versions."""
-    return {
-        "kill": controls.kill_state(session, bot_id),
-        "ladder": controls.ladder_state(session, bot_id),
-        "policy_versions": load_versions(session, user_id),
-    }
-
-
-# --- events and steps -------------------------------------------------------------------------
-
-
-def _emit(
-    session: Session,
-    signal: HatSignal,
-    event_type: str,
-    *,
-    aggregate_type: str,
-    aggregate_id: uuid.UUID,
-    payload: dict[str, object],
-    now: datetime,
-    position: HatPosition | None = None,
-    veto: bool = False,
-) -> None:
-    """Record `event_type` through the journal, which moves the signal (and its position) along
-    the step it drives in the same transaction and refuses a step the table forbids
-    (HAT-EXEC-042). A veto trade's event moves only its position."""
-    journal.record(
-        session,
-        signal,
-        event_type,
-        payload,
-        aggregate_type=aggregate_type,
-        aggregate_id=aggregate_id,
-        now=now,
-        position=position,
-        veto=veto,
-    )
 
 
 def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
@@ -490,7 +263,7 @@ def open_entry(
     base = request.context
     lock_owner(session, bot.user_id)  # after the duplicate check: a retry waits on no other bot
     slots = owner_slots(session, bot.user_id, request.trade_date, request.last_prices)
-    entries, stopouts = _day_counts(session, request.bot_id, request.trade_date)
+    entries, stopouts = day_counts(session, request.bot_id, request.trade_date)
     signal_id = uuid7()
     ctx = replace(
         base,
@@ -523,7 +296,7 @@ def open_entry(
     )
     session.add(signal)
     session.flush()
-    _emit(
+    journal.record(
         session,
         signal,
         SIGNAL_TRIGGERED,
@@ -533,7 +306,7 @@ def open_entry(
         now=request.triggered_at,
     )
     if not accepted:
-        _emit(
+        journal.record(
             session,
             signal,
             "signal.rejected",
@@ -562,7 +335,7 @@ def _route_accepted(
     shadow opens the virtual position."""
     mode = signal.mode
     if mode == CONFIRM:
-        _send_approval(session, signal, now, issue)
+        send_approval(session, signal, now, issue)
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     if mode == AUTO:
         # The router places the real order after this transaction commits (HAT-BRK-101).
@@ -628,7 +401,7 @@ def _triggered_payload(
     return payload
 
 
-def _send_approval(
+def send_approval(
     session: Session, signal: HatSignal, now: datetime, issue: TokenIssuer | None
 ) -> None:
     """The approval card of a confirm signal (HAT-EXEC-030): its `hat_approval` row, expiring
@@ -715,7 +488,7 @@ def _virtual_entry(
     order, _ = _virtual_order(
         session, signal, bot, None, purpose="entry", side="buy", qty=qty, fill=fill, now=now
     )
-    _emit(
+    journal.record(
         session,
         signal,
         "order.placed",
@@ -725,7 +498,7 @@ def _virtual_entry(
         now=now,
         veto=veto,
     )
-    _emit(
+    journal.record(
         session,
         signal,
         "order.filled",
@@ -754,7 +527,7 @@ def _virtual_entry(
     session.flush()  # the position row first: the order's foreign key points at it
     order.position_id = position.id
     session.flush()
-    _emit(
+    journal.record(
         session,
         signal,
         "position.opened",
@@ -769,18 +542,6 @@ def _virtual_entry(
 
 
 # --- the router's steps on a confirm or auto signal -------------------------------------------
-
-
-def entry_price_of(session: Session, signal: HatSignal) -> Decimal:
-    """The entry price the trigger planned, from its `signal.triggered` event (else the level)."""
-    payload = session.scalar(
-        select(HatEvent.payload).where(
-            HatEvent.correlation_id == signal.id, HatEvent.event_type == SIGNAL_TRIGGERED
-        )
-    )
-    raw = (payload or {}).get("entry_price")
-    price = Decimal(str(raw)) if raw is not None else Decimal(signal.trigger_price)
-    return price if price.is_finite() and price > 0 else Decimal(signal.trigger_price)
 
 
 def _veto_position(session: Session, signal_id: uuid.UUID) -> HatPosition | None:
@@ -833,7 +594,7 @@ def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: date
     session.refresh(signal)
     if signal.state not in (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL):
         return False
-    _emit(
+    journal.record(
         session,
         signal,
         "signal.rejected",
@@ -848,46 +609,6 @@ def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: date
 # --- exits ------------------------------------------------------------------------------------
 
 
-def exit_rules_of(session: Session, signal: HatSignal) -> list[ExitRule]:
-    """The exit stack of the strategy version the signal entered under: a version promoted
-    after the entry never changes the rules of an open trade (HAT-BOT-083)."""
-    version = session.get(HatStrategyVersion, signal.strategy_version_id)
-    if version is None:
-        raise TradeError("unknown_strategy_version")
-    return list(parse_config(version.config).exits)
-
-
-def _entry_qty(session: Session, signal: HatSignal, position: HatPosition) -> int:
-    """The shares the entry bought, on the position's current scale: each split or bonus applied
-    to it since (`position.rescaled`) scales them as it scaled `qty_open`, so R and the partial
-    exits stay on one scale (HAT-EXEC-141)."""
-    qty = int(
-        session.scalar(
-            select(func.coalesce(func.sum(HatFill.qty), 0))
-            .join(HatOrder, HatOrder.id == HatFill.order_id)
-            .where(HatOrder.signal_id == signal.id, HatOrder.purpose == "entry")
-        )
-        or 0
-    )
-    for factor in rescale.applied_factors(session, position.id):
-        qty = rescale.scale_qty(qty, factor)
-    return qty
-
-
-def trade_r(realized_pnl: Decimal, avg_entry: Decimal, initial_stop: Decimal, qty: int) -> Decimal:
-    """HAT-BT-040: realised P&L over the initial risk (entry - initial stop) x entry quantity.
-    Zero when there is no positive initial risk (the position was never validly sized)."""
-    risk = (avg_entry - initial_stop) * qty
-    if risk <= 0:
-        return _ZERO
-    return (realized_pnl / risk).quantize(_RATIO_PLACES)
-
-
-def _is_veto(signal: HatSignal, position: HatPosition) -> bool:
-    """A virtual position of a confirm or auto signal is that signal's veto trade."""
-    return position.is_virtual and signal.mode != SHADOW
-
-
 def _locked_virtual_position(session: Session, position_id: uuid.UUID) -> HatPosition:
     """The position, re-read under its bot's lock; only a virtual one is the engine's."""
     position = session.get(HatPosition, position_id)
@@ -898,52 +619,6 @@ def _locked_virtual_position(session: Session, position_id: uuid.UUID) -> HatPos
     if not position.is_virtual:
         raise TradeError("position_not_virtual")  # real exits are the router's (PR 15)
     return position
-
-
-def _raise_stop(
-    session: Session,
-    signal: HatSignal,
-    position: HatPosition,
-    old: Decimal,
-    new: Decimal,
-    now: datetime,
-) -> None:
-    _emit(
-        session,
-        signal,
-        "stop.moved",
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={"from": str(old), "to": str(new)},
-        now=now,
-        veto=_is_veto(signal, position),
-    )
-    position.current_stop = new
-
-
-def _signal_and_bot(session: Session, position: HatPosition) -> tuple[HatSignal, HatBot]:
-    signal = session.get(HatSignal, position.signal_id)
-    bot = session.get(HatBot, position.bot_id)
-    if signal is None or bot is None:
-        raise TradeError("unknown_signal")
-    return signal, bot
-
-
-def position_state(
-    session: Session, position: HatPosition
-) -> tuple[list[ExitRule], exits.PositionState]:
-    """The pinned exit stack of a position and the position as the exit rules read it: what
-    `evaluate_position` hands to `exits.evaluate`."""
-    signal, _ = _signal_and_bot(session, position)
-    state = exits.PositionState(
-        qty_original=_entry_qty(session, signal, position),
-        qty_open=position.qty_open,
-        avg_entry=Decimal(position.avg_entry),
-        initial_stop=Decimal(position.initial_stop),
-        current_stop=Decimal(position.current_stop),
-        fired=frozenset(position.rules_fired or []),
-    )
-    return exit_rules_of(session, signal), state
 
 
 def evaluate_position(
@@ -965,17 +640,17 @@ def evaluate_position(
     position = _locked_virtual_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return exits.Evaluation()
-    signal, bot = _signal_and_bot(session, position)
+    signal, bot = signal_and_bot(session, position)
     rules, state = position_state(session, position)
     result = exits.evaluate(rules, state, view, phase)
     price = view.price
     if result.actions and price is None:
         raise TradeError("exit_without_price")  # nothing is written for an exit with no price
     if result.new_stop is not None and result.new_stop > state.current_stop:
-        _raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
+        raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
     for rule_id, reason in result.ignored:
         # A rule that would not raise the stop is logged, never applied (HAT-RISK-070).
-        _log_ignored(rule_id, reason)
+        logger.info("exit rule %s ignored: %s", rule_id, reason)
     position.rules_fired = sorted({*(position.rules_fired or []), *result.fired})
     if price is not None:
         marks = _Marks(fills, high, low)
@@ -1003,15 +678,11 @@ def close_position(
     position = _locked_virtual_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return False
-    signal, bot = _signal_and_bot(session, position)
+    signal, bot = signal_and_bot(session, position)
     sale = _Sale(True, position.qty_open, reason)
     _virtual_exit(session, signal, bot, position, sale, price, now, _Marks(fills, high, low))
     session.flush()
     return True
-
-
-def _log_ignored(rule_id: str, reason: str) -> None:
-    logger.info("exit rule %s ignored: %s", rule_id, reason)
 
 
 @dataclass(frozen=True)
@@ -1041,7 +712,7 @@ def _virtual_exit(
     marks: _Marks,
 ) -> None:
     full = sale.full
-    veto = _is_veto(signal, position)
+    veto = is_veto(signal, position)
     purpose = "exit_full" if full else "exit_partial"
     fill = marks.fills.fill("sell", sale.qty, price)
     filled = fill[0]
@@ -1057,7 +728,7 @@ def _virtual_exit(
         now=now,
     )
     rule = sale.rule
-    _emit(
+    journal.record(
         session,
         signal,
         "order.placed",
@@ -1068,7 +739,7 @@ def _virtual_exit(
         position=position,
         veto=veto,
     )
-    _emit(
+    journal.record(
         session,
         signal,
         "order.filled",
@@ -1080,7 +751,7 @@ def _virtual_exit(
     )
     position.qty_open -= sale.qty
     if not full:
-        _emit(
+        journal.record(
             session,
             signal,
             "exit.partial",
@@ -1093,7 +764,7 @@ def _virtual_exit(
         )
         return
     position.closed_at = now
-    _emit(
+    journal.record(
         session,
         signal,
         "position.closed",
@@ -1104,62 +775,7 @@ def _virtual_exit(
         position=position,
         veto=veto,
     )
-    _write_result(session, signal, position, rule, now, high=marks.high, low=marks.low)
-
-
-def _write_result(
-    session: Session,
-    signal: HatSignal,
-    position: HatPosition,
-    reason: str,
-    now: datetime,
-    *,
-    high: Decimal | None,
-    low: Decimal | None,
-) -> None:
-    """The one `hat_trade_result` of a closed position, in the closing transaction
-    (HAT-SCH-057), and the ladder step for a real trade (a virtual one changes nothing)."""
-    fills = session.execute(
-        select(HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
-        .join(HatOrder, HatOrder.id == HatFill.order_id)
-        .where(HatOrder.signal_id == signal.id)
-    ).all()
-    pnl = _ZERO
-    fees = _ZERO
-    for side, qty, price, fee in fills:
-        sign = 1 if side == "sell" else -1
-        pnl += sign * qty * Decimal(price) - Decimal(fee)
-        fees += Decimal(fee)
-    entry = Decimal(position.avg_entry)
-    stop = Decimal(position.initial_stop)
-    qty = _entry_qty(session, signal, position)
-    risk = entry - stop
-    r = trade_r(pnl, entry, stop, qty)
-    top = max(entry, high if high is not None else entry)
-    bottom = min(entry, low if low is not None else entry)
-    session.add(
-        HatTradeResult(
-            position_id=position.id,
-            realized_pnl=pnl,
-            fees=fees,
-            currency="INR",
-            r_multiple=r,
-            holding_days=max(0, (trade_date_of(now) - signal.trade_date).days),
-            exit_reason=reason,
-            mfe_r=((top - entry) / risk).quantize(_RATIO_PLACES) if risk > 0 else _ZERO,
-            mae_r=((bottom - entry) / risk).quantize(_RATIO_PLACES) if risk > 0 else _ZERO,
-        )
-    )
-    policy = effective_version(load_versions(session, _owner_of(session, signal)), now)
-    if policy is not None:
-        controls.record_closed_trade(session, signal.bot_id, r, position.is_virtual, policy.policy)
-
-
-def _owner_of(session: Session, signal: HatSignal) -> uuid.UUID:
-    bot = session.get(HatBot, signal.bot_id)
-    if bot is None:
-        raise TradeError("unknown_bot")
-    return bot.user_id
+    write_result(session, signal, position, rule, now, high=marks.high, low=marks.low)
 
 
 # --- the end of the session -------------------------------------------------------------------

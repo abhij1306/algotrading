@@ -158,7 +158,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `827fa5f3728c087e0a3a81a6dc06079345e197dcb339e12c4cdac40879ce0717`
+Covered digest: `1cfc50318f743c400f8db4e6bdfdac3ba8e6dbab67ef57afd83ce283f2900c51`
 
 ## Scope changes
 
@@ -174,6 +174,7 @@ Covered digest: `827fa5f3728c087e0a3a81a6dc06079345e197dcb339e12c4cdac40879ce071
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 75a: `daily/live.py` reads `positions.exit_rules_of` (moved from `trades`, `verify-execution`). No live-data check changed.
 - `bars.staleness_trip` and `bars.staleness_boundary`: HAT-DATA-116's statement said "more than 30 seconds" and its acceptance said no tick in (t - 30 s, t], which disagree at exactly 30 s. The acceptance wins; the statement in `02-data.md` was edited to "30 seconds or more".
 - The session is the half-open interval [09:15, 15:30) IST; a tick at 15:30:00 or later is in no bar.
 - A late tick (at or after its bar's end + 2 s) is left out of bars but still counts in the day volume, so volume pace stays right.

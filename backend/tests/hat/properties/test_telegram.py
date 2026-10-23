@@ -501,6 +501,7 @@ UNPARSED = st.one_of(
 
 @SLOW
 @given(UNPARSED, st.sampled_from((AT, EVENING)))
+@example("@", AT)  # not a command, so it names no other bot (found in PR 75a)
 def test_unknown_command_rejected(text: str, now: datetime) -> None:
     """HAT-TG-030, HAT-DEC-B12: a text that is not one of the ten commands with its arguments
     (an order, a gate override, a command with extra words) is refused (`unknown_command` or

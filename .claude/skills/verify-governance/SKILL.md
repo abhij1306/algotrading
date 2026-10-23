@@ -19,6 +19,7 @@ Checks that the HAT database enforces its own rules (so no bug or manual edit ca
 - `PBT risk_policy.cooling_off` For every request and effective time, an increase is allowed only at 7 days (168 hours) or more, decreases at any time, and the app-level guard rejects the write the database would. Harm: risk is raised without the cooling-off gate.
 - `CONF schema.*` The models equal the spec tables: columns, types, nullability, keys, foreign keys and unique sets read from `03-schema.md`; hat_ prefix and only hat_ targets; uuid keys; user_id and market_id columns; Numeric(18,4) money and no Float; timezone-aware timestamps; portable types only; `create_all` builds all 41 tables on SQLite. Harm: the code and the spec drift and a column the engine relies on is missing or of the wrong type.
 - `CONF boundaries` The import graph keeps criteria free of broker, DB and UI modules and keeps engine, data and risk away from the broker layer; HAT code lives under `backend/app/hat`; data paths come from `HAT_DATA_ROOT`; no OpenAlgo; HAT refuses non-Postgres; the NSE market row is seeded once with the right values; no secret is committed and `.env.example` lists every HAT variable empty. Harm: a code path can place an order without the risk check, or a secret is pushed.
+- `CONF no_private_imports` (07 §4, PR 75a, architecture audit F2) No module under `app/hat` imports an underscore name from another HAT module (`from x import _name`, relative or absolute) or reads one off a HAT module it imported (`x._name`); its own private names and non-HAT ones pass. Harm: `live_trades` took seven private helpers of the shadow engine, so a shadow refactor could change real-position accounting with nothing at the import level to say so.
 
 ## Run
 
@@ -92,12 +93,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `a6f7634ef8ba56de45695cb9af65be8592147f627a7caa6b02e5c12a3d0f0237`
+Covered digest: `d5b53b4715db5fa808c283e42d766596c985b37f5c628fb9e6526dcc321e3cb0`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 75a: `test_conf_boundaries.py` gains CONF `no_private_imports`; `time.day_bounds` is now called directly by `engine/snapshot.py`, `engine/live_trades.py` and `execution/submit.py` (the `trades._day_bounds` alias is gone). Nothing was narrowed.
 - PR 73b: `models/strategy.py` gains the account status and broker constants (`ACCOUNT_PENDING`, `ACCOUNT_ACTIVE`, `ACCOUNT_FAILED`, `BROKER_FYERS`), the one copy every reader imports (CONF `brk__account_constants_one_copy`, `verify-execution`). No table, column or constraint changed. Nothing was narrowed.
 - PR 73: the spec gains three event types (03 §6) and the release and DDPI rules of 04, 05, 06 and 10 their PR 73 lines; `test_config.py` checks the assign event (`verify-criteria`). No schema, foundation helper or boundary changed. Nothing was narrowed.
 - PR 63: `engine/backtest.py` gained the slot order (`RunSpec.slot_order`, `backtest/slots.py`, recorded in `conventions` and `config_digest`) and `test_config.add_run` records `slot_order: time`; no governance check changed.
@@ -127,6 +129,30 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 Each check was shown to catch a deliberate break in the real code (HAT-VER-072), then the break was removed and the check returned to passing.
 
+
+### CONF no_private_imports
+
+Break: (PR 75a) `engine/live_trades.py` and `execution/submit.py` as on main (`from .trades import _day_bounds, _emit, _is_veto, _log_ignored, _raise_stop, _signal_and_bot, _write_result`; `trades._day_bounds(...)`).
+
+```
+E   AssertionError: assert {'engine/live..._day_bounds']} == {}
+E     Left contains 2 more items:
+E     {'engine/live_trades.py': ['line 44: from app.hat.engine.trades import _day_bounds',
+```
+
+Break: (PR 75a) the checker reads only `name._x`, not a chain (`if root in modules and not rest:`), so `app.hat.engine.snapshot._slots` after `import app.hat.engine.snapshot` and `engine.trades._emit` through a package pass.
+
+```
+E   At index 2 diff: 'line 12: app.hat.engine.trades._day_bounds' != 'line 10: app.hat.engine.snapshot._slots'
+E   Right contains 2 more items, first extra item: 'line 12: app.hat.engine.trades._day_bounds'
+```
+
+Break: (PR 75a, CodeAnt) the checker ignores `getattr` (`node.func.id in {"hasattr", "setattr"}`), so `getattr(trades, '_emit')` passes.
+
+```
+E   At index 4 diff: 'line 13: app.hat.engine.trades._day_bounds' != 'line 12: app.hat.engine.trades._emit'
+E   Right contains one more item: 'line 13: app.hat.engine.journal._move'
+```
 ### DB governance.*
 
 Break: the immutability trigger of `hat_strategy_version` rewired from `BEFORE UPDATE` to `BEFORE DELETE` in `PG_DDL`.

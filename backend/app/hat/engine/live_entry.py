@@ -49,7 +49,7 @@ from ..risk import controls
 from ..risk.decision import SignalContext
 from ..risk.sessions import SessionCalendar
 from ..time import IST, utc_now
-from . import lifecycle, trades
+from . import lifecycle, positions, trades
 from .criteria import CriterionResult, EvalContext
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
@@ -350,12 +350,12 @@ def route_by_mode(
     (`auto_needs_router`, `confirm_needs_router`) and nothing is written: only shadow is routed."""
     bot = session.get(HatBot, request.bot_id)
     if bot is None:
-        raise trades.TradeError("unknown_bot")
+        raise positions.TradeError("unknown_bot")
     mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
     if mode == AUTO:
-        raise trades.TradeError("auto_needs_router")
+        raise positions.TradeError("auto_needs_router")
     if mode == CONFIRM:
-        raise trades.TradeError("confirm_needs_router")
+        raise positions.TradeError("confirm_needs_router")
     return trades.open_entry(session, request, decide=decide, mode=mode)
 
 

@@ -44,7 +44,7 @@ from ..data.live import Quote, usable_price
 from ..data.quality import JOB_QUALITY
 from ..data.staleness import StalenessMonitor
 from ..data.store import DataStore
-from ..engine import trades
+from ..engine import positions, trades
 from ..engine.exits import ExitView, Phase
 from ..engine.live_entry import route_by_mode
 from ..engine.live_trades import record_close_evaluation
@@ -475,7 +475,7 @@ class ExitViews:
         calendar = self._calendar()
         trading = calendar.trading_days() if calendar is not None else []
         held = held_sessions(trading, trade_date_of(as_utc(position.opened_at)), today)
-        rules = trades.exit_rules_of(session, signal)
+        rules = positions.exit_rules_of(session, signal)
         return self._book.day(today).exit_view(position.instrument_id, price, rules, held)
 
 

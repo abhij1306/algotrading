@@ -61,7 +61,7 @@ from time import monotonic
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..engine import exits, live_trades, trades
+from ..engine import exits, live_trades, snapshot, trades
 from ..engine.rescale import unhandled_actions
 from ..models import (
     HatBot,
@@ -375,7 +375,7 @@ class TradeManager:
             return None
         session.refresh(position)
         rule = action.rule_ids[0].split(":", 1)[1]
-        if rule == live_trades.HARD_STOP and self._broker_stop_rests(session, position.id):
+        if rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position.id):
             # The stop resting at the broker is the hard stop; HAT sells at market only when no
             # stop the broker confirmed rests (HAT-EXEC-065).
             return None

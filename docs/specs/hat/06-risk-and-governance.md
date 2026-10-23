@@ -132,8 +132,8 @@ Caps can only shrink or reject an entry; they never apply to exits.
 #### HAT-RISK-033: Daily entry cap
 - **Statement:** A bot accepts at most 3 [A] new entries per trade date; further triggers that day are rejected.
 - **Source:** BL "Caps".
-- **PR:** 10
-- **Verification:** PBT `caps.daily_entries`
+- **PR:** 10, 75
+- **Verification:** PBT `caps.daily_entries`, PBT `trades.day_counts`
 - **Acceptance:**
   - Property: for every sequence of triggers within one trade date, the number of ACCEPT decisions for a bot is ≤ `max_entries_per_day`. Harm: over-trading on a noisy day.
 - **[A]** entries/day 3: validated by live review.
@@ -141,8 +141,8 @@ Caps can only shrink or reject an entry; they never apply to exits.
 #### HAT-RISK-034: Daily stop-out cap
 - **Statement:** After 3 [A] stop-outs in one trade date, a bot accepts no more entries that day.
 - **Source:** BL "Caps".
-- **PR:** 10
-- **Verification:** PBT `caps.daily_stopouts`
+- **PR:** 10, 75
+- **Verification:** PBT `caps.daily_stopouts`, PBT `trades.day_counts`
 - **Acceptance:**
   - Property: for every sequence of events within a trade date, once the bot's count of positions closed by `hard_stop` reaches `max_stopouts_per_day`, every later entry decision that date is REJECT with reason `stopout_cap`. Harm: the bot keeps buying into a failing tape.
 - **[A]** stop-outs/day 3: validated by live review.
@@ -167,7 +167,7 @@ Caps can only shrink or reject an entry; they never apply to exits.
   - Property: through `open_entry` and the exit stack, the history read is the trade date of the bot's latest `hard_stop` close of the instrument at or before the trigger; other reasons, other bots, other instruments and later closes are not. Harm: the cooldown bars the wrong name or misses the stop that should bar it.
   - Property: in a backtest run with N in [0, 4], every trigger rejected `cooldown` follows a hard stop of its instrument within N sessions and buys nothing, and no entry opens within N sessions after one. Harm: the knob the cooldown sweep turns does nothing.
   - Property: a sleeve's backtest evidence (HAT-BT-060) is its newest completed run made under the cooldown in force; a sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0. Harm: Research to Backtested is gated on a run of a rule that is not live.
-- **Design (PR 58):** the check is the last of the per-bot caps (after `stopout_cap`), so an entry refused for a position, the daily caps or the stop-out cap keeps that reason. The history is `SignalContext.hard_stop_days`, filled by `trades.open_entry` (`trades.last_hard_stop`), and sessions are counted on the context's trading calendar. A stored policy written before the field existed reads as 0, so the change alters nothing until the owner sets it. The backtest's `--cooldown-sessions` (`engine.backtest.with_cooldown`) replaces N in the run's copy of the policy and every run records the value used (`metrics.cooldown_sessions`); `runs.backtest_evidence` reads only runs whose value equals the cooldown in force.
+- **Design (PR 58):** the check is the last of the per-bot caps (after `stopout_cap`), so an entry refused for a position, the daily caps or the stop-out cap keeps that reason. The history is `SignalContext.hard_stop_days`, filled by `trades.open_entry` (`snapshot.last_hard_stop`), and sessions are counted on the context's trading calendar. A stored policy written before the field existed reads as 0, so the change alters nothing until the owner sets it. The backtest's `--cooldown-sessions` (`engine.backtest.with_cooldown`) replaces N in the run's copy of the policy and every run records the value used (`metrics.cooldown_sessions`); `runs.backtest_evidence` reads only runs whose value equals the cooldown in force.
 
 ## §4 Progressive exposure
 
