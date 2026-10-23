@@ -24,8 +24,9 @@ held in memory: a restart forgets them. The cursor moves after the message is se
 commit as its `hat_telegram_message` row: a crash in between resends one message rather than
 losing it. A send that fails stops the run with the cursor before that event, so a passing
 outage loses nothing; a refusal that will not pass (a 400, 403 or 404) is tried `MAX_REFUSALS`
-times, then the event is skipped with a `relay.skipped` event (an alert, sent once Telegram takes
-messages again; a skipped card's signal still shows in the 15:35 rejection digest). An event that
+times, then the event is skipped with a `relay.skipped` event (an alert naming the event and its
+subject, sent once Telegram takes messages again; a skipped card's approval expires unanswered
+and the signal goes on as a veto trade). An event that
 cannot be rendered is logged by id and skipped, so it does not hold back the ones after it. On
 its first run the relay starts at the newest event: history is not replayed.
 """
@@ -321,7 +322,7 @@ class EventRelay:
         try:
             message_id = self._client.send(out.text, out.buttons)
         except TelegramError as exc:
-            event_id, event_type = event.id, event.event_type
+            event_id, event_type, subject = event.id, event.event_type, event.aggregate_id
             session.rollback()
             if exc.retryable or not self._refused_enough(event_id):
                 logger.warning("telegram relay stopped at event %s: %s", event_id, exc.code)
@@ -334,7 +335,7 @@ class EventRelay:
                 exc.code,
             )
             if event_type != SKIPPED:  # the alert of a skip is never itself alerted
-                _record_skip(session, event_id, event_type, exc.code, now)
+                _record_skip(session, event_id, event_type, subject, exc.code, now)
             return True
         self._refusals.pop(event.id, None)
         store.record_message(
@@ -363,16 +364,27 @@ class EventRelay:
 
 
 def _record_skip(
-    session: Session, event_id: int, event_type: str, code: str, now: datetime
+    session: Session,
+    event_id: int,
+    event_type: str,
+    subject: uuid.UUID,
+    code: str,
+    now: datetime,
 ) -> None:
     """The trail of a skipped event, in the transaction that moves the cursor past it; the
-    relay sends it as an alert once Telegram takes messages again."""
+    relay sends it as an alert once Telegram takes messages again. `subject` is the skipped
+    event's aggregate (a skipped card's signal, on the dashboard's signals list)."""
     record(
         session,
         aggregate_type="session",
         aggregate_id=uuid.uuid5(uuid.NAMESPACE_URL, f"hat:relay:{event_id}"),
         event_type=SKIPPED,
         actor="engine",
-        payload={"event_id": event_id, "event_type": event_type, "code": code},
+        payload={
+            "event_id": event_id,
+            "event_type": event_type,
+            "subject": str(subject),
+            "code": code,
+        },
         occurred_at=now,
     )

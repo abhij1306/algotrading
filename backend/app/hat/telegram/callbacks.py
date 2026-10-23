@@ -220,10 +220,10 @@ def _after_raise(session: Session, signal_id: uuid.UUID) -> ApprovalDecision:
         signal = session.get(HatSignal, signal_id)
         if approval is None or signal is None or approval.decision != approvals.TAKE:
             return ApprovalDecision(signal_id, "error")
-        if _entry_sent(session, signal_id, unsent=(*_ENTRY_NOT_SENT, "pending")):
-            placement = Placement.SENT  # it reached the broker, or may have (`unconfirmed`)
+        if _entry_attempted(session, signal_id):
+            placement = Placement.SENT  # it reached the broker, or may have: never sent again
         elif signal.state == lifecycle.AWAITING_APPROVAL:
-            placement = Placement.RETRYING  # a reserved `pending` entry included: resume sends it
+            placement = Placement.RETRYING  # a reserved entry never attempted: resume sends it
         else:
             placement = Placement.REFUSED
         return ApprovalDecision(signal_id, approvals.APPROVED, placement=placement)
@@ -233,17 +233,28 @@ def _after_raise(session: Session, signal_id: uuid.UUID) -> ApprovalDecision:
         return ApprovalDecision(signal_id, "unknown", placement=Placement.UNKNOWN)
 
 
-def _entry_sent(
-    session: Session, signal_id: uuid.UUID, unsent: tuple[str, ...] = _ENTRY_NOT_SENT
-) -> bool:
-    """The signal has an entry order that reached, or may have reached, the broker: one whose
-    status is not in `unsent`."""
+def _entry_sent(session: Session, signal_id: uuid.UUID) -> bool:
+    """The signal has an entry order that reached, or may have reached, the broker."""
     session.expire_all()
     found = session.scalar(
         select(HatOrder.id).where(
             HatOrder.signal_id == signal_id,
             HatOrder.purpose == ENTRY,
-            HatOrder.status.not_in(unsent),
+            HatOrder.status.not_in(_ENTRY_NOT_SENT),
+        )
+    )
+    return found is not None
+
+
+def _entry_attempted(session: Session, signal_id: uuid.UUID) -> bool:
+    """The signal has an entry order past `pending`, or a `pending` one whose send was stamped
+    (`placed_at`): the broker may hold it, so a resume only looks it up by tag (HAT-BRK-102)."""
+    found = session.scalar(
+        select(HatOrder.id).where(
+            HatOrder.signal_id == signal_id,
+            HatOrder.purpose == ENTRY,
+            HatOrder.status.not_in(_ENTRY_NOT_SENT),
+            (HatOrder.status != "pending") | HatOrder.placed_at.is_not(None),
         )
     )
     return found is not None

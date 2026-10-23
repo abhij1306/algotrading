@@ -17,12 +17,13 @@ the offset where it was, so the update comes again after the back-off; any other
 a handler or before one runs (a malformed update, a refusal that cannot be written), is logged
 as an `error` row and the offset moves past it, so one bad update cannot hold back a `/kill`.
 
-Under `run`, a button (a Take, a Skip, a second confirmation such as `/flatten`'s) is handed to
-the button thread and the poll goes on, so a Take or a flatten waiting on the broker never holds
-back a `/kill` (text commands stay on the poll thread). The poll after it asks Telegram for the
-updates past that button, so a crash, a stop or a database error while the button runs drops
-the press (and its reply) rather than bringing it again; it is never applied twice. A Take that
-committed before that is placed by `resume_entries`; one that did not leaves the card's buttons.
+Under `run`, a button that may wait on the broker (a Take, a Skip, `/flatten`'s confirmation) is
+handed to the button thread and the poll goes on, so it never holds back a `/kill`; text commands
+and the other confirmations (`/arm`, auto mode) stay on the poll thread, in order. The poll after
+a handed button asks Telegram for the updates past it, so a crash, a stop or a database error
+while it runs drops the press (and its reply) rather than bringing it again; it is never applied
+twice. A Take that committed before that is placed by `resume_entries`; one that did not leaves
+the card's buttons.
 
 `handle` turns one update into exactly one `hat_command_log` row (HAT-TG-012):
 
@@ -62,7 +63,7 @@ from .commands import CommandContext, Reply, addressee, refused, run_command
 from .confirm import PendingConfirmations
 from .reads import LoginLinks, PriceSource
 from .relay import EventRelay
-from .tokens import ApprovalSigner
+from .tokens import ACTIONS, CONFIRM, ApprovalSigner
 
 __all__ = ["Handled", "TelegramService", "run_relay"]
 
@@ -167,13 +168,25 @@ class TelegramService:
             if update_id < offset:
                 continue
             offset = update_id + 1
-            if self._buttons is not None and isinstance(update.get("callback_query"), dict):
+            if self._buttons is not None and self._slow(update):
                 self._buttons.submit(self._button, update_id, update)
                 self._handed = offset
             else:
                 self._handle_or_give_up(update_id, update)
             handled += 1
         return handled
+
+    def _slow(self, update: dict[str, Any]) -> bool:
+        """A button that may wait on the broker: a Take or Skip, or the confirmation of a
+        /flatten. The other confirmations (`/arm`, auto mode) stay on the poll thread, in order
+        with `/kill`, so an `/arm` confirmed before a `/kill` can never land after it."""
+        callback = update.get("callback_query")
+        data = callback.get("data") if isinstance(callback, dict) else None
+        if not isinstance(data, str):
+            return False
+        if data.startswith(CONFIRM):
+            return self._confirmations.action_of(data) == "flatten"
+        return data[:1] in ACTIONS
 
     def _handle_or_give_up(self, update_id: int, update: dict[str, Any]) -> None:
         try:
@@ -194,7 +207,8 @@ class TelegramService:
             logger.error("telegram button lost: %s", type(exc).__name__)
             callback_id = update["callback_query"].get("id")
             if isinstance(callback_id, str):
-                self._attempt("answer", lambda: self._client.answer(callback_id, "Refused: error"))
+                text = _error_text(update["callback_query"].get("data"))
+                self._attempt("answer", lambda: self._client.answer(callback_id, text))
 
     def _give_up(self, update_id: int, exc: Exception) -> None:
         """An update `handle` could not get through (a malformed update, a refusal that cannot be
@@ -265,7 +279,7 @@ class TelegramService:
                 if isinstance(exc, OperationalError):
                     raise  # may pass: nothing is logged and the offset stays (HAT-TG-011)
                 logger.error("telegram update failed: %s", type(exc).__name__)
-                command, reply = "error", refused("error")
+                command, reply = "error", refused("error", _error_text(data))
                 store.log_command(
                     session,
                     chat_id=chat_id,
@@ -371,6 +385,14 @@ class TelegramService:
             logger.warning("telegram %s not sent: %s", what, exc.code)
         except Exception as exc:  # the update is handled and logged; a lost link row is not fatal
             logger.error("telegram %s failed: %s", what, type(exc).__name__)
+
+
+def _error_text(data: object) -> str:
+    """The reply to an update that failed. A button's work (a Take's order, a flatten's sales)
+    may have gone through before the failure, so its reply does not say it was refused."""
+    if data is None:
+        return "Refused: error"
+    return "Error: the outcome is not known, see the alerts and /positions before tapping again"
 
 
 async def _sleep_or_stop(stop: asyncio.Event, seconds: float) -> None:

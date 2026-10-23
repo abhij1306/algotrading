@@ -63,8 +63,8 @@ from ..models import (
     HatStrategyVersion,
 )
 from ..notify import Notifier
-from ..ops.jobs import JobError, SessionFactory, recover_interrupted, run_job
-from ..ops.scheduler import HatScheduler, ScheduledJob, succeeded_on
+from ..ops.jobs import JobError, SessionFactory, recover_interrupted, reopen, run_job
+from ..ops.scheduler import HatScheduler, ScheduledJob
 from ..risk.sessions import SessionCalendar, is_trading_day
 from ..settings import HatSettings, require_postgres
 from ..telegram.callbacks import ManagerFlattener, RouterDesk
@@ -405,19 +405,15 @@ class HatRuntime:
             await asyncio.to_thread(self._arm, today)
 
     def _arm(self, today: date) -> None:
-        """Arm a day under way once: through the job ledger, so the scheduler finds
+        """Arm a day under way once, through the job ledger, so the scheduler finds
         `live.prepare` succeeded and does not run it again on the live feed (wiping the prices
         and swapping the trigger monitor). A run an earlier process recorded armed only that
-        process, so this one prepares again outside the ledger. A failed run is the
-        scheduler's to retry; until then the day stays unarmed (no entries), exits still run."""
+        process, so it is reopened and run again here. A failed run is the scheduler's to
+        retry; until then the day stays unarmed (no entries), exits still run."""
         sf = self._session_factory
         try:
-            if LIVE_PREPARE in succeeded_on(sf, today):
-                self.intraday.prepare(today)
-            else:
-                run_job(
-                    LIVE_PREPARE, today, lambda: self.intraday.prepare(today), session_factory=sf
-                )
+            reopen(LIVE_PREPARE, today, sf)
+            run_job(LIVE_PREPARE, today, lambda: self.intraday.prepare(today), session_factory=sf)
         except Exception:
             logger.exception("arming the day on restart failed")
 

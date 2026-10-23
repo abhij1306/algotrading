@@ -271,8 +271,9 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 ### Alert: `relay.skipped`
 
 1. Telegram refused one message for good (HTTP 400, 403 or 404, three times), so the relay
-   skipped its event (`event_id`, `event_type`) and sent the ones after it. Read that event in
-   the event log; a skipped approval card's signal shows in the 15:35 rejection digest.
+   skipped its event (`event_id`, `event_type`, `subject`) and sent the ones after it. Read that
+   event in the event log. A skipped approval card was never answered: its approval expires and
+   the signal goes on as a veto trade (the dashboard's signals list shows it).
 2. A Take answered "placement retrying" was recorded; its entry is placed by the next resume
    (fresh feed, reconciled, max-chase re-checked) or ends with an `entry.not_placed` alert.
 
