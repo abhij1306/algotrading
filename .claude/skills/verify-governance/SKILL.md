@@ -93,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `dbca566945bb7925d116cbbead45bcdfd03daebad1424f58791c67cf66895be2`
+Covered digest: `d5b53b4715db5fa808c283e42d766596c985b37f5c628fb9e6526dcc321e3cb0`
 
 ## Scope changes
 
@@ -145,6 +145,13 @@ Break: (PR 75a) the checker reads only `name._x`, not a chain (`if root in modul
 ```
 E   At index 2 diff: 'line 12: app.hat.engine.trades._day_bounds' != 'line 10: app.hat.engine.snapshot._slots'
 E   Right contains 2 more items, first extra item: 'line 12: app.hat.engine.trades._day_bounds'
+```
+
+Break: (PR 75a, CodeAnt) the checker ignores `getattr` (`node.func.id in {"hasattr", "setattr"}`), so `getattr(trades, '_emit')` passes.
+
+```
+E   At index 4 diff: 'line 13: app.hat.engine.trades._day_bounds' != 'line 12: app.hat.engine.trades._emit'
+E   Right contains one more item: 'line 13: app.hat.engine.journal._move'
 ```
 ### DB governance.*
 

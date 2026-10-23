@@ -102,14 +102,30 @@ def private_imports(module: str, source: str) -> list[str]:
                     else:
                         modules["app"] = "app"  # `import app.hat.x` binds `app`
     for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and _private(node.attr):
-            owner = _dotted(node.value)
-            root, _, rest = (owner or "").partition(".")
-            if root in modules:
-                path = ".".join(filter(None, [modules[root], rest]))
-                if path.startswith("app.hat"):
-                    found.append(f"line {node.lineno}: {path}.{node.attr}")
+        owner, attr = _private_read(node)
+        root, _, rest = (owner or "").partition(".")
+        if root in modules:
+            path = ".".join(filter(None, [modules[root], rest]))
+            if path.startswith("app.hat"):
+                found.append(f"line {node.lineno}: {path}.{attr}")
     return found
+
+
+def _private_read(node: ast.AST) -> tuple[str | None, str]:
+    """(the dotted owner, the name) of `owner._x` or `getattr(owner, "_x")`, else (None, "")."""
+    if isinstance(node, ast.Attribute) and _private(node.attr):
+        return _dotted(node.value), node.attr
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"getattr", "hasattr", "setattr"}
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+        and _private(node.args[1].value)
+    ):
+        return _dotted(node.args[0]), node.args[1].value
+    return None, ""
 
 
 def _dotted(node: ast.expr) -> str | None:
@@ -137,8 +153,8 @@ def test_no_private_imports() -> None:
             found[str(path.relative_to(HAT_ROOT))] = bad
     assert found == {}
     # the checker can fail: a relative and an absolute private import, a private attribute of an
-    # imported HAT module (by alias, by `import app.hat.x`, through a package); a module's own
-    # private names and a non-HAT one pass
+    # imported HAT module (by alias, by `import app.hat.x`, through a package, by `getattr`); a
+    # module's own private names and a non-HAT one pass
     bad = (
         "from .trades import _emit, open_entry\n"
         "from app.hat.time import _parse\n"
@@ -151,6 +167,7 @@ def test_no_private_imports() -> None:
         "    _local(self._own)\n"
         "    app.hat.engine.snapshot._slots()\n"
         "    engine.trades._emit()\n"
+        "    getattr(trades, '_emit')(getattr(trades, 'open_entry'))\n"
         "    return trades._day_bounds, journal._move, open_entry\n"
     )
     assert private_imports("app.hat.engine.live_trades", bad) == [
@@ -158,8 +175,9 @@ def test_no_private_imports() -> None:
         "line 2: from app.hat.time import _parse",
         "line 10: app.hat.engine.snapshot._slots",
         "line 11: app.hat.engine.trades._emit",
-        "line 12: app.hat.engine.trades._day_bounds",
-        "line 12: app.hat.engine.journal._move",
+        "line 12: app.hat.engine.trades._emit",
+        "line 13: app.hat.engine.trades._day_bounds",
+        "line 13: app.hat.engine.journal._move",
     ]
 
 
