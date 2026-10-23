@@ -28,12 +28,20 @@ from ..models import HatBrokerAccount
 from ..models.strategy import ACCOUNT_ACTIVE, ACCOUNT_FAILED, ACCOUNT_PENDING, BROKER_FYERS
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import as_utc, trade_date_of
-from .broker import BrokerError, HatBroker
+from .broker import (
+    CODE_RATE_LIMITED,
+    CODE_SESSION_EXPIRED,
+    CODE_UNAVAILABLE,
+    BrokerError,
+    BrokerUnavailableError,
+    HatBroker,
+)
 from .fyers_adapter import build_fyers_broker
 
 __all__ = [
     "ADAPTER_FACTORIES",
     "OnboardingError",
+    "onboarding_status",
     "confirm_ddpi",
     "onboard_account",
     "revoke_ddpi",
@@ -68,7 +76,9 @@ def onboard_account(
     session: Session, broker: HatBroker, *, user_id: uuid.UUID, broker_name: str, account_ref: str
 ) -> HatBrokerAccount:
     """Run the capability check and record the account: `active` when funds, positions and
-    holdings were all fetched, else `failed`. Re-running for the same account updates it."""
+    holdings were all fetched, else `failed`, except that a re-run the broker could not answer
+    keeps the account's status (`onboarding_status`). Re-running for the same account updates
+    it."""
     if broker_name not in ADAPTER_FACTORIES:
         raise OnboardingError("unsupported broker")
     with _ONBOARD_LOCK:  # one lookup-then-insert at a time in this process
@@ -94,17 +104,35 @@ def _onboard(
             status=ACCOUNT_PENDING,
         )
         session.add(account)
+    error: BrokerError | None = None
     try:
         broker.funds()
         broker.positions()
         broker.holdings()
-        passed = True
-    except BrokerError:
-        passed = False
+    except BrokerError as exc:
+        error = exc
     account.capabilities = broker.capabilities().to_json()
-    account.status = ACCOUNT_ACTIVE if passed else ACCOUNT_FAILED
+    account.status = onboarding_status(account.status, error)
     session.commit()
     return account
+
+
+# The broker could not answer (an outage, a spent day's requests, an expired token): the check
+# says nothing about the account.
+_TRANSIENT = frozenset({CODE_UNAVAILABLE, CODE_RATE_LIMITED, CODE_SESSION_EXPIRED})
+
+
+def onboarding_status(previous: str, error: BrokerError | None) -> str:
+    """The account's status after a capability check that raised `error` (None: it passed).
+    A check the broker could not answer keeps a status an earlier check set, so one outage
+    during a re-run never turns an active account `failed`; a first check that fails, or a
+    definite failure (a reply that cannot be read, any other broker error), is `failed`."""
+    if error is None:
+        return ACCOUNT_ACTIVE
+    transient = isinstance(error, BrokerUnavailableError) and error.code in _TRANSIENT
+    if transient and previous != ACCOUNT_PENDING:
+        return previous
+    return ACCOUNT_FAILED
 
 
 def confirm_ddpi(

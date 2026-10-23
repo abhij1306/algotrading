@@ -11,6 +11,7 @@ from hat_fyers_support import LIVE_REPLIES
 from hypothesis import example, given
 from hypothesis import strategies as st
 
+from app.hat.execution.accounts import onboarding_status
 from app.hat.execution.broker import (
     CODE_RATE_LIMITED,
     CODE_SESSION_EXPIRED,
@@ -23,7 +24,13 @@ from app.hat.execution.broker import (
     SessionStatus,
     Side,
 )
-from app.hat.execution.fyers_adapter import TOKEN_CHECK_SECONDS, FyersHatBroker, map_session
+from app.hat.execution.fyers_adapter import (
+    CODE_INVALID_RESPONSE,
+    TOKEN_CHECK_SECONDS,
+    FyersHatBroker,
+    map_session,
+)
+from app.hat.execution.manage import NEVER_SOLD, SOLD, UNKNOWN, earlier_sale_verdict
 from app.hat.execution.modes import (
     Gates,
     ModeRefusedError,
@@ -362,3 +369,37 @@ def test_reads_raise_when_the_sdk_replies_with_an_error(read: str) -> None:
     method = getattr(adapter_over(sdk), read)
     with pytest.raises(BrokerUnavailableError):
         method()
+
+
+@pytest.mark.parametrize(
+    ("previous", "error", "status"),
+    [
+        ("pending", None, "active"),
+        ("failed", None, "active"),
+        ("pending", BrokerUnavailableError(), "failed"),  # a first check that fails
+        ("active", BrokerUnavailableError(), "active"),  # an outage keeps it
+        ("active", BrokerUnavailableError(CODE_RATE_LIMITED), "active"),
+        ("active", BrokerUnavailableError(CODE_SESSION_EXPIRED), "active"),
+        ("failed", BrokerUnavailableError(CODE_UNAVAILABLE), "failed"),
+        ("active", BrokerUnavailableError(CODE_INVALID_RESPONSE), "failed"),  # definite
+    ],
+)
+def test_onboarding_status_keeps_the_status_through_an_outage(
+    previous: str, error: BrokerUnavailableError | None, status: str
+) -> None:
+    assert onboarding_status(previous, error) == status
+
+
+@pytest.mark.parametrize(
+    ("qty_open", "held", "row_qty", "verdict"),
+    [
+        (100, 100, 100, NEVER_SOLD),
+        (100, 120, 40, NEVER_SOLD),
+        (100, 0, 100, SOLD),
+        (100, 60, 40, SOLD),
+        (100, 0, 40, SOLD),  # more gone than the sales: sold, capped at what is held
+        (100, 70, 40, UNKNOWN),  # part of the sale gone
+    ],
+)
+def test_earlier_sale_verdict(qty_open: int, held: int, row_qty: int, verdict: str) -> None:
+    assert earlier_sale_verdict(qty_open, held, row_qty) == verdict

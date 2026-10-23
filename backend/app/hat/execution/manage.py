@@ -58,12 +58,13 @@ from datetime import datetime, time, timedelta
 from decimal import Decimal
 from time import monotonic
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine import exits, live_trades, snapshot, trades
 from ..engine.rescale import unhandled_actions
+from ..events import record
 from ..models import (
     HatBot,
     HatCorporateAction,
@@ -121,6 +122,7 @@ __all__ = [
     "StopsReport",
     "TradeManager",
     "ViewSource",
+    "earlier_sale_verdict",
     "in_close_window",
 ]
 
@@ -142,7 +144,12 @@ FLATTEN = "flatten"
 SETTLED = "settled"
 WAIT = "wait"
 UNREADABLE = "unreadable"
-STALE = "stale"
+# What the broker's holdings say of a lost sale of an earlier session (`earlier_sale_verdict`).
+NEVER_SOLD = "never_sold"
+SOLD = "sold"
+UNKNOWN = "unknown"
+ALERT_SALE_SETTLED = "sale.settled_from_holdings"
+EVENT_QTY_CORRECTED = "position.qty_corrected"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
 ViewSource = Callable[[Session, HatPosition], exits.ExitView | None]
@@ -158,6 +165,18 @@ class _RunClock:
 
     def now(self) -> datetime:
         return self._start + timedelta(seconds=self._ticker() - self._began)
+
+
+def earlier_sale_verdict(qty_open: int, broker_held: int, row_qty: int) -> str:
+    """What the shares the broker holds for a position (`broker_held`) say of its lost sales of
+    an earlier session (`row_qty` shares in all), when HAT counts `qty_open` open: NEVER_SOLD
+    when every open share is still held, SOLD when the shares gone cover the sales, UNKNOWN
+    otherwise (part sold, or held shares that the sales do not explain)."""
+    if broker_held >= qty_open:
+        return NEVER_SOLD
+    if qty_open - broker_held >= row_qty:
+        return SOLD
+    return UNKNOWN
 
 
 def in_close_window(now: datetime) -> bool:
@@ -351,7 +370,7 @@ class TradeManager:
         try:
             holdings = self._broker.holdings()
         except BrokerUnavailableError:
-            logger.warning("holdings unreadable: flatten sells the open quantity")
+            logger.warning("holdings unreadable")
             return None
         out: dict[str, int] = {}
         for holding in holdings:
@@ -446,12 +465,12 @@ class TradeManager:
         )
         if signal is None or bot is None or symbol is None:
             return None
-        settled = self._settle_sales(session, position, signal.bot_id)
-        if settled in (UNREADABLE, STALE):
-            # STALE: a lost sale of an earlier session that today's book cannot show may have
-            # sold, so the open quantity may be stale: nothing more is sold; the broker stop
-            # keeps protecting the position and the owner reconciles it.
+        settled = self._settle_sales(session, position, signal.bot_id, now)
+        if settled == UNREADABLE:
             self._not_placed(signal, position, "sale_unresolved", now)
+            return None
+        qty = min(qty, position.qty_open)  # a sale settled from holdings may have lowered it
+        if qty <= 0:
             return None
         if (
             settled == WAIT
@@ -540,16 +559,19 @@ class TradeManager:
             session, signal, position, limit, request.rule_ids, rule, now, attempts=1
         )
 
-    def _settle_sales(self, session: Session, position: HatPosition, bot_id: uuid.UUID) -> str:
+    def _settle_sales(
+        self, session: Session, position: HatPosition, bot_id: uuid.UUID, now: datetime
+    ) -> str:
         """Settle the position's sales of unknown outcome before it is sold again (under its
         sale lock, so nothing else is sending them): one reserved and never sent is cancelled;
         one sent with its answer lost is looked up by its tag once `settle_after` has passed
         (found: adopted; absent: it never landed, ends `expired` and its rules fire again).
         One found with shares sold is left to the fill sync, which records its fills with it
         (the position's open quantity is stale until then). The order book is today's, so a
-        lost sale of an earlier session that it does not hold may have sold: it is left unsure.
-        STALE (such a sale), UNREADABLE (the order book could not be read), WAIT (sent too
-        recently, or fills not yet recorded) or SETTLED, the first that applies."""
+        lost sale of an earlier session is settled from the broker's holdings instead
+        (`_settle_earlier`). UNREADABLE (the order book, or the holdings such a sale needs,
+        could not be read), WAIT (sent too recently, or fills not yet recorded) or SETTLED, the
+        first that applies."""
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -573,11 +595,12 @@ class TradeManager:
             book = {order.tag: order for order in self._broker.orders()}
         except BrokerUnavailableError:
             return UNREADABLE
-        stale = waiting = False
+        earlier: list[HatOrder] = []
+        waiting = False
         for row in lost:
             found = book.get(row.tag)
             if found is None and self._earlier_session(row):
-                stale = True
+                earlier.append(row)
             elif found is None and self._young(row):
                 waiting = True  # sent too recently: it may still be on its way
             elif found is None:
@@ -587,9 +610,85 @@ class TradeManager:
             else:
                 adopt_broker_order(session, row, found, bot_id, clock=self._clock)
             session.commit()
-        if stale:
-            return STALE
+        if earlier and not self._settle_earlier(session, position, earlier, now):
+            return UNREADABLE
         return WAIT if waiting else SETTLED
+
+    def _settle_earlier(
+        self, session: Session, position: HatPosition, rows: list[HatOrder], now: datetime
+    ) -> bool:
+        """Settle lost sales of an earlier session from the broker's holdings: a DAY market sale
+        cannot still rest, so it sold or it did not. The shares held of the symbol, less those
+        the account's other open HAT positions of it hold, are this position's
+        (`earlier_sale_verdict`). Never sold: the sales end `expired` and their rules fire again.
+        Sold, or unsure: the sales end `filled` (their fills are not in today's book), the open
+        quantity drops to the shares held (`position.qty_corrected`, never raised), the stop is
+        resized to it (cancelled at none) and the owner is told once
+        (`sale.settled_from_holdings`); the exit then sells what is held. False,
+        with nothing changed, when the holdings cannot be read."""
+        held = self._held_shares()
+        if held is None:
+            return False
+        symbol = str(
+            session.scalar(
+                select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+            )
+        )
+        account_id = session.scalar(
+            select(HatBot.broker_account_id).where(HatBot.id == position.bot_id)
+        )
+        others = session.scalar(
+            select(func.coalesce(func.sum(HatPosition.qty_open), 0)).where(
+                HatPosition.id != position.id,
+                HatPosition.instrument_id == position.instrument_id,
+                HatPosition.bot_id.in_(self._bots(session, account_id)),
+                HatPosition.is_virtual.is_(False),
+                HatPosition.closed_at.is_(None),
+            )
+        )
+        own = max(0, held.get(symbol, 0) - int(others or 0))
+        verdict = earlier_sale_verdict(position.qty_open, own, sum(row.qty for row in rows))
+        logger.info("lost sales %s of an earlier session: %s", [row.tag for row in rows], verdict)
+        if verdict == NEVER_SOLD:
+            for row in rows:
+                end_lost_order(session, row)
+            session.commit()
+            return True
+        for row in rows:
+            row.status = "filled"
+        before, after = position.qty_open, min(position.qty_open, own)
+        record(
+            session,
+            aggregate_type="position",
+            aggregate_id=position.id,
+            event_type=EVENT_QTY_CORRECTED,
+            actor="engine",
+            payload={
+                "from": before,
+                "to": after,
+                "held": own,
+                "verdict": verdict,
+                "tags": [row.tag for row in rows],
+            },
+            correlation_id=position.signal_id,
+            bot_id=position.bot_id,
+            occurred_at=now,
+        )
+        position.qty_open = after
+        session.commit()
+        self._desk.protect(session, position.id, now)  # the stop to the shares held (none: off)
+        self._notifier.alert(
+            ALERT_SALE_SETTLED,
+            trade_date_of(now),
+            {
+                "bot_id": str(position.bot_id),
+                "position_id": str(position.id),
+                "code": verdict,
+                "qty_from": before,
+                "qty_to": after,
+            },
+        )
+        return True
 
     def _young(self, row: HatOrder) -> bool:
         """Sent less than `settle_after` ago: its answer may still be on its way."""
@@ -982,7 +1081,7 @@ class TradeManager:
                     row.status = "cancelled"
                 else:
                     if self._earlier_session(row):
-                        continue  # today's book cannot show it: left to the owner
+                        continue  # today's book cannot show it: settled from holdings
                     end_lost_order(session, row)
                 session.commit()
                 continue
