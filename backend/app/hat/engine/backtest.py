@@ -148,7 +148,7 @@ from ..backtest.fills import (
 )
 from ..backtest.slots import SLOT_ORDER_TIME, is_slot_order, order_slots, trigger_rank
 from ..confighash import config_hash
-from ..data.identity import series_on
+from ..data.identity import series_as_of
 from ..data.sessions import IST
 from ..data.ticks import tick_for_date
 from ..errors import HatError
@@ -742,7 +742,7 @@ class _Run:
             bars=self._window(prev),
             regime_closes=self._closes_through(prev),
             features=self.features.get(prev),
-            series={i: s for i in self.data.series if (s := series_on(self.data.series, i, prev))},
+            series=series_as_of(self.data.series, prev),
         )
         published = watchlist.scan_and_publish(
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)

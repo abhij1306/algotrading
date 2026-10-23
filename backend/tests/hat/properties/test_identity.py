@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date
+from pathlib import Path
 
 from app.hat.data.identity import (
     Interval,
@@ -12,11 +13,12 @@ from app.hat.data.identity import (
     best_per_isin,
     kept_id,
     merge_symbol_history,
+    series_as_of,
     series_changes,
     series_on,
     series_rank,
 )
-from app.hat.data.isin_merge import coverage_ids, keep_rows
+from app.hat.data.isin_merge import MergeError, coverage_ids, keep_rows, rekey
 
 
 def test_series_rank_puts_the_normal_market_first() -> None:
@@ -100,3 +102,17 @@ def test_series_on_reads_the_series_of_its_day() -> None:
     assert series_on(changes, "x", date(2024, 1, 2)) == "EQ"
     assert series_on(changes, "x", date(2024, 1, 9)) == "BE"
     assert series_on(changes, "y", d) is None
+    assert series_as_of(changes, date(2023, 12, 31)) == {}
+    assert series_as_of(changes, date(2024, 1, 3)) == {"x": "BE"}
+
+
+def test_rekey_refuses_a_target_with_files(tmp_path: Path) -> None:
+    (tmp_path / "old").mkdir()
+    (tmp_path / "new").mkdir()
+    (tmp_path / "new" / "left.parquet").write_bytes(b"")
+    try:
+        rekey(tmp_path / "old", tmp_path / "new", {})
+    except MergeError as exc:
+        assert exc.code == "isin_merge_into_not_empty"
+        return
+    raise AssertionError("a target with files was accepted")

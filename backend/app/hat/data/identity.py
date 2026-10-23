@@ -22,6 +22,7 @@ __all__ = [
     "best_per_isin",
     "kept_id",
     "merge_symbol_history",
+    "series_as_of",
     "series_changes",
     "series_on",
     "series_rank",
@@ -74,6 +75,12 @@ def series_on(
     points = changes.get(instrument_id, ())
     at = bisect_right(points, day, key=lambda p: p[0])
     return points[at - 1][1] if at else None
+
+
+def series_as_of(changes: Mapping[str, Sequence[tuple[date, str]]], day: date) -> dict[str, str]:
+    """`series_on` of every instrument that had traded by `day`."""
+    found = ((i, series_on(changes, i, day)) for i in changes)
+    return {i: s for i, s in found if s is not None}
 
 
 @dataclass(frozen=True)

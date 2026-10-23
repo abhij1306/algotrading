@@ -172,7 +172,8 @@ in the stack):
    other non-reference table (`isin_merge_conflict <table>`) and changes nothing. Repeating it
    changes nothing. `down` undoes it from the audit tables `hat_isin_merge` and
    `hat_isin_merge_row`, which `up` keeps.
-4. `python -m app.hat.data.isin_merge rekey --root <old root> --into <new root>`: a new data root
+4. `python -m app.hat.data.isin_merge rekey --root <old root> --into <new root>` (a new or empty
+   directory, else `isin_merge_into_not_empty`): a new data root
    with the merged ids (`bars_daily_raw` keeps one row per instrument and day; `bars_5m`, its
    coverage files and `bars_5m_rejects` are re-keyed; everything else is hard-linked or copied).
    Point `HAT_DATA_ROOT` at the new root and keep the old one until the next backup drill.

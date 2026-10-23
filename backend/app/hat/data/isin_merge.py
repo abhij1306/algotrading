@@ -667,10 +667,14 @@ REKEYED = (DATASET_BARS, DATASET_5M, DATASET_REJECTS)
 
 
 def rekey(root: Path, into: Path, mapping: Mapping[str, str]) -> RekeyReport:
-    """Write `into` from `root` with the instrument ids mapped (see the module docstring)."""
+    """Write `into`, a new or empty directory, from `root` with the instrument ids mapped (see
+    the module docstring)."""
     root, into = root.resolve(), into.resolve()
     if into == root or root in into.parents or into in root.parents:
         raise MergeError("isin_merge_same_root")
+    if into.exists() and any(into.iterdir()):
+        # a part left by an earlier or partial run would be read with the new ones
+        raise MergeError("isin_merge_into_not_empty")
     report = RekeyReport()
     for source in sorted(p for p in root.rglob("*") if p.is_file()):
         rel = source.relative_to(root)
