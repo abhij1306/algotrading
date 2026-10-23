@@ -60,7 +60,7 @@ from ..engine.trigger import (
 from ..execution.manage import in_close_window
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
-from ..execution.series import series_changed
+from ..execution.series import broker_symbol, series_changed
 from ..models import (
     HatAllocationDaily,
     HatBot,
@@ -442,8 +442,10 @@ class ExitViews:
     a split or bonus rescale: its prices are on the old scale, so no exit fires from the action
     alone (HAT-EXEC-142); nor ever once it spans an action the rescale cannot handle (a
     consolidation, a rights issue, a demerger): it is manage-only until the owner resolves it
-    (HAT-EXEC-144); nor once its instrument has moved to another series (EQ to BE) while it was
-    held: it is manage-only until the owner resolves it (HAT-EXEC-146). The price is
+    (HAT-EXEC-144). A position whose instrument moved to another series (EQ to BE) while it was
+    held keeps its exits (D210, HAT-EXEC-146): its prices are continuous under one instrument,
+    and a sale goes out under the new series' symbol; only one moved to a series with no Fyers
+    symbol (BZ) has none, as no sale can be sent for it. The price is
     `LivePrices.price`: one the stale threshold old or outside the day's band gives no view, so
     no exit fires on it (PR 51; the broker stop still rests)."""
 
@@ -467,8 +469,9 @@ class ExitViews:
         if manage_only(session, position, today):
             logger.warning("position %s spans a corporate action not rescaled", position.id)
             return None
-        if series_changed(session, position) is not None:
-            logger.warning("position %s was opened before its series changed", position.id)
+        moved = series_changed(session, position)
+        if moved is not None and broker_symbol(session, moved.id) is None:
+            logger.warning("position %s moved to a series with no Fyers symbol", position.id)
             return None
         signal = session.get(HatSignal, position.signal_id)
         if signal is None:

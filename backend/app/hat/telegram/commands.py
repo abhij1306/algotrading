@@ -14,6 +14,7 @@ and does not commit; the service logs the command in the same transaction.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -258,14 +259,25 @@ def _account(session: Session, bot: HatBot) -> HatBrokerAccount | None:
     return session.get(HatBrokerAccount, bot.broker_account_id)
 
 
-def _owner_accounts(session: Session, bots: Sequence[HatBot]) -> bool:
-    """HAT-OVR-061: auto is the owner's switch: every bot's account belongs to `HAT_USER_ID`."""
-    owner = load_settings(process_env()).user_id
-    for bot in bots:
-        account = _account(session, bot)
-        if account is None or account.user_id != owner:
-            return False
-    return True
+AUTO_NOT_OWNER = "auto_not_owner"
+AUTO_UNCONFIRMED = "auto_unconfirmed"
+
+
+def auto_refusal(
+    owner: uuid.UUID, account_users: Sequence[uuid.UUID | None], *, confirmed: bool
+) -> str | None:
+    """HAT-OVR-061, D210: who may set auto mode. Only the owner (`HAT_USER_ID`): every bot's
+    account must belong to `owner` (an account not found has no user), checked before and after
+    the second confirmation; and only once that confirmation is given (`AUTO_UNCONFIRMED`: ask
+    for it)."""
+    if not account_users or any(user != owner for user in account_users):
+        return AUTO_NOT_OWNER
+    return None if confirmed else AUTO_UNCONFIRMED
+
+
+def _account_users(session: Session, bots: Sequence[HatBot]) -> list[uuid.UUID | None]:
+    accounts = (_account(session, bot) for bot in bots)
+    return [None if account is None else account.user_id for account in accounts]
 
 
 # A gate's code as `/mode` reports it (`mode_needs_gtt` predates the other gates).
@@ -284,10 +296,17 @@ def mode_refused(reason: str) -> Reply:
 
 
 def _mode_refusal(
-    session: Session, bots: Sequence[HatBot], to_mode: str, now: datetime, calendar: SessionCalendar
+    session: Session,
+    bots: Sequence[HatBot],
+    to_mode: str,
+    now: datetime,
+    calendar: SessionCalendar,
+    *,
+    confirmed: bool,
 ) -> str | None:
     """Why the change may not be queued now (HAT-TG-032, HAT-GOV-085), checked without writing:
-    the gates are read as they will stand at the open the change takes effect at."""
+    the gates are read as they will stand at the open the change takes effect at. Auto before its
+    second confirmation is `AUTO_UNCONFIRMED` once every other check passes."""
     if to_mode not in MODE_VALUES:
         return "unknown_mode"
     state = calendar.state(now)
@@ -295,8 +314,12 @@ def _mode_refusal(
         return "no_calendar"  # no row for today: whether the market is open is not known
     if state is not SessionState.CLOSED:
         return "market_hours"
-    if to_mode == Mode.AUTO and not _owner_accounts(session, bots):
-        return "auto_not_owner"
+    auto = None
+    if to_mode == Mode.AUTO:
+        owner = load_settings(process_env()).user_id
+        auto = auto_refusal(owner, _account_users(session, bots), confirmed=confirmed)
+        if auto == AUTO_NOT_OWNER:
+            return auto
     try:
         opens = plan_mode_change(to_mode, now, calendar).effective_from
     except ModeChangeError:
@@ -305,18 +328,25 @@ def _mode_refusal(
         refusal = gate_refusal(to_mode, account_gates(session, _account(session, bot), opens))
         if refusal is not None:
             return _GATE_REASONS.get(refusal, refusal)
-    return None
+    return auto
 
 
 def queue_modes(
-    session: Session, bots: Sequence[HatBot], to_mode: str, now: datetime, chat_id: int
+    session: Session,
+    bots: Sequence[HatBot],
+    to_mode: str,
+    now: datetime,
+    chat_id: int,
+    *,
+    confirmed: bool = False,
 ) -> Reply:
     """Queue `to_mode` for every bot from the next session open, all or none. Refused, with
-    nothing written, inside market hours, for an unknown mode, or for an account without GTT."""
+    nothing written, inside market hours, for an unknown mode, for an account without GTT, or
+    for auto unless the owner's second confirmation is given (`confirmed`)."""
     calendar = session_calendar(session)
     if calendar is None:
         return refused("no_calendar")
-    refusal = _mode_refusal(session, bots, to_mode, now, calendar)
+    refusal = _mode_refusal(session, bots, to_mode, now, calendar, confirmed=confirmed)
     if refusal is not None:
         return mode_refused(refusal)
     effective = None
@@ -354,8 +384,8 @@ def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
     calendar = session_calendar(session)
     if calendar is None:
         return refused("no_calendar")
-    refusal = _mode_refusal(session, bots, to_mode, ctx.now, calendar)
-    if refusal is not None:
+    refusal = _mode_refusal(session, bots, to_mode, ctx.now, calendar, confirmed=False)
+    if refusal is not None and refusal != AUTO_UNCONFIRMED:
         return mode_refused(refusal)
     return _ask(ctx, "mode_auto", tuple(str(b.id) for b in bots))
 

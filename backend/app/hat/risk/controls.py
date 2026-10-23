@@ -48,7 +48,8 @@ SNAPSHOT_AT = time(15, 30)  # the close: a snapshot is read as taken at the sess
 ALERT_KILL_DRAWDOWN = "kill.drawdown"  # a drawdown kill tripped: the scope is manage-only
 ALERT_FALLBACK_MARKS = "drawdown.fallback_marks"  # holdings marked without a fresh price
 # An instrument's latest trade and whether it is fresh; (None, False) when none is known.
-Marks = Callable[[uuid.UUID], tuple[Decimal | None, bool]]
+# An instrument's (latest trade this session, whether it is fresh, previous official close)
+Marks = Callable[[uuid.UUID], tuple[Decimal | None, bool, Decimal | None]]
 
 logger = logging.getLogger(__name__)
 
@@ -554,7 +555,8 @@ def _realized(session: Session, bot_id: uuid.UUID, cut: datetime) -> Decimal:
 
 def _holdings(session: Session, bot_id: uuid.UUID, marks: Marks) -> list[kill.Holding]:
     """The bot's open real positions as `kill.open_pnl` marks them: the net cash of each one's
-    fills (`write_result` sums the same fills once it closes), its stop and its latest trade."""
+    fills (`write_result` sums the same fills once it closes), its stop, its latest trade and
+    its previous close."""
     out = []
     for position in session.scalars(
         select(HatPosition).where(
@@ -570,9 +572,11 @@ def _holdings(session: Session, bot_id: uuid.UUID, marks: Marks) -> list[kill.Ho
             .where(HatOrder.signal_id == position.signal_id)
         ):
             cash += (1 if side == "sell" else -1) * qty * Decimal(price) - Decimal(fee)
-        price, fresh = marks(position.instrument_id)
+        price, fresh, close = marks(position.instrument_id)
         out.append(
-            kill.Holding(position.qty_open, cash, Decimal(position.current_stop), price, fresh)
+            kill.Holding(
+                position.qty_open, cash, Decimal(position.current_stop), price, fresh, close
+            )
         )
     return out
 
@@ -589,19 +593,21 @@ def _allocation_on(session: Session, bot_id: uuid.UUID, day: date) -> HatAllocat
 
 def live_equity(
     session: Session, now: datetime, marks: Marks
-) -> tuple[dict[uuid.UUID, tuple[Decimal, Decimal]], int]:
+) -> tuple[dict[uuid.UUID, tuple[Decimal, Decimal]], dict[str, int]]:
     """Each allocated bot's equity marked at `now` (capital in force + realised P&L so far +
     its open positions at `marks`, `kill.open_pnl`) with its capital, for
-    `evaluate_drawdown_kills(live=...)`; and how many holdings were marked by a fallback (no
-    fresh trade: the lower of the last trade and the stop)."""
+    `evaluate_drawdown_kills(live=...)`; and how many holdings were marked without a fresh
+    trade, by basis (`kill.mark_of`: the previous close, or the lower of the trade and the
+    stop)."""
     out: dict[uuid.UUID, tuple[Decimal, Decimal]] = {}
-    fallbacks = 0
+    fallbacks = {kill.MARK_CLOSE: 0, kill.MARK_STOP: 0}
     for bot in session.scalars(select(HatBot)).all():
         allocation = _allocation_on(session, bot.id, trade_date_of(now))
         if allocation is None:
             continue
         pnl, missed = kill.open_pnl(_holdings(session, bot.id, marks))
-        fallbacks += missed
+        for basis, count in missed.items():
+            fallbacks[basis] += count
         capital = Decimal(allocation.capital)
         out[bot.id] = (capital + _realized(session, bot.id, now) + pnl, capital)
     return out, fallbacks
@@ -633,8 +639,8 @@ def _snapshot_peak(
     return max(equity, base.quantize(Decimal("0.0001"), rounding=ROUND_CEILING))
 
 
-def _no_marks(_instrument_id: uuid.UUID) -> tuple[Decimal | None, bool]:
-    return None, False
+def _no_marks(_instrument_id: uuid.UUID) -> tuple[Decimal | None, bool, Decimal | None]:
+    return None, False, None
 
 
 def snapshot_bots(
@@ -661,7 +667,7 @@ def snapshot_bots(
         if allocation is None:
             continue
         pnl, missed = kill.open_pnl(_holdings(session, bot.id, marks))
-        fallbacks += missed
+        fallbacks += sum(missed.values())
         realized = _realized(session, bot.id, _snapshot_instant(trade_date))
         equity = Decimal(allocation.capital) + realized + pnl
         peak = _snapshot_peak(session, bot.id, trade_date, equity, Decimal(allocation.capital))

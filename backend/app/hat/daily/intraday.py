@@ -64,6 +64,7 @@ from ..notify import Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
 from ..risk.controls import ALERT_KILL_DRAWDOWN, evaluate_drawdown_kills, live_equity
+from ..risk.kill import MARK_CLOSE, MARK_STOP
 from ..time import trade_date_of, utc_now
 from .live import CalendarSource, PriceBook, ShadowExits
 from .market import DailyBook
@@ -133,28 +134,44 @@ class Intraday:
 
     def drawdown(self, now: datetime, user_id: uuid.UUID) -> list[str]:
         """The drawdown kills on equity marked to market now (P5, owner decision X9): each
-        bot's open positions at their latest trade, or the lower of a stale trade and the stop
-        when no fresh one is known (`kill.mark_of`). Each scope tripped is alerted, with how many
-        holdings were marked by that fallback. Returns the scopes tripped."""
-
-        def mark(instrument_id: uuid.UUID) -> tuple[Decimal | None, bool]:
-            quote = self._prices.quote(instrument_id)
-            if quote is None:
-                return None, False
-            return quote.price, usable_price(quote, now)[1] is None
-
+        bot's open positions at their latest trade; before an instrument's first trade of the
+        session, at its previous official close (D210); once its trade goes stale, at the lower
+        of that trade and the stop (`kill.mark_of`). Each scope tripped is alerted, with how many
+        holdings were marked on each basis but a fresh trade. Returns the scopes tripped."""
         day = trade_date_of(now)
+        data = self._book.day(day)
         with self._session_factory() as session:
+
+            def mark(instrument_id: uuid.UUID) -> tuple[Decimal | None, bool, Decimal | None]:
+                quote = self._prices.quote(instrument_id)
+                if quote is not None:
+                    return quote.price, usable_price(quote, now)[1] is None, None
+                try:
+                    close = data.daily(session, instrument_id).prev_close
+                except Exception:  # unreadable: the stop basis, never a higher mark
+                    logger.exception("previous close of %s unreadable", instrument_id)
+                    close = None
+                return None, False, close
+
             live, fallbacks = live_equity(session, now, mark)
             tripped = evaluate_drawdown_kills(session, policy_at(session, user_id, day), now, live)
             session.commit()
-        if fallbacks:
-            logger.warning("intraday drawdown: %d holdings marked without a fresh price", fallbacks)
+        if fallbacks[MARK_STOP] or fallbacks[MARK_CLOSE]:
+            logger.warning(
+                "intraday drawdown: %d holdings marked at the previous close, %d at the stop basis",
+                fallbacks[MARK_CLOSE],
+                fallbacks[MARK_STOP],
+            )
         for scope in tripped:
             self._notifier.alert(
                 ALERT_KILL_DRAWDOWN,
                 day,
-                {"scope": scope, "basis": "intraday", "fallback_marks": fallbacks},
+                {
+                    "scope": scope,
+                    "basis": "intraday",
+                    "fallback_marks": fallbacks[MARK_STOP],
+                    "close_marks": fallbacks[MARK_CLOSE],
+                },
             )
         return tripped
 

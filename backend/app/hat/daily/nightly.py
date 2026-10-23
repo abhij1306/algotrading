@@ -355,7 +355,7 @@ class Nightly:
         closes = official_closes(self.deps.store, day)
         with self.deps.session_factory() as session:
             result, fallbacks = snapshot_bots(
-                session, day, lambda instrument_id: (closes.get(instrument_id), True)
+                session, day, lambda instrument_id: (closes.get(instrument_id), True, None)
             )
             tripped = evaluate_drawdown_kills(
                 session, policy_at(session, self.deps.user_id, day), self._now()

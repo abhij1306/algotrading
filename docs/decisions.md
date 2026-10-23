@@ -39,7 +39,8 @@ here.
   at most 6 open positions per bot, 2 per industry, 3 entries and 3 stop-outs per day; exposure
   ladder L1 2 positions at 0.5x, L2 4 at 1.0x, L3 6 at 1.0x, up after 2 wins, down after 2 losses;
   kill switches at 10% drawdown (account and per bot) make bots manage-only, measured on equity
-  marked to market intraday, not only the end-of-day realised P&L (X9, 2026-10-23). All risk
+  marked to market intraday, not only the end-of-day realised P&L (X9, 2026-10-23); before a
+  holding's first trade of the session it is marked at its previous official close (D210). All risk
   numbers live in the versioned risk policy, never in a bot or strategy.
 - **Portfolio (PL1-PL5).** Unit is a sleeve (strategy version x universe version). Regime (rules
   over trend, India VIX, breadth; 4 states, changes after 3 days) scales sleeve weights within
@@ -64,6 +65,8 @@ here.
   `series_since` and `previous_series`, and each `bars_daily_raw` row carries the series of its
   day. A day keeps one row per ISIN, the normal-market series' (EQ, BE, BZ, then the rest: BL and
   IL windows trade beside EQ/BE). Databases from before are migrated by `data/isin_merge.py`.
+  A position held across a series change keeps its exits (D210). BZ stays unmapped: only an active
+  EQ or BE instrument is scanned or entered, and a held one moved to BZ is alerted `unmapped`.
 - **Storage (T5, T6, T10, T11).** Postgres is the system of record; price history is date-partitioned
   Parquet read through DuckDB; strategy configs are versioned JSONB with YAML import/export;
   indicators are own polars code on adjusted bars.

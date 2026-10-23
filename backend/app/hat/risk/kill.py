@@ -257,14 +257,21 @@ def account_series(bot_snapshots: Iterable[tuple[datetime, Decimal]]) -> list[Eq
 @dataclass(frozen=True)
 class Holding:
     """One open real position as its equity is marked: the shares still held, the net cash of
-    its fills so far (sales less purchases, less fees: negative while held), its broker stop and
-    the latest trade of its instrument (None: none known) with whether that trade is fresh."""
+    its fills so far (sales less purchases, less fees: negative while held), its broker stop,
+    the latest trade of its instrument this session (None: none yet) with whether that trade is
+    fresh, and its previous official close (the last stored daily close; None: none known)."""
 
     qty: int
     cash: Decimal
     stop: Decimal
     price: Decimal | None
     fresh: bool
+    close: Decimal | None = None
+
+
+MARK_TRADE = "trade"  # a fresh trade
+MARK_CLOSE = "close"  # no trade yet this session: the previous official close (D210)
+MARK_STOP = "stop"  # a stale trade, or no trade and no close: the lower of the trade and the stop
 
 
 def _usable(value: Decimal | None) -> Decimal | None:
@@ -278,28 +285,35 @@ def _usable(value: Decimal | None) -> Decimal | None:
     return found if found > 0 else None
 
 
-def mark_of(holding: Holding) -> tuple[Decimal, bool]:
-    """The price `holding` is marked at and whether it is a fallback. A fresh trade is the mark.
-    Otherwise (no trade, a stale one, an unreadable one) the most conservative price known: the
-    lower of the last trade and the stop, so a missing or stale price never marks a holding
-    higher than either; zero when neither is known (the shares count for nothing)."""
+def mark_of(holding: Holding) -> tuple[Decimal, str]:
+    """The price `holding` is marked at and its basis. A fresh trade is the mark. Before the
+    instrument's first trade of the session, its previous official close (D210: the stop would
+    read a gap that has not traded as a loss). Otherwise (a trade gone stale, an unreadable one,
+    no trade and no close) the most conservative price known: the lower of the last trade and
+    the stop, so a stale price never marks a holding higher than either; zero when neither is
+    known (the shares count for nothing)."""
     price = _usable(holding.price)
     if price is not None and holding.fresh:
-        return price, False
+        return price, MARK_TRADE
+    close = _usable(holding.close)
+    if holding.price is None and close is not None:
+        return close, MARK_CLOSE
     known = [p for p in (price, _usable(holding.stop)) if p is not None]
-    return (min(known) if known else Decimal(0)), True
+    return (min(known) if known else Decimal(0)), MARK_STOP
 
 
-def open_pnl(holdings: Iterable[Holding]) -> tuple[Decimal, int]:
+def open_pnl(holdings: Iterable[Holding]) -> tuple[Decimal, dict[str, int]]:
     """The marked P&L of the open holdings (each one's fill cash plus its shares at its mark,
-    which is its realised P&L once it is sold out) and how many were marked by a fallback."""
+    which is its realised P&L once it is sold out) and how many were marked on each basis other
+    than a fresh trade (`MARK_CLOSE`, `MARK_STOP`)."""
     total = Decimal(0)
-    fallbacks = 0
+    bases = {MARK_CLOSE: 0, MARK_STOP: 0}
     for holding in holdings:
-        price, fallback = mark_of(holding)
+        price, basis = mark_of(holding)
         total += holding.cash + holding.qty * price
-        fallbacks += fallback
-    return total, fallbacks
+        if basis != MARK_TRADE:
+            bases[basis] += 1
+    return total, bases
 
 
 def live_point(

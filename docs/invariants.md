@@ -33,7 +33,8 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
   to a hard-coded price. Size is `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`;
   zero skips the trade.
 - **Exits are never blocked** by a cap, kill switch, data failure, reconciliation state or mode.
-  Kill switches, pause and a failed quality gate stop new entries only (manage-only).
+  Kill switches, pause and a failed quality gate stop new entries only (manage-only). A held
+  instrument that changes series (EQ to BE) keeps its exits under the new symbol.
 - **Fail closed on the broker.** A missing client, open circuit or failed read raises
   `BrokerUnavailableError`, never an empty book. A write with unknown outcome is `unconfirmed`.
   No entry on a trade date before that date's first reconciliation succeeded; a mismatch blocks
@@ -44,7 +45,8 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). A drawdown or
   manual kill re-arms by hand with a second confirmation; a health kill clears itself. Drawdown
   equity is capital + realised P&L + open positions marked to market (the latest fresh trade in
-  the session, the official close at night); a missing or stale price marks a holding at the lower
+  the session, the official close at night); before its first trade of the session a holding is
+  marked at its previous official close, and a stale price (or no trade and no close) at the lower
   of its last trade and its stop, never higher.
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored only as hashes;
   approval expires after 5 minutes; Take re-checks `max_chase`; unknown chats are ignored and logged.

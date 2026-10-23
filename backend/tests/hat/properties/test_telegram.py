@@ -11,6 +11,7 @@ from app.hat.engine.approvals import ApprovalDecision, Placement
 from app.hat.risk.sessions import SessionCalendar
 from app.hat.telegram.callbacks import take_reply
 from app.hat.telegram.client import refusal_retryable
+from app.hat.telegram.commands import AUTO_NOT_OWNER, AUTO_UNCONFIRMED, auto_refusal
 from app.hat.telegram.reports import is_week_end
 from app.hat.time import IST
 
@@ -82,3 +83,20 @@ def test_take_reply_says_what_happens_to_the_entry() -> None:
     assert reply("unknown", Placement.UNKNOWN)[0] is False
     assert reply("error", None) == (False, "Refused: error")
     assert reply("max_chase", None) == (False, "Refused: max_chase")
+
+
+def test_auto_is_the_owners_switch_after_confirmation() -> None:
+    """HAT-OVR-061, D210: auto only for accounts all the owner's, and only once confirmed."""
+    owner, other = uuid.UUID(int=1), uuid.UUID(int=2)
+    table = [
+        ([owner], False, AUTO_UNCONFIRMED),
+        ([owner], True, None),
+        ([owner, owner], True, None),
+        ([other], False, AUTO_NOT_OWNER),
+        ([other], True, AUTO_NOT_OWNER),  # handed over while the confirmation was pending
+        ([owner, other], True, AUTO_NOT_OWNER),
+        ([owner, None], True, AUTO_NOT_OWNER),  # an account not found
+        ([], True, AUTO_NOT_OWNER),
+    ]
+    for users, confirmed, expected in table:
+        assert auto_refusal(owner, users, confirmed=confirmed) == expected, (users, confirmed)
