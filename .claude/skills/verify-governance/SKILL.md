@@ -93,7 +93,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `3f3f873d37e2abe789733501700ba35539af447e40a9b2717e712844bed71af8`
+Covered digest: `dbca566945bb7925d116cbbead45bcdfd03daebad1424f58791c67cf66895be2`
 
 ## Scope changes
 
@@ -138,6 +138,13 @@ Break: (PR 75a) `engine/live_trades.py` and `execution/submit.py` as on main (`f
 E   AssertionError: assert {'engine/live..._day_bounds']} == {}
 E     Left contains 2 more items:
 E     {'engine/live_trades.py': ['line 44: from app.hat.engine.trades import _day_bounds',
+```
+
+Break: (PR 75a) the checker reads only `name._x`, not a chain (`if root in modules and not rest:`), so `app.hat.engine.snapshot._slots` after `import app.hat.engine.snapshot` and `engine.trades._emit` through a package pass.
+
+```
+E   At index 2 diff: 'line 12: app.hat.engine.trades._day_bounds' != 'line 10: app.hat.engine.snapshot._slots'
+E   Right contains 2 more items, first extra item: 'line 12: app.hat.engine.trades._day_bounds'
 ```
 ### DB governance.*
 

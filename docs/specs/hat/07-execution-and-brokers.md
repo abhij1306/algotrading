@@ -191,7 +191,7 @@ The BL says a trade moves through eleven states and ends as Closed, Rejected, Ex
 | PartiallyExited | PartiallyExited | `exit.partial` | another partial fills |
 | ExitPending | Closed | `order.filled`, `position.closed` | remaining qty filled |
 
-Where the code lives (PR 75a, architecture audit F2): `engine/trades.py` holds the entry decision under the bot's and owner's locks, the approval card, the virtual (shadow) order, fill and exit engine and veto trades; `engine/snapshot.py` the reads an entry decision takes (the owner's slots, the bot's entries and stop-outs today, the last hard stop, the kill, ladder and policy inputs); `engine/positions.py` what the shadow engine and the real side share (the pinned exit stack and the position as the exit rules read it, a stop raise, the trade result); `engine/journal.py` every state change. No HAT module imports another's underscore name (CONF `no_private_imports`).
+No HAT module imports another's underscore name (CONF `no_private_imports`).
 
 How the real (broker) side drives these rows (PR 15c, `engine/live_trades.py`, `execution/fills.py`):
 
