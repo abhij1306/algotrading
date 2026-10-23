@@ -6,7 +6,8 @@ The app itself is never built here (`app.main` is out of bounds for `tests/hat`)
 the routers of the `app.hat.api` modules and the source of each GET endpoint. From an endpoint it
 follows every call it can resolve to a function of an `app.hat` module (the module's own helpers,
 `reads.*`, `controls.kill_state` and so on) and refuses a session write (`add`, `commit`,
-`delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`.: every write route depends on the write guard (`app.hat.api.guard`); the app
+`delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`.: every
+write route depends on the write guard (`app.hat.api.guard`); the app
 wiring hands the guard the CORS frontend-origin rule; the server binds to loopback by default. The
 wiring is read from the source of `app/main.py` and `start_server.py`, which are never imported.
 """

@@ -791,7 +791,8 @@ def test_vcp_contract(
     rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict
 ) -> None:
     """A reported base meets every enabled rule: the count, the depth ratios, the
-    final depth, the dry-up against the mean volume of the 50 sessions before the base starts, and the enabled structural rules: every contraction
+    final depth, the dry-up against the mean volume of the 50 sessions before the base starts,
+    and the enabled structural rules: every contraction
     at least `min_contraction_bars` bars, the first at least `min_first_depth_pct` deep, and
     every contraction high within `max_high_spread_pct` of the highest. Harm: a loose base, a noise
     wiggle or a decelerating down-staircase enters the watchlist, or the base's own quiet bars

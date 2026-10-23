@@ -417,7 +417,8 @@ def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
     """For every night's data (good, a bad row, no India VIX stored, an unexplained 50% move) and
     either health state before it, the gate writes exactly four rows, one per check, PASS iff all
     four pass; a failure writes one `quality.failed` event, raises one alert, fails the job and
-    leaves the health kill tripped, however often the scheduler retries it on the same data; only a passing
+    leaves the health kill tripped, however often the scheduler retries it on the same data;
+    only a passing
     gate clears it."""
     names = [s for s, _, _ in symbols_of(4)]
     with tempfile.TemporaryDirectory() as tmp:

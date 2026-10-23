@@ -457,7 +457,8 @@ def test_brk__recorded_writes() -> None:
     assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))
 
 
-# The broker-account status and broker-name values live once, in the models leaf; every reader imports them from there.
+# The broker-account status and broker-name values live once, in the models leaf; every reader
+# imports them from there.
 ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING", "BROKER_FYERS"}
 CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
 # the model, and any name for an account a reader uses (`account`, `acct`, `broker_account`...)

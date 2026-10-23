@@ -1502,7 +1502,8 @@ def test_candidates_never_overwrite_refresh(
 )
 def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
     """For every state of watchlists, positions and candidates, the `"hat"` owner's set equals
-    watchlist | positions | candidates | the heartbeat, open positions are always in it, the provider is subscribed to
+    watchlist | positions | candidates | the heartbeat, open positions are always in it, the
+    provider is subscribed to
     exactly the symbols some owner holds, and releasing HAT's symbols never unsubscribes a
     symbol another owner holds. A set at or above the limit raises an alert."""
     registry = SubscriptionRegistry(str.upper)

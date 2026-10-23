@@ -369,7 +369,7 @@ Live trade management:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `64eb876746636c2dbd9a2e9e821124833db68903cafb8476a2d31be274e58464`
+Covered digest: `538c50dba16756fe9455cb8108ea0bb7f7a1292600c785fcefffbdb000b40d3c`
 
 ## Scratch breaks
 

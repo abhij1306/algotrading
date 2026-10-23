@@ -1858,7 +1858,8 @@ def test_sized_from_allocation(paths: dict, weight: D, rule: str, rnd: object) -
 def test_invested_share(paths: dict) -> None:
     """Every session records the share of the account's mark held in open positions: in
     [0, 1], above 0 exactly on the sessions a trade was open at the close (entered on or
-    before, exited after, or held to the period's end), and `invested_share` is their mean. Harm: the report hides how little of the account a sleeve deploys, so
+    before, exited after, or held to the period's end), and `invested_share` is their mean.
+    Harm: the report hides how little of the account a sleeve deploys, so
     its percentage returns read as a full book's."""
     result = _run(s.market(paths, DAYS))
     days = [d for d, _ in result.equity]
@@ -1972,7 +1973,8 @@ def test_regime_inputs_loaded(paths: dict, with_vix: bool, rated: set[int], pct:
     """Under the `policy` regime rule `load_market` reads what the regime job reads: the NIFTY
     500 and India VIX closes and each session's breadth from the features job, equal to
     `portfolio.jobs.read_series` and `read_breadth`; without a VIX close or any breadth in the
-    store it refuses (`backtest_no_regime_inputs`), and without the rule it reads neither. The generated history is too short for the job's breadth, so the sessions in
+    store it refuses (`backtest_no_regime_inputs`), and without the rule it reads neither. The
+    generated history is too short for the job's breadth, so the sessions in
     `rated` have theirs rewritten to `pct`.
     Harm: the regime-sized backtest reads other inputs than the nightly regime job, or sizes
     on a regime it could not compute."""

@@ -373,7 +373,8 @@ def _mcp_kind(row: dict) -> str:
 )
 def test_upsert_idempotent_mcp_rows(rows: list[dict]) -> None:
     """MCP rows keep the server's factor for splits and bonuses; an action of factor 1 is kept
-    price-neutral, `dividend` for a dividend and `notice` for any other type; zero and negative factors are reported and
+    price-neutral, `dividend` for a dividend and `notice` for any other type; zero and negative
+    factors are reported and
     never become records."""
     result = from_mcp(uuid.UUID(int=5), rows)
     kept = [r for r in rows if r["adjustmentFactor"] > 0]
