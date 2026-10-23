@@ -729,7 +729,8 @@ class TradeManager:
         room for it is put back."""
         sent: SendOutcome | None = None
         for _ in range(gate.attempts):
-            sent, done = self._attempt(session, sale, sale.request, sent, now)
+            outcome, done = self._attempt(session, sale, sale.request, now)
+            sent = outcome or sent
             if done:
                 return sent
         if gate.floor is not None:
@@ -739,7 +740,8 @@ class TradeManager:
                 {**self._detail(sale), "code": BAND_LIMIT},
             )
             limit = replace(sale.request, order_type=OrderType.LIMIT, price=gate.floor)
-            sent, done = self._attempt(session, sale, limit, sent, now)
+            outcome, done = self._attempt(session, sale, limit, now)
+            sent = outcome or sent
             if done:
                 return sent
         self._not_placed(sale.signal, sale.order.position, "order_rejected", now)
@@ -751,12 +753,11 @@ class TradeManager:
         session: Session,
         sale: _Sale,
         request: OrderRequest,
-        sent: SendOutcome | None,
         now: datetime,
     ) -> tuple[SendOutcome | None, bool]:
-        """One send of `request`: its outcome (`sent`, the last one, when nothing was sent), and
-        whether the sale is done (out, unknown, or refused before the broker took it); a sale
-        the broker rejected is alerted and not done."""
+        """One send of `request`: its outcome (None when nothing was sent), and whether the sale
+        is done (out, unknown, or refused before the broker took it); a sale the broker rejected
+        is alerted and not done."""
         signal, position = sale.signal, sale.order.position
         try:
             tag = reserve_order(session, request)
@@ -776,9 +777,9 @@ class TradeManager:
             self._release(session, signal.id, request.purpose)
             self._not_placed(signal, position, code, now)
             self._desk.protect(session, position.id, now)  # the stop made room for it
-            return sent, True
+            return None, True
         except UnresolvedOrderError:
-            return sent, True
+            return None, True
         if sent.status != "rejected":
             # Placed, or unknown (looked up by tag before the position is sold again): the
             # rule has fired; it fires again if the sale ends without selling.
