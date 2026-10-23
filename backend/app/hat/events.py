@@ -105,6 +105,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "broker.ddpi_confirmed",
         "broker.ddpi_revoked",
         "feed.stale",
+        "relay.skipped",
     ),
 }
 EVENT_TYPES: frozenset[str] = frozenset(t for group in EVENT_GROUPS.values() for t in group)

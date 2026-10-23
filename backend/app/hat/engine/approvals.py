@@ -28,6 +28,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -75,6 +76,18 @@ class ApprovalDecision:
     signal_id: uuid.UUID
     outcome: str
     place: bool = False
+    placement: Placement | None = None  # an approved Take's entry, once the desk knows it
+
+
+class Placement(StrEnum):
+    """What became of an approved Take's entry: sent to the broker (or may have been), refused
+    after the Take, retrying (its placement raised and `resume_entries` places it), or unknown
+    (the raise left the Take itself unreadable)."""
+
+    SENT = "sent"
+    REFUSED = "refused"
+    RETRYING = "retrying"
+    UNKNOWN = "unknown"
 
 
 def chase_recheck(

@@ -12,8 +12,8 @@ sends at most one message per event:
   position: price, qty and R so far.
 - `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed` (the
   adapter's GTT for delivery reached the account, HAT-BRK-092), `corporate_action.unhandled` (a
-  position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT) and
-  `order.rejected`: a health alert (T15). The `Notifier` leaves these codes to the relay, so
+  position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT), `order.rejected`
+  and `relay.skipped`: a health alert (T15). The `Notifier` leaves these codes to the relay, so
   each failure is one alert.
 
 An event is relayed only once it is `RELAY_LAG` old, so a transaction that took a lower id and
@@ -22,7 +22,10 @@ rolled-back transaction, or one still open) is kept as a gap and looked up again
 for `GAP_WAIT`, so a transaction that commits late is relayed late rather than lost. The gaps are
 held in memory: a restart forgets them. The cursor moves after the message is sent, in the same
 commit as its `hat_telegram_message` row: a crash in between resends one message rather than
-losing it. A send that fails stops the run with the cursor before that event; an event that
+losing it. A send that fails stops the run with the cursor before that event, so a passing
+outage loses nothing; a refusal that will not pass (a 400, 403 or 404) is tried `MAX_REFUSALS`
+times, then the event is skipped with a `relay.skipped` event (an alert, sent once Telegram takes
+messages again; a skipped card's signal still shows in the 15:35 rejection digest). An event that
 cannot be rendered is logged by id and skipped, so it does not hold back the ones after it. On
 its first run the relay starts at the newest event: history is not replayed.
 """
@@ -30,6 +33,7 @@ its first run the relay starts at the newest event: history is not replayed.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -40,6 +44,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.confidence import stored_basis
+from ..events import record
 from ..models import (
     HatAnnouncement,
     HatApproval,
@@ -70,6 +75,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 RELAY_LAG = timedelta(seconds=5)
+SKIPPED = "relay.skipped"
+# A refusal that will not pass (`TelegramError.retryable` False) is tried this many times, then
+# its event is skipped, so it cannot hold back the cards and alerts after it.
+MAX_REFUSALS = 3
 POSITION_EVENTS = frozenset({"order.filled", "exit.partial", "position.closed", "stop.moved"})
 HEALTH_EVENTS = frozenset(
     {
@@ -79,6 +88,7 @@ HEALTH_EVENTS = frozenset(
         "broker.capabilities_changed",
         "corporate_action.unhandled",
         "order.rejected",
+        SKIPPED,
     }
 )
 TRIGGERED = "signal.triggered"
@@ -236,6 +246,7 @@ class EventRelay:
         self._signer = signer
         self._clock = clock
         self._gaps: dict[int, datetime] = {}  # unseen event id -> when it was first passed
+        self._refusals: dict[int, int] = {}  # event id -> permanent refusals so far
         self._sent = 0
 
     def run_once(self) -> int:
@@ -310,9 +321,22 @@ class EventRelay:
         try:
             message_id = self._client.send(out.text, out.buttons)
         except TelegramError as exc:
-            logger.warning("telegram relay stopped at event %s: %s", event.id, exc.code)
+            event_id, event_type = event.id, event.event_type
             session.rollback()
-            return False
+            if exc.retryable or not self._refused_enough(event_id):
+                logger.warning("telegram relay stopped at event %s: %s", event_id, exc.code)
+                return False
+            logger.error(
+                "telegram relay skipped event %s (%s) after %d refusals: %s",
+                event_id,
+                event_type,
+                MAX_REFUSALS,
+                exc.code,
+            )
+            if event_type != SKIPPED:  # the alert of a skip is never itself alerted
+                _record_skip(session, event_id, event_type, exc.code, now)
+            return True
+        self._refusals.pop(event.id, None)
         store.record_message(
             session,
             chat_id=self._client.chat_id,
@@ -327,3 +351,28 @@ class EventRelay:
                 approval.telegram_message_id = message_id
         self._sent = 1
         return True
+
+    def _refused_enough(self, event_id: int) -> bool:
+        """Count one permanent refusal of the event; True on the last one allowed."""
+        count = self._refusals.get(event_id, 0) + 1
+        if count < MAX_REFUSALS:
+            self._refusals[event_id] = count
+            return False
+        self._refusals.pop(event_id, None)
+        return True
+
+
+def _record_skip(
+    session: Session, event_id: int, event_type: str, code: str, now: datetime
+) -> None:
+    """The trail of a skipped event, in the transaction that moves the cursor past it; the
+    relay sends it as an alert once Telegram takes messages again."""
+    record(
+        session,
+        aggregate_type="session",
+        aggregate_id=uuid.uuid5(uuid.NAMESPACE_URL, f"hat:relay:{event_id}"),
+        event_type=SKIPPED,
+        actor="engine",
+        payload={"event_id": event_id, "event_type": event_type, "code": code},
+        occurred_at=now,
+    )

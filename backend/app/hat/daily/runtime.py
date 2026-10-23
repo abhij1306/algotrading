@@ -63,8 +63,8 @@ from ..models import (
     HatStrategyVersion,
 )
 from ..notify import Notifier
-from ..ops.jobs import JobError, SessionFactory, recover_interrupted
-from ..ops.scheduler import HatScheduler, ScheduledJob
+from ..ops.jobs import JobError, SessionFactory, recover_interrupted, run_job
+from ..ops.scheduler import HatScheduler, ScheduledJob, succeeded_on
 from ..risk.sessions import SessionCalendar, is_trading_day
 from ..settings import HatSettings, require_postgres
 from ..telegram.callbacks import ManagerFlattener, RouterDesk
@@ -79,7 +79,7 @@ from ..telegram.service import TelegramService, run_relay
 from ..telegram.tokens import ApprovalSigner
 from ..time import IST, trade_date_of, utc_now
 from .accounts import Desks, account_jobs
-from .intraday import PREPARE_AT, Intraday, intraday_jobs
+from .intraday import LIVE_PREPARE, PREPARE_AT, Intraday, intraday_jobs
 from .live import (
     ExitViews,
     GateBoard,
@@ -399,9 +399,27 @@ class HatRuntime:
                 # before the feed starts (the bar builder is the loop thread's once it does): the
                 # bars stored before the restart give back the opening ranges and day volumes
                 await asyncio.to_thread(self.live.restore, today)
-                await asyncio.to_thread(self.intraday.prepare, today)
-            except Exception:  # the day stays unarmed (no entries); exits and stops still run
-                logger.exception("arming the day on restart failed")
+            except Exception:  # the scheduler's `live.prepare` arms the day without them
+                logger.exception("restoring the day's bars on restart failed")
+                return
+            await asyncio.to_thread(self._arm, today)
+
+    def _arm(self, today: date) -> None:
+        """Arm a day under way once: through the job ledger, so the scheduler finds
+        `live.prepare` succeeded and does not run it again on the live feed (wiping the prices
+        and swapping the trigger monitor). A run an earlier process recorded armed only that
+        process, so this one prepares again outside the ledger. A failed run is the
+        scheduler's to retry; until then the day stays unarmed (no entries), exits still run."""
+        sf = self._session_factory
+        try:
+            if LIVE_PREPARE in succeeded_on(sf, today):
+                self.intraday.prepare(today)
+            else:
+                run_job(
+                    LIVE_PREPARE, today, lambda: self.intraday.prepare(today), session_factory=sf
+                )
+        except Exception:
+            logger.exception("arming the day on restart failed")
 
     def _start_live(self, parts: RuntimeParts) -> None:
         self.live.attach(parts.feed)

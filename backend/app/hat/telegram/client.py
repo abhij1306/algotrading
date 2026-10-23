@@ -27,6 +27,7 @@ __all__ = [
     "HttpsTransport",
     "TelegramError",
     "TelegramTransport",
+    "refusal_retryable",
 ]
 
 API_ROOT = "https://api.telegram.org"
@@ -47,12 +48,24 @@ MAX_TEXT = 4096
 Button = tuple[str, str]  # (label, callback data)
 
 
-class TelegramError(HatError):
-    """A Bot API call failed; the message is a fixed code, never server or HTTP text."""
+# The refusals that will not pass on a retry (a bad request, a forbidden or missing chat or
+# message); a 429, a 5xx, a timeout or a transport failure may.
+PERMANENT_STATUSES = frozenset({400, 403, 404})
 
-    def __init__(self, code: str) -> None:
+
+def refusal_retryable(status: int) -> bool:
+    """A refusal with this HTTP status may succeed when sent again."""
+    return status not in PERMANENT_STATUSES
+
+
+class TelegramError(HatError):
+    """A Bot API call failed; the message is a fixed code, never server or HTTP text.
+    `retryable` is False only for a refusal that will not pass (`refusal_retryable`)."""
+
+    def __init__(self, code: str, *, retryable: bool = True) -> None:
         super().__init__(code)
         self.code = code
+        self.retryable = retryable
 
 
 class TelegramTransport(Protocol):
@@ -91,7 +104,7 @@ class HttpsTransport:
         if not isinstance(body, dict):
             raise TelegramError(CODE_BAD_RESPONSE)
         if status >= 400 or body.get("ok") is not True:
-            raise TelegramError(CODE_REFUSED)
+            raise TelegramError(CODE_REFUSED, retryable=refusal_retryable(status))
         return body.get("result")
 
 

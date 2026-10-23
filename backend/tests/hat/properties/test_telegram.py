@@ -6,6 +6,7 @@ broker."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -19,12 +20,15 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from app.base import Base
+from app.hat.engine.approvals import ApprovalDecision, Placement
 from app.hat.models import (
     HatCommandLog,
     HatJobRun,
     HatTelegramMessage,
 )
 from app.hat.risk.sessions import SessionCalendar
+from app.hat.telegram.callbacks import take_reply
+from app.hat.telegram.client import refusal_retryable
 from app.hat.telegram.reports import is_week_end
 
 ENGINE = memory_engine(HatTelegramMessage, HatCommandLog, HatJobRun)
@@ -163,3 +167,35 @@ def test_veto_digest_on_week_end(kinds: list[str], day: int) -> None:
 
 
 # --- the raw token is never kept ---------------------------------------
+
+
+# --- a refusal that will not pass; the answer to a Take ----------------------------
+
+
+def test_only_400_403_404_are_permanent() -> None:
+    assert [
+        s for s in (200, 400, 401, 403, 404, 409, 429, 500, 502) if not refusal_retryable(s)
+    ] == [
+        400,
+        403,
+        404,
+    ]
+
+
+def test_take_reply_says_what_happens_to_the_entry() -> None:
+    sid = uuid.uuid4()
+
+    def reply(outcome: str, placement: Placement | None) -> tuple[bool, str | None]:
+        r = take_reply(ApprovalDecision(sid, outcome, placement=placement))
+        return r.accepted, r.text
+
+    assert reply("approved", Placement.SENT) == (True, "Take: approved, entry sent")
+    assert reply("approved", Placement.RETRYING) == (
+        True,
+        "Take: approved, placement retrying (see alerts)",
+    )
+    assert reply("approved", Placement.REFUSED)[1] == "Take: approved, entry NOT placed (see alert)"
+    assert reply("approved", None)[1] == "Take: approved, entry NOT placed (see alert)"
+    assert reply("unknown", Placement.UNKNOWN)[0] is False
+    assert reply("error", None) == (False, "Refused: error")
+    assert reply("max_chase", None) == (False, "Refused: max_chase")
