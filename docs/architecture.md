@@ -114,5 +114,8 @@ RegimeConfirmation, SleeveLifecycle; each with `broken/` variants), Hypothesis p
 `tests/hat/conformance/`. The `verify-*` skills in `.claude/skills/` say
 how to run and update each area and record a digest of the files they cover.
 
-CI (`.github/workflows/ci.yml`): `backend`, `backend-postgres`, `verification-tla`,
+CI (`.github/workflows/ci.yml`, every PR and push to main): `backend`, `backend-postgres`,
 `verification-conformance`, `verification-properties` (four shards), `frontend`, `api-schema`.
+`.github/workflows/tla.yml` runs the TLC models and their broken variants only when
+`verification/**` or a Python file named in a model's `code:` comments changes, weekly, and on
+demand.

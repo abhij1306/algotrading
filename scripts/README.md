@@ -5,7 +5,6 @@ Active helpers only (run from repo root):
 - `install_backend_deps.py` installs backend deps into `venv/` (fyers-apiv3 with `--no-deps`, Python 3.14 safe)
 - `lock_ci_requirements.py` regenerates `backend/requirements-ci.lock` after a change to `backend/requirements*.txt`
 - `export_openapi.py` writes the OpenAPI schema for `pnpm gen:api` in `frontend/`
-- `ci_property_shards.py <shard> <shards>` prints the Hypothesis property files one CI shard runs
 - `hat_backup.py run --local DIR --remote DIR` takes the nightly HAT backup: a `pg_dump`
   (custom format) and a tar of `HAT_DATA_ROOT`, written to both targets with a `manifest.json`
   (size and sha256 of every file) and re-verified at both; exit 1 on any mismatch.

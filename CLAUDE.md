@@ -151,8 +151,10 @@ Run only the tests your change touches plus `tests/hat/conformance`; CI runs eve
 
 ### CI
 `.github/workflows/ci.yml` runs on every pull request and on pushes to main: `backend` (ruff and
-the app tests), `backend-postgres`, `verification-tla`, `verification-conformance`,
-`verification-properties` (four shards, each property file once), `frontend` and `api-schema`.
+the app tests), `backend-postgres`, `verification-conformance`, `verification-properties` (four
+shards, each property file once), `frontend` and `api-schema`. `.github/workflows/tla.yml` runs
+the TLC models only when `verification/**` or a Python file a model's actions map to (its `code:`
+comments) changes, plus weekly and on `workflow_dispatch`; add a newly mapped file to its paths.
 Ruff, `vp check` and the tests stay at zero errors and zero warnings. CI installs the hash-pinned
 `backend/requirements-ci.lock`; regenerate it with `python scripts/lock_ci_requirements.py` after
 changing `backend/requirements*.txt`. `fyers-apiv3` is installed with `--no-deps` because it pins

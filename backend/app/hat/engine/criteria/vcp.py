@@ -1,5 +1,5 @@
 """`vcp`: the scored volatility-contraction detector (HAT-CRIT-040), ported from the legacy
-`services/vcp/pattern.py` (frozen outputs in `tests/hat/fixtures/vcp_oracle.json`).
+`services/vcp/pattern.py`.
 
 What carries over unchanged is the structure search: the base starts at the first highest close
 of the last `lookback_days` sessions (and must hold at least `MIN_BASE_BARS` bars); pivots are

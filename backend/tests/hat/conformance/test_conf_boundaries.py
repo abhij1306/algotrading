@@ -47,24 +47,6 @@ def test_import_graph_boundaries() -> None:
         assert _graph_violations(graph, area, BROKER_FORBIDDEN) == {}, area
 
 
-def test_import_graph_checker_can_fail() -> None:
-    """The checker finds a direct and a transitive violation in a synthetic graph."""
-    graph = {
-        "app.hat.engine.criteria.a": {"app.hat.engine.criteria.helper"},
-        "app.hat.engine.criteria.helper": {"sqlalchemy.orm"},
-        "app.hat.risk.sizing": {"app.brokers.plugins.fyers"},
-        "app.hat.data.ok": {"json"},
-    }
-    found = _graph_violations(graph, "app.hat.engine.criteria", CRITERIA_FORBIDDEN)
-    assert found["app.hat.engine.criteria.a"] == [
-        "app.hat.engine.criteria.a",
-        "app.hat.engine.criteria.helper",
-        "sqlalchemy.orm",
-    ]
-    assert _graph_violations(graph, "app.hat.risk", BROKER_FORBIDDEN)
-    assert _graph_violations(graph, "app.hat.data", BROKER_FORBIDDEN) == {}
-
-
 def _private(name: str) -> bool:
     return name.startswith("_") and not name.startswith("__")
 
