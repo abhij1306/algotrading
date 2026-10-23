@@ -244,7 +244,9 @@ def test_nightly_no_lookahead(
     """Truncation replay of the nightly job: night d's features and scan, replayed on a store
     that already holds the later sessions (another future for a random instrument, other index
     closes, the later nights' features), publish the same watchlist (levels, score, ADTR and
-    criteria results) as night d did on the store cut at d (G39)."""
+    criteria results) as night d did on the store cut at d (G39). Both hold the same corporate
+    actions (none): a split stored after d re-scales every earlier bar by design (the adjusted
+    view, HAT-BT-012), so it is out of scope here."""
     cfg = s.config()
     symbol = sorted(base)[pick % len(base)]
     future = next(iter(other.values()))
