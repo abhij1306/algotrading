@@ -144,7 +144,8 @@ RETURNS_SCHEMA = pa.schema(
 
 def _returns_parquet(result: BacktestResult) -> bytes:
     """The run's session closes and daily returns, each against the close before (the first
-    against `metrics.initial_equity`; null without it): the series `metrics.returns` describes."""
+    against `metrics.initial_equity`; null without it, or after a close at or below 0): the
+    series `metrics.returns` describes."""
     raw = result.metrics.get("initial_equity")
     previous = None if raw is None else float(Decimal(str(raw)))
     rows = []
@@ -154,7 +155,7 @@ def _returns_parquet(result: BacktestResult) -> bytes:
             {
                 "date": day,
                 "equity": equity,
-                "ret": None if not previous else value / previous - 1.0,
+                "ret": None if previous is None or previous <= 0 else value / previous - 1.0,
             }
         )
         previous = value
@@ -164,11 +165,17 @@ def _returns_parquet(result: BacktestResult) -> bytes:
 
 
 def read_returns(root: Path, run_id: uuid.UUID) -> dict[date, float] | None:
-    """A run's daily returns by date; None when it has no returns file (a run before PR 66)."""
+    """A run's daily returns by date; None when it has no returns file (a run before PR 66) or
+    the file cannot be read as one (`RETURNS_SCHEMA`)."""
     path = returns_path(root, run_id)
     if not path.is_file():
         return None
-    table = pq.read_table(path)
+    try:
+        table = pq.read_table(path)
+        if not table.schema.equals(RETURNS_SCHEMA):
+            return None
+    except (OSError, pa.ArrowException):
+        return None
     return {
         d: r
         for d, r in zip(
@@ -224,13 +231,16 @@ def _recorded(session: Session, run: HatBacktestRun) -> HatBacktestRun:
     return run
 
 
-def run_dsr(session: Session, run: HatBacktestRun) -> tuple[Deflated, int, float]:
+def run_dsr(
+    session: Session, run: HatBacktestRun, metrics: Mapping[str, Any] | None = None
+) -> tuple[Deflated, int, float]:
     """A recorded run's deflated Sharpe probability now, with the family's trial count and the
     variance of its Sharpe ratios (the run's own included, completed or not), through the
-    family floors (`family_deflated_sharpe`). A run that is not recorded is refused
-    (`backtest_run_unrecorded`): only a counted trial is scored."""
+    family floors (`family_deflated_sharpe`); `metrics` stands for the run's own while it is
+    being completed. A run that is not recorded is refused (`backtest_run_unrecorded`): only a
+    counted trial is scored."""
     _recorded(session, run)
-    stats = _stats(run.metrics)
+    stats = _stats(run.metrics if metrics is None else metrics)
     sharpes = [
         s.sr
         for s in (_stats(r.metrics) for r in _completed(session, run.family_key) if r.id != run.id)
@@ -240,7 +250,7 @@ def run_dsr(session: Session, run: HatBacktestRun) -> tuple[Deflated, int, float
         sharpes.append(stats.sr)
     trials = trial_count(session, run.family_key)
     variance = trial_variance(sharpes)
-    return family_deflated_sharpe(stats, max(1, trials), variance), trials, variance
+    return family_deflated_sharpe(stats, trials, variance), trials, variance
 
 
 def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any]:
@@ -257,31 +267,46 @@ def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any
 
 
 def family_pbo(
-    session: Session, family: str, root: Path, blocks: int = PBO_BLOCKS
+    session: Session,
+    family: str,
+    root: Path,
+    blocks: int = PBO_BLOCKS,
+    *,
+    also: HatBacktestRun | None = None,
 ) -> dict[str, Any]:
     """The probability of backtest overfitting of a family (`dsr.pbo`, CSCV) over its completed
-    runs with a returns file, on the sessions every one of them has a return for. `prob` is
-    null, with a `reason`, with fewer than 2 such runs (`pbo_too_few_variants`) or fewer than 2
-    common sessions per block (`pbo_too_short`)."""
-    series = [
-        found
-        for found in (read_returns(root, r.id) for r in _completed(session, family))
-        if found is not None
-    ]
+    runs (and `also`, a run being completed) with a readable returns file, on the sessions
+    every one of them has a return for. A run whose series equals an earlier one's on those
+    sessions (a re-run of the same variant) is that variant, not another. `prob` is null, with
+    a `reason`, with fewer than 2 distinct variants (`pbo_too_few_variants`), fewer than 2
+    common sessions per block (`pbo_too_short`) or a series CSCV cannot score
+    (`pbo_unscorable`, a value that is not finite)."""
+    members = [r for r in _completed(session, family) if also is None or r.id != also.id]
+    if also is not None:
+        members.append(also)
+    series = [found for found in (read_returns(root, r.id) for r in members) if found is not None]
     common = sorted(set.intersection(*(set(s) for s in series))) if series else []
+    distinct: list[list[float]] = []
+    for s in series:
+        row = [s[d] for d in common]
+        if row not in distinct:
+            distinct.append(row)
     out: dict[str, Any] = {
         "prob": None,
-        "variants": len(series),
+        "runs": len(series),
+        "variants": len(distinct),
         "sessions": len(common),
         "blocks": blocks,
         "splits": None,
         "reason": None,
     }
-    if len(series) < 2:
+    if len(distinct) < 2:
         return {**out, "reason": "pbo_too_few_variants"}
-    found = pbo([[s[d] for d in common] for s in series], blocks)
-    if found is None:
+    if len(common) < 2 * blocks:
         return {**out, "reason": "pbo_too_short"}
+    found = pbo(distinct, blocks)
+    if found is None:
+        return {**out, "reason": "pbo_unscorable"}
     return {
         **out,
         "prob": str(Decimal(repr(found.prob)).quantize(_DSR_PLACES)),
@@ -332,16 +357,16 @@ def complete_run(
     atomic_replace(
         returns_path(root, run.id), lambda tmp: tmp.write_bytes(_returns_parquet(result))
     )
-    run.metrics = dict(result.metrics)
-    deflated, trials, variance = run_dsr(session, run)
-    run.status = COMPLETED
-    session.flush()
-    run.metrics = {
+    # everything is computed before the one change of status, so nothing can fail in between
+    deflated, trials, variance = run_dsr(session, run, result.metrics)
+    metrics = {
         **result.metrics,
         "dsr": _dsr_json(deflated, trials, variance),
-        "pbo": family_pbo(session, run.family_key, root),
+        "pbo": family_pbo(session, run.family_key, root, also=run),
         "completed_at": utc_now().isoformat(),
     }
+    run.metrics = metrics
+    run.status = COMPLETED
     session.flush()
     return run
 

@@ -812,12 +812,14 @@ def test_evidence_latest_by_completion(order: list[int]) -> None:
 
 @given(st.lists(st.lists(st.integers(-30, 30), min_size=24, max_size=24), min_size=1, max_size=4))
 @settings(max_examples=20, deadline=None)
+@example([[1, -2, 3, 0] * 6, [1, -2, 3, 0] * 6, [2, 1, -1, -3] * 6])  # a re-run, then a variant
 def test_family_pbo_recorded(variants: list[list[int]]) -> None:
     """Each completed run records its family's PBO (`metrics.pbo`) over the completed runs with
     a returns file, itself included, on the sessions they share: `dsr.pbo` of their return
-    series in run order with the default blocks, and no probability but
-    `pbo_too_few_variants` while the family has one such run. Harm: the overfitting check
-    silently reads another family's runs, or reports a probability from one variant."""
+    series in run order with the default blocks, a re-run of an equal series counted once,
+    and no probability but `pbo_too_few_variants` while the family has one distinct variant.
+    Harm: the overfitting check reads another family's runs, reports a probability from one
+    variant, or scores a deterministic re-run as an overfit second variant."""
     days = [START + timedelta(days=n) for n in range(24)]
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -835,9 +837,11 @@ def test_family_pbo_recorded(variants: list[list[int]]) -> None:
             run = _start(session, live if n % 2 else other, universe)
             runs.complete_run(session, run, result, root=root)
             points = [1_000_000.0, *(float(v) for v in curve)]
-            series.append([points[i + 1] / points[i] - 1.0 for i in range(24)])
+            row = [points[i + 1] / points[i] - 1.0 for i in range(24)]
+            if row not in series:  # a re-run of the same series is the same variant
+                series.append(row)
             got = run.metrics["pbo"]
-            assert (got["variants"], got["sessions"]) == (len(series), 24)
+            assert (got["runs"], got["variants"], got["sessions"]) == (n + 1, len(series), 24)
             if len(series) < 2:
                 assert (got["prob"], got["reason"]) == (None, "pbo_too_few_variants")
             else:
@@ -845,4 +849,34 @@ def test_family_pbo_recorded(variants: list[list[int]]) -> None:
                 assert want is not None
                 assert got["prob"] == str(Decimal(repr(want.prob)).quantize(Decimal("0.000001")))
                 assert got["splits"] == want.splits
+        session.rollback()
+
+
+@given(st.binary(max_size=64))
+@settings(max_examples=20, deadline=None)
+@example(b"")
+def test_family_pbo_skips_unreadable(garbage: bytes) -> None:
+    """A sibling run whose returns file cannot be read as one is left out of the family's PBO;
+    the run being completed still completes with its DSR and PBO. Harm: one damaged file fails
+    every later backtest of the family, so its trials go unscored."""
+    days = [START + timedelta(days=n) for n in range(24)]
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _, live, _, universe = _bot_world(session)
+        curve = tuple((d, Decimal(1_000_000 + 100 * (n % 5))) for n, d in enumerate(days))
+        metrics = {**_result(0.1, 24, 1, "0").metrics, "initial_equity": "1000000"}
+        first = _start(session, live, universe)
+        runs.complete_run(
+            session, first, BacktestResult((), curve, (), (), (), {}, metrics), root=root
+        )
+        runs.returns_path(root, first.id).write_bytes(garbage)
+        second = _start(session, live, universe)
+        runs.complete_run(
+            session, second, BacktestResult((), curve, (), (), (), {}, metrics), root=root
+        )
+        assert second.status == runs.COMPLETED
+        assert (second.metrics["pbo"]["runs"], second.metrics["pbo"]["reason"]) == (
+            1,
+            "pbo_too_few_variants",
+        )
         session.rollback()
