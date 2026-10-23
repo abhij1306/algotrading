@@ -346,6 +346,7 @@ def _result(
     promoted: bool | None = True,
     slots: str | None = "time",
     path: bool = True,
+    regime_mult: str | None = "1",
 ) -> BacktestResult:
     metrics: dict[str, object] = {
         "trades": trades,
@@ -360,6 +361,8 @@ def _result(
         metrics["slot_order"] = slots
     if path:  # False: a run recorded before PR 64 (no lower-circuit carry)
         metrics["lower_circuit"] = "carry_to_next_unlocked_open"
+    if regime_mult is not None:  # None: a run recorded before PR 68 (sized off the account)
+        metrics["regime_mult"] = regime_mult
     return BacktestResult((), (), (), (), (), {}, metrics)
 
 
@@ -427,23 +430,32 @@ def test_evidence_cooldown_in_force(
 
 
 FLAGS = st.tuples(
-    st.sampled_from([True, False, None]), st.sampled_from(["time", "score", None]), st.booleans()
+    st.sampled_from([True, False, None]),
+    st.sampled_from(["time", "score", None]),
+    st.booleans(),
+    st.sampled_from(["1", "policy", None]),
 )
 
 
 @given(st.lists(FLAGS, max_size=5))
 @settings(max_examples=30, deadline=None)
-@example([(True, "time", True), (False, "time", True)])  # a sensitivity run newer than it
-@example([(None, None, False)])  # a run recorded before PR 62
-@example([(True, "time", True), (True, None, False)])  # a promotion run recorded before PR 63
-@example([(True, "time", True), (True, "score", True)])  # a promotion run in score order
-@example([(True, "time", True), (True, "time", False)])  # a promotion run recorded before PR 64
-def test_evidence_promoted_only(flags: list[tuple[bool | None, str | None, bool]]) -> None:
+@example([(True, "time", True, "1"), (False, "time", True, "1")])  # a sensitivity run newer
+@example([(None, None, False, None)])  # a run recorded before PR 62
+@example([(True, "time", True, "1"), (True, None, False, None)])  # recorded before PR 63
+@example([(True, "time", True, "1"), (True, "score", True, "1")])  # a promotion run in score order
+@example([(True, "time", True, "1"), (True, "time", False, None)])  # recorded before PR 64
+@example([(True, "time", True, "1"), (True, "time", True, None)])  # recorded before PR 68
+@example([(True, "time", True, "1"), (True, "time", True, "policy")])  # the regime variant
+def test_evidence_promoted_only(
+    flags: list[tuple[bool | None, str | None, bool, str | None]],
+) -> None:
     """The sleeve's evidence, for the lifecycle and for the risk-increase gate, is its newest
     completed run flagged for promotion (PR 62, O5) whose slots went in the estimated trigger
-    order (`slot_order` `time`, PR 63) under the path rules (`lower_circuit`, PR 64): a
-    sensitivity run (`touch`, 0 bps, a sweep, another slot order) or one recorded before the
-    flag, the slot order or the path rules existed is skipped, and with none
+    order (`slot_order` `time`, PR 63) under the path rules (`lower_circuit`, PR 64), sized by
+    the sleeve's allocation at regime rule `1` (`regime_mult`, PR 68): a sensitivity run
+    (`touch`, 0 bps, a sweep, another slot order, the regime variant) or one recorded before
+    the flag, the slot order, the path rules or the allocation sizing existed is skipped, and
+    with none
     there is no evidence. Harm: a sleeve is promoted, or its risk raised, on perfect or
     optimistic fills."""
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
@@ -458,14 +470,23 @@ def test_evidence_promoted_only(flags: list[tuple[bool | None, str | None, bool]
         session.flush()
         user = uuid.uuid4()
         bot = _sleeve_bot(session, user, strategy, live.id, uv)
-        for n, (flag, slots, path) in enumerate(flags):
+        for n, (flag, slots, path, sizing) in enumerate(flags):
             run = _start(session, live, universe)
-            result = _result(0.1, 60, n + 1, str(n + 1), promoted=flag, slots=slots, path=path)
+            result = _result(
+                0.1,
+                60,
+                n + 1,
+                str(n + 1),
+                promoted=flag,
+                slots=slots,
+                path=path,
+                regime_mult=sizing,
+            )
             runs.complete_run(session, run, result, root=root)
         want = [
             n + 1
-            for n, (flag, slots, path) in enumerate(flags)
-            if flag is True and slots == "time" and path
+            for n, (flag, slots, path, sizing) in enumerate(flags)
+            if flag is True and slots == "time" and path and sizing == "1"
         ]
         facts = runs.backtest_evidence(session, bot)
         assert facts.trades == (want[-1] if want else 0)

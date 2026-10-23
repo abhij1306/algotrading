@@ -12,7 +12,7 @@ PR 65 (G35) adds what a tuning run reports besides the return figures: the share
 with a position held (`exposure`), MAR (`mar_ratio`), the longest stretch under the running peak
 (`longest_drawdown`), the mean after dropping the best trades (`tail_trimmed_mean`) and the
 charges' share of the gross P&L (`cost_share`). The two on R and money take Decimals and stay
-exact.
+exact. PR 68 adds the mean share of the account held in positions (`invested_share`), exact too.
 
 No I/O and no state beyond the inputs passed in.
 """
@@ -168,3 +168,11 @@ def tail_trimmed_mean(values: Sequence[Decimal], drop: int) -> Decimal | None:
 def cost_share(charges: Decimal, gross: Decimal) -> Decimal | None:
     """The charges' share of the gross P&L (before charges); None unless the gross is a gain."""
     return charges / gross if gross > 0 else None
+
+
+def invested_share(shares: Sequence[Decimal]) -> Decimal | None:
+    """The mean of the sessions' invested shares (marked positions over the session's mark),
+    exact; None without a session (PR 68)."""
+    if not shares:
+        return None
+    return sum(shares, Decimal(0)) / len(shares)

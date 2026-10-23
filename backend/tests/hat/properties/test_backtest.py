@@ -10,8 +10,8 @@ import json
 import math
 import tempfile
 import uuid
-from datetime import date
-from decimal import Decimal
+from datetime import date, timedelta
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 
 import hat_backtest_support as s
@@ -44,8 +44,10 @@ from app.hat.backtest.market import load_market
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.confighash import config_hash
 from app.hat.data.corporate_actions import stored_factors
-from app.hat.data.features import STATE_FILE, inputs_digest, run_features
+from app.hat.data.features import BREADTH_PART, STATE_FILE, inputs_digest, run_features
 from app.hat.data.store import (
+    BREADTH_SCHEMA,
+    DATASET_BREADTH,
     DATASET_FEATURES,
     DATASET_SCHEMAS,
     BarRow,
@@ -56,6 +58,9 @@ from app.hat.data.ticks import tick_for_date
 from app.hat.engine.backtest import (
     KNOWN_GAPS,
     NSE_BANDS,
+    REGIME_MULT_ONE,
+    REGIME_MULT_POLICY,
+    REGIME_MULT_RULES,
     TOUCH_GAP,
     BacktestError,
     BacktestResult,
@@ -65,6 +70,7 @@ from app.hat.engine.backtest import (
     check_conventions,
     compute_metrics,
     config_digest,
+    conventions,
     industry_on,
     lower_circuit_locked,
     pre_break_low,
@@ -73,6 +79,8 @@ from app.hat.engine.backtest import (
     upper_circuit_locked,
     with_cooldown,
 )
+from app.hat.engine.portfolio import regime
+from app.hat.engine.portfolio.jobs import read_breadth, read_series
 from app.hat.engine.portfolio.universe import Interval
 from app.hat.engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, floor_to_tick, low_of_day
 from app.hat.engine.strategy.versions import VersionError, publish_version, seed_default_strategies
@@ -1019,6 +1027,9 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
         "ambiguous": AMBIGUOUS_OPTIMISTIC,  # the defaults of PR 64
         "lower_circuit": "carry_to_next_unlocked_open",
         "suspension_markdown": {"after_sessions": SUSPENSION_SESSIONS, "band_pct": "5"},
+        "sleeve_weight": "0.5",  # the policy's base weight of S1, regime 1 (PR 68)
+        "regime_mult": REGIME_MULT_ONE,
+        "health_mult": "1",
     }
     assert {k: metrics[k] for k in recorded} == recorded
     assert metrics["conventions"] == recorded  # the block of PR 65, exactly what is hashed
@@ -1035,17 +1046,29 @@ CONVENTIONS = st.tuples(
     SLOT_ORDERS,
     st.sampled_from(AMBIGUOUS_RULES),
     st.sampled_from([0, SUSPENSION_SESSIONS, 20]),
+    st.sampled_from([None, D("0.5"), D("0.50"), D("0.3")]),
+    st.sampled_from(REGIME_MULT_RULES),
 )
 
 
 @given(CONVENTIONS, CONVENTIONS)
 def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
     """Two runs' `config_digest`s are equal exactly when their entry fill rule, slippage (20
-    and 20.0 bps alike, -0 and 0 alike), cost model, slot order (PR 63), ambiguous-day rule and
-    bar-less sessions before the markdown (PR 64) are. Harm: a run under other conventions
-    passes for a rerun, or a rerun reads as another convention."""
+    and 20.0 bps alike, -0 and 0 alike), cost model, slot order (PR 63), ambiguous-day rule,
+    bar-less sessions before the markdown (PR 64), sleeve weight (the policy's 0.50 when none
+    is given, 0.5 and 0.50 alike) and regime rule (PR 68) are. Harm: a run under other
+    conventions passes for a rerun, or a rerun reads as another convention."""
 
-    def spec(rule: str, bps: D, model: str, slots: str, ambiguous: str, after: int) -> object:
+    def spec(
+        rule: str,
+        bps: D,
+        model: str,
+        slots: str,
+        ambiguous: str,
+        after: int,
+        weight: D | None,
+        regime_rule: str,
+    ) -> object:
         fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_model(), D(0))
         fills = BacktestFills(fills.model, bps)
         base = s.spec(s.config(), DAYS, fills=fills)
@@ -1055,9 +1078,14 @@ def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
             slot_order=slots,
             ambiguous=ambiguous,
             suspension_sessions=after,
+            sleeve_weight=weight,
+            regime_mult=regime_rule,
         )
 
-    same = tuple(a) == tuple(b)  # Decimal(20) == Decimal("20.0")
+    def key(c: tuple) -> tuple:
+        return (*c[:6], D("0.5") if c[6] is None else c[6], c[7])
+
+    same = key(a) == key(b)  # Decimal(20) == Decimal("20.0")
     assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
 
 
@@ -1681,3 +1709,289 @@ def test_features_digest_pinned(
         rel_tol=1e-9,
         abs_tol=1e-12,
     )
+
+
+# --- HAT-BT-014: sizing through the sleeve's allocation (PR 68) --------------------------------
+
+WEIGHTS = st.integers(1, 100).map(lambda n: D(n) / 100)
+HISTORY = regime.SMA_SLOW + regime.VIX_WINDOW  # index sessions before the market's first
+
+
+def _weekdays_before(day: date, count: int) -> list[date]:
+    found: list[date] = []
+    while len(found) < count:
+        day -= timedelta(days=1)
+        if day.weekday() < 5:
+            found.append(day)
+    return found[::-1]
+
+
+def _regime_market(paths: dict, rnd: object) -> MarketData:
+    """`s.market(paths)` with the regime engine's inputs: NIFTY 500 and India VIX closes from
+    `HISTORY` sessions before the first day (a random walk swinging across its SMAs), and
+    breadth per session; a few market days miss their VIX close or their breadth."""
+    market = s.market(paths, DAYS)
+    days = [*_weekdays_before(DAYS[0], HISTORY), *DAYS]
+    close, closes, vix = D(1000), [], []
+    for _ in days:
+        close = max(D(100), close * (1 + D(rnd.randint(-40, 40)) / 1000))  # type: ignore[attr-defined]
+        closes.append(close.quantize(D("0.01")))
+        vix.append(D(rnd.randint(1000, 4000)) / 100)  # type: ignore[attr-defined]
+    vix_gaps = {d for d in DAYS if rnd.random() < 0.08}  # type: ignore[attr-defined]
+    breadth = {d: D(rnd.randint(0, 100)) for d in DAYS if rnd.random() > 0.08}  # type: ignore[attr-defined]
+    return dataclasses.replace(
+        market,
+        index_closes={
+            regime.INDEX_NAME: list(zip(days, closes, strict=True)),
+            regime.VIX_NAME: [(d, v) for d, v in zip(days, vix, strict=True) if d not in vix_gaps],
+        },
+        breadth=breadth,
+    )
+
+
+def _expected_allocations(
+    result: BacktestResult, data: MarketData, weight: D, rule: str
+) -> dict[date, tuple[D, D] | None]:
+    """Per trade date of the period, the (regime multiplier, capital) the live allocator gives
+    the sleeve the night before, written out here: v1's inputs and 3-day rule from the first
+    session, the table value clamped to the policy's bounds, moved at most 0.25 a night from
+    the last allocation's, times the weight and the night's account mark (the initial equity
+    before the period); None for a night without regime inputs."""
+    policy = s.policy_version().policy
+    lo, hi, step = policy.multiplier_lo, policy.multiplier_hi, D("0.25")
+    marks = dict(result.equity)
+    closes = dict(data.index_closes[regime.INDEX_NAME])
+    vix = dict(data.index_closes[regime.VIX_NAME])
+    period = [d for d, _ in result.equity]
+    found: dict[date, tuple[D, D] | None] = {}
+    confirmation, last = None, None
+    for night, day in zip(data.days, data.days[1:], strict=False):
+        if day > period[-1]:
+            break
+        mult: D | None = min(max(D(1), lo), hi)  # the table value 1, in the policy's bounds
+        if rule == REGIME_MULT_POLICY:
+            try:
+                inputs = regime.compute_inputs(night, closes, vix, data.breadth.get(night))
+            except regime.RegimeError:
+                mult = None
+            else:
+                confirmation = regime.confirm_step(confirmation, regime.classify_inputs(inputs))
+                target = min(max(regime.DEFAULT_MULTIPLIERS[confirmation.confirmed], lo), hi)
+                mult = target if last is None else last + min(max(target - last, -step), step)
+        if mult is not None:
+            last = mult
+        if day not in period:
+            continue
+        equity = marks.get(night, s.spec(s.config(), DAYS).initial_equity)
+        found[day] = (
+            None
+            if mult is None
+            else (mult, (weight * mult * equity).quantize(D("0.0001"), rounding=ROUND_DOWN))
+        )
+    return found
+
+
+@given(s.paths(SESSIONS), WEIGHTS, st.sampled_from(REGIME_MULT_RULES), st.randoms())
+@RUNS
+def test_sized_from_allocation(paths: dict, weight: D, rule: str, rnd: object) -> None:
+    """Each trade date's entries are sized from the allocation the live allocator makes the
+    night before: capital = weight x regime multiplier x the account's mark at that night's close
+    (rounded down), risk per trade = the policy's x the multiplier, health 1; the multiplier is 1
+    under `1` (clamped to the policy's bounds) and under `policy` the regime engine's (v1 inputs,
+    3-day rule warmed up from the run's first session, smoothed 0.25 a night), and a night without
+    its regime inputs has no allocation, so that day's entries are rejected unsized. No accepted
+    entry risks more than its allocation's capital x risk per trade (HAT-BT-014, HAT-PORT-050,
+    HAT-PORT-052). Harm: the backtest sizes trades as live never would, so its percentage results
+    describe another book."""
+    data = _regime_market(paths, rnd)
+    spec = dataclasses.replace(s.spec(s.config(), DAYS), sleeve_weight=weight, regime_mult=rule)
+    result = run_backtest(spec, data)
+    expected = _expected_allocations(result, data, weight, rule)
+    risk = spec.policy.policy.risk_pct
+    assert set(result.allocations) == set(expected)
+    for day, allocation in result.allocations.items():
+        want = expected[day]
+        if want is None:
+            assert allocation is None, day
+            continue
+        assert allocation is not None, day
+        mult, capital = want
+        assert (allocation.regime_mult, allocation.capital) == (mult, capital), day
+        assert allocation.health_mult == 1
+        assert allocation.risk_pct == risk * mult
+    for row in result.signals:
+        allocation = result.allocations[row.trade_date]
+        assert row.allocation == allocation
+        if allocation is None:
+            assert row.qty == 0
+            assert row.state == "Rejected"
+        elif row.qty:
+            assert row.qty * (row.trigger_price - row.stop_price) <= (
+                allocation.capital * allocation.risk_pct
+            )
+
+
+@given(s.paths(SESSIONS))
+@RUNS
+def test_invested_share(paths: dict) -> None:
+    """Every session records the share of the account's mark held in open positions: in
+    [0, 1], above 0 exactly on the sessions a trade was open at the close (entered on or
+    before, exited after, or held to the period's end), and `invested_share` is their mean
+    (PR 68, audit O6). Harm: the report hides how little of the account a sleeve deploys, so
+    its percentage returns read as a full book's."""
+    result = _run(s.market(paths, DAYS))
+    days = [d for d, _ in result.equity]
+    assert len(result.invested) == len(days)
+    for day, share in zip(days, result.invested, strict=True):
+        held = any(
+            t.entry_date <= day
+            and (day < t.exit_date or (day == days[-1] and t.exit_reason == "end_of_period"))
+            for t in result.trades
+        )
+        assert 0 <= share <= 1, day
+        assert (share > 0) is held, day
+    mean = sum(result.invested, D(0)) / len(days)
+    assert result.metrics["invested_share"] == str(mean.quantize(D("0.000001")))
+    assert result.metrics["pct_basis"] == {
+        "equity": "account",
+        "sleeve_weight": "0.5",
+        "regime_mult": REGIME_MULT_ONE,
+    }
+
+
+@given(
+    st.one_of(
+        st.none(),
+        WEIGHTS,
+        st.decimals(allow_nan=True, allow_infinity=True),
+        st.integers(-2, 2),
+        st.floats(0.01, 1.0),
+    ),
+    st.sampled_from([*REGIME_MULT_RULES, "Policy", "0.5", ""]),
+    st.sampled_from([D("0.50"), None, D(0)]),
+    st.sampled_from([D(1), D("0.4")]),
+    st.booleans(),
+)
+@example(D(0), REGIME_MULT_ONE, D("0.50"), D(1), False)
+@example(D("1.0001"), REGIME_MULT_ONE, D("0.50"), D(1), False)
+@example(D(1), REGIME_MULT_POLICY, D("0.50"), D(1), False)
+@example(None, REGIME_MULT_ONE, None, D(1), False)  # no base weight for the sleeve
+@example(None, REGIME_MULT_ONE, D(0), D(1), False)  # a base weight of 0
+@example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # above the cluster cap
+@example(None, REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # the base weight above it too
+@example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion off the base weight
+@example(None, REGIME_MULT_POLICY, D("0.50"), D(1), True)  # promotion on the regime variant
+@example(None, REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion as live sizes it
+def test_sizing_conventions_refused(
+    weight: object, rule: str, base: D | None, cap: D, promote: bool
+) -> None:
+    """A sleeve weight that is not a Decimal in (0, 1] is refused (`backtest_bad_sleeve_weight`),
+    as is a regime rule other than `1` and `policy` (`backtest_bad_regime_mult`); a run for
+    promotion is refused with a weight of its own (`backtest_promotion_off_base_weight`) or
+    the `policy` variant (`backtest_promotion_regime_variant`); with no weight given, a policy
+    without the sleeve's base weight, or with one of 0, is refused (`backtest_no_base_weight`),
+    and a weight above the policy's cluster cap, which the allocator would cut, is refused
+    (`backtest_weight_above_cluster_cap`); otherwise the run records the weight used,
+    normalised (HAT-BT-014). Harm: a run sized on a weight of 0, above the whole account, above
+    what the allocator gives or on a guess passes for evidence, or a promotion rides on a
+    sizing live never uses."""
+    policy = s.policy_version()
+    policy = dataclasses.replace(
+        policy,
+        policy=dataclasses.replace(
+            policy.policy,
+            base_weight={} if base is None else dict.fromkeys(policy.policy.base_weight, base),
+            cluster_cap=cap,
+        ),
+    )
+    spec = dataclasses.replace(
+        s.spec(s.config(), DAYS, policy=policy, slippage=DEFAULT_SLIPPAGE_BPS),
+        sleeve_weight=weight,
+        regime_mult=rule,
+        for_promotion=promote,
+    )
+    good_weight = weight is None or (
+        isinstance(weight, D) and weight.is_finite() and 0 < weight <= 1
+    )
+    used = base if weight is None else weight
+    if not good_weight:
+        code = "backtest_bad_sleeve_weight"
+    elif rule not in REGIME_MULT_RULES:
+        code = "backtest_bad_regime_mult"
+    elif promote and weight is not None:
+        code = "backtest_promotion_off_base_weight"
+    elif promote and rule != REGIME_MULT_ONE:
+        code = "backtest_promotion_regime_variant"
+    elif weight is None and (base is None or base == 0):
+        code = "backtest_no_base_weight"
+    elif used > cap:  # type: ignore[operator]
+        code = "backtest_weight_above_cluster_cap"
+    else:
+        code = None
+    if code is not None:
+        market = s.market(FLAT, DAYS)
+        with pytest.raises(BacktestError) as refused:
+            run_backtest(spec, market)
+        assert refused.value.code == code
+        return
+    assert conventions(spec)["sleeve_weight"] == format(used.normalize(), "f")  # type: ignore[union-attr]
+    assert conventions(spec)["regime_mult"] == rule
+    assert ("regime_table" in conventions(spec)) is (rule == REGIME_MULT_POLICY)
+
+
+@given(
+    s.paths(SESSIONS, instruments=2),
+    st.booleans(),
+    st.sets(st.integers(0, SESSIONS - 1), max_size=6),
+    st.integers(0, 100),
+)
+@RUNS
+def test_regime_inputs_loaded(paths: dict, with_vix: bool, rated: set[int], pct: int) -> None:
+    """Under the `policy` regime rule `load_market` reads what the regime job reads: the NIFTY
+    500 and India VIX closes and each session's breadth from the features job, equal to
+    `portfolio.jobs.read_series` and `read_breadth`; without a VIX close or any breadth in the
+    store it refuses (`backtest_no_regime_inputs`), and without the rule it reads neither
+    (PR 68). The generated history is too short for the job's breadth, so the sessions in
+    `rated` have theirs rewritten to `pct`.
+    Harm: the regime-sized backtest reads other inputs than the nightly regime job, or sizes
+    on a regime it could not compute."""
+    cfg = s.config()
+    with tempfile.TemporaryDirectory() as tmp:
+        world = s.night_world(Path(tmp) / "night", cfg, sorted(paths), DAYS)
+        for n in range(SESSIONS):
+            s.store_session(world.store, paths, DAYS, n)
+            if with_vix:
+                level = D(15 + n % 7)
+                world.store.upsert_index(
+                    DAYS[n], [IndexRow(regime.VIX_NAME, level, level, level, level)]
+                )
+        world.nightly(DAYS[-1]).features(DAYS[-1])
+        for n in rated:
+            frame = world.store.read_partition(DATASET_BREADTH, DAYS[n])
+            table = frame.with_columns(pl.lit(float(pct)).alias("breadth_pct")).to_arrow()
+            world.store.write_partition(
+                DATASET_BREADTH, DAYS[n], BREADTH_PART, table.cast(BREADTH_SCHEMA)
+            )
+        with world.session() as session:
+            period = {
+                "universe_id": world.universe_id,
+                "index": s.INDEX,
+                "start": DAYS[s.WARM_UP],
+                "end": DAYS[-1],
+            }
+            plain, _ = load_market(world.store, session, **period)  # type: ignore[arg-type]
+            if not (with_vix and rated):
+                with pytest.raises(BacktestError) as refused:
+                    load_market(world.store, session, regime_inputs=True, **period)  # type: ignore[arg-type]
+                assert refused.value.code == "backtest_no_regime_inputs"
+                return
+            data, snapshot = load_market(world.store, session, regime_inputs=True, **period)  # type: ignore[arg-type]
+        closes, vix = read_series(world.store, DAYS[-1])
+        breadth = {d: b for d in data.days if (b := read_breadth(world.store, d)) is not None}
+    assert set(plain.index_closes) == {s.INDEX}
+    assert not plain.breadth
+    assert dict(data.index_closes[regime.INDEX_NAME]) == closes
+    assert dict(data.index_closes[regime.VIX_NAME]) == vix
+    assert data.breadth == breadth
+    assert breadth
+    assert snapshot["breadth_points"] == len(breadth)

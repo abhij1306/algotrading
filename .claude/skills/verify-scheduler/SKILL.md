@@ -147,12 +147,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `c1e3d8a7a0ce99c992b0599203fe2227359603152e84c44bb8533ba5b1bda570`
+Covered digest: `a98bec8c92ab144b17c55010ce71ff557a67d1fd3191f2d98805fe47ef103556`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 68: `MERGED_PRS` gains 68; no scheduler check changed.
 - PR 73: `test_conf_verification.py` lists PR 73 as merged, `test_conf_ops.py` allows the admin command line `decimal`, `engine.rescale` and `engine.trades`, and `execution/accounts.py` gains `revoke_ddpi` (`verify-portfolio`). No job, job-run or harness rule changed. Nothing was narrowed.
 - PR 67: `MERGED_PRS` gains 67; no scheduler check changed.
 - PR 66: `MERGED_PRS` gains 66; no scheduler check changed.

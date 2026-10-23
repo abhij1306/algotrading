@@ -18,10 +18,14 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT backtest.market_point_in_time` `load_market` reads bars and index closes up to the period's end only; an instrument delisted by the end has its last bar on or before its delisting as its last traded session, one delisted later has none; industry classifications come with their effective dates and `industry_on` gives the one in force on each day (HAT-BT-011, HAT-BT-012). Harm: a run closes a live stock as delisted, or a later reclassification changes an earlier industry-cap decision.
 - `PBT backtest.features_digest_pinned` `load_market` refuses (`backtest_features_stale`) unless the features digest the last complete `features` run stored equals `inputs_digest(stored_factors, None)` and every session of the window has a features partition, read under the features job's lock (a split stored after the last run, a rebuild ranked over a narrower universe, a last run stopped before the last session and no run at all are refused); when it loads, the snapshot's `actions_digest` is that digest and the features it read equal a full rebuild over the same bars and actions (HAT-DATA-077, G42). Harm: a run mixes prices adjusted for a split with features computed before it or over another universe, which the nightly scan never sees.
 - `PBT backtest.version_pinned` Every signal and trade carries the run's strategy and risk-policy versions, and the metrics name them (HAT-BT-013). Harm: evidence cannot be tied to the version being promoted.
+- `PBT backtest.sized_from_allocation` Each trade date's allocation (`BacktestResult.allocations`, and `SignalRow.allocation` on each signal) is the live allocator's for one Live sleeve of health 1: capital = weight x regime multiplier x the account's mark at the night's close (the initial equity before the period), rounded down to money places, risk per trade = the policy's x the multiplier; the multiplier is 1 under `regime_mult` `1` (clamped to the policy's bounds) and under `policy` regime v1 (inputs, 3-day rule from the run's first session, default table, policy bounds, 0.25 smoothing), written out in the test; a night without regime inputs has no allocation and that day's entries are rejected unsized; no accepted entry risks more than capital x risk per trade (HAT-BT-014, PR 68). Harm: the backtest sizes trades as live never would, so its percentage results describe another book.
+- `PBT backtest.invested_share` Each session's invested share (marked positions over the account's mark) is in [0, 1] and above 0 exactly when a trade was open at the close; `metrics.invested_share` is their mean and `metrics.pct_basis` names the account, the weight and the regime rule (HAT-BT-014, O6). Harm: the report hides how little of the account a sleeve deploys.
+- `PBT backtest.sizing_conventions_refused` A sleeve weight that is not a Decimal in (0, 1] (`backtest_bad_sleeve_weight`), an unknown regime rule (`backtest_bad_regime_mult`), for a promotion run a weight of its own (`backtest_promotion_off_base_weight`) or the `policy` variant (`backtest_promotion_regime_variant`), with no weight given a policy without the sleeve's base weight or with one of 0 (`backtest_no_base_weight`), and a weight above the policy's cluster cap (`backtest_weight_above_cluster_cap`) are refused; otherwise `conventions` records the weight (normalised), the rule and, under `policy` only, the regime table (HAT-BT-014). Harm: a run sized on a weight of 0, above the account or on a guess passes for evidence.
+- `PBT backtest.regime_inputs_loaded` `load_market(regime_inputs=True)` reads the NIFTY 500 and India VIX closes and the features job's breadth as `portfolio.jobs.read_series` and `read_breadth` do, records `breadth_points`, and refuses a store without a VIX close or any breadth (`backtest_no_regime_inputs`); without the flag it reads neither (HAT-BT-014). Harm: the regime-sized backtest reads other inputs than the nightly regime job.
 - `PBT backtest.entry_fill_proxy` A gap over (open above the level) fills at the open under either rule; otherwise the default `penetration_1_tick` fills at the first tick-grid price above the level (level + tick on the grid, the next grid price for an off-grid adjusted level) when the high reaches it and `touch` at the level when the high reaches the level, else no entry; penetration never fills where touch does not nor below its price, and without a tick there is no penetration entry (HAT-BT-020, PR 62). Harm: the backtest buys breakouts live never sees trade, at a better price than live pays.
 - `PBT backtest.entry_fill_proxy_chase` In a run under either entry rule (drawn), every opened entry records its level as the trigger price (HAT-CRIT-119) and its buy filled at that rule's proxy price on the instrument's tick and within max chase of the level, with the chase drawn from 0.5%, 1% and 5%. Harm: the backtest buys gaps the live risk check refuses, or ignores the rule a run asked for.
-- `PBT backtest.fill_conventions_recorded` Every run's metrics record `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `slippage_bps` (normalised), `cost_model`, `slot_order` (PR 63), the path rules `ambiguous` (`optimistic` by default), `lower_circuit` and `suspension_markdown` (PR 64), the same ten as one `conventions` block (PR 65), `for_promotion` and `config_digest` (the canonical hash of the first ten, which is exactly the block), and a `touch` run appends `entry_fills_on_touch` to `known_gaps`; a run flagged for promotion at a slippage of 0 or under `touch` is refused (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`; HAT-BT-020..022, O5, PR 62). Harm: runs under different fill conventions read as comparable evidence, or a promotion rides on perfect fills.
-- `PBT backtest.fill_conventions_recorded_digest` Two specs' `config_digest`s are equal exactly when their entry rule, slippage (20 and 20.0 bps alike, -0 and 0 alike), cost model, slot order, ambiguous-day rule and bar-less sessions before the markdown are (PR 62, 63, 64). Harm: a run under other conventions passes for a rerun, or a rerun reads as another convention.
+- `PBT backtest.fill_conventions_recorded` Every run's metrics record `fill_path`, `entry_fill_rule`, `gap_through_rule`, `trigger_proxy`, `slippage_bps` (normalised), `cost_model`, `slot_order` (PR 63), the path rules `ambiguous` (`optimistic` by default), `lower_circuit` and `suspension_markdown` (PR 64), the sizing `sleeve_weight` (the policy's base weight, 0.5 for S1, by default), `regime_mult` (`1` by default) and `health_mult` (PR 68), the same thirteen as one `conventions` block (PR 65), `for_promotion` and `config_digest` (the canonical hash of the first thirteen, which is exactly the block), and a `touch` run appends `entry_fills_on_touch` to `known_gaps`; a run flagged for promotion at a slippage of 0 or under `touch` is refused (`backtest_promotion_without_slippage`, `backtest_promotion_on_touch`; HAT-BT-020..022, O5, PR 62). Harm: runs under different fill conventions read as comparable evidence, or a promotion rides on perfect fills.
+- `PBT backtest.fill_conventions_recorded_digest` Two specs' `config_digest`s are equal exactly when their entry rule, slippage (20 and 20.0 bps alike, -0 and 0 alike), cost model, slot order, ambiguous-day rule, bar-less sessions before the markdown (PR 62, 63, 64), sleeve weight (none given is the policy's 0.50; 0.5 and 0.50 alike) and regime rule (PR 68) are. Harm: a run under other conventions passes for a rerun, or a rerun reads as another convention.
 - `PBT backtest.slot_order_rank` Under `time` candidates take the slots in estimated trigger order (every gap over first: an open above the level, or at it under `touch`; then (level - open) / open ascending, compared by cross-multiplying; no level or open last; ties in score order); `score` keeps the score order; `random:K` is a permutation the same K and day reproduce (HAT-BT-026, G11, PR 63). Harm: on a capped day the backtest gives the slots to the best-scored setups, not the first to break.
 - `PBT backtest.slot_order_refused` A slot order other than `time`, `score` or `random:K` (ASCII digits, no leading zeros, below 10^9) is refused `backtest_bad_slot_order` by `check_conventions`, and a run flagged for promotion under any order but `time` is refused `backtest_promotion_off_time_order` (HAT-BT-026, PR 63). Harm: two spellings of one rule hash apart, an unknown order reads as the default, or a version is promoted on a slot allocation live cannot get.
 - `PBT backtest.slot_order_applied` In a run with one open slot (generated markets with up to six instruments, so most trigger days are capped), each day's triggers reach `evaluate_signal` in the run's slot order computed from the day's watchlist and bars, no trigger takes the slot after an earlier one that day was refused `max_positions`, and `metrics.slot_order` records the rule (HAT-BT-026, PR 63). Harm: the backtest fills a capped day's slot with a later break than live would take.
@@ -68,7 +72,7 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.family_key` Two runs share a family key iff they share strategy and universe, whatever their version or period (HAT-BT-031). Harm: a new version escapes the trial penalty.
 - `PBT dsr.evidence_current_trials` The lifecycle's evidence is the newest completed run of the live version with the DSR deflated by the family's trials and Sharpe variance now, later failed runs and other versions counted; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the gate on a stale trial count.
 - `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force when it is read (now for the lifecycle, the request's instant for the risk-increase gate): a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: a gate is passed on a run of a rule that is not live.
-- `PBT dsr.evidence_promoted_only` The sleeve's evidence, for the lifecycle and the risk-increase gate, is its newest completed run flagged for promotion (`metrics.for_promotion`) whose `metrics.slot_order` is `time` (PR 63) and whose metrics carry the path rules (`lower_circuit`, PR 64); a sensitivity run or one recorded before the flag, the slot order or the path rules is skipped, and with none there is no evidence (HAT-BT-060, O5, PR 62). Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
+- `PBT dsr.evidence_promoted_only` The sleeve's evidence, for the lifecycle and the risk-increase gate, is its newest completed run flagged for promotion (`metrics.for_promotion`) whose `metrics.slot_order` is `time` (PR 63) and whose metrics carry the path rules (`lower_circuit`, PR 64) and `regime_mult` `1` (PR 68); a sensitivity run, the regime variant or one recorded before the flag, the slot order, the path rules or the allocation sizing is skipped, and with none there is no evidence (HAT-BT-060, O5, PR 62). Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
 - `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
 - `PBT dsr.family_floors` A family's DSR is the formula at N' = max(N, `MIN_TRIALS`) and V' = max(V, `VARIANCE_FLOOR`), never above the unfloored DSR, and a first run (N = 1) or identical variants (V = 0) are deflated against a positive SR0 (HAT-BT-042, PR 66, N15). Harm: a new strategy's first lucky run is scored undeflated and promoted.
 - `PBT dsr.pbo_ranked_variants` Variants that differ by a constant shift of the same returns (every block varying) have PBO 0, identical variants PBO 1, and PBO is in [0, 1] over C(S, S/2) splits (HAT-BT-042, PR 66). Harm: a genuinely best variant reads as overfit, or indistinguishable variants read as skill.
@@ -141,10 +145,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `e7a1d8afad273cba43c6ff03c813cc7783767b041b287d336cb826e582e36c75`
+Covered digest: `149b6a76e4e6b07974930dda1d7287f760062e8ea388af73693c16b16784eea1`
 
 ## Scope changes
 
+- PR 68 (G12, N4, O6): sizing through the sleeve's allocation (HAT-BT-014). `RunSpec.sleeve_weight` (default: the policy's base weight of `allocator.sleeve_key(config.bot)`, so 0.50 for the seeds) and `RunSpec.regime_mult` (`1` default, `policy`); each night `_Run._allocate` calls `allocator.allocate` for one Live sleeve (health 1, id `_SANDBOX_SLEEVE`, since the ledger's bot id is new each run) over the account's mark, and `_context` sizes from the allocation's capital and risk per trade (total equity = the capital; free cash = the account's cash). Under `policy` the regime v1 engine (`portfolio.regime`, which now owns `INDEX_NAME` and `VIX_NAME`; `portfolio.jobs` aliases them) reads every session of the window from the first, so the 3-day rule and the smoothing are warm; a night whose inputs fail allocates nothing and the next day's entries are rejected for the missing input, as live. `load_market(regime_inputs=True)` adds the two series and `MarketData.breadth`. `compute_metrics` takes the sessions' invested shares (`BacktestResult.invested`, `metrics.invested_share`, `backtest.metrics.invested_share`) and adds `pct_basis`; `conventions` gains `sleeve_weight`, `regime_mult`, `health_mult` and, under `policy`, `regime_table`. `KNOWN_GAPS` is unchanged (`multipliers_fixed_at_one` now reads: health 1, regime 1 unless `policy`). The golden was regenerated: the default weight halves every size (fees and money figures), R moves only by the charges' rounding, and `config_digest` changes with the block. Code review of PR 68: a weight above the policy's cluster cap is refused (the allocator would cut it while the metrics record it); a promotion run must use the base weight and rule `1`, and the evidence (`runs._latest_run`) needs `regime_mult` `1`, which skips every run recorded before PR 68 (`dsr.evidence_promoted_only` gains the case); the weight is checked before the store is read; under `policy` each night reads the last `regime.HISTORY_DAYS` (300, moved from `jobs`) index days, as the regime job does; the snapshot records `regime_index_points` and `vix_points`; `--sleeve-weight` refuses a malformed number as a usage error. CodeAnt on PR 68: `load_market` reads every index it needs in one statement and the breadth with the features under the features job's lock, so a concurrent upsert or rebuild cannot mix generations (not property-testable: no concurrency in the generated stores). CodeAnt's second pass: a policy base weight of 0 (which `risk.policy` accepts) is refused as `backtest_no_base_weight` (`sizing_conventions_refused` draws the base weight from 0.50, none and 0); a cash-bound entry's slippage and charges can overdraw the cash (pre-existing sizing on `cash / entry`), which `invested_share` shows above 1 rather than hiding; spec 09 records it as a deviation and the root fix is a follow-up. Under rule `1` the multiplier is 1 clamped to the policy's bounds, as the spec, docstrings and this skill now say. Sonar on PR 68: the promotion refusals moved into `_check_promotion` (the break above was re-run there). New PBT `backtest.sized_from_allocation`, `backtest.invested_share`, `backtest.sizing_conventions_refused` and `backtest.regime_inputs_loaded`; `backtest.fill_conventions_recorded` and `backtest.fill_conventions_recorded_digest` gain the sizing conventions. Nothing was narrowed.
 - PR 67 (G38, G39, G42): the nightly path against the loop. `backtest.market.load_market` refuses `backtest_features_stale` unless the features job's stored digest (`features_daily/_state.json`) equals `inputs_digest(stored_factors, None)`, and records it as `actions_digest`. New PBT `backtest.nightly_scan_parity` (HAT-BT-010), `backtest.nightly_no_lookahead` (HAT-BT-011) and `backtest.features_digest_pinned` (HAT-DATA-077), on a night world (`hat_backtest_support.store_session`, `night_world`, `NightWorld`: raw bars in a Parquet store and a HAT database the nightly job bodies read). `backtest.market_point_in_time` writes the job's digest next to its partitions; its assertions are unchanged. Code review of PR 67: the digest and the partitions are read under the features job's lock (shared, `FEATURES_LOCK`), so a run rewriting them finishes first; a session of the window without a features partition is refused too (an incremental run stopped before the last session still records its digest), and the property gained the `short` and `unrun` cases (pinned by `@example`). CodeAnt on PR 67: `backtest.nightly_no_lookahead` states its scope, the corporate actions stored by night d (none in the property); a split stored later re-scales every earlier bar by design (the adjusted view, HAT-BT-012), so it is not a nightly read past d. No property failed on main. Nothing was narrowed.
 - PR 66 (G33, N15): trial accounting. `runs.run_dsr` (replacing `runs.deflate`) scores only a recorded run (`backtest_run_unrecorded` otherwise, `complete_run` too) through `dsr.family_deflated_sharpe` (N >= `MIN_TRIALS` 5, V >= `VARIANCE_FLOOR` 0.25 / 252); `metrics.dsr` gains `trials_floor` and `variance_floor`. `complete_run` writes `returns.parquet` (`RETURNS_SCHEMA`: date, equity, ret; `returns_path`, `read_returns`) and records `metrics.completed_at` and `metrics.pbo` (`family_pbo`: CSCV `dsr.pbo`, `PBO_BLOCKS` 8, over the family's completed runs with a returns file on their shared sessions). `_latest_run` orders by completion (`_completion`: `completed_at`, else the uuid7 start). New PBT `dsr.family_floors`, `dsr.pbo_ranked_variants`, `dsr.pbo_two_variants`, `dsr.pbo_refused`, `dsr.dsr_needs_recorded_run`, `dsr.returns_persisted`, `dsr.evidence_latest_by_completion`, `dsr.family_pbo_recorded` and CONF `dsr_scored_only_by_runs`; `dsr.evidence_current_trials` compares with the floored DSR. `dsr.pbo_ranked_variants` needs every block to vary: a half without volatility scores every variant 0, so the shift no longer orders them (found by the property). Code review of PR 66: `family_pbo` counts a re-run whose series equals an earlier one's once (`runs` vs `variants`; a deterministic re-run scored every split overfit), skips a returns file it cannot read (`read_returns` gives None) and says `pbo_unscorable` for a non-finite series; `complete_run` computes the DSR (`run_dsr(metrics=)`), PBO and completion time before its one status change, so a failure cannot leave a completed run half-written; a close at or below 0 gives a null next return. CodeAnt on PR 66: `run_dsr` takes the trial count and the Sharpe ratios from one read of the family (a sibling completing between two reads made them disagree), and CONF `dsr_scored_only_by_runs` also refuses a whole-module import of `dsr`. The pure formula's properties and the golden replay are unchanged. Nothing was narrowed.
 - PR 65 (G35, N10): run metrics. `compute_metrics` adds `exposure`, `cagr`, `mar`, `longest_drawdown_sessions`, `tail_trimmed_r` (`top_1pct`, `top_5pct`, `top_10pct`; `TAIL_TRIM_PCTS`) and `cost_share` from the new functions of `backtest/metrics.py` (verify-standalone), and `conventions`, the `conventions()` block `config_digest` hashes (the flat keys stay, the evidence filters read them). `TradeRow.score` (last field, default None) is the score of the watchlist row the trade entered from (`_trades` joins on playbook, instrument and trade date), and `TRADE_SCHEMA` gains a nullable float `score` column after the existing ones. `playbook` and the skip counts (`metrics.skips`) predate PR 65 (a deviation note in HAT-BT-032). New PBT `backtest.robustness_metrics`; `backtest.trades_match_metrics` and `backtest.fill_conventions_recorded` gain the score and the block. The golden replay's trades are unchanged; each gains `score`, and both seeds' metrics gain the seven keys; `config_digest` is unchanged. Code review of PR 65: `cagr` (`_cagr`) is null rather than a crash when the final equity is not positive or a short run's extrapolation overflows, and `mar` then too; the score comes from the sorted watchlist rows `_watch_rows` already reads (one read; a repeated key resolves the same each run); `conventions()` is built once per run. Nothing was narrowed.
@@ -352,6 +357,128 @@ E   AssertionError: assert 'f912e2c0-c9f...-82ca501293ca' == '00000000-000...-00
 E
 ```
 
+### PBT backtest.sized_from_allocation
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `_Run._allocate` allocates over the initial equity instead of the account's mark at the night's close.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1819: in test_sized_from_allocation
+    assert (allocation.regime_mult, allocation.capital) == (mult, capital), day
+E   AssertionError: datetime.date(2025, 2, 12)
+E   assert (Decimal('1') [cut]'10000.0000')) == (Decimal('1') [cut]('9999.9736'))
+E     At index 1 diff: Decimal('10000.0000') != Decimal('9999.9736')
+E     Full diff:
+E       (
+E           Decimal('1'),
+```
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `_regime_night` confirms each night's raw state on its own (`confirm_step(None, ...)`): no 3-day rule.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1819: in test_sized_from_allocation
+    assert (allocation.regime_mult, allocation.capital) == (mult, capital), day
+E   AssertionError: datetime.date(2025, 2, 5)
+E   assert (Decimal('0.7 [cut]('7500.0000')) == (Decimal('0.5 [cut]('5000.0000'))
+E     At index 0 diff: Decimal('0.75') != Decimal('0.5')
+E     Full diff:
+E       (
+E     -     Decimal('0.5'),
+```
+
+### PBT backtest.invested_share
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `_mark` records the cash's share of the mark instead of the positions'.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1852: in test_invested_share
+    assert (share > 0) is held, day
+E   AssertionError: datetime.date(2025, 2, 4)
+E   assert (Decimal('1') > 0) is False
+E   Failing test case: test_invested_share(
+E       paths={'00000000-0000-0000-0000-000000001000': [(80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+```
+
+### PBT backtest.sizing_conventions_refused
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `check_conventions` accepts a sleeve weight of 0 (`0 <= sleeve_weight <= 1`).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1903: in test_sizing_conventions_refused
+    with pytest.raises(BacktestError) as refused:
+E   Failed: DID NOT RAISE BacktestError
+E   Failing explicit example: test_sizing_conventions_refused(
+E       weight=Decimal('0'),
+E       rule='1',
+E       has_base=True,
+E   )
+```
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `sleeve_weight` skips the cluster-cap check (`if False:`), so a weight the allocator cuts runs and records the uncut weight (code review of PR 68).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1931: in test_sizing_conventions_refused
+    with pytest.raises(BacktestError) as refused:
+E   Failed: DID NOT RAISE BacktestError
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_sizing_conventions_refused(
+E       weight=None,
+E       rule='1',
+E       has_base=True,
+```
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `sleeve_weight` accepts a policy base weight of 0 (`if weight is None:`), so the run goes ahead with no capital and rejects every entry (CodeAnt on PR 68).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1933: in test_sizing_conventions_refused
+    with pytest.raises(BacktestError) as refused:
+E   Failed: DID NOT RAISE BacktestError
+E   Failing explicit example: test_sizing_conventions_refused(
+E       weight=None,
+E       rule='1',
+E       base=Decimal('0'),
+E       cap=Decimal('1'),
+E       promote=False,
+E   )
+```
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `_check_promotion` accepts a promotion run with a weight of its own (`if False:`; re-run after Sonar's split of `check_conventions`).
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1932: in test_sizing_conventions_refused
+    with pytest.raises(BacktestError) as refused:
+E   Failed: DID NOT RAISE BacktestError
+E   Failing explicit example: test_sizing_conventions_refused(
+E       weight=Decimal('0.5'),
+E       rule='1',
+E       has_base=True,
+E       cap=Decimal('1'),
+```
+
+### PBT backtest.regime_inputs_loaded
+
+Break: (PR 68) in `backend/app/hat/backtest/market.py`: `load_market` checks only the NIFTY 500 closes, so a store without India VIX loads.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1955: in test_regime_inputs_loaded
+    with pytest.raises(BacktestError) as refused:
+E   Failed: DID NOT RAISE BacktestError
+E   Failing test case: test_regime_inputs_loaded(
+E       # The test always failed when commented parts were varied together.
+E       paths={'00000000-0000-0000-0000-000000001000': [(80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+```
+
 ### PBT backtest.entry_fill_proxy
 
 Break: in `backend/app/hat/backtest/fills.py`: a gap over the level fills at the level, not the open.
@@ -502,6 +629,20 @@ E     Full diff:
 E       {
 ```
 
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `conventions` leaves out `health_mult`.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1034: in test_fill_conventions_recorded
+    assert {k: metrics[k] for k in recorded} == recorded
+E   KeyError: 'health_mult'
+E   Failing test case: test_fill_conventions_recorded(
+E       # The test always failed when commented parts were varied together.
+E       paths={'00000000-0000-0000-0000-000000001000': [(80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+E         (80.0, 80.0, 80.0, 80.0),
+```
+
 ### PBT backtest.fill_conventions_recorded_digest
 
 Break: (PR 62) in `backend/app/hat/engine/backtest.py`: `config_digest` leaves the slippage out.
@@ -582,6 +723,20 @@ E       c05262e73d6) is False
 E   Failing test case: test_fill_conventions_recorded_digest(
 E       a=('penetration_1_tick', Decimal('0'), 'zero', 'time', 'optimistic', 0),
 E       b=('penetration_1_tick', Decimal('0'), 'zero', 'time', 'optimistic', 5),
+```
+
+Break: (PR 68) in `backend/app/hat/engine/backtest.py`: `conventions` records the sleeve weight unnormalised (`str(sleeve_weight(spec))`), so 0.5 and 0.50 hash apart.
+
+```
+tests/hat/properties/test_backtest.py F
+tests/hat/properties/test_backtest.py:1089: in test_fill_conventions_recorded_digest
+    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+E   AssertionError: assert ('aba611fcde3c [cut]e143dbf9c5b45' == 'ca95e60936ce [cut]139e26fd7f42c'
+E     - ca95e60936ce8280be059bb5643ca5150c63ecfa484045b9987139e26fd7f42c
+E     + aba611fcde3c5c1ae8e0978fe0ee165900126d29c4b041c6807e143dbf9c5b45) is True
+E   Failing test case: test_fill_conventions_recorded_digest(
+E       a=('penetration_1_tick',
+E           Decimal('0'),
 ```
 
 ### PBT backtest.slot_order_rank
@@ -1633,6 +1788,20 @@ E   AssertionError: assert 2 == 1
 E    +  where 2 = BacktestFacts(dsr_prob=Decimal('0.778222'), trades=2, expectancy=Decimal('2'), trials=2).trades
 E   Failing explicit example: test_evidence_promoted_only(
 E       flags=[(True, 'time', True), (True, 'time', False)],
+E   )
+```
+
+Break: (PR 68) in `backend/app/hat/backtest/runs.py`: `_latest_run` drops the `regime_mult` filter, so a promotion run recorded before PR 68 (sized off the whole account) is the evidence.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:492: in test_evidence_promoted_only
+    assert facts.trades == (want[-1] if want else 0)
+E   AssertionError: assert 2 == 1
+E    +  where 2 = BacktestFacts(dsr_prob=Decimal('0.683814'), trades=2, expectancy=Decimal('2'), trials=2).trades
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_evidence_promoted_only(
+E       flags=[(True, 'time', True, '1'), (True, 'time', True, None)],
 E   )
 ```
 

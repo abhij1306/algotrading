@@ -39,12 +39,15 @@ from sqlalchemy.orm import Session
 from ..data.store import DataStore, atomic_replace
 from ..engine.backtest import (
     LOWER_CIRCUIT_RULE,
+    REGIME_MULT_ONE,
+    REGIME_MULT_POLICY,
     BacktestError,
     BacktestResult,
     MarketData,
     RunSpec,
     check_conventions,
     run_backtest,
+    sleeve_weight,
     with_cooldown,
 )
 from ..engine.backtest import trades_parquet as encode_trades
@@ -421,12 +424,15 @@ def record_backtest(
 class RunConventions:
     """The rules a run chooses besides its slippage and cost model (`RunSpec`): the entry fill
     (PR 62), the slot order (PR 63), the ambiguous-day rule and the bar-less sessions before the
-    suspension markdown (PR 64)."""
+    suspension markdown (PR 64), the sleeve weight (None: the policy's base weight) and the
+    regime rule the entries are sized under (PR 68)."""
 
     entry_fill_rule: str = PENETRATION
     slot_order: str = SLOT_ORDER_TIME
     ambiguous: str = AMBIGUOUS_OPTIMISTIC
     suspension_sessions: int = SUSPENSION_SESSIONS
+    sleeve_weight: Decimal | None = None
+    regime_mult: str = REGIME_MULT_ONE
 
 
 def backtest_bot(
@@ -448,9 +454,11 @@ def backtest_bot(
     the same strategy) on the sleeve's universe under the risk policy in force now, over the
     Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58), and
     `conventions` the default entry fill (PR 62), slot order (PR 63), ambiguous-day rule and
-    bar-less sessions before the markdown (PR 64). A run `for_promotion` (one `publish_version`
-    may take) is refused at a slippage of 0, under `touch`, off the `time` slot order or with a
-    markdown later than the default. The command line's body.
+    bar-less sessions before the markdown (PR 64), sleeve weight and regime rule (PR 68); the
+    `policy` regime rule also reads the regime engine's index, VIX and breadth. A run
+    `for_promotion` (one `publish_version` may take) is refused at a slippage of 0, under
+    `touch`, off the `time` slot order or with a markdown later than the default. The command line's
+    body.
     Refusals before the run is recorded raise `RunError` and record nothing; a refusal of the
     engine is a failed trial."""
     bot = session.get(HatBot, bot_id)
@@ -484,12 +492,8 @@ def backtest_bot(
             rules.slot_order,
             ambiguous=rules.ambiguous,
             suspension_sessions=rules.suspension_sessions,
-        )
-    except BacktestError as exc:
-        raise RunError(exc.code) from None
-    try:
-        data, snapshot = load_market(
-            store, session, universe_id=universe_id, index=config.regime.index, start=start, end=end
+            sleeve_weight=rules.sleeve_weight,
+            regime_mult=rules.regime_mult,
         )
     except BacktestError as exc:
         raise RunError(exc.code) from None
@@ -505,7 +509,25 @@ def backtest_bot(
         slot_order=rules.slot_order,
         ambiguous=rules.ambiguous,
         suspension_sessions=rules.suspension_sessions,
+        sleeve_weight=rules.sleeve_weight,
+        regime_mult=rules.regime_mult,
     )
+    try:
+        sleeve_weight(spec)  # before the store is read
+    except BacktestError as exc:
+        raise RunError(exc.code) from None
+    try:
+        data, snapshot = load_market(
+            store,
+            session,
+            universe_id=universe_id,
+            index=config.regime.index,
+            start=start,
+            end=end,
+            regime_inputs=rules.regime_mult == REGIME_MULT_POLICY,
+        )
+    except BacktestError as exc:
+        raise RunError(exc.code) from None
     return record_backtest(
         session, spec, data, universe_id=universe_id, data_snapshot=snapshot, root=root
     )
@@ -549,7 +571,9 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     one recorded before the flag existed is never the evidence; nor is one whose slots went in
     another order than the estimated trigger time (PR 63), as every run before PR 63 did, nor
     one recorded before the path rules (PR 64), which sold at locked lower bands and carried
-    suspended positions at their last close."""
+    suspended positions at their last close, nor one recorded before the sleeve's allocation
+    sized it (PR 68), which sized off the whole account; a promotion run is sized at the base
+    weight and regime rule `1` (`check_conventions`)."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
@@ -572,6 +596,7 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
             and (run.metrics or {}).get("for_promotion") is True
             and (run.metrics or {}).get("slot_order") == SLOT_ORDER_TIME
             and (run.metrics or {}).get("lower_circuit") == LOWER_CIRCUIT_RULE
+            and (run.metrics or {}).get("regime_mult") == REGIME_MULT_ONE
         ),
         None,
     )
