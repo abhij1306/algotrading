@@ -229,11 +229,17 @@ class GttUpkeep:
         HAT-OPS-024), one step of `verify_plan` at a time: refreshed, else alerted and placed
         again. A GTT under the old series' symbol (HAT-EXEC-146), or placed `GTT_RENEW_AFTER` ago
         (research G24; the market is shut at the nightly verify, so nothing can trigger
-        meanwhile), is cancelled and placed again; a refused cancel leaves it to the next step."""
+        meanwhile), is cancelled and placed again; a refused cancel leaves it to the next step.
+        A position whose split or bonus is not rescaled yet is left as it is: its stop and
+        quantity are on the old scale (HAT-EXEC-142)."""
         target = self._desk.target(session, position_id)
         position = target.position
         if position.closed_at is not None or position.qty_open <= 0:
             return CLOSED
+        if pending_actions(session, position, trade_date_of(now)):
+            # A GTT placed at the old-scale stop would rest above the price: told, nothing done.
+            self._desk.alert(ALERT_GTT_UNVERIFIED, target, now, "corporate_action_pending")
+            return UNVERIFIED
         tick = self._desk.tick(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)
         gtts = [
