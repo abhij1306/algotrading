@@ -42,7 +42,17 @@ from app.hat.ops.jobs import (
     DEFAULT_ERROR_CODE,
     JobError,
 )
-from app.hat.ops.scheduler import Days, HatScheduler, ScheduledJob, due, runs_on
+from app.hat.ops.scheduler import (
+    JOB_MISSED,
+    JOB_RUNNING_LONG,
+    Days,
+    HatScheduler,
+    ScheduledJob,
+    due,
+    overdue,
+    runs_on,
+)
+from app.hat.risk.sessions import SessionCalendar, calendar_short
 from app.hat.settings import load_settings
 from app.hat.time import IST, trade_date_of
 from app.paths import PROJECT_ROOT
@@ -513,3 +523,39 @@ def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime, 
         ("subscription_limit", trade_date_of(now), {}) for n in wanted if n >= limit
     ]
     assert threading.current_thread() not in notifier.threads
+
+
+# --- job health (P5, audit R1) ---
+
+
+def test_overdue_classifies_missed_and_hung() -> None:
+    """Past `at + deadline` without a success: running is `job.running_long`, anything else
+    `job.missed`; before it, a success, or a day the job does not run on, nothing."""
+    job = ScheduledJob("snapshot.bots", time(23, 30), lambda _d: None, deadline=timedelta(hours=1))
+    day = date(2026, 10, 23)
+    late = datetime(2026, 10, 24, 0, 30, tzinfo=IST)
+    early = late - timedelta(seconds=1)
+
+    def check(
+        now: datetime, *, ok: bool = False, running: bool = False, trading: bool = True
+    ) -> str | None:
+        return overdue(job, day, now, trading=lambda _d: trading, succeeded=ok, running=running)
+
+    assert check(early) is None
+    assert check(late) == JOB_MISSED
+    assert check(late, running=True) == JOB_RUNNING_LONG
+    assert check(late, ok=True) is None
+    assert check(late, trading=False) is None
+
+
+def test_calendar_short() -> None:
+    """Short when no trading day lies beyond a week from today, or there is no calendar."""
+    today = date(2026, 12, 24)
+
+    def cal(*days: date) -> SessionCalendar:
+        return SessionCalendar.from_rows((d, True, None, None) for d in days)
+
+    assert calendar_short(None, today)
+    assert calendar_short(cal(), today)
+    assert calendar_short(cal(date(2026, 12, 31)), today)
+    assert not calendar_short(cal(date(2027, 1, 1)), today)

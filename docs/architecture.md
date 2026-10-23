@@ -101,10 +101,16 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 | 15:20-15:25 | exits.close (MA exits on live price); 15:25 gtt.swap |
 | 15:30-15:45 | watchlist.expire, trade.end_session, Telegram rejections, daily report, veto digest |
 | 18:00 on | the nightly chain above |
-| 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots (drawdown kills) |
+| 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots (drawdown kills at the close marks) |
+
+Every job has a deadline after its time (`daily/runtime.py:JOB_DEADLINES`); a job that fails,
+misses its deadline or runs past it raises one URGENT alert per job and trade date
+(`job.failed`, `job.missed`, `job.running_long`). A calendar with no trading day more than a week
+ahead alerts `calendar.short` daily.
 
 Periodic loop beside the jobs: session watch, fill sync, approval expiry, reconciliation (5 min),
-live exits of shadow positions, announcements poll.
+live exits of shadow positions, the drawdown kills on equity marked to market (every minute of
+the session), announcements poll, the calendar check.
 
 ## Verification layout
 

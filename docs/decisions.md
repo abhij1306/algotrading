@@ -38,8 +38,9 @@ here.
   distance; per-sleeve position caps (S1 20%, S2 25% of equity); ADV cap 1% of 20-day volume per position; global open risk 1.5%;
   at most 6 open positions per bot, 2 per industry, 3 entries and 3 stop-outs per day; exposure
   ladder L1 2 positions at 0.5x, L2 4 at 1.0x, L3 6 at 1.0x, up after 2 wins, down after 2 losses;
-  kill switches at 10% drawdown (account and per bot) make bots manage-only. All risk numbers live
-  in the versioned risk policy, never in a bot or strategy.
+  kill switches at 10% drawdown (account and per bot) make bots manage-only, measured on equity
+  marked to market intraday, not only the end-of-day realised P&L (X9, 2026-10-23). All risk
+  numbers live in the versioned risk policy, never in a bot or strategy.
 - **Portfolio (PL1-PL5).** Unit is a sleeve (strategy version x universe version). Regime (rules
   over trend, India VIX, breadth; 4 states, changes after 3 days) scales sleeve weights within
   [0.25, 1.0], moving at most 0.25 a day; it never promotes or retires. Base weights S1 50% and S2
