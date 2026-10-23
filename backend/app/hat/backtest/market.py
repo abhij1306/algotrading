@@ -46,9 +46,10 @@ SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
        CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value
 FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
 """
+# every index the run reads, in one statement, so a concurrent upsert cannot split them
 _INDEX_SQL = """
-SELECT date, CAST(close AS VARCHAR) FROM index_daily
-WHERE index_name = ? AND date <= ? ORDER BY date
+SELECT index_name, date, CAST(close AS VARCHAR) FROM index_daily
+WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 """
 
 
@@ -113,10 +114,13 @@ def _features_digest(store: DataStore) -> str | None:
     return digest if isinstance(digest, str) else None
 
 
-def _current_features(store: DataStore, digest: str, days: list[date]) -> pl.DataFrame:
-    """The features of `days`, read under the features job's lock (shared), so a run that is
-    rewriting partitions finishes first; `backtest_features_stale` unless the job's recorded
-    digest is `digest` and every day has a partition."""
+def _current_features(
+    store: DataStore, digest: str, days: list[date], breadth_days: list[date]
+) -> tuple[pl.DataFrame, dict[date, Decimal]]:
+    """The features of `days` and the breadth of `breadth_days`, read under the features job's
+    lock (shared), so a run that is rewriting partitions finishes first and both come from one
+    generation; `backtest_features_stale` unless the job's recorded digest is `digest` and
+    every day has a partition."""
     store.root.mkdir(parents=True, exist_ok=True)
     with (store.root / FEATURES_LOCK).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)
@@ -124,7 +128,7 @@ def _current_features(store: DataStore, digest: str, days: list[date]) -> pl.Dat
             store.partition_files(DATASET_FEATURES, day) for day in days
         ):
             raise BacktestError("backtest_features_stale")
-        return _features(store, days)
+        return _features(store, days), _breadth(store, breadth_days)
 
 
 def _breadth(store: DataStore, days: Iterable[date]) -> dict[date, Decimal]:
@@ -187,22 +191,19 @@ def load_market(
     window = days[max(0, first - LOOKBACK_SESSIONS) :]
     actions = stored_factors(session)
     expected = inputs_digest(actions, None)
-    features = _current_features(store, expected, days[max(0, first - 1) :])
+    features, breadth = _current_features(
+        store, expected, days[max(0, first - 1) :], window if regime_inputs else []
+    )
     members = _members(session, universe_id)
     instruments = {m.instrument_id for m in members}
     with store.connect(actions) as con:
         bars = con.execute(_BARS_SQL, [window[0], end]).pl()
-        closes = con.execute(_INDEX_SQL, [index, end]).fetchall()
-        extra = {
-            name: con.execute(_INDEX_SQL, [name, end]).fetchall()
-            for name in (regime.INDEX_NAME, regime.VIX_NAME)
-            if regime_inputs and name != index
-        }
-    index_closes = {
-        name: [(d, Decimal(c)) for d, c in points]
-        for name, points in {**extra, index: closes}.items()
-    }
-    breadth = _breadth(store, window) if regime_inputs else {}
+        names = sorted({index, *((regime.INDEX_NAME, regime.VIX_NAME) if regime_inputs else ())})
+        rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
+    index_closes: dict[str, list[tuple[date, Decimal]]] = {name: [] for name in names}
+    for name, day, close in rows:
+        index_closes[name].append((day, Decimal(close)))
+    closes = index_closes[index]
     if regime_inputs and not (
         breadth and all(index_closes[n] for n in (regime.INDEX_NAME, regime.VIX_NAME))
     ):

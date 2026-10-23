@@ -1835,17 +1835,38 @@ def check_conventions(
         raise BacktestError("backtest_bad_sleeve_weight")
     if regime_mult not in REGIME_MULT_RULES:
         raise BacktestError("backtest_bad_regime_mult")
-    if for_promotion and slippage_bps == 0:
+    if for_promotion:
+        _check_promotion(
+            entry_fill_rule,
+            slippage_bps,
+            slot_order,
+            suspension_sessions,
+            own_weight=sleeve_weight is not None,
+            regime_mult=regime_mult,
+        )
+
+
+def _check_promotion(
+    entry_fill_rule: str,
+    slippage_bps: Decimal,
+    slot_order: str,
+    suspension_sessions: int,
+    *,
+    own_weight: bool,
+    regime_mult: str,
+) -> None:
+    """The refusals of a run flagged for promotion (`check_conventions`)."""
+    if slippage_bps == 0:
         raise BacktestError("backtest_promotion_without_slippage")
-    if for_promotion and entry_fill_rule != PENETRATION:
+    if entry_fill_rule != PENETRATION:
         raise BacktestError("backtest_promotion_on_touch")
-    if for_promotion and slot_order != SLOT_ORDER_TIME:
+    if slot_order != SLOT_ORDER_TIME:
         raise BacktestError("backtest_promotion_off_time_order")
-    if for_promotion and suspension_sessions > SUSPENSION_SESSIONS:
+    if suspension_sessions > SUSPENSION_SESSIONS:
         raise BacktestError("backtest_promotion_late_suspension")
-    if for_promotion and sleeve_weight is not None:
+    if own_weight:
         raise BacktestError("backtest_promotion_off_base_weight")
-    if for_promotion and regime_mult != REGIME_MULT_ONE:
+    if regime_mult != REGIME_MULT_ONE:
         raise BacktestError("backtest_promotion_regime_variant")
 
 

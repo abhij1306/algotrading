@@ -1928,8 +1928,9 @@ def test_sizing_conventions_refused(
     else:
         code = None
     if code is not None:
+        market = s.market(FLAT, DAYS)
         with pytest.raises(BacktestError) as refused:
-            run_backtest(spec, s.market(FLAT, DAYS))
+            run_backtest(spec, market)
         assert refused.value.code == code
         return
     assert conventions(spec)["sleeve_weight"] == format(used.normalize(), "f")  # type: ignore[union-attr]
