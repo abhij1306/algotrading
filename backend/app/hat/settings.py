@@ -45,6 +45,7 @@ class HatSettings:
     mpp_page_after: int = 3
     exchange_day_range: bool = False
     symbol_silent_seconds: int = 120
+    entry_timeout_minutes: int = 60
 
 
 def _is_true(raw: str | None) -> bool:
@@ -85,6 +86,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         mpp_page_after=_calls(source.get("HAT_MPP_PAGE_AFTER"), 3) or 3,
         exchange_day_range=_is_true(source.get("HAT_EXCHANGE_DAY_RANGE")),
         symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
+        entry_timeout_minutes=_calls(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60) or 60,
     )
 
 

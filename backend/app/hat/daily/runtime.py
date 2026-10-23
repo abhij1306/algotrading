@@ -51,6 +51,7 @@ from ..engine.live_entry import DataHealthKill, TriggerService
 from ..engine.strategy.config import StrategyConfig, parse_config
 from ..engine.trigger import TriggerMonitor, locked_upper_circuit
 from ..execution.broker import HatBroker
+from ..execution.entry_timeout import EntryWatch
 from ..execution.router import PlacementCheck
 from ..logs import configure_hat_logging
 from ..models import (
@@ -304,6 +305,9 @@ class HatRuntime:
             TriggerMonitor(self.live.builder), sf, contexts, feed_stale, self.route
         )
         self.live.add_bar_listener(self.service.on_bar)
+        # PR 49: an unfilled entry is cancelled on a failed break or after the timeout
+        self.entries = EntryWatch(timedelta(minutes=self.settings.entry_timeout_minutes))
+        self.live.add_bar_listener(self.entries.on_bar)
         self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
         self.shadow = ShadowExits(sf, self.views, self.desks.managed)
         self.subscriptions = LiveSubscriptions(registry, subscribe, unsubscribe)
@@ -419,6 +423,13 @@ class HatRuntime:
             ]
             if self.is_open(now):
                 steps.append(("exits", timedelta(0), lambda: self._live_exits(now)))
+                steps.append(
+                    (
+                        "entries",
+                        timedelta(0),
+                        lambda: self.desks.cancel_stale_entries(now, self.entries),
+                    )
+                )
         if self.parts.announcements is not None:
             steps.append(("announcements", poll_interval(now), lambda: self._poll(now)))
         for name, every, step in steps:

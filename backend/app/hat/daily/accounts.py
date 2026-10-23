@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
+from ..execution.entry_timeout import EntryWatch
 from ..execution.fills import FillSync, SaleBand, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
@@ -389,6 +390,34 @@ class Desks:
             return 0
         with self._session_factory() as session:
             return desk.router.expire(session, now)
+
+    def cancel_stale_entries(self, now: datetime, watch: EntryWatch) -> int:
+        """Cancel each account's real entries nothing of which filled whose break failed or that
+        waited too long (PR 49, HAT-EXEC-046); one account's failure never holds up another's.
+        Returns the cancels asked."""
+        asked = 0
+        for account_id, desk in self.by_account.items():
+            try:
+                with self._session_factory() as session:
+                    for signal_id, reason in watch.due(session, account_id, now):
+                        asked += self._cancel_stale(desk, session, signal_id, reason, now)
+            except Exception:
+                logger.exception("stale entries of account %s not read", account_id)
+        return asked
+
+    @staticmethod
+    def _cancel_stale(
+        desk: AccountDesk, session: Session, signal_id: uuid.UUID, reason: str, now: datetime
+    ) -> int:
+        """One signal's cancel; its failure never holds up the account's other entries."""
+        try:
+            if desk.manager.cancel_unfilled_entry(session, signal_id, now):
+                logger.info("entry of signal %s cancel taken: %s", signal_id, reason)
+                return 1
+        except Exception:
+            session.rollback()
+            logger.exception("entry of signal %s not cancelled (%s)", signal_id, reason)
+        return 0
 
     def watch_sessions(self, now: datetime) -> None:
         for desk in self.by_account.values():

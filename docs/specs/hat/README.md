@@ -334,10 +334,10 @@ to an artefact that exists.
 | HAT-CRIT-116 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.volume_pace_contract` |
 | HAT-CRIT-117 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.early_volume_contract` |
 | HAT-CRIT-118 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.catalyst_attached_contract` |
-| HAT-CRIT-119 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.price_breaks_level_contract` |
+| HAT-CRIT-119 | [04](04-criteria-and-bots.md) | 8, 15, 49 | PBT `criteria.price_breaks_level_contract` |
 | HAT-CRIT-120 | [04](04-criteria-and-bots.md) | 8, 15, 56 | PBT `criteria.neglect_contract` |
 | HAT-CRIT-121 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.adtr_filter_contract` |
-| HAT-CRIT-122 | [04](04-criteria-and-bots.md) | 8, 15 | PBT `criteria.max_chase_contract`, TLA `ExecutionRouter!MaxChaseAlwaysApplied` |
+| HAT-CRIT-122 | [04](04-criteria-and-bots.md) | 8, 15, 49 | PBT `criteria.max_chase_contract`, TLA `ExecutionRouter!MaxChaseAlwaysApplied` |
 | HAT-CRIT-123 | [04](04-criteria-and-bots.md) | 54 | PBT `criteria.close_vs_pivot_contract`, PBT `criteria.close_vs_pivot_stage`, PBT `scoring.stage_levels`, PBT `scoring.numeric_levels`, PBT `config.close_vs_pivot_needs_vcp` |
 | HAT-BOT-050 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `config.playbook_shape`, PBT `trades.shared_bot_cap` |
 | HAT-BOT-051 | [04](04-criteria-and-bots.md) | 8, 15 | DB `runtime.signal_unique_per_day`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
@@ -452,6 +452,7 @@ to an artefact that exists.
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
 | HAT-EXEC-045 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap` |
+| HAT-EXEC-046 | [07](07-execution-and-brokers.md) | 49 | PBT `manage.unfilled_entry_cancelled`, PBT `bars.live_flags_parsed` |
 | HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11, 54 | PBT `stops.final_contraction_low`, PBT `stops.contraction_stop_at_the_fill` |
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11, 22, 39 | PBT `stops.low_of_day`, PBT `bars.trigger_never_uses_a_partial_session` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |

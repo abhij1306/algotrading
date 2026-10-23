@@ -120,7 +120,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `2e09c52ab4db00a399a1b6faf7f9becf4486fea87b6734ff776476dcdf282991`
+Covered digest: `acdfb8b2c43f4e9f7753736c312eec167733c60ac9a01548a33a353b565562aa`
 
 ## Scope changes
 
@@ -139,6 +139,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 54 (plan audit G28) added `min_pct` to `below_final_contraction_low` (default 0, off) and the skip `stop_too_narrow`; the backtest's re-check at the fill price (`check_width`) applies it too. `final_contraction_low` draws a low near a 100.00 entry as well, so `min_pct` decides often. The scan's overnight plan at the pivot leaves `min_pct` to the entry (`plan_stop_at_pivot`), since a higher fill only widens a contraction stop. Nothing was narrowed.
 - PR 16 added `exits.veto_verdict_threshold` (`approvals.veto_verdict`, `veto_history`). The comparison is exact (`sum(s) * |t| < sum(t) * |s|`) after the first draft compared rounded means; nothing was narrowed.
 - PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
+- PR 49 (HAT-EXEC-046): `StopDesk.cancel_unfilled_entry` cancels a real entry nothing of which filled (refused once a real position exists), through `_cancel_entries`, now shared with `cancel_entry`'s remainder cancel. No stop is placed or moved; `StopPlacement` is unchanged. Its property (`manage.unfilled_entry_cancelled`) and breaks are in `verify-execution`. Nothing was narrowed.
 - PR 47 (research G01, HAT-DATA-052): price-neutral actions (`dividend`, `notice`) are stored for their ex-dates; `rescale.unhandled_actions` excludes them (`PRICE_NEUTRAL_TYPES`). `StopDesk.verify` renews a GTT 300 days old (`_renewed`, `manage.verify_renews_old_gtt`), and `check_gtt` backs the 08:40 ex-date check; their properties are in `verify-execution` (`test_manage.py`). `StopPlacement` is unchanged: a renewal is a cancel and a place of the same stop while the market is shut, and a broker cancel is the model's existing GTT loss. Nothing was narrowed.
 
 ## Scratch breaks

@@ -1288,24 +1288,50 @@ def oracle_level(expr: str, pivot: int, consolidation: int, first_high: int | No
     expr="pivot",
     pivot=10_000,
     consolidation=10_000,
+    confirm=None,
 )  # the first bar touches the pivot without trading above it; the second breaks it
+@example(
+    steps=[(300, 10_050, 1), (310, 9_990, 1), (600, 10_020, 1)],
+    expr="pivot",
+    pivot=10_000,
+    consolidation=10_000,
+    confirm=None,
+)  # PR 49 (N1): the second bar spikes through and closes back below; the third holds above
+@example(
+    steps=[(300, 10_050, 1), (310, 9_990, 1)],
+    expr="pivot",
+    pivot=10_000,
+    consolidation=10_000,
+    confirm="high",
+)  # with `confirm: high` the spike is a break; the entry is still never below the level
 @given(
     steps=STEPS,
     expr=st.sampled_from(LEVEL_EXPRESSIONS),
     pivot=st.integers(9_500, 10_500),
     consolidation=st.integers(9_500, 10_500),
+    confirm=st.sampled_from([None, "close", "high"]),
 )
 @settings(max_examples=150, deadline=None)
 def test_price_breaks_level_contract(
-    steps: list[tuple[int, int, int]], expr: str, pivot: int, consolidation: int
+    steps: list[tuple[int, int, int]],
+    expr: str,
+    pivot: int,
+    consolidation: int,
+    confirm: str | None,
 ) -> None:
     """HAT-CRIT-119, HAT-BOT-071, HAT-EXEC-120: driven through the real bar builder and trigger
     monitor, a `price_breaks_level` playbook fires once, on the first final bar whose high is
-    strictly above the level and whose final instant is in [09:20, 15:20]; the trigger's time is
-    that instant, its price the level, its live price the bar's close. The opening range level
-    does not exist before the first bar is final, and a touch is not a break. Harm: a breakout
-    is bought on a touch, before the opening range exists, or after 15:20."""
-    book = playbook(trigger=[{"type": "price_breaks_level", "params": {"level": expr}}])
+    strictly above the level, whose close is at or above it (`confirm: close`, the default; PR
+    49) and whose final instant is in [09:20, 15:20]; the trigger's time is that instant, its
+    price the level, its live price the bar's close, and its entry the larger of the level and
+    that close on the tick grid, never below the level. The opening range level does not exist
+    before the first bar is final, and a touch is not a break. Harm: a breakout is bought on a
+    touch, before the opening range exists, or after 15:20; or a spike that closed back under
+    the level is bought below it as it falls (plan audit N1)."""
+    params: dict[str, str] = {"level": expr}
+    if confirm is not None:
+        params["confirm"] = confirm
+    book = playbook(trigger=[{"type": "price_breaks_level", "params": params}])
     cand = candidate(book, pivot=paise(pivot), consolidation_high=paise(consolidation))
     builder = BarBuilder()
     monitor = TriggerMonitor(builder)
@@ -1325,6 +1351,7 @@ def test_price_breaks_level_contract(
             for b in sorted(highs)
             if level is not None
             and highs[b] > level
+            and (confirm == "high" or closes[b][1] >= level)
             and ist(DAY, 9, 15) + timedelta(seconds=300 * b + 302) <= window_end
         ),
         None,
@@ -1338,6 +1365,11 @@ def test_price_breaks_level_contract(
     assert trigger.evaluation.level == paise(level)
     assert trigger.plan.level == paise(level)
     assert trigger.context.price == paise(closes[expected][1])
+    tick = cand.daily.tick
+    want = paise(max(level, closes[expected][1]))
+    if tick is not None:
+        want = math.ceil(Fraction(want) / Fraction(tick)) * tick  # up to the tick grid
+    assert trigger.plan.entry == want >= paise(level)
 
 
 @example(entry=10_000, stop=9_000, adtr=1_000, mult=1.0)  # width exactly one ADTR passes
@@ -1575,7 +1607,7 @@ def test_level_expression(levels: dict[str, int | None], expr: str) -> None:
             playbook(trigger=[{"type": "price_breaks_level", "params": {"level": expr}}])
     assert resolve_level(expr, prices) == maybe(want)
     if expr in LEVEL_EXPRESSIONS:
-        ctx = LiveContext(at=AT, bar_high=paise(30_000), levels=prices)
+        ctx = LiveContext(at=AT, bar_high=paise(30_000), bar_close=paise(30_000), levels=prices)
         result = live_contract("price_breaks_level", {"level": expr}, ctx)
         assert result.passed == (want is not None)
         assert result.reason == ("ok" if want is not None else "level_undefined")
@@ -1649,6 +1681,7 @@ def test_catalyst_required_in_confirm(catalyst: bool, required: list[str] | None
     ctx = LiveContext(
         at=AT,
         bar_high=paise(11_500),
+        bar_close=paise(11_500),
         levels={"opening_range_high": paise(11_400)},
         cum_volume=1_000_000,
         adv20=Decimal(1_000_000),
@@ -1699,6 +1732,14 @@ def oracle_filter(
     items=entry_filter_sets(),
     band=st.sampled_from(["fno", "unknown", "20"]),
 )
+@example(  # PR 49, CodeAnt: the close 90.91 is within 1% of 90.01, its LIMIT 90.95 is not
+    entry=9_091,
+    level=9_001,
+    stop_pct=0.5,
+    adtr=1_500,
+    items=[{"type": "max_chase", "params": {"pct": 1.0}, "enabled": True}],
+    band="fno",
+)
 def test_entry_filters_skip(
     entry: int, level: int, stop_pct: float, adtr: int, items: list[dict], band: str
 ) -> None:
@@ -1723,6 +1764,10 @@ def test_entry_filters_skip(
         cand = candidate(book, daily=daily, bot_id=world.bot_id, instrument_id=world.instruments[0])
         ctx = LiveContext(at=AT, price=paise(entry))
         plan = plan_entry(cand, ctx, paise(level))
+        # PR 49: the entry is the larger of the level and the price, up to the 0.05 tick
+        limit = math.ceil(Fraction(max(entry, level), 5)) * 5
+        assert plan.entry == paise(limit) >= paise(level)
+        entry = limit
         locked = None if band == "unknown" else band == "20" and entry >= 12_000
         chase = [i for i in items if i["type"] == "max_chase" and i["enabled"]]
         order = [i for i in items if i.get("enabled", True)]

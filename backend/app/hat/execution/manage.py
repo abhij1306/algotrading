@@ -292,6 +292,11 @@ class TradeManager:
             self._sell(session, position_id, action, now, sending)
         return result
 
+    def cancel_unfilled_entry(self, session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
+        """Cancel the signal's real entry while nothing of it filled (PR 49, HAT-EXEC-046):
+        `StopDesk.cancel_unfilled_entry`. A cancel is never an entry, so no gate holds it."""
+        return self._desk.cancel_unfilled_entry(session, signal_id, now)
+
     # --- flatten (HAT-TG-035, HAT-GOV-082) ----------------------------------------------------
 
     def flatten(self, session: Session, account_id: uuid.UUID, now: datetime) -> FlattenReport:

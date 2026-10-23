@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -17,7 +17,7 @@ import pytest
 from hat.fakes.broker import accepted, rejected, unconfirmed
 from hat_engine_support import TRADE_DAY, exit_stack
 from hat_exec_support import SYMBOLS
-from hat_manage_support import TICK, ManageRig, at
+from hat_manage_support import TICK, TICKER, ManageRig, at
 from hat_risk_support import CALENDAR
 from hat_support import memory_engine
 from hypothesis import example, given, settings
@@ -27,10 +27,12 @@ from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
 from app.hat.daily.live import ExitViews
+from app.hat.data.bars import Bar
 from app.hat.data.corporate_actions import TYPE_DIVIDEND, TYPE_NOTICE, TYPE_SPLIT
 from app.hat.data.instruments import fyers_instruments
 from app.hat.engine import exits, lifecycle, trades
 from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
+from app.hat.execution.entry_timeout import EntryWatch
 from app.hat.execution.fills import ALERT_FILL_EXCESS, NOT_MARKETED, RESTING
 from app.hat.execution.manage import ALERT_EXIT_NOT_PLACED
 from app.hat.execution.protect import (
@@ -635,6 +637,115 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
         assert trades.replay_state(session, signal.id) == state
         assert rig.position(outcome.signal_id) is None
         assert _writes_since(rig, start) == []
+
+
+# ---------------------------------------------------------------------------------------
+# HAT-EXEC-046 (PR 49): an entry nothing of which filled is cancelled on a failed break or
+# after the timeout
+# ---------------------------------------------------------------------------------------
+
+
+@settings(max_examples=60, deadline=None)
+@given(
+    closes=st.lists(st.integers(-30, 30), min_size=1, max_size=16),
+    checks=st.lists(st.integers(0, 100), min_size=1, max_size=8, unique=True),
+    timeout=st.integers(1, 90),
+    filled_before=st.one_of(st.none(), st.integers(0, 7)),
+    seen_first=st.booleans(),
+    retried=st.booleans(),
+)
+@example([-5, 10], [1, 30], 60, None, False, False)  # the trigger bar's close is ignored
+@example([0, 10, -1], [12, 13], 60, None, False, False)  # a later close below the level
+@example([0], [59, 60], 60, None, False, False)  # exactly the timeout
+@example([0, -1], [20], 60, 0, False, False)  # part filled: left working
+@example([0, -1], [20], 60, 0, True, False)  # the order shows the part fill first
+@example([0], [30], 60, None, False, True)  # an earlier rejected attempt is not the clock
+def test_unfilled_entry_cancelled(
+    closes: list[int],
+    checks: list[int],
+    timeout: int,
+    filled_before: int | None,
+    seen_first: bool,
+    retried: bool,
+) -> None:
+    """HAT-EXEC-046 (PR 49, plan audit N1/G19): a real entry nothing of which has filled is
+    asked to be cancelled at the broker exactly once, at the first check where a final bar
+    later than the trigger bar closed below the signal's level or the timeout has passed since
+    the entry was placed; then the fill sync ends its signal Cancelled with no position. The
+    trigger bar's own close never counts, and an entry with a fill keeps its remainder working
+    (the partial-entry policy), also while only its order's status shows the part fill
+    (`seen_first`: the book read before the fill sync opened the position). The timeout runs
+    from the working order, not an earlier attempt the broker rejected (`retried`). Harm: a
+    failed break's LIMIT rests all day and fills as the price falls through the level, or a
+    part-filled entry's remainder is cut short."""
+    with Session(memory_engine()) as session:
+        rig = ManageRig(session)
+        # the 10:25 bar's final instant, in UTC: SQLite keeps the wall time it is given
+        triggered = (at(10, 30) + timedelta(seconds=2)).astimezone(UTC)
+        if retried:  # the first entry is rejected; the router's retry is the working order
+            rig.fake.script("place_order", rejected("Insufficient margin"))
+        outcome = rig.enter(triggered)
+        rows = session.scalars(
+            select(HatOrder).where(
+                HatOrder.signal_id == outcome.signal_id, HatOrder.purpose == "entry"
+            )
+        ).all()
+        entry = next(row for row in rows if row.status == "placed")
+        assert entry.broker_order_id
+        for row in rows:  # the router stamps the wall clock; this day is the rig's
+            # an earlier attempt, stamped well before the working order (worst case)
+            row.placed_at = triggered if row is entry else triggered - timedelta(minutes=45)
+        assert len(rows) == 1 + retried
+        session.commit()
+        signal = session.get(HatSignal, outcome.signal_id)
+        assert signal is not None
+        level = D(signal.trigger_price)
+        tick = D("0.05")
+        # bar k starts at 10:25 + 5k minutes: bar 0 is the trigger bar
+        bars = [
+            Bar(TICKER, at(10, 25) + timedelta(minutes=5 * k), level, level, level, c, 1)
+            for k, c in enumerate(level + tick * n for n in closes)
+        ]
+        watch = EntryWatch(timedelta(minutes=timeout))
+        fed = 0
+        cancel_at: int | None = None
+        filled = False
+        for n, minute in enumerate(sorted(checks)):
+            now = triggered + timedelta(minutes=minute)
+            while fed < len(bars) and bars[fed].final_at <= now:
+                watch.on_bar(bars[fed])
+                fed += 1
+            if filled_before == n and cancel_at is None:
+                if seen_first:  # the order shows the part fill; no position yet
+                    entry.status = "partially_filled"
+                    session.commit()
+                else:
+                    rig.fill(entry, 1, D(entry.price))
+                    rig.sync(now)
+                filled = True
+            before = rig.fake.calls_named("cancel_order").count(entry.broker_order_id)
+            due = [s for s, _ in watch.due(session, rig.account_id, now)]
+            if filled:  # the desk itself refuses an entry with a fill, whoever asks
+                assert due == []
+                assert not rig.manager.cancel_unfilled_entry(session, outcome.signal_id, now)
+            for signal_id in due:
+                rig.manager.cancel_unfilled_entry(session, signal_id, now)
+            asked = rig.fake.calls_named("cancel_order").count(entry.broker_order_id) - before
+            broke = any(triggered < b.final_at <= now and b.close < level for b in bars)
+            want = cancel_at is None and not filled and (broke or minute >= timeout)
+            assert asked == int(want), (minute, broke)
+            if want:
+                cancel_at = n
+            if not (filled and seen_first):  # a sync would read the book's status back
+                rig.sync(now)
+        session.refresh(signal)
+        if cancel_at is not None:
+            assert signal.state == lifecycle.CANCELLED
+            assert rig.position(outcome.signal_id) is None
+        elif filled:
+            assert _book_row(rig, entry)["status"] == WORKING_AT_BROKER
+        else:
+            assert signal.state == lifecycle.ENTRY_PLACED
 
 
 # ---------------------------------------------------------------------------------------
