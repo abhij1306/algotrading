@@ -30,6 +30,7 @@ __all__ = [
     "DEFAULT_SLIPPAGE_BPS",
     "MAX_SLIPPAGE_BPS",
     "BacktestFills",
+    "CashBoundFills",
     "Charges",
     "Component",
     "CostError",
@@ -213,3 +214,44 @@ class BacktestFills:
         """(fill price, fees) of a fill of `qty` at the reference `price`."""
         filled = slipped(price, side, self.slippage_bps)
         return filled, charges(self.model, side, qty, filled).total
+
+    def outlay(self, qty: int, price: Decimal) -> Decimal:
+        """The cash a buy of `qty` at the reference `price` takes: its value after slippage
+        plus its charges."""
+        filled, fees = self.fill("buy", qty, price)
+        return filled * qty + fees
+
+    def affordable(self, cash: Decimal, price: Decimal) -> int:
+        """The most shares a buy at the reference `price` can take whose outlay (slippage and
+        charges included) fits in `cash`; 0 when not one does, or `cash` is not positive. The
+        outlay grows with the quantity, so the largest one that fits is found by bisection."""
+        if cash <= 0:
+            return 0
+        low, high = 0, int(cash // slipped(price, "buy", self.slippage_bps))
+        while low < high:
+            mid = (low + high + 1) // 2
+            if self.outlay(mid, price) <= cash:
+                low = mid
+            else:
+                high = mid - 1
+        return low
+
+    def within(self, cash: Decimal) -> CashBoundFills:
+        """These fills, refusing a buy whose outlay exceeds `cash`, as the broker would."""
+        return CashBoundFills(self, cash)
+
+
+@dataclass(frozen=True)
+class CashBoundFills:
+    """A run's fills for one entry, with the account's free cash: a buy whose value plus
+    charges exceeds `cash` is refused (`cost_cash_overdraw`), as the broker refuses it. Sizing
+    reserves the outlay first (`BacktestFills.affordable`), so the refusal is a guard only."""
+
+    fills: BacktestFills
+    cash: Decimal
+
+    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]:
+        filled, fees = self.fills.fill(side, qty, price)
+        if side == "buy" and filled * qty + fees > self.cash:
+            raise CostError("cost_cash_overdraw")
+        return filled, fees
