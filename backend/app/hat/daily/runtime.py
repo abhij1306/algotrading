@@ -42,10 +42,11 @@ from ..data.announcements import INTRADAY_FEEDS, poll_all, poll_interval
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
-from ..data.live import EventFeedHealth, LiveData, threadsafe_provider
+from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
 from ..data.mcp_client import McpClient
+from ..data.staleness import SilenceWatch
 from ..data.store import DataStore
-from ..data.subscriptions import LiveSubscriptions, SubscriptionRegistry
+from ..data.subscriptions import HAT_OWNER, LiveSubscriptions, SubscriptionRegistry
 from ..engine.live_entry import DataHealthKill, TriggerService
 from ..engine.strategy.config import StrategyConfig, parse_config
 from ..engine.trigger import TriggerMonitor, locked_upper_circuit
@@ -261,12 +262,22 @@ class HatRuntime:
         self.book = DailyBook(parts.store, sf, _configs)
         self.prices = PriceBook()
         self.gates = GateBoard(parts.store)
+        subscribe, unsubscribe = threadsafe_provider(parts.feed, loop)
+        registry = parts.feed.registry
         self.live = LiveData(
             health=EventFeedHealth(sf, DataHealthKill(sf, lambda: utc_now(clock))),
             is_open=self.is_open,
             clock=clock,
             store=parts.bar_store,
             instrument_ids=self._instrument_ids,
+            exchange_range=self.settings.exchange_day_range,
+            silence=SilenceWatch(
+                self.is_open,
+                silence_alert(self.notifier),
+                subscribe,
+                silent_after=timedelta(seconds=self.settings.symbol_silent_seconds),
+            ),
+            watched=lambda: registry.symbols_of(HAT_OWNER),
         )
         self.live.add_tick_listener(self.prices.on_tick)
         self.desks = Desks(
@@ -295,9 +306,7 @@ class HatRuntime:
         self.live.add_bar_listener(self.service.on_bar)
         self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
         self.shadow = ShadowExits(sf, self.views, self.desks.managed)
-        self.subscriptions = LiveSubscriptions(
-            parts.feed.registry, *threadsafe_provider(parts.feed, loop)
-        )
+        self.subscriptions = LiveSubscriptions(registry, subscribe, unsubscribe)
         self.intraday = Intraday(
             session_factory=sf,
             clock=clock,

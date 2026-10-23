@@ -228,18 +228,18 @@ to an artefact that exists.
 | HAT-DATA-104 | [02](02-data.md) | 14 | PBT `announcements.text_never_gates` |
 | HAT-DATA-110 | [02](02-data.md) | 14 | CONF `imports.no_second_websocket` |
 | HAT-DATA-111 | [02](02-data.md) | 14 | PBT `bars.listener_isolation` |
-| HAT-DATA-112 | [02](02-data.md) | 14 | PBT `bars.subscription_set` |
+| HAT-DATA-112 | [02](02-data.md) | 14, 39 | PBT `bars.subscription_set` |
 | HAT-DATA-113 | [02](02-data.md) | 14 | PBT `bars.alignment` |
-| HAT-DATA-114 | [02](02-data.md) | 14 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live` |
+| HAT-DATA-114 | [02](02-data.md) | 14, 22, 39 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`, PBT `bars.session_state_never_partial`, PBT `bars.trigger_never_uses_a_partial_session`, PBT `bars.seed_needs_ordered_prices`, PBT `bars.delayed_seed_spoiled_by_gap`, PBT `bars.live_flags_parsed` |
 | HAT-DATA-115 | [02](02-data.md) | 14 | PBT `bars.volume_pace` |
-| HAT-DATA-116 | [02](02-data.md) | 14, 15, 51 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`, PBT `bars.usable_price`, PBT `bars.price_book_dates_each_tick`, PBT `bars.exits_and_placement_read_the_checked_price` |
+| HAT-DATA-116 | [02](02-data.md) | 14, 15, 51, 39 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`, PBT `bars.usable_price`, PBT `bars.price_book_dates_each_tick`, PBT `bars.exits_and_placement_read_the_checked_price`, PBT `bars.symbol_silence_resubscribes_and_alerts` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |
 | HAT-DATA-118 | [02](02-data.md) | 14 | PBT `bars.gap_pct` |
 | HAT-DATA-119 | [02](02-data.md) | 12, 41, 43 | PBT `bars.history_matches_builder`, PBT `bars.minute_history_aggregates_to_5m`, PBT `bars.minute_history_budget`, PBT `bars.minute_history_resume`, PBT `bars.minute_history_plan_clamp`, PBT `minute_history_cli.root_and_report` |
 | HAT-DATA-120 | [02](02-data.md) | 14 | PBT `gapscan.covers_universe` |
-| HAT-DATA-121 | [02](02-data.md) | 14 | PBT `gapscan.filter` |
+| HAT-DATA-121 | [02](02-data.md) | 14, 22, 39 | PBT `gapscan.filter` |
 | HAT-DATA-122 | [02](02-data.md) | 14 | PBT `gapscan.timing_recorded`, OPS `gapscan.latency_observed` |
-| HAT-DATA-123 | [02](02-data.md) | 14 | PBT `feed.session_one_socket`, PBT `feed.session_gives_up`, PBT `feed.session_close_stops_a_backing_off_runner`, PBT `feed.socket_factory`, PBT `feed.token_source`, PBT `feed.traceback_throttle` |
+| HAT-DATA-123 | [02](02-data.md) | 14, 39 | PBT `feed.session_one_socket`, PBT `feed.session_gives_up`, PBT `feed.session_close_stops_a_backing_off_runner`, PBT `feed.socket_factory`, PBT `feed.token_source`, PBT `feed.traceback_throttle` |
 | HAT-DATA-124 | [02](02-data.md) | 14 | PBT `feed.tick_normalised`, PBT `feed.tick_flow` |
 | HAT-DATA-125 | [02](02-data.md) | 14 | PBT `feed.registry_model`, PBT `feed.registry_concurrent` |
 | HAT-DATA-126 | [02](02-data.md) | 14 | PBT `feed.provider_converges` |
@@ -341,7 +341,7 @@ to an artefact that exists.
 | HAT-CRIT-123 | [04](04-criteria-and-bots.md) | 54 | PBT `criteria.close_vs_pivot_contract`, PBT `criteria.close_vs_pivot_stage`, PBT `scoring.stage_levels`, PBT `scoring.numeric_levels`, PBT `config.close_vs_pivot_needs_vcp` |
 | HAT-BOT-050 | [04](04-criteria-and-bots.md) | 8, 11 | PBT `config.playbook_shape`, PBT `trades.shared_bot_cap` |
 | HAT-BOT-051 | [04](04-criteria-and-bots.md) | 8, 15 | DB `runtime.signal_unique_per_day`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
-| HAT-BOT-052 | [04](04-criteria-and-bots.md) | 14, 15 | PBT `criteria.ep_candidate_bands` |
+| HAT-BOT-052 | [04](04-criteria-and-bots.md) | 14, 15, 39 | PBT `criteria.ep_candidate_bands` |
 | HAT-BOT-053 | [04](04-criteria-and-bots.md) | 8, 11, 55 | PBT `regime.strategy_rules` |
 | HAT-BOT-060 | [04](04-criteria-and-bots.md) | 8, 54 | CONF `bot_seed_s1_matches_spec` |
 | HAT-BOT-061 | [04](04-criteria-and-bots.md) | 8, 45 | CONF `bot_seed_default_mode`, PBT `config.new_bot_mode_confirm` |
@@ -453,7 +453,7 @@ to an artefact that exists.
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
 | HAT-EXEC-045 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap` |
 | HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11, 54 | PBT `stops.final_contraction_low`, PBT `stops.contraction_stop_at_the_fill` |
-| HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.low_of_day` |
+| HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11, 22, 39 | PBT `stops.low_of_day`, PBT `bars.trigger_never_uses_a_partial_session` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |
 | HAT-EXEC-053 | [07](07-execution-and-brokers.md) | 15 | PBT `stops.tick_size_slabs`, PBT `ops.daily_tick_matches_reference` |
 | HAT-EXEC-060 | [07](07-execution-and-brokers.md) | 15, 20, 26, 50 | TLA `StopPlacement!StopAfterFill`, TLA `StopPlacement!SharesTracked`, TLA `StopPlacement!RestCancelledOnExit`, TLA `StopPlacement!EmptiedCloses`, PBT `manage.real_fill_protected`, PBT `manage.a_resting_sale_is_never_stopped_over`, PBT `manage.entry_remainder_tracked`, PBT `router.fill_sync_cadence` |

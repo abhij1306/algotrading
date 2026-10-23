@@ -7,7 +7,7 @@ driver passes each tick's own instant as its arrival time, and no property reads
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
@@ -127,11 +127,13 @@ def drive(
     until: datetime,
     *,
     from_open: bool = True,
+    seed: Callable[[Tick], tuple[Decimal, Decimal]] | None = None,
 ) -> tuple[list[Bar], list[Trigger]]:
     """Feed `ticks` in exchange-time order (each arriving at its own instant, then the bars
     final by then are handed to the monitor, as the live step does), and finish at `until`, when
     another symbol of the feed ticks. With `from_open` each symbol is first watched from before
-    the open. Returns the final bars and the triggers, in order."""
+    the open; with `seed` each tick also carries the exchange's (high, low) so far (PR 39).
+    Returns the final bars and the triggers, in order."""
     bars: list[Bar] = []
     triggers: list[Trigger] = []
     ticks = list(ticks)
@@ -145,6 +147,8 @@ def drive(
 
     for tick in sorted(ticks, key=lambda t: t.at):
         builder.on_tick(tick, tick.at)
+        if seed is not None:
+            builder.seed(tick, *seed(tick), tick.at)
         advance(tick.at)
     builder.on_tick(Tick(FEED, until, Decimal(1)), until)  # the rest of the feed ticks on
     advance(until)

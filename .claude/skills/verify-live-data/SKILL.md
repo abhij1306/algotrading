@@ -24,7 +24,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.staleness_boundary` Silence of exactly 30 s is stale and 30 s minus one microsecond is not. Harm: the threshold is off by one.
 - `PBT bars.staleness_events_recorded` Each transition into stale writes exactly one `feed.stale` event and calls the health kill once; recovery clears the kill and writes nothing. Harm: the owner is never alerted, or is alerted repeatedly.
 - `PBT bars.listener_isolation` With any set of listeners on `LiveFeed`, any subset of which raises, every listener that did not raise for a tick got it, in order, and a removed listener gets none. Harm: one bad listener freezes live quotes for every consumer.
-- `PBT bars.subscription_set` The `"hat"` owner's set equals watchlist, open positions and candidates; positions are always in it; the provider holds exactly the symbols some owner holds, and releasing HAT never unsubscribes a symbol another owner holds; a set at or above the limit alerts. Harm: an open position stops receiving prices so its exits never fire.
+- `PBT bars.subscription_set` The `"hat"` owner's set equals watchlist, open positions and candidates, plus the heartbeat index `NIFTY50` from the first sync until HAT releases its symbols (PR 39; it is also in the drawn pool, so other owners and the inputs hold it too); positions are always in it; the provider holds exactly the symbols some owner holds, and releasing HAT never unsubscribes a symbol another owner holds; a set at or above the limit alerts. Harm: an open position stops receiving prices so its exits never fire.
 - `PBT bars.subscription_inputs` The inputs are today's watchlist symbols, every open position's symbol (not closed ones, not other days' watchlists) and the candidates. Harm: stale symbols hold feed budget, or an open position is missed.
 - `PBT bars.no_store_keeps_no_bars` Without a bar store, final bars reach the listeners and are then forgotten; nothing accumulates. Harm: the long-running loop grows memory all session.
 - `PBT bars.persisted_equals_live` The `bars_5m` rows equal the final bars the bar listener saw, one row per (instrument, bar_start), exactly the spec's columns, however writes failed and re-ran. Harm: replays and audits cannot reproduce a live decision.
@@ -72,8 +72,12 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.trigger_only_on_final_bars` With prints arriving late or out of order through the real bar builder, a pivot breakout fires once, at the final instant (end + 2 s) of the first final bar in [09:20, 15:20] whose high is above the pivot, never from a print in a bar still open or a late print the bar never took, and never at an instant before the bar was handed over; the elapsed share of the session is read at that same final instant, where the day volume is read; and (`test_failed_signal_write_retries`) a failed signal write releases the key so the next final bar fires again, while a stored signal closes it for the day. Harm: an entry fires on a print the 5-minute bar later disowns, or before the bar that justifies it exists.
 - `PBT bars.stale_feed_trips_health_kill` Wired as in production (staleness monitor, `EventFeedHealth`, `DataHealthKill`), the account's data-health kill is tripped exactly while the feed is stale and clears by itself when ticks resume, even when the trip and the recovery fall on one instant and (`test_health_kill_writes_out_of_order`) whatever order the worker threads write the changes in; a trigger fired while stale is stored Rejected with `stale_feed` and opens nothing, one on a live feed opens its virtual position. Harm: entries keep being taken on prices that stopped updating, or the account stays manage-only after the feed is back.
 - `PBT bars.restore_matches_live` After a mid-session restart, a bar builder given the day's stored final bars and coverage has the same opening ranges and day volumes as one that saw every tick, a restored bar never replaces a live one, and it has no day low (the restart is a gap); the opening range comes back only when the stopped process saw the feed past the first bar (`coverage.json` `seen_until`). Harm: after a restart the opening range is lost and no ORB entry fires that day.
-- `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4).
-- `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
+- `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). PR 39 adds `seeded`: the exchange range is on and each AAA tick carries the session's high and low so far (`high_price`, `low_price`); the same holds, and a symbol first seen late, after a restart or after a gap, with no gap after, has the opening range when it ticked inside the first bar and the day low once that tick's bar is final (`@example`s: the 09:17:30 subscriber, a seed after a restart, a gap then a new seed, a seed before a gap whose low traded unseen, and a restart whose next tick knows a high from after 09:20). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4); or EP never fires on a gap-scan name (PR 39).
+- `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. With `seeded` (PR 39) the late candidate's ticks carry the exchange's high and low, and its stop is exactly the real low less a tick. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
+- `PBT bars.symbol_silence_resubscribes_and_alerts` Through `LiveData` with a `SilenceWatch` (threshold 60 s, checks every 5 s, the heartbeat ticking every 10 s), a watched symbol is subscribed again exactly when the threshold has passed since its last tick, its last resubscribe, or the last check at which it was not yet watched, the market closed or the feed stale; each check makes at most one resubscribe (every symbol found) and one alert (those not alerted since the market last opened); a failing alert or resubscribe is logged and never reaches the feed, and a name whose alert failed is named again at the next report; and no quiet symbol ever makes the feed stale (only a feed-wide outage does). `@example`s: an outage then a closed window that reopens; a name trading every 100 s. Harm: an illiquid or band-locked name makes the account manage-only all day, a dead subscription goes unnoticed, or an alert per quiet name floods the owner's chat (PR 39, HAT-DATA-116).
+- `PBT bars.live_flags_parsed` `HAT_EXCHANGE_DAY_RANGE` turns the exchange-range seed on exactly for a true value (off unset or for anything else), and `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120. Harm: unverified tick fields seed the opening range and the stop by default, or a typo reports every symbol (PR 39).
+- `PBT bars.delayed_seed_spoiled_by_gap` A seed covers prints only up to the earlier of its exchange time and its arrival, so a feed gap that began between the two (a delayed tick arriving after the gap, found before or after the tick) or later inside the bars it covers leaves the opening range and day low as they would be without it. Harm: prints the gap hid, in neither the seed nor the bars, leave a range or a low the session never had (PR 39, CodeAnt).
+- `PBT bars.seed_needs_ordered_prices` A seed is taken only from a tick inside the session with `0 < low <= price <= high`; any other leaves the opening range and day low as they would be without it. Harm: a garbled or stale high/low field publishes a range or a low the session never had (PR 39).
 - `PBT bars.usable_price` For every quote, clock and band, the price a Take, a placement or an exit may act on is the quote's price exactly when it is under 30 seconds from the clock either way (by exchange time) and inside the known bounds, else none with `price_unknown`, `stale_price` or `price_out_of_band`; a tick exactly 30 seconds old no longer counts (PR 51, HAT-DATA-116). Harm: one quiet symbol's hours-old print prices a Take while the feed as a whole is live.
 - `PBT bars.price_book_dates_each_tick` Through `LiveData` and its tick listener, the price book keeps per instrument the latest tick's price with its exchange time (`exch_feed_time`), else its arrival, and a print arriving after a newer one does not replace it. Harm: a price that has not traded for an hour reads as current, or a late print regresses it.
 - `PBT bars.circuit_locks_read_the_band` For every previous close, band and tick, the upper circuit price is the band's top rounded down to the tick grid and the lower one its bottom rounded up; a price is locked at a circuit exactly when it is at or beyond it, neither lock holds without a band (F&O) and both are unknown without a band row or a previous close. Harm: an entry is taken into a frozen upper circuit, or a lower-circuit print is treated as sellable.
@@ -113,12 +117,13 @@ A failing property prints the falsifying example and a `reproduce_failure` blob.
 Code under check:
 - `backend/app/hat/data/bars.py`: `BarBuilder`, `Tick`, `Bar`, `volume_pace`
 - `backend/app/hat/data/bars_store.py`: `BarStore`
-- `backend/app/hat/data/staleness.py`: `StalenessMonitor`
-- `backend/app/hat/data/subscriptions.py`: `LiveSubscriptions`, `load_inputs`
+- `backend/app/hat/data/staleness.py`: `StalenessMonitor`, `SilenceWatch`
+- `backend/app/hat/data/subscriptions.py`: `LiveSubscriptions` (with `HEARTBEAT_SYMBOL`), `load_inputs`
+- `backend/app/hat/settings.py`: `load_settings` (`exchange_day_range`, `symbol_silent_seconds` only; the rest is `verify-governance`'s and `verify-execution`'s)
 - `backend/app/hat/data/preopen.py`: `PreopenGaps`, `gap_pct`, `meets_gap`
 - `backend/app/hat/data/gapscan.py`: `scan_rows`, `select_gappers`, `run_gap_scan`
 - `backend/app/hat/data/announcements.py`: `parse_feed`, `store_items`, `attached_announcements`, `catalyst_attached`, `next_poll_at`, `poll_feed`
-- `backend/app/hat/data/live.py`: `LiveData`, `EventFeedHealth`, `tick_from_payload`, `Quote`, `usable_price`
+- `backend/app/hat/data/live.py`: `LiveData` (with the exchange-range seed and the silence watch), `EventFeedHealth`, `tick_from_payload`, `Quote`, `usable_price`; `silence_alert` and `off_loop` are wiring, not checked here
 - `backend/app/hat/engine/trigger.py`: `TriggerMonitor`, `in_window`, `upper_circuit_price`, `lower_circuit_price`, `locked_upper_circuit`, `locked_lower_circuit`
 - `backend/app/hat/daily/live.py`: `PriceBook`, `band_bounds`, `LivePrices`, the price read of `ExitViews` and `LiveRoute.check` (PR 51; the rest of the file is `verify-execution`'s)
 - `backend/app/hat/engine/live_entry.py`: `TriggerService`, `DataHealthKill`
@@ -153,10 +158,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `2d585528b47f6beae95d8466b95ba247167ac2cd554efb0ee38816bcafdb9dc6`
+Covered digest: `d173b569f4e8af319e8b37f1fcfeb0fd1415ebb061c2107825b0d2a98eaaa915`
 
 ## Scope changes
 
+- PR 39 (audit triage §18): the heartbeat `NIFTY50` (`NSE:NIFTY50-INDEX`) is always in the `"hat"` owner's set, so feed staleness measures the socket. A watched symbol silent for `HAT_SYMBOL_SILENT_SECONDS` (default 120) is subscribed again (and again after each further threshold) and named in one health alert `symbol_silent` per check, once per symbol per day; never a kill (`SilenceWatch`, wired in `daily/runtime.py`; the alert is sent off the loop, and an `&` in a symbol is written `_`, as the alert text keeps only plain characters). With `HAT_EXCHANGE_DAY_RANGE` on, a tick's `high_price` and `low_price` seed the builder (`BarBuilder.seed`), so a symbol first seen late, after a restart or after a gap has the opening range when its seeding tick traded inside the first bar, and otherwise the day low once that tick's bar is final; the field names are `[A]`: no recorded websocket tick exists (the fixtures hold REST replies only), so the flag defaults to off and, until it is on, such a symbol has neither (HAT-DATA-114). The bar builder now keeps every gap start of a day, not only the first. Nothing was narrowed: `bars.subscription_set`, `bars.session_state_never_partial` and `bars.trigger_never_uses_a_partial_session` were strengthened.
 - PR 48: `daily/live.py:SaleBands` reads the day's lower band and the lower-circuit lock (PR 51's `lower_circuit_price` and `locked_lower_circuit` on the dated last price) for the trade manager's sales; its use is checked by `verify-execution`'s `mpp.*` through a stub band. No live-data check changed.
 - PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
 - PR 12 added the minute-history loader (HAT-DATA-119). `FyersClient.get_historical_data` named by the spec does not exist; the loader takes the history call as an injected function, so the properties fake it and no check reaches Fyers.
@@ -379,6 +385,12 @@ tests/hat/properties/test_bars.py:570: in test_subscription_set
 E   AssertionError: assert set() == {'S0'}
 E     
 E     Extra items in the right set:
+```
+
+Break: (PR 39) `LiveSubscriptions.desired` leaves out the heartbeat (`| {HEARTBEAT_SYMBOL}` removed).
+
+```
+E   AssertionError: assert set() == {'NIFTY50'}
 ```
 
 ### PBT bars.subscription_inputs
@@ -1346,6 +1358,36 @@ E   AssertionError: assert (Decimal('100...imal('100.0')) == (Decimal('100...ima
 E     At index 1 diff: Decimal('100.0') != Decimal('90.00')
 ```
 
+Break: (PR 39) `LiveData.on_tick` never seeds (the `_seed` call to `pass`): a late subscriber has no opening range at 09:20:02.
+
+```
+AssertionError: assert datetime.datetime(2026, 10, 21, 9, 20, 2, ...) < (datetime.datetime(2026, 10, 21, 9, 15, ...) + datetime.timedelta(seconds=302))
+```
+
+Break: (PR 39) `BarBuilder.opening_range` does not widen the seed by the first bar's ticks (`return seed.high, seed.low`).
+
+```
+E   AssertionError: assert (Decimal('110...imal('101.0')) == (Decimal('110...mal('100.00'))
+```
+
+Break: (PR 39) `BarBuilder._seed_for` ignores a gap after the seed (`return seed`). It first passed; the `@example` of a seed at 09:15:10 whose bar's low traded unseen in a gap now fails it.
+
+```
+E   AssertionError: assert (Decimal('100...imal('100.0')) == (Decimal('100...imal('90.00'))
+```
+
+Break: (PR 39) `BarBuilder.opening_range` takes a seed from after the first bar (`by` the session end). It first passed; the `@example` of a restart whose next tick knows a high from after 09:20 now fails it.
+
+```
+E   AssertionError: assert (Decimal('115...imal('100.0')) == (Decimal('110...mal('100.00'))
+```
+
+Break: (PR 39) `BarBuilder.seed` never seeds again after a gap (`if seeds:`).
+
+```
+E   AssertionError: assert datetime.datetime(2026, 10, 21, 9, 20, 2, ...) < (datetime.datetime(2026, 10, 21, 9, 15, ...) + datetime.timedelta(seconds=302))
+```
+
 ### PBT bars.trigger_never_uses_a_partial_session
 
 Break: `BarBuilder.from_open` returns `True`.
@@ -1353,6 +1395,105 @@ Break: `BarBuilder.from_open` returns `True`.
 ```
 E   AssertionError: assert Decimal('104.00') == Decimal('110.00')
 E   Failing explicit example: test_trigger_never_uses_a_partial_session(
+```
+
+Break: (PR 39) `BarBuilder.day_low` ignores the seed's low (`lows.append((seed.at, seed.low))` to `pass`).
+
+```
+E   AssertionError: assert Decimal('99.95') == Decimal('89.95')
+```
+
+### PBT bars.symbol_silence_resubscribes_and_alerts
+
+Break: (PR 39) `SilenceWatch.check` needs more than the threshold (`>=` to `>`).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39) `SilenceWatch.on_tick` does not end the silence (its update to `pass`).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39) `SilenceWatch.check` counts silence while the feed is stale (`feed_stale or` removed).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 2, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39) `SilenceWatch.check` never resubscribes (the `_resubscribe` call removed).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, 20, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39) `SilenceWatch.check` calls `resubscribe` unguarded (`_isolated` removed).
+
+```
+E   RuntimeError: provider down
+```
+
+Break: (PR 39) `SilenceWatch.check` keeps the day's alerted names across a closed market (`self._alerted.clear()` removed). It first passed in the first version of the property, whose market closed at 15:30 and never reopened; the property now draws a closed window that reopens.
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 10, 55, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39, code review) `SilenceWatch.check` does not restart the count after a resubscribe (it would ask again at every check).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 1, 25, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39, code review) `SilenceWatch.check` alerts every symbol found, not only those not yet alerted (`fresh = list(found)`).
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 3, 15, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+Break: (PR 39, CodeAnt) `SilenceWatch.check` marks names alerted before the alert is sent, so a failed alert is never sent again.
+
+```
+E   AssertionError: ('AAA', datetime.datetime(2026, 10, 21, 10, 2, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')))
+```
+
+### PBT bars.delayed_seed_spoiled_by_gap
+
+Break: (PR 39, CodeAnt) `_Seed.covered_until` is the arrival, not the earlier of the exchange time and the arrival (`return self.arrival`).
+
+```
+E   AssertionError: assert (Decimal('101'), Decimal('99')) == None
+```
+
+### PBT bars.live_flags_parsed
+
+Break: (PR 39) `load_settings` turns the exchange range on unless it is `"0"`.
+
+```
+E   AssertionError: assert True == ((None is not None))
+```
+
+Break: (PR 39) `load_settings` defaults the silence to 30 seconds.
+
+```
+E   AssertionError: assert 30 == 120
+```
+
+### PBT bars.seed_needs_ordered_prices
+
+Break: (PR 39) `BarBuilder.seed` takes any prices (`or not Decimal(0) < low <= tick.price <= high` removed).
+
+```
+E   assert True == False
+E   Failing explicit example: test_seed_needs_ordered_prices(
+```
+
+Break: (PR 39) `BarBuilder.seed` takes a tick outside the session (`start is None or` removed).
+
+```
+E   AttributeError: 'NoneType' object has no attribute 'date'
 ```
 
 ### PBT bars.gap_record_from_its_own_day

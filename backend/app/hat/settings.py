@@ -9,6 +9,10 @@ call budget: defaults 8, 180 and 5,000 (the Standard plan counts every call); `_
 `HAT_MPP_RESEND` (PR 48) defaults to false: a market sale resting unfilled under market price
 protection is cancelled and sent again fresh only once the O2(c) live check confirms how the
 broker shows such a sale; `HAT_MPP_PAGE_AFTER` is the misses before the owner is paged (default 3).
+`HAT_EXCHANGE_DAY_RANGE` (PR 39) defaults to false: a symbol first seen after the open is seeded
+from the day high and low its tick carries only once a recorded tick confirms the field names
+(HAT-DATA-114). `HAT_SYMBOL_SILENT_SECONDS` is the silence after which a watched symbol is
+reported and subscribed again (default 120; HAT-DATA-116).
 """
 
 from __future__ import annotations
@@ -39,6 +43,8 @@ class HatSettings:
     broker_calls_per_day: int | None = 5000
     mpp_resend: bool = False
     mpp_page_after: int = 3
+    exchange_day_range: bool = False
+    symbol_silent_seconds: int = 120
 
 
 def _is_true(raw: str | None) -> bool:
@@ -77,6 +83,8 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
         mpp_resend=_is_true(source.get("HAT_MPP_RESEND")),
         mpp_page_after=_calls(source.get("HAT_MPP_PAGE_AFTER"), 3) or 3,
+        exchange_day_range=_is_true(source.get("HAT_EXCHANGE_DAY_RANGE")),
+        symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
     )
 
 
