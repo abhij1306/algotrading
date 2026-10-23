@@ -3,49 +3,25 @@ scripted NSE MCP server that answers from a clock, a store in a temporary direct
 
 from __future__ import annotations
 
-import tempfile
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
-from hat_mcp_support import ScriptedTransport, fixture_json, seed_market
-from hat_support import memory_engine
+from hat_mcp_support import ScriptedTransport, fixture_json
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.clock import FixedClock
-from app.hat.data.bhavcopy import BhavRow, ParsedDay
+from app.hat.data.bhavcopy import ParsedDay
 from app.hat.data.ingest import IngestDeps
 from app.hat.data.mcp_client import McpClient, McpTransportError
-from app.hat.data.store import BarRow, DataStore
-from app.hat.ids import uuid7
-from app.hat.models import (
-    HatCorporateAction,
-    HatEvent,
-    HatInstrument,
-    HatJobRun,
-    HatKillSwitch,
-    HatMarket,
-    HatQualityCheck,
-    HatQualityQuarantine,
-)
+from app.hat.data.store import DataStore
 from app.hat.notify import RecordingNotifier
 from app.hat.time import IST
 
 TRADE_DAY = date(2026, 10, 20)
-TABLES = (
-    HatMarket,
-    HatInstrument,
-    HatJobRun,
-    HatEvent,
-    HatQualityCheck,
-    HatKillSwitch,
-    HatCorporateAction,
-    HatQualityQuarantine,
-)
 INDEX_ROWS = [
     {"indexName": "NIFTY 50", "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0},
     {"indexName": "Nifty 500", "open": 200.0, "high": 210.0, "low": 190.0, "close": 205.0},
@@ -185,94 +161,5 @@ class World:
         )
 
 
-def make_world(
-    tmp: str | Path,
-    universe: Sequence[tuple[str, str, bool]],
-    *,
-    start: datetime | None = None,
-) -> World:
-    """`universe` is (symbol, series, active) per instrument."""
-    engine = memory_engine(*TABLES)
-    factory = sessionmaker(bind=engine)
-    ids: dict[str, uuid.UUID] = {}
-    with factory() as session:
-        market_id = seed_market(session)
-        for number, (symbol, series, active) in enumerate(universe):
-            instrument = HatInstrument(
-                id=uuid7(),
-                market_id=market_id,
-                isin=f"INE{number:09d}",
-                series=series,
-                symbol=symbol,
-                name=symbol,
-                face_value=Decimal(10),
-                active=active,
-            )
-            session.add(instrument)
-            ids[f"{symbol}:{series}"] = instrument.id
-        session.commit()
-    clock = FixedClock(start or day_at(18, 0))
-    return World(
-        engine=engine,
-        factory=factory,
-        store=DataStore(Path(tmp)),
-        clock=clock,
-        nse=Nse(clock),
-        notifier=RecordingNotifier(),
-        ids=ids,
-    )
-
-
 def symbols_of(count: int) -> list[tuple[str, str, bool]]:
     return [(f"S{i:04d}", "EQ", True) for i in range(count)]
-
-
-def store_previous(world: World, closes: Mapping[str, Decimal], day: date) -> None:
-    """A stored earlier day with these closes (by symbol), as the history build leaves it."""
-    run = uuid7()
-    rows = [
-        BarRow(
-            world.ids[f"{symbol}:EQ"],
-            f"INE{n:09d}",
-            symbol,
-            "EQ",
-            close,
-            close,
-            close,
-            close,
-            close,
-            1000,
-            None,
-            "bhavcopy",
-            run,
-        )
-        for n, (symbol, close) in enumerate(sorted(closes.items()))
-    ]
-    world.store.write_bars(day, rows)
-
-
-def bhav_day(world: World, closes: Mapping[str, Decimal], day: date = TRADE_DAY) -> ParsedDay:
-    """A parsed bhavcopy for the day: one flat EQ row per symbol, as the fallback returns it."""
-    numbers = {k.split(":")[0]: n for n, k in enumerate(world.ids)}
-    parsed = ParsedDay(day)
-    for symbol, close in sorted(closes.items()):
-        parsed.rows.append(
-            BhavRow(
-                day,
-                f"INE{numbers[symbol]:09d}",
-                "EQ",
-                symbol,
-                close,
-                close,
-                close,
-                close,
-                close,
-                500,
-                close * 500,
-            )
-        )
-    return parsed
-
-
-def tmp_dir() -> tempfile.TemporaryDirectory[str]:
-    return tempfile.TemporaryDirectory()

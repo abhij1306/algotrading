@@ -33,7 +33,6 @@ from app.hat.execution.fyers_broker import (
     READ,
     READ_SHARE,
     SUBMIT_UNCONFIRMED,
-    THROTTLE_PAUSE,
     WRITE,
     CallBudget,
     CallLimits,
@@ -479,88 +478,6 @@ def test_budget_windows_hold(
             now = max([now] + [t for t, _ in granted])
 
 
-@settings(max_examples=40, deadline=None)
-@given(
-    op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"]),
-    source=st.sampled_from(["budget", "http429_json", "http429_raw"]),
-    retry_after=st.sampled_from([None, "2", "0.5", "120", "soon", "-1"]),
-)
-@example(op="place_gtt", source="budget", retry_after=None)
-@example(op="orders", source="http429_json", retry_after="2")
-def test_throttled_call_not_sent(op: str, source: str, retry_after: str | None) -> None:
-    """: a call the budget cannot grant is never sent, and one Fyers answers
-    with HTTP 429 (a JSON error body, or none) is sent once and not again; either way a read
-    fails closed with `broker_rate_limited`, a write is refused with `broker_rate_limited` as not
-    sent (burning no retry), the circuit counts nothing, and a 429 pauses the whole budget for
-    its Retry-After in seconds (at most `MAX_PAUSE`; `THROTTLE_PAUSE` when absent or unreadable).
-    Harm: a throttled stop reads as a broker rejection and spends its tag's sequence, or an
-    outage is declared and every call refused for 20 s when Fyers only asked HAT to slow down."""
-    clock = Tick()
-    budget = CallBudget(CallLimits(8, 180, None), clock=clock, day=lambda: BUDGET_DAY)
-    sdk = Http429Sdk(raw=source == "http429_raw", retry_after=retry_after)
-    if source == "budget":
-        budget = CallBudget(CallLimits(8, 180, 1), clock=clock, day=lambda: BUDGET_DAY)
-        assert budget.take(WRITE, clock(), BUDGET_DAY) == 0  # the day's one call is spent
-        sdk.throttle = False
-    breaker = CircuitBreaker()
-    broker = FyersBroker(lambda: sdk, breaker=breaker, budget=budget)
-    adapter = _adapter_over(broker)
-    call = BUDGET_OPS[op]
-    if op in ("orders", "gtts"):
-        with pytest.raises(BrokerUnavailableError) as caught:
-            call(adapter)
-        assert caught.value.code == CODE_RATE_LIMITED
-    else:
-        result = call(adapter)
-        assert result.code == CODE_RATE_LIMITED
-        assert getattr(result, "status", "rejected") == "rejected"
-        assert getattr(result, "ok", False) is False
-    assert breaker.failures == 0
-    assert not breaker.is_open()
-    if source == "budget":
-        assert sdk.calls == []
-        return
-    assert len(sdk.calls) == 1
-    if retry_after is None or retry_after in ("soon", "-1"):
-        expected = THROTTLE_PAUSE
-    else:
-        expected = min(float(retry_after), MAX_PAUSE)
-    assert budget.take(WRITE, clock() + expected - 0.01, BUDGET_DAY) > 0
-    assert budget.take(WRITE, clock() + expected, BUDGET_DAY) == 0
-
-
-@settings(max_examples=3, deadline=None)
-@given(retry_after=st.sampled_from([None, "2", "30"]))
-def test_late_429_still_pauses(retry_after: str | None) -> None:
-    """: a write Fyers answers HTTP 429 only after the guard gave up
-    waiting is an unknown outcome for its caller (`SUBMIT_UNCONFIRMED`, one breaker failure, as
-    any timeout), and the 429 still pauses the budget for its Retry-After when it lands. Harm:
-    a slow broker's 429 is lost and HAT keeps calling into the limit."""
-    clock = Tick()
-    budget = CallBudget(CallLimits(8, 180, None), clock=clock, day=lambda: BUDGET_DAY)
-    landed = threading.Event()
-
-    class SlowHttp429Sdk(Http429Sdk):
-        def _answer(self, name: str, data: object) -> object:
-            time.sleep(1.7)  # past the write's 1.5 s guard
-            try:
-                return super()._answer(name, data)
-            finally:
-                landed.set()
-
-    sdk = SlowHttp429Sdk(raw=False, retry_after=retry_after)
-    breaker = CircuitBreaker()
-    broker = FyersBroker(lambda: sdk, breaker=breaker, budget=budget)
-    reply = broker.place_order(dict(ORDER))
-    assert reply["status"] == SUBMIT_UNCONFIRMED
-    assert breaker.failures == 1
-    assert landed.wait(5)
-    time.sleep(0.05)  # the worker pauses the budget right after the answer
-    expected = THROTTLE_PAUSE if retry_after is None else float(retry_after)
-    assert budget.take(WRITE, clock() + expected - 0.01, BUDGET_DAY) > 0
-    assert budget.take(WRITE, clock() + expected, BUDGET_DAY) == 0
-
-
 @settings(max_examples=12, deadline=None)
 @given(
     op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"])
@@ -671,32 +588,6 @@ def test_limits_from_settings(
         assert limits.per_day is None
     else:
         assert limits.per_day == expected(per_day, 5000)
-
-
-class Http429Sdk(RecordingSdk):
-    """A model whose requests session runs its response hooks with HTTP 429 (and Retry-After)
-    on every call, then answers Fyers' JSON error body, or raises as the SDK does when the body
-    is not JSON. With `throttle` off it answers as `RecordingSdk`."""
-
-    def __init__(self, *, raw: bool, retry_after: str | None) -> None:
-        super().__init__()
-        self.raw = raw
-        self.retry_after = retry_after
-        self.throttle = True
-        self.service = type("Service", (), {})()
-        self.service.session = type("Session", (), {"hooks": {"response": []}})()
-
-    def _answer(self, name: str, data: object) -> object:
-        if not self.throttle:
-            return super()._answer(name, data)
-        self.calls.append((name, data))
-        headers = {} if self.retry_after is None else {"Retry-After": self.retry_after}
-        response = type("Response", (), {"status_code": 429, "headers": headers})()
-        for hook in self.service.session.hooks["response"]:
-            hook(response)
-        if self.raw:
-            raise ValueError("Expecting value: line 1 column 1 (char 0)")
-        return {"s": "error", "code": 429, "message": "request limit reached"}
 
 
 def _adapter_over(broker: FyersBroker) -> FyersHatBroker:

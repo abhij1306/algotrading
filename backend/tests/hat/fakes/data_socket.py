@@ -6,7 +6,6 @@ the real SDK would fire. `FakeSocketFactory` records every socket and token it w
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any
@@ -14,7 +13,7 @@ from typing import Any
 from app.hat.clock import SYSTEM_CLOCK, Clock
 from app.hat.data.feed import LiveFeed
 from app.hat.data.provider.data_socket import SYMBOL_UPDATE, SocketCallbacks
-from app.hat.data.provider.provider_session import ProviderSession, RetryPolicy
+from app.hat.data.provider.provider_session import RetryPolicy
 from app.hat.data.sessions import IST, SESSION_CLOSE, SESSION_OPEN
 from app.hat.risk.sessions import SessionCalendar, SessionDay
 
@@ -133,37 +132,6 @@ class FakeSocketFactory:
     @property
     def last(self) -> FakeDataSocket:
         return self.sockets[-1]
-
-
-def wait_until_backing_off(factory: FakeSocketFactory, timeout_s: float = 5.0) -> None:
-    """Block until the runner's first attempt failed and released its socket (it then backs
-    off). Fails the test if that does not happen in time."""
-    deadline = time.monotonic() + timeout_s
-    while not (factory.sockets and factory.sockets[0].closed):
-        if time.monotonic() >= deadline:
-            raise AssertionError("the connect runner never failed its first attempt")
-        time.sleep(0.005)
-
-
-def make_session(
-    factory: FakeSocketFactory | None = None,
-    *,
-    desired: Callable[[], list[str]] = list,
-    on_message: Callable[[dict[str, Any]], None] = lambda _m: None,
-    token_source: Callable[[], str | None] = lambda: "CLIENT:tok",
-    spawn: Callable[[Callable[[], None]], None] = run_inline,
-    retry: RetryPolicy = FAST_RETRY,
-) -> tuple[ProviderSession, FakeSocketFactory]:
-    factory = factory or FakeSocketFactory()
-    session = ProviderSession(
-        socket_factory=factory,
-        token_source=token_source,
-        desired_symbols=desired,
-        on_message=on_message,
-        retry=retry,
-        spawn=spawn,
-    )
-    return session, factory
 
 
 def weekday_calendar(clock: Clock, span: int = 400) -> SessionCalendar:

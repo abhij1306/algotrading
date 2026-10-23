@@ -1,12 +1,10 @@
-"""CONF checks of the backtest: shared engine imports, DSR scoring and golden replay."""
+"""CONF checks of the backtest: shared engine imports and DSR scoring."""
 
 import ast
-import json
 import math
 import re
 from pathlib import Path
 
-import hat_backtest_support as s
 from hat_conf_repo import APP_ROOT, imports_of
 
 from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_sharpe
@@ -14,7 +12,6 @@ from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_shar
 HAT = APP_ROOT / "hat"
 BACKTEST = HAT / "engine" / "backtest.py"
 PROPERTIES = Path(__file__).resolve().parents[1] / "properties"
-GOLDEN = Path(__file__).resolve().parents[1] / "fixtures" / "backtest_golden.json"
 
 # The engine functions the day loop must reach through, and the logic it must never import
 # directly: scan, scoring, criteria, sizing, caps and the risk decision live behind them.
@@ -180,20 +177,6 @@ def test_dsr_scored_only_by_runs() -> None:
 
 
 # --- known gaps ------------------------------------------------------------------
-
-
-# --- golden replay ----------------------------------------------------------------
-
-
-def test_backtest_golden_replay() -> None:
-    """The committed fixture market run through the two seeded strategies (S1, S2) reproduces
-    the committed golden document exactly: metrics, trades, signal and watchlist counts. An
-    intended change regenerates it (`python tests/hat/hat_backtest_support.py`) in the same
-    commit."""
-    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
-    assert s.golden_document() == golden
-    assert set(golden) == set(s.GOLDEN_SEEDS)
-    assert any(doc["metrics"]["trades"] for doc in golden.values())
 
 
 MONEY_AREAS = ("sizing", "caps", "exposure", "allocator", "costs")

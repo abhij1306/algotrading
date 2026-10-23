@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable, Iterable, Sequence
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
@@ -16,8 +16,6 @@ import yaml
 
 from app.hat.data.bars import Bar, BarBuilder, Tick
 from app.hat.data.sessions import IST
-from app.hat.engine.criteria import CriterionResult, evaluate_live
-from app.hat.engine.criteria.live import LiveContext
 from app.hat.engine.strategy.config import Playbook, StrategyConfig, parse_config
 from app.hat.engine.strategy.versions import seed_text
 from app.hat.engine.trigger import Candidate, DailyInputs, Trigger, TriggerMonitor
@@ -67,10 +65,6 @@ def seed_config(name: str) -> StrategyConfig:
     return parse_config(yaml.safe_load(seed_text(name)))
 
 
-def seed_playbook(name: str, book: str) -> Playbook:
-    return seed_config(name).playbook(book)
-
-
 def candidate(
     book: Playbook,
     *,
@@ -101,16 +95,6 @@ def candidate(
         announcements=announcements,
         configured_max_chase_pct=configured_pct,
     )
-
-
-def live_contract(code: str, params: dict[str, Any], ctx: LiveContext) -> CriterionResult:
-    """The common contract for a live criterion: repeated calls agree, the score is in
-    [0, 1] and `passed` is exactly reason `ok`."""
-    first = evaluate_live(code, params, ctx)
-    assert evaluate_live(code, params, ctx) == first
-    assert 0.0 <= first.score <= 1.0
-    assert first.passed == (first.reason == "ok")
-    return first
 
 
 def watch_from_open(builder: BarBuilder, symbols: Iterable[str], day: date = DAY) -> None:
@@ -153,11 +137,3 @@ def drive(
     builder.on_tick(Tick(FEED, until, Decimal(1)), until)  # the rest of the feed ticks on
     advance(until)
     return bars, triggers
-
-
-def session_ticks(
-    symbol: str, steps: Sequence[tuple[int, int, int]], day: date = DAY
-) -> list[Tick]:
-    """Ticks from (seconds after 09:15, price paise, qty) steps."""
-    opens = ist(day, 9, 15)
-    return [Tick(symbol, opens + timedelta(seconds=s), paise(p), q) for s, p, q in steps]

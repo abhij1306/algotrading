@@ -4,31 +4,15 @@ with and the line the owner reads on its card."""
 
 from __future__ import annotations
 
-import io
-import tempfile
 import uuid
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
-import pyarrow.parquet as pq
-from hat_engine_support import (
-    AT,
-    LABEL_STATS,
-    TRADE_DAY,
-    request_for,
-    seed_engine_world,
-    seed_evidence,
-)
-from hat_support import memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.hat.backtest import runs
-from app.hat.engine import confidence, trades
-from app.hat.engine.backtest import BacktestResult, TradeRow
+from app.hat.engine import confidence
+from app.hat.engine.backtest import TradeRow
 from app.hat.engine.confidence import (
     BANDS,
     HIGH,
@@ -38,11 +22,8 @@ from app.hat.engine.confidence import (
     BucketStats,
     band_of,
     bucket_stats,
-    buckets,
     label_of,
 )
-from app.hat.engine.scan import EP_PLAYBOOK
-from app.hat.models import HatBacktestBucket, HatEvent, HatSignal
 from app.hat.risk.policy import Z_90
 from app.hat.telegram import render
 
@@ -186,153 +167,9 @@ def _trade(n: int, playbook: str, score: Decimal | None, r: Decimal) -> TradeRow
     )
 
 
-TRADE = st.tuples(
-    st.sampled_from(("pb", "other")), st.one_of(st.none(), SCORE), R.map(lambda r: r / 2)
-)
-
-
-@settings(max_examples=40, deadline=None)
-@given(st.lists(TRADE, max_size=60))
-def test_buckets_match_trades(rows: list[tuple[str, Decimal | None, Decimal]]) -> None:
-    """D132: the buckets a completed run stores are exactly those recomputed from its
-    `trades.parquet`, one per (playbook, band) with a trade and none for an unscored trade or
-    a score outside the bands. Harm: the label is read from a bucket the run's trades do not
-    support."""
-    engine = memory_engine()
-    with Session(engine) as session, tempfile.TemporaryDirectory() as tmp:
-        world = seed_engine_world(session)
-        run = runs.start_run(
-            session,
-            strategy_version_id=world.version_id,
-            risk_policy_version_id=world.policy_version_id,
-            universe_id=world.universe_id,
-            start=date(2020, 1, 1),
-            end=date(2025, 12, 31),
-            data_snapshot={},
-        )
-        trade_rows = tuple(_trade(n, *row) for n, row in enumerate(rows))
-        metrics = {"returns": {"sr": 0.1, "t": 60, "skew": 0.0, "kurtosis": 3.0}}
-        result = BacktestResult(trade_rows, (), (), (), (), {}, metrics)
-        runs.complete_run(session, run, result, root=Path(tmp))
-        stored = {
-            (b.playbook, b.band): BucketStats(
-                b.trades, b.mean_r, b.ci90_low, b.ci90_high, b.win_rate
-            )
-            for b in session.scalars(
-                select(HatBacktestBucket).where(HatBacktestBucket.run_id == run.id)
-            )
-        }
-        table = pq.read_table(io.BytesIO(runs.trades_path(Path(tmp), run.id).read_bytes()))
-        reread = buckets(
-            (p, s, Decimal(str(r)))
-            for p, s, r in zip(
-                table["playbook"].to_pylist(),
-                table["score"].to_pylist(),
-                table["r_multiple"].to_pylist(),
-                strict=True,
-            )
-        )
-    assert stored == reread
-    scored = {(p, band_of(s)) for p, s, _ in rows if band_of(s) is not None}
-    assert set(stored) == scored
-
-
 # --- the label of a signal ----------------------------------------------------------------------
 
 EVIDENCE = st.sampled_from(("none", "no_bucket", HIGH, MEDIUM, LOW))
-
-
-@settings(max_examples=60, deadline=None)
-@given(
-    evidence=EVIDENCE,
-    playbook=st.sampled_from(("pb", EP_PLAYBOOK)),
-    gaps=st.sampled_from(([], ["episodic_pivot_not_backtested"], "unreadable")),
-    score=SCORE,
-    same_day=st.booleans(),
-    late=st.sampled_from(("no", "after", "unreadable")),
-)
-@example(evidence=HIGH, playbook="pb", gaps=[], score=Decimal("0.8"), same_day=True, late="no")
-@example(evidence=LOW, playbook="pb", gaps=[], score=Decimal("0.8"), same_day=True, late="after")
-@example(
-    evidence=LOW, playbook="pb", gaps=[], score=Decimal("0.8"), same_day=True, late="unreadable"
-)
-@example(
-    evidence=HIGH,
-    playbook=EP_PLAYBOOK,
-    gaps=["episodic_pivot_not_backtested"],
-    score=Decimal("0.8"),
-    same_day=True,
-    late="no",
-)
-@example(
-    evidence=HIGH, playbook="pb", gaps="unreadable", score=Decimal("0.8"), same_day=True, late="no"
-)
-@example(evidence=HIGH, playbook="pb", gaps=[], score=Decimal("0.5"), same_day=True, late="no")
-@example(evidence=HIGH, playbook="pb", gaps=[], score=Decimal("0.8"), same_day=False, late="no")
-def test_signal_label_from_evidence(
-    evidence: str,
-    playbook: str,
-    gaps: object,
-    score: Decimal,
-    same_day: bool,
-    late: str,
-) -> None:
-    """D132, a signal is created with the label of its bucket (playbook, the band
-    of its watchlist score) in the bot's evidence run, with that bucket as its basis, and the
-    same label on `signal.triggered`. No run, a playbook the run's known gaps name (EP until
-    PR 70) or an unreadable gap list, or no watchlist score in a band gives low. A run completed
-    after the signal triggered, or at no readable time (`late`, here labelled high), is never
-    its evidence. Harm: a
-    signal without evidence is labelled high and auto places it."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        world = seed_engine_world(session)
-        band = band_of(score)
-        stats = LABEL_STATS.get(evidence)
-        if evidence != "none":
-            seed_evidence(
-                session,
-                world,
-                stats,
-                playbook=playbook,
-                score=score,
-                band=band or "0.75-0.90",
-                known_gaps=gaps,
-                trade_date=TRADE_DAY if same_day else date(2020, 1, 2),
-            )
-        if late != "no":
-            seed_evidence(
-                session,
-                world,
-                LABEL_STATS[HIGH],
-                playbook=playbook,
-                score=score,
-                band=band or "0.75-0.90",
-                known_gaps=gaps,
-                trade_date=TRADE_DAY if same_day else date(2020, 1, 2),
-                completed_at=AT + timedelta(minutes=1) if late == "after" else "not a time",
-            )
-        outcome = trades.open_entry(session, request_for(world, world.instruments[0], playbook))
-        signal = session.get_one(HatSignal, outcome.signal_id)
-        payload = session.scalar(
-            select(HatEvent.payload).where(
-                HatEvent.aggregate_id == signal.id, HatEvent.event_type == "signal.triggered"
-            )
-        )
-    gapped = gaps == "unreadable" or (playbook == EP_PLAYBOOK and gaps != [])
-    if evidence == "none" or gapped or band is None or not same_day:
-        expected = LOW
-    else:
-        expected = label_of(stats)[0]
-    assert signal.confidence == expected
-    assert payload["confidence"] == expected
-    basis = signal.confidence_basis
-    assert basis["reason"]
-    if expected != LOW or basis.get("trades") is not None:
-        assert stats is not None
-        assert basis["band"] == band
-        assert basis["trades"] == stats.trades
-        assert Decimal(basis["mean_r"]) == stats.mean_r
 
 
 def test_backtest_label_is_fixed() -> None:

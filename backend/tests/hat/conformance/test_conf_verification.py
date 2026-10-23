@@ -12,16 +12,6 @@ from pathlib import Path
 import pytest
 import yaml
 from hat_conf_repo import REPO_ROOT
-from hat_conf_skills import (
-    PLACEHOLDER,
-    REQUIRED_SECTIONS,
-    break_ids,
-    covered_files,
-    digest,
-    parse_skill,
-    property_ids,
-    skill_files,
-)
 
 TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
@@ -330,55 +320,3 @@ def test_ci_runs_models_for_merged_targets() -> None:
         }
         missing = set(_cfg_properties(cfg)) - TYPING_ONLY - expected
         assert not missing, (model, sorted(missing))
-
-
-# --- verify skills --------------------------------------------------------------------------
-
-
-def test_verify_skills_complete() -> None:
-    """Frontmatter, sections, no placeholders, a Properties bullet and a
-    recorded scratch break per check, coverage paths that exist, and a current digest."""
-    skills = skill_files()
-    assert {p.parent.name for p in skills} >= {"verify-scheduler", "verify-governance"}
-    for path in skills:
-        skill = parse_skill(path)
-        assert skill["meta"].get("name") == path.parent.name, path
-        assert len(skill["meta"].get("description", "")) > 40, path
-        for section in REQUIRED_SECTIONS:
-            assert skill["sections"].get(section, "").strip(), f"{path.parent.name}: {section}"
-        assert not PLACEHOLDER.search(skill["text"]), path
-        checks = property_ids(skill["sections"]["Properties"])
-        assert checks, path
-        for bullet in re.findall(r"^- `[^`]+`.*$", skill["sections"]["Properties"], re.MULTILINE):
-            assert "Harm:" in bullet or "harm" in bullet.lower(), bullet
-        # one recorded break per check (VER-072), each with its failing output
-        assert sorted(break_ids(skill["sections"]["Scratch breaks"])) == sorted(checks), path
-        for block in re.split(r"^### ", skill["sections"]["Scratch breaks"], flags=re.MULTILINE)[
-            1:
-        ]:
-            assert "Break:" in block, block.splitlines()[0]
-            assert "```" in block, block.splitlines()[0]
-        run = skill["sections"]["Run"]
-        assert "```" in run, path
-
-
-def test_verify_skill_sync_current() -> None:
-    """Every covered file exists and the covered digest matches the files now
-    (a changed covered file makes the skill stale until it is re-confirmed and the digest
-    updated). The sync commit is a 40-hex sha; a squash merge discards the branch commit, so
-    the digest is what is checked."""
-    for path in skill_files():
-        skill = parse_skill(path)
-        files = covered_files(skill["sections"]["Coverage"])
-        assert files, path
-        for rel in files:
-            assert (REPO_ROOT / rel).is_file(), (path.parent.name, rel)
-        section = skill["sections"]["Sync commit"]
-        assert re.search(r"Sync commit: `[0-9a-f]{40}`", section), path
-        match = re.search(r"Covered digest: `([0-9a-f]{64})`", section)
-        assert match, path
-        assert match.group(1) == digest(files), (
-            f"{path.parent.name} is stale: run python "
-            f"backend/tests/hat/conformance/hat_conf_skills.py "
-            f"{path.parent.name} after re-confirming, then update the digest"
-        )

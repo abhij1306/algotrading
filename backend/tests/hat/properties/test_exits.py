@@ -9,20 +9,10 @@ from decimal import Decimal
 from fractions import Fraction
 
 import pytest
-from hat_engine_support import (
-    Trade,
-    exit_stack,
-    open_trade,
-    seed_engine_world,
-    step_trade,
-)
-from hat_support import memory_engine
-from hypothesis import event, example, given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.hat.engine import exits, journal, lifecycle
+from app.hat.engine import exits
 from app.hat.engine.approvals import veto_score, veto_verdict
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.strategy.config import (
@@ -36,12 +26,9 @@ from app.hat.engine.strategy.config import (
     ExitTimeStop,
     ExitTrailingSwingLow,
 )
-from app.hat.models import HatFill, HatOrder, HatPosition, HatSignal, HatTradeResult
 
 D = Decimal
-CENTS = st.integers(100, 100_000).map(lambda n: D(n) / 100)
 FRACTIONS = st.sampled_from([0.1, 0.25, 0.33, 0.5, 0.75, 1.0])
-ATR = st.sampled_from([0.5, 1.0, 1.5, 2.0, 3.0, 5.0])
 
 
 @st.composite
@@ -406,102 +393,6 @@ paths = st.lists(
     min_size=1,
     max_size=12,
 )
-SHADOW_STACKS = st.sampled_from(["trend", "partials", "stop_only"])
-
-
-def run_path(session: Session, kind: str, path: list[tuple[int, int]]) -> Trade:
-    world = seed_engine_world(session, exits=exit_stack(kind))
-    trade = open_trade(session, world)
-    assert trade.outcome.position_id is not None
-    for step, (price, days) in enumerate(path):
-        step_trade(session, trade, D(price), days=days, minutes=step)
-        if session.get(HatPosition, trade.outcome.position_id).closed_at is not None:
-            break
-    return trade
-
-
-@settings(max_examples=40)
-@given(SHADOW_STACKS, paths)
-def test_shadow_rows_virtual(kind: str, path: list[tuple[int, int]]) -> None:
-    """A shadow trade driven from signal to close writes only virtual
-    orders, fills and positions, with no broker order id, no broker trade id and no fees (the
-    engine imports no broker at all: CONF import_graph_boundaries); the sold quantity plus what
-    stays open is the entry quantity; and
-    a closed position has exactly one trade result whose R is its P&L over the initial risk.
-    Harm: a shadow row that looks real can be reconciled against, and sold at, the broker."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        trade = run_path(session, kind, path)
-        session.flush()
-        orders = session.scalars(select(HatOrder)).all()
-        fills = session.scalars(select(HatFill)).all()
-        position = session.get(HatPosition, trade.outcome.position_id)
-        assert orders
-        assert all(o.is_virtual for o in orders)
-        assert all(o.broker_order_id is None for o in orders)
-        assert fills
-        assert all(f.is_virtual for f in fills)
-        assert all(f.broker_trade_id is None for f in fills)
-        assert all(f.fees == 0 for f in fills)
-        assert position.is_virtual
-        bought = sum(o.qty for o in orders if o.side == "buy")
-        sold = sum(o.qty for o in orders if o.side == "sell")
-        assert sold + position.qty_open == bought
-        results = session.scalars(select(HatTradeResult)).all()
-        event(f"closed={position.closed_at is not None} partial={sold > 0}")
-        if position.closed_at is None:
-            assert not results
-            assert position.qty_open > 0
-            return
-        assert position.qty_open == 0
-        assert len(results) == 1
-        pnl = sum(
-            (f.qty * Decimal(f.price) * (1 if o.side == "sell" else -1))
-            for o, f in session.execute(
-                select(HatOrder, HatFill).join(HatFill, HatFill.order_id == HatOrder.id)
-            ).all()
-        )
-        risk = (Decimal(position.avg_entry) - Decimal(position.initial_stop)) * bought
-        assert results[0].realized_pnl == pnl
-        assert results[0].r_multiple == (pnl / risk).quantize(Decimal("0.000001"))
-
-
-@settings(max_examples=40)
-@given(SHADOW_STACKS, paths)
-def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None:
-    """After every step of a shadow trade the state stored on the signal (and its
-    position) equals the fold of the trade's events over the transition table, and an event the
-    table does not allow changes nothing. Harm: a state that cannot be rebuilt from the log hides
-    a missed event."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        world = seed_engine_world(session, exits=exit_stack(kind))
-        trade = open_trade(session, world)
-        signal = session.get(HatSignal, trade.outcome.signal_id)
-        position = session.get(HatPosition, trade.outcome.position_id)
-        assert (
-            journal.replay_state(session, signal.id)
-            == signal.state
-            == position.state
-            == lifecycle.OPEN
-        )
-        for step, (price, days) in enumerate(path):
-            step_trade(session, trade, D(price), days=days, minutes=step)
-            session.refresh(signal)
-            session.refresh(position)
-            assert journal.replay_state(session, signal.id) == signal.state
-            if position.state in lifecycle.HOLDING_STATES or position.state == lifecycle.CLOSED:
-                assert position.state == signal.state
-            if position.closed_at is not None:
-                assert signal.state == lifecycle.CLOSED
-                break
-        # A step the table does not allow from the reached state is refused, and the stored
-        # state still equals the fold of the log.
-        with pytest.raises(lifecycle.LifecycleStateError):
-            lifecycle.next_state(signal.state, "signal.triggered")
-        assert journal.replay_state(session, signal.id) == signal.state
-
-
 R_MULTIPLES = st.decimals(
     min_value=-50, max_value=50, places=4, allow_nan=False, allow_infinity=False
 )

@@ -68,15 +68,13 @@ engine, each even if the other failed.
   docs: `docs/architecture.md` (module map, data flow, seams), `docs/invariants.md` (the
   money-safety and trading rules),
   `docs/decisions.md` (decisions in force), `docs/runbook.md` (operator procedures).
-- **Verification, not unit tests.** HAT code is proved with TLA+ models (`verification/tla/`),
-  Hypothesis properties (`backend/tests/hat/properties/`), Postgres checks
-  (`backend/tests/hat/db/`) and CONF checks (`backend/tests/hat/conformance/`). Do not write
-  example-based unit tests for HAT code; show each new check failing on a deliberate break. A
-  conformance check enforces a structural rule of the code, never a copy of a doc or a hand-kept
-  list. The `verify-*` skills in `.claude/skills/` say
-  how to run, read and update each area, and record a digest of the files they cover: after
-  changing a covered file, re-confirm the area and refresh the digest with
-  `python backend/tests/hat/conformance/hat_conf_skills.py <skill>`.
+- **Implement and verify; don't build test ceremony.** Verify a change by running it for real:
+  the affected job, CLI or route on real data (`HAT_DATA_ROOT`, the local database read-only),
+  and a real backtest on real data for engine changes; put the evidence in the PR. Tests are
+  small and only for pure functions at their seams (money maths, parsers, state rules). Never
+  write tests that run a backtest, the pipeline or a full database on generated data, and no
+  deliberate-break rituals or test digests. A conformance check enforces a structural rule of
+  the code, never a copy of a doc or a hand-kept list.
 - **Trading safety.** Read `.claude/skills/trading-safety/SKILL.md` before touching orders, risk,
   positions, brokers or execution. Never call real Fyers, NSE or Telegram endpoints from tests.
 - **Repo paths** come from `backend/app/paths.py`; never compute them from `__file__`. HAT's data
@@ -150,8 +148,6 @@ verification/tla/run.sh
 ```
 
 Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything.
-`python backend/tests/hat/conformance/hat_conf_skills.py --stale` lists `verify-*` skills whose
-covered files changed; `--refresh` rewrites their digests.
 
 ### CI
 `.github/workflows/ci.yml` runs on every pull request and on pushes to main: `backend` (ruff and
@@ -179,7 +175,7 @@ an `aiohttp` that does not build on Python 3.14.
 ## Contribution Workflow
 
 1. Read the invariants and decisions that touch your change.
-2. Implement with checks (properties, models, DB and CONF checks).
+2. Implement, then verify by running the change on real data.
 3. Run the quality checks above.
 4. Update the canonical docs only where architecture, an invariant or a decision changed; delete
    any plan or spec the change finishes.

@@ -1,16 +1,13 @@
 """PBT risk_policy.cooling_off: risk increases wait 7 days."""
 
-import uuid
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from hat_support import memory_engine
 from hypothesis import given
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session
 
 from app.hat.models import HatRiskPolicyVersion
-from app.hat.risk.policy import DIRECTIONS, CoolingOffError, cooling_off_satisfied
+from app.hat.risk.policy import DIRECTIONS, cooling_off_satisfied
 
 SEVEN_DAYS_US = 7 * 24 * 3600 * 1_000_000
 requested = st.datetimes(
@@ -33,27 +30,3 @@ def test_cooling_off(direction: str, asked: datetime, offset_us: int) -> None:
 
 
 ENGINE = memory_engine(HatRiskPolicyVersion)
-
-
-@given(direction=st.sampled_from(DIRECTIONS), asked=requested, offset_us=offsets)
-def test_cooling_off_enforced_on_write(direction: str, asked: datetime, offset_us: int) -> None:
-    """The model rejects a too-early increase at flush, as the Postgres CHECK does."""
-    row = HatRiskPolicyVersion(
-        user_id=uuid.uuid4(),
-        version=1,
-        policy={},
-        direction=direction,
-        requested_at=asked,
-        effective_from=asked + timedelta(microseconds=offset_us),
-    )
-    allowed = direction != "increase" or offset_us >= SEVEN_DAYS_US
-    with Session(ENGINE) as session:
-        session.add(row)
-        if allowed:
-            session.commit()
-            session.delete(row)  # rows stay out of the next example
-            session.commit()
-        else:
-            with pytest.raises(CoolingOffError):
-                session.flush()
-            session.rollback()

@@ -13,7 +13,6 @@ from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session
 
 from app.hat.data.sessions import IST
 from app.hat.risk.caps import OpenPosition
@@ -146,7 +145,6 @@ prices = money("1", "5000")
 volumes = st.integers(min_value=0, max_value=50_000_000).map(D)
 cash_amounts = money("0", "50000000")
 levels = st.sampled_from(("L1", "L2", "L3"))
-strategy_keys = st.sampled_from((S1, S2))
 
 
 @st.composite
@@ -158,60 +156,3 @@ def entry_and_stop(draw: st.DrawFn) -> tuple[Decimal, Decimal]:
 
 
 # --- rows for the service-level properties (SQLite in memory, foreign keys not enforced) --------
-
-
-def seed_bot(session: Session, *, status: str = "active", mode: str = "shadow") -> uuid.UUID:
-    """One `hat_bot` row; returns its id."""
-    from app.hat.models import HatBot
-
-    bot = HatBot(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        strategy_id=uuid.uuid4(),
-        broker_account_id=uuid.uuid4(),
-        execution_mode=mode,
-        status=status,
-        lifecycle_state="live",
-        risk_cluster="c1",
-    )
-    session.add(bot)
-    session.flush()
-    return bot.id
-
-
-def seed_pending_approval(session: Session, bot_id: uuid.UUID) -> uuid.UUID:
-    """An undecided approval on a fresh signal of `bot_id`; returns the signal id."""
-    from app.hat.models import HatApproval, HatSignal
-
-    signal = HatSignal(
-        id=uuid.uuid4(),
-        bot_id=bot_id,
-        strategy_version_id=uuid.uuid4(),
-        risk_policy_version_id=uuid.uuid4(),
-        playbook="default",
-        instrument_id=uuid.uuid4(),
-        trade_date=TRADE_DAY,
-        triggered_at=AT,
-        trigger_price=D(100),
-        stop_price=D(95),
-        qty=10,
-        risk_amount=D(50),
-        currency="INR",
-        mode="confirm",
-        state="AwaitingApproval",  # the card is out: a kill moves it to Expired
-        risk_decision={},
-        confidence="low",
-        confidence_basis={"reason": "no_run"},
-    )
-    session.add(signal)
-    session.flush()
-    session.add(
-        HatApproval(
-            signal_id=signal.id,
-            sent_at=AT,
-            expires_at=AT + timedelta(minutes=5),
-            token_hash="x",
-        )
-    )
-    session.flush()
-    return signal.id

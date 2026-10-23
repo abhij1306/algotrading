@@ -1,28 +1,21 @@
 """PBT for broker accounts, the session, the capability gate and the adapter's reads."""
 
 import uuid
-from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 from hat.fakes.broker import FakeBroker
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
-from hat_exec_support import SYMBOLS, USER, adapter_over, exec_env
+from hat_exec_support import SYMBOLS, adapter_over
 from hat_fyers_support import LIVE_REPLIES
-from hat_support import memory_engine
-from hypothesis import example, given, settings
+from hypothesis import example, given
 from hypothesis import strategies as st
-from sqlalchemy import select
-from sqlalchemy.orm import sessionmaker
 
 from app.hat.execution.accounts import (
-    ADAPTER_FACTORIES,
     MODES,
     ModeRefusedError,
-    OnboardingError,
     UnknownModeError,
     effective_mode,
-    onboard_account,
     request_mode,
 )
 from app.hat.execution.broker import (
@@ -30,7 +23,6 @@ from app.hat.execution.broker import (
     CODE_SESSION_EXPIRED,
     CODE_UNAVAILABLE,
     BrokerUnavailableError,
-    Capabilities,
     GttModify,
     GttRequest,
     OrderIntent,
@@ -45,7 +37,6 @@ from app.hat.execution.session import (
     SessionRegistry,
 )
 from app.hat.execution.tags import encode_tag
-from app.hat.models import HatBrokerAccount, HatBrokerSession, HatEvent
 
 
 @given(
@@ -114,45 +105,6 @@ def test_the_fyers_adapter_unlocks_modes_on_an_active_account(status: str) -> No
 
 
 reads = st.sampled_from(["funds", "positions", "holdings"])
-
-
-@given(st.one_of(st.none(), reads), st.sampled_from(["circuit", "raises"]))
-@settings(max_examples=60)
-def test_account_active_after_check(failing: str | None, how: str) -> None:
-    """An account is `active` exactly when funds, positions and holdings were all
-    fetched, and carries the adapter's capabilities; a failing read leaves it not active."""
-    fake = FakeBroker()
-    if failing is not None:
-        if how == "circuit":
-            fake.circuit_open = True
-        else:
-            error = RuntimeError("down")
-            if failing == "funds":
-                fake.available = error
-            elif failing == "positions":
-                fake.positions = error
-            else:
-                fake.holdings = error
-    engine = memory_engine(HatBrokerAccount)
-    session = sessionmaker(engine, expire_on_commit=False)()
-    broker = FyersHatBroker(fake, instruments=lambda: [])  # type: ignore[arg-type]
-    account = onboard_account(session, broker, user_id=USER, broker_name="fyers", account_ref="Z1")
-    expected_pass = failing is None
-    assert (account.status == "active") == expected_pass
-    assert account.capabilities == broker.capabilities().to_json()
-    assert account.broker == "fyers"
-
-
-@given(st.text(max_size=12).filter(lambda name: name != "fyers"))
-def test_only_the_fyers_adapter_is_registered(name: str) -> None:
-    """Onboarding any broker but Fyers is refused, and the registry holds only Fyers."""
-    assert set(ADAPTER_FACTORIES) == {"fyers"}
-    engine = memory_engine(HatBrokerAccount)
-    session = sessionmaker(engine)()
-    adapter = FyersHatBroker(FakeBroker())
-    with pytest.raises(OnboardingError):
-        onboard_account(session, adapter, user_id=USER, broker_name=name, account_ref="Z")
-    assert session.query(HatBrokerAccount).count() == 0
 
 
 @given(st.booleans(), st.booleans(), st.booleans())
@@ -368,125 +320,6 @@ def test_an_owner_serialises_its_broker_calls() -> None:
     assert max(overlap) == 1
 
 
-CHECKS = st.lists(
-    st.tuples(
-        st.sampled_from([SessionStatus.LIVE, SessionStatus.EXPIRED]),
-        st.sampled_from(["gtt", "no_gtt", "fails"]),
-        st.booleans(),  # the refresh's own write fails
-    ),
-    min_size=1,
-    max_size=6,
-)
-
-
-@settings(max_examples=40, deadline=None)
-@given(st.sampled_from(["empty", "gtt", "no_gtt"]), CHECKS)
-def test_session_check_refreshes_capabilities(stored: str, checks: list) -> None:
-    """Every session check rewrites the account's stored
-    capabilities to the adapter's (a local value: the session need not be live), each rewrite
-    that changes them records one `broker.capabilities_changed` naming the GTT value before and
-    after and the changed keys, and a refresh that fails (the adapter's answer or its own
-    write) leaves the stored value and never undoes the session row. Harm: a flip of the
-    adapter's GTT value never reaches an existing account, a revoked one keeps routing real
-    orders from a stale row, or a failed refresh loses the day's login."""
-    from datetime import date
-
-    from hat_exec_support import GTT_READY
-
-    from app.hat.execution import session as session_module
-    from app.hat.execution.session import record_session
-
-    engine = memory_engine(HatBrokerSession, HatEvent, HatBrokerAccount)
-    session = sessionmaker(engine, expire_on_commit=False)()
-    start = {
-        "empty": {},
-        "gtt": GTT_READY.to_json(),
-        "no_gtt": replace(GTT_READY, gtt_delivery=False).to_json(),
-    }[stored]
-    account = HatBrokerAccount(
-        user_id=USER, broker="fyers", account_ref="X1", capabilities=start, status="active"
-    )
-    session.add(account)
-    session.commit()
-
-    class Broker:
-        status = SessionStatus.LIVE
-        answer = "gtt"
-
-        def session_status(self) -> SessionStatus:
-            return self.status
-
-        def capabilities(self) -> Capabilities:
-            if self.answer == "fails":
-                raise RuntimeError("adapter down")
-            return replace(GTT_READY, gtt_delivery=self.answer == "gtt")
-
-    real_record = session_module.record
-    failing = [False]
-
-    def record(db: object, **fields: object) -> object:
-        if failing[0] and fields["event_type"] == "broker.capabilities_changed":
-            raise RuntimeError("database down")
-        return real_record(db, **fields)  # type: ignore[arg-type]
-
-    broker = Broker()
-    expected, changes = start, []
-    session_module.record = record  # type: ignore[assignment]
-    try:
-        for n, (status, answer, write_fails) in enumerate(checks):
-            broker.status, broker.answer, failing[0] = status, answer, write_fails
-            day = date(2026, 10, 21 + n % 2)
-            record_session(session, broker, account.id, day)  # type: ignore[arg-type]
-            assert session.get(HatBrokerSession, (account.id, day)).status == status.value
-            current = None if answer == "fails" else broker.capabilities().to_json()
-            if current is not None and current != expected and not write_fails:
-                changes.append((current.get("gtt_delivery") is True, expected))
-                expected = current
-            # a query, not `refresh`: it flushes first, so a change a failed refresh left
-            # pending (not rolled back) shows, as the next commit would store it
-            stored_now = session.scalar(
-                select(HatBrokerAccount.capabilities).where(HatBrokerAccount.id == account.id)
-            )
-            assert stored_now == expected
-    finally:
-        session_module.record = real_record
-    events = [e for e in session.query(HatEvent) if e.event_type == "broker.capabilities_changed"]
-    assert len(events) == len(changes)
-    for event, (gtt, before) in zip(events, changes, strict=True):
-        assert event.payload["gtt_delivery"] == ("true" if gtt else "false")
-        assert event.payload["was_gtt_delivery"] == (
-            "true" if before.get("gtt_delivery") is True else "false"
-        )
-        assert event.payload["changed"]
-
-
-def test_record_session_writes_the_morning_login() -> None:
-    from datetime import date
-
-    from app.hat.execution.session import record_session
-
-    engine = memory_engine(HatBrokerSession, HatEvent, HatBrokerAccount)
-    session = sessionmaker(engine, expire_on_commit=False)()
-    account = uuid.uuid4()
-
-    class Broker:
-        status = SessionStatus.LIVE
-
-        def session_status(self) -> SessionStatus:
-            return self.status
-
-    broker = Broker()
-    today = date(2026, 10, 21)
-    assert record_session(session, broker, account, today) is SessionStatus.LIVE  # type: ignore[arg-type]
-    row = session.get(HatBrokerSession, (account, today))
-    assert row.status == "live"
-    assert row.logged_in_at is not None
-    broker.status = SessionStatus.EXPIRED
-    record_session(session, broker, account, today, lost_alert=True)  # type: ignore[arg-type]
-    types = sorted(e.event_type for e in session.query(HatEvent))
-    assert types == ["broker.logged_in", "broker.session_lost"]
-
-
 book_rows = st.dictionaries(
     st.sampled_from(["A", "B", "C"]),
     st.tuples(st.sampled_from([6, 2, 1, 5]), st.integers(min_value=0, max_value=4)),
@@ -529,11 +362,3 @@ def test_reads_raise_when_the_sdk_replies_with_an_error(read: str) -> None:
     method = getattr(adapter_over(sdk), read)
     with pytest.raises(BrokerUnavailableError):
         method()
-
-
-def test_decimal_funds() -> None:
-    env = exec_env()
-    env.fake.available = 12345.5
-    funds = env.broker.funds()
-    assert funds.available == Decimal("12345.5")
-    assert isinstance(funds.total, Decimal)

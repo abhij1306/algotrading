@@ -9,8 +9,6 @@ from pathlib import Path
 
 import pytest
 from hat_conf_repo import APP_ROOT, REPO_ROOT, build_graph, reaches, repo_files
-from sqlalchemy import Engine, create_engine
-from sqlalchemy.pool import StaticPool
 
 import app.hat
 
@@ -189,7 +187,6 @@ def test_hat_package_in_backend() -> None:
         "backend/app/hat/",
         "backend/tests/hat/",
         "verification/",
-        ".claude/skills/verify-",
     )
     stray = []
     for path in repo_files():
@@ -281,12 +278,6 @@ def test_hat_runtime_requires_postgres(dialect: str) -> None:
         if k.arg == "dialect_name"
     ]
     assert dialects == ["database.engine.dialect.name"]
-
-
-def _memory_sqlite() -> Engine:
-    return create_engine(
-        "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
-    )
 
 
 SECRET_NAME = re.compile(r"^(HAT_\w*(?:TOKEN|SECRET|CHAT_ID|_URL))=(.*)$", re.MULTILINE)

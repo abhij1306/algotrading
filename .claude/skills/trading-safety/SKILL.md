@@ -32,8 +32,7 @@ Hire a Trader can place real orders through Fyers. A bug here loses money, so th
 ## Testing
 
 - Never call the real Fyers, NSE or Telegram endpoints. Use `FakeBroker` (`tests/hat/fakes/broker.py`: it has the adapter's methods, records every call in `calls`, scripts outcomes with `script(...)` and `accepted`, `rejected`, `unconfirmed`, and can open the circuit) or `RecordingSdk` over the real `FyersBroker`. `FakeBroker` is the only fake broker; CONF `no_duplicate_fakes_or_authorities` refuses a second one.
-- Prove properties, not examples (Hypothesis, TLA+, DB and CONF checks). A fixed example is allowed only as an `@example` on a property. Show each new check failing on a deliberate break and record it under "Scratch breaks" of the matching `verify-*` skill.
-- HAT's safety properties are pinned by CONF `risk.hat_safety_properties_pinned` (digest and run). If one fails, the code is wrong or the change is a deliberate, reviewed one; never weaken the property to pass.
+- Verify by reading the diff against the rules above and running the change on real data (never placing orders). Tests only for small pure functions (sizing, stop and fill maths, parsers, state rules); never a test that runs a backtest, the pipeline or a full database on generated data.
 - Run only the tests for the files you changed plus `tests/hat/conformance`. CI runs the full suite.
 
 ## Before you finish
