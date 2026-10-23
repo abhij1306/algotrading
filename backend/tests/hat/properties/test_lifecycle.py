@@ -1,6 +1,6 @@
-"""PBT lifecycle.*: the sleeve lifecycle guards on the real
-`app.hat.engine.portfolio.lifecycle` and `service.transition` (SQLite), against rules written
-out independently. The state machine itself is proved in verification/tla/SleeveLifecycle.tla."""
+"""PBT lifecycle.*: the sleeve lifecycle guards on the real `app.hat.engine.portfolio.lifecycle`
+and `sleeve_service.transition` (SQLite), against rules written out independently. The state
+machine itself is proved in verification/tla/SleeveLifecycle.tla."""
 
 import math
 import statistics

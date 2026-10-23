@@ -29,14 +29,14 @@ from ..data.store import (
 from ..data.ticks import tick_for_date
 from ..engine.exits import ExitView, view_from_rules
 from ..engine.scan import ScanInputs
-from ..engine.stops import mean_true_range
+from ..engine.stops import lowest, mean_true_range, sma
 from ..engine.strategy.config import (
     ExitRule,
     StopAtrMultiple,
     StopSwingLow,
     StrategyConfig,
 )
-from ..engine.trigger import DailyInputs, daily_inputs
+from ..engine.trigger import DailyFeeds, DailyInputs, daily_inputs
 from ..models import HatInstrument
 from ..money import exact, require_exact
 
@@ -235,34 +235,27 @@ class DailyData:
         frame = self.bars(instrument_id)
         if frame.height == 0:
             return DailyInputs(tick=self.tick(instrument_id), band_known=found, band_pct=band)
-        return daily_inputs(
-            frame,
-            self.trade_date,
+        feeds = DailyFeeds(
             tick=self.tick(instrument_id),
             adv20=self.feature(instrument_id, "adv20"),
             adtr20=self.feature(instrument_id, "adtr20"),
             band_known=found,
             band_pct=band,
-            swing_lookback=self._swing_days or 0,
             atr=self._atr(instrument_id),
         )
+        return daily_inputs(frame, self.trade_date, feeds, self._swing_days or 0)
 
     def sma(self, instrument_id: uuid.UUID, length: int, live: Decimal) -> Decimal | None:
         """The `length`-session SMA with the live price standing in for today's close (the
         close-phase rules read the live price as the close proxy)."""
         closes = self._closes(instrument_id)[-(length - 1) :] if length > 1 else []
-        if len(closes) < length - 1:
-            return None
-        return (sum(closes, Decimal(0)) + live) / length
+        return sma([*closes, live], length)
 
     def swing_low(self, instrument_id: uuid.UUID, lookback: int) -> Decimal | None:
         """The lowest low of the `lookback` sessions before the trade date."""
-        frame = self.bars(instrument_id)
-        if frame.height < lookback:
-            return None
-        return min(
-            require_exact(v, "low", floats=True) for v in frame.tail(lookback)["low"].to_list()
-        )
+        frame = self.bars(instrument_id).tail(lookback)
+        lows = frame["low"].to_list() if frame.height else []
+        return lowest([require_exact(v, "low", floats=True) for v in lows], lookback)
 
     def exit_view(
         self,

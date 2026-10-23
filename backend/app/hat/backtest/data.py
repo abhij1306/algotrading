@@ -37,7 +37,7 @@ from ..data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataSt
 from ..data.ticks import tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
-from ..engine.stops import mean_true_range
+from ..engine.stops import lowest, mean_true_range, sma
 from ..models import HatIndustry, HatInstrument, HatUniverseMember
 from .spec import BacktestError
 
@@ -55,7 +55,6 @@ __all__ = [
 # the window it is given holds more, so its watchlist equals a scan of the full history.
 LOOKBACK_SESSIONS = 700
 _PRICE_PLACES = Decimal("0.0001")
-_ZERO = Decimal(0)
 _ALWAYS = date(1900, 1, 1)
 
 
@@ -201,16 +200,15 @@ class MarketView:
         dates = self.history.get(instrument_id, ([], []))[0][: len(bars)]
         return tick_for_date(dates, [b.close for b in bars], day)
 
-    def sma(self, instrument_id: str, day: date, length: int) -> Decimal | None:
-        bars = self.bars_through(instrument_id, day)
-        if len(bars) < length:
-            return None
-        return sum((b.close for b in bars[-length:]), _ZERO) / length
+    def sma_through(self, instrument_id: str, day: date, length: int) -> Decimal | None:
+        """The `length`-session SMA of the closes up to `day`."""
+        bars = self.bars_through(instrument_id, day)[-length:]
+        return sma([b.close for b in bars], length)
 
     def lowest_low_before(self, instrument_id: str, before: date, lookback: int) -> Decimal | None:
         """The lowest low of the `lookback` sessions the instrument traded before `before`."""
-        bars = self.bars_through(instrument_id, before, inclusive=False)
-        return min(b.low for b in bars[-lookback:]) if len(bars) >= lookback else None
+        bars = self.bars_through(instrument_id, before, inclusive=False)[-lookback:]
+        return lowest([b.low for b in bars], lookback)
 
     def atr(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The mean true range of the `length` sessions up to `day`."""

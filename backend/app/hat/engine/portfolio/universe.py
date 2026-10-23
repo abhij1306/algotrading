@@ -77,12 +77,14 @@ def add_member(rows: Iterable[Interval], instrument_id: UUID, day: date) -> list
 def remove_member(rows: Iterable[Interval], instrument_id: UUID, day: date) -> list[Interval]:
     """`rows` with `instrument_id` no longer a member from `day`. Not a member on `day`: no
     change. A `day` on or before its interval's start would leave an empty interval and is
-    refused."""
+    refused; so is a `day` before an end already recorded (no rewriting the past)."""
     out: list[Interval] = []
     for row in rows:
         if row.instrument_id == instrument_id and active_on(row, day):
             if day <= row.effective_from:
                 raise UniverseError("universe_empty_interval")
+            if row.effective_to is not None:
+                raise UniverseError("universe_edit_in_past")
             row = Interval(row.instrument_id, row.effective_from, day)
         out.append(row)
     return out

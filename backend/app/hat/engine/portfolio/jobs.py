@@ -19,13 +19,9 @@ from app.hat.errors import HatError
 from app.hat.ops.jobs import JobError, JobResult
 
 from . import regime
-from .service import (
-    PortfolioError,
-    ensure_regime_model,
-    market_id_of,
-    record_regime,
-    run_allocation,
-)
+from .allocation_service import run_allocation
+from .common import PortfolioError, market_id_of
+from .regime_service import ensure_regime_model, record_regime
 
 REGIME_JOB = "regime"
 ALLOCATE_JOB = "allocate"

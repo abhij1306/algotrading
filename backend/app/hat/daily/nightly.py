@@ -49,8 +49,8 @@ from ..data.store import ActionFactor, DataStore
 from ..data.symbols import symbol_master
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
 from ..engine.live_trades import record_close_gaps
+from ..engine.portfolio.allocation_service import policy_at
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
-from ..engine.portfolio.service import policy_at
 from ..engine.rescale import (
     ALERT_ACTION_UNCHECKED,
     flag_unhandled,

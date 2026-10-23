@@ -252,6 +252,24 @@ def close_histories(draw: st.DrawFn) -> tuple[list[date], list[Decimal | None], 
     return dates, closes, trade
 
 
+def test_sma() -> None:
+    """The mean of the last n closes; None with fewer than n."""
+    closes = [Decimal("10"), Decimal("11"), Decimal("13"), Decimal("12")]
+    assert stops.sma(closes, 2) == Decimal("12.5")
+    assert stops.sma(closes, 4) == Decimal("11.5")
+    assert stops.sma(closes, 5) is None
+    assert stops.sma([], 1) is None
+
+
+def test_lowest() -> None:
+    """The lowest of the last n lows; None with fewer than n."""
+    lows = [Decimal("9"), Decimal("12"), Decimal("11"), Decimal("13")]
+    assert stops.lowest(lows, 3) == Decimal("11")
+    assert stops.lowest(lows, 4) == Decimal("9")
+    assert stops.lowest(lows, 5) is None
+    assert stops.lowest([], 1) is None
+
+
 @example(price=24_999)
 @example(price=25_000)  # exactly ₹250 is in the 0.05 slab
 @example(price=100_000)  # exactly ₹1,000 is still 0.05

@@ -105,38 +105,38 @@ Move(to, by) ==
     /\ allocFresh' = FALSE
     /\ UNCHANGED <<healthZero, ciFail, failing, regime, weight>>
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (guard: lifecycle.backtest_gate)
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (guard: lifecycle.backtest_gate)
 ToBacktested ==
     /\ state = "research"
     /\ dsrOk \/ BrokenMode = "no_dsr_guard"
     /\ Move("backtested", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (no condition beyond the edge)
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (no condition beyond the edge)
 ToShadow ==
     /\ state = "backtested"
     /\ Move("shadow", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (guard: lifecycle.shadow_gate)
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (guard: lifecycle.shadow_gate)
 ToLive ==
     /\ state = "shadow"
     /\ shadowDays >= ShadowNeeded \/ BrokenMode = "short_shadow"
     /\ Move("live", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (broken variant "skip_shadow"
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (broken variant "skip_shadow"
 \* only: the real code has no edge from backtested to live)
 SkipShadow ==
     /\ BrokenMode = "skip_shadow"
     /\ state = "backtested"
     /\ Move("live", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (the owner's promotion; guard:
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (the owner's promotion; guard:
 \* lifecycle.still_failing is false)
 Promote ==
     /\ state = "probation"
     /\ ~failing \/ BrokenMode = "promote_while_failing"
     /\ Move("live", IF BrokenMode = "auto_promote" THEN "engine" ELSE "owner")
 
-\* code: backend/app/hat/engine/portfolio/service.py:advance_automatic  (guard:
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:advance_automatic  (guard:
 \* lifecycle.retire_gate)
 Retire ==
     /\ state = "probation"
@@ -144,19 +144,19 @@ Retire ==
     /\ probAge >= ProbNeeded \/ BrokenMode = "early_retire"
     /\ Move("retired", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (the only edge out of retired)
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (the only edge out of retired)
 Reenter ==
     /\ state = "retired"
     /\ Move("research", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:transition  (broken variant
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (broken variant
 \* "retired_to_live" only)
 RetiredToLive ==
     /\ BrokenMode = "retired_to_live"
     /\ state = "retired"
     /\ Move("live", "engine")
 
-\* code: backend/app/hat/engine/portfolio/service.py:run_allocation  (advance_automatic moves a
+\* code: backend/app/hat/engine/portfolio/allocation_service.py:run_allocation  (advance_automatic moves a
 \* live sleeve whose health is 0 or whose expectancy trigger fired into probation, then the
 \* weights are written: 0 for any state but live)
 Allocate ==
@@ -197,13 +197,13 @@ EnvStep(changed) ==
     /\ UNCHANGED <<state, visited, regime, events, weight, lastBy, lastEvent>>
     /\ changed
 
-\* code: backend/app/hat/engine/portfolio/service.py:load_evidence  (backtest evidence)
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:load_evidence  (backtest evidence)
 SetDsr ==
     EnvStep(/\ dsrOk' \in BOOLEAN
             /\ allocFresh' = allocFresh
             /\ UNCHANGED <<shadowDays, healthZero, ciFail, failing, probAge>>)
 
-\* code: backend/app/hat/engine/portfolio/service.py:load_evidence  (a shadow session passes)
+\* code: backend/app/hat/engine/portfolio/sleeve_service.py:load_evidence  (a shadow session passes)
 TickShadow ==
     /\ state = "shadow"
     /\ shadowDays < ShadowNeeded

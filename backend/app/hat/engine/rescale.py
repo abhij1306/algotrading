@@ -23,9 +23,9 @@ the position is manage-only for good instead (HAT-EXEC-144, design review item 6
 `manage_only` holds it, so its exits see no view and its instrument takes no entry, the broker
 stop is left as it is, and `ca.rescale` records one URGENT `corporate_action.unhandled` per
 (position, action). The owner resolves it: a `/flatten` sells at most the shares the broker
-holds, or, for a virtual position, `resolve_action` (the admin command line's
-`resolve-action`, PR 73) records `corporate_action.resolved` and closes it virtually at the
-price the owner gives (the ex-date's adjusted price, PR 31 follow-ups 1 and 12).
+holds, or, for a virtual position, the admin command line's `resolve-action` (PR 73) records
+`corporate_action.resolved` (`resolve_action`) and closes it virtually at the price the owner
+gives (the ex-date's adjusted price, PR 31 follow-ups 1 and 12).
 
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
@@ -49,9 +49,9 @@ from ..events import record
 from ..models import HatCorporateAction, HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
 from ..money import require_exact
 from ..notify import Notifier
-from ..risk.sessions import SessionCalendar, SessionState
 from ..time import as_utc, trade_date_of
 from .botlock import lock_bot
+from .owner import OwnerCommand
 
 __all__ = [
     "ALERT_ACTION_PENDING",
@@ -389,25 +389,22 @@ def resolve_action(
     session: Session,
     position_id: uuid.UUID,
     action: str,
-    *,
     price: Decimal | None,
-    close: Callable[[HatPosition, Decimal], bool],
-    calendar: SessionCalendar,
-    chat_id: int,
-    now: datetime,
+    command: OwnerCommand,
 ) -> HatPosition:
     """The owner resolves one unhandled action (`<ex-date>:<type>`, as its
     `corporate_action.unhandled` names it) of an open virtual position (PR 73; PR 31 follow-ups
     1, 12): records `corporate_action.resolved` as the owner's (`actor = user`, the allowlisted
-    chat, `via = cli`) and closes the position at `price` (the
-    ex-date's adjusted price the owner reads; `close` sells it virtually and writes its trade
-    result). Outside market hours, under the bot's lock. Refused, writing nothing: inside a
+    chat, `via = cli`) at `price` (the ex-date's adjusted price the owner reads), and the caller
+    closes the position at it in the same transaction (`trades.close_position` with
+    `CLOSE_REASON`: it sells it virtually and writes its trade result). Outside market hours,
+    under the bot's lock. Refused, writing nothing: inside a
     session (`market_hours`), an unknown or closed position (`position_unknown`), a real one
     (`real_position_flatten`: its quantity and stop are on the old scale, and lifting the lock
     would also lift `/flatten`'s cap at the shares the broker holds, so it is resolved by
     `/flatten`), an action that does not lock it (`action_not_unhandled`) and a missing or
     non-positive price (`close_price_required`)."""
-    if calendar.state(now) is not SessionState.CLOSED:
+    if command.in_session:
         raise ResolutionError("market_hours")
     position = session.get(HatPosition, position_id)
     if position is None:
@@ -420,7 +417,7 @@ def resolve_action(
         raise ResolutionError("real_position_flatten")
     locking = {
         _key(a.ex_date, a.action_type)
-        for a in unhandled_actions(session, position, trade_date_of(now))
+        for a in unhandled_actions(session, position, command.trade_date)
     }
     if action not in locking:
         raise ResolutionError("action_not_unhandled")
@@ -435,13 +432,12 @@ def resolve_action(
         payload={
             "action": action,
             "price": str(price),
-            "chat_id": chat_id,
+            "chat_id": command.chat_id,
             "via": "cli",
         },
         correlation_id=position.signal_id,
         bot_id=position.bot_id,
-        occurred_at=now,
+        occurred_at=command.now,
     )
     session.flush()
-    close(position, price)
     return position

@@ -65,8 +65,9 @@ from sqlalchemy.orm import Session
 from .clock import SYSTEM_CLOCK, Clock
 from .data.calendar import session_calendar
 from .data.reference import parse_industry_csv
-from .engine.portfolio import lifecycle
-from .engine.portfolio import service as portfolio
+from .engine.owner import OwnerCommand
+from .engine.portfolio import lifecycle, sleeve_service, universe_service
+from .engine.portfolio.common import market_id_of
 from .engine.rescale import CLOSE_REASON, resolve_action
 from .engine.strategy import versions
 from .engine.strategy.config import ConfigError
@@ -87,7 +88,7 @@ from .risk.policy import RiskPolicy, effective_version
 from .risk.policy_service import load_versions, seed_initial_policy
 from .risk.sessions import SessionCalendar
 from .telegram.config import owner_chat_id
-from .time import trade_date_of, utc_now
+from .time import utc_now
 
 __all__ = ["AdminDeps", "AdminError", "main"]
 
@@ -226,22 +227,28 @@ def _publish_universe(
     rows = parse_industry_csv(content)
     if not rows:
         raise AdminError("constituents_empty")
-    market_id = portfolio.market_id_of(session)
-    constituents, unknown = portfolio.resolve_symbols(
+    market_id = market_id_of(session)
+    constituents, unknown = universe_service.resolve_symbols(
         session,
         market_id,
         [row.symbol for row in rows],
         args.as_of,
         {row.symbol: row.isin for row in rows},
     )
-    include, unknown_in = portfolio.resolve_symbols(session, market_id, args.include, args.as_of)
-    exclude, unknown_ex = portfolio.resolve_symbols(session, market_id, args.exclude, args.as_of)
+    include, unknown_in = universe_service.resolve_symbols(
+        session, market_id, args.include, args.as_of
+    )
+    exclude, unknown_ex = universe_service.resolve_symbols(
+        session, market_id, args.exclude, args.as_of
+    )
     missing = sorted({*unknown, *unknown_in, *unknown_ex})
     if missing:
         # every symbol must name an instrument: a silent drop would trade an unapproved list
         raise AdminError("unknown_symbols: " + " ".join(missing))
-    named = portfolio.universe_named(session, user_id=user_id, market_id=market_id, name=args.name)
-    draft = portfolio.seed_universe_version(
+    named = universe_service.universe_named(
+        session, user_id=user_id, market_id=market_id, name=args.name
+    )
+    draft = universe_service.seed_universe_version(
         session,
         named.id,
         constituents=constituents,
@@ -249,12 +256,12 @@ def _publish_universe(
         exclude=exclude,
         as_of=args.as_of,
     )
-    live = portfolio.publish_version(session, draft.id, now)
+    live = universe_service.publish_version(session, draft.id, now)
     bot_ids = args.bot or [
         uuid.UUID(b["id"]) for b in versions.release_overview(session, user_id)["bots"]
     ]
     for bot_id in bot_ids:
-        portfolio.assign_universe(
+        universe_service.assign_universe(
             session, bot_id=bot_id, universe_version_id=live.id, calendar=calendar, now=now
         )
     return {
@@ -343,6 +350,7 @@ def _owner(
         )
         return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
     calendar = _calendar(session)
+    owner = OwnerCommand(chat_id, now, calendar)
     if args.command == "confirm-ddpi":
         account = confirm_ddpi(
             session,
@@ -361,32 +369,16 @@ def _owner(
         )
         return {"bot_id": str(bot.id), "live_version_id": str(bot.live_version_id)}
     if args.command == "resolve-action":
-        position = resolve_action(
-            session,
-            args.position,
-            args.action,
-            price=args.close_at,
-            close=lambda p, price: close_position(session, p.id, price, CLOSE_REASON, now),
-            calendar=calendar,
-            chat_id=chat_id,
-            now=now,
-        )
+        position = resolve_action(session, args.position, args.action, args.close_at, owner)
+        close_position(session, position.id, args.close_at, CLOSE_REASON, now)
         return {"position_id": str(position.id), "closed": position.closed_at is not None}
     if args.command == "promote-version":
         row = versions.promote_version(
             session, args.version, calendar=calendar, now=now, chat_id=chat_id
         )
         return {"version_id": str(row.id), "status": row.status}
-    trade_date = trade_date_of(now)
-    bot = portfolio.owner_transition(
-        session,
-        args.bot,
-        args.to,
-        trade_date=trade_date,
-        policy=_policy(session, deps.user_id, now),
-        calendar=calendar,
-        chat_id=chat_id,
-        now=now,
+    bot = sleeve_service.owner_transition(
+        session, args.bot, args.to, _policy(session, deps.user_id, now), owner
     )
     return {"bot_id": str(bot.id), "lifecycle_state": bot.lifecycle_state}
 

@@ -69,6 +69,7 @@ __all__ = [
     "Trigger",
     "TriggerEvaluation",
     "TriggerMonitor",
+    "DailyFeeds",
     "daily_inputs",
     "daily_trigger_results",
     "elapsed_fraction",
@@ -124,23 +125,28 @@ class DailyInputs:
     swing_lows: tuple[Decimal, ...] = ()
 
 
+@dataclass(frozen=True)
+class DailyFeeds:
+    """The `DailyInputs` values that do not come from the instrument's daily bars: the tick
+    (`data.ticks` on the unadjusted closes), the `adv20`/`adtr20` features, the price band and
+    the ATR of the stop rule."""
+
+    tick: Decimal | None
+    adv20: Decimal | None = None
+    adtr20: Decimal | None = None
+    band_known: bool = False
+    band_pct: Decimal | None = None
+    atr: Decimal | None = None
+
+
 def daily_inputs(
-    bars: pl.DataFrame,
-    trade_date: date,
-    *,
-    tick: Decimal | None,
-    adv20: Decimal | None,
-    adtr20: Decimal | None,
-    band_known: bool,
-    band_pct: Decimal | None,
-    swing_lookback: int = 0,
-    atr: Decimal | None = None,
+    bars: pl.DataFrame, trade_date: date, feeds: DailyFeeds, swing_lookback: int = 0
 ) -> DailyInputs:
     """`DailyInputs` from one instrument's adjusted daily bars (`date`, `low`, `close`,
-    `volume`): the previous close is the last close before `trade_date` (HAT-CRIT-115), the
-    average volume the mean of the last 50 sessions' volume before it (HAT-DATA-115; None with
-    fewer than 50), and the swing lows the last `swing_lookback` lows (none with fewer).
-    `tick` comes from `data.ticks` on the unadjusted closes."""
+    `volume`) and its `feeds`: the previous close is the last close before `trade_date`
+    (HAT-CRIT-115), the average volume the mean of the last 50 sessions' volume before it
+    (HAT-DATA-115; None with fewer than 50), and the swing lows the last `swing_lookback` lows
+    (none with fewer)."""
     prior = bars.filter(pl.col("date") < trade_date).sort("date")
     closes = [exact(v, floats=True) for v in prior["close"].to_list()] if prior.height else []
     volumes = [exact(v, floats=True) for v in prior["volume"].to_list()] if prior.height else []
@@ -155,12 +161,12 @@ def daily_inputs(
     return DailyInputs(
         prev_close=closes[-1] if closes else None,
         avg50_volume=avg50,
-        adv20=adv20,
-        adtr20=adtr20,
-        tick=tick,
-        band_known=band_known,
-        band_pct=band_pct,
-        atr=atr,
+        adv20=feeds.adv20,
+        adtr20=feeds.adtr20,
+        tick=feeds.tick,
+        band_known=feeds.band_known,
+        band_pct=feeds.band_pct,
+        atr=feeds.atr,
         swing_lows=tuple(v for v in swing if v is not None),
     )
 
