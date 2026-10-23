@@ -1,0 +1,92 @@
+name: TLA
+
+# The TLC models run only when a model or the code its actions map to changes (the `code:`
+# comments in verification/tla/*.tla; CONF `tla_actions_mapped` keeps those targets real on
+# every PR), plus weekly and on demand. PR CI (ci.yml) never waits on them.
+on:
+  pull_request:
+    paths: &paths
+      - verification/**
+      - .github/workflows/tla.yml
+      - backend/app/hat/daily/nightly.py
+      - backend/app/hat/daily/runtime.py
+      - backend/app/hat/data/ingest.py
+      - backend/app/hat/data/quality.py
+      - backend/app/hat/data/staleness.py
+      - backend/app/hat/engine/approvals.py
+      - backend/app/hat/engine/botlock.py
+      - backend/app/hat/engine/criteria/live.py
+      - backend/app/hat/engine/exits.py
+      - backend/app/hat/engine/lifecycle.py
+      - backend/app/hat/engine/live_trades.py
+      - backend/app/hat/engine/portfolio/health.py
+      - backend/app/hat/engine/portfolio/jobs.py
+      - backend/app/hat/engine/portfolio/lifecycle.py
+      - backend/app/hat/engine/portfolio/regime.py
+      - backend/app/hat/engine/portfolio/service.py
+      - backend/app/hat/engine/positions.py
+      - backend/app/hat/engine/strategy/versions.py
+      - backend/app/hat/engine/trades.py
+      - backend/app/hat/execution/accounts.py
+      - backend/app/hat/execution/fills.py
+      - backend/app/hat/execution/fyers_adapter.py
+      - backend/app/hat/execution/manage.py
+      - backend/app/hat/execution/mode_changes.py
+      - backend/app/hat/execution/protect.py
+      - backend/app/hat/execution/reconcile.py
+      - backend/app/hat/execution/router.py
+      - backend/app/hat/execution/session.py
+      - backend/app/hat/execution/submit.py
+      - backend/app/hat/ops/jobs.py
+      - backend/app/hat/ops/scheduler.py
+      - backend/app/hat/risk/controls.py
+      - backend/app/hat/risk/decision.py
+      - backend/app/hat/risk/service.py
+      - backend/app/hat/risk/sessions.py
+      - backend/app/hat/telegram/commands.py
+      - backend/app/hat/telegram/confirm.py
+      - backend/app/hat/telegram/relay.py
+      - backend/app/hat/telegram/reports.py
+  push:
+    branches: [main]
+    paths: *paths
+  schedule:
+    - cron: "30 2 * * 1" # Monday 08:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tla-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Two parallel jobs: the models must pass, each broken variant must fail.
+  tla-models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: TLC models (must pass)
+        run: verification/tla/run.sh
+
+  tla-broken:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: TLC broken variants (each must fail)
+        run: verification/tla/run.sh --broken

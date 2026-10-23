@@ -32,7 +32,8 @@ architecture, invariants, CLAUDE.md, decisions -- and they stay compact.
 `READY TO MERGE #<n> <head sha>` as the last line of your turn, and it is true at that sha:
 
 1. The PR does what its brief says and keeps the invariants it touches, verified as below.
-2. Every CI check passes and the SonarCloud quality gate is OK.
+2. Every CI check passes and the SonarCloud quality gate is OK. Don't wait for CodeAnt: report
+   READY once CI and Sonar are green, and fix any CodeAnt finding that arrives before merge.
 3. Every real bug found by you, Sonar or CodeAnt is fixed. A Sonar or CodeAnt finding (inline
    comment or PR Risk) you judge not to be a real bug gets a reply saying why. Cosmetic findings
    don't block.
@@ -56,10 +57,12 @@ Implementation and real verification come first; testing is not proof.
 
 - **One push, then one fix round.** Open the PR only when the work is complete and verified.
   After the push, wait
-  until CI, Sonar and CodeAnt have all finished, then fix everything in one commit.
+  until CI and Sonar have finished, then fix everything (with any CodeAnt findings already in) in
+  one commit.
 - **Pre-push check**, from the worktree root: `ruff format --check .`, `ruff check .`, then from
   `backend/` the test files you touched plus `tests/hat/conformance`, and `pnpm check` if you
-  touched the frontend. CI runs everything else.
+  touched the frontend. CI runs everything else; the TLC models run in `tla.yml` only when a model
+  or the code its actions map to changes.
 - **Never run full suites locally.** No full `pytest`, no `CI=1` property runs, no run of every
   TLC model. CI runs them. After a rebase, rerun the pre-push check above and nothing more.
 - **Tests while iterating:** run the one test you are working on, default Hypothesis profile.
@@ -84,7 +87,8 @@ Implementation and real verification come first; testing is not proof.
   issues `https://sonarcloud.io/api/issues/search?componentKeys=abhij1306_algotrading&pullRequest=<n>&resolved=false`.
 - CodeAnt: inline comments `gh api repos/abhij1306/algotrading/pulls/<n>/comments`, PR Risk in
   `gh api repos/abhij1306/algotrading/issues/<n>/comments`. Reply `Re CodeAnt <what>: fixed in
-  <sha>. <how>` or a short reason. If it hasn't reviewed 30 minutes after opening, go on without it.
+  <sha>. <how>` or a short reason. Never wait for it; a finding that arrives after READY and
+  before merge is fixed then, and READY reported again.
 
 ## Report
 

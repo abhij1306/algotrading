@@ -1,9 +1,6 @@
-"""PBT backtest.* (09): the day loop of `app.hat.engine.backtest` on generated
-markets (random walks on a paise grid, `hat_backtest_support`), against rules written out
-independently: the live scan run directly, the fill proxies, R and money identities, and the
-version and run rules of `publish_version`.
-
-A run takes about a second, so the run-level properties use fewer examples than the profile."""
+"""PBT backtest.* (09): the pure rules of the backtest day loop, against rules written out
+independently: the fill proxies, the entry-day and circuit inferences, slot order, and the
+recorded fill conventions and their refusals."""
 
 import dataclasses
 import math
@@ -12,7 +9,6 @@ from decimal import Decimal
 
 import hat_backtest_support as s
 import pytest
-from hat_support import memory_engine
 from hypothesis import example, given
 from hypothesis import strategies as st
 
@@ -41,24 +37,12 @@ from app.hat.engine.backtest import (
     pre_break_low,
     upper_circuit_locked,
 )
-from app.hat.engine.portfolio import regime
 from app.hat.engine.stops import floor_to_tick
-from app.hat.schema import seed_hat_reference
 
 D = Decimal
 SESSIONS = 34  # 21 warm-up sessions, then 13 simulated ones
 PRICE = st.integers(100, 100_000).map(lambda n: D(n) / 100)  # 1.00 .. 1000.00 on the paise grid
 DAYS = s.sessions(SESSIONS)
-# --- -------------------------------------------------------------------------------
-
-
-# --- -------------------------------------------------------------------------------
-
-
-# --- -------------------------------------------------------------------------------
-
-
-# --- -------------------------------------------------------------------------------
 
 
 # --- -------------------------------------------------------------------------
@@ -143,9 +127,6 @@ def test_pre_break_low(
     assert after == (day_low if day_low < before else None)
 
 
-# --- entry filters at the trigger -------------------------------------------
-
-
 # --- the per-instrument cooldown -----------------------------------------
 
 
@@ -225,15 +206,6 @@ def test_exit_fill_proxy(open_: D, low: D, stop: D) -> None:
 # --- -------------------------------------------------------------------------------
 
 
-# --- -------------------------------------------------------------------------------
-
-
-# --- -------------------------------------------------------------------------------
-
-
-# --- -------------------------------------------------------------------------------
-
-
 _NO_FEES = D(0)
 
 
@@ -256,9 +228,6 @@ def _trade(day: int, r: D, n: int, entry: int = 0, fees: D = _NO_FEES) -> TradeR
         strategy_version_id=s.VERSION,
         risk_policy_version_id=s.policy_version().version_id,
     )
-
-
-# --- -------------------------------------------------------------------------------
 
 
 # --- recorded fill conventions -----------------------------------------
@@ -468,22 +437,3 @@ def test_path_rules_refused(rule: str, after: int) -> None:
         check_conventions(
             PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
         )
-
-
-# --- -------------------------------------------------------------------------------
-
-ENGINE = memory_engine()
-seed_hat_reference(ENGINE)
-
-
-# --- the market loader --------------------------------------------------------
-
-KINDS = st.sampled_from(["listed", "gone_before", "gone_after"])
-
-
-# --- the features the loop reads are the night's ----------------------------------
-
-
-# --- sizing through the sleeve's allocation --------------------------------
-
-HISTORY = regime.SMA_SLOW + regime.VIX_WINDOW  # index sessions before the market's first

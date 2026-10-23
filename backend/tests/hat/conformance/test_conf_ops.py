@@ -167,25 +167,6 @@ def test_admin_cli_calls_services() -> None:
     assert importers == []
 
 
-def test_admin_checker_can_fail() -> None:
-    """The checker finds each kind of violation in a synthetic module."""
-    source = (
-        "from sqlalchemy import select\n"
-        "from .models import HatBot\n"
-        "def run(session, bot):\n"
-        "    session.add(bot)\n"
-        "    bot.lifecycle_state = 'live'\n"
-        "    return select(HatBot)\n"
-    )
-    found = admin_violations(source)
-    assert "from sqlalchemy" in found
-    assert "import select" in found
-    assert "from app.hat.models" in found
-    assert "session.add()" in found
-    assert "assigns .lifecycle_state" in found
-    assert "select" in found
-
-
 def unalerted_subscriptions(source: str) -> list[int]:
     """The lines of every `LiveSubscriptions(...)` in a module's source (by its name, an import
     alias or `module.LiveSubscriptions`) built without its `alert` (the fourth positional

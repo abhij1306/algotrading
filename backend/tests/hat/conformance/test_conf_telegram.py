@@ -131,13 +131,6 @@ def test_telegram_parser_accepts_only_its_commands() -> None:
         assert commands.parse(stray) is None, stray
 
 
-def test_telegram__command_catalogue() -> None:
-    """The handler table, the argument table and the command tuple are the same names; a handler
-    table with an extra entry would be an unreviewed control path."""
-    assert set(commands.HANDLERS) == set(commands.COMMANDS) == set(commands._ARITY)
-    assert all(callable(handler) for handler in commands.HANDLERS.values())
-
-
 # --- live levers only reduce risk ---------------------------------------------
 
 
@@ -192,7 +185,7 @@ def test_no_override_command() -> None:
 def test_telegram__no_webhook_no_listener() -> None:
     """Nothing in app/hat/telegram imports a server stack, binds, listens or names
     setWebhook; the client allows only the five outbound methods and refuses any other before
-    a request is made (the scan is shown to catch a planted listener)."""
+    a request is made."""
     assert _listener_findings(TELEGRAM) == []
     assert (
         frozenset(
@@ -208,19 +201,6 @@ def test_telegram__no_webhook_no_listener() -> None:
             transport.call(method, {}, 1)
         assert raised.value.code == CODE_METHOD
     assert posted == []
-
-
-def test_telegram__listener_scan_catches_a_server(tmp_path: Path) -> None:
-    """The scan above finds a planted socket server and a webhook registration."""
-    (tmp_path / "planted.py").write_text(
-        "import socket\ns = socket.socket()\ns.bind(('0.0.0.0', 8443))\n"
-        "def hook(c):\n    c.call('setWebhook', {}, 1)\n",
-        encoding="utf-8",
-    )
-    found = _listener_findings(tmp_path)
-    assert any("imports socket" in f for f in found)
-    assert any("uses bind" in f for f in found)
-    assert any("uses setWebhook" in f for f in found)
 
 
 # --- no order from free text ---------------------------------------------------

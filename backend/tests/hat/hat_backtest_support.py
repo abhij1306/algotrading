@@ -1,5 +1,5 @@
 """Small builders for the backtest fill and cost properties: instruments, sessions, a
-permissive config and spec, and generated daily price paths."""
+permissive config and spec."""
 
 from __future__ import annotations
 
@@ -8,20 +8,14 @@ import uuid
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
-
-import polars as pl
-from hypothesis import strategies as st
 
 from app.hat.backtest.costs import (
     BacktestFills,
     load_cost_model,
     parse_cost_model,
 )
-from app.hat.data.features import compute_features
-from app.hat.engine.backtest import MarketData, RunSpec
-from app.hat.engine.portfolio.universe import Interval
+from app.hat.engine.backtest import RunSpec
 from app.hat.engine.strategy.config import StrategyConfig, parse_config
 from app.hat.risk.policy import PolicyVersion, seed_policy
 
@@ -31,11 +25,8 @@ __all__ = [
     "INDEX",
     "VERSION",
     "WARM_UP",
-    "PricePath",
     "config",
     "instrument",
-    "market",
-    "paths",
     "policy_version",
     "sessions",
     "spec",
@@ -48,10 +39,7 @@ INDEX = "NIFTY 500"
 BOT = "stage2-contraction-breakout"  # a strategy key the seed policy has a p_max for
 VERSION = uuid.UUID("00000000-0000-7000-8000-0000000000b1")
 POLICY = uuid.UUID("00000000-0000-7000-8000-0000000000b2")
-VOLUME = 1_000_000.0
 ZERO = D(0)
-# (open, high, low, close) per session, optionally with the session's volume
-PricePath = list[tuple[float, ...]]
 
 _EXITS: list[dict[str, Any]] = [
     {"rule": "hard_stop"},
@@ -127,7 +115,6 @@ def policy_version() -> PolicyVersion:
     )
 
 
-FIXTURES = Path(__file__).parent / "fixtures"
 # adv20 (the liquidity cap's input) needs 20 sessions, so a run starts after them
 WARM_UP = 21
 
@@ -155,88 +142,3 @@ def spec(
         end=days[-1],
         fills=fills or BacktestFills(load_cost_model(), slippage),
     )
-
-
-def _frame(paths_: Mapping[str, PricePath], days: Sequence[date]) -> pl.DataFrame:
-    rows = []
-    for instrument_id, path in sorted(paths_.items()):
-        previous = None
-        for day, bar in zip(days, path, strict=False):
-            o, h, low, c = bar[:4]
-            volume = bar[4] if len(bar) > 4 else VOLUME
-            rows.append((instrument_id, day, o, h, low, c, previous, volume, c * volume))
-            previous = c
-    return pl.DataFrame(
-        rows,
-        schema={
-            "instrument_id": pl.String,
-            "date": pl.Date,
-            "open": pl.Float64,
-            "high": pl.Float64,
-            "low": pl.Float64,
-            "close": pl.Float64,
-            "prev_close": pl.Float64,
-            "volume": pl.Float64,
-            "traded_value": pl.Float64,
-        },
-        orient="row",
-    )
-
-
-def market(
-    paths_: Mapping[str, PricePath],
-    days: Sequence[date],
-    *,
-    index: Sequence[float] | None = None,
-    members: Sequence[Interval] | None = None,
-    last_traded: Mapping[str, date] | None = None,
-) -> MarketData:
-    """The market of `paths_` (an instrument's path may be shorter than `days`: it stops
-    trading). Every instrument is a member from the first session unless `members` says
-    otherwise; the index rises steadily unless given."""
-    bars = _frame(paths_, days)
-    features, _ = compute_features(bars)
-    closes = index if index is not None else [1000.0 + n for n in range(len(days))]
-    return MarketData(
-        days=tuple(days),
-        bars=bars,
-        features=features,
-        index_closes={INDEX: [(d, D(repr(c))) for d, c in zip(days, closes, strict=False)]},
-        members=tuple(
-            members
-            if members is not None
-            else (Interval(uuid.UUID(i), days[0]) for i in sorted(paths_))
-        ),
-        industries={i: f"industry-{n}" for n, i in enumerate(sorted(paths_))},
-        series=dict.fromkeys(paths_, "EQ"),
-        last_traded=dict(last_traded or {}),
-    )
-
-
-@st.composite
-def paths(draw: st.DrawFn, count: int, *, instruments: int = 3) -> dict[str, PricePath]:
-    """Random-walk paths on a whole-paise grid: each session moves the close by up to 6% and
-    draws an open, high and low around it."""
-    found: dict[str, PricePath] = {}
-    for n in range(draw(st.integers(1, instruments))):
-        price = float(draw(st.integers(80, 200)))
-        path: PricePath = []
-        for _ in range(count):
-            move = draw(st.integers(-60, 60)) / 1000
-            gap = draw(st.integers(-20, 30)) / 1000
-            close = round(max(5.0, price * (1 + move)), 2)
-            open_ = round(max(5.0, price * (1 + gap)), 2)
-            up = draw(st.integers(0, 30)) / 1000
-            down = draw(st.integers(0, 30)) / 1000
-            high = round(max(open_, close) * (1 + up), 2)
-            low = round(min(open_, close) * (1 - down), 2)
-            path.append((open_, high, low, close))
-            price = close
-        found[instrument(n)] = path
-    return found
-
-
-# --- the night world -------------------------------------------------------------------
-
-# A split ex-dated on a session: (ex-date, factor), the adjusted price being the raw one times it.
-Split = tuple[date, Decimal]
