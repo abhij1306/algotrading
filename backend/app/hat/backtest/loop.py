@@ -158,7 +158,7 @@ from .fills import (
     stop_fill,
     suspended_mark,
 )
-from .ledger import exact_flows, fill_rows, ledger
+from .ledger import exact_flows, fill_rows, ledger, set_series
 from .ledger import trade_rows as ledger_trade_rows
 from .ledger import watch_rows as ledger_watch_rows
 from .report import (
@@ -367,13 +367,15 @@ class _Run:
         return self._result()
 
     def _publish(self, prev: date, day: date) -> None:
+        series = series_as_of(self.data.series, prev)
+        set_series(self.session, series)
         inputs = ScanInputs(
             as_of=prev,
             members=(),  # replaced by the bot's universe on `prev`
             bars=self.view.window(prev),
             regime_closes=self.view.closes_through(prev),
             features=self.view.features.get(prev),
-            series=series_as_of(self.data.series, prev),
+            series=series,
         )
         published = watchlist.scan_and_publish(
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)

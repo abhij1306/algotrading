@@ -8,11 +8,11 @@ flows, summed exactly."""
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import time
 from decimal import Decimal
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -21,6 +21,7 @@ from ..models import (
     HatBot,
     HatFill,
     HatIndustry,
+    HatInstrument,
     HatMarket,
     HatOrder,
     HatPosition,
@@ -38,10 +39,12 @@ from .data import MarketData, classifications
 from .report import FillRow, TradeRow, WatchRow
 from .spec import RunSpec
 
-__all__ = ["exact_flows", "fill_rows", "ledger", "trade_rows", "watch_rows"]
+__all__ = ["exact_flows", "fill_rows", "ledger", "set_series", "trade_rows", "watch_rows"]
 
 _SANDBOX_USER = uuid.UUID(int=1)
 _ZERO = Decimal(0)
+# before its first bar an instrument has no series, and so no Fyers symbol
+_NO_SERIES = ""
 
 
 def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
@@ -89,6 +92,21 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
                 reason="constituent",
             )
         )
+    # The live scan and entry read only active instruments trading under a Fyers series (D210):
+    # each member gets a row, its series set point in time each night by `set_series`.
+    for instrument_id in sorted({str(i.instrument_id) for i in data.members}):
+        session.add(
+            HatInstrument(
+                id=uuid.UUID(instrument_id),
+                market_id=market.id,
+                isin=instrument_id,
+                series=_NO_SERIES,
+                symbol=instrument_id,
+                name=instrument_id,
+                face_value=Decimal(1),
+                active=True,
+            )
+        )
     for instrument_id in sorted({str(i.instrument_id) for i in data.members}):
         # the live lookup reads the classification in force on the trade date
         for effective_from, industry in classifications(data, instrument_id):
@@ -115,6 +133,17 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     session.add(bot)
     session.flush()
     return session, bot.id
+
+
+def set_series(session: Session, series: Mapping[str, str]) -> None:
+    """Set each ledger instrument's series to `series` (by instrument id; one without a bar yet
+    has none), as the live listing refresh keeps `hat_instrument.series` current."""
+    for instrument_id, current in session.execute(select(HatInstrument.id, HatInstrument.series)):
+        wanted = series.get(str(instrument_id), _NO_SERIES)
+        if wanted != current:
+            session.execute(
+                update(HatInstrument).where(HatInstrument.id == instrument_id).values(series=wanted)
+            )
 
 
 # --- what the run wrote -----------------------------------------------------------------------
