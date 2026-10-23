@@ -4,17 +4,17 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.config import config
+from app.utils import origins
 from app.utils.origins import FrontendCORSMiddleware
 
 
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
-    monkeypatch.setattr(config, "ALLOWED_ORIGINS", ("http://desk.lan:3000", "null"))
+    monkeypatch.setattr(origins, "ALLOWED_ORIGINS", ("http://desk.lan:3000", "null"))
     app = FastAPI()
     app.add_middleware(
         FrontendCORSMiddleware,
-        allow_origins=list(config.ALLOWED_ORIGINS),
+        allow_origins=list(origins.ALLOWED_ORIGINS),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

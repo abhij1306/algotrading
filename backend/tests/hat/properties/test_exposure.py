@@ -4,33 +4,21 @@ from hat_risk_support import D
 from hypothesis import given
 from hypothesis import strategies as st
 
-from app.hat.risk.exposure import (
-    ClosedTrade,
-    LadderState,
-    ladder_from_trades,
-)
-from app.hat.risk.policy import LEVELS, seed_policy
+from app.hat.risk.exposure import ClosedTrade, LadderState, apply_trade
+from app.hat.risk.policy import LEVELS, RiskPolicy, seed_policy
 
 SEED = seed_policy()
 R = st.decimals(min_value=D("-3"), max_value=D("6"), places=2)
 trade_lists = st.lists(st.builds(ClosedTrade, R, st.booleans()), max_size=60)
 
 
-def oracle(trades: list[ClosedTrade], up: int, down: int) -> tuple[int, int, int]:
-    """Written independently of the module: (level index, wins run, losses run)."""
-    level, wins, losses = 0, 0, 0
-    for t in trades:
-        if t.is_virtual:
-            continue
-        if t.r_multiple > 0:
-            wins, losses = wins + 1, 0
-            if wins >= up and level < 2:
-                level, wins = level + 1, 0
-        else:
-            losses, wins = losses + 1, 0
-            if losses >= down and level > 0:
-                level, losses = level - 1, 0
-    return level, wins, losses
+def ladder_from_trades(trades: list[ClosedTrade], policy: RiskPolicy) -> LadderState:
+    """The state after `trades` (oldest first) from a fresh start at L1, one `apply_trade` per
+    closed trade as `controls` applies them."""
+    state = LadderState()
+    for trade in trades:
+        state = apply_trade(state, trade, policy)
+    return state
 
 
 @given(

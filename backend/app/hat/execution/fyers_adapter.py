@@ -6,7 +6,7 @@ and `SUBMIT_UNCONFIRMED`), `FyersSession` (is the SDK model usable) and `FyersAu
 or an environment variable itself (HAT-OPS-051). The instrument list comes from `hat_instrument`
 and `hat_broker_symbol`.
 
-Everything Fyers-shaped is here (PR 75d, architecture audit F8): every intent becomes one exact
+Everything Fyers-shaped is here (architecture audit F8): every intent becomes one exact
 Fyers payload with product CNC (`order_payload`, `gtt_payload` and the modify fields), the one
 place a Decimal price becomes the float the SDK's JSON carries; an invalid intent raises
 `InvalidIntentError` before any broker call. Every raw reply is parsed once, its amounts through
@@ -41,7 +41,6 @@ from .broker import (
     BrokerFunds,
     BrokerGtt,
     BrokerHolding,
-    BrokerLoginError,
     BrokerOrder,
     BrokerPosition,
     BrokerTrade,
@@ -50,22 +49,16 @@ from .broker import (
     GttModify,
     GttRequest,
     GttResult,
-    Instrument,
     InvalidIntentError,
     OrderBook,
     OrderIntent,
     OrderType,
-    OrderUpdate,
     PlaceResult,
     SessionStatus,
     Side,
 )
 from .fyers_auth import (
-    ACCOUNT_UNCONFIRMED,
-    AccountsUnreadableError,
-    FyersAuthError,
     FyersAuthService,
-    WrongAccountError,
     get_fyers_auth,
 )
 from .fyers_broker import (
@@ -81,7 +74,6 @@ from .fyers_broker import (
     rate_limited,
 )
 from .fyers_session import FyersSession, get_fyers_session
-from .fyers_tokens import TokenStoreError
 from .tags import TAG_LENGTH, is_gtt_tag, is_hat_tag
 
 # Fyers order "type": 1 = LIMIT, 2 = MARKET, 3 = SL-M (stop market), 4 = SL (stop limit)
@@ -528,8 +520,6 @@ class FyersHatBroker:
         self._client = client
         self._auth = auth
         self._instruments = instruments if instruments is not None else _stored_instruments
-        self._seen: dict[str, tuple[str, int]] = {}
-        self._seen_lock = threading.Lock()
         self._clock = clock
         # the last profile check: (SDK model it checked, refused, when); see `_token_refused`
         self._token_check: tuple[object, bool, float] | None = None
@@ -539,41 +529,6 @@ class FyersHatBroker:
 
     def capabilities(self) -> Capabilities:
         return self._capabilities
-
-    def login_url(self) -> str:
-        try:
-            return self._auth().login_url()
-        except Exception:
-            logger.exception("Fyers login url failed")
-            raise BrokerLoginError("login_unavailable") from None
-
-    def complete_login(self, code: str) -> SessionStatus:
-        """Trade the login code for a token through the one login flow, which checks the token's
-        Fyers user against the active broker accounts (HAT-DEC-BD5): another user's login is
-        `wrong_account`, a user Fyers did not name is `account_unconfirmed` (logging in again may
-        succeed), and unreadable accounts are `accounts_unreadable`; none of them saves."""
-        try:
-            self._auth().exchange(code)
-        except WrongAccountError as error:
-            if error.message == ACCOUNT_UNCONFIRMED:
-                logger.warning("Fyers login refused: the account could not be confirmed")
-                raise BrokerLoginError("account_unconfirmed") from None
-            logger.warning("Fyers login refused: not the HAT broker account")
-            raise BrokerLoginError("wrong_account") from None
-        except AccountsUnreadableError:
-            raise BrokerLoginError("accounts_unreadable") from None
-        except TokenStoreError:
-            logger.exception("Fyers token could not be stored")
-            raise BrokerLoginError("token_store_failed") from None
-        except FyersAuthError:
-            logger.warning("Fyers refused the login code")
-            raise BrokerLoginError("login_failed") from None
-        except Exception:
-            logger.exception("Fyers login failed")
-            raise BrokerLoginError("login_failed") from None
-        with self._token_check_lock:
-            self._token_check = None  # the new token is checked afresh
-        return self.session_status()
 
     def session_status(self) -> SessionStatus:
         try:
@@ -807,23 +762,6 @@ class FyersHatBroker:
 
     def funds(self) -> BrokerFunds:
         return self._read(self._broker.fetch_funds, parse_funds)
-
-    def instruments(self) -> list[Instrument]:
-        return self._read(
-            self._instruments, lambda pairs: [Instrument(sym, fyers) for sym, fyers in pairs]
-        )
-
-    def order_updates(self) -> list[OrderUpdate]:
-        """Orders whose status or filled quantity changed since the last successful poll."""
-        current = self.orders()
-        with self._seen_lock:
-            updates = [
-                OrderUpdate(o.order_id, o.tag, o.status, o.filled_qty)
-                for o in current
-                if self._seen.get(o.order_id) != (o.status, o.filled_qty)
-            ]
-            self._seen = {o.order_id: (o.status, o.filled_qty) for o in current}
-        return updates
 
 
 def build_fyers_broker() -> FyersHatBroker:

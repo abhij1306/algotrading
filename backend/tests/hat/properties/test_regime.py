@@ -33,12 +33,22 @@ def model_confirmed(raws: list[str], days: int = 3) -> list[str]:
     return out
 
 
+def confirm_all(raws: list[str], days: int = 3) -> list[regime.Confirmation]:
+    """`confirm_step` over a whole series, as the nightly job applies it one day at a time."""
+    out: list[regime.Confirmation] = []
+    held: regime.Confirmation | None = None
+    for raw in raws:
+        held = regime.confirm_step(held, raw, days)
+        out.append(held)
+    return out
+
+
 @given(RAWS)
 def test_three_day_confirmation(raws: list[str]) -> None:
     """The confirmed state equals the independent model on every prefix; it changes only on the
     third consecutive reading of a different state; and it only ever takes values that were
     read."""
-    steps = regime.confirm_sequence(raws)
+    steps = confirm_all(raws)
     assert [s.confirmed for s in steps] == model_confirmed(raws)
     for i in range(1, len(raws)):
         if steps[i].confirmed != steps[i - 1].confirmed:
@@ -48,17 +58,12 @@ def test_three_day_confirmation(raws: list[str]) -> None:
     for i in range(2, len(raws)):
         if raws[i] == raws[i - 1] == raws[i - 2]:
             assert steps[i].confirmed == raws[i]  # three equal days always confirm
-    # the sequence of days read so far gives the same answer in one go or step by step
-    held = None
-    for raw, step in zip(raws, steps, strict=True):
-        held = regime.confirm_step(held, raw)
-        assert held == step
 
 
 @given(RAWS, st.integers(1, 6))
 def test_confirmation_days_parameter(raws: list[str], days: int) -> None:
     """The rule holds for any confirmation length, not only 3."""
-    steps = regime.confirm_sequence(raws, days)
+    steps = confirm_all(raws, days)
     assert [s.confirmed for s in steps] == model_confirmed(raws, days)
 
 
@@ -178,8 +183,8 @@ def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None
     """Close_above_sma_and_rising is true iff close_t > SMA_t and SMA_t >
     SMA_{t-rising}; sma_fast_above_slow_both_rising is true iff SMA_fast > SMA_slow and both are
     above their value `rising` sessions earlier; a series too short for the lookback is false.
-    Through the config, the fast/slow rule without `rising_days` reads 3 sessions (owner default,
-    PR 55), one with it reads that many, and the configured rule gives what the function gives.
+    Through the config, the fast/slow rule without `rising_days` reads 3 sessions (owner default),
+    one with it reads that many, and the configured rule gives what the function gives.
     Harm: the gate lets entries through in a falling market or blocks them in a rising one, or
     flips on one down tick."""
     now, before = sma(closes, window), sma(closes, window, rising)

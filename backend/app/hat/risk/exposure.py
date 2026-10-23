@@ -9,7 +9,6 @@ trade is ignored, so paper wins never unlock real exposure.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -54,14 +53,6 @@ def apply_trade(state: LadderState, trade: ClosedTrade, policy: RiskPolicy) -> L
     if trade.is_virtual:
         return state
     return apply_outcome(state, is_win(trade.r_multiple), policy)
-
-
-def ladder_from_trades(trades: Iterable[ClosedTrade], policy: RiskPolicy) -> LadderState:
-    """The state after `trades` (oldest first) from a fresh start at L1."""
-    state = LadderState()
-    for trade in trades:
-        state = apply_trade(state, trade, policy)
-    return state
 
 
 def max_positions(level: str, policy: RiskPolicy) -> int:

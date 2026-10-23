@@ -1,18 +1,13 @@
-"""Pure backtest metric calculations: drawdown, return, Sharpe and trade statistics.
-
-HAT's own copy of the legacy `app.services.backtest_metrics` (K1, backend review C5), taken so the
-legacy module can be deleted without losing what PR 12 (the backtest) reuses. Two Sharpe
-conventions are kept so a characterization against the legacy numbers stays possible. Series are
-polars (PR 12 moved the module off pandas, HAT-DATA-078); the arithmetic is unchanged.
+"""Pure backtest metric calculations: drawdown, return, Sharpe and trade statistics, on polars
+series (HAT-DATA-078).
 
 * `sharpe_mean_std`: `mean / std * sqrt(periods)` of per-period returns, risk-free 0.
-* `sharpe_excess_cagr`: `(cagr - rf) / annualised std`.
 
-PR 65 (G35) adds what a tuning run reports besides the return figures: the share of sessions
-with a position held (`exposure`), MAR (`mar_ratio`), the longest stretch under the running peak
-(`longest_drawdown`), the mean after dropping the best trades (`tail_trimmed_mean`) and the
-charges' share of the gross P&L (`cost_share`). The two on R and money take Decimals and stay
-exact. PR 68 adds the mean share of the account held in positions (`invested_share`), exact too.
+A tuning run also reports the share of sessions with a position held (`exposure`), MAR
+(`mar_ratio`), the longest stretch under the running peak (`longest_drawdown`), the mean after
+dropping the best trades (`tail_trimmed_mean`), the charges' share of the gross P&L
+(`cost_share`) and the mean share of the account held in positions (`invested_share`). The ones
+on R and money take Decimals and stay exact.
 
 No I/O and no state beyond the inputs passed in.
 """
@@ -94,19 +89,6 @@ def sharpe_mean_std(returns: pl.Series, periods_per_year: int = TRADING_DAYS_PER
     return 0.0
 
 
-def sharpe_excess_cagr(
-    cagr: float,
-    returns: pl.Series,
-    risk_free: float,
-    periods_per_year: int = TRADING_DAYS_PER_YEAR,
-) -> float:
-    """``(cagr - risk_free) / annualised std``; 0.0 when volatility is zero."""
-    std = _std(returns)
-    if std <= VOLATILITY_FLOOR:  # the floor is per period, like the series
-        return 0.0
-    return (cagr - risk_free) / (std * math.sqrt(periods_per_year))
-
-
 def trade_stats(values: Sequence[float]) -> TradeStats:
     """Summarise per-trade P&L or returns. A value of exactly 0 counts as a loss."""
     wins = [v for v in values if v > 0]
@@ -178,7 +160,7 @@ def cost_share(charges: Decimal, gross: Decimal) -> Decimal | None:
 
 def invested_share(shares: Sequence[Decimal]) -> Decimal | None:
     """The mean of the sessions' invested shares (marked positions over the session's mark),
-    exact; None without a session (PR 68)."""
+    exact; None without a session."""
     if not shares:
         return None
     return sum(shares, Decimal(0)) / len(shares)

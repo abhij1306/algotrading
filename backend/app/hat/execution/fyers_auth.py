@@ -10,10 +10,10 @@ injected hooks, so this module imports no feed and no HTTP layer:
 - `login` runs after a successful login and `disconnect` before a logout removes the token (K3's
   live feed registers here).
 
-Every login is checked against the broker accounts (HAT-DEC-BD5, PR 73): the service is built with
+Every login is checked against the broker accounts (HAT-DEC-BD5): the service is built with
 `account_refs`, the `account_ref` of every active Fyers broker account, and saves a token only
 when there is none or the token's Fyers user is one of them. The lookup is part of the service,
-not an argument of `exchange`, so no caller (the HTTP route, the adapter's `complete_login`, a
+not an argument of `exchange`, so no caller (the HTTP route, a
 later Telegram or job login) can skip it. It is read after Fyers has answered and just before
 the save, so no connection is held while Fyers answers and an account onboarded meanwhile counts.
 

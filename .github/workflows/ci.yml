@@ -14,10 +14,10 @@ concurrency:
 
 jobs:
   backend:
-    # Lint, format and the app-level tests (logging, paths, database config, CORS, the 503
-    # handlers). Each HAT suite runs exactly once: tests/hat/properties (sharded) and
-    # tests/hat/conformance in the verification-* jobs, tests/hat/db in backend-postgres. No
-    # coverage: nothing consumes it (Sonar imports no report), so it only cost time.
+    # Lint, format and the app-level tests (logging, paths, database config, CORS). Each HAT
+    # suite runs exactly once: tests/hat/properties (sharded) and tests/hat/conformance in the
+    # verification-* jobs, tests/hat/db in backend-postgres. No coverage: nothing consumes it
+    # (Sonar imports no report), so it only cost time.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

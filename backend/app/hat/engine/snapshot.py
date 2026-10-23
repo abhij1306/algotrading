@@ -27,7 +27,6 @@ from . import journal, lifecycle
 
 __all__ = [
     "HARD_STOP",
-    "bot_snapshot",
     "day_counts",
     "entry_price_of",
     "last_hard_stop",
@@ -132,20 +131,6 @@ def owner_slots(
     the entry's bot's own."""
     bots = select(HatBot.id).where(HatBot.user_id == user_id)
     return _slots(session, bots, trade_date, last_prices)
-
-
-def bot_snapshot(
-    session: Session,
-    bot_id: uuid.UUID,
-    trade_date: date,
-    last_prices: dict[uuid.UUID, Decimal] | None = None,
-) -> tuple[list[OpenPosition], int, int]:
-    """(slots, entries today, stop-outs today) for the bot, read now (slots as `_slots`). A veto
-    trade's stop-out is not the bot's. These are the bot's own slots only: an entry decision
-    reads `owner_slots`, since the global open-risk cap sums every bot."""
-    slots = _slots(session, [bot_id], trade_date, last_prices)
-    entries, stopouts = day_counts(session, bot_id, trade_date)
-    return slots, entries, stopouts
 
 
 def day_counts(session: Session, bot_id: uuid.UUID, trade_date: date) -> tuple[int, int]:

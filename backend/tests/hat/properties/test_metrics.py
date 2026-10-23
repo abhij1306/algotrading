@@ -1,5 +1,5 @@
-"""PBT metrics.* (HAT-BT, PR 12 inputs): the drawdown, return, Sharpe and trade statistics that
-the HAT backtest reuses, and the robustness figures of PR 65 (exposure, MAR, the longest
+"""PBT metrics.* (HAT-BT): the drawdown, return, Sharpe and trade statistics that
+the HAT backtest reuses, and the robustness figures (exposure, MAR, the longest
 drawdown, the tail-trimmed mean and the cost share), on the real functions of
 `app.hat.backtest.metrics`. Series are bounded
 (at most 60 points) and positive, as an equity curve is."""
@@ -68,15 +68,13 @@ def test_trade_stats_partition(values: list[float]) -> None:
     st.integers(min_value=1, max_value=60),
 )
 def test_sharpe_zero_volatility(level: float, n: int) -> None:
-    """Returns that never vary have no volatility, so both Sharpe conventions are exactly 0.0
+    """Returns that never vary have no volatility, so the Sharpe is exactly 0.0
     rather than a division by zero or an infinity. Harm: an infinite Sharpe ranks a flat
     strategy first."""
     flat = pl.Series([level] * n, dtype=pl.Float64)
     assert metrics.sharpe_mean_std(flat) == 0.0
-    assert metrics.sharpe_excess_cagr(0.1, flat, 0.05) == 0.0
     tiny = pl.Series([0.0, 2e-13] * 5)  # a per-period volatility of 1e-13 is still no volatility
     assert metrics.sharpe_mean_std(tiny) == 0.0
-    assert metrics.sharpe_excess_cagr(0.1, tiny, 0.05) == 0.0
 
 
 @given(returns)

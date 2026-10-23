@@ -35,13 +35,10 @@ LEGACY_TEST_HELPERS = {"fakes", "conftest", "tests"}
 # last ones with the legacy features that used them).
 WIRING = {"database.py", "main.py"}
 
-# Modules a HAT suite must never load, however it reaches them: the app and the routers. (The
+# Modules a HAT suite must never load, however it reaches them: the app. (The
 # manual-trading singletons they once listed are deleted, K4; `test_conf_risk.py` checks that none
 # comes back.)
-NEVER_LOADED = (
-    "app.main",
-    "app.routers",
-)
+NEVER_LOADED = ("app.main",)
 
 
 def _module_exists(name: str) -> bool:
