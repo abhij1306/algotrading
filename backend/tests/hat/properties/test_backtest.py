@@ -1795,14 +1795,14 @@ def _expected_allocations(
 @RUNS
 def test_sized_from_allocation(paths: dict, weight: D, rule: str, rnd: object) -> None:
     """Each trade date's entries are sized from the allocation the live allocator makes the
-    night before: capital = weight x regime multiplier x the account's mark at that night's
-    close (rounded down), risk per trade = the policy's x the multiplier, health 1; the
-    multiplier is 1 under `1` and under `policy` the regime engine's (v1 inputs, 3-day rule
-    warmed up from the run's first session, smoothed 0.25 a night), and a night without its
-    regime inputs has no allocation, so that day's entries are rejected unsized. No accepted
+    night before: capital = weight x regime multiplier x the account's mark at that night's close
+    (rounded down), risk per trade = the policy's x the multiplier, health 1; the multiplier is 1
+    under `1` (clamped to the policy's bounds) and under `policy` the regime engine's (v1 inputs,
+    3-day rule warmed up from the run's first session, smoothed 0.25 a night), and a night without
+    its regime inputs has no allocation, so that day's entries are rejected unsized. No accepted
     entry risks more than its allocation's capital x risk per trade (HAT-BT-014, HAT-PORT-050,
-    HAT-PORT-052). Harm: the backtest sizes trades as live never would, so its percentage
-    results describe another book."""
+    HAT-PORT-052). Harm: the backtest sizes trades as live never would, so its percentage results
+    describe another book."""
     data = _regime_market(paths, rnd)
     spec = dataclasses.replace(s.spec(s.config(), DAYS), sleeve_weight=weight, regime_mult=rule)
     result = run_backtest(spec, data)

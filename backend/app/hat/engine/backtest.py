@@ -90,13 +90,13 @@ sleeve with the live allocator (`portfolio.allocator.allocate`) over the account
 night's close, at the run's sleeve weight (`sleeve_weight`, by default the policy's base weight
 of the sleeve), and d's entries are sized from that allocation as live sizes them: the sleeve's
 capital as equity and the allocation's risk per trade. The regime multiplier is 1 (`regime_mult`
-`1`, the default) or the live regime engine's (`policy`: v1's inputs, 3-day confirmation and
-default table, warmed up over the sessions before the period, then the allocator's smoothing); a
-night whose regime inputs are missing makes no allocation, so the next day's entries are
-rejected for the missing input, as live rejects them. Percentage metrics are of the whole
-account, of which the sleeve is `sleeve_weight`; the run records the weight and the rule beside
-them (`pct_basis`), and the mean share of the account held in positions (`invested_share`).
-R statistics do not depend on either.
+`1`, the default; the allocator clamps it to the policy's bounds) or the live regime engine's
+(`policy`: v1's inputs, 3-day confirmation and default table, warmed up over the sessions before
+the period, then the allocator's smoothing); a night whose regime inputs are missing makes no
+allocation, so the next day's entries are rejected for the missing input, as live rejects them.
+Percentage metrics are of the whole account, of which the sleeve is `sleeve_weight`; the run
+records the weight and the rule beside them (`pct_basis`), and the mean share of the account
+held in positions (`invested_share`). R statistics do not depend on either.
 
 The command line runs a sleeve's strategy version over the Parquet store and records the run
 (`app.hat.backtest.runs`): `python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD
@@ -263,7 +263,6 @@ _SANDBOX_USER = uuid.UUID(int=1)
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
-_ONE = Decimal(1)
 _FINEST_TICK = Decimal("0.01")  # the NSE tick below ₹250 (`data.ticks`), the finest slab
 # The instants of a simulated day (IST): a later step of the day has a later instant.
 _AT_NIGHT = time(16, 0)
@@ -1316,8 +1315,7 @@ class _Run:
     def _mark(self, day: date) -> None:
         equity, held_value = self._marked(day)
         self.equity.append((day, equity))
-        # at most 1: a cash-bound entry's slippage and charges can overdraw the cash a little
-        self.invested.append(min(held_value / equity, _ONE) if equity > 0 else _ZERO)
+        self.invested.append(held_value / equity if equity > 0 else _ZERO)
 
     # --- the result --------------------------------------------------------------------------
 
