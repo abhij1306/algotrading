@@ -325,12 +325,21 @@ def gtt_modify_fields(request: GttModify) -> dict[str, Any]:
 # --- replies: each raw Fyers reply parsed once ---------------------------------------------------
 
 
-def _count(value: object, name: str) -> int:
-    """A share count from a reply: a whole number, never a truncated fraction."""
+def _count(value: object, name: str, minimum: int | None = 0) -> int:
+    """A share count from a reply: a whole number of at least `minimum` (None: any sign, as a
+    net position's), never a truncated fraction."""
     whole = _whole_number(value)
-    if whole is None:
-        raise ValueError(f"{name}: not a whole number")
+    if whole is None or (minimum is not None and whole < minimum):
+        raise ValueError(f"{name}: not a count")
     return whole
+
+
+def _id(value: object, name: str) -> str:
+    """A broker id from a reply: text or a whole number, never missing (a null id read as "None"
+    would make every such row the same order, trade or GTT)."""
+    if isinstance(value, bool) or not isinstance(value, str | int) or str(value).strip() == "":
+        raise ValueError(f"{name}: missing")
+    return str(value)
 
 
 def _text(value: object, name: str) -> str:
@@ -347,7 +356,7 @@ def parse_positions(rows: Iterable[dict[str, Any]]) -> list[BrokerPosition]:
     INTRADAY product)."""
     positions = []
     for row in rows:
-        qty = _count(row["netQty"], "netQty")
+        qty = _count(row["netQty"], "netQty", minimum=None)
         if qty == 0:
             continue
         average = "buyAvg" if qty > 0 else "sellAvg"
@@ -405,12 +414,12 @@ def parse_trade(row: dict[str, Any]) -> BrokerTrade:
     """One `tradeBook` row: its traded quantity a whole number, its price exact and positive."""
     tag, gtt_tag = _row_tags(row.get("orderTag"))
     return BrokerTrade(
-        trade_id=str(row["tradeNumber"]),
-        order_id=str(row["orderNumber"]),
+        trade_id=_id(row["tradeNumber"], "tradeNumber"),
+        order_id=_id(row["orderNumber"], "orderNumber"),
         tag=tag,
         symbol=symbol_master.to_db(str(row["symbol"])),
         side=_side(row["side"]),
-        qty=_count(row["tradedQty"], "tradedQty"),
+        qty=_count(row["tradedQty"], "tradedQty", minimum=1),
         price=require_exact(row["tradePrice"], "tradePrice", floats=True, positive=True),
         traded_at=None,
         gtt_tag=gtt_tag,
@@ -418,7 +427,7 @@ def parse_trade(row: dict[str, Any]) -> BrokerTrade:
 
 
 def _side(value: object) -> Side:
-    return {1: Side.BUY, -1: Side.SELL}[_count(value, "side")]
+    return {1: Side.BUY, -1: Side.SELL}[_count(value, "side", minimum=None)]
 
 
 def _clean_tag(tag: object) -> str | None:
@@ -703,7 +712,7 @@ class FyersHatBroker:
         tag = _gtt_tag(row.get("ordertag"))
         shown = _clean_tag(row.get("ordertag"))
         return BrokerGtt(
-            gtt_id=str(row["id"]),
+            gtt_id=_id(row["id"], "id"),
             symbol=symbol_master.to_db(str(row["symbol"])),
             side=_side(row["tran_side"] if "tran_side" in row else row["side"]),
             qty=whole,
@@ -754,7 +763,7 @@ class FyersHatBroker:
         filled = _count(row.get("filledQty") or 0, "filledQty")
         tag, gtt_tag = _row_tags(row.get("orderTag"))
         return BrokerOrder(
-            order_id=str(row["id"]),
+            order_id=_id(row["id"], "id"),
             tag=tag,
             symbol=symbol_master.to_db(str(row["symbol"])),
             side=_side(row["side"]),

@@ -201,12 +201,15 @@ class FakeBroker:
         if self.circuit_open:
             return {"s": "error", "message": "Fyers modify timeout/unavailable"}
         reply = _settle(self.modify_reply)
-        if isinstance(reply, dict) and reply.get("s") == "ok" and "type" in fields:
-            # the broker shows a modified order with its new type
+        if isinstance(reply, dict) and reply.get("s") == "ok":
+            # the broker shows a modified order with its new fields
+            shown = {
+                k: v for k, v in fields.items() if k in ("type", "qty", "limitPrice", "stopPrice")
+            }
             rows = [*self.book, *(self.orders if isinstance(self.orders, list) else [])]
             for row in rows:
                 if row["id"] == order_id:
-                    row["type"] = fields["type"]
+                    row.update(shown)
         return reply
 
     def cancel_order(self, order_id: str) -> Any:  # noqa: ANN401
@@ -311,13 +314,16 @@ class FakeBroker:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers modify timeout/unavailable"}
+        reply = _settle(self.modify_reply)
+        if not (isinstance(reply, dict) and reply.get("s") == "ok"):
+            return reply
         leg = fields["orderInfo"]["leg1"]
         for row in self.resting_gtts():
             if row["id"] == gtt_id:
                 row.update(
                     price_limit=leg["price"], price_trigger=leg["triggerPrice"], qty=leg["qty"]
                 )
-        return {"s": "ok", "message": "Modified"}
+        return reply
 
     def cancel_gtt(self, gtt_id: str) -> Any:  # noqa: ANN401
         queue = self._call("cancel_gtt", gtt_id)
