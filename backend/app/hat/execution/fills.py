@@ -306,15 +306,7 @@ class FillSync:
         }
         book = TagBook.of(orders)
         self._adopt(session, rows, book, now, report)
-        for trade in trades:
-            row = rows.get(trade.tag) if trade.tag else None
-            if row is not None:
-                self._apply(session, row, trade, now, report)
-        gtts = self._working_gtts(session, account_id)
-        for trade in trades:
-            gtt = gtts.of(trade)
-            if gtt is not None and trade.side is Side.SELL:
-                self._apply_gtt_trade(session, gtt, trade, now, report)
+        self._trades(session, account_id, rows, trades, now, report)
         self._statuses(session, rows, book, now, report)
         self._sales(session, rows, book, now, report)
         self._gtt_sales(session, account_id, orders, now, report)
@@ -332,6 +324,27 @@ class FillSync:
         for position_id in self._emptied(session, account_id):
             self._close_emptied(session, position_id, now)
         return report
+
+    def _trades(
+        self,
+        session: Session,
+        account_id: uuid.UUID,
+        rows: dict[str, HatOrder],
+        trades: Iterable[BrokerTrade],
+        now: datetime,
+        report: SyncReport,
+    ) -> None:
+        """Steps 2 and 3: each trade of an HT-tagged order, then each sale of a triggered GTT."""
+        trades = list(trades)
+        for trade in trades:
+            row = rows.get(trade.tag) if trade.tag else None
+            if row is not None:
+                self._apply(session, row, trade, now, report)
+        gtts = self._working_gtts(session, account_id)
+        for trade in trades:
+            gtt = gtts.of(trade)
+            if gtt is not None and trade.side is Side.SELL:
+                self._apply_gtt_trade(session, gtt, trade, now, report)
 
     def _gtt_sales(
         self,
