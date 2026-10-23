@@ -1327,7 +1327,7 @@ def test_price_breaks_level_contract(
     that close on the tick grid, never below the level. The opening range level does not exist
     before the first bar is final, and a touch is not a break. Harm: a breakout is bought on a
     touch, before the opening range exists, or after 15:20; or a spike that closed back under
-    the level is bought below it as it falls (plan audit N1)."""
+    the level is bought below it as it falls."""
     params: dict[str, str] = {"level": expr}
     if confirm is not None:
         params["confirm"] = confirm

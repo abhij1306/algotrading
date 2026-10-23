@@ -13,7 +13,7 @@ an entry is routed by:
 - **The gates.** Confirm and auto place real orders, so both need an active account whose
   capabilities report GTT for delivery (every real fill needs an overnight broker-side stop,
   HAT-EXEC-012), the owner's word that DDPI is registered on the account (a CNC sale needs no
-  TPIN, plan audit O1) and a policy whose base weights and cluster cap the owner has confirmed
+  TPIN) and a policy whose base weights and cluster cap the owner has confirmed
   (`weights_confirmed`); without any of them the bot runs shadow (HAT-GOV-085). DDPI and
   the policy are read as they stood at the session's open, so neither widens a mode mid-session;
   the account's GTT is read now, so losing it narrows at once.

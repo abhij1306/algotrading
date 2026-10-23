@@ -174,7 +174,7 @@ every check named must exist, and a new check is added here with its ID.
 - HAT-PORT-055: Unallocated weight stays cash | PBT `allocator.cash_remainder`
 - HAT-PORT-056: One audited allocation row per sleeve and day | DB `portfolio.unique_keys`, TLA `JobScheduler!AtMostOnceSuccess`
 - HAT-PORT-060: Lifecycle transitions follow the table and its guards | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `admin.first_deploy`, PBT `admin.shadow_beside_live`
-- HAT-PORT-061: Backtested requires DSR probability ≥ 0.95 and ≥ 200 trades | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions`
+- HAT-PORT-061: Backtested requires DSR probability ≥ 0.95, ≥ 200 trades, a five-year span, no gap in an enabled playbook | PBT `lifecycle.backtest_gate`, PBT `lifecycle.backtest_refusal`, PBT `dsr.evidence_gate_facts`, TLA `SleeveLifecycle!AllowedTransitions`
 - HAT-PORT-062: Shadow lasts 20 trading days before Live | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.shadow_days`
 - HAT-PORT-063: Probation trigger and effect | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`, PBT `router.non_live_sleeve_routes_as_shadow`
 - HAT-PORT-064: Retirement and re-entry | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.retire_gate`
@@ -437,9 +437,9 @@ every check named must exist, and a new check is added here with its ID.
 - HAT-BT-042: Deflated Sharpe probability | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example`, PBT `dsr.family_floors`, PBT `dsr.pbo_ranked_variants`, PBT `dsr.pbo_two_variants`, PBT `dsr.pbo_refused`, PBT `dsr.family_pbo_recorded`, PBT `dsr.family_pbo_skips_unreadable`
 - HAT-BT-050: Backtests are deterministic | PBT `backtest.deterministic`
 - HAT-BT-051: Golden replay of a fixed fixture market | CONF `backtest_golden_replay`
-- HAT-BT-060: Evidence hook for the Backtested state | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, PBT `dsr.evidence_latest_by_completion`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`
+- HAT-BT-060: Evidence hook for the Backtested state | PBT `lifecycle.backtest_gate`, PBT `lifecycle.backtest_refusal`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, PBT `dsr.evidence_latest_by_completion`, PBT `dsr.evidence_gate_facts`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`
 - HAT-BT-061: Strategy versions record their backtest | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run`
-- HAT-BT-070: Every unmodelled behaviour is a listed gap | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded`
+- HAT-BT-070: Every unmodelled behaviour is a listed gap | CONF `known_gaps_listed`, PBT `lifecycle.backtest_refusal`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded`
 
 ### Risk
 

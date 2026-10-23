@@ -125,7 +125,7 @@ def confirm_ddpi(
     chat_id: int,
 ) -> HatBrokerAccount:
     """Record the owner's word that DDPI (or a POA) is registered on the account's demat since
-    `since` (plan audit O1, D154; HAT-GOV-085): sets `ddpi_confirmed` with the time and the
+    `since` (HAT-GOV-085): sets `ddpi_confirmed` with the time and the
     dated note and writes `broker.ddpi_confirmed` (actor user, via cli). A bot reads it as set
     from the next session open on. Refused, writing nothing: an account that is not the user's
     or not active (`account_not_active`), inside market hours or without a calendar row

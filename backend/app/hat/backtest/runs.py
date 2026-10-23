@@ -27,7 +27,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from ..data.store import DataStore, atomic_replace
 from ..engine.backtest import (
+    GAP_PLAYBOOKS,
     LOWER_CIRCUIT_RULE,
     REGIME_MULT_ONE,
     REGIME_MULT_POLICY,
@@ -51,8 +52,9 @@ from ..engine.backtest import (
     with_cooldown,
 )
 from ..engine.backtest import trades_parquet as encode_trades
+from ..engine.portfolio.allocator import sleeve_key
 from ..engine.portfolio.lifecycle import DEFAULT_DISCOUNT, BacktestFacts, discounted_benchmark
-from ..engine.strategy.config import parse_config
+from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
 from ..errors import HatError
 from ..models import (
     HatBacktestRun,
@@ -572,8 +574,9 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     another order than the estimated trigger time (PR 63), as every run before PR 63 did, nor
     one recorded before the path rules (PR 64), which sold at locked lower bands and carried
     suspended positions at their last close, nor one recorded before the sleeve's allocation
-    sized it (PR 68), which sized off the whole account; a promotion run is sized at the base
-    weight and regime rule `1` (`check_conventions`)."""
+    sized it (PR 68), which sized off the whole account, nor one sized under regime rule `1`
+    (PR 69): a promotion run is sized at the base weight under the live regime rule `policy`
+    (`check_conventions`)."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
@@ -596,7 +599,7 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
             and (run.metrics or {}).get("for_promotion") is True
             and (run.metrics or {}).get("slot_order") == SLOT_ORDER_TIME
             and (run.metrics or {}).get("lower_circuit") == LOWER_CIRCUIT_RULE
-            and (run.metrics or {}).get("regime_mult") == REGIME_MULT_ONE
+            and (run.metrics or {}).get("regime_mult") == REGIME_MULT_POLICY
         ),
         None,
     )
@@ -607,22 +610,80 @@ def _expectancy(metrics: Mapping[str, Any]) -> Decimal | None:
     return None if raw is None else Decimal(str(raw))
 
 
+def _config_of(version: HatStrategyVersion | None) -> StrategyConfig | None:
+    """The version's config, None when it has none that parses (its playbooks are then
+    unknown, and the gate fails closed)."""
+    if version is None:
+        return None
+    try:
+        return parse_config(version.config)
+    except ConfigError:
+        return None
+
+
+def _count(metrics: Mapping[str, Any], key: str) -> int | None:
+    raw = metrics.get(key)
+    return raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
+def _day(metrics: Mapping[str, Any], key: str) -> date | None:
+    raw = metrics.get(key)
+    try:
+        return date.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
+def _weight(raw: object) -> Decimal | None:
+    try:
+        return Decimal(raw) if isinstance(raw, str) else None
+    except InvalidOperation:
+        return None
+
+
 def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     """The sleeve's backtest evidence (HAT-BT-060): the newest completed run of its live version
     on its universe, with the DSR recomputed at the family's current trial count and Sharpe
-    variance. No run gives no evidence, so Research -> Backtested stays closed."""
+    variance; since PR 69 also what the rest of the gate reads (HAT-PORT-061): the run's first
+    and last session, ambiguous days and held sessions, the playbooks its known gaps name
+    (`GAP_PLAYBOOKS`) and those the version enables, and its sleeve weight and regime rule
+    beside the base weight of the sleeve in the policy in force. A fact the run did not record
+    is absent, and fails its condition. No run gives no evidence, so Research -> Backtested
+    stays closed."""
     in_force = effective_version(load_versions(session, bot.user_id), utc_now())
     run = _latest_run(session, bot, _cooldown_of(in_force))
     if run is None:
         return BacktestFacts()
     metrics = run.metrics or {}
     deflated, trials, _ = run_dsr(session, run)
-    trades = metrics.get("trades")
+    config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
+    playbooks = frozenset(() if config is None else (p.name for p in config.playbooks))
+    gaps = metrics.get("known_gaps")
+    # a run without a readable gap list may have any gap: every playbook counts as named
+    gapped = (
+        frozenset(p for code in gaps for p in GAP_PLAYBOOKS.get(code, ()))
+        if isinstance(gaps, list) and all(isinstance(code, str) for code in gaps)
+        else playbooks
+    )
+    base = (
+        None
+        if in_force is None or config is None
+        else in_force.policy.base_weight.get(sleeve_key(config.bot))
+    )
     return BacktestFacts(
         dsr_prob=Decimal(repr(deflated.prob)).quantize(_DSR_PLACES),
-        trades=trades if isinstance(trades, int) and not isinstance(trades, bool) else 0,
+        trades=_count(metrics, "trades") or 0,
         expectancy=_expectancy(metrics),
         trials=trials,
+        first_session=_day(metrics, "first_session"),
+        last_session=_day(metrics, "last_session"),
+        ambiguous_days=_count(metrics, "ambiguous_days"),
+        held_sessions=_count(metrics, "held_sessions") or 0,
+        gapped_playbooks=gapped,
+        playbooks=playbooks,
+        sleeve_weight=_weight(metrics.get("sleeve_weight")),
+        base_weight=base,
+        regime_mult=metrics.get("regime_mult"),
     )
 
 

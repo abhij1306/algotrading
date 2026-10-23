@@ -916,7 +916,9 @@ def test_metrics_bounds(rows: list[tuple[int, D]], curve: list[D], rnd: object) 
 @example([], [D(10) ** 12])  # one session far above the start: the CAGR overflows, so no MAR
 def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D]) -> None:
     """A run's robustness figures (PR 65) restate its trades and equity: `exposure` is the share
-    of its sessions inside some trade's entry..exit span, `longest_drawdown_sessions` the
+    of its sessions inside some trade's entry..exit span (`held_sessions` their count, and
+    `first_session` and `last_session` the span's ends, which the lifecycle gate reads, PR 69),
+    `longest_drawdown_sessions` the
     longest run of sessions below the running peak of the curve (the initial equity first),
     `mar` the CAGR over the drawdown's depth (both null when the CAGR overflows, never a crash),
     `tail_trimmed_r` the mean R without the best ceil(1, 5, 10 % of the trades), and
@@ -936,6 +938,11 @@ def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D])
     days = [d for d, _ in equity]
     inside = [d for d in days if any(t.entry_date <= d <= t.exit_date for t in trades)]
     assert metrics["exposure"] == len(inside) / len(days)
+    assert metrics["held_sessions"] == len(inside)
+    assert (metrics["first_session"], metrics["last_session"]) == (
+        days[0].isoformat(),
+        days[-1].isoformat(),
+    )
     points = [spec.initial_equity, *curve]
     peaks = [max(points[: n + 1]) for n in range(len(points))]
     under = "".join("1" if v < p else "0" for v, p in zip(points, peaks, strict=True))
@@ -1007,8 +1014,12 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
     under `touch`, is refused. Harm: runs under different fill conventions read as comparable
     evidence, or a promotion rides on perfect or optimistic fills."""
     fills = BacktestFills(load_cost_model(), bps)
+    regime = REGIME_MULT_POLICY if promote else REGIME_MULT_ONE  # promotion sizes as live
     spec = dataclasses.replace(
-        s.spec(s.config(), DAYS, fills=fills), entry_fill_rule=rule, for_promotion=promote
+        s.spec(s.config(), DAYS, fills=fills),
+        entry_fill_rule=rule,
+        for_promotion=promote,
+        regime_mult=regime,
     )
     market = s.market(paths, DAYS)
     if promote and (bps == 0 or rule == TOUCH):
@@ -1027,10 +1038,12 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
         "ambiguous": AMBIGUOUS_OPTIMISTIC,  # the defaults of PR 64
         "lower_circuit": "carry_to_next_unlocked_open",
         "suspension_markdown": {"after_sessions": SUSPENSION_SESSIONS, "band_pct": "5"},
-        "sleeve_weight": "0.5",  # the policy's base weight of S1, regime 1 (PR 68)
-        "regime_mult": REGIME_MULT_ONE,
+        "sleeve_weight": "0.5",  # the policy's base weight of S1 (PR 68)
+        "regime_mult": regime,
         "health_mult": "1",
     }
+    if regime == REGIME_MULT_POLICY:  # its table (`sizing_conventions_refused`)
+        recorded["regime_table"] = metrics["conventions"]["regime_table"]
     assert {k: metrics[k] for k in recorded} == recorded
     assert metrics["conventions"] == recorded  # the block of PR 65, exactly what is hashed
     assert metrics["for_promotion"] is promote
@@ -1177,11 +1190,15 @@ def test_slot_order_refused(rule: str) -> None:
     )
     if ok:
         check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, False, rule)
-        if rule == SLOT_ORDER_TIME:
-            check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule)
+        if rule == SLOT_ORDER_TIME:  # a promotion run sizes under `policy` (PR 69)
+            check_conventions(
+                PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule, regime_mult=REGIME_MULT_POLICY
+            )
         else:  # a promotion run takes the slots in trigger order only
             with pytest.raises(BacktestError, match="backtest_promotion_off_time_order"):
-                check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule)
+                check_conventions(
+                    PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule, regime_mult=REGIME_MULT_POLICY
+                )
     else:
         with pytest.raises(BacktestError, match="backtest_bad_slot_order"):
             check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, False, rule)
@@ -1446,9 +1463,14 @@ def test_path_rules_refused(rule: str, after: int) -> None:
         check_conventions(
             PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
         )
-        if after <= SUSPENSION_SESSIONS:
+        if after <= SUSPENSION_SESSIONS:  # a promotion run sizes under `policy` (PR 69)
             check_conventions(
-                PENETRATION, DEFAULT_SLIPPAGE_BPS, True, ambiguous=rule, suspension_sessions=after
+                PENETRATION,
+                DEFAULT_SLIPPAGE_BPS,
+                True,
+                ambiguous=rule,
+                suspension_sessions=after,
+                regime_mult=REGIME_MULT_POLICY,
             )
         else:  # a promotion run marks a bar-less position down no later than the default
             with pytest.raises(BacktestError, match="backtest_promotion_late_suspension"):
@@ -1458,6 +1480,7 @@ def test_path_rules_refused(rule: str, after: int) -> None:
                     True,
                     ambiguous=rule,
                     suspension_sessions=after,
+                    regime_mult=REGIME_MULT_POLICY,
                 )
         return
     code = "backtest_bad_ambiguous_rule" if not good_rule else "backtest_bad_suspension"
@@ -1880,15 +1903,16 @@ def test_invested_share(paths: dict) -> None:
 @example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # above the cluster cap
 @example(None, REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # the base weight above it too
 @example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion off the base weight
-@example(None, REGIME_MULT_POLICY, D("0.50"), D(1), True)  # promotion on the regime variant
-@example(None, REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion as live sizes it
+@example(None, REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion under regime 1 (PR 69)
+@example(None, REGIME_MULT_POLICY, D("0.50"), D(1), True)  # promotion as live sizes it
 def test_sizing_conventions_refused(
     weight: object, rule: str, base: D | None, cap: D, promote: bool
 ) -> None:
     """A sleeve weight that is not a Decimal in (0, 1] is refused (`backtest_bad_sleeve_weight`),
     as is a regime rule other than `1` and `policy` (`backtest_bad_regime_mult`); a run for
     promotion is refused with a weight of its own (`backtest_promotion_off_base_weight`) or
-    the `policy` variant (`backtest_promotion_regime_variant`); with no weight given, a policy
+    under regime rule `1` (`backtest_promotion_regime_variant`; live sizes under the regime
+    engine, PR 69); with no weight given, a policy
     without the sleeve's base weight, or with one of 0, is refused (`backtest_no_base_weight`),
     and a weight above the policy's cluster cap, which the allocator would cut, is refused
     (`backtest_weight_above_cluster_cap`); otherwise the run records the weight used,
@@ -1920,7 +1944,7 @@ def test_sizing_conventions_refused(
         code = "backtest_bad_regime_mult"
     elif promote and weight is not None:
         code = "backtest_promotion_off_base_weight"
-    elif promote and rule != REGIME_MULT_ONE:
+    elif promote and rule != REGIME_MULT_POLICY:
         code = "backtest_promotion_regime_variant"
     elif weight is None and (base is None or base == 0):
         code = "backtest_no_base_weight"

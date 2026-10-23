@@ -668,7 +668,7 @@ def test_unfilled_entry_cancelled(
     seen_first: bool,
     retried: bool,
 ) -> None:
-    """HAT-EXEC-046 (PR 49, plan audit N1/G19): a real entry nothing of which has filled is
+    """HAT-EXEC-046 (PR 49): a real entry nothing of which has filled is
     asked to be cancelled at the broker exactly once, at the first check where a final bar
     later than the trigger bar closed below the signal's level or the timeout has passed since
     the entry was placed; then the fill sync ends its signal Cancelled with no position. The

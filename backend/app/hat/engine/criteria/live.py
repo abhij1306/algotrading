@@ -66,7 +66,7 @@ class PriceBreaksLevelParams(ParamModel):
     level: Literal["pivot", "opening_range_high", "max(consolidation_high, opening_range_high)"]
     bar: Literal["5m"] = "5m"
     # `close`: the bar must also close at or above the level, so a spike that fell back below it
-    # is no break (PR 49, plan audit N1/G20); `high`: a trade above the level is enough
+    # is no break (PR 49); `high`: a trade above the level is enough
     confirm: Literal["close", "high"] = "close"
 
 

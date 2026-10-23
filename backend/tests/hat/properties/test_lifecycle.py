@@ -17,8 +17,10 @@ from hypothesis import strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.hat.engine.backtest import GAP_PLAYBOOKS, KNOWN_GAPS, REGIME_MULT_POLICY
 from app.hat.engine.portfolio import lifecycle, service
-from app.hat.engine.portfolio.lifecycle import Evidence, LifecycleError
+from app.hat.engine.portfolio.lifecycle import BacktestFacts, Evidence, LifecycleError
+from app.hat.engine.scan import EP_PLAYBOOK
 from app.hat.models import (
     HatAllocationDaily,
     HatBot,
@@ -46,6 +48,108 @@ def test_backtest_gate(dsr: Decimal | None, trades: int) -> None:
     assert lifecycle.backtest_gate(dsr, trades) == (
         dsr is not None and dsr >= D("0.95") and trades >= 200
     )
+
+
+FIRST = date(2016, 2, 29)  # a leap day: its fifth anniversary is 2021-02-28
+PLAYBOOKS = st.frozensets(st.sampled_from(["breakout", EP_PLAYBOOK, "pullback"]))
+
+
+@st.composite
+def backtest_facts(draw: st.DrawFn) -> BacktestFacts:
+    """Evidence near every boundary of the gate: each condition passes about half the time."""
+    first = FIRST + timedelta(days=draw(st.integers(0, 400)))
+    anniversary = date(first.year + 5, first.month, 28) + timedelta(days=first.day - 28)
+    if first.month == 2 and first.day == 29:
+        anniversary = date(first.year + 5, 2, 28)
+    last = anniversary + timedelta(days=draw(st.integers(-12, 3)))
+    return BacktestFacts(
+        dsr_prob=draw(st.sampled_from([None, D("0.9499"), D("0.95"), D("0.99")])),
+        trades=draw(st.sampled_from([199, 200, 1000])),
+        expectancy=draw(st.one_of(st.none(), R)),
+        first_session=draw(st.one_of(st.just(first), st.none())),
+        last_session=draw(st.one_of(st.just(last), st.none())),
+        ambiguous_days=draw(st.one_of(st.integers(0, 40), st.none())),
+        held_sessions=draw(st.integers(0, 300)),
+        gapped_playbooks=draw(PLAYBOOKS),
+        playbooks=draw(PLAYBOOKS),
+        sleeve_weight=draw(st.sampled_from([D("0.5"), D("0.50"), D("0.25"), None])),
+        base_weight=draw(st.sampled_from([D("0.50"), D("0.25"), None])),
+        regime_mult=draw(st.sampled_from(["policy", "1", None])),
+    )
+
+
+def model_refusal(f: BacktestFacts) -> str | None:
+    """HAT-PORT-061 and D150 as a list of conditions, written without the module's helpers."""
+    if f.dsr_prob is None or f.dsr_prob < D("0.95") or f.trades < 200:
+        return "backtest_gate"
+    if f.first_session is None or f.last_session is None:
+        return "backtest_span_short"
+    try:
+        anniversary = f.first_session.replace(year=f.first_session.year + 5)
+    except ValueError:  # 29 February
+        anniversary = date(f.first_session.year + 5, 2, 28)
+    if (anniversary - f.last_session).days > 7:
+        return "backtest_span_short"
+    if not f.playbooks:
+        return "backtest_no_playbooks"
+    if f.gapped_playbooks & f.playbooks:
+        return "backtest_gap_in_playbook"
+    if f.ambiguous_days is None or f.held_sessions == 0 or f.ambiguous_days * 10 > f.held_sessions:
+        return "backtest_ambiguous_days"
+    if f.sleeve_weight is None or f.base_weight is None or f.sleeve_weight != f.base_weight:
+        return "backtest_off_base_weight"
+    if f.regime_mult != "policy":
+        return "backtest_regime_rule"
+    return None
+
+
+PASSING = BacktestFacts(
+    dsr_prob=D("0.95"),
+    trades=200,
+    first_session=date(2018, 1, 1),
+    last_session=date(2022, 12, 25),  # 7 days short of five years
+    ambiguous_days=10,
+    held_sessions=100,  # exactly the cap of 10%
+    gapped_playbooks=frozenset({EP_PLAYBOOK}),
+    playbooks=frozenset({"breakout"}),
+    sleeve_weight=D("0.5"),
+    base_weight=D("0.50"),
+    regime_mult="policy",
+)
+
+
+@given(backtest_facts())
+@example(PASSING)
+@example(replace(PASSING, last_session=date(2022, 12, 24)))  # 8 days short
+@example(replace(PASSING, first_session=None))
+@example(replace(PASSING, playbooks=frozenset({"breakout", EP_PLAYBOOK})))  # S2 before PR 70
+@example(replace(PASSING, playbooks=frozenset()))
+@example(replace(PASSING, ambiguous_days=11))
+@example(replace(PASSING, ambiguous_days=None))
+@example(replace(PASSING, ambiguous_days=0, held_sessions=0))
+@example(replace(PASSING, sleeve_weight=D("0.25")))
+@example(replace(PASSING, base_weight=None))
+@example(replace(PASSING, regime_mult="1"))
+@example(replace(PASSING, dsr_prob=D("0.9499")))
+def test_backtest_refusal(facts: BacktestFacts) -> None:
+    """Research to Backtested (HAT-PORT-061, D150) passes only on evidence whose DSR probability is
+    at least 0.95 with 200 trades (`backtest_gate`), whose sessions span five years, the last no
+    more than 7 days short of the first's fifth anniversary (`backtest_span_short`), whose version's
+    playbooks are known (`backtest_no_playbooks`) and whose known gaps name none of them
+    (`backtest_gap_in_playbook`), whose ambiguous days are at most 10% of the sessions a trade was
+    held (`backtest_ambiguous_days`), and which was sized at the policy's base weight of the sleeve
+    now (`backtest_off_base_weight`) under the live regime rule `policy` (`backtest_regime_rule`);
+    the first failing condition is the refusal's code, and an absent fact fails its condition. The
+    guard gives the same answer. Harm: a sleeve is promoted on a short or optimistic history, on a
+    playbook the backtest never traded, or on a sizing live does not use."""
+    want = model_refusal(facts)
+    assert lifecycle.backtest_refusal(facts) == want
+    verdict = lifecycle.guard("research", "backtested", Evidence(today=START, backtest=facts))
+    assert (verdict.allowed, verdict.reason) == (want is None, want or "ok")
+    # the rule the gate pins is the backtest's, and every gap it maps is a listed one
+    assert lifecycle.EVIDENCE_REGIME_RULE == REGIME_MULT_POLICY
+    assert set(GAP_PLAYBOOKS) <= set(KNOWN_GAPS)
+    assert GAP_PLAYBOOKS["episodic_pivot_not_backtested"] == (EP_PLAYBOOK,)
 
 
 @given(st.sets(st.integers(0, 120), max_size=120), st.integers(0, 60), st.integers(0, 100))
@@ -188,8 +292,7 @@ def evidences(draw: st.DrawFn) -> Evidence:
     )
     return Evidence(
         today=today,
-        dsr_prob=draw(PROB),
-        backtest_trades=draw(TRADES),
+        backtest=draw(backtest_facts()),
         sessions=sessions,
         shadow_started_on=draw(st.one_of(st.none(), st.just(today - timedelta(days=45)))),
         health_zero=draw(st.booleans()),
@@ -198,7 +301,6 @@ def evidences(draw: st.DrawFn) -> Evidence:
             st.one_of(st.none(), st.integers(0, 150).map(lambda n: today - timedelta(days=n)))
         ),
         probation_shadow_r=tuple(draw(st.lists(R, max_size=60))),
-        backtest_expectancy=draw(st.one_of(st.none(), R)),
     )
 
 
@@ -207,16 +309,15 @@ def model_allowed(current: str, target: str, ev: Evidence, by_owner: bool) -> bo
     if (current, target) not in lifecycle.EDGES:
         return False
     if (current, target) == ("research", "backtested"):
-        return ev.dsr_prob is not None and ev.dsr_prob >= D("0.95") and ev.backtest_trades >= 200
+        return model_refusal(ev.backtest) is None
     if (current, target) == ("shadow", "live"):
         if ev.shadow_started_on is None:
             return False
         return len([d for d in ev.sessions if ev.shadow_started_on < d <= ev.today]) >= 20
     if (current, target) == ("live", "probation"):
         return lifecycle.probation_trigger(ev.health_zero, ev.live_r)
-    benchmark = (
-        None if ev.backtest_expectancy is None else ev.backtest_expectancy * (1 - ev.discount)
-    )
+    expectancy = ev.backtest.expectancy
+    benchmark = None if expectancy is None else expectancy * (1 - ev.discount)
     failing = (
         not ev.probation_shadow_r
         or benchmark is None
@@ -382,7 +483,7 @@ def test_probation_promotion_is_owner_only(expectancy: Decimal, extra: list, own
     results = tuple(benchmark + x for x in extra)  # every result at or above the benchmark
     ev = Evidence(
         today=START,
-        backtest_expectancy=expectancy,
+        backtest=BacktestFacts(expectancy=expectancy),
         probation_shadow_r=results,
         probation_entered_on=START,
     )

@@ -1,5 +1,4 @@
-"""Unfilled entries that should not rest any longer (HAT-EXEC-046; PR 49, plan audit N1,
-G19).
+"""Unfilled entries that should not rest any longer (HAT-EXEC-046; PR 49).
 
 A real entry is a DAY LIMIT at the larger of the level and the trigger bar's close (HAT-CRIT-119).
 Left alone it rests until the close and fills only when the price comes back down to it, which on

@@ -94,12 +94,15 @@ refuse inside a session (`market_hours`).
    ones (`SYMBOL(ISIN)` for an ISIN that differs) and writes nothing.
 6. For each sleeve: backtest its strategy's version 1,
    `$COMPOSE exec -w /app/backend backend python -m app.hat.engine.backtest --bot <bot> --version
-   <version> --from 2010-01-01 --to <last trading day>`; note `run_id`.
+   <version> --from 2010-01-01 --to <last trading day> --for-promotion --regime-mult policy`; note `run_id`.
 7. `$ADMIN publish-version --version <version> --run <run_id>` (draft to backtested, HAT-BT-061),
    then `$ADMIN assign-version --bot <bot> --version <version>`: the sleeve now scans with it
    (an owner's act, recorded `sleeve.version_assigned` with the chat id).
 8. `$ADMIN promote --bot <bot> --to backtested`: refused (`backtest_gate`) unless the run's DSR
-   probability is at least 0.95 with 200 or more trades (HAT-PORT-061); the sleeve then stays in
+   probability is at least 0.95 with 200 or more trades, its sessions span five years
+   (`backtest_span_short`), the config parses, no known gap names a playbook the version enables,
+   ambiguous days are within the cap, and it sized at the base weight under `policy` (HAT-PORT-061);
+   the sleeve then stays in
    Research. Then `$ADMIN promote --bot <bot> --to shadow` and
    `$ADMIN shadow-version --version <version>` the same evening: the sleeve takes virtual entries
    sized from its nominal allocation (HAT-PORT-050) and the 20 sessions start for both.
