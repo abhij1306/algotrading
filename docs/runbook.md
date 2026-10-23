@@ -171,7 +171,8 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    (an auto signal in Triggered, a Take whose order never went out) are placed once the
    feed is fresh, and only on their own trade date (the next date's sweep ends them Rejected
    `signal_expired`); a restart after 08:45
-   re-arms the day from the stored 5-minute bars and the recorded gap scan.
+   re-arms the day once from the stored 5-minute bars and the recorded gap scan (recorded as
+   `live.prepare`, so the scheduler does not arm it again on the live feed).
 3. Check on Telegram: `/status` (session live, kill switches, feed), `/positions` (every open real
    position shows its stop). If the session is not live, follow "Morning login".
 4. If a `reconcile.mismatch` alert arrives, follow "Reconciliation mismatch".
@@ -266,6 +267,15 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 2. Read the reason: price band, margin, freeze, session, unregistered IP (see "Failover drill").
 3. Fix the cause; do not place the order by hand (there is no manual trading). A rejected stop is
    placed again by the next fill sync (`stop.not_placed`); if it keeps failing, see "GTT missing".
+
+### Alert: `relay.skipped`
+
+1. Telegram refused one message for good (HTTP 400, 403 or 404, three times), so the relay
+   skipped its event (`event_id`, `event_type`, `subject`) and sent the ones after it. Read that
+   event in the event log. A skipped approval card was never answered: its approval expires and
+   the signal goes on as a veto trade (the dashboard's signals list shows it).
+2. A Take answered "placement retrying" was recorded; its entry is placed by the next resume
+   (fresh feed, reconciled, max-chase re-checked) or ends with an `entry.not_placed` alert.
 
 ### Failure: Duplicate trigger
 

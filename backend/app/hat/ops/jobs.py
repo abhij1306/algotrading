@@ -35,6 +35,7 @@ OnFinish = Callable[[Session, HatJobRun], None]
 
 DEFAULT_ERROR_CODE = "job_failed"
 INTERRUPTED_ERROR_CODE = "interrupted"
+REOPENED_ERROR_CODE = "reopened"
 _ERROR_CODE = re.compile(r"^[a-z][a-z0-9_.]{0,63}$")
 
 
@@ -225,6 +226,25 @@ def run_job(
         now=utc_now(),
         on_finish=on_finish,
     )
+
+
+def reopen(name: str, trade_date: date, session_factory: SessionFactory | None = None) -> bool:
+    """Mark the succeeded run of (name, trade_date) failed (`reopened`), so the next `run_job`
+    runs it again: for a body whose effect lived in a process that is gone (a restart). Returns
+    whether a run was reopened."""
+    factory = session_factory or _default_session_factory()
+    with factory() as session:
+        done = session.execute(
+            update(HatJobRun)
+            .where(
+                HatJobRun.job == name,
+                HatJobRun.trade_date == trade_date,
+                HatJobRun.status == RunStatus.SUCCEEDED.value,
+            )
+            .values(status="failed", error=REOPENED_ERROR_CODE)
+        )
+        session.commit()
+        return done.rowcount == 1
 
 
 def recover_interrupted(session_factory: SessionFactory | None = None) -> int:

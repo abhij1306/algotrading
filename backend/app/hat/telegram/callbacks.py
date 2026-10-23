@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
@@ -30,8 +30,8 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..engine import approvals
-from ..engine.approvals import ApprovalDecision
+from ..engine import approvals, lifecycle
+from ..engine.approvals import ApprovalDecision, Placement
 from ..events import record
 from ..execution.manage import FlattenReport, TradeManager
 from ..execution.router import ExecutionRouter, PlacementCheck
@@ -51,12 +51,13 @@ __all__ = [
     "RouterDesk",
     "TakeInputs",
     "run_callback",
+    "take_reply",
 ]
 
 logger = logging.getLogger(__name__)
 
 EVENT_FLATTEN = "flatten.executed"
-_PLACED_OR_SKIPPED = (approvals.APPROVED, "skipped")
+_SKIPPED = "skipped"
 _ENTRY_NOT_SENT = ("cancelled", "rejected", "expired")
 
 
@@ -98,15 +99,21 @@ class RouterDesk:
         if router is None or signal is None:
             return ApprovalDecision(signal_id, "no_router")
         price, locked, check = self._inputs(session, signal, now)
-        return router.take(
-            session,
-            signal_id,
-            price=price,
-            locked_upper_circuit=locked,
-            now=now,
-            chat_id=chat_id,
-            check=check,
-        )
+        try:
+            decision = router.take(
+                session,
+                signal_id,
+                price=price,
+                locked_upper_circuit=locked,
+                now=now,
+                chat_id=chat_id,
+                check=check,
+            )
+        except Exception:  # the Take may have committed: what happens next is read, not guessed
+            session.rollback()
+            logger.exception("the Take of signal %s raised", signal_id)
+            return _after_raise(session, signal_id)
+        return decision
 
     def skip(
         self, session: Session, signal_id: uuid.UUID, *, now: datetime, chat_id: int
@@ -175,16 +182,55 @@ def _approval_button(ctx: ButtonContext, session: Session, data: str) -> tuple[s
         return command, args, refused("no_router")
     if claim.action == TAKE:
         decision = ctx.desk.take(session, claim.signal_id, now=ctx.now, chat_id=ctx.chat_id)
-    else:
-        decision = ctx.desk.skip(session, claim.signal_id, now=ctx.now, chat_id=ctx.chat_id)
-    if decision.outcome not in _PLACED_OR_SKIPPED:
+        if decision.outcome == approvals.APPROVED and decision.placement is None:
+            sent = _entry_sent(session, claim.signal_id)
+            decision = replace(decision, placement=Placement.SENT if sent else Placement.REFUSED)
+        return command, args, take_reply(decision)
+    decision = ctx.desk.skip(session, claim.signal_id, now=ctx.now, chat_id=ctx.chat_id)
+    if decision.outcome != _SKIPPED:
         return command, args, refused(decision.outcome)
-    if claim.action == TAKE and not _entry_sent(session, claim.signal_id):
-        # the Take is recorded, but the placement was refused after it (an entry.not_placed
-        # alert says why): the reply must not read as a placed order
-        return command, args, Reply(True, text="Take: approved, entry NOT placed (see alert)")
-    text = "Take: approved, entry sent" if claim.action == TAKE else "Skip: skipped"
-    return command, args, Reply(True, text=text)
+    return command, args, Reply(True, text="Skip: skipped")
+
+
+_TAKE_TEXT = {
+    Placement.SENT: "Take: approved, entry sent",
+    # refused after the Take (an entry.not_placed alert says why): never reads as placed
+    Placement.REFUSED: "Take: approved, entry NOT placed (see alert)",
+    Placement.RETRYING: "Take: approved, placement retrying (see alerts)",
+}
+
+
+def take_reply(decision: ApprovalDecision) -> Reply:
+    """The answer to a Take: what will happen to its entry, never more than is known."""
+    if decision.placement is Placement.UNKNOWN:
+        # the Take may or may not have been recorded; the card keeps its buttons
+        return refused("unknown", "Take: outcome unknown, see alerts before tapping again")
+    if decision.outcome != approvals.APPROVED:
+        return refused(decision.outcome)
+    return Reply(True, text=_TAKE_TEXT[decision.placement or Placement.REFUSED])
+
+
+def _after_raise(session: Session, signal_id: uuid.UUID) -> ApprovalDecision:
+    """A Take whose router call raised, read back: not recorded (an `error` refusal, the card
+    stays), recorded and left for `resume_entries` (retrying: the router remembered it
+    stranded), its entry sent, or refused after the Take."""
+    try:
+        session.expire_all()
+        approval = session.get(HatApproval, signal_id)
+        signal = session.get(HatSignal, signal_id)
+        if approval is None or signal is None or approval.decision != approvals.TAKE:
+            return ApprovalDecision(signal_id, "error")
+        if _entry_attempted(session, signal_id):
+            placement = Placement.SENT  # it reached the broker, or may have: never sent again
+        elif signal.state == lifecycle.AWAITING_APPROVAL:
+            placement = Placement.RETRYING  # a reserved entry never attempted: resume sends it
+        else:
+            placement = Placement.REFUSED
+        return ApprovalDecision(signal_id, approvals.APPROVED, placement=placement)
+    except Exception:
+        session.rollback()
+        logger.exception("reading back the Take of signal %s failed", signal_id)
+        return ApprovalDecision(signal_id, "unknown", placement=Placement.UNKNOWN)
 
 
 def _entry_sent(session: Session, signal_id: uuid.UUID) -> bool:
@@ -195,6 +241,20 @@ def _entry_sent(session: Session, signal_id: uuid.UUID) -> bool:
             HatOrder.signal_id == signal_id,
             HatOrder.purpose == ENTRY,
             HatOrder.status.not_in(_ENTRY_NOT_SENT),
+        )
+    )
+    return found is not None
+
+
+def _entry_attempted(session: Session, signal_id: uuid.UUID) -> bool:
+    """The signal has an entry order past `pending`, or a `pending` one whose send was stamped
+    (`placed_at`): the broker may hold it, so a resume only looks it up by tag (HAT-BRK-102)."""
+    found = session.scalar(
+        select(HatOrder.id).where(
+            HatOrder.signal_id == signal_id,
+            HatOrder.purpose == ENTRY,
+            HatOrder.status.not_in(_ENTRY_NOT_SENT),
+            (HatOrder.status != "pending") | HatOrder.placed_at.is_not(None),
         )
     )
     return found is not None

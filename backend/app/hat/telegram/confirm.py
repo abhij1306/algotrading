@@ -54,6 +54,13 @@ class PendingConfirmations:
             self._pending[nonce] = pending
         return CONFIRM + nonce, pending
 
+    def action_of(self, data: str) -> str | None:
+        """The action a confirmation button names while it is pending, without consuming it."""
+        nonce = data[len(CONFIRM) :] if data.startswith(CONFIRM) else ""
+        with self._lock:
+            pending = self._pending.get(nonce)
+        return None if pending is None else pending.action
+
     def take(self, data: str, chat_id: int, now: datetime) -> tuple[Confirmation | None, str]:
         """Consume the confirmation a button names: (it, "ok") when it is pending, from the
         same chat and not expired; else (None, the reason). Consumed even when refused."""
