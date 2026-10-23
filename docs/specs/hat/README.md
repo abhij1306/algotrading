@@ -527,6 +527,7 @@ to an artefact that exists.
 | HAT-BT-011 | [09](09-backtest.md) | 12, 67 | PBT `backtest.no_lookahead`, PBT `backtest.nightly_no_lookahead` |
 | HAT-BT-012 | [09](09-backtest.md) | 12 | PBT `backtest.survivorship_free`, PBT `backtest.market_point_in_time` |
 | HAT-BT-013 | [09](09-backtest.md) | 12 | PBT `backtest.version_pinned` |
+| HAT-BT-014 | [09](09-backtest.md) | 68 | PBT `backtest.sized_from_allocation`, PBT `backtest.invested_share`, PBT `backtest.sizing_conventions_refused`, PBT `backtest.regime_inputs_loaded`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest` |
 | HAT-BT-020 | [09](09-backtest.md) | 12, 60, 62, 63, 64 | PBT `backtest.entry_fill_proxy`, PBT `backtest.entry_fill_proxy_chase`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest`, PBT `backtest.stop_on_instrument_tick`, PBT `backtest.pre_break_low`, PBT `backtest.entry_day_stop`, PBT `backtest.contraction_stop_too_wide` |
 | HAT-BT-021 | [09](09-backtest.md) | 12, 62, 64 | PBT `backtest.exit_fill_proxy`, PBT `backtest.exit_fill_proxy_close`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.raised_stop_dip`, PBT `backtest.raised_stop_dip_rules_agree`, PBT `backtest.lower_circuit_inferred`, PBT `backtest.lower_circuit_carry`, PBT `backtest.suspension_markdown`, PBT `backtest.path_rules_refused` |
 | HAT-BT-022 | [09](09-backtest.md) | 12, 62 | PBT `costs.slippage_adverse`, PBT `costs.slippage_adverse_net`, PBT `costs.slippage_adverse_bounds`, PBT `backtest.fill_conventions_recorded` |
@@ -544,7 +545,7 @@ to an artefact that exists.
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
 | HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62, 63, 64, 66 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, PBT `dsr.evidence_latest_by_completion`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
 | HAT-BT-061 | [09](09-backtest.md) | 2, 12, 62, 63 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
-| HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62, 64 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
+| HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62, 64, 68 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
 | HAT-OPS-003 | [10](10-ops.md) | 17 (wiring), 13 (reconciliation), 52 (entries left unplaced) | TLA `OrderReconciliation!ReconcileBeforeFirstOrder`, TLA `ExecutionRouter!EntriesSettled`, PBT `router.crash_resumes_entry_once`, PBT `router.stranded_entry_ends_next_day`, Postgres check `test_db_crash_safe_routing.py::test_db_crash_resumes_entry_once`, PBT `router.resumed_entry_waits_for_feed`, PBT `router.one_login_per_broker`, PBT `ops.stop_names_abandoned_jobs`, PBT `ops.stop_after_failed_start` |

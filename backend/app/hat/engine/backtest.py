@@ -82,7 +82,21 @@ Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, 09 §7 
 measured in shadow (PLAN Q4): among them, the trigger is the break of the level alone
 (`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the episodic-pivot playbook
 is not backtested, close-based exits fill at the official close, kill switches are not simulated
-(the exposure ladder is), and a sleeve's allocation uses regime and health multipliers of 1.
+(the exposure ladder is), and a sleeve's health multiplier is 1 (its regime multiplier too, unless
+the run applies the policy's).
+
+Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one
+sleeve with the live allocator (`portfolio.allocator.allocate`) over the account's equity at the
+night's close, at the run's sleeve weight (`sleeve_weight`, by default the policy's base weight
+of the sleeve), and d's entries are sized from that allocation as live sizes them: the sleeve's
+capital as equity and the allocation's risk per trade. The regime multiplier is 1 (`regime_mult`
+`1`, the default) or the live regime engine's (`policy`: v1's inputs, 3-day confirmation and
+default table, warmed up over the sessions before the period, then the allocator's smoothing); a
+night whose regime inputs are missing makes no allocation, so the next day's entries are
+rejected for the missing input, as live rejects them. Percentage metrics are of the whole
+account, of which the sleeve is `sleeve_weight`; the run records the weight and the rule beside
+them (`pct_basis`), and the mean share of the account held in positions (`invested_share`).
+R statistics do not depend on either.
 
 The command line runs a sleeve's strategy version over the Parquet store and records the run
 (`app.hat.backtest.runs`): `python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD
@@ -96,7 +110,7 @@ import math
 import uuid
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
@@ -157,6 +171,9 @@ from ..risk.policy import PolicyError, PolicyVersion, parse_policy
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import as_utc, trade_date_of
 from . import exits, lifecycle, trades, trigger, watchlist
+from .portfolio import regime as regime_v1
+from .portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
+from .portfolio.health import Health
 from .portfolio.universe import Interval
 from .regime_gate import regime_allows_longs
 from .scan import EP_PLAYBOOK, ScanInputs
@@ -179,6 +196,9 @@ from .strategy.config import (
 
 __all__ = [
     "INITIAL_EQUITY",
+    "REGIME_MULT_ONE",
+    "REGIME_MULT_POLICY",
+    "REGIME_MULT_RULES",
     "KNOWN_GAPS",
     "LOOKBACK_SESSIONS",
     "LOWER_CIRCUIT_RULE",
@@ -202,6 +222,7 @@ __all__ = [
     "lower_circuit_locked",
     "upper_circuit_locked",
     "run_backtest",
+    "sleeve_weight",
     "trades_parquet",
 ]
 
@@ -217,7 +238,7 @@ KNOWN_GAPS = (
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",  # live fills at the first tick after the open
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)
-    "multipliers_fixed_at_one",  # regime and health multipliers are 1
+    "multipliers_fixed_at_one",  # health is 1; regime too unless `regime_mult` is `policy`
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
 )
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
@@ -225,6 +246,10 @@ TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a tr
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
 LOWER_CIRCUIT_RULE = "carry_to_next_unlocked_open"
 MAX_SUSPENSION_SESSIONS = 250  # about a year of sessions
+# The regime multiplier a run sizes with (PR 68, HAT-BT-014): 1, or the live regime engine's.
+REGIME_MULT_ONE = "1"
+REGIME_MULT_POLICY = "policy"
+REGIME_MULT_RULES = (REGIME_MULT_ONE, REGIME_MULT_POLICY)
 # The NSE price bands an upper circuit is inferred at when the run has no band table (PR 61).
 NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
 END_OF_PERIOD = "end_of_period"
@@ -234,6 +259,8 @@ SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
 # How the loop reads the entry day's low before and after the break (HAT-BT-020, PR 60).
 ENTRY_DAY_LOW = "bars_5m_else_max_low_min_open_level_less_adr20"
 _SANDBOX_USER = uuid.UUID(int=1)
+# The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
+_SANDBOX_SLEEVE = uuid.UUID(int=2)
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
 _FINEST_TICK = Decimal("0.01")  # the NSE tick below ₹250 (`data.ticks`), the finest slab
@@ -270,7 +297,9 @@ class MarketData:
     per index name, (date, close) oldest first. `members`: the universe's membership intervals,
     delisted instruments included. `industries`: each instrument's industry, either one name
     or its classifications as (effective_from, industry), read point in time. `last_traded`: the
-    last session of each instrument delisted by the period's end.
+    last session of each instrument delisted by the period's end. `breadth`: the features job's
+    `breadth_pct` per session, read with the `regime.INDEX_NAME` and `regime.VIX_NAME` closes of
+    `index_closes` only by a run under the `policy` regime rule (PR 68).
     """
 
     days: tuple[date, ...]
@@ -287,6 +316,7 @@ class MarketData:
     intraday: Mapping[tuple[str, date], Sequence[tuple[Decimal, Decimal]]] = field(
         default_factory=dict
     )
+    breadth: Mapping[date, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -305,6 +335,8 @@ class RunSpec:
     slot_order: str = SLOT_ORDER_TIME  # HAT-BT-026: `score` and `random:K` are variants
     ambiguous: str = AMBIGUOUS_OPTIMISTIC  # HAT-BT-021: `pessimistic` fills a raised stop's dip
     suspension_sessions: int = SUSPENSION_SESSIONS  # bar-less sessions before the markdown
+    sleeve_weight: Decimal | None = None  # HAT-BT-014: None is the policy's base weight
+    regime_mult: str = REGIME_MULT_ONE  # HAT-BT-014: `policy` applies the live regime engine
 
 
 # --- outputs ----------------------------------------------------------------------------------
@@ -332,6 +364,7 @@ class SignalRow:
     qty: int
     strategy_version_id: uuid.UUID
     risk_policy_version_id: uuid.UUID
+    allocation: Allocation | None = None  # the night's allocation the entry was sized from
 
 
 @dataclass(frozen=True)
@@ -375,6 +408,10 @@ class BacktestResult:
     fills: tuple[FillRow, ...]
     skips: Mapping[str, int]  # triggers that never became a signal, by reason
     metrics: dict[str, Any]
+    # PR 68 (HAT-BT-014): the positions' share of each session's mark, and the sleeve's
+    # allocation each trade date's entries were sized from (None: the night had none)
+    invested: tuple[Decimal, ...] = ()
+    allocations: Mapping[date, Allocation | None] = field(default_factory=dict)
 
 
 # --- small helpers ----------------------------------------------------------------------------
@@ -579,6 +616,15 @@ class _Run:
         self.skips: dict[str, int] = {}
         self.gate: dict[date, bool] = {}
         self.signal_rows: list[SignalRow] = []
+        self.invested: list[Decimal] = []
+        # The sleeve's nightly allocation (HAT-BT-014), by the trade date it sizes.
+        self.weight = sleeve_weight(spec)
+        self.allocations: dict[date, Allocation | None] = {}
+        self.regime_closes = dict(data.index_closes.get(regime_v1.INDEX_NAME, ()))
+        self.vix = dict(data.index_closes.get(regime_v1.VIX_NAME, ()))
+        self.confirmation: regime_v1.Confirmation | None = None
+        self.regime_mult: Decimal | None = None  # the last allocation's, which smoothing reads
+        self.nights = 0  # the sessions the regime has been read for
 
     # --- market views ------------------------------------------------------------------------
 
@@ -662,6 +708,7 @@ class _Run:
             prev = self._prev(day)
             if prev is not None:
                 self._publish(prev, day)
+                self.allocations[day] = self._allocate(prev)
             self._morning(day, prev)
             self._sync_ladder()
             if prev is not None:
@@ -687,6 +734,58 @@ class _Run:
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)
         )
         self.gate[day] = published.gate_on
+
+    def _allocate(self, night: date) -> Allocation | None:
+        """The sleeve's allocation of `night` (HAT-BT-014): the live allocator over the account's
+        equity at the night's close; None when the regime inputs of the night are missing, as
+        the live allocation then fails. Under `policy` the regime engine first reads every
+        earlier session of the run's store (the warm-up of the 3-day rule and the smoothing),
+        each allocated over the initial equity."""
+        if self.spec.regime_mult == REGIME_MULT_ONE:
+            return self._sleeve(Decimal(1), self._equity_now()[0])
+        allocation = None
+        while self.nights <= self.index[night]:
+            day = self.days[self.nights]
+            self.nights += 1
+            equity = self._equity_now()[0] if day == night else self.spec.initial_equity
+            allocation = self._regime_night(day, equity)
+        return allocation
+
+    def _regime_night(self, day: date, equity: Decimal) -> Allocation | None:
+        """Read `day`'s regime and allocate at its confirmed state's multiplier, or None."""
+        try:
+            inputs = regime_v1.compute_inputs(
+                day, self.regime_closes, self.vix, self.data.breadth.get(day)
+            )
+        except regime_v1.RegimeError:
+            return None  # live's regime job fails: the night has no allocation
+        self.confirmation = regime_v1.confirm_step(
+            self.confirmation, regime_v1.classify_inputs(inputs)
+        )
+        return self._sleeve(regime_v1.multiplier_for(self.confirmation.confirmed), equity)
+
+    def _sleeve(self, table_value: Decimal, equity: Decimal) -> Allocation:
+        """The run's one sleeve allocated by `allocator.allocate`: Live, health 1, base weight
+        the run's weight, its last regime multiplier carried for the smoothing."""
+        sleeve = sleeve_key(self.config.bot)
+        policy = replace(self.policy, base_weight={sleeve: self.weight})
+        (allocation,) = allocate(
+            [
+                SleeveInput(
+                    bot_id=_SANDBOX_SLEEVE,
+                    sleeve=sleeve,
+                    cluster=sleeve,
+                    lifecycle_state=LIVE,
+                    regime_table_value=table_value,
+                    health=Health(Decimal(1), probation=False),
+                    previous_regime_mult=self.regime_mult,
+                )
+            ],
+            policy,
+            equity,
+        )
+        self.regime_mult = allocation.regime_mult
+        return allocation
 
     def _open_positions(self) -> list[HatPosition]:
         rows = self.session.scalars(
@@ -835,7 +934,12 @@ class _Run:
         return equity, cash
 
     def _context(self, row: HatWatchlistEntry, plan: _EntryPlan, prev: date) -> SignalContext:
-        equity, cash = self._equity_now()
+        """The entry's context as live builds it (`daily.live`): sized from the night's
+        allocation, the book being the run's one sleeve; without one, the allocation inputs are
+        missing and the entry is rejected for it."""
+        cash = self._cash()
+        allocation = self.allocations.get(row.trade_date)
+        capital = None if allocation is None else allocation.capital
         instrument_id = str(row.instrument_id)
         return SignalContext(
             action="entry",
@@ -847,13 +951,13 @@ class _Run:
             ltp=plan.price,
             locked_upper_circuit=plan.locked,
             configured_max_chase_pct=self.chase[row.playbook],
-            equity=equity,
-            allocation_risk_pct=self.policy.risk_pct,
-            regime_mult=Decimal(1),
-            health_mult=Decimal(1),
+            equity=capital,
+            allocation_risk_pct=None if allocation is None else allocation.risk_pct,
+            regime_mult=None if allocation is None else allocation.regime_mult,
+            health_mult=None if allocation is None else allocation.health_mult,
             free_cash=cash,
             adv20=self._feature(prev, instrument_id, "adv20"),
-            total_equity=equity,
+            total_equity=capital,
             policy_versions=[self.spec.policy],
             ladder=self.ladder,
             gate_on=self.gate.get(row.trade_date, False),
@@ -1047,6 +1151,7 @@ class _Run:
                 qty=signal.qty,
                 strategy_version_id=signal.strategy_version_id,
                 risk_policy_version_id=signal.risk_policy_version_id,
+                allocation=self.allocations.get(row.trade_date),
             )
         )
         if outcome.position_id is None:
@@ -1143,7 +1248,7 @@ class _Run:
             self._close(position, price, END_OF_PERIOD, _at(last, _AT_END, 30))
         self.session.flush()
         if self.equity:
-            self.equity[-1] = (last, self._marked(last))
+            self.equity[-1] = (last, self._marked(last)[0])
 
     def _sync_ladder(self) -> None:
         """Step the exposure ladder for each trade closed since the last step, in close order:
@@ -1195,16 +1300,19 @@ class _Run:
         tick = self._tick(instrument_id, day) or _FINEST_TICK
         return suspended_mark(last, sessions, after, SUSPENSION_BAND_PCT, tick)
 
-    def _marked(self, day: date) -> Decimal:
-        equity = self._cash()
+    def _marked(self, day: date) -> tuple[Decimal, Decimal]:
+        """(the account's mark on `day`, the marked value of its open positions)."""
+        held_value = _ZERO
         for position in self._open_positions():
             held = self.held[position.id]
             price = self._mark_price(held.instrument_id, day, Decimal(position.avg_entry))
-            equity += position.qty_open * price
-        return equity
+            held_value += position.qty_open * price
+        return self._cash() + held_value, held_value
 
     def _mark(self, day: date) -> None:
-        self.equity.append((day, self._marked(day)))
+        equity, held_value = self._marked(day)
+        self.equity.append((day, equity))
+        self.invested.append(held_value / equity if equity > 0 else _ZERO)
 
     # --- the result --------------------------------------------------------------------------
 
@@ -1219,8 +1327,10 @@ class _Run:
             fills=self._fill_rows(),
             skips=dict(sorted(self.skips.items())),
             metrics={},
+            invested=tuple(self.invested),
+            allocations=dict(self.allocations),
         )
-        metrics = compute_metrics(trade_rows, result.equity, self.spec)
+        metrics = compute_metrics(trade_rows, result.equity, self.spec, result.invested)
         metrics["skips"] = dict(result.skips)
         metrics["signals"] = len(self.signal_rows)
         metrics["rejections"] = _count_by(r.reason or "" for r in self.signal_rows if r.qty == 0)
@@ -1477,12 +1587,16 @@ def compute_metrics(
     trades_: Sequence[TradeRow],
     equity: Sequence[tuple[date, Decimal]],
     spec: RunSpec,
+    invested: Sequence[Decimal] = (),
 ) -> dict[str, Any]:
     """The run's metrics (HAT-BT-040, HAT-BT-041, HAT-BT-042): R statistics in Decimal, the
     standard drawdown, return and Sharpe figures from `app.hat.backtest.metrics`, the return
     moments the deflated Sharpe ratio reads, and the robustness figures of PR 65 (exposure, MAR,
     the longest drawdown, the tail-trimmed mean R and the cost share). The DSR itself depends
-    on the family's trials and is added when the run is recorded."""
+    on the family's trials and is added when the run is recorded. The percentage figures are of
+    the whole account: `pct_basis` names the sleeve weight and regime rule they were sized
+    under, and `invested_share` is the mean of `invested`, the positions' share of each
+    session's mark (PR 68, HAT-BT-014)."""
     rs = [t.r_multiple for t in trades_]
     count = len(rs)
     wins = [r for r in rs if r > 0]
@@ -1502,6 +1616,7 @@ def compute_metrics(
     share = bt_metrics.cost_share(fees, net + fees)  # realized P&L is net of the charges
     held = [(t.entry_date, t.exit_date) for t in trades_]
     used = conventions(spec)
+    share_held = bt_metrics.invested_share(invested)
     return {
         "trades": count,
         "sum_r": _ratio(total_r),
@@ -1526,6 +1641,12 @@ def compute_metrics(
         "longest_drawdown_sessions": bt_metrics.longest_drawdown(floats),
         "tail_trimmed_r": _tail_trimmed(rs),
         "cost_share": None if share is None else _ratio(share),
+        "invested_share": None if share_held is None else _ratio(share_held),
+        "pct_basis": {  # what the percentage figures are of (PR 68)
+            "equity": "account",
+            "sleeve_weight": used["sleeve_weight"],
+            "regime_mult": used["regime_mult"],
+        },
         "strategy_version_id": str(spec.strategy_version_id),
         "risk_policy_version_id": str(spec.policy.version_id),
         "cooldown_sessions": spec.policy.policy.cooldown_sessions,
@@ -1536,6 +1657,17 @@ def compute_metrics(
         "for_promotion": spec.for_promotion,
         "config_digest": config_hash(used),
     }
+
+
+def sleeve_weight(spec: RunSpec) -> Decimal:
+    """The run's sleeve weight (HAT-BT-014): `spec.sleeve_weight`, else the policy's base
+    weight of the strategy's sleeve; `backtest_no_base_weight` when the policy has none."""
+    if spec.sleeve_weight is not None:
+        return spec.sleeve_weight
+    weight = spec.policy.policy.base_weight.get(sleeve_key(spec.config.bot))
+    if weight is None:
+        raise BacktestError("backtest_no_base_weight")
+    return weight
 
 
 def known_gaps(spec: RunSpec) -> list[str]:
@@ -1560,6 +1692,15 @@ def conventions(spec: RunSpec) -> dict[str, Any]:
             "after_sessions": spec.suspension_sessions,
             "band_pct": str(SUSPENSION_BAND_PCT),
         },
+        # HAT-BT-014 (PR 68): the sizing; the regime table only when it is applied
+        "sleeve_weight": format(sleeve_weight(spec).normalize(), "f"),
+        "regime_mult": spec.regime_mult,
+        "health_mult": "1",
+        **(
+            {"regime_table": {k: str(v) for k, v in regime_v1.DEFAULT_MULTIPLIERS.items()}}
+            if spec.regime_mult == REGIME_MULT_POLICY
+            else {}
+        ),
     }
 
 
@@ -1643,7 +1784,10 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
         spec.slot_order,
         ambiguous=spec.ambiguous,
         suspension_sessions=spec.suspension_sessions,
+        sleeve_weight=spec.sleeve_weight,
+        regime_mult=spec.regime_mult,
     )
+    sleeve_weight(spec)  # a policy without the sleeve's base weight is refused here
     return _Run(spec, data).run()
 
 
@@ -1655,10 +1799,13 @@ def check_conventions(
     *,
     ambiguous: str = AMBIGUOUS_OPTIMISTIC,
     suspension_sessions: int = SUSPENSION_SESSIONS,
+    sleeve_weight: Decimal | None = None,
+    regime_mult: str = REGIME_MULT_ONE,
 ) -> None:
     """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule or slot order
     (PR 63), an unknown ambiguous-day rule or a bar-less session count that is not a whole
-    number in 0..`MAX_SUSPENSION_SESSIONS` (PR 64), and for a run flagged for promotion,
+    number in 0..`MAX_SUSPENSION_SESSIONS` (PR 64), a sleeve weight that is not a Decimal in
+    (0, 1] or an unknown regime rule (PR 68), and for a run flagged for promotion,
     perfect fills (a slippage of 0), the optimistic `touch` rule, a slot order other than the
     estimated trigger time or a suspension markdown later than `SUSPENSION_SESSIONS`."""
     if entry_fill_rule not in ENTRY_FILL_RULES:
@@ -1673,6 +1820,12 @@ def check_conventions(
         or not 0 <= suspension_sessions <= MAX_SUSPENSION_SESSIONS
     ):
         raise BacktestError("backtest_bad_suspension")
+    if sleeve_weight is not None and not (
+        isinstance(sleeve_weight, Decimal) and sleeve_weight.is_finite() and 0 < sleeve_weight <= 1
+    ):
+        raise BacktestError("backtest_bad_sleeve_weight")
+    if regime_mult not in REGIME_MULT_RULES:
+        raise BacktestError("backtest_bad_regime_mult")
     if for_promotion and slippage_bps == 0:
         raise BacktestError("backtest_promotion_without_slippage")
     if for_promotion and entry_fill_rule != PENETRATION:
@@ -1698,7 +1851,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     """python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD
     [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N]
     [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
-    [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--for-promotion]
+    [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
+    [--regime-mult 1|policy] [--for-promotion]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe over the
     Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
@@ -1707,7 +1861,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     a version's evidence, and is refused at a slippage of 0 (PR 62). A capped day's slots go in
     the estimated trigger order (`--slot-order time`, PR 63). `--ambiguous pessimistic` fills
     a raised stop the day's low reached; a bar-less position is marked down after
-    `--suspension-sessions` sessions (PR 64).
+    `--suspension-sessions` sessions (PR 64). Entries are sized from the sleeve's nightly
+    allocation at `--sleeve-weight` (the policy's base weight by default) under the regime rule
+    `--regime-mult` (PR 68).
     """
     import argparse  # noqa: PLC0415
     import json  # noqa: PLC0415
@@ -1731,6 +1887,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--slot-order", type=_slot_order_arg, default=SLOT_ORDER_TIME)
     parser.add_argument("--ambiguous", choices=AMBIGUOUS_RULES, default=AMBIGUOUS_OPTIMISTIC)
     parser.add_argument("--suspension-sessions", type=int, default=SUSPENSION_SESSIONS)
+    parser.add_argument("--sleeve-weight", type=Decimal, default=None)
+    parser.add_argument("--regime-mult", choices=REGIME_MULT_RULES, default=REGIME_MULT_ONE)
     parser.add_argument("--for-promotion", action="store_true")
     args = parser.parse_args(argv)
     settings = operator_settings()
@@ -1758,6 +1916,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                     slot_order=args.slot_order,
                     ambiguous=args.ambiguous,
                     suspension_sessions=args.suspension_sessions,
+                    sleeve_weight=args.sleeve_weight,
+                    regime_mult=args.regime_mult,
                 ),
                 **extra,
             )

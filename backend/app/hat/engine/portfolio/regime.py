@@ -23,6 +23,9 @@ BEAR = "bear"
 # Least to most defensive: the order the classifier is monotone in (HAT-PORT-032).
 STATES = (BULL_QUIET, BULL_VOLATILE, CORRECTION, BEAR)
 
+# The series the inputs read (HAT-PORT-031): the regime job and the backtest read these names.
+INDEX_NAME = "NIFTY 500"
+VIX_NAME = "INDIA VIX"
 SMA_SLOW = 200
 SMA_FAST = 50
 VIX_WINDOW = 252

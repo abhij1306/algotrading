@@ -153,6 +153,7 @@ Covered digest: `c1e3d8a7a0ce99c992b0599203fe2227359603152e84c44bb8533ba5b1bda57
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 68: `MERGED_PRS` gains 68; no scheduler check changed.
 - PR 73: `test_conf_verification.py` lists PR 73 as merged, `test_conf_ops.py` allows the admin command line `decimal`, `engine.rescale` and `engine.trades`, and `execution/accounts.py` gains `revoke_ddpi` (`verify-portfolio`). No job, job-run or harness rule changed. Nothing was narrowed.
 - PR 67: `MERGED_PRS` gains 67; no scheduler check changed.
 - PR 66: `MERGED_PRS` gains 66; no scheduler check changed.

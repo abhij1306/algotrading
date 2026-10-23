@@ -68,12 +68,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `3b58ad73889581865dccb202fb4209319b329823069c9d65077377e7db5cd978`
+Covered digest: `769a58e69666be968913fdebc35be845b313c6c16f4d517a230a95caf19a9d88`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 68 (O6): `backtest/metrics.py` gains `invested_share`, the exact Decimal mean of the sessions' invested shares (None without a session); the backtest checks it through PBT `backtest.invested_share` (verify-backtest). No metrics check changed.
 - PR 65 (G35): `backtest/metrics.py` gains `longest_drawdown`, `exposure`, `mar_ratio`, `tail_trimmed_mean` and `cost_share` (the last two on Decimals), with five new `metrics.*` properties. `metrics.mar_ratio` draws a drawdown of 0 or at least 1e-6 deep: a subnormal depth overflows the float quotient to infinity (found by the property; `compute_metrics` records a non-finite MAR as null).
 - `metrics.trade_stats_partition` found a subnormal gross loss giving an infinite profit factor; the HAT copy treats a gross loss below the floor as none and keeps the factor finite.
 - PR 12 rewrote `backtest/metrics.py` on polars (`pl.Series` in, the arithmetic unchanged; the population deviation is `std(ddof=0)`). The five `metrics.*` properties were moved to polars series with the same strategies and bounds, and each was shown failing again on the polars code (the `PR 12` breaks below). No property was narrowed.

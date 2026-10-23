@@ -31,8 +31,8 @@ from .service import (
 
 REGIME_JOB = "regime"
 ALLOCATE_JOB = "allocate"
-INDEX_NAME = "NIFTY 500"
-VIX_NAME = "INDIA VIX"
+INDEX_NAME = regime.INDEX_NAME
+VIX_NAME = regime.VIX_NAME
 HISTORY_DAYS = 300  # index days read: enough for the 252-value VIX window and the 200-day SMA
 
 

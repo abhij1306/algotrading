@@ -6,7 +6,9 @@ the regime index from `index_daily`, and membership from the universe's interval
 instruments included. Nothing is filtered by what happened later: the day loop reads each input
 only up to the date it decides for. The features must be the ones the nightly job wrote for the
 corporate actions the bars are adjusted with: the job's stored inputs digest must equal the
-digest of the stored actions over the whole store (HAT-DATA-077, PR 67).
+digest of the stored actions over the whole store (HAT-DATA-077, PR 67). A run under the
+`policy` regime rule also reads the regime engine's inputs: the NIFTY 500 and India VIX closes
+and the features job's breadth of each session (PR 68).
 """
 
 from __future__ import annotations
@@ -27,8 +29,9 @@ from sqlalchemy.orm import Session
 
 from ..data.corporate_actions import stored_factors
 from ..data.features import STATE_FILE, inputs_digest
-from ..data.store import DATASET_BARS, DATASET_FEATURES, DataStore
+from ..data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataStore
 from ..engine.backtest import LOOKBACK_SESSIONS, BacktestError, MarketData
+from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..models import HatIndustry, HatInstrument, HatUniverseMember
 
@@ -124,6 +127,17 @@ def _current_features(store: DataStore, digest: str, days: list[date]) -> pl.Dat
         return _features(store, days)
 
 
+def _breadth(store: DataStore, days: Iterable[date]) -> dict[date, Decimal]:
+    """The features job's `breadth_pct` of each of `days` that has one, as the regime job
+    reads it (`portfolio.jobs.read_breadth`)."""
+    found: dict[date, Decimal] = {}
+    for day in days:
+        frame = store.read_partition(DATASET_BREADTH, day)
+        if frame.height and frame["breadth_pct"][0] is not None:
+            found[day] = Decimal(str(frame["breadth_pct"][0]))
+    return found
+
+
 def _content_digest(market: MarketData) -> str:
     """sha256 of what the run read: the bars, features, index closes, membership intervals and
     industry history, each in a fixed order. Two snapshots with the same row counts but
@@ -140,6 +154,10 @@ def _content_digest(market: MarketData) -> str:
         ).encode()
     )
     digest.update(repr(sorted(market.industries.items())).encode())
+    if market.breadth:
+        digest.update(
+            repr(sorted((d.isoformat(), str(v)) for d, v in market.breadth.items())).encode()
+        )
     return digest.hexdigest()
 
 
@@ -151,6 +169,7 @@ def load_market(
     index: str,
     start: date,
     end: date,
+    regime_inputs: bool = False,
 ) -> tuple[MarketData, dict[str, Any]]:
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
     read, for `hat_backtest_run.data_snapshot`). Raises `BacktestError` when the store has no
@@ -158,7 +177,9 @@ def load_market(
     not written for the stored corporate actions over every instrument (the nightly job's
     digest, `universe` None) or a session of the window has none: the loop would read prices
     adjusted one way and features computed another, or miss a night's scan, which the nightly
-    job never does."""
+    job never does. With `regime_inputs` it also reads the regime engine's index and VIX closes
+    and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
+    of one of them (PR 68)."""
     days = [d for d in store.days(DATASET_BARS) if d <= end]
     first = bisect_left(days, start)
     if first >= len(days):
@@ -172,6 +193,20 @@ def load_market(
     with store.connect(actions) as con:
         bars = con.execute(_BARS_SQL, [window[0], end]).pl()
         closes = con.execute(_INDEX_SQL, [index, end]).fetchall()
+        extra = {
+            name: con.execute(_INDEX_SQL, [name, end]).fetchall()
+            for name in (regime.INDEX_NAME, regime.VIX_NAME)
+            if regime_inputs and name != index
+        }
+    index_closes = {
+        name: [(d, Decimal(c)) for d, c in points]
+        for name, points in {**extra, index: closes}.items()
+    }
+    breadth = _breadth(store, window) if regime_inputs else {}
+    if regime_inputs and not (
+        breadth and all(index_closes[n] for n in (regime.INDEX_NAME, regime.VIX_NAME))
+    ):
+        raise BacktestError("backtest_no_regime_inputs")
     wanted = {str(i) for i in instruments}
     bars = bars.filter(pl.col("instrument_id").is_in(sorted(wanted)))
     series, delisted = _instruments(session, instruments)
@@ -190,11 +225,12 @@ def load_market(
         days=tuple(window),
         bars=bars,
         features=features,
-        index_closes={index: [(d, Decimal(c)) for d, c in closes]},
+        index_closes=index_closes,
         members=members,
         industries=_industries(session, instruments),
         series=series,
         last_traded=last_traded,
+        breadth=breadth,
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -204,6 +240,7 @@ def load_market(
         "features": features.height,
         "index": index,
         "index_points": len(closes),
+        **({"breadth_points": len(breadth)} if regime_inputs else {}),
         "members": len(members),
         "actions_digest": expected,
         "content_digest": _content_digest(market),
