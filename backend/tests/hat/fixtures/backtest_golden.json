@@ -43,9 +43,11 @@
    "fees": "242.5400",
    "fill_path": "open_low_high_close",
    "final_equity": "998053.0318",
+   "first_session": "2025-05-05",
    "for_promotion": false,
    "gap_through_rule": "min_open_stop",
    "health_mult": "1",
+   "held_sessions": 5,
    "initial_equity": "1000000",
    "invested_share": "0.001443",
    "known_gaps": [
@@ -58,6 +60,7 @@
     "multipliers_fixed_at_one",
     "entry_day_low_estimated"
    ],
+   "last_session": "2025-09-19",
    "longest_drawdown_sessions": 78,
    "lower_circuit": "carry_to_next_unlocked_open",
    "lower_circuit_days": 0,
@@ -188,9 +191,11 @@
    "fees": "37.4700",
    "fill_path": "open_low_high_close",
    "final_equity": "1005269.0246",
+   "first_session": "2025-05-05",
    "for_promotion": false,
    "gap_through_rule": "min_open_stop",
    "health_mult": "1",
+   "held_sessions": 54,
    "initial_equity": "1000000",
    "invested_share": "0.008197",
    "known_gaps": [
@@ -203,6 +208,7 @@
     "multipliers_fixed_at_one",
     "entry_day_low_estimated"
    ],
+   "last_session": "2025-09-19",
    "longest_drawdown_sessions": 24,
    "lower_circuit": "carry_to_next_unlocked_open",
    "lower_circuit_days": 0,

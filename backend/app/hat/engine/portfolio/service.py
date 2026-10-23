@@ -484,9 +484,7 @@ def load_evidence(
         health_zero = sleeve_health(session, bot.id, trade_date, policy).probation
     return lifecycle.Evidence(
         today=trade_date,
-        dsr_prob=facts.dsr_prob,
-        backtest_trades=facts.trades,
-        backtest_trials=facts.trials,
+        backtest=facts,
         sessions=trading_sessions(session),
         shadow_started_on=stage_entered_on(session, bot.id, lifecycle.SHADOW),
         health_zero=health_zero,
@@ -499,7 +497,6 @@ def load_evidence(
             since=None if entered is None else _close_of(entered),
             until=_close_of(trade_date),
         ),
-        backtest_expectancy=facts.expectancy,
     )
 
 

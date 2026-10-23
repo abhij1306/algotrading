@@ -11,7 +11,7 @@ from __future__ import annotations
 import calendar
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, localcontext
 
 from app.hat.errors import HatError
@@ -40,6 +40,14 @@ EDGES: frozenset[tuple[str, str]] = frozenset(
 
 DSR_MIN = Decimal("0.95")  # [A] HAT-PORT-061
 MIN_BACKTEST_TRADES = 200  # [A] HAT-PORT-061
+MIN_SPAN_YEARS = 5  # D150: the evidence run's sessions span at least five years
+# A run asked for whole years ends on the last session, which year-end holidays and a weekend
+# can put a few days before the anniversary of the first.
+SPAN_SLACK = timedelta(days=7)
+MAX_AMBIGUOUS_SHARE = Decimal("0.10")  # [OWNER-PENDING] of the sessions a trade was held
+# The regime rule the evidence run sizes under: the live regime engine's, as live sizes
+# (`engine.backtest.REGIME_MULT_POLICY`, PR 69).
+EVIDENCE_REGIME_RULE = "policy"
 SHADOW_DAYS = 20  # [A] HAT-PORT-062
 PROBATION_MONTHS = 3  # HAT-PORT-064
 PROBATION_SHADOW_TRADES = 50  # HAT-PORT-064
@@ -64,6 +72,22 @@ def backtest_gate(dsr_prob: Decimal | None, trades: int) -> bool:
     if dsr_prob is None or isinstance(trades, bool) or not isinstance(trades, int):
         return False
     return dsr_prob.is_finite() and dsr_prob >= DSR_MIN and trades >= MIN_BACKTEST_TRADES
+
+
+def span_gate(first: date | None, last: date | None) -> bool:
+    """The evidence run's sessions span at least `MIN_SPAN_YEARS` years: its last session is
+    no more than `SPAN_SLACK` before the anniversary of its first (D150)."""
+    if first is None or last is None:
+        return False
+    return add_months(first, 12 * MIN_SPAN_YEARS) <= last + SPAN_SLACK
+
+
+def ambiguous_gate(ambiguous_days: int | None, held_sessions: int) -> bool:
+    """Ambiguous days (09 HAT-BT-021) are at most `MAX_AMBIGUOUS_SHARE` of the sessions a
+    trade was held; an absent count fails, as does a run that held nothing."""
+    if ambiguous_days is None or held_sessions <= 0:
+        return False
+    return ambiguous_days <= MAX_AMBIGUOUS_SHARE * held_sessions
 
 
 def sessions_after(sessions: Iterable[date], start: date, end: date) -> int:
@@ -164,12 +188,51 @@ def retire_gate(entered_on: date | None, today: date, shadow_trades: int, failin
 class BacktestFacts:
     """What a sleeve's backtest gives the lifecycle (09 §6, HAT-BT-060): the deflated Sharpe
     probability at the family's current trial count, the run's trade count and expectancy in R,
-    and that trial count. The default is no evidence."""
+    and that trial count; since PR 69 also the run's first and last session, its ambiguous days
+    and held sessions, the playbooks its known gaps name and those the version enables, and the
+    sleeve weight and regime rule it sized under beside the policy's base weight now. The
+    default is no evidence."""
 
     dsr_prob: Decimal | None = None
     trades: int = 0
     expectancy: Decimal | None = None
     trials: int = 0
+    first_session: date | None = None
+    last_session: date | None = None
+    ambiguous_days: int | None = None
+    held_sessions: int = 0
+    gapped_playbooks: frozenset[str] = frozenset()
+    playbooks: frozenset[str] = frozenset()
+    sleeve_weight: Decimal | None = None
+    base_weight: Decimal | None = None
+    regime_mult: str | None = None
+
+
+def backtest_refusal(facts: BacktestFacts) -> str | None:
+    """Research -> Backtested (HAT-PORT-061): why the evidence run fails the gate, the first
+    failing condition's code, or None when it passes. The run needs a deflated Sharpe
+    probability of at least 0.95 and 200 trades (`backtest_gate`), sessions spanning five years
+    (`backtest_span_short`), no known gap naming a playbook the version enables
+    (`backtest_gap_in_playbook`), ambiguous days within the cap (`backtest_ambiguous_days`),
+    and sizing as live: the policy's base weight of the sleeve now (`backtest_off_base_weight`)
+    under the live regime rule (`backtest_regime_rule`). An absent fact fails its condition."""
+    if not backtest_gate(facts.dsr_prob, facts.trades):
+        return "backtest_gate"
+    if not span_gate(facts.first_session, facts.last_session):
+        return "backtest_span_short"
+    if facts.gapped_playbooks & facts.playbooks or not facts.playbooks:
+        return "backtest_gap_in_playbook"
+    if not ambiguous_gate(facts.ambiguous_days, facts.held_sessions):
+        return "backtest_ambiguous_days"
+    if (
+        facts.sleeve_weight is None
+        or facts.base_weight is None
+        or facts.sleeve_weight != facts.base_weight
+    ):
+        return "backtest_off_base_weight"
+    if facts.regime_mult != EVIDENCE_REGIME_RULE:
+        return "backtest_regime_rule"
+    return None
 
 
 @dataclass(frozen=True)
@@ -177,16 +240,13 @@ class Evidence:
     """Everything a guard reads. A field that is absent makes the guard that needs it fail."""
 
     today: date
-    dsr_prob: Decimal | None = None
-    backtest_trades: int = 0
-    backtest_trials: int = 0  # the family's trial count the DSR was deflated with
+    backtest: BacktestFacts = field(default_factory=BacktestFacts)
     sessions: frozenset[date] = field(default_factory=frozenset)
     shadow_started_on: date | None = None
     health_zero: bool = False
     live_r: tuple[Decimal, ...] = ()
     probation_entered_on: date | None = None
     probation_shadow_r: tuple[Decimal, ...] = ()
-    backtest_expectancy: Decimal | None = None
     discount: Decimal = DEFAULT_DISCOUNT
 
 
@@ -197,9 +257,9 @@ class Verdict:
 
 
 def _benchmark(ev: Evidence) -> Decimal | None:
-    if ev.backtest_expectancy is None:
+    if ev.backtest.expectancy is None:
         return None
-    return discounted_benchmark(ev.backtest_expectancy, ev.discount)
+    return discounted_benchmark(ev.backtest.expectancy, ev.discount)
 
 
 def _gate(ok: bool, reason: str) -> Verdict:
@@ -207,7 +267,8 @@ def _gate(ok: bool, reason: str) -> Verdict:
 
 
 def _backtest_edge(ev: Evidence) -> Verdict:
-    return _gate(backtest_gate(ev.dsr_prob, ev.backtest_trades), "backtest_gate")
+    reason = backtest_refusal(ev.backtest)
+    return Verdict(reason is None, reason or "ok")
 
 
 def _shadow_edge(ev: Evidence) -> Verdict:

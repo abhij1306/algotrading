@@ -40,8 +40,19 @@ CHAT = 4242
 # not the settings' default user, so an event filed under that default instead of the owner's
 # user is seen
 USER = uuid.UUID("00000000-0000-7000-8000-000000000073")
-EVIDENCE = lifecycle.BacktestFacts(
-    dsr_prob=Decimal("0.99"), trades=250, expectancy=Decimal("0.3"), trials=1
+EVIDENCE = lifecycle.BacktestFacts(  # passes the Backtested gate (HAT-PORT-061, PR 69)
+    dsr_prob=Decimal("0.99"),
+    trades=250,
+    expectancy=Decimal("0.3"),
+    trials=1,
+    first_session=date(2019, 1, 1),
+    last_session=date(2024, 12, 31),
+    ambiguous_days=0,
+    held_sessions=500,
+    playbooks=frozenset({"breakout"}),
+    sleeve_weight=Decimal("0.50"),
+    base_weight=Decimal("0.50"),
+    regime_mult="policy",
 )
 
 

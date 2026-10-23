@@ -241,6 +241,9 @@ KNOWN_GAPS = (
     "multipliers_fixed_at_one",  # health is 1; regime too unless `regime_mult` is `policy`
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
 )
+# The playbooks a known gap names: the lifecycle gate refuses a version that enables one of them
+# on this evidence (PR 69, HAT-PORT-061). A gap not listed here holds for every playbook.
+GAP_PLAYBOOKS: dict[str, tuple[str, ...]] = {"episodic_pivot_not_backtested": (EP_PLAYBOOK,)}
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
@@ -1638,6 +1641,10 @@ def compute_metrics(
         "sharpe_annual": _float(bt_metrics.sharpe_mean_std(returns)),
         "returns": _stats_json(stats),
         "sessions": len(equity),
+        # the span and held sessions the lifecycle gate reads (PR 69, HAT-PORT-061)
+        "first_session": equity[0][0].isoformat() if equity else None,
+        "last_session": equity[-1][0].isoformat() if equity else None,
+        "held_sessions": bt_metrics.held_sessions([day for day, _ in equity], held),
         "exposure": bt_metrics.exposure([day for day, _ in equity], held),  # HAT-BT-041
         "cagr": cagr,
         "mar": None if mar is None else _float(mar),
@@ -1814,7 +1821,7 @@ def check_conventions(
     (PR 63), an unknown ambiguous-day rule or a bar-less session count that is not a whole
     number in 0..`MAX_SUSPENSION_SESSIONS` (PR 64), a sleeve weight that is not a Decimal in
     (0, 1] or an unknown regime rule (PR 68), and for a run flagged for promotion, a weight
-    other than the policy's base weight or the `policy` regime variant (PR 68),
+    other than the policy's base weight (PR 68) or a regime rule other than `policy` (PR 69),
     perfect fills (a slippage of 0), the optimistic `touch` rule, a slot order other than the
     estimated trigger time or a suspension markdown later than `SUSPENSION_SESSIONS`."""
     if entry_fill_rule not in ENTRY_FILL_RULES:
@@ -1866,7 +1873,7 @@ def _check_promotion(
         raise BacktestError("backtest_promotion_late_suspension")
     if own_weight:
         raise BacktestError("backtest_promotion_off_base_weight")
-    if regime_mult != REGIME_MULT_ONE:
+    if regime_mult != REGIME_MULT_POLICY:  # live sizes under the regime engine (PR 69)
         raise BacktestError("backtest_promotion_regime_variant")
 
 
@@ -1907,7 +1914,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     a raised stop the day's low reached; a bar-less position is marked down after
     `--suspension-sessions` sessions (PR 64). Entries are sized from the sleeve's nightly
     allocation at `--sleeve-weight` (the policy's base weight by default) under the regime rule
-    `--regime-mult` (PR 68).
+    `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
     """
     import argparse  # noqa: PLC0415
     import json  # noqa: PLC0415
