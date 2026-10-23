@@ -99,3 +99,10 @@ def test_reject_threshold() -> None:
     assert _Loaded(date(2026, 1, 1), rejected=rejected, candles=199).too_many_rejects(limits)
     run = _Loaded(date(2026, 1, 1), rejected=rejected, candles=10_000, longest_run=3)
     assert run.too_many_rejects(limits)
+
+
+def test_reject_run_carries_across_answers() -> None:
+    first = parse_candles([[EPOCH, 10.0, 11.0, 9.5, 10.5, 7], ["x"], ["x"]])
+    assert (first.longest_run, first.trailing_run) == (2, 2)
+    second = parse_candles([["x"], [EPOCH + 600, 10.0, 11.0, 9.5, 10.5, 7]], first.trailing_run)
+    assert (second.longest_run, second.trailing_run) == (3, 0)

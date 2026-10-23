@@ -154,11 +154,13 @@ class Rejected:
 @dataclass(frozen=True)
 class Parsed:
     """One answer's candles (oldest first, one per minute), the rejected ones in answer order,
-    and the most rejected candles in a row."""
+    the most rejected candles in a row (counting the run the previous answer ended with) and
+    the run this one ends with."""
 
     candles: list[MinuteCandle]
     rejected: list[Rejected]
     longest_run: int = 0
+    trailing_run: int = 0
 
 
 def _price(raw: object) -> Decimal | None:
@@ -204,15 +206,16 @@ def _classify(row: object) -> MinuteCandle | tuple[str, datetime | None]:
     return MinuteCandle(at, open_, high, low, close, volume)
 
 
-def parse_candles(raw: Iterable[object]) -> Parsed:
+def parse_candles(raw: Iterable[object], carry: int = 0) -> Parsed:
     """The history response's `candles` ([epoch seconds, open, high, low, close, volume] each)
-    sorted into candles and rejected rows (`REJECT_RULES`). Content never raises: a bad row is
-    rejected, never repaired or guessed."""
+    sorted into candles and rejected rows (`REJECT_RULES`); `carry` is the run of rejected rows
+    the previous answer of the symbol ended with, so a run across two answers counts whole.
+    Content never raises: a bad row is rejected, never repaired or guessed."""
     outcomes = [_classify(row) for row in raw]
     minutes = [o.at if isinstance(o, MinuteCandle) else o[1] for o in outcomes]
     found: dict[datetime, MinuteCandle] = {}
     rejected: list[Rejected] = []
-    run = longest = 0
+    run = longest = carry
     for i, outcome in enumerate(outcomes):
         if isinstance(outcome, MinuteCandle):
             found[outcome.at] = outcome
@@ -222,7 +225,7 @@ def parse_candles(raw: Iterable[object]) -> Parsed:
         longest = max(longest, run)
         rule, at = outcome
         rejected.append(Rejected(rule, at, (at,) if at is not None else _neighbours(minutes, i)))
-    return Parsed([found[at] for at in sorted(found)], rejected, longest)
+    return Parsed([found[at] for at in sorted(found)], rejected, longest, run)
 
 
 def _neighbours(minutes: Sequence[datetime | None], i: int) -> tuple[datetime, ...]:
@@ -557,6 +560,7 @@ class _Loaded:
     rejected: list[Rejected] = field(default_factory=list)
     candles: int = 0
     longest_run: int = 0
+    run: int = 0  # the rejected rows the last answer ended with
 
     def too_many_rejects(self, limits: HistoryLimits) -> bool:
         return self.longest_run >= limits.max_reject_run or Decimal(
@@ -604,7 +608,8 @@ def _load_symbol(
         if response.get("s") != "ok" and _plan_refused(response):
             first = loaded.first = _clamp(pacer, limits, progress, report, first)
             continue
-        parsed = _parse_answer(response, limits, first, last)
+        parsed = _parse_answer(response, limits, first, last, loaded.run)
+        loaded.run = parsed.trailing_run
         fetched_on = pacer.last_day or pacer.today()
         loaded.candles += len(parsed.candles) + len(parsed.rejected)
         loaded.rejected.extend(parsed.rejected)
@@ -614,6 +619,8 @@ def _load_symbol(
             for bar in aggregate(symbol, screen(parsed))
         )
         first = last + timedelta(days=1)
+    if loaded.first > end:  # clamped past the period: the plan serves none of it
+        raise MinuteHistoryError("history_plan_limit")
     return loaded
 
 
@@ -634,7 +641,7 @@ def _clamp(
 
 
 def _parse_answer(
-    response: Mapping[str, object], limits: HistoryLimits, first: date, last: date
+    response: Mapping[str, object], limits: HistoryLimits, first: date, last: date, carry: int
 ) -> Parsed:
     """The candles and rejected rows of one answer for `first..last`; a refusal or an answer
     that is not a candle list raises."""
@@ -648,11 +655,11 @@ def _parse_answer(
         raise MinuteHistoryError("history_bad_answer")
     if len(raw) > limits.candle_cap:
         raise MinuteHistoryError("history_too_many_candles")
-    parsed = parse_candles(raw)
+    parsed = parse_candles(raw, carry)
 
     # a rejected row counts wherever it claims to be: an answer is judged whole
     inside = [c for c in parsed.candles if first <= trade_date_of(c.at) <= last]
-    return Parsed(inside, parsed.rejected, parsed.longest_run)
+    return Parsed(inside, parsed.rejected, parsed.longest_run, parsed.trailing_run)
 
 
 def load_minute_history(
@@ -899,7 +906,10 @@ def rebase_stored(
             for refused_day, code in refused:
                 rejects.append(RejectRow(instrument_id, instrument_id, refused_day, None, code))
                 report.rejects[code] += 1
-        report.rows += target.write(keep, {i: i for i in by_instrument})
+        # each instrument's day is replaced whole: a day refused now keeps no earlier bar
+        report.rows += target.write(
+            keep, {i: i for i in by_instrument}, replace=dict.fromkeys(by_instrument, (day, day))
+        )
         report.writes += 1
         target.write_rejects(rejects)
     report.symbols = len(report.days)
