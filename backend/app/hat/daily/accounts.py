@@ -5,7 +5,8 @@ every broker call of the desk goes through it), its `ExecutionGuard` (no entry i
 the trade date reconciled; stops and sales never wait, D118), the reconciliation, the execution
 router (signing approval cards with the Telegram signer), the stop desk, the fill sync and the
 `TradeManager`. The live exits, the close job, the GTT jobs and the Telegram flatten all use the
-same `TradeManager`, whose per-position sale lock serialises their sales.
+same `TradeManager`; it and the stop desk share one `PositionDesk`, whose per-position write lock
+serialises their sales and stop writes.
 
 `sync_due` reads an account's fills every periodic step while one of its real entries works or a
 stop's answer is not in yet, and once a minute otherwise, so an entry fill gets its broker stop
@@ -39,6 +40,7 @@ from ..execution.entry_timeout import EntryWatch
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import TradeManager, ViewSource
+from ..execution.position_desk import PositionDesk
 from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
 from ..execution.router import ExecutionRouter, PlacementCheck, unplaced_entry
@@ -262,7 +264,12 @@ class Desks:
             broker, guard, notifier_sink(notifier, clock), notifier, clock=clock
         )
         stops = StopDesk(
-            broker, guard, tick_for=tick_for, calendar=calendar, notifier=notifier, clock=clock
+            broker,
+            guard,
+            positions=PositionDesk(clock=clock),
+            tick_for=tick_for,
+            calendar=calendar,
+            notifier=notifier,
         )
         fills = FillSync(
             broker,
@@ -283,7 +290,6 @@ class Desks:
             notifier=notifier,
             band=self._band,
             resend=self._resend,
-            clock=clock,
         )
         router = ExecutionRouter(broker, guard, reconciler, notifier, issuer=issuer, clock=clock)
         return AccountDesk(

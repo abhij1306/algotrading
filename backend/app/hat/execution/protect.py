@@ -59,17 +59,16 @@ from __future__ import annotations
 
 import functools
 import logging
-import threading
 import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_FLOOR, Decimal
+from typing import TypeVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.rescale import applied_factors, pending_actions
 from ..errors import HatError
 from ..events import record
@@ -89,6 +88,7 @@ from .broker import (
 )
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
+from .position_desk import LOST_ANSWER_SETTLE, PositionDesk, Verdict
 from .series import broker_symbol, series_changed
 from .submit import (
     EXIT_SALES,
@@ -113,7 +113,6 @@ __all__ = [
     "ALERT_STOP_NOT_MOVED",
     "ALERT_STOP_NOT_PLACED",
     "LIVE",
-    "LOST_ANSWER_SETTLE",
     "STOP_DAY",
     "STOP_GTT",
     "SWAP_AT",
@@ -138,9 +137,6 @@ LIVE = ("placed", "partially_filled")
 UNSURE = ("pending", "unconfirmed")
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
-# How long after its send an order whose answer was lost is settled against the broker's books:
-# the guarded call gives up after 1.5 s, but the SDK request may still be in flight and land.
-LOST_ANSWER_SETTLE = timedelta(seconds=60)
 # A GTT this old is placed again by the nightly verify: Fyers expires a GTT a year after it was
 # placed, and a modify may not reset that clock (research G24; [verify on a live account]).
 CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
@@ -209,15 +205,20 @@ class _Target:
     unmapped: bool = False
 
 
-def _serialised(method: Callable[..., str]) -> Callable[..., str]:
-    """Hold the position's stop lock for the call. The fill sync and a trade job run on their
-    own threads over one desk: without it, both could see a cancelled stop and each place a new
-    one, leaving two GTTs over the same shares."""
+_R = TypeVar("_R")
+
+
+def _serialised(method: Callable[..., _R]) -> Callable[..., _R]:
+    """Hold the position's write lock (`PositionDesk.lock`) for the call. The fill sync, the
+    sales and the jobs run on their own threads over one desk: without it, two could see no
+    working stop and each place one, or one place a stop while a sale it made room for is sent."""
 
     @functools.wraps(method)
-    def locked(self: StopDesk, session: Session, position_id: uuid.UUID, *args: object) -> str:
-        with self._stop_lock(position_id):
-            return method(self, session, position_id, *args)
+    def locked(
+        self: StopDesk, session: Session, position_id: uuid.UUID, *args: object, **kwargs: object
+    ) -> _R:
+        with self._positions.lock(position_id, method.__name__):
+            return method(self, session, position_id, *args, **kwargs)
 
     return locked
 
@@ -231,35 +232,26 @@ class StopDesk:
         broker: HatBroker,
         guard: ExecutionGuard,
         *,
+        positions: PositionDesk,
         tick_for: TickSource,
         calendar: SessionCalendar | None = None,
         notifier: Notifier | None = None,
-        settle_after: timedelta = LOST_ANSWER_SETTLE,
-        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._guard = guard
+        # The position locks, the settle wait and the clock that stamps the sends.
+        self._positions = positions
+        self._clock = positions.clock
         self._tick_for = tick_for
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
-        # A lost answer is settled `settle_after` after its send, by the clock the send was
-        # stamped with (`placed_at`), not the caller's `now`.
-        self._settle_after = settle_after
-        self._clock = clock
         # Entries whose remainder the broker was asked to cancel (`cancel_entry`): not asked again.
         self._entry_cancels: set[uuid.UUID] = set()
-        # One re-entrant lock per position around what places a stop (`_serialised`).
-        self._stop_locks: dict[uuid.UUID, threading.RLock] = {}
-        self._stop_locks_guard = threading.Lock()
-
-    def _stop_lock(self, position_id: uuid.UUID) -> threading.RLock:
-        with self._stop_locks_guard:
-            return self._stop_locks.setdefault(position_id, threading.RLock())
 
     @property
-    def settle_after(self) -> timedelta:
-        """How long after its send a stop counts as answered (`settle_lost`, `stop_confirmed`)."""
-        return self._settle_after
+    def positions(self) -> PositionDesk:
+        """The account's position locks and settle wait, shared with its `TradeManager`."""
+        return self._positions
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows)."""
@@ -498,20 +490,19 @@ class StopDesk:
             row.status == "unconfirmed" or (row.status == "pending" and row.placed_at is not None)
         )
 
-    def _settled_long_enough(self, row: HatOrder) -> bool:
-        if row.placed_at is None:
-            return True
-        return self._clock.now() - as_utc(row.placed_at) >= self._settle_after
-
+    @_serialised
     def settle_lost(self, session: Session, position_id: uuid.UUID) -> None:
         """Settle every stop of the position whose answer was lost (see `_settle`)."""
         if any(self.lost(row) for row in self.stops_of(session, position_id)):
             self._settled_stops(session, self._target(session, position_id))
 
-    def _settled_stops(self, session: Session, target: _Target) -> list[HatOrder]:
-        """The position's working stops, after settling those whose answer was lost."""
+    def _settled_stops(
+        self, session: Session, target: _Target, purpose: str | None = None
+    ) -> list[HatOrder]:
+        """The position's working stops, after settling those whose answer was lost (of
+        `purpose` only, when given)."""
         rows = self.stops_of(session, target.position.id)
-        lost = [row for row in rows if self.lost(row)]
+        lost = [row for row in rows if self.lost(row) and purpose in (None, row.purpose)]
         if not lost:
             return rows
         self._settle(session, target, lost)
@@ -519,10 +510,10 @@ class StopDesk:
 
     def _settle(self, session: Session, target: _Target, rows: list[HatOrder]) -> None:
         """Look the stops in `rows` (each sent, its answer lost) up at the broker once they are
-        old enough: a GTT in the GTT book, a day stop by its tag. Found is adopted as placed;
-        absent after a good read never landed and ends `expired`. An unreadable book leaves them
-        as they are."""
-        ready = [row for row in rows if self._settled_long_enough(row)]
+        old enough: a GTT in the GTT book, a day stop by its tag (`settle_verdict`). Found is
+        adopted as placed; absent after a good read never landed and ends `expired`. An
+        unreadable book leaves them as they are; a young one is not looked up."""
+        ready = [row for row in rows if not self._positions.young(row.placed_at)]
         gtts = [row for row in ready if row.purpose == STOP_GTT]
         days = [row for row in ready if row.purpose != STOP_GTT]
         bot_id = target.signal.bot_id
@@ -535,11 +526,12 @@ class StopDesk:
                 claimed = self._claimed_gtts(session, target.account_id)
                 for row in gtts:
                     found = find_gtt(book, row, target.symbol, claimed)
-                    if found is None:
-                        end_lost_order(session, row)
-                    else:
+                    verdict = self._positions.verdict(row.placed_at, found is not None)
+                    if found is not None and verdict is Verdict.ADOPT:
                         adopt_gtt(session, row, found, bot_id)
                         claimed.add(found.gtt_id)
+                    elif verdict is Verdict.EXPIRE:
+                        end_lost_order(session, row)
                     session.commit()
         if days:
             try:
@@ -548,11 +540,11 @@ class StopDesk:
                 return
             for row in days:
                 found_order = orders.get(row.tag)
-                if found_order is None:
-                    end_lost_order(session, row)
-                else:
+                verdict = self._positions.verdict(row.placed_at, found_order is not None)
+                if found_order is not None and verdict is Verdict.ADOPT:
                     adopt_broker_order(session, row, found_order, bot_id, clock=self._clock)
-
+                elif verdict is Verdict.EXPIRE:
+                    end_lost_order(session, row)
                 session.commit()
 
     @staticmethod
@@ -592,10 +584,7 @@ class StopDesk:
             # what is left once the sale ends. A sale whose answer was lost does not count: the
             # position is protected meanwhile (HAT-EXEC-065).
             return EXIT_WORKING
-        lost_gtts = [row for row in working if row.purpose == STOP_GTT and self.lost(row)]
-        if lost_gtts:
-            self._settle(session, target, lost_gtts)
-            working = self.stops_of(session, position.id)
+        working = self._settled_stops(session, target, STOP_GTT)
         covered = self._cover_live(session, target, working, now)
         if covered is not None:
             return PROTECTED if covered else FAILED  # a refused resize is alerted
@@ -607,7 +596,10 @@ class StopDesk:
             row
             for row in working
             if row.status in UNSURE
-            and (not self.lost(row) or (row.purpose == STOP_DAY and self._settled_long_enough(row)))
+            and (
+                not self.lost(row)
+                or (row.purpose == STOP_DAY and not self._positions.young(row.placed_at))
+            )
         ]
         if any(self._resend(session, target, row) for row in ready):
             return PROTECTED
@@ -617,7 +609,7 @@ class StopDesk:
             # (sent too recently, or the book unreadable): nothing is placed on top of it; the
             # next sync settles it. Only an answer the settle could not decide is alerted: a
             # young one is still in flight and alerting it on every sync would only add noise.
-            if any(self._settled_long_enough(row) for row in lost):
+            if not all(self._positions.young(row.placed_at) for row in lost):
                 gtt = any(row.purpose == STOP_GTT for row in lost)
                 reason = "gtt_unconfirmed" if gtt else "stop_unconfirmed"
                 self._alert(ALERT_STOP_NOT_PLACED, target, now, reason)
@@ -669,6 +661,7 @@ class StopDesk:
         session.commit()
         return True
 
+    @_serialised
     def cancel_all(self, session: Session, position_id: uuid.UUID, now: datetime) -> int:
         """Cancel the working stops of a position that has nothing left to protect (a stop
         resting under a sold position could sell shares that are not there). Returns how many
@@ -706,6 +699,7 @@ class StopDesk:
         holds, so it can never sell more than the position."""
         return self._broker.modify_order(broker_order_id, order_type=OrderType.MARKET)
 
+    @_serialised
     def cancel_entry(self, session: Session, position_id: uuid.UUID) -> None:
         """Ask the broker to cancel the unfilled rest of the position's entry, once (again only
         after the broker could not be reached; a refusal means it filled or ended). The order's
@@ -766,6 +760,7 @@ class StopDesk:
                 logger.warning("entry %s remainder not cancelled (%s)", row.tag, ack.code)
         return asked
 
+    @_serialised
     def make_room(self, session: Session, position_id: uuid.UUID, keep: int, now: datetime) -> bool:
         """Before a sale: shrink the position's resting stops to the `keep` shares that stay
         (cancel them when none stay), since a broker holds the shares a resting CNC sell covers
@@ -790,6 +785,7 @@ class StopDesk:
 
     # --- follow the stop up -------------------------------------------------------------------
 
+    @_serialised
     def follow(self, session: Session, position_id: uuid.UUID, now: datetime) -> bool:
         """Move every working broker stop up to the position's current stop (HAT-EXEC-064).
         A broker stop is never moved down. True when every working stop is at the target."""
@@ -812,6 +808,7 @@ class StopDesk:
             done = self._move(session, target, row, goal, tick, now) and done
         return done
 
+    @_serialised
     def rescaled(self, session: Session, position_id: uuid.UUID, now: datetime) -> bool:
         """After a split or bonus rescaled the position (`position.rescaled`, HAT-EXEC-143): move
         every live broker stop resting above the rescaled stop down to it, keeping the quantity
@@ -895,11 +892,9 @@ class StopDesk:
             return EXIT_WORKING  # the sale comes first; the job tries the swap again
         has_gtt = self._has_live_gtt(session, position.id)
         if not has_gtt:
+            self._settled_stops(session, target, STOP_GTT)
+            has_gtt = self._has_live_gtt(session, position.id)
             unsure = self._unsure_gtts(session, position.id)
-            if any(self.lost(row) for row in unsure):
-                self._settle(session, target, [row for row in unsure if self.lost(row)])
-                has_gtt = self._has_live_gtt(session, position.id)
-                unsure = self._unsure_gtts(session, position.id)
             has_gtt = has_gtt or any(self._resend(session, target, row) for row in unsure)
             if not has_gtt and unsure:
                 self._alert(ALERT_GTT_SWAP_FAILED, target, now, "gtt_unconfirmed")
@@ -981,14 +976,11 @@ class StopDesk:
         position = target.position
         if position.closed_at is not None or position.qty_open <= 0:
             return CLOSED
-        gtts = [row for row in self.stops_of(session, position.id) if row.purpose == STOP_GTT]
-        if any(self.lost(row) for row in gtts):
-            self._settle(session, target, [row for row in gtts if self.lost(row)])
-            gtts = [r for r in self.stops_of(session, position.id) if r.purpose == STOP_GTT]
+        gtts = [r for r in self._settled_stops(session, target, STOP_GTT) if r.purpose == STOP_GTT]
         live = [row for row in gtts if row.status in LIVE and row.broker_order_id]
         stale = [row for row in live if self._old_series(session, target, row)]
         if any(
-            stop_confirmed(row, book, read_at, self._settle_after) is not False
+            stop_confirmed(row, book, read_at, self._positions.settle_after) is not False
             for row in live
             if row not in stale
         ):
@@ -1035,10 +1027,7 @@ class StopDesk:
             return CLOSED
         tick = self._tick_for(session, position)
         goal = broker_trigger(Decimal(position.current_stop), tick)
-        gtts = [row for row in self.stops_of(session, position.id) if row.purpose == STOP_GTT]
-        if any(self.lost(row) for row in gtts):
-            self._settle(session, target, [row for row in gtts if self.lost(row)])
-            gtts = [r for r in self.stops_of(session, position.id) if r.purpose == STOP_GTT]
+        gtts = [r for r in self._settled_stops(session, target, STOP_GTT) if r.purpose == STOP_GTT]
         live = [
             (row, row.broker_order_id) for row in gtts if row.status in LIVE and row.broker_order_id
         ]
