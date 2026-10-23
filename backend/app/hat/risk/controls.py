@@ -36,6 +36,7 @@ from ..models import (
     HatTradeResult,
 )
 from ..ops.jobs import JobResult
+from ..read.kill import kill_rows
 from ..settings import load_settings
 from ..time import IST, as_utc, trade_date_of, utc_now
 from . import kill
@@ -68,13 +69,6 @@ def _actor_payload(actor: str, chat_id: int | None, payload: dict) -> dict:
 
 
 # --- Kill switches ----------------------------------------------------------------------------
-
-
-def kill_rows(session: Session) -> list[kill.KillRow]:
-    rows = session.scalars(select(HatKillSwitch)).all()
-    return [
-        kill.KillRow(r.scope, r.bot_id, r.state, r.tripped_at, r.reason, r.rearmed_at) for r in rows
-    ]
 
 
 def kill_state(session: Session, bot_id: uuid.UUID) -> kill.KillState:

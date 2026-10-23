@@ -5,8 +5,10 @@ routes listed in WRITE_ROUTES, and no GET route reaches a database write.
 The app itself is never built here (`app.main` is out of bounds for `tests/hat`): the check reads
 the routers of the `app.hat.api` modules and the source of each GET endpoint. From an endpoint it
 follows every call it can resolve to a function of an `app.hat` module (the module's own helpers,
-`reads.*`, `controls.kill_state` and so on) and refuses a session write (`add`, `commit`,
-`delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`.: every
+`read_bots.*` and so on) and refuses a session write (`add`, `commit`,
+`delete`, `flush`, ...), an `insert`/`update`/`delete` statement or an event `record`. The shared
+read model (`app/hat/read`, which the dashboard and Telegram both use) is held to the same rule:
+no function of it writes and it imports no module that does. Every
 write route depends on the write guard (`app.hat.api.guard`); the app
 wiring hands the guard the CORS frontend-origin rule; the server binds to loopback by default. The
 wiring is read from the source of `app/main.py` and `start_server.py`, which are never imported.
@@ -23,9 +25,10 @@ from typing import Any
 
 from fastapi import APIRouter
 from fastapi.routing import APIRoute
-from hat_conf_repo import REPO_ROOT
+from hat_conf_repo import REPO_ROOT, build_graph, reaches
 
 import app.hat.api
+import app.hat.read
 from app.hat.api import guard
 
 # The only routes that are not GET: the daily Fyers login. It writes the token
@@ -49,6 +52,13 @@ WRITE_ATTRS = {
 }
 WRITE_CALLS = {"insert", "update", "delete", "record"}
 HAT_PACKAGE = "app.hat."
+# The modules that write a HAT table or send something; the read model reaches none of them.
+WRITER_MODULES = (
+    "app.hat.events",
+    "app.hat.risk.controls",
+    "app.hat.execution.mode_changes",
+    "app.hat.telegram",
+)
 
 
 def _routers() -> Iterator[tuple[str, APIRouter]]:
@@ -123,11 +133,27 @@ def _writes_in(func: Callable[..., Any], seen: set[Callable[..., Any]]) -> list[
     return found
 
 
+def _read_model_functions() -> Iterator[Callable[..., Any]]:
+    for info in pkgutil.iter_modules(app.hat.read.__path__, "app.hat.read."):
+        module = importlib.import_module(info.name)
+        for value in vars(module).values():
+            if inspect.isfunction(value) and value.__module__ == info.name:
+                yield value
+
+
 def test_hat_routes_read_only() -> None:
     """Every HAT route is a read (GET) except the listed Fyers login routes, the
     listed exemptions all exist, and no GET endpoint reaches a session write, a write statement
-    or an event record. Harm: the dashboard becomes a second control surface that bypasses
-    Telegram's confirmations and the risk authority."""
+    or an event record. The shared read model writes nothing and imports no writing module.
+    Harm: the dashboard becomes a second control surface that bypasses Telegram's
+    confirmations and the risk authority."""
+    functions = list(_read_model_functions())
+    assert functions
+    for func in functions:
+        assert _writes_in(func, set()) == [], func.__qualname__
+    graph = build_graph()
+    for info in pkgutil.iter_modules(app.hat.read.__path__, "app.hat.read."):
+        assert reaches(graph, info.name, WRITER_MODULES) == [], info.name
     routes = _routes()
     assert routes
     writes = set()

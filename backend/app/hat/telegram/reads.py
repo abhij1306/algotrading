@@ -1,6 +1,8 @@
 """Read-only queries behind the Telegram commands and reports (HAT-TG-022, -024,
 -037). Nothing here writes: `/status`, `/positions`, `/watchlist` and `/login` change no table
-(HAT-TG-037), and the scheduled reports only read what they summarise.
+(HAT-TG-037), and the scheduled reports only read what they summarise. Bots, kill switches, open
+positions and watchlists come from the shared read model (`app/hat/read`, the dashboard's too);
+this module adds only what Telegram shows beyond it.
 """
 
 from __future__ import annotations
@@ -15,22 +17,21 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..data.calendar import session_calendar
-from ..execution.modes import mode_view
 from ..models import (
     HatBot,
     HatBrokerAccount,
     HatBrokerSession,
     HatDailyBotSnapshot,
     HatEvent,
-    HatInstrument,
     HatPosition,
     HatRegimeState,
     HatSignal,
-    HatStrategy,
-    HatWatchlistEntry,
 )
 from ..models.strategy import ACCOUNT_ACTIVE
-from ..risk import controls, kill
+from ..read import bots as read_bots
+from ..read import kill as read_kill
+from ..read.positions import open_positions, symbol_of
+from ..read.watchlist import latest_watchlists
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc, day_bounds, trade_date_of
 from . import render
@@ -40,16 +41,14 @@ __all__ = [
     "LoginLinks",
     "PriceSource",
     "accounts",
-    "bot_label",
     "bots_named",
     "daily_bots",
     "logged_out",
     "position_rows",
     "rejection_rows",
     "status_view",
-    "symbol_of",
     "watchlist_digest",
-    "watchlist_rows",
+    "watchlist_texts",
 ]
 
 LIVE = "live"
@@ -66,32 +65,23 @@ class LoginLinks(Protocol):
         ...
 
 
-# --- bots and instruments ----------------------------------------------------------------------
-
-
-def bot_label(session: Session, bot: HatBot) -> str:
-    name = session.scalar(select(HatStrategy.name).where(HatStrategy.id == bot.strategy_id))
-    return name or str(bot.id)[:8]
+# --- bots --------------------------------------------------------------------------------------
 
 
 def bots_named(session: Session, name: str | None) -> list[HatBot]:
     """Every bot when `name` is None; else the bots whose strategy name is `name` (any case) or
     whose id starts with it (6 or more characters). Ordered by id."""
-    bots = list(session.scalars(select(HatBot).order_by(HatBot.id)))
+    bots = read_bots.all_bots(session)
     if name is None:
         return bots
     wanted = name.strip().lower()
+    labels = read_bots.labels(session, (b.id for b in bots))
     return [
         b
         for b in bots
-        if bot_label(session, b).lower() == wanted
+        if labels[b.id].lower() == wanted
         or (len(wanted) >= _ID_PREFIX and str(b.id).startswith(wanted))
     ]
-
-
-def symbol_of(session: Session, instrument_id: uuid.UUID) -> str:
-    symbol = session.scalar(select(HatInstrument.symbol).where(HatInstrument.id == instrument_id))
-    return symbol or "?"
 
 
 # --- accounts and broker sessions --------------------------------------------------------------
@@ -152,50 +142,29 @@ def _regime(session: Session) -> str:
     return f"{row.state}{'' if row.confirmed else ' (unconfirmed)'} {row.trade_date.isoformat()}"
 
 
-def _bot_state(session: Session, bot: HatBot) -> str:
-    state = controls.kill_state(session, bot.id)
-    reasons = [
-        name
-        for name, on in (
-            ("account kill", state.account_tripped),
-            ("bot kill", state.bot_tripped),
-            ("health kill", state.health_tripped),
-            ("paused", state.paused),
-        )
-        if on
-    ]
+def _bot_state(row: read_bots.BotRow) -> str:
+    reasons = [reason.replace("_", " ") for reason in row.reasons]
     return "manage-only: " + ", ".join(reasons) if reasons else "active"
 
 
-def _mode(session: Session, bot: HatBot, now: datetime, calendar: SessionCalendar | None) -> str:
+def _mode(row: read_bots.BotRow) -> str:
     """The effective and the asked mode and the queued change (HAT-TG-034, D130)."""
-    view = mode_view(session, bot, now, calendar)
+    view = row.mode
     return render.mode_text(view.asked, view.effective, view.why, view.pending, view.pending_from)
 
 
 def status_view(session: Session, now: datetime, feed: str) -> render.StatusView:
     day = trade_date_of(now)
-    calendar = session_calendar(session)
     regime = _regime(session)
-    rows = controls.kill_rows(session)
-    account_tripped = any(
-        kill.current_state(rows, "account", None, channel) == kill.TRIPPED
-        for channel in ("risk", "health")
-    )
     return render.StatusView(
         sessions=tuple(
             (account_label(a), session_status(session, a.id, day)) for a in accounts(session)
         ),
         feed=feed,
-        kill_account=account_tripped,
+        kill_account=read_kill.account_tripped(read_kill.kill_rows(session)),
         bots=tuple(
-            (
-                bot_label(session, b),
-                _mode(session, b, now, calendar),
-                _bot_state(session, b),
-                regime,
-            )
-            for b in bots_named(session, None)
+            (row.label, _mode(row), _bot_state(row), regime)
+            for row in read_bots.bot_rows(session, now)
         ),
     )
 
@@ -221,78 +190,56 @@ def r_so_far(entry: Decimal, initial_stop: Decimal, price: Decimal | None) -> De
 
 
 def position_rows(session: Session, now: datetime, price: PriceSource) -> list[render.PositionView]:
-    rows = []
     calendar = session_calendar(session)  # once per command, not once per position
-    for p in session.scalars(
-        select(HatPosition)
-        .where(HatPosition.closed_at.is_(None), HatPosition.qty_open > 0)
-        .order_by(HatPosition.opened_at, HatPosition.id)
-    ):
-        bot = session.get(HatBot, p.bot_id)
-        entry, stop = Decimal(p.avg_entry), Decimal(p.current_stop)
-        rows.append(
-            render.PositionView(
-                bot=bot_label(session, bot) if bot is not None else "?",
-                symbol=symbol_of(session, p.instrument_id),
-                qty=p.qty_open,
-                entry=entry,
-                stop=stop,
-                r_so_far=r_so_far(entry, Decimal(p.initial_stop), price(p.instrument_id)),
-                days_held=_days_held(calendar, p.opened_at, now),
-                virtual=bool(p.is_virtual),
-            )
+    return [
+        render.PositionView(
+            bot=p.bot,
+            symbol=p.symbol,
+            qty=p.qty_open,
+            entry=p.avg_entry,
+            stop=p.current_stop,
+            r_so_far=r_so_far(p.avg_entry, p.initial_stop, price(p.instrument_id)),
+            days_held=_days_held(calendar, p.opened_at, now),
+            virtual=p.is_virtual,
         )
-    return rows
+        for p in open_positions(session)
+    ]
 
 
 # --- watchlists --------------------------------------------------------------------------------
 
 
-def _watchlist_day(session: Session, bot_id: uuid.UUID, on_or_before: date) -> date | None:
-    return session.scalar(
-        select(func.max(HatWatchlistEntry.trade_date)).where(
-            HatWatchlistEntry.bot_id == bot_id, HatWatchlistEntry.trade_date <= on_or_before
+def watchlist_texts(session: Session, bots: Sequence[HatBot], day: date) -> list[str]:
+    """`/watchlist`: each bot's latest watchlist on or before `day`."""
+    found = latest_watchlists(session, day, (b.id for b in bots))
+    labels = read_bots.labels(session, (b.id for b in bots))
+    out = []
+    for bot in bots:
+        watchlist = found.get(bot.id)
+        out.append(
+            render.watchlist_text(
+                labels[bot.id],
+                watchlist.trade_date if watchlist else None,
+                watchlist.entries if watchlist else (),
+            )
         )
-    )
-
-
-def _entries(session: Session, bot_id: uuid.UUID, day: date | None) -> list[tuple[str, Decimal]]:
-    """(symbol, score) of a bot's watchlist on `day`, best first (score, then symbol)."""
-    if day is None:
-        return []
-    rows = session.execute(
-        select(HatInstrument.symbol, HatWatchlistEntry.score)
-        .join(HatInstrument, HatInstrument.id == HatWatchlistEntry.instrument_id)
-        .where(HatWatchlistEntry.bot_id == bot_id, HatWatchlistEntry.trade_date == day)
-    ).all()
-    best: dict[str, Decimal] = {}
-    for symbol, score in rows:
-        value = Decimal(score)
-        best[symbol] = max(best.get(symbol, value), value)
-    return sorted(best.items(), key=lambda item: (-item[1], item[0]))
-
-
-def watchlist_rows(
-    session: Session, bot: HatBot, day: date
-) -> tuple[date | None, list[tuple[str, Decimal]]]:
-    """The bot's latest watchlist on or before `day`."""
-    found = _watchlist_day(session, bot.id, day)
-    return found, _entries(session, bot.id, found)
+    return out
 
 
 def watchlist_digest(session: Session, bot: HatBot, day: date) -> render.WatchlistDigest:
     """HAT-TG-022: new = today minus the previous watchlist, dropped = the previous minus today,
     top = the first min(10, n) of today by score descending."""
-    today = _entries(session, bot.id, day)
-    previous = _entries(session, bot.id, _watchlist_day(session, bot.id, day - timedelta(days=1)))
+    latest = latest_watchlists(session, day, (bot.id,)).get(bot.id)
+    today = latest.entries if latest is not None and latest.trade_date == day else ()
+    before = latest_watchlists(session, day - timedelta(days=1), (bot.id,)).get(bot.id)
     now_set = {s for s, _ in today}
-    before = {s for s, _ in previous}
+    previous = {s for s, _ in before.entries} if before is not None else set()
     return render.WatchlistDigest(
-        bot=bot_label(session, bot),
+        bot=read_bots.label_of(session, bot),
         trade_date=day,
         regime=_regime(session),
-        new=tuple(sorted(now_set - before)),
-        dropped=tuple(sorted(before - now_set)),
+        new=tuple(sorted(now_set - previous)),
+        dropped=tuple(sorted(previous - now_set)),
         top=tuple(today[:TOP_N]),
     )
 
@@ -317,7 +264,7 @@ def rejection_rows(session: Session, day: date) -> list[render.RejectionRow]:
         bot = session.get(HatBot, signal.bot_id) if signal is not None else None
         rows.append(
             render.RejectionRow(
-                bot=bot_label(session, bot) if bot is not None else "?",
+                bot=read_bots.label_of(session, bot) if bot is not None else "?",
                 symbol=symbol_of(session, signal.instrument_id) if signal is not None else "?",
                 reason=str((event.payload or {}).get("reason") or "unknown"),
             )
@@ -337,7 +284,7 @@ def daily_bots(session: Session, day: date) -> list[render.BotDay]:
         ).first()
         out.append(
             render.BotDay(
-                bot=bot_label(session, bot),
+                bot=read_bots.label_of(session, bot),
                 trade_date=snap.trade_date if snap else None,
                 open_risk=Decimal(snap.open_risk) if snap else None,
                 realized_r=Decimal(snap.realized_r) if snap else None,

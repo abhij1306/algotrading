@@ -8,16 +8,17 @@ today's broker sessions, today's job runs and the latest `feed.stale` of the day
 Money, weights and scores are exact decimals and leave as strings, never floats. A failed read
 answers a fixed message; database text never reaches the client.
 
-The module reads the tables itself and applies only the pure kill rules (`risk.kill`): it imports
-no module that writes (the control plane, the Telegram reads that sit beside it, the mode code),
-so no route can reach a write (CONF `hat_routes_read_only`, HAT-OVR-061).
+Bots, kill switches, open positions and watchlists come from the shared read model
+(`app/hat/read`, which Telegram renders too); the rest the module reads itself. It imports no
+module that writes (the control plane, the Telegram reads, the mode code), so no route can reach a
+write (CONF `hat_routes_read_only`, HAT-OVR-061).
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, TypeVar
@@ -29,25 +30,21 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...database import get_db
-from ..data.calendar import session_calendar
 from ..engine.confidence import stored_basis
-from ..execution import modes
 from ..models import (
     HatAllocationDaily,
-    HatBot,
     HatBrokerAccount,
     HatBrokerSession,
     HatEvent,
-    HatInstrument,
     HatJobRun,
-    HatKillSwitch,
-    HatPosition,
     HatRegimeState,
     HatSignal,
-    HatStrategy,
-    HatWatchlistEntry,
 )
 from ..models.strategy import ACCOUNT_ACTIVE
+from ..read import bots as read_bots
+from ..read import kill as read_kill
+from ..read import positions as read_positions
+from ..read.watchlist import latest_watchlists
 from ..risk import kill
 from ..time import as_utc, day_bounds, trade_date_of, utc_now
 
@@ -60,8 +57,7 @@ router = APIRouter(prefix="/api/hat", tags=["HAT dashboard"])
 DB_ERROR = "The HAT database could not be read"
 READ_ERROR = "The HAT dashboard could not be read"
 FEED_STALE = "feed.stale"
-ACTIVE = "active"  # `hat_bot.status` of a bot that is not paused
-UNKNOWN = "?"
+UNKNOWN = read_positions.UNKNOWN
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 ERRORS: dict[int | str, dict[str, Any]] = {
@@ -238,70 +234,25 @@ class EventView(BaseModel):
 # --- reads -------------------------------------------------------------------------------------
 
 
-def _labels(session: Session, bot_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Each bot's strategy name, else the start of its id (as the Telegram replies name it),
-    read in one query (a bot that does not exist is left out)."""
-    rows = session.execute(
-        select(HatBot.id, HatStrategy.name)
-        .outerjoin(HatStrategy, HatStrategy.id == HatBot.strategy_id)
-        .where(HatBot.id.in_(set(bot_ids)))
-    )
-    return {bot_id: name or str(bot_id)[:8] for bot_id, name in rows}
-
-
-def _symbols(session: Session, instrument_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
-    rows = session.execute(
-        select(HatInstrument.id, HatInstrument.symbol).where(
-            HatInstrument.id.in_(set(instrument_ids))
-        )
-    )
-    return {instrument_id: symbol for instrument_id, symbol in rows if symbol}
-
-
-def _all_bots(session: Session) -> list[HatBot]:
-    return list(session.scalars(select(HatBot).order_by(HatBot.id)))
-
-
-def _kill_rows(session: Session) -> list[kill.KillRow]:
-    return [
-        kill.KillRow(r.scope, r.bot_id, r.state, r.tripped_at, r.reason, r.rearmed_at)
-        for r in session.scalars(select(HatKillSwitch))
-    ]
-
-
-def _bot_view(bot: HatBot, rows: list[kill.KillRow], name: str, mode: modes.ModeView) -> BotView:
-    state = kill.kill_state_of(rows, bot.id, paused=bot.status != ACTIVE)
-    flags = (
-        ("account_kill", state.account_tripped),
-        ("bot_kill", state.bot_tripped),
-        ("health_kill", state.health_tripped),
-        ("paused", state.paused),
-    )
+def _bot_view(row: read_bots.BotRow) -> BotView:
     return BotView(
-        id=bot.id,
-        name=name,
-        execution_mode=mode.asked,
-        effective_mode=mode.effective,
-        mode_reason=mode.why,
-        pending_mode=mode.pending,
-        pending_from=mode.pending_from,
-        status=bot.status,
-        lifecycle_state=bot.lifecycle_state,
-        risk_cluster=bot.risk_cluster,
-        manage_only=state.manage_only,
-        reasons=[name for name, on in flags if on],
+        id=row.id,
+        name=row.label,
+        execution_mode=row.mode.asked,
+        effective_mode=row.mode.effective,
+        mode_reason=row.mode.why,
+        pending_mode=row.mode.pending,
+        pending_from=row.mode.pending_from,
+        status=row.status,
+        lifecycle_state=row.lifecycle_state,
+        risk_cluster=row.risk_cluster,
+        manage_only=row.kill.manage_only,
+        reasons=list(row.reasons),
     )
 
 
 def _bots(session: Session, now: datetime, rows: list[kill.KillRow] | None = None) -> list[BotView]:
-    rows = _kill_rows(session) if rows is None else rows
-    bots = _all_bots(session)
-    labels = _labels(session, (bot.id for bot in bots))
-    calendar = session_calendar(session)
-    return [
-        _bot_view(bot, rows, labels[bot.id], modes.mode_view(session, bot, now, calendar))
-        for bot in bots
-    ]
+    return [_bot_view(row) for row in read_bots.bot_rows(session, now, rows)]
 
 
 def _sessions(session: Session, day: date) -> list[BrokerSessionView]:
@@ -379,12 +330,12 @@ def _feed_stale_at(session: Session, day: date) -> datetime | None:
 
 def _status(session: Session, now: datetime) -> StatusResponse:
     day = trade_date_of(now)
-    rows = _kill_rows(session)
+    rows = read_kill.kill_rows(session)
     regime = _regimes(session, 1)
     return StatusResponse(
         as_of=now,
         trade_date=day,
-        kill_account=kill.current_state(rows, "account", None) == kill.TRIPPED,
+        kill_account=read_kill.account_tripped(rows),
         feed_stale_at=_feed_stale_at(session, day),
         regime=regime[0] if regime else None,
         bots=_bots(session, now, rows),
@@ -396,46 +347,25 @@ def _status(session: Session, now: datetime) -> StatusResponse:
 
 def _watchlists(session: Session, now: datetime) -> list[WatchlistView]:
     """Each bot's latest watchlist on or before today: one row per symbol at its best score,
-    best first (score, then symbol). Two queries for every bot."""
-    today = trade_date_of(now)
-    latest = (
-        select(HatWatchlistEntry.bot_id, func.max(HatWatchlistEntry.trade_date).label("day"))
-        .where(HatWatchlistEntry.trade_date <= today)
-        .group_by(HatWatchlistEntry.bot_id)
-        .subquery()
-    )
-    days: dict[uuid.UUID, date] = {}
-    best: dict[uuid.UUID, dict[str, Decimal]] = {}
-    rows = session.execute(
-        select(latest.c.bot_id, latest.c.day, HatInstrument.symbol, HatWatchlistEntry.score)
-        .join(
-            HatWatchlistEntry,
-            (HatWatchlistEntry.bot_id == latest.c.bot_id)
-            & (HatWatchlistEntry.trade_date == latest.c.day),
+    best first (score, then symbol)."""
+    found = latest_watchlists(session, trade_date_of(now))
+    bots = read_bots.all_bots(session)
+    labels = read_bots.labels(session, (bot.id for bot in bots))
+    out = []
+    for bot in bots:
+        watchlist = found.get(bot.id)
+        out.append(
+            WatchlistView(
+                bot_id=bot.id,
+                bot=labels[bot.id],
+                trade_date=watchlist.trade_date if watchlist else None,
+                entries=[
+                    WatchlistItem(symbol=symbol, score=_money(score))
+                    for symbol, score in (watchlist.entries if watchlist else ())
+                ],
+            )
         )
-        .join(HatInstrument, HatInstrument.id == HatWatchlistEntry.instrument_id)
-    )
-    for bot_id, day, symbol, score in rows:
-        days[bot_id] = day
-        value = Decimal(score)
-        scores = best.setdefault(bot_id, {})
-        scores[symbol] = max(scores.get(symbol, value), value)
-    bots = _all_bots(session)
-    labels = _labels(session, (bot.id for bot in bots))
-    return [
-        WatchlistView(
-            bot_id=bot.id,
-            bot=labels[bot.id],
-            trade_date=days.get(bot.id),
-            entries=[
-                WatchlistItem(symbol=s, score=_money(score))
-                for s, score in sorted(
-                    best.get(bot.id, {}).items(), key=lambda item: (-item[1], item[0])
-                )
-            ],
-        )
-        for bot in bots
-    ]
+    return out
 
 
 def _signals(session: Session, limit: int) -> list[SignalView]:
@@ -444,8 +374,8 @@ def _signals(session: Session, limit: int) -> list[SignalView]:
             select(HatSignal).order_by(HatSignal.triggered_at.desc(), HatSignal.id).limit(limit)
         )
     )
-    labels = _labels(session, (s.bot_id for s in rows))
-    symbols = _symbols(session, (s.instrument_id for s in rows))
+    labels = read_bots.labels(session, (s.bot_id for s in rows))
+    symbols = read_positions.symbols(session, (s.instrument_id for s in rows))
     return [
         SignalView(
             id=s.id,
@@ -470,31 +400,22 @@ def _signals(session: Session, limit: int) -> list[SignalView]:
 
 
 def _positions(session: Session) -> list[PositionView]:
-    rows = list(
-        session.scalars(
-            select(HatPosition)
-            .where(HatPosition.closed_at.is_(None), HatPosition.qty_open > 0)
-            .order_by(HatPosition.opened_at, HatPosition.id)
-        )
-    )
-    labels = _labels(session, (p.bot_id for p in rows))
-    symbols = _symbols(session, (p.instrument_id for p in rows))
     return [
         PositionView(
             id=p.id,
             bot_id=p.bot_id,
-            bot=labels.get(p.bot_id, UNKNOWN),
-            symbol=symbols.get(p.instrument_id, UNKNOWN),
+            bot=p.bot,
+            symbol=p.symbol,
             qty_open=p.qty_open,
             avg_entry=_money(p.avg_entry),
             initial_stop=_money(p.initial_stop),
             current_stop=_money(p.current_stop),
             currency=p.currency,
-            opened_at=as_utc(p.opened_at),
+            opened_at=p.opened_at,
             state=p.state,
-            is_virtual=bool(p.is_virtual),
+            is_virtual=p.is_virtual,
         )
-        for p in rows
+        for p in read_positions.open_positions(session)
     ]
 
 
@@ -509,7 +430,7 @@ def _allocations(session: Session) -> AllocationsResponse:
             .order_by(HatAllocationDaily.bot_id)
         )
     )
-    labels = _labels(session, (a.bot_id for a in rows))
+    labels = read_bots.labels(session, (a.bot_id for a in rows))
     return AllocationsResponse(
         trade_date=day,
         rows=[

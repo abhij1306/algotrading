@@ -26,6 +26,8 @@ from ..errors import HatError
 from ..execution.mode_changes import request_mode_change
 from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal
 from ..models import HatBot, HatBrokerAccount
+from ..read import bots as read_bots
+from ..read import kill as read_kill
 from ..risk import controls, kill
 from ..risk.modes import MODE_VALUES, Mode, ModeChangeError, plan_mode_change
 from ..risk.sessions import SessionCalendar, SessionState
@@ -141,11 +143,7 @@ def _watchlist(ctx: CommandContext, session: Session, args: Sequence[str]) -> Re
     bots = reads.bots_named(session, args[0] if args else None)
     if not bots:
         return refused("unknown_bot")
-    day = trade_date_of(ctx.now)
-    texts = []
-    for bot in bots:
-        found, rows = reads.watchlist_rows(session, bot, day)
-        texts.append(render.watchlist_text(reads.bot_label(session, bot), found, rows))
+    texts = reads.watchlist_texts(session, bots, trade_date_of(ctx.now))
     return Reply(True, text="\n\n".join(texts))
 
 
@@ -168,7 +166,7 @@ def _pause(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
     if not bots:
         return refused("unknown_bot")
     done = [
-        reads.bot_label(session, b)
+        read_bots.label_of(session, b)
         for b in bots
         if controls.pause_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
     ]
@@ -182,7 +180,7 @@ def _resume(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply
     if not bots:
         return refused("unknown_bot")
     done = [
-        reads.bot_label(session, b)
+        read_bots.label_of(session, b)
         for b in bots
         if controls.resume_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
     ]
@@ -223,7 +221,7 @@ def _flatten(ctx: CommandContext, _session: Session, _args: Sequence[str]) -> Re
 
 def _tripped(session: Session) -> list[tuple[str, HatBot | None]]:
     """The drawdown or manual kills that are tripped now: (scope, bot)."""
-    rows = controls.kill_rows(session)
+    rows = read_kill.kill_rows(session)
     out: list[tuple[str, HatBot | None]] = []
     if kill.current_state(rows, "account", None, "risk") == kill.TRIPPED:
         out.append(("account", None))
@@ -366,7 +364,7 @@ def queue_modes(
             session.rollback()
             return refused("mode_refused")
         effective = row.effective_from
-    names = ", ".join(reads.bot_label(session, b) for b in bots)
+    names = ", ".join(read_bots.label_of(session, b) for b in bots)
     when = effective.isoformat() if effective is not None else "the next session"
     return Reply(True, text=f"Mode {to_mode} for {names} from {when}")
 
