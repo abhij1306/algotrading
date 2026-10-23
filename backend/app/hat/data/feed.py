@@ -96,21 +96,23 @@ def calendar_source(
     session_factory: Callable[[], Any],
     *,
     ttl_s: float = 600.0,
+    retry_s: float = 30.0,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> CalendarSource:
     """A source that reads HAT's trading calendar (`session_calendar`) through `session_factory`,
-    at most once per `ttl_s`. It returns None, and is read again next time, when the market has
-    no calendar yet or the read fails, so the feed stays closed."""
-    cached: list[tuple[float, SessionCalendar]] = []
+    at most once per `ttl_s`. It returns None when the market has no calendar yet (kept for
+    `retry_s`, so a read made off the event loop serves the connect that follows it) or the read
+    fails (read again next time), so the feed stays closed."""
+    cached: list[tuple[float, SessionCalendar | None]] = []
 
     def source() -> SessionCalendar | None:
         now = monotonic()
-        if cached and now - cached[0][0] < ttl_s:
-            return cached[0][1]
+        if cached:
+            at, calendar = cached[0]
+            if now - at < (ttl_s if calendar is not None else min(ttl_s, retry_s)):
+                return calendar
         with session_factory() as session:
             calendar = session_calendar(session)
-        if calendar is None:
-            return None
         cached[:] = [(now, calendar)]
         return calendar
 
@@ -148,6 +150,7 @@ class LiveFeed:
         self._calendar = calendar
         self._calendar_source = calendar_source
         self._clock = clock
+        self._connect_task: asyncio.Task[str] | None = None
         # Who wants which symbols: HAT's own owner (the registry keeps a refcount per owner).
         self.registry = registry or SubscriptionRegistry(symbols.to_db)
         self.session = ProviderSession(
@@ -363,11 +366,15 @@ class LiveFeed:
         self, loop: asyncio.AbstractEventLoop, *, prevalidated_token: bool | None = None
     ) -> str:
         """Remember the event loop that ticks are delivered on, start the health monitor and
-        connect if the market allows it. Call on the loop."""
+        connect if the market allows it, through `connect_async` so the calendar and token reads
+        stay off the loop. Call on the loop."""
         self.loop = loop
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = loop.create_task(self._monitor_loop())
-        return self.connect(prevalidated_token=prevalidated_token)
+        self._connect_task = loop.create_task(
+            self.connect_async(prevalidated_token=prevalidated_token)
+        )
+        return "connecting"
 
     async def stop(self) -> None:
         """App shutdown: stop the monitor and close the socket. Unlike `disconnect()` this does
@@ -377,6 +384,10 @@ class LiveFeed:
         live = task is not None and not task.done() and task.get_loop() is running
         if live and task is not None:
             task.cancel()
+        pending, self._connect_task = self._connect_task, None
+        if pending is not None and not pending.done() and pending.get_loop() is running:
+            pending.cancel()  # a start-up connect must not open a socket after the stop
+            await asyncio.gather(pending, return_exceptions=True)
         try:
             await asyncio.to_thread(self.session.stop)  # closing joins the SDK threads
         finally:

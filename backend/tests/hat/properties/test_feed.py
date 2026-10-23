@@ -1010,3 +1010,54 @@ def test_calendar_closed(
         assert allowed == (day.weekday() < 5 and day not in shut and window)
     else:
         assert allowed is False
+
+
+@settings(max_examples=12, deadline=None)
+@given(known=st.booleans(), stop_at_once=st.booleans())
+def test_calendar_read_off_loop(known: bool, stop_at_once: bool) -> None:
+    """PBT feed.calendar_read_off_loop (HAT-OVR-001; PR 75b, CodeAnt): starting the feed and the
+    connect it begins read the trading calendar only off the event loop, a calendar found missing
+    is not read again by the connect that follows, and a stop before that connect finishes leaves
+    no socket. Harm: a slow calendar query stalls every task on the loop (ticks, the monitor), or
+    a shutdown races a start-up connect that opens a socket afterwards."""
+    from contextlib import nullcontext
+    from unittest.mock import patch
+
+    from hat.fakes.data_socket import weekday_calendar
+
+    from app.hat.data import feed as feed_module
+
+    clock = FixedClock(OPEN)
+    reads: list[bool] = []  # one entry per calendar read: was it on the loop thread
+
+    def load(_session: object) -> object:
+        try:
+            asyncio.get_running_loop()
+            reads.append(True)
+        except RuntimeError:
+            reads.append(False)
+        return weekday_calendar(clock) if known else None
+
+    async def run() -> bool:
+        factory = FakeSocketFactory()
+        source = feed_module.calendar_source(lambda: nullcontext(object()))
+        feed = feed_module.LiveFeed(
+            calendar_source=source,
+            clock=clock,
+            socket_factory=factory,
+            token_source=lambda: "CLIENT:tok",
+            validate_token=lambda: True,
+            spawn=lambda target: None,  # the runner is not needed: only whether it was started
+        )
+        feed.start(asyncio.get_running_loop(), prevalidated_token=True)
+        if not stop_at_once:
+            await asyncio.sleep(0.05)
+        await feed.stop()
+        await asyncio.sleep(0.05)  # anything left running after the stop gets its turn
+        return feed.session.busy
+
+    with patch.object(feed_module, "session_calendar", load):
+        busy = asyncio.run(run())
+    assert True not in reads
+    assert len(reads) <= 1
+    assert not busy
