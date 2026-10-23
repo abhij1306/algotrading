@@ -85,8 +85,9 @@ def test_not_found_memo_round_trip(tmp_path: Path) -> None:
     memo.add(date(2012, 1, 2))
     memo.add(date(2011, 12, 30))
     assert NotFoundMemo.load(path).days == {date(2011, 12, 30), date(2012, 1, 2)}
-    path.write_text("[1, 2]", encoding="utf-8")
-    assert NotFoundMemo.load(path).days == set()
+    for bad in ("[1, 2]", '{"not_found": 5}', '{"not_found": [5]}'):
+        path.write_text(bad, encoding="utf-8")
+        assert NotFoundMemo.load(path).days == set()
 
 
 class _CodedError(HatError):

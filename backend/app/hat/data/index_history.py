@@ -166,7 +166,7 @@ class NotFoundMemo:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
             return cls(path, {date.fromisoformat(d) for d in raw.get("not_found", [])})
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError, TypeError):  # unreadable: ask again
             return cls(path)
 
     def add(self, day: date) -> None:
