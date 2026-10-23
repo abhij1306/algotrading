@@ -110,8 +110,9 @@ class MinuteCandle:
 
 def _price(raw: object) -> Decimal:
     """A candle price: a JSON number (never text), positive at the store's 4 places."""
-    value = exact(raw, floats=True, positive=True, places=MONEY_SCALE)
-    if value is None or not isinstance(raw, int | float):
+    is_number = isinstance(raw, int | float)
+    value = exact(raw, floats=True, positive=True, places=MONEY_SCALE) if is_number else None
+    if value is None:
         raise MinuteHistoryError("history_bad_candle")
     return value
 

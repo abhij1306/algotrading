@@ -192,6 +192,9 @@ def profile_data(response: object) -> dict[str, Any]:
     return data
 
 
+_FUND_TITLES = {"Total Balance", "Available Balance", "Utilized Amount"}
+
+
 def _amount(value: object) -> Decimal:
     """A reply's amount, exact (a JSON float read by its shortest text); a value that is not a
     finite number raises, so the read fails closed."""
@@ -851,11 +854,13 @@ class FyersBroker:
 
         for fund in funds:
             title = fund.get("title")
+            if title not in _FUND_TITLES:
+                continue  # a row HAT does not read never fails the read
             amount = _amount(fund.get("equityAmount", 0) or 0)
             if title == "Total Balance":
                 total = amount
             elif title == "Available Balance":
                 available = amount
-            elif title == "Utilized Amount":
+            else:
                 used = amount
         return available, used, total

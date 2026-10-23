@@ -4,12 +4,13 @@ Every number HAT reads from outside (a feed tick, a broker reply, a Parquet colu
 a config value, a command argument) becomes exact here, by one rule (`exact`):
 
 - None, a bool, NaN, an infinity, text Decimal cannot read and any other object is not a number.
-- Text is read as written, surrounding spaces ignored. Only a reader of an NSE format that groups
-  digits ("1,234.50") passes `grouped=True` to drop the commas, so "1,5" is never read as 15
-  anywhere else.
+- Text is read as written, surrounding spaces ignored, and only as an ASCII decimal number
+  (`[+-]digits[.digits][e[+-]digits]`): Python's own reading would also take "1_5" as 15 and
+  other scripts' digits. Only a reader of an NSE format that groups digits ("1,234.50") passes
+  `grouped=True` to drop the commas, so "1,5" is never read as 15 anywhere else.
 - A float is refused unless the caller reads a float source (`floats=True`: Parquet, polars, a
   JSON reply). It is read by its shortest text (`str`), so 0.1 is Decimal("0.1"), never the
-  binary expansion, and a numpy float reads the same as a Python one.
+  binary expansion, and a numpy float64 reads the same as a Python float of its value.
 - `places` quantizes half-even (a value too large for that many places is not a number);
   `positive` then refuses zero and negatives, so a price that rounds to 0 is refused.
 
@@ -20,6 +21,7 @@ half up; the column type is `numeric(18, 4)`, so storage keeps a little more.
 from __future__ import annotations
 
 import numbers
+import re
 from decimal import ROUND_HALF_EVEN, ROUND_HALF_UP, Decimal, InvalidOperation
 
 __all__ = [
@@ -33,6 +35,8 @@ __all__ = [
     "require_exact",
     "to_money",
 ]
+
+_NUMBER_TEXT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", re.ASCII)
 
 MONEY_PRECISION = 18
 MONEY_SCALE = 4
@@ -91,17 +95,23 @@ def to_money(value: Decimal) -> Decimal:
 
 
 def _read(value: object, *, floats: bool) -> Decimal | None:
+    kind = type(value)
+    if kind is Decimal:  # the common cases first: this runs per bar in the criteria
+        return value  # type: ignore[return-value]
+    if kind is float:
+        return Decimal(str(value)) if floats else None
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, Decimal):
         return value
     if isinstance(value, numbers.Integral):  # int, and numpy's integers
         return Decimal(int(value))
-    if isinstance(value, numbers.Real) and not floats:
-        return None
-    if isinstance(value, str | numbers.Real):
+    if isinstance(value, str):
+        text = value.strip()
+        return Decimal(text) if _NUMBER_TEXT.fullmatch(text) else None
+    if isinstance(value, numbers.Real) and floats:
         try:
-            return Decimal(str(value).strip())
-        except InvalidOperation:
+            return Decimal(str(value))
+        except InvalidOperation:  # a Real whose text is not a number ("1/3")
             return None
     return None

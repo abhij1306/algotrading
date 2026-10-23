@@ -16,7 +16,6 @@ LANE_E = {
     "app/hat/engine/portfolio/service.py",
 }
 _TEXT = {"str", "repr", "float"}
-_DECIMAL_ERRORS = {"InvalidOperation", "ArithmeticError", "DecimalException", "ConversionSyntax"}
 
 
 def _name(node: ast.expr) -> str | None:
@@ -27,26 +26,22 @@ def _name(node: ast.expr) -> str | None:
     return None
 
 
-def _catches_decimal_error(handler: ast.ExceptHandler) -> bool:
-    kinds = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-    return any(kind is not None and _name(kind) in _DECIMAL_ERRORS for kind in kinds)
-
-
 def _coercions(tree: ast.Module) -> list[int]:
     """Lines that read a number into a Decimal by hand: `Decimal(str(x))`, `Decimal(repr(x))`,
-    `Decimal(float(x))`, `Decimal(x.strip())` and the like, or any `Decimal(...)` inside a `try`
-    that catches the decimal error."""
+    `Decimal(float(x))`, `Decimal(x.strip())`, `Decimal(row["k"])` (a payload or reply value)
+    and the like, or any `Decimal(...)` inside a `try` (a guard against what it cannot read)."""
     guarded: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Try) and any(map(_catches_decimal_error, node.handlers)):
+        if isinstance(node, ast.Try) and node.handlers:
             guarded.update(id(inner) for stmt in node.body for inner in ast.walk(stmt))
     lines = []
     for node in ast.walk(tree):
         if not (isinstance(node, ast.Call) and _name(node.func) == "Decimal" and node.args):
             continue
         arg = node.args[0]
-        by_text = isinstance(arg, ast.Call) and (
-            _name(arg.func) in _TEXT or isinstance(arg.func, ast.Attribute)
+        by_text = isinstance(arg, ast.Subscript) or (
+            isinstance(arg, ast.Call)
+            and (_name(arg.func) in _TEXT or isinstance(arg.func, ast.Attribute))
         )
         if by_text or id(node) in guarded:
             lines.append(node.lineno)

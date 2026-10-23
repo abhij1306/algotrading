@@ -758,10 +758,12 @@ def test_reply_amounts_exact(
     amounts of a positions or funds reply (JSON floats) are read exactly by `money.exact`, as
     the Decimal each float's shortest text names, and a total Fyers leaves out is the exact sum
     of the available and used amounts; an amount that is not a finite number fails the read
-    closed. Harm: 0.1 + 0.2 in float puts 0.30000000000000004 of free cash into sizing, or a NaN
-    average price reads as a position's cost."""
+    closed, while a fund row HAT does not read never fails it. Harm: 0.1 + 0.2 in float puts
+    0.30000000000000004 of free cash into sizing, a NaN average price reads as a position's cost,
+    or an odd collateral row blocks every entry."""
     row = {"symbol": "NSE:TCS-EQ", "netQty": 5, "buyAvg": buy, "ltp": ltp, "pl": pnl}
-    funds = {"available": available, "used": used, "fund_limit": []}
+    unread = {"title": "Collaterals", "equityAmount": "NaN"}  # a row HAT does not read
+    funds = {"available": available, "used": used, "fund_limit": [unread]}
     if bad is not None:
         (row if where == "positions" else funds)["buyAvg" if where == "positions" else "used"] = bad
     reply = {"s": "ok", "netPositions": [row]} if where == "positions" else {"s": "ok", **funds}

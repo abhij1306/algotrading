@@ -334,17 +334,17 @@ def test_invalid_intents_raise_before_any_sdk_call(
     assert sdk.calls == []
 
 
-@given(valid_intents(), st.sampled_from(["price", "trigger_price"]))
-def test_float_intent_price_refused(intent: OrderIntent, field: str) -> None:
+@given(valid_intents(), st.sampled_from(["price", "trigger_price"]), st.sampled_from([float, str]))
+def test_float_intent_price_refused(intent: OrderIntent, field: str, form: type) -> None:
     """PBT tags.float_intent_price_refused (trading-safety rule 8; PR 75c): an intent whose price
-    or trigger is a float, even one equal to a valid price, raises InvalidIntentError before the
-    SDK is called; the same intent with the Decimal is placed. Harm: a float's binary rounding
-    reaches an order price unseen, because the adapter read it as text."""
+    or trigger is a float or text, even one equal to a valid price, raises InvalidIntentError
+    before the SDK is called; the same intent with the Decimal is placed. Harm: a float's binary
+    rounding, or text such as "1_5", reaches an order price unseen."""
     price = getattr(intent, field)
     assume(price is not None)
     sdk = RecordingSdk()
     with pytest.raises(InvalidIntentError):
-        adapter_over(sdk).place_order(OrderIntent(**{**intent.__dict__, field: float(price)}))
+        adapter_over(sdk).place_order(OrderIntent(**{**intent.__dict__, field: form(price)}))
     assert sdk.calls == []
     assert adapter_over(sdk).place_order(intent).status == "placed"
 

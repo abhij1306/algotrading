@@ -23,7 +23,7 @@ from typing import Any
 
 from app.hat.data.symbols import symbol_master
 
-from ..money import exact, require_exact
+from ..money import NotExactError, exact, require_exact
 from .broker import (
     CODE_INVALID_INTENT,
     CODE_RATE_LIMITED,
@@ -183,7 +183,10 @@ def map_session(*, connected: bool, has_client: bool, store_error: bool) -> Sess
 
 
 def _intent_price(value: object) -> Decimal:
-    """An order's price as HAT sends it: an exact positive Decimal; a float is refused (rule 8)."""
+    """An order's price as HAT sends it: an exact positive Decimal; a float, text or anything
+    else is refused (rule 8)."""
+    if not isinstance(value, Decimal):
+        raise NotExactError("price: not a Decimal")
     return require_exact(value, "price", positive=True)
 
 

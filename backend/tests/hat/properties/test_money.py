@@ -1,5 +1,6 @@
 """PBT money.exact (HAT-SCH-014; PR 75c, architecture A-F7): the one Decimal boundary."""
 
+import re
 from decimal import Decimal, InvalidOperation
 
 import numpy as np
@@ -9,9 +10,25 @@ from hypothesis import strategies as st
 
 from app.hat.money import NotExactError, exact, require_exact
 
+_ASCII_NUMBER = re.compile(r"[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?", re.ASCII)
 _TEXT = st.one_of(
     st.decimals(allow_nan=True, allow_infinity=True, places=None).map(str),
-    st.sampled_from(["1e999", " 1.5 ", "1,234.50", "1,5", "NaN", "sNaN", "-Infinity", "", "abc"]),
+    st.sampled_from(
+        [
+            "1e999",
+            " 1.5 ",
+            "1,234.50",
+            "1,5",
+            "1_5",
+            "١٢",
+            "１２",
+            "NaN",
+            "sNaN",
+            "-Infinity",
+            "",
+            ".",
+        ]
+    ),
     st.text(alphabet="0123456789.,-+eE ", max_size=8),
 )
 VALUES = st.one_of(
@@ -38,6 +55,7 @@ VALUES = st.one_of(
 @example(value=np.float64(0.1), floats=True, positive=False, places=None, grouped=False)
 @example(value="1e999", floats=False, positive=False, places=4, grouped=False)
 @example(value="1,5", floats=False, positive=False, places=None, grouped=False)
+@example(value="1_5", floats=False, positive=False, places=None, grouped=True)
 @example(value=0.00004, floats=True, positive=True, places=4, grouped=False)
 def test_exact(
     value: object, floats: bool, positive: bool, places: int | None, grouped: bool
@@ -45,7 +63,8 @@ def test_exact(
     """`exact` is the one way HAT reads an untrusted number: the answer is None or a finite
     Decimal; None, a bool, NaN, an infinity and any other object are never a number; a float
     (numpy's too) is refused unless `floats`, and is then read by its shortest text, so 0.1 is
-    exactly 0.1; text is read as written (a comma only with `grouped`); `places` rounds half-even
+    exactly 0.1; text is read as written and only as an ASCII decimal number (a comma only with
+    `grouped`; never "1_5" or another script's digits); `places` rounds half-even
     to exactly that many places, and `positive` refuses what is (or rounds to) zero or less.
     `require_exact` raises `NotExactError` (an `InvalidOperation` and a `ValueError`) exactly
     when `exact` answers None. Harm: two readers of one tick or reply disagree, a float's binary
@@ -90,7 +109,10 @@ def _read_as(value: object, *, grouped: bool) -> Decimal:
     if isinstance(value, float | np.floating):
         return Decimal(repr(float(value)))  # the shortest text that round-trips
     assert isinstance(value, str)
-    return Decimal((value.replace(",", "") if grouped else value).strip())
+    text = (value.replace(",", "") if grouped else value).strip()
+    if not _ASCII_NUMBER.fullmatch(text):  # Decimal alone also reads "1_5" and other digits
+        raise InvalidOperation(text)
+    return Decimal(text)
 
 
 def _assert_refused(
