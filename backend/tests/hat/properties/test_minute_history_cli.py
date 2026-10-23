@@ -9,6 +9,7 @@ and assert nothing that depends on the date."""
 import io
 import tempfile
 from contextlib import nullcontext
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -19,6 +20,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from app.hat.data import minute_history
+from app.hat.data.bars_basis import RawBasis
 
 
 @given(
@@ -48,6 +50,9 @@ def test_root_and_report(source: str, count: int, refused: bool, unmapped: int) 
             patch("app.hat.data.provider.fyers_websocket.fyers_history", return_value=history),
             patch("app.database.db_session_scope", return_value=nullcontext()),
             patch.object(minute_history, "history_universe", return_value=(symbols, unmapped)),
+            patch.object(
+                minute_history, "_basis", return_value=RawBasis([], lambda *_: {}, Decimal(0))
+            ),
             patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
             patch("sys.stdout", new_callable=io.StringIO) as out,
             no_network() as reached,

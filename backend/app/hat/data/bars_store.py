@@ -6,6 +6,12 @@ Rows are keyed by (instrument_id, bar_start): writing the same bar again changes
 makes the writer safe to re-run after a crash. Only the layout is written:
 `instrument_id, bar_start, open, high, low, close, volume`.
 
+The minute-history download (audit D1, D2) replaces an instrument's stored days over the period
+it loaded (`write(..., replace=...)`), so a day it refused leaves no bar of an older basis behind,
+and records what it refused in the append-only ledger `bars_5m_rejects/` (one Parquet file per
+write: instrument, day, 5-minute bucket and the rule; outside `bars_5m`, so no reader of the
+day partitions sees it).
+
 Beside it, `coverage.json` records the session coverage a restart needs (PR 22): the instruments
 the writer watched from the open and the start of the day's first feed gap. It only grows (a
 union and a minimum), and it is written after the bars, so a crash between the two leaves less
@@ -30,7 +36,7 @@ import pyarrow.parquet as pq
 from ..time import as_utc, trade_date_of
 from .bars import Bar
 
-__all__ = ["DATASET", "SCHEMA", "BarRow", "BarStore", "Coverage"]
+__all__ = ["DATASET", "REJECTS", "SCHEMA", "BarRow", "BarStore", "Coverage", "RejectRow"]
 
 DATASET = "bars_5m"
 PRICE = pa.decimal128(18, 4)
@@ -43,6 +49,16 @@ SCHEMA = pa.schema(
         ("low", PRICE),
         ("close", PRICE),
         ("volume", pa.int64()),
+    ]
+)
+REJECTS = "bars_5m_rejects"
+REJECT_SCHEMA = pa.schema(
+    [
+        ("instrument_id", pa.string()),
+        ("symbol", pa.string()),
+        ("day", pa.date32()),
+        ("bar_start", pa.timestamp("us", tz="UTC")),
+        ("rule", pa.string()),
     ]
 )
 FILE_NAME = "bars.parquet"
@@ -62,6 +78,19 @@ class BarRow:
     @property
     def key(self) -> tuple[str, datetime]:
         return (self.instrument_id, self.bar_start)
+
+
+@dataclass(frozen=True)
+class RejectRow:
+    """One refusal in the ledger: a candle's 5-minute bucket (`bar_start`, None when the
+    candle could not be placed) or a whole day (`bar_start` None), and the rule that refused
+    it."""
+
+    instrument_id: str
+    symbol: str
+    day: date | None
+    bar_start: datetime | None
+    rule: str
 
 
 def row_from_bar(bar: Bar, instrument_id: uuid.UUID | str) -> BarRow:
@@ -106,12 +135,31 @@ class BarStore:
         path = self.path(day)
         return pq.read_table(path, schema=SCHEMA) if path.is_file() else SCHEMA.empty_table()
 
-    def write(self, bars: Iterable[Bar], instrument_ids: Mapping[str, uuid.UUID | str]) -> int:
+    def days(self) -> list[date]:
+        """The trade dates that have a stored file, oldest first."""
+        base = self._root / DATASET
+        if not base.is_dir():
+            return []
+        return sorted(
+            date.fromisoformat(p.name[5:])
+            for p in base.glob("date=*")
+            if p.joinpath(FILE_NAME).is_file()
+        )
+
+    def write(
+        self,
+        bars: Iterable[Bar],
+        instrument_ids: Mapping[str, uuid.UUID | str],
+        *,
+        replace: Mapping[str, tuple[date, date]] | None = None,
+    ) -> int:
         """Merge `bars` into their trade dates' partitions; return the rows that were new or
-        changed. A bar whose symbol has no instrument id is skipped (nothing is invented). Only
-        the stored rows of the written instruments are turned into Python rows; the rest of the
-        day is carried over as Arrow data, so writing one symbol into a full day stays cheap
-        (the minute-history download writes each symbol on its own, D131)."""
+        changed. A bar whose symbol has no instrument id is skipped (nothing is invented).
+        `replace` (instrument id -> first and last day) drops every stored row of the instrument
+        on those days first, so the bars given are then all it has there. Each day file is
+        rewritten once per call whatever the number of instruments (the minute-history download
+        writes a batch of symbols at once, D7). Only the stored rows of the written instruments
+        are turned into Python rows; the rest of the day is carried over as Arrow data."""
         by_day: dict[date, dict[tuple[str, datetime], BarRow]] = {}
         for bar in bars:
             instrument_id = instrument_ids.get(bar.symbol)
@@ -119,18 +167,59 @@ class BarStore:
                 continue
             row = row_from_bar(bar, instrument_id)
             by_day.setdefault(trade_date_of(bar.start), {})[row.key] = row
+        spans = {str(i): span for i, span in (replace or {}).items()}
+        days = set(by_day)
+        if spans:
+            days |= {d for d in self.days() if any(a <= d <= b for a, b in spans.values())}
         written = 0
-        for day, fresh in sorted(by_day.items()):
+        for day in sorted(days):
+            fresh = by_day.get(day, {})
+            cleared = {i for i, (a, b) in spans.items() if a <= day <= b}
             stored = self._table(day)
-            ids = pa.array(sorted({key[0] for key in fresh}), pa.string())
+            ids = pa.array(sorted({key[0] for key in fresh} | cleared), pa.string())
             mine = pc.is_in(stored["instrument_id"], value_set=ids)
-            merged = {row.key: row for row in _rows(stored.filter(mine))}
-            changed = sum(1 for key, row in fresh.items() if merged.get(key) != row)
-            if changed:
-                merged.update(fresh)
+            old = {row.key: row for row in _rows(stored.filter(mine))}
+            merged = {key: row for key, row in old.items() if key[0] not in cleared}
+            merged.update(fresh)
+            if merged != old:
                 self._replace(day, stored.filter(pc.invert(mine)), list(merged.values()))
-            written += changed
+            written += sum(1 for key, row in fresh.items() if old.get(key) != row)
         return written
+
+    def write_rejects(self, rows: Iterable[RejectRow]) -> None:
+        """Append `rows` to the reject ledger as one new file (nothing when there are none)."""
+        listed = list(rows)
+        if not listed:
+            return
+        table = pa.table(
+            {
+                "instrument_id": [r.instrument_id for r in listed],
+                "symbol": [r.symbol for r in listed],
+                "day": [r.day for r in listed],
+                "bar_start": [None if r.bar_start is None else as_utc(r.bar_start) for r in listed],
+                "rule": [r.rule for r in listed],
+            },
+            schema=REJECT_SCHEMA,
+        )
+        target = self._root / REJECTS / f"part-{uuid.uuid4().hex}.parquet"
+        self._atomic_table(target, table)
+
+    def read_rejects(self) -> list[RejectRow]:
+        """Every ledger row, in no particular order."""
+        rows = []
+        for path in sorted((self._root / REJECTS).glob("part-*.parquet")):
+            for r in pq.read_table(path, schema=REJECT_SCHEMA).to_pylist():
+                at = r["bar_start"]
+                rows.append(
+                    RejectRow(
+                        r["instrument_id"],
+                        r["symbol"],
+                        r["day"],
+                        None if at is None else as_utc(at),
+                        r["rule"],
+                    )
+                )
+        return rows
 
     def read_coverage(self, day: date) -> Coverage:
         """The stored coverage of `day`; none (nothing watched from the open) when absent or
@@ -196,9 +285,11 @@ class BarStore:
         table = pa.concat_tables([rest, fresh]).sort_by(
             [("bar_start", "ascending"), ("instrument_id", "ascending")]
         )
-        target = self.path(day)
+        self._atomic_table(self.path(day), table)
+
+    def _atomic_table(self, target: Path, table: pa.Table) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_name(f".{FILE_NAME}.{uuid.uuid4().hex}.tmp")
+        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
         try:
             pq.write_table(table, temp)
             os.replace(temp, target)
