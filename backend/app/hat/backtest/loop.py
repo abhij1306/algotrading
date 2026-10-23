@@ -127,7 +127,7 @@ from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate
 from ..engine.portfolio.health import Health
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.scan import EP_PLAYBOOK, ScanInputs
-from ..engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, StopInputs, plan_stop
+from ..engine.stops import SKIP_BAD_INPUT, StopInputs, plan_stop
 from ..engine.strategy.config import (
     Playbook,
     StopAtrMultiple,
@@ -494,10 +494,7 @@ class _Run:
             return None, SKIP_BAD_INPUT
         inputs = StopInputs(entry=entry, tick=tick)
         if isinstance(rule, StopBelowFinalContractionLow):
-            if row.planned_stop is None:
-                # The scan leaves the plan empty when the stop at the pivot is too wide; the
-                # contraction stop does not move with the entry, so it is too wide here too.
-                return None, SKIP_TOO_WIDE
+            # priced at the entry from the setup's level, as the live entry does
             levels = (row.criteria_results or {}).get("levels", {})
             contraction = exact(levels.get("final_contraction_low"), floats=True, positive=True)
             inputs = StopInputs(entry=entry, tick=tick, final_contraction_low=contraction)
