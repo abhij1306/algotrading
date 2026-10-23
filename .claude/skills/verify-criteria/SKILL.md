@@ -145,7 +145,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `d8868f0a1ce5b628c0468f83d0d5dd69535fb796b88d8e9e54677e9a312b8af3`
+Covered digest: `7524ab0c054359306e6fd3e53338c591e9c645f91e97a596f5267745cc063fca`
 
 ## Scope changes
 
@@ -174,7 +174,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
 - PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
-- PR 49 (plan audit N1, G20; HAT-CRIT-119, -122): `price_breaks_level` gains `confirm: close|high` (default `close`: the final bar must also close at or above the level), reading the new `LiveContext.bar_close`; the trigger monitor fills it with the bar's close. The entry is `trigger.entry_limit` (max(level, close) rounded up to the tick), and the entry filters read that price (`plan_entry` passes it to `ctx.for_entry`, which keeps the trigger context's other inputs). `criteria.price_breaks_level_contract` draws `confirm` (unset, `close`, `high`) and asserts the entry; `criteria.entry_filters_skip`'s oracle reads the entry LIMIT; `level_expression` and `catalyst_required_in_confirm` give their contexts a bar close. The seed YAMLs are unchanged (the default applies). The backtest is untouched (it does not evaluate `price_breaks_level`; its fill proxies are 09 §2). Nothing was narrowed.
+- PR 49 (plan audit N1, G20; HAT-CRIT-119, -122): `price_breaks_level` gains `confirm: close|high` (default `close`: the final bar must also close at or above the level), reading the new `LiveContext.bar_close`; the trigger monitor fills it with the bar's close. The entry is `trigger.entry_limit` (max(level, close) rounded up to the tick), and the entry filters read that price (`plan_entry` passes `replace(ctx, price=entry).for_entry(...)`: `max_chase` reads `price`, `adtr_filter` reads `entry`, and the trigger context's other inputs are kept). `criteria.price_breaks_level_contract` draws `confirm` (unset, `close`, `high`) and asserts the entry; `criteria.entry_filters_skip`'s oracle reads the entry LIMIT; `level_expression` and `catalyst_required_in_confirm` give their contexts a bar close. The seed YAMLs are unchanged (the default applies). The backtest is untouched (it does not evaluate `price_breaks_level`; its fill proxies are 09 §2). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1523,6 +1523,15 @@ Break: (PR 49) `plan_entry` runs the filters on the bar's close, not the entry L
 ```
 E   AssertionError: assert None == 'adtr_filter'
 E   Failing test case: test_entry_filters_skip(
+```
+
+Break: (PR 49, CodeAnt) `plan_entry` leaves the filter context's `price` at the bar's close (`ctx.for_entry(` for `replace(ctx, price=entry).for_entry(`), so `max_chase` checks the close, not the LIMIT rounded up to the tick. It passed until the `@example` (close 90.91, level 90.01, 1%: LIMIT 90.95) was added.
+
+```
+E   AssertionError: assert None == 'max_chase'
+E   Failing explicit example: test_entry_filters_skip(
+E       entry=9091,
+E       level=9001,
 ```
 
 ### PBT criteria.level_expression

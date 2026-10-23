@@ -41,7 +41,7 @@ from __future__ import annotations
 import threading
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, Decimal
 from fractions import Fraction
@@ -440,7 +440,8 @@ def plan_entry(
             ),
         )
         stop, skip = planned.stop, planned.skip
-    filter_ctx = ctx.for_entry(
+    # the filters read the LIMIT (max_chase reads `price`), with the trigger's other inputs
+    filter_ctx = replace(ctx, price=entry).for_entry(
         entry=entry,
         stop=stop,
         adtr20=daily.adtr20,

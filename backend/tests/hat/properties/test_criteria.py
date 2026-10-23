@@ -1732,6 +1732,14 @@ def oracle_filter(
     items=entry_filter_sets(),
     band=st.sampled_from(["fno", "unknown", "20"]),
 )
+@example(  # PR 49, CodeAnt: the close 90.91 is within 1% of 90.01, its LIMIT 90.95 is not
+    entry=9_091,
+    level=9_001,
+    stop_pct=0.5,
+    adtr=1_500,
+    items=[{"type": "max_chase", "params": {"pct": 1.0}, "enabled": True}],
+    band="fno",
+)
 def test_entry_filters_skip(
     entry: int, level: int, stop_pct: float, adtr: int, items: list[dict], band: str
 ) -> None:
