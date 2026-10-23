@@ -105,15 +105,14 @@ def _read(value: object, *, floats: bool) -> Decimal | None:
         return Decimal(int(value))
     if isinstance(value, str):
         text = value.strip()
-        if not text.isascii() or "_" in text:
-            return None
-        try:
-            return Decimal(text)
-        except InvalidOperation:  # not a number, or an exponent Decimal cannot hold
-            return None
+        return _read_text(text) if text.isascii() and "_" not in text else None
     if isinstance(value, numbers.Real) and floats:
-        try:
-            return Decimal(str(value))
-        except InvalidOperation:  # a Real whose text is not a number ("1/3")
-            return None
+        return _read_text(str(value))  # a Real whose text is not a number ("1/3") is None
     return None
+
+
+def _read_text(text: str) -> Decimal | None:
+    try:
+        return Decimal(text)
+    except InvalidOperation:  # not a number, or an exponent Decimal cannot hold
+        return None
