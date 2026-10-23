@@ -452,6 +452,7 @@ to an artefact that exists.
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
 | HAT-EXEC-045 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap` |
+| HAT-EXEC-046 | [07](07-execution-and-brokers.md) | 49 | PBT `manage.unfilled_entry_cancelled`, PBT `bars.live_flags_parsed` |
 | HAT-EXEC-050 | [07](07-execution-and-brokers.md) | 11, 54 | PBT `stops.final_contraction_low`, PBT `stops.contraction_stop_at_the_fill` |
 | HAT-EXEC-051 | [07](07-execution-and-brokers.md) | 11, 22, 39 | PBT `stops.low_of_day`, PBT `bars.trigger_never_uses_a_partial_session` |
 | HAT-EXEC-052 | [07](07-execution-and-brokers.md) | 11 | PBT `stops.custom_rules` |

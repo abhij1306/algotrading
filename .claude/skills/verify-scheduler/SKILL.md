@@ -147,7 +147,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `40b6fe1efdbce269589db9fef684d39377ed8bac7c2c7e4b12b670512bac2bc9`
+Covered digest: `a6eedc4b6ba907f2bd0708a69b7700f29099ab0068848033eed19b568b4684f5`
 
 ## Scope changes
 
@@ -157,6 +157,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 63: `MERGED_PRS` gains 63; no scheduler check changed.
 - PR 62: `MERGED_PRS` gains 62; no scheduler check changed.
 - PR 52: `daily/accounts.py:Desks.recover` remembers a Take left unplaced as well as an auto entry in Triggered (`_left_unplaced`), and `resume_entries` also takes the signals whose placement raised in this process (`ExecutionRouter.take_stranded`); checked by `verify-execution`'s `router.crash_resumes_entry_once` (breaks recorded there). The `expire` job is unchanged (every minute); its sweep now also ends an earlier trade date's stranded entry. No job or schedule changed.
+- PR 49: `HatRuntime.periodic` gains the `entries` step (every pass while the market is open: `Desks.cancel_stale_entries` with the runtime's `EntryWatch`, a `LiveData` bar listener); checked by `verify-execution`'s `manage.unfilled_entry_cancelled` (breaks recorded there). No scheduled job changed.
 - PR 48: `daily/accounts.py:Desks` and `daily/runtime.py` pass the sale band and the `HAT_MPP_RESEND`/`HAT_MPP_PAGE_AFTER` settings to the fill sync and the trade manager (`verify-execution`'s `mpp.*`). No job or schedule changed.
 - `ops.job_run_recording` runs 60 state-machine examples of 40 steps rather than the profile's 500 examples: each step is a database transaction on a real SQLite engine, and 500 sequences would exceed the 15-minute job budget. The invariants are not weakened.
 - `JobScheduler` models one key (job, trade_date) because keys are independent rows under one unique index; two callers and three calls each stand for "any number" of racers (bounds in the model header).

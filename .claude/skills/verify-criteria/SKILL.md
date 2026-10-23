@@ -145,7 +145,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `0520e3e6f30b37f1f8bde218e2a7f20b0ab8b70ca5c3c631ee933a3b95aed2e7`
+Covered digest: `d8868f0a1ce5b628c0468f83d0d5dd69535fb796b88d8e9e54677e9a312b8af3`
 
 ## Scope changes
 
@@ -174,6 +174,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
 - PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
+- PR 49 (plan audit N1, G20; HAT-CRIT-119, -122): `price_breaks_level` gains `confirm: close|high` (default `close`: the final bar must also close at or above the level), reading the new `LiveContext.bar_close`; the trigger monitor fills it with the bar's close. The entry is `trigger.entry_limit` (max(level, close) rounded up to the tick), and the entry filters read that price (`plan_entry` passes it to `ctx.for_entry`, which keeps the trigger context's other inputs). `criteria.price_breaks_level_contract` draws `confirm` (unset, `close`, `high`) and asserts the entry; `criteria.entry_filters_skip`'s oracle reads the entry LIMIT; `level_expression` and `catalyst_required_in_confirm` give their contexts a bar close. The seed YAMLs are unchanged (the default applies). The backtest is untouched (it does not evaluate `price_breaks_level`; its fill proxies are 09 §2). Nothing was narrowed.
 
 ## Scratch breaks
 

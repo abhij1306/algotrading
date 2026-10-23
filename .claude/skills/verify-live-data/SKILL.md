@@ -75,7 +75,7 @@ No TLA+ model: `11-verification.md` §3 assigns none to this area. The ordering 
 - `PBT bars.session_state_never_partial` Through `LiveData` with a `BarStore`, whatever HAT missed of the session (AAA first seen after the open, a feed-wide silence of 30 s or more, also while it is still under 30 s, a restart and its downtime, with a BBB heartbeat as the rest of the feed; the process keeps stepping during a silence; `@example`s: a gap found after the first bar was stored then a restart before the next bar, and a restart while silent from 09:19:50), a published opening range is the session's real one and a published day low the real low of the day's final bars; watched from the open with no gap both are published (the opening range also after a restart once the first bar was stored). PR 39 adds `seeded`: the exchange range is on and each AAA tick carries the session's high and low so far (`high_price`, `low_price`); the same holds, and a symbol first seen late, after a restart or after a gap, with no gap after, has the opening range when it ticked inside the first bar and the day low once that tick's bar is final (`@example`s: the 09:17:30 subscriber, a seed after a restart, a gap then a new seed, a seed before a gap whose low traded unseen, and a restart whose next tick knows a high from after 09:20). Harm: EP buys under its true opening-range high with a too-tight, oversized stop (PR 22, audit F4); or EP never fires on a gap-scan name (PR 39).
 - `PBT bars.trigger_never_uses_a_partial_session` Through the real builder and trigger monitor, for a candidate first seen late an opening-range trigger fires only at the real opening-range high and a `low_of_day` stop is the real low less a tick or `stop_input_missing`; watched from the open both are exactly the session's. With `seeded` (PR 39) the late candidate's ticks carry the exchange's high and low, and its stop is exactly the real low less a tick. The audit's probe (an unseen 09:15 spike to 110, ticks from 09:17:30) is an `@example`. Harm: a breakout bought under its own level, with an oversized position.
 - `PBT bars.symbol_silence_resubscribes_and_alerts` Through `LiveData` with a `SilenceWatch` (threshold 60 s, checks every 5 s, the heartbeat ticking every 10 s), a watched symbol is subscribed again exactly when the threshold has passed since its last tick, its last resubscribe, or the last check at which it was not yet watched, the market closed or the feed stale; each check makes at most one resubscribe (every symbol found) and one alert (those not alerted since the market last opened); a failing alert or resubscribe is logged and never reaches the feed, and a name whose alert failed is named again at the next report; and no quiet symbol ever makes the feed stale (only a feed-wide outage does). `@example`s: an outage then a closed window that reopens; a name trading every 100 s. Harm: an illiquid or band-locked name makes the account manage-only all day, a dead subscription goes unnoticed, or an alert per quiet name floods the owner's chat (PR 39, HAT-DATA-116).
-- `PBT bars.live_flags_parsed` `HAT_EXCHANGE_DAY_RANGE` turns the exchange-range seed on exactly for a true value (off unset or for anything else), and `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120. Harm: unverified tick fields seed the opening range and the stop by default, or a typo reports every symbol (PR 39).
+- `PBT bars.live_flags_parsed` `HAT_EXCHANGE_DAY_RANGE` turns the exchange-range seed on exactly for a true value (off unset or for anything else), `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120, and `HAT_ENTRY_TIMEOUT_MINUTES` (PR 49, HAT-EXEC-046) a positive whole number, else 60. Harm: unverified tick fields seed the opening range and the stop by default, a typo reports every symbol (PR 39), or a typo cancels every entry at once or never.
 - `PBT bars.delayed_seed_spoiled_by_gap` A seed covers prints only up to the earlier of its exchange time and its arrival, so a feed gap that began between the two (a delayed tick arriving after the gap, found before or after the tick) or later inside the bars it covers leaves the opening range and day low as they would be without it. Harm: prints the gap hid, in neither the seed nor the bars, leave a range or a low the session never had (PR 39, CodeAnt).
 - `PBT bars.seed_needs_ordered_prices` A seed is taken only from a tick inside the session with `0 < low <= price <= high`; any other leaves the opening range and day low as they would be without it. Harm: a garbled or stale high/low field publishes a range or a low the session never had (PR 39).
 - `PBT bars.usable_price` For every quote, clock and band, the price a Take, a placement or an exit may act on is the quote's price exactly when it is under 30 seconds from the clock either way (by exchange time) and inside the known bounds, else none with `price_unknown`, `stale_price` or `price_out_of_band`; a tick exactly 30 seconds old no longer counts (PR 51, HAT-DATA-116). Harm: one quiet symbol's hours-old print prices a Take while the feed as a whole is live.
@@ -158,7 +158,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `d173b569f4e8af319e8b37f1fcfeb0fd1415ebb061c2107825b0d2a98eaaa915`
+Covered digest: `04c4caf5ba2cdcda023c427e431262c288c67addc7e25b89f245a7ed7d0b0a4e`
 
 ## Scope changes
 
@@ -188,6 +188,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - K2 edited `test_conf_imports.py` (the `fyers_apiv3.fyersModel` REST import is allowed under `app/hat/execution`; sockets stay forbidden, with synthetic-offender checks) and `tests/test_subscription_registry.py` (`canonicalize` is now a required argument, passed `symbol_master.to_db`): no check narrowed, and the existing live and stream tests above stay green.
 - PR 41 narrowed `CONF single_feed_import_rule`: outside the provider package, `hat/data/minute_history.py` may import `provider.fyers_websocket.fyers_history` and nothing else from it (`PROVIDER_IMPORTS`). The download needs the Fyers session's REST history, and HAT-BRK-080 lets the data package reach the session only through that module; no socket or provider session is built, and importing anything else from the provider still fails (break recorded below).
 - PR 15b widened the live trigger path (`engine/live_entry.py`): `watchlist_candidates` and `ep_bot_candidates` take every active bot with a live version and its effective mode (with an optional `calendar`), and `submit_trigger` and `TriggerService` take a `route`. The bar and trigger properties pass unchanged; none was narrowed.
+- PR 49: `bars.trigger_only_on_final_bars`'s oracle needs the bar's close at or above the pivot (`confirm: close`, the default) and asserts `bar_close`; `bars.live_flags_parsed` also reads `HAT_ENTRY_TIMEOUT_MINUTES`. The bar listener `execution.entry_timeout.EntryWatch` reads final bars only (checked in `verify-execution`). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1486,6 +1487,12 @@ Break: (PR 39) `load_settings` defaults the silence to 30 seconds.
 
 ```
 E   AssertionError: assert 30 == 120
+```
+
+Break: (PR 49) `load_settings` defaults the entry timeout to 5 minutes.
+
+```
+E   AssertionError: assert 5 == 60
 ```
 
 ### PBT bars.seed_needs_ordered_prices

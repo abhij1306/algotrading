@@ -1047,26 +1047,33 @@ def test_delayed_seed_spoiled_by_gap(at: int, delay: int, gap: int, first: bool)
         assert seeded.day_low("AAA", DAY) == plain.day_low("AAA", DAY)
 
 
-@example(seed=None, silent=None)
-@example(seed="1", silent="0")
+@example(seed=None, silent=None, timeout=None)
+@example(seed="1", silent="0", timeout="0")
 @given(
     seed=st.none() | st.sampled_from(["1", "true", " On ", "yes", "0", "off", "", "no", "maybe"]),
     silent=st.none() | st.sampled_from(["1", "45", "300", "0", "-3", "x", ""]),
+    timeout=st.none() | st.sampled_from(["1", "30", "90", "0", "-5", "60m", ""]),
 )
-def test_live_flags_parsed(seed: str | None, silent: str | None) -> None:
-    """PR 39 (HAT-DATA-114, HAT-DATA-116): `HAT_EXCHANGE_DAY_RANGE` turns the exchange-range seed
-    on exactly for a true value (off unset or for anything else), and
-    `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120. Harm: unverified tick
-    fields seed the opening range and the stop by default, or a typo reports every symbol."""
+def test_live_flags_parsed(seed: str | None, silent: str | None, timeout: str | None) -> None:
+    """PR 39 (HAT-DATA-114, HAT-DATA-116), PR 49 (HAT-EXEC-046): `HAT_EXCHANGE_DAY_RANGE` turns
+    the exchange-range seed on exactly for a true value (off unset or for anything else),
+    `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120, and
+    `HAT_ENTRY_TIMEOUT_MINUTES` a positive whole number, else 60. Harm: unverified tick fields
+    seed the opening range and the stop by default, a typo reports every symbol, or a typo
+    cancels every entry at once (or never)."""
     env = {}
     if seed is not None:
         env["HAT_EXCHANGE_DAY_RANGE"] = seed
     if silent is not None:
         env["HAT_SYMBOL_SILENT_SECONDS"] = silent
+    if timeout is not None:
+        env["HAT_ENTRY_TIMEOUT_MINUTES"] = timeout
     loaded = load_settings(env)
     assert loaded.exchange_day_range == (seed is not None and seed.strip().lower() in TRUE_VALUES)
     number = int(silent) if silent is not None and silent.lstrip("-").isdigit() else 0
     assert loaded.symbol_silent_seconds == (number if number > 0 else 120)
+    minutes = int(timeout) if timeout is not None and timeout.lstrip("-").isdigit() else 0
+    assert loaded.entry_timeout_minutes == (minutes if minutes > 0 else 60)
 
 
 # --- one symbol's silence (PR 39: HAT-DATA-116) -----------------------------------------------

@@ -146,6 +146,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT manage.real_fill_protected` Each entry fill the sync reads (one or several partial fills, at any time of the session or after the close) is followed, before any other broker write, by the position's stop: placed for the open quantity when none rests (an intraday SL-M SELL before 15:25, a GTT from 15:25 on), resized when one does, its trigger on the tick and never above the stop; a stop the broker refuses twice is alerted and placed by the next sync; a resize it refuses is alerted and sent again by the next sync. Harm: a filled position sits at the broker with no stop, or a stop for fewer shares than it holds.
 - `PBT manage.broker_stop_only_tightens` As the position's stop rises (any steps, refused modifies among them), its intraday or GTT broker stop is modified up to it rounded down to the tick, never above it and never down; a refused modify leaves it and is alerted. Harm: a loosened broker stop, or one above the price HAT holds, sells on noise.
 - `PBT manage.swap_leaves_no_gap` Whatever the broker answers to the GTT (and its retry), `gtt.swap` cancels the intraday stop only after a confirmed GTT; otherwise the intraday stop keeps working, `gtt.swap_failed` is raised and the job fails to be retried; a day stop the broker will not cancel fails the swap too. Harm: the day stop is cancelled first and the position spends the night unprotected.
+- `PBT manage.unfilled_entry_cancelled` Through `EntryWatch` (final bars fed as they end), the real `StopDesk` and the trade manager on `FakeBroker`, a real entry nothing of which filled is asked to be cancelled exactly once, at the first check where a final bar after the trigger bar closed below the level or `HAT_ENTRY_TIMEOUT_MINUTES` passed since placement; the fill sync then ends the signal Cancelled with no position; the trigger bar's own close never counts; the timeout runs from the working order, not an earlier attempt the broker rejected; once anything filled, or the order alone shows a part fill (the book read before the fill sync), `due` names no entry and `cancel_unfilled_entry` refuses it, whoever asks (PR 49, HAT-EXEC-046). Harm: a failed break's LIMIT rests all day and fills as the price falls, or a part-filled entry's remainder is cut short.
 - `PBT manage.entry_remainder_tracked` An entry fills in chunks, interleaved with its day stop filling and a flatten, with the broker taking or refusing the cancel of the entry's rest. Once a sale empties the position the rest of the entry is asked to be cancelled (once); a chunk that fills first adds to the still-open position and gets a stop; after every sync HAT's open quantity equals the shares in the broker's trade book and its live stops cover exactly those, and the position closes only with no share held and no entry working at the broker (audit 2026-10-22 F2). Harm: shares the broker bought after HAT closed the position sit untracked and unprotected.
 - `PBT manage.verify_covers` The nightly verify refreshes a GTT the broker confirms to the current stop (`gtt.refreshed`), never below the trigger it rests at when the instrument's tick changed since (a coarser tick floors the stop lower; audit F24), and a refused refresh of a GTT so kept is alerted `gtt.unverified` with nothing placed; one it does not confirm is alerted (`gtt.missing`), cancelled at the broker and in HAT's book, and placed again; when the cancel fails, the broker is unreachable, the fills cannot be read or HAT's GTT row was never confirmed, `gtt.unverified` is raised and no GTT is modified or placed. Harm: a GTT that triggered or expired goes unnoticed and the position opens the next day without a stop.
 - `PBT manage.verify_renews_old_gtt` (PR 47, HAT-EXEC-063) For every GTT age around 300 days and cancel reply, the nightly verify cancels a GTT placed 300 days ago or more and places it again at the current stop (`gtt.missing` never raised), and refreshes in place a younger one or one whose cancel is refused. Harm: the broker expires the GTT a year after placement and the position has no stop.
@@ -338,6 +339,7 @@ Live trade management (PR 15c):
 - `backend/app/hat/execution/protect.py`
 - `backend/app/hat/execution/fills.py`
 - `backend/app/hat/execution/manage.py`
+- `backend/app/hat/execution/entry_timeout.py`
 - `backend/app/hat/engine/live_trades.py`
 - `backend/tests/hat/hat_manage_support.py`
 - `backend/tests/hat/properties/test_manage.py`
@@ -351,7 +353,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `2ec38a54eeb8cc486e5f34a61a2c5e66ab4829a1549796febdb0af6b457f9c98`
+Covered digest: `c32d4c0c4ad564989f068d99aff76f0e2f2b5062687f936b811d75b09d234df2`
 
 ## Scope changes
 
@@ -359,6 +361,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
 - PR 58: `trades.open_entry` fills `SignalContext.hard_stop_days` from `trades.last_hard_stop` (the bot's latest `hard_stop` close of the instrument at or before the trigger, a veto trade's excluded as in `_day_counts`). `trades.last_hard_stop` generates no veto trade (a virtual trade of a skipped confirm signal); the exclusion is the same `_NOT_VETO` filter the daily stop-out count uses.
+- PR 49 (plan audit N1, G19, G20; HAT-EXEC-046): New `execution/entry_timeout.py`: `cancel_reason` (a final bar after the trigger bar closed below the level, or the timeout since placement) and `EntryWatch` (a `LiveData` bar listener keeping the day's closes in memory; `due` names an account's EntryPlaced signals of today), run by `Desks.cancel_stale_entries` in the periodic pass while the market is open; the cancel is `StopDesk.cancel_unfilled_entry` (refused once a real position exists or an entry order shows a part fill), which shares the remainder cancel `_cancel_entries` with `cancel_entry` (true only when the broker took a cancel). `due` reads the signal's state (its first fill opens it) and the order's status (`placed`: not a rejected earlier attempt, not a part fill); the desk reads the position and the order's status; each guard was seen failing alone. `Desks.cancel_stale_entries` isolates each signal's cancel. A placement or Take after the price fell back under the level is not refused (a fresh-context review found a `price_below_level` refusal rejected a valid break on a one-tick dip and nearly every `confirm: high` signal, so it was dropped). Not covered by a property: the runtime wiring (the bar listener and the `entries` step; the Postgres simulated day runs shadow bots only), and a restart forgets the closes before it (the timeout still ends such an entry). Nothing was narrowed.
 - PR 52 (audit T-F4, T-F7, T-F15; HAT-EXEC-023, -030, HAT-OPS-003): `_send_entry` reads the stored rejection count before it reserves a new tag, so a resume after the second rejection ends the signal `order_rejected` instead of sending a third order. `route` and `take` commit and place through `_place_committed`, which remembers a signal whose commit or placement raised (`take_stranded`, drained by `Desks.resume_entries`); `daily/accounts.py:_left_unplaced` (was `_left_triggered`) also finds a Take left in AwaitingApproval with decision `take`. `place_entry` refuses an undecided card (`_taken`): it found that a resume of an AwaitingApproval signal could place a card nobody took. `expire` ends Rejected `signal_expired` a real entry of an earlier trade date left waiting, cancelling first an order reserved and never sent and leaving one that may have reached the broker to reconciliation. The sweep was already scheduled (`daily/runtime.py`, `expire` every minute: T-F15's wiring part); the idempotency is a property here and on PostgreSQL. The router `Rig` moved from `test_router.py` to `hat_router_support.py` (with `crash_after`, `restart`, `desks_for`), shared with the Postgres checks. The Postgres checks seed the shared rig with the foreign-key triggers off for that connection (`session_replication_role = replica`; the seed writes rows before the rows they reference, which SQLite never checks) and run with them on. The seed (`_seeded`) uses a session bound to one dedicated connection and resets it before it returns to the pool: a plain session takes a new pooled connection after each commit, and CI caught the setting leaking to a pooled connection (`test_db_runtime.py::test_governance__stop_only_rises` then saw no trigger). `clean_db` asserts after each check that every pooled connection runs `origin` (it failed on 3 of 3 local runs before the fix). `ExecutionRouter.tla`: Take now decides to a new state `taken` and `PlaceTaken` places it; a per-signal `lost` flag and `Crash` model the lost in-process placement; `Place`/`PlaceTaken` are weakly fair over all variables while the router's other actions keep their fairness over `routerVars`; new property `EntriesSettled` and broken variant `no_resume`. The state space grew from 823,680 to 982,080 distinct states (local run 67 s to 123 s). `OrderReconciliation.tla`'s `Reserve` comment names the router's rejection count check (the model already keeps retries across `Restart`). FakeBroker keeps no order book, so an entry the broker accepted and whose answer was lost is never found by the tag lookup in these properties (left to reconciliation: follow-up). Review round (/code-review): `place_entry` runs under the router's `_placing` lock and re-reads the signal, since the trigger path, a Take and the periodic resume share one router per account and two placements that both read no open tag reserved two tags (a cross-process race is out of scope: one runtime places); `route` again returns the state after placement and keeps the shadow position's id (the branch swap had lost both; `routes_by_mode` now asserts them); a resume that raises is given back to the router for the next pass; one signal's failure no longer stops the sweep (`_end_stranded`, under `_placing`); the recovery and the sweep share one predicate (`router.unplaced_entry`: Triggered and auto, or a passed Take). Declined: bounding the sweep's scan to recent dates (the stranded rows are few; a row of unknown outcome is re-read each minute until reconciliation moves it) and replacing the in-memory stranded set with a query (the set only adds the in-process failures; recovery re-reads the database). Nothing was narrowed.
 - PR 51: `PlacementCheck` carries the dated live price (`ltp`, `ltp_refusal`, read by `daily/live.py:LivePrices`; its own checks are `verify-live-data`'s `bars.*`), and `placement_refusal` refuses no price with its code and a price at or below the signal's stop (`price_at_or_below_stop`). `LiveRoute.check` and its callers take the instrument. The unused `PlacementCheck.of` was removed. `router.take_rechecks_max_chase` gained an `@example` at the stop: the drawn conditions did not reach it in the derandomized run (break recorded below). Nothing was narrowed.
 - PR 12: `open_entry` and `close_position` take a fill model (`FillModel`; the default `SHADOW_FILLS` fills at the reference price with no fees, as before), and `position_state` exposes the pinned stack and state `evaluate_position` reads. The backtest passes its own fills (slippage and charges, `verify-backtest`). The shadow checks here were re-run unchanged and pass; no property was narrowed.
@@ -2357,6 +2360,63 @@ Break: `StopDesk.swap` returns `SWAPPED` even when a day-stop cancel failed.
 ```
 E   assert [] == [UUID('...')]
 ```
+
+### PBT manage.unfilled_entry_cancelled
+
+Break: (PR 49) `cancel_reason` counts the trigger bar's own close (`triggered_at < at` became `<=`).
+
+```
+E   AssertionError: (1, False)
+```
+
+Break: (PR 49) `cancel_reason` needs more than the timeout (`>=` became `>`).
+
+```
+E   AssertionError: (60, False)
+```
+
+Break: (PR 49) `EntryWatch.due` reads no closes (`closes=()`).
+
+```
+E   AssertionError: (12, True)
+```
+
+Break: (PR 49) `StopDesk.cancel_unfilled_entry` does not check for a fill (the position check removed).
+
+```
+E   assert not rig.manager.cancel_unfilled_entry(session, outcome.signal_id, now)
+E   AssertionError: assert not True
+```
+
+Break: (PR 49) `EntryWatch.due` names an Open signal too (`state.in_((ENTRY_PLACED, OPEN))`).
+
+```
+E   assert due == []
+E   AssertionError: assert [UUID('01a166...91563ec9ed5')] == []
+```
+
+Break: (PR 49) `EntryWatch.due` does not read the order's status (`HatOrder.status == WORKING` removed): a part-filled order and a rejected earlier attempt are named.
+
+```
+    |     assert due == []
+    | AssertionError: assert [UUID('01a166...06d4340a6bd')] == []
+    |     assert asked == int(want), (minute, broke)
+    | AssertionError: (30, False)
+```
+
+Break: (PR 49) `StopDesk.cancel_unfilled_entry` does not read the order's status (`or part is not None` removed).
+
+```
+E   AssertionError: assert not True
+E   Failing explicit example: test_unfilled_entry_cancelled(
+E       closes=[0, -1],
+E       checks=[20],
+E       timeout=60,
+E       filled_before=0,
+E       seen_first=True,
+```
+
+Two first versions passed and were simplified: `cancel_reason` also required the bar's final instant by `now` (bars are only seen once final, so the clause could not fail), and `due` also filtered on no position, on the mode and on a real order, each redundant with the signal's state or the desk's own filters (a break of any one alone passed); they were removed. The order's status filter, first removed this way, came back with the `retried` and `seen_first` dimensions that make it fail. Ordering a signal's rows by placement and keeping the latest also passed its break (only one row of a signal is `placed`) and was not kept.
 
 ### PBT manage.entry_remainder_tracked
 

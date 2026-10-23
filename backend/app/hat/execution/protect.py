@@ -14,6 +14,10 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   at the broker, so it cannot fill under a position HAT is closing. The position closes only once
   the broker shows the entry ended; a fill that lands first adds to it and is protected. Each
   entry's cancel is sent once per desk, again only after the broker could not be reached.
+- **An entry nothing of which filled** (`cancel_unfilled_entry`, PR 49): cancelled at the
+  broker the same way when its break failed or it waited too long (`entry_timeout.EntryWatch`
+  decides). One that filled in part keeps its remainder working (the partial-entry policy, 07
+  §4).
 - **When the stop rises** (`follow`): the working stop is modified up to the new price (day:
   `modify_order`; GTT: `modify_gtt`, event `gtt.refreshed`), never down (nor by the verify).
   The broker trigger is the stop rounded down to the instrument's tick, so it is never above
@@ -57,7 +61,7 @@ import threading
 import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_FLOOR, Decimal
 
 from sqlalchemy import select
@@ -679,10 +683,36 @@ class StopDesk:
         position = session.get(HatPosition, position_id)
         if position is None:
             return
-        today = trade_date_of(self._wall())
+        self._cancel_entries(session, position.signal_id, trade_date_of(self._wall()))
+
+    def cancel_unfilled_entry(self, session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
+        """Cancel the signal's real entry while nothing of it has filled (PR 49): its break
+        failed or it waited too long. An entry with a fill (a real position, or a part fill the
+        broker reported) is left working: the partial-entry policy keeps the remainder until the
+        close (07 §4). The cancel is the one `cancel_entry` sends; the signal ends Cancelled when
+        the fill sync sees the order end with nothing filled, and a fill that lands first opens
+        the position as any fill does. True when the broker took a cancel."""
+        filled = session.scalar(
+            select(HatPosition.id).where(
+                HatPosition.signal_id == signal_id, HatPosition.is_virtual.is_(False)
+            )
+        )
+        part = session.scalar(
+            select(HatOrder.id).where(
+                HatOrder.signal_id == signal_id,
+                HatOrder.purpose == ENTRY,
+                HatOrder.status.in_(("partially_filled", "filled")),
+            )
+        )
+        if filled is not None or part is not None:
+            return False
+        return self._cancel_entries(session, signal_id, trade_date_of(now))
+
+    def _cancel_entries(self, session: Session, signal_id: uuid.UUID, today: date) -> bool:
+        asked = False
         for row in session.scalars(
             select(HatOrder).where(
-                HatOrder.signal_id == position.signal_id,
+                HatOrder.signal_id == signal_id,
                 HatOrder.purpose == ENTRY,
                 HatOrder.is_virtual.is_(False),
                 HatOrder.status.in_(LIVE),
@@ -698,8 +728,11 @@ class StopDesk:
             ack = self._broker.cancel_order(row.broker_order_id)
             if ack.ok or ack.code not in CODES_NOT_SENT:
                 self._entry_cancels.add(row.id)
-            if not ack.ok:
+            if ack.ok:
+                asked = True
+            else:
                 logger.warning("entry %s remainder not cancelled (%s)", row.tag, ack.code)
+        return asked
 
     def make_room(self, session: Session, position_id: uuid.UUID, keep: int, now: datetime) -> bool:
         """Before a sale: shrink the position's resting stops to the `keep` shares that stay

@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `21eb2143642762e63b6162123d157f15afacbda015c66e0029c4ab8e9f0620f3`
+Covered digest: `cb2afe9faeb0a838360422edb107d90e0ad461fd85561eedc109b486780a6671`
 
 ## Scope changes
 
@@ -118,6 +118,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33 added the `hat_quality_quarantine` table (`models/ops.py`; 03 §7, HAT-SCH-070): `schema.backtest_ops_columns` now covers nine ops tables and `schema.sqlite_create_all` expects 43 tables. Its `released_by` CHECK is new; the quarantine itself is checked by `verify-data`. Nothing was narrowed.
 - PR 34 (design review item 8a, HAT-PORT-050): `hat_allocation_daily` gains the nullable `virtual_capital` and `virtual_risk_pct` (03 §portfolio); an existing Postgres database gets them from `ensure_hat_columns`. Checked by `verify-portfolio`'s allocator properties. Nothing was narrowed.
 - PR 47: `HatSettings.exdate_gtt_check` (`HAT_EXDATE_GTT_CHECK`, default off); its break is recorded under `ops.ex_date_job_behind_flag` in `verify-scheduler`. Nothing was narrowed.
+- PR 49: `HatSettings.entry_timeout_minutes` (`HAT_ENTRY_TIMEOUT_MINUTES`, a positive whole number, else 60); proved by `bars.live_flags_parsed` in `verify-live-data` (break recorded there). Nothing was narrowed.
 - PR 50: `HatSettings.broker_calls_per_second`, `_per_minute`, `_per_day` (`HAT_BROKER_CALLS_PER_*`, defaults 8, 180, 5,000; `0` or `off` lifts the day cap only); proved by `fyers_broker.limits_from_settings`, whose breaks are recorded in `verify-execution`. Nothing was narrowed.
 
 ## Scratch breaks
