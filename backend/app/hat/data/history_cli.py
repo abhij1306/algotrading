@@ -1,0 +1,238 @@
+"""The historical build's command line (HAT-DATA-090..097, HAT-DEC-I2).
+
+    python -m app.hat.data.history_cli [--from 2011-06-22] [--to YYYY-MM-DD] [--resume]
+
+Runs `history_build.run_history_build` by hand, once, against the real NSE archive and the two
+MCP servers: about 4,000 bhavcopy zips at about one per second (roughly 70 minutes), then
+corporate actions, index history and a check of 50 random symbol-days against
+`get_stock_history`. `--resume` skips every day already downloaded or known to have no file.
+
+Environment: `HAT_DATA_ROOT` (data directory); the NSE bhavcopy MCP endpoint variable of the ops
+spec (corporate actions, recent index history and validation; without it those steps are
+skipped and the index comes from NSE's daily index archive alone); a PostgreSQL database as for
+the rest of HAT (`DB_*`). Add `--skip-actions`, `--skip-index` or
+`--skip-validation` to leave a step out.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from datetime import date, datetime
+from pathlib import Path
+
+from sqlalchemy import select
+
+from ..settings import operator_settings, process_env
+from ..time import IST
+from . import corporate_actions as ca
+from .bhavcopy import FIRST_ISIN_DAY
+from .history_build import (
+    ActionHooks,
+    BuildPlan,
+    BuildReport,
+    BuildSteps,
+    DbCatalog,
+    run_history_build,
+)
+from .history_validation import Validation, mcp_close_source
+from .index_history import ArchiveIndexSource, IndexSource, archive_fill_source, mcp_index_source
+from .mcp_client import McpClient
+from .pacing import Pacer
+from .run_report import save_report
+from .store import DataStore
+
+logger = logging.getLogger(__name__)
+
+REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD.txt per run day
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(prog="python -m app.hat.data.history_cli", description=__doc__)
+    p.add_argument("--from", dest="start", type=date.fromisoformat, default=FIRST_ISIN_DAY)
+    p.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
+    p.add_argument("--resume", action="store_true", help="skip days already downloaded or empty")
+    p.add_argument("--interval", type=float, default=1.0, help="seconds between requests")
+    p.add_argument("--seed", type=int, default=0, help="seed of the validation sample")
+    p.add_argument(
+        "--actions-archive", help="an NSE corporate-action CSV (SYMBOL, PURPOSE, EX-DATE)"
+    )
+    p.add_argument("--skip-actions", action="store_true")
+    p.add_argument("--skip-index", action="store_true")
+    p.add_argument("--skip-validation", action="store_true")
+    return p.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+    end = args.end or date.today()
+    settings = operator_settings()  # before the database module, which reads .env too
+    from app.database import SessionLocal
+
+    from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
+    from . import calendar as hat_calendar
+    from .bhavcopy import http_fetcher
+    from .instruments import resolve_symbol
+    from .mcp_client import client_from_env
+
+    logging.basicConfig(level=logging.INFO)
+    store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+    with SessionLocal() as session:
+        market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
+        if market_id is None:
+            sys.stderr.write("history_no_market\n")
+            return 2
+        calendar = hat_calendar.session_calendar(session)
+        holidays = calendar.holidays() if calendar else frozenset()
+    client = client_from_env(process_env())
+
+    def instruments() -> dict[str, object]:
+        # read when the actions are loaded, so securities registered by the build are included;
+        # a symbol several instruments share asks once, for the active one (then the lowest id)
+        with SessionLocal() as session:
+            rows = session.execute(
+                select(HatInstrument.id, HatInstrument.symbol, HatInstrument.active).where(
+                    HatInstrument.market_id == market_id
+                )
+            ).all()
+        chosen: dict[str, object] = {}
+        for instrument_id, symbol, _active in sorted(rows, key=lambda r: (not r[2], r[0].bytes)):
+            chosen.setdefault(symbol, instrument_id)
+        return chosen
+
+    def resolve(symbol: str, on: date) -> object | None:
+        with SessionLocal() as session:
+            found = resolve_symbol(session, market_id, symbol, on)
+            return None if found is None else found.id
+
+    def sink(records: Sequence[ca.ActionRecord]) -> ca.LoadReport:
+        with SessionLocal() as session:
+            result = ca.load_actions(session, records)
+            session.commit()
+            return result
+
+    fetch = http_fetcher()
+    pacer = Pacer(
+        min_interval=args.interval
+    )  # one pacer: the bhavcopy and index files share a host
+    index_source: IndexSource | None = None
+    if not args.skip_index:
+        index_source = ArchiveIndexSource(store, fetch, pacer)
+        if client is not None:
+            index_source = archive_fill_source(mcp_index_source(client), index_source)
+    hooks = None
+    if not args.skip_actions and (client is not None or args.actions_archive):
+        sources = ActionSources(client, instruments, resolve, args.actions_archive)
+        hooks = _action_hooks(sources, args.start, end, sink)
+    report = run_history_build(
+        BuildPlan(
+            store=store,
+            fetch=fetch,
+            catalog=DbCatalog(SessionLocal, market_id),
+            start=args.start,
+            end=end,
+            holidays=holidays,
+            resume=args.resume,
+        ),
+        BuildSteps(
+            pacer=pacer,
+            actions=hooks,
+            index_source=index_source,
+            validation=Validation(mcp_close_source(client), seed=args.seed)
+            if client is not None and not args.skip_validation
+            else None,
+        ),
+    )
+    summary = _summary(report)
+    sys.stdout.write(summary)
+    save_report(settings.data_root / REPORT_DIR, summary, datetime.now(IST))
+    return _exit_code(report)
+
+
+def _exit_code(report: BuildReport) -> int:
+    """Non-zero when anything needs the operator: a mismatch, an unplaced security, an unusable
+    file, a day with no file that is not a holiday, an action lookup or an index that failed."""
+    failed = report.validation is not None and report.validation.failed
+    incomplete = report.unresolved or report.problems or report.days.gaps or report.days.unaccounted
+    index_failed = report.index is not None and report.index.failed
+    return 1 if failed or incomplete or report.action_symbols_failed or index_failed else 0
+
+
+@dataclass(frozen=True)
+class ActionSources:
+    """Where the build's corporate actions come from: the MCP (None: not configured), the
+    instruments to ask it for (symbol to instrument id, read when the actions are loaded), the
+    instrument a symbol named on an ex-date (the symbol history, for the archive) and an
+    operator-supplied NSE archive CSV."""
+
+    client: McpClient | None
+    instruments: Callable[[], Mapping[str, object]]
+    resolve: Callable[[str, date], object | None]
+    archive: str | None = None
+
+
+def _action_hooks(
+    sources: ActionSources,
+    start: date,
+    end: date,
+    sink: Callable[[Sequence[ca.ActionRecord]], ca.LoadReport],
+) -> ActionHooks:
+    """Actions from the MCP (first, `corporate_actions.lookup_actions`, the nightly lookup) and
+    the archive CSV (fallback); the sink keeps the first value per key. A failed, partial or
+    unreadable MCP page is counted; an archive row naming a split, bonus or consolidation
+    without a usable ratio, or a symbol no instrument held on its ex-date, is reported
+    (HAT-DATA-055), never dropped."""
+
+    def loader() -> tuple[list[ca.ActionRecord], int, list[str]]:
+        found = ca.ActionLookup()
+        if sources.client is not None:
+            found = ca.lookup_actions(sources.client, sources.instruments(), start, end)
+        records = list(found.records)
+        unparsed: list[str] = []
+        if sources.archive:
+            text = Path(sources.archive).read_text(encoding="utf-8")
+            parsed = ca.from_archive_csv(text, sources.resolve)
+            records.extend(parsed.records)
+            unparsed.extend(parsed.unparsed)
+            for purpose in parsed.unparsed:
+                logger.warning("archive action not parsed: %s", purpose)
+        return records, len(found.failed), unparsed
+
+    return ActionHooks(loader, sink)
+
+
+def _summary(report: BuildReport) -> str:
+    lines = [
+        f"downloaded {len(report.download.downloaded)}, already had "
+        f"{len(report.download.already_have)}, no file {len(report.download.candidates)}, "
+        f"errors {len(report.download.errors)}",
+        f"rows written {report.rows_written} in {report.files_written} files",
+        f"holiday candidates explained {len(report.days.holidays)}, "
+        f"gaps (not on the holiday list) {len(report.days.gaps)}",
+        f"unaccounted days {len(report.days.unaccounted)}, "
+        f"action lookups failed or partial {report.action_symbols_failed}, "
+        f"archive actions not parsed {len(report.actions_unparsed)}",
+        f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
+        f"left out {dict(report.left_out)}",
+    ]
+    if report.index is not None:
+        missing = {name: len(days) for name, days in report.index_missing.items() if days}
+        lines.append(
+            f"index: {report.index.days_written} days, {report.index.points} rows, "
+            f"failed {report.index.failed}, missing days {missing}"
+        )
+    if report.validation is not None:
+        lines.append(
+            f"validation: {len(report.validation.samples)} samples, "
+            f"{len(report.validation.mismatches)} mismatches, "
+            f"{len(report.validation.unchecked)} unchecked, row counts for "
+            f"{len(report.validation.row_counts)} days"
+        )
+    return "\n".join(lines) + "\n"
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

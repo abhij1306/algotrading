@@ -63,7 +63,7 @@ from .bars_store import COVERAGE_NAME
 from .bars_store import DATASET as DATASET_5M
 from .bars_store import REJECTS as DATASET_REJECTS
 from .identity import Interval, Sibling, kept_id, merge_symbol_history, series_rank
-from .store import DATASET_BARS, RAW_DIR
+from .store import DATASET_BARS, RAW_DIR, atomic_replace
 
 __all__ = [
     "DROPPABLE",
@@ -595,10 +595,7 @@ def _mapped(table: pa.Table, mapping: Mapping[str, str]) -> tuple[pa.Table, int]
 
 
 def _write_parquet(table: pa.Table, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    pq.write_table(table, temp)
-    os.replace(temp, target)
+    atomic_replace(target, lambda tmp: pq.write_table(table, tmp))
 
 
 def _rekey_parquet(
@@ -640,10 +637,8 @@ def _rekey_coverage(source: Path, target: Path, mapping: Mapping[str, str]) -> N
         "gap_from": raw.get("gap_from"),
         "seen_until": raw.get("seen_until"),
     }
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    temp.write_text(json.dumps(body), encoding="utf-8")
-    os.replace(temp, target)
+    text = json.dumps(body)
+    atomic_replace(target, lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
 
 def _link_or_copy(source: Path, target: Path, immutable: bool, report: RekeyReport) -> None:

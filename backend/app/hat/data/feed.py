@@ -34,6 +34,7 @@ from typing import Any, Protocol
 from app.hat.clock import SYSTEM_CLOCK, Clock
 
 from ..risk.sessions import SessionCalendar
+from ..time import IST
 from .calendar import session_calendar
 from .provider.data_socket import SocketFactory, TokenSource
 from .provider.fyers_websocket import fyers_socket_factory, session_token_valid
@@ -47,7 +48,6 @@ from .provider.provider_session import (
     spawn_daemon_thread,
 )
 from .provider.ticks import TickPayload, normalize_tick
-from .sessions import IST
 from .subscriptions import SubscriptionRegistry
 from .symbols import SymbolMaster, symbol_master
 

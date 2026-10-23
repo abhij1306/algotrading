@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.hat.clock import SYSTEM_CLOCK, Clock, require_aware
-from app.hat.data.sessions import IST
+
+IST = ZoneInfo("Asia/Kolkata")  # NSE's exchange zone
 
 __all__ = ["IST", "as_utc", "day_bounds", "trade_date_of", "utc_now"]
 

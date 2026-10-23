@@ -29,7 +29,7 @@ from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 from app.paths import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)

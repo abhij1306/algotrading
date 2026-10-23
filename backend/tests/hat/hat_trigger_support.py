@@ -15,10 +15,10 @@ from typing import Any
 import yaml
 
 from app.hat.data.bars import Bar, BarBuilder, Tick
-from app.hat.data.sessions import IST
 from app.hat.engine.strategy.config import Playbook, StrategyConfig, parse_config
 from app.hat.engine.strategy.versions import seed_text
 from app.hat.engine.trigger import Candidate, DailyInputs, Trigger, TriggerMonitor
+from app.hat.time import IST
 
 DAY = date(2026, 10, 21)
 BOT = uuid.UUID("00000000-0000-7000-8000-0000000000c1")

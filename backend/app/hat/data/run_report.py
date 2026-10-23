@@ -11,7 +11,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from .sessions import IST
+from ..time import IST
 
 logger = logging.getLogger(__name__)
 

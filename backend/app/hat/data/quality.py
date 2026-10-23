@@ -46,8 +46,9 @@ from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..risk.controls import sync_health
 from ..time import utc_now
 from .corporate_actions import PRICE_NEUTRAL_TYPES
-from .ingest import JOB_INGEST, active_universe, has_required_indices, moved_over_limit
+from .ingest import JOB_INGEST, has_required_indices, moved_over_limit
 from .store import DATASET_BARS, DataStore
+from .universe import active_members
 
 JOB_QUALITY = "quality.gate"
 COVERAGE_PERCENT = 99  # [A] HAT-DATA-060: at least 99% of the active universe
@@ -272,7 +273,7 @@ def gate_inputs(
 ) -> dict[str, Any]:
     """What `evaluate` needs, read from the universe, the day's stored bars, the corporate
     actions and the index rows."""
-    members = {str(m.instrument_id) for m in active_universe(session)}
+    members = {str(m.instrument_id) for m in active_members(session)}
     frame = store.read_bars(trade_date)
     rows = [
         (r["instrument_id"], r["close"], r["prev_close"])

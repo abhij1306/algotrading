@@ -120,7 +120,6 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from ..data.identity import series_as_of
-from ..data.sessions import IST
 from ..engine import exits, lifecycle, positions, trades, trigger, watchlist
 from ..engine.confidence import BACKTEST_CONFIDENCE
 from ..engine.portfolio import regime as regime_v1
@@ -146,7 +145,7 @@ from ..risk.decision import SignalContext
 from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
 from ..risk.sessions import SessionCalendar, SessionDay
-from ..time import as_utc
+from ..time import IST, as_utc
 from .data import Bar, MarketData, MarketView, industry_on
 from .fillrules import first_trigger, lower_circuit_locked, pre_break_low, upper_circuit_locked
 from .fills import (

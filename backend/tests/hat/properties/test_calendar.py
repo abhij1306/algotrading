@@ -9,7 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from app.hat.data import calendar as cal
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 
 CalSpec = tuple[time, time, dict[date, cal.CalendarDay]]
 WINDOW_START = date(2026, 1, 1)

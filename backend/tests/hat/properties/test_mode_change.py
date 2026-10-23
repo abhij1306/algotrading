@@ -7,7 +7,6 @@ from hat_risk_support import CALENDAR, TRADE_DAY
 from hypothesis import given
 from hypothesis import strategies as st
 
-from app.hat.data.sessions import IST
 from app.hat.risk.modes import (
     MODE_VALUES,
     Mode,
@@ -16,6 +15,7 @@ from app.hat.risk.modes import (
     plan_mode_change,
     queued_mode_at,
 )
+from app.hat.time import IST
 
 instants = st.datetimes(
     min_value=datetime(2026, 10, 12), max_value=datetime(2026, 10, 30), timezones=st.just(IST)

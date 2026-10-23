@@ -18,7 +18,6 @@ from hat_risk_support import (
 from hypothesis import given
 from hypothesis import strategies as st
 
-from app.hat.data.sessions import IST
 from app.hat.risk import kill
 from app.hat.risk.decision import Reason
 from app.hat.risk.kill import EquityPoint
@@ -36,6 +35,7 @@ from app.hat.risk.policy import (
 )
 from app.hat.risk.service import evaluate_signal, price_band_ok
 from app.hat.settings import load_settings
+from app.hat.time import IST
 
 SEED = seed_policy()
 # --- global open risk ---

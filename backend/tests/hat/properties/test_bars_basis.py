@@ -13,7 +13,7 @@ from app.hat.data.bars_basis import (
     to_raw,
 )
 from app.hat.data.minute_history import HistoryLimits, _Loaded, parse_candles, screen
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 
 OPEN = datetime(2026, 10, 20, 9, 15, tzinfo=IST)
 EPOCH = int(OPEN.timestamp())

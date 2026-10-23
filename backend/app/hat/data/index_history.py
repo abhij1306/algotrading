@@ -1,0 +1,259 @@
+"""Index history: NIFTY 50, NIFTY 500, Smallcap 250 and India VIX (HAT-DATA-095).
+
+The MCP's `get_index_history` keeps about two years; NSE's daily index archive
+(`ind_close_all_DDMMYYYY.csv`) fills the days before. The history build loads both
+(`load_index_history`), and the nightly ingest reads the archive file's levels for one day
+(`parse_index_archive_csv`).
+"""
+
+from __future__ import annotations
+
+import csv
+import io
+import logging
+from collections import defaultdict
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
+from datetime import date, timedelta
+
+from ..errors import HatError
+from ..money import exact
+from .bhavcopy import Fetcher
+from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
+from .pacing import Pacer
+from .store import DATASET_BARS, DataStore, IndexRow
+
+logger = logging.getLogger(__name__)
+
+NIFTY_50 = "NIFTY 50"
+NIFTY_500 = "NIFTY 500"
+INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
+MCP_HISTORY_MONTHS = 12
+# [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
+INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
+# [A] Names the archive used before NSE's 2015 renaming; read as today's names.
+INDEX_ALIASES = {
+    "CNX NIFTY": NIFTY_50,
+    "S&P CNX NIFTY": NIFTY_50,
+    "CNX 500": NIFTY_500,
+    "S&P CNX 500": NIFTY_500,
+}
+
+
+@dataclass(frozen=True)
+class IndexPoint:
+    day: date
+    row: IndexRow
+
+
+IndexSource = Callable[[str, date, date], Iterable[IndexPoint]]
+
+
+def index_point_from_mcp(name: str, row: dict) -> IndexPoint | None:
+    """One `get_index_history` row; None when a value or the date is missing."""
+    day = parse_data_date(row.get("date"))
+    values = [
+        exact(row.get(k), floats=True, grouped=True) for k in ("open", "high", "low", "close")
+    ]
+    if day is None or any(v is None for v in values):
+        return None
+    o, h, low, c = values
+    assert o is not None
+    assert h is not None
+    assert low is not None
+    assert c is not None
+    return IndexPoint(day, IndexRow(name.upper(), o, h, low, c))
+
+
+def _chunks(client: McpClient, name: str, start: date, end: date) -> Iterator[list[dict]]:
+    """The `get_index_history` chunks (12 months each) back from `end` to `start`, newest first.
+    A "no data" answer is the server's depth and ends them; any other failure raises."""
+    cursor: date | None = end
+    while cursor is not None and cursor >= start:
+        try:
+            rows, nxt = client.index_history(name, cursor, MCP_HISTORY_MONTHS)
+        except McpError as exc:
+            if exc.code == CODE_NO_DATA:
+                return
+            raise
+        yield rows
+        cursor = nxt if nxt is not None and nxt < cursor else None
+
+
+def mcp_index_source(client: McpClient) -> IndexSource:
+    """Chain `get_index_history` chunks back from `end` to `start` (`_chunks`), keeping the
+    readable rows inside the range."""
+
+    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        points = (
+            index_point_from_mcp(name, row)
+            for rows in _chunks(client, name, start, end)
+            for row in rows
+        )
+        for point in points:
+            if point is not None and start <= point.day <= end:
+                yield point
+
+    return source
+
+
+def parse_index_archive_csv(
+    text: str, day: date, names: Collection[str] = INDEX_NAMES
+) -> list[IndexPoint]:
+    """NSE's `ind_close_all_DDMMYYYY.csv` rows for the wanted indices."""
+    wanted = {n.upper() for n in names}
+    points = []
+    for raw in csv.DictReader(io.StringIO(text)):
+        row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+        name = row.get("index name", "").upper()
+        name = INDEX_ALIASES.get(name, name)
+        if name not in wanted:
+            continue
+        values = [
+            exact(row.get(k), floats=True, grouped=True)
+            for k in (
+                "open index value",
+                "high index value",
+                "low index value",
+                "closing index value",
+            )
+        ]
+        if any(v is None for v in values):
+            continue
+        o, h, low, c = values
+        assert o is not None
+        assert h is not None
+        assert low is not None
+        assert c is not None
+        points.append(IndexPoint(day, IndexRow(name, o, h, low, c)))
+    return points
+
+
+CODE_INDEX_ARCHIVE = "index_archive_error"
+
+
+class IndexArchiveError(HatError):
+    """An index archive file could not be fetched or held no index row; raised after the rows
+    that were available, so the index keeps them and is reported failed."""
+
+    code = CODE_INDEX_ARCHIVE
+
+
+def index_archive_name(day: date) -> str:
+    return f"ind_close_all_{day:%d%m%Y}.csv"
+
+
+class ArchiveIndexSource:
+    """Index rows from NSE's daily `ind_close_all_DDMMYYYY.csv`, for the days that have bars.
+    One file serves every index: it is fetched at most once per run, on the bhavcopy
+    downloader's pacer (the same host), and kept untouched under `raw/` so a later run reads it
+    from disk. A day NSE has no file for stays missing (reported by the coverage); a failed
+    fetch, or an answer with no index row (never kept, so the next run asks again), fails the
+    indices that needed it."""
+
+    def __init__(
+        self, store: DataStore, fetch: Fetcher, pacer: Pacer, names: Collection[str] = INDEX_NAMES
+    ) -> None:
+        self._store = store
+        self._fetch = fetch
+        self._pacer = pacer
+        self._names = names
+        self._points: dict[date, list[IndexPoint]] = {}
+        self._bar_days: list[date] | None = None
+        self.requested: list[date] = []
+        self.not_found: list[date] = []
+        self.errors: list[date] = []
+
+    def __call__(self, name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        wanted = name.upper()
+        if self._bar_days is None:
+            self._bar_days = self._store.days(DATASET_BARS)
+        days = [d for d in self._bar_days if start <= d <= end]
+        for day in days:
+            yield from (p for p in self._day(day) if p.row.index_name == wanted)
+        if any(day in self.errors for day in days):
+            raise IndexArchiveError(CODE_INDEX_ARCHIVE)
+
+    def _day(self, day: date) -> list[IndexPoint]:
+        if day not in self._points:
+            self._points[day] = self._read(day)
+        return self._points[day]
+
+    def _read(self, day: date) -> list[IndexPoint]:
+        name = index_archive_name(day)
+        if self._store.raw_exists(name):
+            return self._parse(self._store.read_raw(name), day)
+        self._pacer.wait()
+        self.requested.append(day)
+        result = self._fetch(INDEX_ARCHIVE_URL + name)
+        if result.status == "not_found":
+            self.not_found.append(day)
+            return []
+        points = self._parse(result.data, day) if result.status == "ok" else []
+        if not points:  # an error, or an answer that is no index file (a block page, a cut body)
+            self.errors.append(day)
+            return []
+        self._store.store_raw(name, result.data)
+        return points
+
+    def _parse(self, data: bytes, day: date) -> list[IndexPoint]:
+        return parse_index_archive_csv(data.decode("utf-8-sig", errors="replace"), day, self._names)
+
+
+def archive_fill_source(primary: IndexSource, archive: IndexSource) -> IndexSource:
+    """The primary source (the MCP) first; the archive fills the days before its first row, or
+    the whole range when it has none. A failure of either is raised after every row both could
+    give (the primary's first), so the index keeps them and is still reported failed."""
+
+    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        points: list[IndexPoint] = []
+        failure: Exception | None = None
+        try:
+            points.extend(primary(name, start, end))  # keeps the rows taken before a failure
+        except Exception as exc:  # re-raised below, after the archive fill
+            failure = exc
+        yield from points
+        first = min((p.day for p in points), default=end + timedelta(days=1))
+        if first > start:
+            try:
+                yield from archive(name, start, first - timedelta(days=1))
+            except Exception as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+
+    return source
+
+
+@dataclass
+class IndexLoadReport:
+    days_written: int = 0
+    points: int = 0
+    failed: dict[str, str] = field(default_factory=dict)  # index -> stable code
+
+
+def load_index_history(
+    store: DataStore,
+    source: IndexSource,
+    start: date,
+    end: date,
+    names: Sequence[str] = INDEX_NAMES,
+) -> IndexLoadReport:
+    """Pull every index, then write each day once with all its indices (idempotent). An index
+    whose source fails is recorded with a stable code and keeps the rows it already gave; the
+    other indices still load."""
+    by_day: dict[date, dict[str, IndexRow]] = defaultdict(dict)
+    report = IndexLoadReport()
+    for name in names:
+        try:
+            for point in source(name, start, end):
+                by_day[point.day][point.row.index_name] = point.row
+        except Exception as exc:  # one index never stops the others, validation or the report
+            code = getattr(exc, "code", None)
+            report.failed[name] = code if isinstance(code, str) else "index_source_failed"
+            logger.warning("index history %s failed: %s", name, report.failed[name])
+    for day in sorted(by_day):
+        store.upsert_index(day, list(by_day[day].values()))
+        report.days_written += 1
+        report.points += len(by_day[day])
+    return report

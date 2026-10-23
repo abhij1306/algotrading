@@ -20,8 +20,9 @@ from enum import StrEnum
 from fractions import Fraction
 
 from app.hat.clock import require_aware
-from app.hat.data.sessions import IST, SESSION_OPEN
+from app.hat.data.sessions import SESSION_OPEN
 from app.hat.money import exact
+from app.hat.time import IST
 
 __all__ = [
     "INDICATIVE_OPEN_FIELDS",

@@ -28,7 +28,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 
 from ..models import HatInstrument, HatJobRun, HatMarket
 from ..money import exact

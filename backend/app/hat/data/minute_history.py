@@ -43,7 +43,7 @@ import logging
 import sys
 import time
 import uuid
-from collections import Counter, deque
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -52,22 +52,16 @@ from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from ..broker_limits import FYERS_CODE_RATE_LIMITED, PLAN_CALLS_PER_DAY
 from ..clock import SYSTEM_CLOCK, Clock
 from ..errors import HatError
-from ..models import HatBrokerSymbol, HatInstrument, HatMarket
-from ..models.strategy import BROKER_FYERS
 from ..money import MONEY_SCALE, exact
-from ..time import as_utc, trade_date_of
+from ..time import IST, as_utc, trade_date_of
 from .bars import Bar, BarBuilder, Tick
 from .bars_basis import DailyRange, RawBasis, check_day, store_daily, to_raw
 from .bars_store import BarStore, RejectRow
-from .ingest import UNIVERSE_SERIES
+from .pacing import DayLimitError, Pacer, Sleep
 from .run_report import save_report
-from .sessions import IST
 from .store import DataStore, atomic_replace
 
 if TYPE_CHECKING:
@@ -77,7 +71,6 @@ __all__ = [
     "CHUNK_DAYS",
     "PROGRESS_FILE",
     "REJECT_RULES",
-    "CallPacer",
     "HistoryCall",
     "HistoryLimits",
     "HistoryReport",
@@ -88,7 +81,7 @@ __all__ = [
     "Rejected",
     "aggregate",
     "candle_prints",
-    "history_universe",
+    "history_pacer",
     "load_minute_history",
     "main",
     "parse_candles",
@@ -98,7 +91,6 @@ __all__ = [
 
 CHUNK_DAYS = 100  # the most days of 1-minute candles one history request may span
 _MINUTE = timedelta(minutes=1)
-_WINDOW = timedelta(minutes=1)  # the per-minute call budget's window
 _PLAN_REFUSAL = "historical data available for your plan"
 LEGACY_PLAN_DAYS = 365  # the Standard plan's depth, which a progress file without one was under
 # Codes that end the run (the rest fail one symbol): the day's call budget is spent (by our count
@@ -346,9 +338,6 @@ class HistoryLimits:
         return cls(**values)
 
 
-Sleep = Callable[[float], None]
-
-
 @dataclass
 class Progress:
     """What a download has done, kept across runs: history calls per IST day (the daily budget
@@ -419,56 +408,36 @@ class Progress:
         return span is not None and span[0] <= start and span[1] >= end
 
 
-class CallPacer:
-    """Makes each history call within the budget: at most `per_minute` calls in any 60 seconds
-    (it sleeps until the oldest leaves the window) and at most `per_day` in an IST day (both
-    kept in `progress`, so a restart shares the minute and the day; one more call than the day
-    allows raises `history_daily_limit`). The progress is saved before every call: the count
-    must survive a crash.
-    A call counts when it is made, whatever it answers."""
+def history_pacer(
+    limits: HistoryLimits,
+    progress: Progress,
+    *,
+    clock: Clock = SYSTEM_CLOCK,
+    sleep: Sleep = time.sleep,
+) -> Pacer:
+    """The history calls' pacer: at most `per_minute` calls in any 60 seconds and `per_day` in
+    an IST day, both kept in `progress` (saved before every call: the count must survive a
+    crash), so a restart shares the minute and the day."""
+    return Pacer(
+        per_minute=limits.per_minute,
+        per_day=limits.per_day,
+        state=progress,
+        clock=clock,
+        sleep=sleep,
+    )
 
-    def __init__(
-        self,
-        limits: HistoryLimits,
-        progress: Progress,
-        *,
-        clock: Clock = SYSTEM_CLOCK,
-        sleep: Sleep = time.sleep,
-    ) -> None:
-        self._limits = limits
-        self._progress = progress
-        self._clock = clock
-        self._sleep = sleep
-        # seeded from the progress: a run started right after another sees its last minute
-        self._recent: deque[datetime] = deque(sorted(progress.recent))
-        self.made = 0
-        self.last_day: date | None = None  # the IST day of the last call made
 
-    def today(self) -> date:
-        return self._clock.now().astimezone(IST).date()
-
-    def call(self, history: HistoryCall, request: dict[str, str]) -> object:
-        now = self._clock.now()
-        while True:
-            while self._recent and self._recent[0] <= now - _WINDOW:
-                self._recent.popleft()
-            if len(self._recent) < self._limits.per_minute:
-                break
-            self._sleep((self._recent[0] + _WINDOW - now).total_seconds())
-            now = self._clock.now()
-        day = now.astimezone(IST).date().isoformat()  # after any wait: the day the call is made
-        if self._progress.calls.get(day, 0) >= self._limits.per_day:
-            raise MinuteHistoryError("history_daily_limit")
-        self._recent.append(now)
-        self._progress.recent = list(self._recent)
-        self._progress.calls[day] = self._progress.calls.get(day, 0) + 1
-        self.made += 1
-        self.last_day = date.fromisoformat(day)
-        self._progress.save()
-        try:
-            return history(request)
-        except Exception as exc:  # the SDK's text never leaves this module
-            raise MinuteHistoryError("history_failed") from exc
+def _call(pacer: Pacer, history: HistoryCall, request: dict[str, str]) -> object:
+    """One history call within the budget; one more than the day allows raises
+    `history_daily_limit`. A call counts when it is made, whatever it answers."""
+    try:
+        pacer.wait()
+    except DayLimitError as exc:
+        raise MinuteHistoryError("history_daily_limit") from exc
+    try:
+        return history(request)
+    except Exception as exc:  # the SDK's text never leaves this module
+        raise MinuteHistoryError("history_failed") from exc
 
 
 def _plan_refused(response: Mapping[str, object]) -> bool:
@@ -580,18 +549,23 @@ class _Batch:
         return len(self.loaded) >= limits.write_batch or self.bars >= limits.flush_bars
 
 
-def _load_symbol(
-    history: HistoryCall,
-    pacer: CallPacer,
-    limits: HistoryLimits,
-    progress: Progress,
-    report: HistoryReport,
-    basis: RawBasis,
-    instrument_id: str,
-    symbol: str,
-    start: date,
-    end: date,
-) -> _Loaded:
+@dataclass
+class Download:
+    """One run's moving parts, built once by `load_minute_history`: the SDK call, the store,
+    the pacer, the limits, the progress, the report, the raw basis and the batch waiting to be
+    written."""
+
+    history: HistoryCall
+    store: BarStore
+    pacer: Pacer
+    limits: HistoryLimits
+    progress: Progress
+    report: HistoryReport
+    basis: RawBasis
+    batch: _Batch = field(default_factory=_Batch)
+
+
+def _load_symbol(dl: Download, instrument_id: str, symbol: str, start: date, end: date) -> _Loaded:
     """The raw-basis 5-minute bars of `symbol` for `start..end` (or from where the plan serves,
     when a call is refused for its depth). Calls span at most `chunk_days`; each response is
     screened, aggregated and converted with the factors as of the day it was fetched as it
@@ -599,23 +573,23 @@ def _load_symbol(
     loaded = _Loaded(start)
     first = start
     while first <= end:
-        last = min(end, first + timedelta(days=limits.chunk_days - 1))
-        response = pacer.call(history, _request(symbol, first, last))
+        last = min(end, first + timedelta(days=dl.limits.chunk_days - 1))
+        response = _call(dl.pacer, dl.history, _request(symbol, first, last))
         if not isinstance(response, Mapping):
             raise MinuteHistoryError("history_bad_answer")  # not a refusal: the symbol only
         if response.get("s") != "ok" and response.get("code") == FYERS_CODE_RATE_LIMITED:
             raise MinuteHistoryError("history_rate_limited")
         if response.get("s") != "ok" and _plan_refused(response):
-            first = loaded.first = _clamp(pacer, limits, progress, report, first)
+            first = loaded.first = _clamp(dl, first)
             continue
-        parsed = _parse_answer(response, limits, first, last, loaded.run)
+        parsed = _parse_answer(response, dl.limits, first, last, loaded.run)
         loaded.run = parsed.trailing_run
-        fetched_on = pacer.last_day or pacer.today()
+        fetched_on = dl.pacer.last_day or dl.pacer.today()
         loaded.candles += len(parsed.candles) + len(parsed.rejected)
         loaded.rejected.extend(parsed.rejected)
         loaded.longest_run = max(loaded.longest_run, parsed.longest_run)
         loaded.bars.extend(
-            to_raw(bar, basis.factor(instrument_id, trade_date_of(bar.start), fetched_on))
+            to_raw(bar, dl.basis.factor(instrument_id, trade_date_of(bar.start), fetched_on))
             for bar in aggregate(symbol, screen(parsed))
         )
         first = last + timedelta(days=1)
@@ -624,15 +598,14 @@ def _load_symbol(
     return loaded
 
 
-def _clamp(
-    pacer: CallPacer, limits: HistoryLimits, progress: Progress, report: HistoryReport, first: date
-) -> date:
+def _clamp(dl: Download, first: date) -> date:
     """The next first date after a refusal for the plan's depth: where the plan serves, or a
     day later when that was refused too; `history_plan_limit` after `max_clamps` refusals."""
-    if report.clamps >= limits.max_clamps:
+    progress, report = dl.progress, dl.report
+    if report.clamps >= dl.limits.max_clamps:
         raise MinuteHistoryError("history_plan_limit")
     report.clamps += 1
-    first = max(first + timedelta(days=1), pacer.today() - timedelta(days=limits.plan_days))
+    first = max(first + timedelta(days=1), dl.pacer.today() - timedelta(days=dl.limits.plan_days))
     if progress.available_from is None or first > progress.available_from:
         progress.available_from = first
         progress.save()
@@ -672,7 +645,7 @@ def load_minute_history(
     basis: RawBasis,
     limits: HistoryLimits | None = None,
     progress: Progress | None = None,
-    pacer: CallPacer | None = None,
+    pacer: Pacer | None = None,
     resume: bool = False,
     retry_failed: bool = False,
 ) -> HistoryReport:
@@ -692,45 +665,39 @@ def load_minute_history(
     limits = limits or HistoryLimits()
     progress = progress if progress is not None else Progress()
     start, end = _begin(progress, start, end, resume, limits.plan_days)
-    pacer = pacer or CallPacer(limits, progress)
     report = HistoryReport(start, end, symbols=len(instruments))
     report.available_from = progress.available_from
-    batch = _Batch()
+    dl = Download(
+        history,
+        store,
+        pacer or history_pacer(limits, progress),
+        limits,
+        progress,
+        report,
+        basis,
+    )
     in_row = 0
     # symbols that failed last time go last, so a few bad ones cannot block a resume forever
     for symbol in sorted(instruments, key=lambda s: (s in progress.failed, s)):
         first = max(start, progress.available_from or start)
-        if resume and _skipped(progress, report, symbol, first, end, retry_failed):
+        if resume and _skipped(dl, symbol, first, end, retry_failed):
             continue
-        code = _attempt(
-            history,
-            batch,
-            str(instruments[symbol]),
-            pacer,
-            limits,
-            progress,
-            report,
-            basis,
-            symbol,
-            first,
-            end,
-        )
+        code = _attempt(dl, str(instruments[symbol]), symbol, first, end)
         # only refused calls in a row point at a dead session; a symbol's bad data does not
         in_row = in_row + 1 if code == "history_failed" else 0
         report.stopped = _stop(code, in_row, limits)
         if report.stopped:
             break
-        if batch.full(limits):
-            _flush(store, basis, batch, progress, report)
-    _flush(store, basis, batch, progress, report)
+        if dl.batch.full(limits):
+            _flush(dl)
+    _flush(dl)
     return report
 
 
-def _skipped(
-    progress: Progress, report: HistoryReport, symbol: str, first: date, end: date, retry: bool
-) -> bool:
+def _skipped(dl: Download, symbol: str, first: date, end: date, retry: bool) -> bool:
     """Whether a resume skips `symbol` (counted in the report): loaded over the period, or
     failed on its data and not asked to `retry`."""
+    progress, report = dl.progress, dl.report
     if first <= end and progress.covers(symbol, first, end):
         report.skipped += 1
         return True
@@ -771,42 +738,29 @@ def _stop(code: str | None, in_row: int, limits: HistoryLimits) -> str | None:
     return "history_failed" if in_row >= limits.failures_in_row else None
 
 
-def _attempt(
-    history: HistoryCall,
-    batch: _Batch,
-    instrument_id: str,
-    pacer: CallPacer,
-    limits: HistoryLimits,
-    progress: Progress,
-    report: HistoryReport,
-    basis: RawBasis,
-    symbol: str,
-    first: date,
-    end: date,
-) -> str | None:
-    """Load one symbol into `batch`; None when it loaded, else the code it failed with (a symbol
-    failure is recorded, a run stop is left to the caller). Its rejected candles go to the
-    ledger either way."""
+def _attempt(dl: Download, instrument_id: str, symbol: str, first: date, end: date) -> str | None:
+    """Load one symbol into the batch; None when it loaded, else the code it failed with (a
+    symbol failure is recorded, a run stop is left to the caller). Its rejected candles go to
+    the ledger either way."""
     if first > end:
         return "history_plan_limit"  # the plan serves nothing of the period
+    progress, report, batch = dl.progress, dl.report, dl.batch
     try:
-        loaded = _load_symbol(
-            history, pacer, limits, progress, report, basis, instrument_id, symbol, first, end
-        )
+        loaded = _load_symbol(dl, instrument_id, symbol, first, end)
     except MinuteHistoryError as exc:
         if exc.code not in _RUN_STOPS:
             report.failed[symbol] = progress.failed[symbol] = exc.code
             progress.save()
         return exc.code
     finally:
-        report.calls = pacer.made
+        report.calls = dl.pacer.made
     rules = BarBuilder()
     for r in loaded.rejected:
         bucket = rules.bar_start(r.at) if r.at is not None else None
         day = trade_date_of(r.at) if r.at is not None else None
         batch.rejects.append(RejectRow(instrument_id, symbol, day, bucket, r.rule))
         report.rejects[r.rule] += 1
-    if loaded.too_many_rejects(limits):
+    if loaded.too_many_rejects(dl.limits):
         report.failed[symbol] = progress.failed[symbol] = "history_too_many_rejects"
         progress.save()
         return "history_too_many_rejects"
@@ -836,12 +790,11 @@ def _checked_days(
     return kept, refused
 
 
-def _flush(
-    store: BarStore, basis: RawBasis, batch: _Batch, progress: Progress, report: HistoryReport
-) -> None:
+def _flush(dl: Download) -> None:
     """Check the batch's days against the raw daily bars, write the ones that fit in one write
     (each symbol's stored days over its period are replaced, so a refused day keeps no older
     bar), append the ledger and only then mark the symbols done."""
+    store, basis, batch, progress, report = dl.store, dl.basis, dl.batch, dl.progress, dl.report
     if batch.loaded:
         ids = sorted({instrument_id for _, instrument_id, _, _, _ in batch.loaded})
         first = min(f for _, _, f, _, _ in batch.loaded)
@@ -916,28 +869,7 @@ def rebase_stored(
     return report
 
 
-# --- the trading universe and the command line ----------------------------------------------
-
-
-def history_universe(session: Session) -> tuple[dict[str, uuid.UUID], int]:
-    """The active NSE EQ/BE instruments (the trading universe) by their Fyers symbol, and
-    how many active members have no Fyers symbol (they cannot be asked for)."""
-    rows = session.execute(
-        select(HatInstrument.id, HatBrokerSymbol.broker_symbol)
-        .join(HatMarket, HatMarket.id == HatInstrument.market_id)
-        .outerjoin(
-            HatBrokerSymbol,
-            (HatBrokerSymbol.instrument_id == HatInstrument.id)
-            & (HatBrokerSymbol.broker == BROKER_FYERS),
-        )
-        .where(
-            HatMarket.code == "NSE",
-            HatInstrument.active.is_(True),
-            HatInstrument.series.in_(UNIVERSE_SERIES),
-        )
-    ).all()
-    mapped = {symbol: instrument_id for instrument_id, symbol in rows if symbol is not None}
-    return mapped, sum(1 for _, symbol in rows if symbol is None)
+# --- the command line ------------------------------------------------------------------------
 
 
 @contextmanager
@@ -1077,8 +1009,12 @@ def _download(
     if history is None:
         sys.stderr.write("history_no_session: log in to Fyers from the app first\n")
         return 2
+    from .universe import active_members  # the models: only the command line needs them
+
     with db_session_scope() as db:
-        instruments, unmapped = history_universe(db)
+        members = active_members(db, with_broker_symbol=True)
+    instruments = {m.broker_symbol: m.instrument_id for m in members if m.broker_symbol}
+    unmapped = sum(1 for m in members if m.broker_symbol is None)
     today = datetime.now(IST).date()
     report = load_minute_history(
         history,

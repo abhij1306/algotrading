@@ -16,7 +16,6 @@ import csv
 import io
 import json
 import logging
-import time
 import zipfile
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -28,6 +27,7 @@ from typing import Literal, Protocol
 from ..errors import HatError
 from ..money import exact
 from .identity import best_per_isin
+from .pacing import Pacer
 from .reference import EQUITY_SERIES, ISIN_RE
 from .rowcheck import Candidate, row_ok
 from .store import MAX_VOLUME, BarRow, DataStore, atomic_replace
@@ -414,33 +414,17 @@ class DownloadReport:
 
 
 class Downloader:
-    """Requests each missing day once, at least `interval` seconds after the previous request
-    started, and keeps every zip untouched in `raw/`."""
+    """Requests each missing day once, paced by `pacer` (by default at least
+    `DEFAULT_INTERVAL_SECONDS` between two request starts), and keeps every zip untouched in
+    `raw/`."""
 
     def __init__(
-        self,
-        store: DataStore,
-        fetch: Fetcher,
-        state: BuildState,
-        *,
-        interval: float = DEFAULT_INTERVAL_SECONDS,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
+        self, store: DataStore, fetch: Fetcher, state: BuildState, pacer: Pacer | None = None
     ) -> None:
         self._store = store
         self._fetch = fetch
         self._state = state
-        self._interval = interval
-        self._clock = clock
-        self._sleep = sleep
-        self._last_start: float | None = None
-
-    def _wait_turn(self) -> None:
-        if self._last_start is not None:
-            remaining = self._interval - (self._clock() - self._last_start)
-            if remaining > 0:
-                self._sleep(remaining)
-        self._last_start = self._clock()
+        self._pacer = pacer or Pacer(min_interval=DEFAULT_INTERVAL_SECONDS)
 
     def run(self, days: Iterable[date], *, resume: bool = True) -> DownloadReport:
         report = DownloadReport()
@@ -452,7 +436,7 @@ class Downloader:
             if resume and day in self._state.candidates:
                 report.skipped_candidates.append(day)
                 continue
-            self._wait_turn()
+            self._pacer.wait()
             report.requested.append(day)
             result = self._fetch(archive_url(day))
             if result.status == "ok":

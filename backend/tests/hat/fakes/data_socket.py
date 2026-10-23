@@ -14,8 +14,9 @@ from app.hat.clock import SYSTEM_CLOCK, Clock
 from app.hat.data.feed import LiveFeed
 from app.hat.data.provider.data_socket import SYMBOL_UPDATE, SocketCallbacks
 from app.hat.data.provider.provider_session import RetryPolicy
-from app.hat.data.sessions import IST, SESSION_CLOSE, SESSION_OPEN
+from app.hat.data.sessions import SESSION_CLOSE, SESSION_OPEN
 from app.hat.risk.sessions import SessionCalendar, SessionDay
+from app.hat.time import IST
 
 # Short waits so runner retries and timeouts finish in milliseconds.
 FAST_RETRY = RetryPolicy(

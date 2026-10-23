@@ -10,13 +10,17 @@ An MCP action that changes no price (factor 1: a dividend, an AGM) is stored too
 `dividend` or `notice` (PR 47, HAT-DATA-052): Fyers cancels a resting GTT before any ex-date,
 so the morning GTT check needs every ex-date of a held name (HAT-EXEC-145). Such a row is never
 a price factor (`stored_factors`) and never an action the rescale handles or flags.
+
+`lookup_actions` is the one MCP lookup, pooled on the client: the nightly ingest, the next-session
+and quarantine lookups and the history build all read actions through it, so an MCP page means
+the same everywhere (a failed, incomplete or unreadable page fails its symbol).
 """
 
 from __future__ import annotations
 
 import csv
 import io
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
@@ -29,6 +33,7 @@ from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
 
 from ..models import HatCorporateAction
 from ..money import exact
+from .mcp_client import McpClient, McpError
 from .store import ActionFactor
 
 SOURCE_MCP = "mcp"
@@ -215,6 +220,54 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             report.conflicts.append(record.key)
     session.flush()
     return report
+
+
+@dataclass(frozen=True)
+class ActionLookup:
+    """What `lookup_actions` found: the records, the symbols whose lookup failed, came back
+    incomplete or held a row that could not be read (an unknown action is not "none"), and the
+    texts of those unread rows."""
+
+    records: list[ActionRecord] = field(default_factory=list)
+    failed: list[str] = field(default_factory=list)
+    unparsed: list[str] = field(default_factory=list)
+
+
+def lookup_actions(
+    client: McpClient, instruments: Mapping[str, object], from_date: date, to_date: date
+) -> ActionLookup:
+    """`get_corporate_actions` for each symbol (to its instrument id) over the dates, on the
+    client's pool. An incomplete page gives no record; a page with an unread row keeps the rows
+    it could read and fails its symbol."""
+
+    def one(symbol: str) -> Callable[[], tuple[str, Normalised | None]]:
+        def run() -> tuple[str, Normalised | None]:
+            try:
+                page = client.corporate_actions(symbol, from_date, to_date)
+            except McpError:
+                return symbol, None
+            if page.incomplete:
+                return symbol, None
+            return symbol, from_mcp(instruments[symbol], page.actions)
+
+        return run
+
+    results = client.map_calls([one(s) for s in sorted(instruments)])
+    return ActionLookup(
+        [r for _, n in results if n is not None for r in n.records],
+        sorted(s for s, n in results if n is None or n.unparsed),
+        [text for _, n in results if n is not None for text in n.unparsed],
+    )
+
+
+def store_actions(session_factory: Callable[[], Session], records: Sequence[ActionRecord]) -> int:
+    """Store `records` in one transaction (`load_actions`); the number created."""
+    if not records:
+        return 0
+    with session_factory() as session:
+        created = load_actions(session, records).created
+        session.commit()
+    return created
 
 
 def stored_factors(session: Session) -> list[ActionFactor]:

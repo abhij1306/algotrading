@@ -28,10 +28,10 @@ from hypothesis.stateful import (
 
 from app.hat.clock import FixedClock
 from app.hat.data.provider.ticks import normalize_tick
-from app.hat.data.sessions import IST
 from app.hat.data.subscriptions import HAT_OWNER, SubscriptionRegistry
 from app.hat.data.symbols import symbol_master
 from app.hat.execution.fyers_auth import FyersCredentials
+from app.hat.time import IST
 
 OPEN = datetime(2026, 10, 21, 10, 0, tzinfo=IST).astimezone(UTC)  # a Wednesday, mid-session
 SATURDAY = datetime(2026, 10, 24, 10, 0, tzinfo=IST).astimezone(UTC)

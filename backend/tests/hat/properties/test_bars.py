@@ -37,16 +37,15 @@ from app.hat.data.live import (
 )
 from app.hat.data.minute_history import (
     CHUNK_DAYS,
-    CallPacer,
     HistoryLimits,
     Progress,
     aggregate,
     candle_prints,
+    history_pacer,
     load_minute_history,
     parse_candles,
 )
 from app.hat.data.preopen import GapSource, PreopenGaps
-from app.hat.data.sessions import IST
 from app.hat.data.staleness import STALE_AFTER, SilenceWatch, StalenessMonitor
 from app.hat.data.subscriptions import (
     HAT_OWNER,
@@ -63,6 +62,7 @@ from app.hat.engine.trigger import (
     lower_circuit_price,
     upper_circuit_price,
 )
+from app.hat.time import IST
 
 DAY = date(2026, 10, 21)
 MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
@@ -1433,7 +1433,7 @@ def test_minute_history_budget(
                     end,
                     limits=limits,
                     progress=progress,
-                    pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
+                    pacer=history_pacer(limits, progress, clock=clock, sleep=clock.sleep),
                     basis=_basis(raw),
                 )
             )
@@ -1542,7 +1542,7 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
                 chunk_days=1, per_minute=10**6, per_day=budget or 1, failures_in_row=4
             ),
             progress=progress,
-            pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
+            pacer=history_pacer(limits, progress, clock=clock, sleep=clock.sleep),
             basis=_basis(raw),
         )
         done = set(Progress.load(path).done)
@@ -1558,7 +1558,7 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
             end + timedelta(days=1),
             limits=HistoryLimits(chunk_days=1, per_minute=10**6),
             progress=progress,
-            pacer=CallPacer(
+            pacer=history_pacer(
                 HistoryLimits(chunk_days=1, per_minute=10**6),
                 progress,
                 clock=clock,
@@ -1612,7 +1612,7 @@ def test_minute_history_plan_clamp(raw: list[list[Any]], late: int, back: int, o
             end,
             limits=limits,
             progress=progress,
-            pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
+            pacer=history_pacer(limits, progress, clock=clock, sleep=clock.sleep),
             basis=_basis(raw),
         )
         if other and back:

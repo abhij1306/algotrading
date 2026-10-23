@@ -24,7 +24,7 @@ from app.hat.data.announcements import (
     next_poll_at,
     parse_feed,
 )
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 
 NOW = datetime(2026, 10, 21, 10, 0, tzinfo=IST)
 SYMBOL_ISINS = {"AAA": "INE000000001", "BBB": "INE000000002", "CCC": "INE000000003"}

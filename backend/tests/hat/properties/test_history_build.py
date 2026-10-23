@@ -1,5 +1,5 @@
-"""history_build's pure seams: the MCP index and close wrappers and the corporate-action
-archive parse. The build itself is verified on real data, never here."""
+"""The history build's pure seams: the MCP index and close wrappers and the corporate-action
+hooks of the command line. The build itself is verified on real data, never here."""
 
 import tempfile
 from collections.abc import Mapping
@@ -9,22 +9,20 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hat_mcp_support import ScriptedTransport
+from hat_mcp_support import ScriptedTransport, fixture_json
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from app.hat.data import history_build
+from app.hat.data import history_cli
 from app.hat.data.bhavcopy import (
     DayReconciliation,
     DownloadReport,
     weekdays,
 )
-from app.hat.data.corporate_actions import LoadReport
-from app.hat.data.history_build import (
-    BuildReport,
-    mcp_close_source,
-    mcp_index_source,
-)
+from app.hat.data.corporate_actions import TYPE_DIVIDEND, LoadReport, lookup_actions
+from app.hat.data.history_build import BuildReport
+from app.hat.data.history_validation import mcp_close_source
+from app.hat.data.index_history import mcp_index_source
 from app.hat.data.mcp_client import CODE_BAD_RESPONSE, McpClient, McpError
 from app.hat.data.store import (
     PartitionReport,
@@ -178,13 +176,11 @@ def test_archive_unparsed_reported(words: list[str], split: bool) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "actions.csv"
         path.write_text("SYMBOL,PURPOSE,EX-DATE\n" + "\n".join(rows) + "\n", encoding="utf-8")
-        hooks = history_build._action_hooks(
-            None,
-            lambda: [(1, "AAA")],
-            str(path),
-            date(2018, 1, 1),
-            date(2018, 12, 31),
-            lambda _records: LoadReport(),
+        sources = history_cli.ActionSources(
+            None, lambda: {"AAA": 1}, lambda sym, _day: 1 if sym == "AAA" else None, str(path)
+        )
+        hooks = history_cli._action_hooks(
+            sources, date(2018, 1, 1), date(2018, 12, 31), lambda _records: LoadReport()
         )
         records, failed, unparsed = hooks.loader()
     assert failed == 0
@@ -192,4 +188,22 @@ def test_archive_unparsed_reported(words: list[str], split: bool) -> None:
     assert len(records) == int(split)
     report = BuildReport(DownloadReport(), DayReconciliation(), PartitionReport())
     report.actions_unparsed = list(unparsed)
-    assert f"archive actions not parsed {len(words)}" in history_build._summary(report)
+    assert f"archive actions not parsed {len(words)}" in history_cli._summary(report)
+
+
+def test_lookup_actions_fixture_unread_row_fails_symbol() -> None:
+    """The recorded INFY `get_corporate_actions` page with a second row whose factor the server
+    left out (`mcp_corporate_actions_unread.json`): the lookup keeps the readable dividend and
+    fails the symbol, for the nightly lookup and the history build alike (one `lookup_actions`;
+    the old history loader counted it as a success). An incomplete page fails it too."""
+    page = fixture_json("mcp_corporate_actions_unread.json")
+    warned = {**fixture_json("mcp_corporate_actions.json"), "warning": "partial"}
+    client = McpClient(ScriptedTransport([page, warned]), sleep=lambda _s: None)
+    span = (date(2018, 6, 1), date(2018, 7, 1))
+    found = lookup_actions(client, {"INFY": 1}, *span)
+    assert found.failed == ["INFY"]
+    assert [(r.action_type, r.factor) for r in found.records] == [(TYPE_DIVIDEND, Decimal(1))]
+    assert len(found.unparsed) == 1
+    partial = lookup_actions(client, {"INFY": 1}, *span)
+    assert partial.failed == ["INFY"]
+    assert partial.records == []
