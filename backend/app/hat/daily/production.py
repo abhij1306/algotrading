@@ -28,7 +28,9 @@ from ..errors import HatConfigError
 from ..execution.accounts import ADAPTER_FACTORIES
 from ..execution.broker import HatBroker
 from ..execution.fyers_auth import get_fyers_auth
+from ..execution.fyers_ipv4 import require_direct_fyers
 from ..models import HatBrokerAccount
+from ..models.strategy import BROKER_FYERS
 from ..settings import HatSettings, process_env
 from ..telegram.client import HttpsTransport
 from ..telegram.config import telegram_settings
@@ -61,7 +63,7 @@ class FyersLoginLinks:
     """The Fyers login link the Telegram login prompt carries; None when it cannot be made."""
 
     def link(self, account: HatBrokerAccount) -> str | None:
-        if account.broker != "fyers":
+        if account.broker != BROKER_FYERS:
             return None
         try:
             return get_fyers_auth().login_url()
@@ -98,8 +100,9 @@ def production_parts(
     """The parts factory `HatRuntime` calls once HAT is enabled and the database is Postgres."""
 
     def build() -> RuntimeParts:
-        telegram = telegram_settings()
         env = process_env()
+        require_direct_fyers(env)  # no proxy carries Fyers traffic past the IPv4 pin
+        telegram = telegram_settings()
         fetch = http_fetcher()
 
         def price_bands(day: date) -> TextSource:

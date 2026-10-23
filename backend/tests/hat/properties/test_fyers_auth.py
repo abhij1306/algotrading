@@ -7,10 +7,12 @@ import os
 import threading
 from collections.abc import Callable, Mapping
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any, NoReturn
 from unittest import mock
 
 import pytest
+from hat.fakes.broker import FakeBroker
 from hat.fakes.fyers_sdk import RecordingSdk, RecordingSession
 from hat_fyers_support import (
     LIVE_REPLIES,
@@ -24,14 +26,21 @@ from hat_fyers_support import (
 )
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from sqlalchemy.exc import OperationalError
 
+from app.hat.execution.broker import BrokerLoginError, SessionStatus
+from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_auth import (
+    ACCOUNT_UNCONFIRMED,
     STATUS_CACHE_SECONDS,
+    WRONG_ACCOUNT,
     FyersAuthError,
     FyersAuthService,
     FyersCredentials,
     LoginCancelledError,
     MissingCredentialsError,
+    TokenRejectedError,
+    WrongAccountError,
     credentials_from_env,
 )
 from app.hat.execution.fyers_tokens import TokenStore, TokenStoreError
@@ -88,6 +97,7 @@ class Harness:
 
         self.service = FyersAuthService(
             store,
+            account_refs=frozenset,  # no broker account yet: any user logs in
             session_factory=factory,
             credentials=lambda: CREDS,
             on_token_change=lambda: self.events.append("token_change"),
@@ -399,10 +409,159 @@ def test_unset_credentials_fail_before_any_sdk_call(code: str) -> None:
             raise MissingCredentialsError("CLIENT_ID not found")
 
         service = FyersAuthService(
-            store, session_factory=factory, credentials=no_creds, on_token_change=lambda: None
+            store,
+            account_refs=frozenset,
+            session_factory=factory,
+            credentials=no_creds,
+            on_token_change=lambda: None,
         )
         for call in (service.login_url, lambda: service.exchange(code)):
             with pytest.raises(MissingCredentialsError):
                 call()
         assert sessions == []
         assert listing(store) == []
+
+
+USERS = ("XA1234", "XB9999")
+maybe_user = st.one_of(st.none(), st.sampled_from(USERS))
+
+
+def _profile(user: str | None) -> dict[str, Any]:
+    """The profile reply of a token for `user`; None: the recorded -16 refusal (no user id)."""
+    return profile_ok(user) if user is not None else LIVE_REPLIES["profile_invalid_token"]
+
+
+@given(
+    refs=st.frozensets(st.sampled_from(USERS)),
+    onboarded=maybe_user,
+    user=maybe_user,
+    good=st.booleans(),
+    token=tokens,
+    code=codes,
+)
+def test_accounts_read_in_order(
+    refs: frozenset[str],
+    onboarded: str | None,
+    user: str | None,
+    good: bool,
+    token: str,
+    code: str,
+) -> None:
+    """PBT fyers_auth.accounts_read_in_order (HAT-DEC-BD5; PR 73, PR 38 follow-ups 1 and 2): every
+    exchange checks the token's Fyers user against the active Fyers broker accounts, which the
+    service reads itself, once, after Fyers has answered and the profile was read and just before
+    the save: an account onboarded while Fyers answers counts, a rejected code reads no account,
+    and a refused user saves nothing. Harm: a login for another Fyers account plants its token
+    (HAT then trades and reconciles against the wrong account), or the read moves before the
+    exchange and holds a connection while Fyers answers."""
+    trace: list[str] = []
+    accounts = set(refs)
+
+    def factory(**kwargs: str) -> RecordingSession:
+        session = RecordingSession(token_reply(token) if good else {"s": "error"}, **kwargs)
+        answer = session.generate_token
+
+        def generate() -> Mapping[str, Any]:
+            trace.append("exchange")
+            return answer()
+
+        session.generate_token = generate  # type: ignore[method-assign]
+        return session
+
+    class Profile:
+        def get_profile(self) -> dict[str, Any]:
+            trace.append("profile")
+            if onboarded is not None:
+                accounts.add(onboarded)  # onboarded while Fyers was answering
+            return _profile(user)
+
+    def account_refs() -> frozenset[str]:
+        trace.append("accounts")
+        return frozenset(accounts)
+
+    final = refs | ({onboarded} if onboarded is not None else set())
+    accepted = good and (not final or user in final)
+    with token_store() as store:
+        save = store.save
+
+        def traced_save(*args: Any, **kwargs: Any) -> Any:  # noqa: ANN401 - TokenStore.save
+            trace.append("save")
+            return save(*args, **kwargs)
+
+        store.save = traced_save  # type: ignore[method-assign]
+        service = FyersAuthService(
+            store,
+            account_refs=account_refs,
+            session_factory=factory,
+            credentials=lambda: CREDS,
+            on_token_change=lambda: None,
+            model_factory=lambda **_kwargs: Profile(),
+        )
+        try:
+            service.exchange(code)
+            saved = True
+        except WrongAccountError as error:
+            assert good
+            assert error.message == (ACCOUNT_UNCONFIRMED if user is None else WRONG_ACCOUNT)
+            saved = False
+        except TokenRejectedError:
+            assert not good
+            saved = False
+        assert saved == accepted
+        assert store.path.exists() == accepted
+    read = ["exchange", "profile", "accounts"] if good else ["exchange"]
+    assert trace == read + (["save"] if accepted else [])
+
+
+@given(
+    refs=st.frozensets(st.sampled_from(USERS)),
+    user=maybe_user,
+    down=st.booleans(),
+    token=tokens,
+    code=codes,
+)
+def test_complete_login_checks_the_account(
+    refs: frozenset[str], user: str | None, down: bool, token: str, code: str
+) -> None:
+    """PBT fyers_auth.complete_login_checks_the_account (HAT-DEC-BD5; PR 73, PR 38 follow-up 1):
+    the adapter's `complete_login` goes through the same check as the HTTP route. It saves the
+    token exactly when no Fyers account is active or the user is one; another user is
+    `wrong_account`, a user Fyers did not name is `account_unconfirmed`, unreadable accounts are
+    `accounts_unreadable`, and none of them writes a token.
+    Harm: a Telegram or job login saves a token for any Fyers user."""
+
+    def account_refs() -> frozenset[str]:
+        if down:
+            raise OperationalError("SELECT account_ref", {}, RuntimeError("database down"))
+        return refs
+
+    with token_store() as store:
+        service = FyersAuthService(
+            store,
+            account_refs=account_refs,
+            session_factory=lambda **kwargs: RecordingSession(token_reply(token), **kwargs),
+            credentials=lambda: CREDS,
+            on_token_change=lambda: None,
+            model_factory=lambda **_kwargs: RecordingSdk(_profile(user)),
+        )
+        broker = FyersHatBroker(
+            FakeBroker(),  # type: ignore[arg-type]
+            client=lambda: SimpleNamespace(fyers=None),  # type: ignore[arg-type,return-value]
+            auth=lambda: service,
+            instruments=list,
+        )
+        accepted = not down and (not refs or user in refs)
+        if accepted:
+            assert broker.complete_login(code) is SessionStatus.EXPIRED  # saved; no SDK client
+        else:
+            with pytest.raises(BrokerLoginError) as refused:
+                broker.complete_login(code)
+            expected = (
+                "accounts_unreadable"
+                if down
+                else "account_unconfirmed"
+                if user is None
+                else "wrong_account"
+            )
+            assert refused.value.code == expected
+        assert store.path.exists() == accepted

@@ -29,6 +29,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -61,6 +62,7 @@ from ..models import (
     HatSignal,
     HatStrategyVersion,
 )
+from ..notify import Notifier
 from ..ops.jobs import JobError, SessionFactory, recover_interrupted
 from ..ops.scheduler import HatScheduler, ScheduledJob
 from ..risk.sessions import SessionCalendar, SessionState, is_trading_day
@@ -92,7 +94,14 @@ from .live import (
 from .market import DailyBook
 from .nightly import NightlyDeps, TextSources, nightly_jobs
 
-__all__ = ["STEP_SECONDS", "HatRuntime", "RuntimeParts", "daily_jobs"]
+__all__ = [
+    "ALERT_POOL",
+    "STEP_SECONDS",
+    "HatRuntime",
+    "RuntimeParts",
+    "daily_jobs",
+    "subscription_alert",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +110,29 @@ MINUTE = timedelta(minutes=1)
 RECONCILE_EVERY = timedelta(minutes=5)
 CALENDAR_EVERY = timedelta(minutes=10)
 STOPPING = "hat_stopping"
+
+
+# one worker for the subscription alert: a sync runs on a job thread under the subscriptions'
+# lock, and a notifier blocks on its transport
+ALERT_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hat-alert")
+
+
+def subscription_alert(notifier: Notifier, now: Callable[[], datetime]) -> Callable[[str], None]:
+    """`LiveSubscriptions`' alert as a health alert of today's trade date (`subscription_limit`:
+    the wanted set reached the provider's symbol limit, HAT-DATA-112; PR 73, PR 39), sent on
+    `ALERT_POOL`, never on the caller's thread (the loop, or a job holding the subscriptions'
+    lock). A failed send is logged by its error type."""
+
+    def send(code: str, day: date) -> None:
+        try:
+            notifier.alert(code, day, {})
+        except Exception as exc:  # the alert is best effort; the log keeps the type only
+            logger.warning("subscription alert not sent: %s", type(exc).__name__)
+
+    def alert(code: str) -> None:
+        ALERT_POOL.submit(send, code, trade_date_of(now()))
+
+    return alert
 
 
 class Feed(Protocol):
@@ -232,7 +264,8 @@ class HatRuntime:
 
     async def start(self) -> bool:
         """Start HAT; False (and nothing started) when HAT is disabled. Raises `HatConfigError`
-        for a non-Postgres database or a bad Telegram configuration, before any task exists."""
+        for a non-Postgres database, a proxy that would carry Fyers traffic (`fyers_proxy_set`)
+        or a bad Telegram configuration, before any task exists."""
         if not self.settings.enabled:
             logger.info("HAT_ENABLED is false: no HAT task is started")
             return False
@@ -310,7 +343,9 @@ class HatRuntime:
         self.live.add_bar_listener(self.entries.on_bar)
         self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
         self.shadow = ShadowExits(sf, self.views, self.desks.managed)
-        self.subscriptions = LiveSubscriptions(registry, subscribe, unsubscribe)
+        self.subscriptions = LiveSubscriptions(
+            registry, subscribe, unsubscribe, subscription_alert(self.notifier, self._now)
+        )
         self.intraday = Intraday(
             session_factory=sf,
             clock=clock,

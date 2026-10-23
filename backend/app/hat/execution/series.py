@@ -22,8 +22,8 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.instruments import BROKER_FYERS
 from ..models import HatBrokerSymbol, HatInstrument, HatPosition
+from ..models.strategy import BROKER_FYERS
 
 __all__ = ["ALERT_SERIES_CHANGED", "broker_symbol", "series_changed", "successor"]
 

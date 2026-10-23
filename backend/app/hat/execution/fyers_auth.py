@@ -10,6 +10,13 @@ injected hooks, so this module imports no feed and no HTTP layer:
 - `login` runs after a successful login and `disconnect` before a logout removes the token (K3's
   live feed registers here).
 
+Every login is checked against the broker accounts (HAT-DEC-BD5, PR 73): the service is built with
+`account_refs`, the `account_ref` of every active Fyers broker account, and saves a token only
+when there is none or the token's Fyers user is one of them. The lookup is part of the service,
+not an argument of `exchange`, so no caller (the HTTP route, the adapter's `complete_login`, a
+later Telegram or job login) can skip it. It is read after Fyers has answered and just before
+the save, so no connection is held while Fyers answers and an account onboarded meanwhile counts.
+
 A hook that raises is logged by its type and never blocks the login or the logout.
 
 Fail closed: a refused code, a missing field, an SDK error, a reply that is not a mapping and a
@@ -23,16 +30,22 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session as DbSession
+
+from ..models import HatBrokerAccount
+from ..models.strategy import ACCOUNT_ACTIVE, BROKER_FYERS
 from .fyers_broker import profile_data
 from .fyers_session import reset_fyers_session, sdk_model
 from .fyers_tokens import TokenStore, token_store
 
 __all__ = [
+    "ACCOUNTS_UNREADABLE",
     "AUTH_CODE_REJECTED",
     "LOGIN_CANCELLED",
     "LOGIN_FAILED",
@@ -46,7 +59,10 @@ __all__ = [
     "TokenRejectedError",
     "ACCOUNT_UNCONFIRMED",
     "WRONG_ACCOUNT",
+    "AccountsUnreadableError",
     "WrongAccountError",
+    "active_fyers_refs",
+    "fyers_account_refs",
     "credentials_from_env",
     "fyers_auth",
     "get_fyers_auth",
@@ -64,6 +80,7 @@ LOGIN_FAILED = "Fyers login failed. Please try again."
 LOGIN_CANCELLED = "Login was cancelled by a logout. Please log in again."
 WRONG_ACCOUNT = "This Fyers login is not the HAT broker account. Please log in with that account."
 ACCOUNT_UNCONFIRMED = "Could not confirm which Fyers account logged in. Please log in again."
+ACCOUNTS_UNREADABLE = "The database is unavailable; the Fyers login was not saved"
 
 Event = Literal["token_change", "login", "disconnect"]
 
@@ -86,6 +103,10 @@ class TokenRejectedError(FyersAuthError):
 
 class WrongAccountError(FyersAuthError):
     """The token is for a Fyers user the caller does not accept (HAT-DEC-BD5)."""
+
+
+class AccountsUnreadableError(FyersAuthError):
+    """The broker accounts could not be read, so the login's user cannot be checked."""
 
 
 class LoginCancelledError(TokenRejectedError):
@@ -117,6 +138,7 @@ class Session(Protocol):
 
 
 SessionFactory = Callable[..., Session]
+AccountRefs = Callable[[], Collection[str]]
 
 # Each credential: the name the login flow has always read first, then the names `.env.example`
 # also documents (FYERS_APP_ID, FYERS_SECRET_KEY, FYERS_CLIENT_ID).
@@ -140,6 +162,26 @@ def credentials_from_env() -> FyersCredentials:
     return FyersCredentials(**values)
 
 
+def fyers_account_refs(session: DbSession) -> frozenset[str]:
+    """The `account_ref` (the Fyers user id) of every active Fyers broker account."""
+    return frozenset(
+        session.scalars(
+            select(HatBrokerAccount.account_ref).where(
+                HatBrokerAccount.broker == BROKER_FYERS,
+                HatBrokerAccount.status == ACCOUNT_ACTIVE,
+            )
+        )
+    )
+
+
+def active_fyers_refs() -> frozenset[str]:
+    """`fyers_account_refs` in a session scope of its own, closed before the token is saved."""
+    from app.database import db_session_scope  # deferred: importing it connects the engine
+
+    with db_session_scope() as session:
+        return fyers_account_refs(session)
+
+
 def _sdk_session(**kwargs: str) -> Session:
     from .fyers_ipv4 import sdk  # the login exchange leaves over IPv4 too (HAT-BRK-093)
 
@@ -151,6 +193,7 @@ class FyersAuthService:
         self,
         store: TokenStore,
         *,
+        account_refs: AccountRefs,
         session_factory: SessionFactory = _sdk_session,
         credentials: Callable[[], FyersCredentials] = credentials_from_env,
         on_token_change: Callable[[], None] = reset_fyers_session,
@@ -158,6 +201,7 @@ class FyersAuthService:
         model_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.store = store
+        self._account_refs = account_refs
         self._session_factory = session_factory
         self._model_factory = model_factory
         self._credentials = credentials
@@ -222,7 +266,7 @@ class FyersAuthService:
         """The Fyers user id (`fy_id`) from the profile of a new token. The token reply carries
         none, so without this the login status has no user id. None when there is no model
         factory or the profile cannot be read in PROFILE_TIMEOUT_SECONDS; the login stands either
-        way unless the caller's `accept_user` refuses an unknown user. The reply is checked as
+        way only while no Fyers broker account is active (`_accepts`). The reply is checked as
         every profile read is (`profile_data`)."""
         if self._model_factory is None:
             return None
@@ -239,17 +283,28 @@ class FyersAuthService:
             return None
         return user_id
 
-    def exchange(
-        self, auth_code: str, *, accept_user: Callable[[str | None], bool] | None = None
-    ) -> FyersStatus:
-        """Trade an auth code for a token, save it, and point the process at it.
+    def _accepts(self, user_id: str | None) -> bool:
+        """Whether the token's Fyers user (None: its profile could not be read) may log in: any
+        user while no Fyers broker account is active (onboarding needs the first token), else
+        only an active account's `account_ref`. Raises AccountsUnreadableError when the accounts
+        cannot be read."""
+        try:
+            refs = self._account_refs()
+        except Exception as error:
+            logger.warning("Fyers login: broker accounts unreadable: %s", type(error).__name__)
+            raise AccountsUnreadableError(ACCOUNTS_UNREADABLE) from None
+        return not refs or user_id in refs
 
-        `accept_user`, when given, sees the token's Fyers user id (None when the profile could not
-        be read) before anything is saved; a refusal raises WrongAccountError, with
-        ACCOUNT_UNCONFIRMED when the user id is unknown and WRONG_ACCOUNT otherwise.
+    def exchange(self, auth_code: str) -> FyersStatus:
+        """Trade an auth code for a token, check its Fyers user against the broker accounts,
+        save it, and point the process at it.
 
-        Raises MissingCredentialsError, TokenRejectedError, WrongAccountError, FyersAuthError (the
-        SDK failed) or TokenStoreError (save failed); in each case no token was written.
+        A user the accounts refuse raises WrongAccountError, with ACCOUNT_UNCONFIRMED when the
+        user id is unknown and WRONG_ACCOUNT otherwise.
+
+        Raises MissingCredentialsError, TokenRejectedError, WrongAccountError,
+        AccountsUnreadableError, FyersAuthError (the SDK failed) or TokenStoreError (save failed);
+        in each case no token was written.
         """
         creds = self._credentials()
         with self._lock:
@@ -264,7 +319,7 @@ class FyersAuthService:
             raise TokenRejectedError(AUTH_CODE_REJECTED)
 
         user_id = self._profile_user_id(creds.client_id, access_token)
-        if accept_user is not None and not accept_user(user_id):
+        if not self._accepts(user_id):
             if user_id is None:
                 logger.warning("Fyers login refused: its account could not be confirmed")
                 raise WrongAccountError(ACCOUNT_UNCONFIRMED)
@@ -321,7 +376,7 @@ class FyersAuthService:
         self._run_hooks("token_change")
 
 
-fyers_auth = FyersAuthService(token_store, model_factory=sdk_model)
+fyers_auth = FyersAuthService(token_store, account_refs=active_fyers_refs, model_factory=sdk_model)
 """The process-wide login flow over the default token file."""
 
 

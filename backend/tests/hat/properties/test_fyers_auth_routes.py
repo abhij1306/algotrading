@@ -7,7 +7,7 @@ router; the login service runs on a temporary token file and a recording SDK, an
 accounts live in SQLite in memory."""
 
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 from unittest import mock
 
@@ -18,17 +18,18 @@ from hat_fyers_support import captured_logs, profile_ok, token_reply, token_stor
 from hat_support import memory_engine
 from hypothesis import example, given
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
-from app.database import get_db
 from app.hat.api import fyers_auth as routes
 from app.hat.api import guard
 from app.hat.execution.fyers_auth import (
     ACCOUNT_UNCONFIRMED,
+    ACCOUNTS_UNREADABLE,
     WRONG_ACCOUNT,
     FyersAuthService,
     FyersCredentials,
     MissingCredentialsError,
+    fyers_account_refs,
     get_fyers_auth,
 )
 from app.hat.execution.fyers_tokens import TokenStore
@@ -46,7 +47,7 @@ FIXED = {
     routes.STORE_ERROR,
     routes.DISCONNECT_ERROR,
     routes.STATUS_ERROR,
-    routes.DB_ERROR,
+    ACCOUNTS_UNREADABLE,
     "Fyers rejected the auth code. Please log in again.",
     "Fyers login failed. Please try again.",
     "Login was cancelled by a logout. Please log in again.",
@@ -84,11 +85,9 @@ REPLIES = st.one_of(
 )
 
 
-def _accounts_db(
-    accounts: Sequence[Account], down: bool = False
-) -> Callable[[], Iterator[Session]]:
-    """Sessions over the given broker accounts; `down`: a database without the table, so every
-    read raises (`OperationalError`)."""
+def _account_refs(accounts: Sequence[Account], down: bool = False) -> Callable[[], frozenset[str]]:
+    """`active_fyers_refs` over the given broker accounts in SQLite; `down`: a database without
+    the table, so every read raises (`OperationalError`)."""
     engine = memory_engine(HatBrokerAccount)
     if down:
         HatBrokerAccount.__table__.drop(engine)  # type: ignore[attr-defined]
@@ -107,11 +106,11 @@ def _accounts_db(
             )
         session.commit()
 
-    def db() -> Iterator[Session]:
+    def refs() -> frozenset[str]:
         with factory() as session:
-            yield session
+            return fyers_account_refs(session)
 
-    return db
+    return refs
 
 
 def client_for(
@@ -139,6 +138,7 @@ def client_for(
 
     service = FyersAuthService(
         store,
+        account_refs=_account_refs(accounts, db_down),
         session_factory=factory,
         credentials=credentials,
         on_token_change=lambda: None,
@@ -152,7 +152,6 @@ def client_for(
     app = FastAPI()
     app.include_router(routes.router)
     app.dependency_overrides[get_fyers_auth] = lambda: service
-    app.dependency_overrides[get_db] = _accounts_db(accounts, db_down)
     if wired:
         setattr(app.state, guard.ORIGIN_RULE, lambda origin: origin in FRONTEND)
     return TestClient(
@@ -352,9 +351,9 @@ def test_token_for_another_account_refused(
     profile could not be read), `token` saves the token exactly when there is no active Fyers
     account or the user is the `account_ref` of one. Otherwise it answers 403 with the fixed
     message (`ACCOUNT_UNCONFIRMED` for an unknown user, else `WRONG_ACCOUNT`) and writes nothing.
-    When the accounts cannot be read it answers 503 with `DB_ERROR` and writes nothing. Harm: a
-    page or a wrong login plants a token for another Fyers account, and HAT trades or reconciles
-    against it."""
+    When the accounts cannot be read it answers 503 with `ACCOUNTS_UNREADABLE` and writes
+    nothing. Harm: a page or a wrong login plants a token for another Fyers account, and HAT
+    trades or reconciles against it."""
     refs = {ref for broker, ref, status in accounts if broker == "fyers" and status == "active"}
     accepted = not refs or user in refs
     profile = profile_ok(user) if user is not None else {"s": "error", "code": -16}
@@ -365,7 +364,7 @@ def test_token_for_another_account_refused(
         exchanged = client.post(f"{routes.router.prefix}/token", json={"auth_code": code})
         if db_down:
             assert exchanged.status_code == 503
-            assert exchanged.json()["detail"] == routes.DB_ERROR
+            assert exchanged.json()["detail"] == ACCOUNTS_UNREADABLE
             assert not store.path.exists()
         elif accepted:
             assert exchanged.status_code == 200

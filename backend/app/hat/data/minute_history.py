@@ -46,11 +46,11 @@ from sqlalchemy.orm import Session
 
 from ..errors import HatError
 from ..models import HatBrokerSymbol, HatInstrument, HatMarket
+from ..models.strategy import BROKER_FYERS
 from ..time import as_utc, trade_date_of
 from .bars import Bar, BarBuilder, Tick
 from .bars_store import BarStore
 from .ingest import UNIVERSE_SERIES
-from .instruments import BROKER_FYERS
 from .run_report import save_report
 from .sessions import IST
 from .store import atomic_replace

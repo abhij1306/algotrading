@@ -654,6 +654,7 @@ class AuthMachine(RuleBasedStateMachine):
         self.reply: dict[str, Any] = {}
         self.service = FyersAuthService(
             self.store,
+            account_refs=frozenset,
             session_factory=lambda **kw: RecordingSession(self.reply, **kw),
             credentials=lambda: CREDS,
             on_token_change=lambda: None,

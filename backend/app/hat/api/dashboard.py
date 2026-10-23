@@ -46,6 +46,7 @@ from ..models import (
     HatStrategy,
     HatWatchlistEntry,
 )
+from ..models.strategy import ACCOUNT_ACTIVE
 from ..risk import kill
 from ..time import as_utc, day_bounds, trade_date_of, utc_now
 
@@ -58,7 +59,7 @@ router = APIRouter(prefix="/api/hat", tags=["HAT dashboard"])
 DB_ERROR = "The HAT database could not be read"
 READ_ERROR = "The HAT dashboard could not be read"
 FEED_STALE = "feed.stale"
-ACTIVE = "active"
+ACTIVE = "active"  # `hat_bot.status` of a bot that is not paused
 UNKNOWN = "?"
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
@@ -308,7 +309,7 @@ def _sessions(session: Session, day: date) -> list[BrokerSessionView]:
             (HatBrokerSession.broker_account_id == HatBrokerAccount.id)
             & (HatBrokerSession.trade_date == day),
         )
-        .where(HatBrokerAccount.status == ACTIVE)
+        .where(HatBrokerAccount.status == ACCOUNT_ACTIVE)
         .order_by(HatBrokerAccount.id)
     )
     return [

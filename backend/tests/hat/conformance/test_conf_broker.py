@@ -2,6 +2,7 @@
 execution mode (HAT-BRK-080, -091, HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-051,
 HAT-EXEC-011)."""
 
+import ast
 import inspect
 import json
 import re
@@ -476,3 +477,80 @@ def test_brk__recorded_writes() -> None:
     assert {(o.tag, o.status) for o in orders} == {("HATTEST2", "rejected")}
     assert len(orders) == 2
     assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))
+
+
+# The broker-account status and broker-name values live once, in the models leaf (PR 73, PR 38
+# follow-up 3); every reader imports them from there.
+ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING", "BROKER_FYERS"}
+CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
+# the model, and any name for an account a reader uses (`account`, `acct`, `broker_account`...)
+ACCOUNT_OWNER = re.compile(r"^HatBrokerAccount$|acc(oun)?t", re.IGNORECASE)
+
+
+def _account_column(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr in ("status", "broker")
+        and isinstance(node.value, ast.Name)
+        and ACCOUNT_OWNER.search(node.value.id) is not None
+    )
+
+
+def account_literal_violations(source: str) -> list[str]:
+    """What breaks the one-copy rule in a module's source: a module-level `ACCOUNT_*` status
+    constant or `BROKER_FYERS` of its own, or a broker account's `status` or `broker` compared
+    with a string, written out or held in a module-level copy under another name."""
+    tree = ast.parse(source)
+    copies = {
+        target.id
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    found = [
+        f"defines {target.id}"
+        for node in tree.body
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (node.targets if isinstance(node, ast.Assign) else [node.target])
+        if isinstance(target, ast.Name) and target.id in ACCOUNT_CONSTANTS
+    ]
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            sides = [node.left, *node.comparators]
+            literal = any(
+                (isinstance(s, ast.Constant) and isinstance(s.value, str))
+                or (isinstance(s, ast.Name) and s.id in copies)
+                for s in sides
+            )
+            if literal and any(_account_column(s) for s in sides):
+                found.append(f"line {node.lineno}: an account column compared with a string")
+    return found
+
+
+def test_brk__account_constants_one_copy() -> None:
+    """CONF brk.account_constants_one_copy (HAT-BRK-092; PR 73, PR 38 follow-up 3): no module but
+    `models/strategy.py` defines a broker-account status constant or the broker name, and none
+    compares an account's status or broker with a string of its own. Harm: a renamed status
+    leaves a stale copy behind, and a login, a routing gate, the dashboard or a broker-symbol
+    read uses a value no row has any more."""
+    found = {
+        str(path.relative_to(HAT_ROOT)): bad
+        for path in sorted(HAT_ROOT.rglob("*.py"))
+        if path != CONSTANTS_HOME
+        and (bad := account_literal_violations(path.read_text(encoding="utf-8")))
+    }
+    assert found == {}
+    # the checker can fail: a copy of a constant, a copy under another name, and compared
+    # literals on the model and on any account name
+    bad = (
+        'ACCOUNT_ACTIVE = "active"\n'
+        'LIVE = "active"\n'
+        "def f(session, account, acct):\n"
+        '    session.scalars(select(HatBrokerAccount).where(HatBrokerAccount.status == "active"))\n'
+        "    session.scalars(select(HatBrokerAccount).where(HatBrokerAccount.status == LIVE))\n"
+        '    return account.broker != "fyers" or acct.status == "active"\n'
+    )
+    assert len(account_literal_violations(bad)) == 5

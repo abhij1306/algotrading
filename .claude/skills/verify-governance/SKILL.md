@@ -92,12 +92,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `3be5e1c81535f7a13ecfaeae9a010ce34add6d915cceed4ebc3df72eefeafb4a`
+Covered digest: `a6f7634ef8ba56de45695cb9af65be8592147f627a7caa6b02e5c12a3d0f0237`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73b: `models/strategy.py` gains the account status and broker constants (`ACCOUNT_PENDING`, `ACCOUNT_ACTIVE`, `ACCOUNT_FAILED`, `BROKER_FYERS`), the one copy every reader imports (CONF `brk__account_constants_one_copy`, `verify-execution`). No table, column or constraint changed. Nothing was narrowed.
 - PR 73: the spec gains three event types (03 §6) and the release and DDPI rules of 04, 05, 06 and 10 their PR 73 lines; `test_config.py` checks the assign event (`verify-criteria`). No schema, foundation helper or boundary changed. Nothing was narrowed.
 - PR 63: `engine/backtest.py` gained the slot order (`RunSpec.slot_order`, `backtest/slots.py`, recorded in `conventions` and `config_digest`) and `test_config.add_run` records `slot_order: time`; no governance check changed.
 - PR 62: `engine/backtest.py` gained the recorded fill conventions (`conventions`, `config_digest` via `confighash.config_hash`, `RunSpec.entry_fill_rule` and `for_promotion`) and `test_config.add_run` flags its run for promotion; no governance check reads them (properties in `verify-backtest`).
