@@ -74,6 +74,10 @@ position whose instrument has no bar (suspended, not delisted) is carried at its
 `suspension_sessions` sessions, then marked 5% lower per further session, in the equity curve
 and at the period end. All three rules are in the run's conventions.
 
+The run's one risk-policy version (`RunSpec.policy`) is in force over the whole period, from its
+first session, whenever the stored version took effect: a backtest of years before the policy
+existed sizes under it as if it had always been the policy.
+
 The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown_sessions`, which
 `evaluate_signal` reads through `trades.open_entry` from the ledger's hard-stop closes, as live
 does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records the value used.
@@ -681,6 +685,15 @@ class _Run:
         self.data = data
         self.config = spec.config
         self.policy = spec.policy.policy
+        # The run's policy version is in force over the whole period: the version in force now
+        # may have taken effect after the period starts (on a fresh install, `seed-policy` makes
+        # v1 effective today), and `open_entry` decides under the version in force at the
+        # trigger. Its id, and so the recorded `risk_policy_version_id`, are unchanged.
+        self.policy_version = replace(
+            spec.policy,
+            effective_from=as_utc(datetime.combine(spec.start, time.min, IST)),
+            superseded_at=None,
+        )
         # Each playbook's configured max chase, as the trigger reads it (HAT-CRIT-122).
         self.chase = {
             b.name: trigger.last_configured_chase([self.config], b.name)
@@ -1068,7 +1081,7 @@ class _Run:
             free_cash=cash,
             adv20=self._feature(prev, instrument_id, "adv20"),
             total_equity=capital,
-            policy_versions=[self.spec.policy],
+            policy_versions=[self.policy_version],
             ladder=self.ladder,
             gate_on=self.gate.get(row.trade_date, False),
             feed_stale=False,
