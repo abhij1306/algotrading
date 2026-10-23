@@ -214,3 +214,14 @@ def test_lookup_actions_fixture_unread_row_fails_symbol() -> None:
     found = lookup_actions(client, {"INFY": 1}, *span)
     assert found.failed == ["INFY"]
     assert len(found.records) == 1
+
+
+def test_action_conflict_is_not_a_success() -> None:
+    """A build whose action load found a factor conflicting with the stored one exits 1 and says
+    so in its summary: the stored factor stays, so the adjusted history may be wrong."""
+    report = BuildReport(DownloadReport(), DayReconciliation(), PartitionReport())
+    report.actions = LoadReport(created=2, unchanged=1)
+    assert history_cli._exit_code(report) == 0
+    report.actions.conflicts.append((1, date(2018, 6, 14), "split"))
+    assert history_cli._exit_code(report) == 1
+    assert "actions: created 2, unchanged 1, conflicts 1" in history_cli._summary(report)

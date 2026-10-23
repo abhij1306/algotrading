@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -35,6 +36,8 @@ from ..models import HatCorporateAction
 from ..money import exact
 from .mcp_client import McpClient, McpError
 from .store import ActionFactor
+
+logger = logging.getLogger(__name__)
 
 SOURCE_MCP = "mcp"
 SOURCE_ARCHIVE = "archive"
@@ -265,13 +268,22 @@ def lookup_actions(
 
 
 def store_actions(session_factory: Callable[[], Session], records: Sequence[ActionRecord]) -> int:
-    """Store `records` in one transaction (`load_actions`); the number created."""
+    """Store `records` in one transaction (`load_actions`); the number created. A conflict (a
+    factor other than the stored one, or a non-positive one) leaves the stored row as it is and
+    is logged with its key, never passed over in silence."""
     if not records:
         return 0
     with session_factory() as session:
-        created = load_actions(session, records).created
+        report = load_actions(session, records)
         session.commit()
-    return created
+    for instrument_id, ex_date, action_type in report.conflicts:
+        logger.warning(
+            "corporate action conflict kept the stored factor: %s %s %s",
+            instrument_id,
+            ex_date.isoformat(),
+            action_type,
+        )
+    return report.created
 
 
 def stored_factors(session: Session) -> list[ActionFactor]:

@@ -154,11 +154,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _exit_code(report: BuildReport) -> int:
     """Non-zero when anything needs the operator: a mismatch, an unplaced security, an unusable
-    file, a day with no file that is not a holiday, an action lookup or an index that failed."""
+    file, a day with no file that is not a holiday, an action lookup or an index that failed, or
+    an action whose factor conflicts with the stored one (the stored factor stays: a conflict is
+    never a success)."""
     failed = report.validation is not None and report.validation.failed
     incomplete = report.unresolved or report.problems or report.days.gaps or report.days.unaccounted
     index_failed = report.index is not None and report.index.failed
-    return 1 if failed or incomplete or report.action_symbols_failed or index_failed else 0
+    actions = report.action_symbols_failed or (
+        report.actions is not None and report.actions.conflicts
+    )
+    return 1 if failed or incomplete or actions or index_failed else 0
 
 
 @dataclass(frozen=True)
@@ -218,6 +223,11 @@ def _summary(report: BuildReport) -> str:
         f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
         f"left out {dict(report.left_out)}",
     ]
+    if report.actions is not None:
+        lines.append(
+            f"actions: created {report.actions.created}, unchanged {report.actions.unchanged}, "
+            f"conflicts {len(report.actions.conflicts)}"
+        )
     if report.index is not None:
         missing = {name: len(days) for name, days in report.index_missing.items() if days}
         lines.append(
