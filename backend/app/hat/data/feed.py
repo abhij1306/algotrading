@@ -4,8 +4,8 @@
 that says which symbols the socket must carry. It
 
 - connects and reconnects the session, only on a trading day from 09:00 IST (the pre-open session,
-  so the opening gaps can be captured, HAT-DATA-118) to the 15:30 close, by HAT's own session
-  policy; it never runs on a weekend or holiday;
+  so the opening gaps can be captured, HAT-DATA-118) to the close, by HAT's trading calendar
+  (`SessionCalendar`); it never runs on a day the calendar does not hold as a trading day;
 - turns each provider message into a tick keyed by database symbol (`ticks.normalize_tick`) and
   hands it to the tick listeners on the event-loop thread, in registration order, a failing
   listener isolated from the rest (`add_tick_listener`, the only tick input `LiveData.attach`
@@ -33,7 +33,8 @@ from typing import Any, Protocol
 
 from app.hat.clock import SYSTEM_CLOCK, Clock
 
-from .calendar import load_calendar
+from ..risk.sessions import SessionCalendar
+from .calendar import session_calendar
 from .provider.data_socket import SocketFactory, TokenSource
 from .provider.fyers_websocket import fyers_socket_factory, session_token_valid
 from .provider.fyers_websocket import fyers_token as provider_token
@@ -46,7 +47,7 @@ from .provider.provider_session import (
     spawn_daemon_thread,
 )
 from .provider.ticks import TickPayload, normalize_tick
-from .sessions import MarketHoursPolicy, MarketPhase
+from .sessions import IST
 from .subscriptions import SubscriptionRegistry
 from .symbols import SymbolMaster, symbol_master
 
@@ -56,9 +57,9 @@ __all__ = [
     "PREOPEN_FROM",
     "AuthHooks",
     "LiveFeed",
-    "PolicySource",
+    "CalendarSource",
     "TickListener",
-    "calendar_policy_source",
+    "calendar_source",
     "connect_status_message",
 ]
 
@@ -88,32 +89,36 @@ def connect_status_message(status: str) -> str:
     return CONNECT_STATUS_MESSAGES.get(status, "Live feed connection completed")
 
 
-PolicySource = Callable[[], MarketHoursPolicy | None]
+CalendarSource = Callable[[], SessionCalendar | None]
 
 
-def calendar_policy_source(
+def calendar_source(
     session_factory: Callable[[], Any],
-    clock: Clock = SYSTEM_CLOCK,
     *,
     ttl_s: float = 600.0,
+    retry_s: float = 30.0,
     monotonic: Callable[[], float] = time.monotonic,
-) -> PolicySource:
-    """A policy source that reads HAT's trading calendar (`hat_trading_calendar`) through
-    `session_factory`, at most once per `ttl_s`. It returns None, and is read again next time,
-    when the market has no calendar yet or the read fails, so the feed stays closed."""
-    cached: list[tuple[float, MarketHoursPolicy]] = []
+) -> CalendarSource:
+    """A source that reads HAT's trading calendar (`session_calendar`) through `session_factory`,
+    at most once per `ttl_s`. It returns None when the market has no calendar yet and raises when
+    the read fails, so the feed stays closed; either outcome is kept for `retry_s`, so a read made
+    off the event loop serves the connect that follows it."""
+    cached: list[tuple[float, SessionCalendar | None]] = []
 
-    def source() -> MarketHoursPolicy | None:
+    def source() -> SessionCalendar | None:
         now = monotonic()
-        if cached and now - cached[0][0] < ttl_s:
-            return cached[0][1]
-        with session_factory() as session:
-            calendar = load_calendar(session)
-        if calendar is None:
-            return None
-        policy = calendar.policy(clock)
-        cached[:] = [(now, policy)]
-        return policy
+        if cached:
+            at, calendar = cached[0]
+            if now - at < (ttl_s if calendar is not None else min(ttl_s, retry_s)):
+                return calendar
+        try:
+            with session_factory() as session:
+                calendar = session_calendar(session)
+        except Exception:
+            cached[:] = [(now, None)]  # unknown until `retry_s` passes
+            raise
+        cached[:] = [(now, calendar)]
+        return calendar
 
     return source
 
@@ -130,8 +135,9 @@ class LiveFeed:
     def __init__(
         self,
         *,
-        policy: MarketHoursPolicy | None = None,
-        policy_source: PolicySource | None = None,
+        calendar: SessionCalendar | None = None,
+        calendar_source: CalendarSource | None = None,
+        clock: Clock = SYSTEM_CLOCK,
         symbols: SymbolMaster = symbol_master,
         registry: SubscriptionRegistry | None = None,
         socket_factory: SocketFactory = fyers_socket_factory,
@@ -142,11 +148,13 @@ class LiveFeed:
     ) -> None:
         self._symbols = symbols
         self._validate_token = validate_token
-        # Which days the market trades comes from HAT's trading calendar: a fixed `policy` or a
-        # `policy_source` that reads it. With neither, or while the source has no calendar, the
-        # feed is closed: an unknown day is never taken for a trading day.
-        self._policy = policy
-        self._policy_source = policy_source
+        # Which days the market trades comes from HAT's trading calendar: a fixed `calendar` or a
+        # `calendar_source` that reads it. With neither, or while the source has no calendar, the
+        # feed is closed, and a day the calendar does not hold is never taken for a trading day.
+        self._calendar = calendar
+        self._calendar_source = calendar_source
+        self._clock = clock
+        self._connect_task: asyncio.Task[str] | None = None
         # Who wants which symbols: HAT's own owner (the registry keeps a refcount per owner).
         self.registry = registry or SubscriptionRegistry(symbols.to_db)
         self.session = ProviderSession(
@@ -183,31 +191,31 @@ class LiveFeed:
         return self.session.has_socket or self.session.state is SessionState.CONNECTING
 
     @property
-    def policy(self) -> MarketHoursPolicy | None:
-        """The market-hours policy now, or None when the calendar is unknown."""
-        if self._policy is not None:
-            return self._policy
-        if self._policy_source is None:
+    def calendar(self) -> SessionCalendar | None:
+        """The trading calendar now, or None when it is unknown."""
+        if self._calendar is not None:
+            return self._calendar
+        if self._calendar_source is None:
             return None
         try:
-            return self._policy_source()
+            return self._calendar_source()
         except Exception as exc:  # an unreadable calendar is an unknown calendar
             logger.warning("Trading calendar unavailable: %s", type(exc).__name__)
             return None
 
     def connection_allowed(self) -> bool:
-        """Whether the feed may be connected now: market hours, or the pre-open session from 09:00
-        IST on a trading day of HAT's calendar (HAT-DATA-118). False while the calendar is unknown.
-        """
-        policy = self.policy
-        if policy is None:
+        """Whether the feed may be connected now: the calendar's session, or the pre-open session
+        from 09:00 IST before the open of a trading day of HAT's calendar (HAT-DATA-118). False
+        while the calendar is unknown and on a day it does not hold."""
+        calendar = self.calendar
+        if calendar is None:
             return False
-        phase = policy.phase()
-        if phase.is_open:
+        now = self._clock.now()
+        if calendar.is_open(now):
             return True
-        if phase is not MarketPhase.PRE_MARKET:
-            return False
-        return policy.now_ist().time() >= PREOPEN_FROM
+        local = now.astimezone(IST)
+        opens = calendar.open_on(local.date())
+        return opens is not None and now < opens and local.time() >= PREOPEN_FROM
 
     def status(self) -> dict[str, Any]:
         connected = self.is_connected()
@@ -308,8 +316,8 @@ class LiveFeed:
         )
         if needs_validation:
             prevalidated_token = await asyncio.to_thread(self._token_valid)
-        # read the calendar off the loop: `connect` then finds the source's cached policy
-        await asyncio.to_thread(lambda: self.policy)
+        # read the calendar off the loop: `connect` then finds the source's cached calendar
+        await asyncio.to_thread(lambda: self.calendar)
         return self.connect(explicit=explicit, prevalidated_token=prevalidated_token)
 
     def disconnect(self) -> None:
@@ -362,11 +370,15 @@ class LiveFeed:
         self, loop: asyncio.AbstractEventLoop, *, prevalidated_token: bool | None = None
     ) -> str:
         """Remember the event loop that ticks are delivered on, start the health monitor and
-        connect if the market allows it. Call on the loop."""
+        connect if the market allows it, through `connect_async` so the calendar and token reads
+        stay off the loop. Call on the loop."""
         self.loop = loop
         if self.monitor_task is None or self.monitor_task.done():
             self.monitor_task = loop.create_task(self._monitor_loop())
-        return self.connect(prevalidated_token=prevalidated_token)
+        self._connect_task = loop.create_task(
+            self.connect_async(prevalidated_token=prevalidated_token)
+        )
+        return "connecting"
 
     async def stop(self) -> None:
         """App shutdown: stop the monitor and close the socket. Unlike `disconnect()` this does
@@ -376,6 +388,10 @@ class LiveFeed:
         live = task is not None and not task.done() and task.get_loop() is running
         if live and task is not None:
             task.cancel()
+        pending, self._connect_task = self._connect_task, None
+        if pending is not None and not pending.done() and pending.get_loop() is running:
+            pending.cancel()  # a start-up connect must not open a socket after the stop
+            await asyncio.gather(pending, return_exceptions=True)
         try:
             await asyncio.to_thread(self.session.stop)  # closing joins the SDK threads
         finally:

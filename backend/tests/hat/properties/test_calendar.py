@@ -1,27 +1,29 @@
-"""PBT calendar.* (HAT-DATA-027, HAT-OVR-001, HAT-SCH-086): a calendar holiday is closed in
-`MarketHoursPolicy` at every instant, a trading day uses its own session, and the engine's
-session comes from market reference data, not constants."""
+"""PBT calendar.* (HAT-DATA-027, HAT-OVR-001, HAT-SCH-086, HAT-RISK-075): the one trading calendar
+(`SessionCalendar`, loaded by `session_calendar`) closes a holiday at every instant, opens a trading
+day for its own session, gives a day it does not hold no session, and every reader (the feed, the
+scheduler's trading days, Telegram's days held) answers as it does."""
 
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 
 from hat_mcp_support import reference_engine
 from hat_risk_support import CALENDAR, TRADE_DAY, calendar_around
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
 from app.hat.data import calendar as cal
-from app.hat.data.sessions import (
-    IST,
-    SESSION_CLOSE,
-    SESSION_OPEN,
-    MarketHoursPolicy,
-    MarketPhase,
-)
+from app.hat.data.feed import PREOPEN_FROM, LiveFeed
+from app.hat.data.sessions import IST
 from app.hat.models import HatMarket
-from app.hat.risk.sessions import SessionState, next_session_open
+from app.hat.risk.sessions import (
+    SessionCalendar,
+    SessionState,
+    is_trading_day,
+    next_session_open,
+)
+from app.hat.telegram.reads import _days_held
 
 CalSpec = tuple[time, time, dict[date, cal.CalendarDay]]
 WINDOW_START = date(2026, 1, 1)
@@ -62,7 +64,7 @@ def calendars(draw: st.DrawFn) -> CalSpec:
 
 def through_database(
     open_default: time, close_default: time, rows: dict[date, cal.CalendarDay]
-) -> cal.MarketCalendar:
+) -> SessionCalendar:
     """Store the calendar in `hat_trading_calendar` and read it back, as the app does."""
     engine = reference_engine()
     with Session(engine) as session:
@@ -77,7 +79,7 @@ def through_database(
         session.flush()
         cal.upsert_calendar(session, market.id, rows.values())
         session.commit()
-        loaded = cal.load_calendar(session)
+        loaded = cal.session_calendar(session)
     assert loaded is not None
     return loaded
 
@@ -89,84 +91,116 @@ def instant(day: date, wall: time) -> datetime:
 GRID = [time(h, m) for h in range(24) for m in (0, 15, 30, 45)] + [time(9, 15), time(15, 30)]
 
 
+def _session(row: cal.CalendarDay | None, default: tuple[time, time]) -> tuple[time, time] | None:
+    """The session a stored row gives its day: its own times on a trading day (the market default
+    for a time it lacks), else none."""
+    if row is None or not row.is_trading:
+        return None
+    return row.open_at or default[0], row.close_at or default[1]
+
+
 @settings(max_examples=60)
 @given(spec=calendars())
 def test_holiday_closed(spec: CalSpec) -> None:
-    """For every date with is_trading = false the policy reports the market closed at every
-    instant of that date, and for every date with is_trading = true the session is
-    open_at-close_at (the market default when the row gives none)."""
+    """For every date with is_trading = false the calendar is CLOSED at every instant of that date;
+    a trading date is OPEN exactly from its open_at to its close_at (the `hat_market` default for a
+    time the row lacks); a date it does not hold is UNKNOWN and never open."""
     open_default, close_default, rows = spec
     loaded = through_database(open_default, close_default, rows)
-    policy = loaded.policy(FixedClock(instant(WINDOW_START, time(0, 0))))
     for offset in range(DAYS):
         day = WINDOW_START + timedelta(days=offset)
         row = rows.get(day)
+        session = _session(row, (open_default, close_default))
         for wall in GRID:
-            at = instant(day, wall)
-            phase = policy.phase(at)
+            state = loaded.state(instant(day, wall))
             if row is not None and not row.is_trading:
-                assert not phase.is_open
-                assert phase in (MarketPhase.HOLIDAY, MarketPhase.WEEKEND)
-            elif row is not None:
-                lo = row.open_at or open_default
-                hi = row.close_at or close_default
-                assert phase.is_open == (lo <= wall <= hi), (day, wall)
-
-
-@settings(max_examples=30)
-@given(spec=calendars())
-def test_policy_has_no_process_state(spec: CalSpec) -> None:
-    """A policy is its own calendar and nothing else (no installed global, no DEV_MODE): building
-    one from a loaded calendar never changes a bare policy, so a bare policy is closed only on a
-    weekend and open on every weekday inside the default session, whatever was loaded elsewhere."""
-    open_default, close_default, rows = spec
-    loaded = through_database(open_default, close_default, rows)
-    loaded.policy(FixedClock(instant(WINDOW_START, time(0, 0))))
-    bare = MarketHoursPolicy(clock=FixedClock(instant(WINDOW_START, time(0, 0))))
-    for offset in range(DAYS):
-        day = WINDOW_START + timedelta(days=offset)
-        for wall in GRID:
-            expected = day.weekday() < 5 and SESSION_OPEN <= wall <= SESSION_CLOSE
-            assert bare.is_open(instant(day, wall)) == expected, (day, wall)
+                assert state is SessionState.CLOSED
+            elif session is None:
+                assert state is SessionState.UNKNOWN, (day, wall)
+            else:
+                lo, hi = session
+                want = SessionState.OPEN if lo <= wall <= hi else SessionState.CLOSED
+                assert state is want, (day, wall)
 
 
 @settings(max_examples=60)
 @given(spec=calendars())
 def test_holiday_closed_trading_days(spec: CalSpec) -> None:
-    """For every calendar, the set of days the scheduler runs on equals the set of dates with
-    is_trading = true (where the calendar has a row), and weekdays without a row trade."""
+    """For every calendar, the days the scheduler runs on (`is_trading_day`, `trading_days`) are
+    exactly the dates stored with is_trading = true: a weekday without a row is not one."""
     open_default, close_default, rows = spec
     loaded = through_database(open_default, close_default, rows)
-    end = WINDOW_START + timedelta(days=DAYS - 1)
-    days = cal.trading_days(loaded, WINDOW_START, end)
+    days = set(loaded.trading_days())
     for offset in range(DAYS):
         day = WINDOW_START + timedelta(days=offset)
         row = rows.get(day)
-        expected = row.is_trading if row is not None else day.weekday() < 5
+        expected = row is not None and row.is_trading
         assert (day in days) == expected
+        assert is_trading_day(loaded, day) == expected
 
 
 @settings(max_examples=60)
 @given(spec=calendars())
 def test_session_from_reference_data(spec: CalSpec) -> None:
     """For every market and date the session the engine uses equals the `hat_trading_calendar`
-    row, or the `hat_market` default on a normal trading day, never a constant (HAT-OVR-001)."""
+    row, or the `hat_market` default that `with_weekdays` writes on a normal weekday, never a
+    constant (HAT-OVR-001); an unlisted weekend has none."""
     open_default, close_default, rows = spec
-    loaded = through_database(open_default, close_default, rows)
-    policy = loaded.policy(FixedClock(instant(WINDOW_START, time(0, 0))))
+    full = {d.day: d for d in cal.with_weekdays(rows.values(), open_default, close_default)}
+    loaded = through_database(open_default, close_default, full)
     for offset in range(DAYS):
         day = WINDOW_START + timedelta(days=offset)
-        row = rows.get(day)
-        if row is not None and row.is_trading:
-            expected = (row.open_at or open_default, row.close_at or close_default)
-        elif row is None and day.weekday() < 5:
-            expected = (open_default, close_default)
-        else:
-            expected = None
-        assert loaded.session_for(day) == expected
+        expected = _session(full.get(day), (open_default, close_default))
+        if rows and day not in rows:
+            assert expected == ((open_default, close_default) if day.weekday() < 5 else None)
+        opens = loaded.open_on(day)
+        assert (None if opens is None else opens.astimezone(IST).time()) == (
+            None if expected is None else expected[0]
+        )
         for wall in GRID:
-            is_open = policy.is_open(instant(day, wall))
+            is_open = loaded.is_open(instant(day, wall))
             assert is_open == (expected is not None and expected[0] <= wall <= expected[1])
+
+
+@example(  # a weekday the calendar does not hold (HAT-OVR-001 left it open; the readers disagreed)
+    spec=(time(9, 15), time(15, 30), {}), offset=1, wall=time(10, 0)
+)
+@settings(max_examples=80)
+@given(
+    spec=calendars(),
+    offset=st.integers(0, DAYS - 1),
+    wall=st.sampled_from(GRID + [PREOPEN_FROM, time(8, 59)]),
+)
+def test_one_answer(spec: CalSpec, offset: int, wall: time) -> None:
+    """For every calendar and instant the readers agree with `SessionCalendar.state`: the feed may
+    connect when the state is OPEN or in the pre-open from 09:00 before a trading day's open, and
+    on no day the calendar does not hold; the scheduler's trading days and Telegram's days held
+    count a day exactly when the calendar holds it as a trading day.
+    Harm: a calendar that has run out drives a daily cycle and a live feed on a day risk rejects
+    every entry as `market_closed`, or the readers count a different number of sessions."""
+    open_default, close_default, rows = spec
+    loaded = through_database(open_default, close_default, rows)
+    day = WINDOW_START + timedelta(days=offset)
+    at = instant(day, wall)
+    state = loaded.state(at)
+    opens = loaded.open_on(day)
+    feed = LiveFeed(calendar=loaded, clock=FixedClock(at))
+    preopen = opens is not None and at < opens and wall >= PREOPEN_FROM
+    assert feed.connection_allowed() == (state is SessionState.OPEN or preopen)
+    if state is SessionState.UNKNOWN:
+        assert not feed.connection_allowed()
+    trading = is_trading_day(loaded, day)
+    row = rows.get(day)
+    assert trading == (row is not None and row.is_trading)
+    assert trading == (day in loaded.trading_days())
+    if state is SessionState.OPEN:
+        assert trading
+    # and back: a day counted as a session has an open the feed and risk can reach
+    assert trading == (opens is not None)
+    opened = instant(WINDOW_START, time(10, 0))
+    held = _days_held(loaded, opened, at)
+    counted = [d for d in loaded.trading_days() if WINDOW_START <= d <= day]
+    assert held == max(len(counted) - 1, 0)
 
 
 @settings(max_examples=40)
@@ -187,11 +221,11 @@ def test_holiday_closed_withdrawn(first: CalSpec, second: CalSpec) -> None:
         session.flush()
         cal.upsert_calendar(session, market.id, first[2].values(), replace_span=True)
         cal.upsert_calendar(session, market.id, second[2].values(), replace_span=True)
-        loaded = cal.load_calendar(session)
+        loaded = cal.session_calendar(session)
         assert loaded is not None
         if second[2]:
             low, high = min(second[2]), max(second[2])
-            stored = {d: r for d, r in loaded.rows.items() if low <= d <= high}
+            stored = {d: r for d, r in loaded.days.items() if low <= d <= high}
             assert set(stored) == set(second[2])
             assert {d for d, r in stored.items() if not r.is_trading} == {
                 d for d, r in second[2].items() if not r.is_trading

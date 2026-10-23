@@ -675,7 +675,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if market_id is None:
             sys.stderr.write("history_no_market\n")
             return 2
-        calendar = hat_calendar.load_calendar(session)
+        calendar = hat_calendar.session_calendar(session)
         holidays = calendar.holidays() if calendar else frozenset()
     client = client_from_env(process_env())
 

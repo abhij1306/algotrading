@@ -121,7 +121,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `c040ffe76911a312a315cb33f37e1aba7adcd49a317c324bfcacaca4a9311345`
+Covered digest: `65afe62fa0520a7fdd41f043160af759ff3436d90f0fc5be1a91fd33ea27fe8d`
 
 ## Scope changes
 
@@ -147,6 +147,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 47 (HAT-EXEC-146): `render.URGENT_ALERTS` gains `position.series_changed`; its break is recorded under `manage.series_change_remapped` in `verify-execution`. Nothing was narrowed.
 
 - PR 36 (HAT-EXEC-042): `render.URGENT_ALERTS` gains `journal.mismatch`; its break is recorded under `journal.check_alerts` in `verify-execution`. No Telegram check changed.
+- PR 75b (architecture audit A-F3): `/positions`' days held counts the one `SessionCalendar`'s trading days (`reads._days_held`), not `MarketCalendar`'s weekday default, so a day the calendar does not hold is not counted; `calendar.one_answer` (`verify-reference-data`) checks it. No Telegram check changed.
 
 ## Scratch breaks
 

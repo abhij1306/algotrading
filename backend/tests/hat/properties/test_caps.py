@@ -568,7 +568,7 @@ def test_hat_kill_is_authority(account: bool, bot: bool, health: bool, paused: b
     assert decision.reason == expected
     assert decision.accepted is (expected is None)
     assert not any("halt" in f.name for f in dataclasses.fields(SignalContext))
-    assert set(inspect.signature(evaluate_signal).parameters) == {"ctx", "hours", "band_pct"}
+    assert set(inspect.signature(evaluate_signal).parameters) == {"ctx", "band_pct"}
 
 
 # --- the price band (HAT-RISK-100, HAT-RISK-101) ---

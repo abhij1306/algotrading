@@ -247,8 +247,10 @@ SAFETY_DIGESTS = {
     "test_stale_blocks_entry": ("941c3b48c6e9faf4eb5cfe1e7db5b2f65602e8d7ed5cf5370fb347e738ebbb2a"),
     "test_market_hours_only": ("ac1870bff30c18760974d6b40183b6629e2f7e73178c21bde2a69b64311382f5"),
     "test_max_chase_always": ("9bc34825f7d88f17b57dacc5e8bedba2733967f06509e39547ec303651e10c1f"),
+    # Re-pinned in PR 75b (A-F3): `evaluate_signal` lost its `hours` parameter (the session comes
+    # only from the calendar), so the allowed parameter set shrank; the same property otherwise.
     "test_hat_kill_is_authority": (
-        "6879437c7689ac2c5df662afee6e0936010ad411afd9a327f93da4aa84817a2f"
+        "77b13c6393317dff3c4c0517d1a7f4b533aa95dc768883194b816c83fd7ee9ba"
     ),
     "test_decision_total_on_garbage": (
         "b60f5ce9e55ee26e6ff95ed9f5363805289d9e3328441567b3e9dc327b9c02c1"

@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from app.hat.clock import SYSTEM_CLOCK, Clock
 from app.hat.data.feed import LiveFeed
 from app.hat.data.provider.data_socket import SYMBOL_UPDATE, SocketCallbacks
 from app.hat.data.provider.provider_session import ProviderSession, RetryPolicy
-from app.hat.data.sessions import MarketHoursPolicy
+from app.hat.data.sessions import IST, SESSION_CLOSE, SESSION_OPEN
+from app.hat.risk.sessions import SessionCalendar, SessionDay
 
 # Short waits so runner retries and timeouts finish in milliseconds.
 FAST_RETRY = RetryPolicy(
@@ -164,12 +166,31 @@ def make_session(
     return session, factory
 
 
+def weekday_calendar(clock: Clock, span: int = 400) -> SessionCalendar:
+    """Calendar rows for every day within `span` days of the clock's IST date: weekdays trade
+    09:15-15:30 IST, weekends are closed."""
+    today = clock.now().astimezone(IST).date()
+    days = {}
+    for offset in range(-span, span + 1):
+        day = today + timedelta(days=offset)
+        days[day] = (
+            SessionDay(
+                True,
+                datetime.combine(day, SESSION_OPEN, tzinfo=IST),
+                datetime.combine(day, SESSION_CLOSE, tzinfo=IST),
+            )
+            if day.weekday() < 5
+            else SessionDay(False)
+        )
+    return SessionCalendar(days)
+
+
 def make_feed(
     factory: FakeSocketFactory | None = None,
     *,
     spawn: Callable[[Callable[[], None]], None] = run_inline,
     clock: Clock = SYSTEM_CLOCK,
-    policy: MarketHoursPolicy | None = None,
+    calendar: SessionCalendar | None = None,
     token_source: Callable[[], str | None] = lambda: "CLIENT:tok",
     token_valid: Callable[[], bool] = lambda: True,
 ) -> tuple[LiveFeed, FakeSocketFactory]:
@@ -177,7 +198,8 @@ def make_feed(
     check never calls Fyers."""
     factory = factory or FakeSocketFactory()
     feed = LiveFeed(
-        policy=policy or MarketHoursPolicy(clock=clock),
+        calendar=calendar or weekday_calendar(clock),
+        clock=clock,
         socket_factory=factory,
         token_source=token_source,
         validate_token=token_valid,

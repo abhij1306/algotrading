@@ -1,8 +1,10 @@
-"""Trading sessions from the calendar, as a pure value (HAT-RISK-075, HAT-SCH-086).
+"""HAT's one trading calendar, as a pure value (HAT-RISK-075, HAT-SCH-086, HAT-OVR-001).
 
-The risk checks read the session of a trade date from `hat_trading_calendar` rows, never from a
-weekday rule, so a holiday is closed and a special session is open. An instant whose date the
-calendar does not know is neither open nor closed: the caller fails closed.
+Every reader (risk, execution, the scheduler, the feed, portfolio and Telegram) reads the session
+of a trade date from `hat_trading_calendar` rows, loaded once by `data.calendar.session_calendar`,
+never from a weekday rule, so a holiday is closed and a special session is open. An instant whose
+date the calendar does not know is never open: risk fails closed on it, and every other reader
+treats the day as no trading day.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import StrEnum
+from functools import cached_property
 
 from ..time import as_utc, trade_date_of
 
@@ -59,6 +62,18 @@ class SessionCalendar:
             return SessionState.OPEN
         return SessionState.CLOSED
 
+    def is_open(self, at: datetime) -> bool:
+        """Whether `state(at)` is OPEN; an unknown date is not open."""
+        return self.state(at) is SessionState.OPEN
+
+    def open_on(self, day: date) -> datetime | None:
+        """The session open of `day`; None unless the calendar holds it as a trading day with its
+        times."""
+        row = self.days.get(day)
+        if row is None or not row.is_trading or row.open_at is None or row.close_at is None:
+            return None
+        return as_utc(row.open_at)
+
     def next_open_after(self, at: datetime) -> datetime | None:
         """The `open_at` of the first trading day whose open is strictly after `at`, or None when
         the calendar holds no such day."""
@@ -70,9 +85,17 @@ class SessionCalendar:
         ]
         return min(opens) if opens else None
 
+    @cached_property
+    def _trading(self) -> tuple[date, ...]:
+        return tuple(sorted(day for day, row in self.days.items() if row.is_trading))
+
     def trading_days(self) -> list[date]:
         """The calendar's trading days, in date order."""
-        return sorted(day for day, row in self.days.items() if row.is_trading)
+        return list(self._trading)
+
+    def holidays(self) -> frozenset[date]:
+        """The dates the calendar holds as closed (holidays and listed weekends)."""
+        return frozenset(day for day, row in self.days.items() if not row.is_trading)
 
     def previous_trading_day(self, day: date) -> date | None:
         """The last trading day before `day`; None when the calendar holds none."""

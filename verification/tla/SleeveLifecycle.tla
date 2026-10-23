@@ -203,7 +203,7 @@ SetDsr ==
             /\ allocFresh' = allocFresh
             /\ UNCHANGED <<shadowDays, healthZero, ciFail, failing, probAge>>)
 
-\* code: backend/app/hat/engine/portfolio/service.py:trading_sessions  (a shadow session passes)
+\* code: backend/app/hat/engine/portfolio/service.py:load_evidence  (a shadow session passes)
 TickShadow ==
     /\ state = "shadow"
     /\ shadowDays < ShadowNeeded

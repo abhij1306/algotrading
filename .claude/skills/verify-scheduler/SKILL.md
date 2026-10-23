@@ -148,7 +148,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `4ec7c4627fd61a4f091e07edc29acf6ee24fafd2419e48a136c56c7cd4c3e2c9`
+Covered digest: `cdede2d144aec19de96e4cb8666de3d55d7055621ecd1e7b5170641863b2b69e`
 
 ## Scope changes
 
@@ -183,6 +183,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 47: `trade_jobs` registers `gtt.ex_date` only with `exdate_check` (`HatSettings.exdate_gtt_check`, passed through `daily_jobs` and `account_jobs`); the job table holds the default registration. Nothing was narrowed.
 
 - PR 36 (HAT-EXEC-042): `daily/nightly.py` gains the `journal.check` job (23:15 trading days, after the 23:00 GTT verify). Its body (`Nightly.journal_check`) is checked by `verify-execution`'s `journal.check_alerts`. Nothing was narrowed.
+- PR 75b (architecture audit A-F3): `SleeveLifecycle.tla` comment only (`TickShadow` names `portfolio/service.py:load_evidence`). No scheduler or harness check changed.
 
 ## Scratch breaks
 

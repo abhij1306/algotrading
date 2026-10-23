@@ -1,6 +1,6 @@
-"""NSE trading calendar: parse the holiday list, store it in `hat_trading_calendar`, and feed
-the `MarketHoursPolicy` the HAT engine reads (HAT-DATA-027, HAT-OVR-001, C7). The policy is built
-from a loaded calendar and passed to its users; nothing installs it process-wide.
+"""NSE trading calendar: parse the holiday list, store it in `hat_trading_calendar`, and load it
+as the one `SessionCalendar` every HAT reader takes (HAT-DATA-027, HAT-OVR-001, C7). It is loaded
+by `session_calendar` and passed to its users; nothing installs it process-wide.
 
 No HTTP here: the holiday text comes from a recorded file or a caller-supplied source.
 """
@@ -10,15 +10,14 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.hat.clock import SYSTEM_CLOCK, Clock
-from app.hat.data.sessions import IST, MarketHoursPolicy
+from app.hat.data.sessions import IST
 
 from ..models import HatMarket, HatTradingCalendar
 from ..risk.sessions import SessionCalendar
@@ -179,77 +178,22 @@ def upsert_calendar(
     return changed
 
 
-@dataclass(frozen=True)
-class MarketCalendar:
-    """What the engine reads: the market's default session plus calendar rows by date."""
-
-    session_open: time
-    session_close: time
-    rows: Mapping[date, CalendarDay]
-
-    def holidays(self) -> frozenset[date]:
-        return frozenset(d for d, r in self.rows.items() if not r.is_trading)
-
-    def sessions(self) -> dict[date, tuple[time, time]]:
-        """Own (open, close) of every date the calendar marks as a trading day."""
-        return {
-            d: (r.open_at or self.session_open, r.close_at or self.session_close)
-            for d, r in self.rows.items()
-            if r.is_trading
-        }
-
-    def policy(self, clock: Clock = SYSTEM_CLOCK) -> MarketHoursPolicy:
-        """A `MarketHoursPolicy` that reads this calendar and the market's default session."""
-        return MarketHoursPolicy(
-            clock=clock,
-            holidays=self.holidays(),
-            sessions=self.sessions(),
-            session_open=self.session_open,
-            session_close=self.session_close,
-        )
-
-    def session_for(self, day: date) -> tuple[time, time] | None:
-        """The session the engine uses on `day`, or None when the market is closed: the calendar
-        row if there is one, else the market default on a weekday (HAT-OVR-001)."""
-        row = self.rows.get(day)
-        if row is not None:
-            if not row.is_trading:
-                return None
-            return (row.open_at or self.session_open, row.close_at or self.session_close)
-        return (self.session_open, self.session_close) if day.weekday() < 5 else None
-
-
-def trading_days(calendar: MarketCalendar, start: date, end: date) -> set[date]:
-    """Dates in [start, end] with a session: what the scheduler runs its daily cycle on."""
-    out = set()
-    day = start
-    while day <= end:
-        if calendar.session_for(day) is not None:
-            out.add(day)
-        day += timedelta(days=1)
-    return out
-
-
 def session_calendar(session: Session, market_code: str = "NSE") -> SessionCalendar | None:
-    """The market's `hat_trading_calendar` rows as the session calendar the risk checks read."""
-    market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == market_code))
-    if market_id is None:
-        return None
-    rows = session.scalars(
-        select(HatTradingCalendar).where(HatTradingCalendar.market_id == market_id)
-    )
-    return SessionCalendar.from_rows((r.day, r.is_trading, r.open_at, r.close_at) for r in rows)
-
-
-def load_calendar(session: Session, market_code: str = "NSE") -> MarketCalendar | None:
+    """The market's `hat_trading_calendar` rows as the one session calendar every reader takes; None
+    when the market is not set up. A trading row without its own times takes the `hat_market`
+    default session (HAT-OVR-001), so every reader that counts the day as a session can open it."""
     market = session.scalar(select(HatMarket).where(HatMarket.code == market_code))
     if market is None:
         return None
-    rows = {}
-    for row in session.scalars(
+    rows = session.scalars(
         select(HatTradingCalendar).where(HatTradingCalendar.market_id == market.id)
-    ):
-        open_at = as_utc(row.open_at).astimezone(IST).time() if row.open_at else None
-        close_at = as_utc(row.close_at).astimezone(IST).time() if row.close_at else None
-        rows[row.day] = CalendarDay(row.day, row.is_trading, open_at, close_at, row.note)
-    return MarketCalendar(market.session_open, market.session_close, rows)
+    )
+    return SessionCalendar.from_rows(
+        (
+            r.day,
+            r.is_trading,
+            r.open_at or (_to_instant(r.day, market.session_open) if r.is_trading else None),
+            r.close_at or (_to_instant(r.day, market.session_close) if r.is_trading else None),
+        )
+        for r in rows
+    )

@@ -47,7 +47,7 @@ DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTR
 - A TLC counterexample names each action (`SnapshotAccount`, `PlaceEntry`, `HealthFlip`, `Pause`, `Resume`); each action has a `\* code: backend/app/hat/risk/...py:function` comment naming the function it models. If the real function can take those steps in that order, it is a bug in the code. If it cannot (a guard or transaction the model leaves out), fix the model and say so under Scope changes.
 - A failing `CONF risk.initial_seed_equals_spec` names the field that differs from `OWNER_SEED` in `test_conf_risk.py`: fix `SEED_POLICY`, or change `OWNER_SEED` and `docs/decisions.md` together in a separate, called-out change.
 - `CONF risk.hat_safety_properties_pinned` fails when a pinned safety property was edited (digest), is no longer a `@given` property, or fails. Do not edit the property: stop and explain which safety behaviour changed; re-pin (update `SAFETY_DIGESTS`) only for a deliberate, reviewed change, and say so in the PR.
-- Finding kept visible: HAT's own `MarketHoursPolicy` (`app/hat/data/sessions.py`) has no `DEV_MODE` bypass, and `evaluate_signal` requires an OPEN session from the trading calendar, so a dev flag never opens a HAT entry.
+- Finding kept visible: HAT has no `DEV_MODE` bypass: `evaluate_signal` takes the session only from the trading calendar (`decide` requires `SessionCalendar.state` OPEN), so a dev flag never opens a HAT entry.
 - Finding kept visible: the price band is a constant (`MAX_PRICE_DEVIATION_PCT`, 20%), not a policy field, because the policy document's fields are fixed (HAT-RISK-010); making it a field is a deliberate change.
 - Staleness: if `test_verify_skill_sync_current` says this skill is stale, a covered file changed. Re-run everything above, update the skill if behaviour changed, then refresh the digest.
 
@@ -77,7 +77,7 @@ Code under check:
 - `backend/app/hat/risk/sessions.py`: `SessionCalendar`, `next_session_open`
 - `backend/app/hat/risk/modes.py`: `plan_mode_change`, `effective_mode`
 - `backend/app/hat/risk/policy.py`: `parse_policy`, `SEED_POLICY`, `OLD_SEED_POLICY`, `effective_version`, `classify_direction`, `build_gate_evidence`, `increase_gate_ok`
-- `backend/app/hat/risk/service.py`: `evaluate_signal`, `price_band_ok`, `market_open_at`
+- `backend/app/hat/risk/service.py`: `evaluate_signal`, `price_band_ok`
 
 Checks:
 - `backend/tests/hat/hat_risk_support.py`
@@ -96,7 +96,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `b7d4a99cd4c9f4862881d54029d98376ef78023ddc28ca580f63d9ee0c637520`
+Covered digest: `f101c90c3fd6e4c6651e1a709f5213fe2d453e44ec60703c27484b9efdec48ac`
 
 ## Scope changes
 
@@ -127,6 +127,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 46 (D128) re-pinned two safety properties in `test_conf_risk.SAFETY_DIGESTS`: `caps.global_open_risk` (its oracle's cap 3% to 1.5%) and `caps.kill_thresholds` (its oracle's account kill 15% to 10%). Only the numbers changed, to the owner's; each property is as strong as before, and each was seen failing with the old number restored in the seed. `kill.drawdown_kills_from_snapshots`, `trades.global_open_risk_across_bots`, `lifecycle.*` (Probation at 10%) and the DB snapshot and owner-serialised checks took the same numbers. The policy helpers that need no backtest import moved to `risk/policy_upkeep.py`, so `app.database` can run the upkeep at startup without the Telegram text path reaching order code (`policy_service` re-exports `load_versions`). Nothing was narrowed.
 
 - PR 36 (HAT-EXEC-042, architecture audit F1): `controls.cancel_pending_approvals` records `kill.tripped` through the trade journal (`journal.record`) only for a signal still AwaitingApproval; a card whose signal has moved on is closed without an event (it used to record `signal.expired` whatever the state). Checked by `verify-execution`'s `journal_only_writers` and `journal.validates_before_writing`; the kill-switch properties here are unchanged and still pass. Nothing was narrowed.
+- PR 75b (architecture audit A-F3): `evaluate_signal` lost `market_open_at`, `_policy_for` and its `hours` parameter, and `EntryChecks` its `market_open`: the policy check repeated `decide`'s `SessionCalendar.state` OPEN check on the same calendar day (no caller passed `hours`). `caps.market_hours_only` is unchanged and passes. `caps.hat_kill_is_authority` is re-pinned in `SAFETY_DIGESTS`: its allowed parameter set shrank to `ctx`, `band_pct`. `SessionCalendar` gains `is_open` and `open_on` for the feed.
 
 ## Scratch breaks
 
@@ -523,6 +524,14 @@ tests/hat/properties/test_caps.py:481: in test_hat_kill_is_authority
 E   AssertionError: assert None == <Reason.KILL_ACCOUNT: 'kill_account'>
 E    +  where None = RiskDecision(accepted=True, reason=None, quantity=500, stop=Decimal('95'), risk_amount=Decimal('2500'), warnings=(), p...4-4f5bcc206489'), binding='risk', risk_pct_used=Decimal('0
 E   Failing test case: test_hat_kill_is_authority(
+```
+
+Break: (PR 75b) in `backend/app/hat/risk/service.py` (caps.hat_kill_is_authority): `evaluate_signal` takes an `hours` parameter again (a second way to say the market is open).
+
+```
+E   AssertionError: assert {'band_pct', 'ctx', 'hours'} == {'band_pct', 'ctx'}
+E     Extra items in the left set:
+E     'hours'
 ```
 
 Break: in `backend/app/hat/risk/service.py` (caps.price_band): the band check always passes.

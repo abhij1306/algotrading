@@ -12,7 +12,8 @@ ID that code, tests and skills cite, with the checks that prove it.
 3. No entry without a stop price below the entry price.
 4. No entry when the day's data or the live feed is stale, or the instrument's own last price is
    unknown, 30 s old or outside the day's price band.
-5. No order outside the exchange session from `hat_trading_calendar` (09:15-15:30 IST).
+5. No order outside the exchange session from `hat_trading_calendar` (09:15-15:30 IST); a date the
+   calendar does not hold is no trading day for any reader.
 6. `max_chase` always applies, even if a config deletes the criterion.
 
 ## Money safety
@@ -65,7 +66,7 @@ every check named must exist, and a new check is added here with its ID.
 
 ### Overview and boundaries
 
-- HAT-OVR-001: Market rules stay out of the engine | CONF `market_id_on_market_tables`, PBT `calendar.session_from_reference_data`
+- HAT-OVR-001: Market rules stay out of the engine | CONF `market_id_on_market_tables`, PBT `calendar.session_from_reference_data`, PBT `calendar.one_answer`
 - HAT-OVR-002: MVP scope is two sleeves, one user, one broker | CONF `mvp_seed_scope`
 - HAT-OVR-003: Criteria import no broker, DB session or UI module | CONF `import_graph_boundaries`
 - HAT-OVR-004: Only the router reaches the broker | CONF `import_graph_boundaries`, TLA `ExecutionRouter!RiskBeforeRoute`
