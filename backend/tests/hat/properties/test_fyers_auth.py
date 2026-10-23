@@ -526,7 +526,8 @@ def test_complete_login_checks_the_account(
     """PBT fyers_auth.complete_login_checks_the_account (HAT-DEC-BD5; PR 73, PR 38 follow-up 1):
     the adapter's `complete_login` goes through the same check as the HTTP route. It saves the
     token exactly when no Fyers account is active or the user is one; another user is
-    `wrong_account`, unreadable accounts are `accounts_unreadable`, and neither writes a token.
+    `wrong_account`, a user Fyers did not name is `account_unconfirmed`, unreadable accounts are
+    `accounts_unreadable`, and none of them writes a token.
     Harm: a Telegram or job login saves a token for any Fyers user."""
 
     def account_refs() -> frozenset[str]:
@@ -555,5 +556,12 @@ def test_complete_login_checks_the_account(
         else:
             with pytest.raises(BrokerLoginError) as refused:
                 broker.complete_login(code)
-            assert refused.value.code == ("accounts_unreadable" if down else "wrong_account")
+            expected = (
+                "accounts_unreadable"
+                if down
+                else "account_unconfirmed"
+                if user is None
+                else "wrong_account"
+            )
+            assert refused.value.code == expected
         assert store.path.exists() == accepted

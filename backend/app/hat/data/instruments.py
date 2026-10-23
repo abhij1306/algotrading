@@ -24,6 +24,7 @@ from ..models import (
     HatInstrumentSymbolHistory,
     HatPriceBand,
 )
+from ..models.strategy import BROKER_FYERS
 from ..time import utc_now
 from .reference import BandRow, IndustryRow, Security
 from .symbols import SymbolMaster
@@ -35,7 +36,6 @@ CODE_LISTING_SHRUNK = "reference_listing_shrunk"
 # A listing that drops more than half of at least this many active instruments is treated as a
 # broken source, not as mass delisting.
 SHRINK_GUARD_MIN_ACTIVE = 100
-BROKER_FYERS = "fyers"
 
 
 class ReferenceDataError(HatError):

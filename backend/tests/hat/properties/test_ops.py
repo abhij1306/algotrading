@@ -41,7 +41,7 @@ from app.hat.daily.intraday import Intraday
 from app.hat.daily.live import GateBoard
 from app.hat.daily.market import DailyData
 from app.hat.daily.nightly import NightlyDeps
-from app.hat.daily.runtime import HatRuntime, daily_jobs, subscription_alert
+from app.hat.daily.runtime import ALERT_POOL, HatRuntime, daily_jobs, subscription_alert
 from app.hat.data.store import BarRow, DataStore
 from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
 from app.hat.data.ticks import tick_for_date
@@ -1376,18 +1376,37 @@ def test_ex_date_job_behind_flag(raw: str | None) -> None:
         )
 
 
+class ThreadNotifier(RecordingNotifier):
+    """Records the thread of every alert; with `fail`, each send raises after it is recorded."""
+
+    def __init__(self, fail: bool) -> None:
+        super().__init__()
+        self.fail = fail
+        self.threads: list[threading.Thread] = []
+
+    def alert(self, code: str, trade_date: date, detail: dict[str, str | int]) -> None:
+        self.threads.append(threading.current_thread())
+        super().alert(code, trade_date, detail)
+        if self.fail:
+            raise ConnectionError("transport down")
+
+
 @given(
     sizes=st.lists(st.integers(0, 12), min_size=1, max_size=6),
     limit=st.integers(2, 10),
     now=st.datetimes(datetime(2026, 1, 1), datetime(2027, 1, 1), timezones=st.just(UTC)),
+    fail=st.booleans(),
 )
-def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime) -> None:
+def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime, fail: bool) -> None:
     """PBT ops.subscription_limit_alerts (HAT-DATA-112; PR 73, PR 39): the runtime's
-    `subscription_alert` turns each sync whose wanted set (the symbols and the heartbeat) is at
-    or above the provider's limit into one health alert `subscription_limit` of the trade date
-    of the runtime's clock, and a sync below it raises none. Harm: the owner never hears that
-    symbols past the limit get no ticks, so their bars, triggers and live exits stay silent."""
-    notifier = RecordingNotifier()
+    `subscription_alert` turns each sync whose wanted set (the symbols and the heartbeat)
+    reached the provider's limit (a further symbol would get no ticks) into one health alert
+    `subscription_limit` of the trade date of the runtime's clock, and a sync below it raises
+    none. Every alert is sent on `ALERT_POOL`, never on the syncing thread (a job holding the
+    subscriptions' lock), and a failed send neither reaches the sync nor stops later alerts.
+    Harm: the owner never hears that symbols past the limit get no ticks, so their bars,
+    triggers and live exits stay silent; or a slow transport stalls every subscription sync."""
+    notifier = ThreadNotifier(fail)
     subs = LiveSubscriptions(
         SubscriptionRegistry(str.upper),
         lambda _s: None,
@@ -1398,7 +1417,9 @@ def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime) 
     for size in sizes:
         watchlist = frozenset(f"NSE:S{n}-EQ" for n in range(size))
         subs.sync(SubscriptionInputs(watchlist, frozenset(), frozenset()))
+    ALERT_POOL.submit(lambda: None).result()  # the one worker has sent every alert before this
     wanted = [size + 1 for size in sizes]  # the heartbeat is always held
     assert notifier.alerts == [
         ("subscription_limit", trade_date_of(now), {}) for n in wanted if n >= limit
     ]
+    assert threading.current_thread() not in notifier.threads

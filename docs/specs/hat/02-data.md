@@ -756,7 +756,7 @@ The live service subscribes to under 200 symbols (watchlists, open positions and
 - **Verification:** PBT `bars.subscription_set`, PBT `ops.subscription_limit_alerts`, CONF `ops.subscription_alert_wired`
 - **Acceptance:**
   - Property: for every state of watchlists, positions and candidates, the `"hat"` owner's subscription set equals (watchlist ∪ open positions ∪ EP candidates ∪ {heartbeat}) in DB symbol format from its first sync until HAT releases its symbols, and unsubscribing HAT never removes a symbol held by another owner. Harm: an open position stops receiving prices so its live exits never fire, or a quiet watchlist trips the feed-wide stale kill.
-- **[A]** Under 200 symbols / Fyers symbol limit: validated during build (DS "Verify: Fyers WebSocket symbol limit"); a set at or above the limit raises the health alert `subscription_limit` of the day, which the runtime sends to the owner (PR 73; before it, the runtime built the subscriptions without their alert and the code reached only the log).
+- **[A]** Under 200 symbols / Fyers symbol limit: validated during build (DS "Verify: Fyers WebSocket symbol limit"); a set at or above the limit raises the health alert `subscription_limit` of the day, which the runtime sends to the owner from one worker thread of its own, never the syncing job's (PR 73; before it, the runtime built the subscriptions without their alert and the code reached only the log).
 
 #### HAT-DATA-113: 5-minute bars are aligned to 09:15 and final at close + 2 s
 - **Statement:** 5-minute bars are built from ticks, aligned to 09:15:00 IST; a bar is final at its close plus 2 seconds.

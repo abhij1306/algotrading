@@ -516,7 +516,8 @@ incident in the PR or issue tracker).
    answers; Telegram `/status` answers. A backend that does not come up with
    `HatConfigError: fyers_proxy_set: <variable>` in `$COMPOSE logs backend` was refused because
    that proxy variable would carry Fyers traffic past the IPv4 pin (HAT-BRK-093): unset it for
-   the backend, or add `fyers.in` to `NO_PROXY`, and start again.
+   the backend, or add `fyers.in` to `NO_PROXY` (and to `no_proxy` if that is set too), and start
+   again.
 3. Stop (planned, outside the window): `python scripts/hat_deploy_guard.py && $COMPOSE stop backend`.
    The backend has 30 s to stop the feed, the scheduler and the engine: running job bodies get
    25 s, and any still running then are logged by name (look for `abandoned` in the log and

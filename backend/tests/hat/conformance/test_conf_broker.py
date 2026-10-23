@@ -481,7 +481,7 @@ def test_brk__recorded_writes() -> None:
 
 # The broker-account status and broker-name values live once, in the models leaf (PR 73, PR 38
 # follow-up 3); every reader imports them from there.
-ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING"}
+ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING", "BROKER_FYERS"}
 CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
 ACCOUNT_OWNERS = {"HatBrokerAccount", "account"}  # the model and the name every reader uses
 
@@ -497,7 +497,8 @@ def _account_column(node: ast.expr) -> bool:
 
 def account_literal_violations(source: str) -> list[str]:
     """What breaks the one-copy rule in a module's source: a module-level `ACCOUNT_*` status
-    constant of its own, or a broker account's `status` or `broker` compared with a string."""
+    constant or `BROKER_FYERS` of its own, or a broker account's `status` or `broker` compared
+    with a string."""
     tree = ast.parse(source)
     found = [
         f"defines {target.id}"
@@ -517,9 +518,10 @@ def account_literal_violations(source: str) -> list[str]:
 
 def test_brk__account_constants_one_copy() -> None:
     """CONF brk.account_constants_one_copy (HAT-BRK-092; PR 73, PR 38 follow-up 3): no module but
-    `models/strategy.py` defines a broker-account status constant, and none compares an account's
-    status or broker with a string of its own. Harm: a renamed status leaves a stale copy behind,
-    and a login, a routing gate or the dashboard reads accounts by a value no row has any more."""
+    `models/strategy.py` defines a broker-account status constant or the broker name, and none
+    compares an account's status or broker with a string of its own. Harm: a renamed status
+    leaves a stale copy behind, and a login, a routing gate, the dashboard or a broker-symbol
+    read uses a value no row has any more."""
     found = {
         str(path.relative_to(HAT_ROOT)): bad
         for path in sorted(HAT_ROOT.rglob("*.py"))

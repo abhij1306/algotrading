@@ -49,7 +49,7 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `CONF fyers_adapter_wraps_existing` The adapter reaches Fyers only through HAT's `FyersBroker`, `FyersSession` and `FyersAuthService`; the SDK's HTTP client `fyersModel` is imported only in `fyers_ipv4.py`, after its hook is installed, and session and auth take it from `fyers_ipv4.sdk` (the data socket's `FyersWebsocket` only in `data/provider/fyers_websocket.py`; GTT SDK calls only in `fyers_broker.py`), and nothing under `app/hat` imports `app.brokers`. Harm: a second, untested path to the broker, or an SDK client that reaches Fyers over IPv6.
 - `PBT fyers_ipv4.fyers_http_leaves_over_ipv4` Through a real `requests.Session` over a scripted resolver and socket, a request to a Fyers host (`fyers.in` or a subdomain, any case, a trailing dot) opens AF_INET sockets only, to its IPv4 addresses in order until one connects, none when it has no IPv4 address; any other host connects as urllib3 does by itself (HAT-BRK-093). Harm: orders leave over IPv6 and Fyers refuses every write with -50 (not the whitelisted IP), as the live test of 2026-10-22 found.
 - `PBT fyers_ipv4.is_fyers_host_exact` Exactly `fyers.in` and its subdomains are Fyers hosts (case and a trailing dot ignored); a look-alike is not. Harm: another host is forced onto IPv4, or a Fyers host escapes the hook.
-- `PBT fyers_ipv4.no_proxy_carries_fyers` (HAT-BRK-093, PR 73) For every environment of proxy variables (either case, set or empty) and `NO_PROXY` values, whenever `require_direct_fyers` lets HAT start, real `requests` (`get_environ_proxies`, `select_proxy`) uses no proxy for any Fyers host HAT reaches; when it refuses, `production_parts` fails with `fyers_proxy_set: <variable>`, never the value. Harm: a proxy carries orders to Fyers over IPv6 past the pin, and Fyers refuses every write (-50).
+- `PBT fyers_ipv4.no_proxy_carries_fyers` (HAT-BRK-093, PR 73) For every environment of proxy variables (either case, set or empty) and `NO_PROXY` values, whenever `require_direct_fyers` lets HAT start, neither real `requests` (`get_environ_proxies`, `select_proxy`) nor urllib (`getproxies_environment`, `proxy_bypass_environment`) uses a proxy for any Fyers host HAT reaches; when it refuses, `production_parts` and `sdk()` fail with `fyers_proxy_set: <variable>`, never the value. Harm: a proxy carries orders to Fyers over IPv6 past the pin, and Fyers refuses every write (-50).
 - `CONF brk__account_constants_one_copy` (HAT-BRK-092, PR 73) No module but `models/strategy.py` defines an `ACCOUNT_*` status constant, and none compares an account's `status` or `broker` with a string (the checker is shown to catch a synthetic offender). Harm: a stale copy of a status survives a rename and a login, gate or view reads accounts by a value no row has.
 - `CONF ops__single_fyers_secret_store` Fyers credential words and the token file appear only in `fyers_auth.py`, `fyers_tokens.py` and `fyers_session.py`, and no HAT table holds a broker secret. Harm: a second copy of the Fyers token.
 - `CONF mvp_seed_scope` Only the Fyers adapter is registered and onboarding accepts no other broker (PR 8 extends this to the seeded strategies, markets and user). Harm: an unreviewed broker is onboarded.
@@ -75,9 +75,9 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_auth.credentials_precedence` Each credential comes from the first non-empty name in its list (the legacy name first); a missing one raises an error naming the primary variable and carrying no value, and the credentials' repr hides the secret. Harm: the wrong app credentials are used or the secret leaks.
 - `PBT fyers_auth.no_sdk_without_credentials` Without app credentials neither the login link nor the exchange builds an SDK session or touches the token file. Harm: a half-configured process calls Fyers with blank credentials.
 - `PBT fyers_auth_routes.cross_site_write_refused` (HAT-DEC-BD5, PR 38) For every write header (absent, `1`, other values), `Origin` (absent, a frontend origin, a page on another site, `null`), `Sec-Fetch-Site` and with or without the app's origin rule wired, both login POSTs run only when the header is `1` and the request names a frontend origin, or names none and is not marked cross-site or same-site. A refusal is a 403 with `guard.WRITE_REFUSED`, writes or removes no token and runs no hook. Five `@example`s pin the harmful shapes. Harm: any page the owner's browser opens logs HAT out of Fyers mid-session or plants its own token.
-- `PBT fyers_auth_routes.token_for_another_account_refused` (HAT-DEC-BD5, PR 38) For every set of broker accounts (broker, `account_ref`, status) and every user a token belongs to (None: the profile failed), `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`; otherwise 403 with `ACCOUNT_UNCONFIRMED` (unknown user) or `WRONG_ACCOUNT`, no file, and neither token nor code in the body or log. With the accounts unreadable (`db_down`: the table is dropped) it answers 503 with `DB_ERROR` and writes nothing. Harm: HAT trades or reconciles on another Fyers account. Since PR 73 the check is the service's (`FyersAuthService(account_refs=...)`), and the rig hands it `fyers_account_refs` over the SQLite accounts.
+- `PBT fyers_auth_routes.token_for_another_account_refused` (HAT-DEC-BD5, PR 38) For every set of broker accounts (broker, `account_ref`, status) and every user a token belongs to (None: the profile failed), `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`; otherwise 403 with `ACCOUNT_UNCONFIRMED` (unknown user) or `WRONG_ACCOUNT`, no file, and neither token nor code in the body or log. With the accounts unreadable (`db_down`: the table is dropped) it answers 503 with `ACCOUNTS_UNREADABLE` and writes nothing. Harm: HAT trades or reconciles on another Fyers account. Since PR 73 the check is the service's (`FyersAuthService(account_refs=...)`), and the rig hands it `fyers_account_refs` over the SQLite accounts.
 - `PBT fyers_auth.accounts_read_in_order` (HAT-DEC-BD5, PR 73) Every exchange reads the accounts once, after Fyers has answered and the profile was read and just before the save (traced: exchange, profile, accounts, save); an account onboarded during the profile read counts, a rejected code reads none, a refused user saves nothing (`ACCOUNT_UNCONFIRMED` or `WRONG_ACCOUNT`). Harm: a login plants another account's token, or the read holds a connection while Fyers answers.
-- `PBT fyers_auth.complete_login_checks_the_account` (HAT-DEC-BD5, PR 73) The adapter's `complete_login` saves the token exactly when no Fyers account is active or the user is one; another user is `wrong_account`, unreadable accounts `accounts_unreadable`, and neither writes a file. Harm: a Telegram or job login saves a token for any Fyers user.
+- `PBT fyers_auth.complete_login_checks_the_account` (HAT-DEC-BD5, PR 73) The adapter's `complete_login` saves the token exactly when no Fyers account is active or the user is one; another user is `wrong_account`, a user Fyers did not name `account_unconfirmed`, unreadable accounts `accounts_unreadable`, and none writes a file. Harm: a Telegram or job login saves a token for any Fyers user.
 - `PBT fyers_routes.failed_exchange_fixed_message` Every failure of the Fyers side answers 400 or 500 with one of the fixed messages, the body and the log carry no code, secret or echoed text, and no token file exists. Harm: Fyers text or the auth code reaches the browser or the log.
 - `PBT fyers_routes.missing_credentials_fixed` Without app credentials the link and the exchange answer 500 with the fixed message, never the variable text. Harm: configuration detail leaks to the client.
 - `PBT fyers_routes.good_exchange_connected` After a good exchange `status` is connected with the user id, disconnect flips it back, and the token never appears in a response or log. Harm: the page shows the wrong login state or the token leaks.
@@ -364,7 +364,7 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `8dea47a14b2545542d4c998d3afa2b352aaaf13311e1873e46e79b3173bc2792`
+Covered digest: `68b46fa835a6cae7ee1e7e0d2c3c357e5981bb6bceec07c38a6d68741aedaed7`
 
 ## Scope changes
 
@@ -4272,6 +4272,12 @@ Break: (PR 73) `complete_login` maps a refused user to `login_failed` (`raise Br
 E   AssertionError: assert 'login_failed' == 'wrong_account'
 ```
 
+Break: (PR 73, review) `complete_login` maps an unconfirmed user to `wrong_account` too (`raise BrokerLoginError("account_unconfirmed")` became `"wrong_account"`).
+
+```
+E   AssertionError: assert 'wrong_account' == 'account_unconfirmed'
+```
+
 ### PBT fyers_ipv4.no_proxy_carries_fyers
 
 Break: (PR 73, found by the oracle while writing it) `*` among other `NO_PROXY` entries read as a bypass.
@@ -4294,6 +4300,34 @@ Break: (PR 73) `production_parts` does not call `require_direct_fyers`.
 E   AssertionError: assert 'HAT_TELEGRAM...EN is not set' == 'fyers_proxy_set: https_proxy'
 ```
 
+Break: (PR 73, review; found by the urllib oracle) the first version read only the first non-empty `no_proxy`/`NO_PROXY`, but requests falls back to the other one when it is empty.
+
+```
+E   AssertionError: api-t1.fyers.in
+E   assert 'http://user:pw-77ee@proxy.example:3128' is None
+```
+
+Break: (PR 73, review) one bypassing `no_proxy` variable is enough (`all(_bypasses(value) ...)` became `any(...)`).
+
+```
+E   AssertionError: api-t1.fyers.in
+E   assert 'http://user:pw-77ee@proxy.example:3128' is None
+E   Failing explicit example: test_no_proxy_carries_fyers(
+E       env={'https_proxy': 'http://user:pw-77ee@proxy.example:3128',
+E        'NO_PROXY': '*',
+E        'no_proxy': ''},
+```
+
+Break: (PR 73, review) `sdk()` hands out the SDK without `require_direct_fyers(process_env())`.
+
+```
+E   Failed: DID NOT RAISE HatConfigError
+E   Failing explicit example: test_no_proxy_carries_fyers(
+E       env={'HTTPS_PROXY': 'http://user:pw-77ee@proxy.example:3128'},
+```
+
+Not caught (by design): lower-casing the `NO_PROXY` entries (`e.strip().lstrip(".")` became `.lower()`) passes, since requests (through urllib's `proxy_bypass`) and urllib both ignore case. The code keeps the narrow, case-sensitive reading for the data socket's client, which the oracle cannot run.
+
 ### CONF brk__account_constants_one_copy
 
 Break: (PR 73) `execution/submit.py` defines its own `ACCOUNT_ACTIVE = "active"` again.
@@ -4306,4 +4340,10 @@ Break: (PR 73) `daily/production.py` compares `account.broker != "fyers"`.
 
 ```
 E   AssertionError: assert {'daily/produ...th a string']} == {}
+```
+
+Break: (PR 73, review) `data/instruments.py` defines its own `BROKER_FYERS = "fyers"` again.
+
+```
+E   AssertionError: assert {'data/instru...ROKER_FYERS']} == {}
 ```

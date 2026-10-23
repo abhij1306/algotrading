@@ -24,6 +24,7 @@ from app.hat.api import fyers_auth as routes
 from app.hat.api import guard
 from app.hat.execution.fyers_auth import (
     ACCOUNT_UNCONFIRMED,
+    ACCOUNTS_UNREADABLE,
     WRONG_ACCOUNT,
     FyersAuthService,
     FyersCredentials,
@@ -46,7 +47,7 @@ FIXED = {
     routes.STORE_ERROR,
     routes.DISCONNECT_ERROR,
     routes.STATUS_ERROR,
-    routes.DB_ERROR,
+    ACCOUNTS_UNREADABLE,
     "Fyers rejected the auth code. Please log in again.",
     "Fyers login failed. Please try again.",
     "Login was cancelled by a logout. Please log in again.",
@@ -350,9 +351,9 @@ def test_token_for_another_account_refused(
     profile could not be read), `token` saves the token exactly when there is no active Fyers
     account or the user is the `account_ref` of one. Otherwise it answers 403 with the fixed
     message (`ACCOUNT_UNCONFIRMED` for an unknown user, else `WRONG_ACCOUNT`) and writes nothing.
-    When the accounts cannot be read it answers 503 with `DB_ERROR` and writes nothing. Harm: a
-    page or a wrong login plants a token for another Fyers account, and HAT trades or reconciles
-    against it."""
+    When the accounts cannot be read it answers 503 with `ACCOUNTS_UNREADABLE` and writes
+    nothing. Harm: a page or a wrong login plants a token for another Fyers account, and HAT
+    trades or reconciles against it."""
     refs = {ref for broker, ref, status in accounts if broker == "fyers" and status == "active"}
     accepted = not refs or user in refs
     profile = profile_ok(user) if user is not None else {"s": "error", "code": -16}
@@ -363,7 +364,7 @@ def test_token_for_another_account_refused(
         exchanged = client.post(f"{routes.router.prefix}/token", json={"auth_code": code})
         if db_down:
             assert exchanged.status_code == 503
-            assert exchanged.json()["detail"] == routes.DB_ERROR
+            assert exchanged.json()["detail"] == ACCOUNTS_UNREADABLE
             assert not store.path.exists()
         elif accepted:
             assert exchanged.status_code == 200

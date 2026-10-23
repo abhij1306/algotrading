@@ -58,7 +58,7 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `PBT ops.retry_after_failed_run` A failed run is retried `retry_after` after it ended, not after it started, so a body slower than the retry interval is not started again at once. Harm: a slow failing job runs back to back and hammers its source.
 - `PBT ops.chain_carries_past_midnight` A chained job without a window whose head finished late still starts for its own date on the next IST date until 08:30, and not after. Harm: a nightly chain whose ingest succeeded at 23:58 is dropped and the next day has no watchlist.
 - `PBT ops.stop_names_abandoned_jobs` `stop` waits up to its grace for running bodies and returns (and logs) the name of each one still running. Harm: a close or swap cut off by a shutdown leaves no trace of which job was abandoned.
-- `PBT ops.subscription_limit_alerts` (HAT-DATA-112, PR 73) The runtime's `subscription_alert` turns every sync whose wanted set (symbols and heartbeat) is at or above the limit into one `subscription_limit` alert of the clock's trade date, and none below it. Harm: the owner never hears that symbols past the limit get no ticks.
+- `PBT ops.subscription_limit_alerts` (HAT-DATA-112, PR 73) The runtime's `subscription_alert` turns every sync whose wanted set (symbols and heartbeat) is at or above the limit into one `subscription_limit` alert of the clock's trade date, and none below it; every alert is sent on `ALERT_POOL`, never the syncing thread, and a failed send stops no later one. Harm: the owner never hears that symbols past the limit get no ticks, or a slow transport stalls every sync.
 - `CONF ops.subscription_alert_wired` (HAT-DATA-112, PR 73) Every `LiveSubscriptions(...)` under `app/hat` is given its alert (fourth argument or `alert=`), and the runtime builds one. Harm: `subscription_limit` reaches only the log, as it did before PR 73.
 - `PBT ops.stop_after_failed_start` After a start that failed part way, `stop` runs each step on what exists and stops the feed exactly once with no tick listener left, even when a step raises. Harm: a failed start leaves the provider socket and login hooks behind.
 - `PBT ops.daily_tick_matches_reference` `DailyData.tick` reads only the two closes `reference_close` can pick (each date's from its newest ingest run) and gives the tick `tick_for_date` gives over every close of the window. Harm: a stop or limit off the exchange's tick grid is rejected.
@@ -987,6 +987,12 @@ Break: (PR 73) the alert dates itself by the UTC date (`trade_date_of(now())` be
 
 ```
 E   AssertionError: assert [('subscripti...6, 1, 1), {})] == [('subscripti...6, 1, 2), {})]
+```
+
+Break: (PR 73, review) the alert is sent on the syncing thread (`ALERT_POOL.submit(send, code, ...)` became `send(code, ...)`), which holds the subscriptions' lock while the transport blocks.
+
+```
+E   assert <_MainThread(MainThread, started ...)> not in [<_MainThread(MainThread, started ...)>]
 ```
 
 ### CONF ops.subscription_alert_wired

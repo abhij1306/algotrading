@@ -34,7 +34,8 @@ configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`
    app keeps serving (requests answer 503) unless `HAT_ENABLED` is true, which refuses to start.
 3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
    (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
-   database that is not PostgreSQL and a bad Telegram configuration, reconciles every broker
+   database that is not PostgreSQL, a proxy variable that would carry Fyers traffic
+   (`fyers_proxy_set`) and a bad Telegram configuration, reconciles every broker
    account before anything is placed, then starts the scheduler with the daily cycle
    (`daily_jobs`, the 10-ops §3 job table), the live feed (`app/hat/data/feed.py`, the one Fyers
    data socket, built in `main.py`), the periodic loop (session watch, fill sync, approval expiry,

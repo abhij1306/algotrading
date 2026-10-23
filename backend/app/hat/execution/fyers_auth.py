@@ -175,10 +175,10 @@ def fyers_account_refs(session: DbSession) -> frozenset[str]:
 
 
 def active_fyers_refs() -> frozenset[str]:
-    """`fyers_account_refs` in a session of its own, closed before the token is saved."""
-    from app.database import SessionLocal  # deferred: importing it connects the engine
+    """`fyers_account_refs` in a session scope of its own, closed before the token is saved."""
+    from app.database import db_session_scope  # deferred: importing it connects the engine
 
-    with SessionLocal() as session:
+    with db_session_scope() as session:
         return fyers_account_refs(session)
 
 

@@ -8,6 +8,7 @@ installed, over a scripted resolver and socket: nothing reaches the network.
 
 import os
 import socket
+import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from unittest.mock import patch
@@ -167,6 +168,7 @@ NO_PROXY_ENTRIES = [
     "example.com",
     "notfyers.in",
     " fyers.in ",
+    "FYERS.IN",
 ]
 # the hosts HAT reaches: the API (orders, GTTs, quotes), the login and the data socket
 REACHED = ["api-t1.fyers.in", "api.fyers.in", "socket.fyers.in"]
@@ -186,11 +188,15 @@ ENVS = st.fixed_dictionaries(
 @example(env={"https_proxy": PROXY_URL, "NO_PROXY": "fyers.in,*"})
 @example(env={"https_proxy": PROXY_URL, "no_proxy": "*"})
 @example(env={"ALL_PROXY": PROXY_URL, "no_proxy": "api-t1.fyers.in"})
+@example(env={"https_proxy": PROXY_URL, "NO_PROXY": "*", "no_proxy": ""})
+@example(env={"https_proxy": PROXY_URL, "no_proxy": "", "NO_PROXY": "*"})
+@example(env={"https_proxy": PROXY_URL, "no_proxy": "FYERS.IN"})
 def test_no_proxy_carries_fyers(env: dict[str, str]) -> None:
     """PBT fyers_ipv4.no_proxy_carries_fyers (HAT-BRK-093; PR 73, PR 25 follow-up 6): whenever
-    `require_direct_fyers` lets HAT start, `requests` (the SDK's client) uses no proxy for any
-    Fyers host HAT reaches, as it reads this environment; and when it refuses, the start of the
-    production parts fails with `HatConfigError` naming the variable, never its value. Harm: a
+    `require_direct_fyers` lets HAT start, neither `requests` (the SDK's client) nor urllib's
+    reading of the environment uses a proxy for any Fyers host HAT reaches; and when it refuses,
+    both the start of the production parts and `sdk` (every Fyers HTTP client) fail with
+    `HatConfigError` naming the variable, never its value. Harm: a
     proxy carries orders to Fyers over IPv6 past the IPv4 pin, and Fyers refuses every write
     from a non-whitelisted address (-50)."""
     named = fyers_ipv4.fyers_proxy(env)
@@ -201,6 +207,9 @@ def test_no_proxy_carries_fyers(env: dict[str, str]) -> None:
                 url = f"https://{host}/api/v3/orders"
                 proxies = requests.utils.get_environ_proxies(url)
                 assert requests.utils.select_proxy(url, proxies) is None, host
+                seen = urllib.request.getproxies_environment()
+                proxied = seen.get("https") or seen.get("all")
+                assert not proxied or urllib.request.proxy_bypass_environment(host, seen), host
         else:
             assert named in fyers_ipv4.PROXY_VARIABLES
             build = production_parts(load_settings(os.environ), feed=None)  # type: ignore[arg-type]
@@ -208,3 +217,6 @@ def test_no_proxy_carries_fyers(env: dict[str, str]) -> None:
                 build()
             assert str(refused.value) == f"fyers_proxy_set: {named}"
             assert "pw-77ee" not in str(refused.value)
+            with pytest.raises(HatConfigError) as refused:
+                fyers_ipv4.sdk()
+            assert str(refused.value) == f"fyers_proxy_set: {named}"

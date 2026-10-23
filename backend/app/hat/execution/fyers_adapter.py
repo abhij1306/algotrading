@@ -54,6 +54,7 @@ from .broker import (
     Side,
 )
 from .fyers_auth import (
+    ACCOUNT_UNCONFIRMED,
     AccountsUnreadableError,
     FyersAuthError,
     FyersAuthService,
@@ -324,10 +325,14 @@ class FyersHatBroker:
     def complete_login(self, code: str) -> SessionStatus:
         """Trade the login code for a token through the one login flow, which checks the token's
         Fyers user against the active broker accounts (HAT-DEC-BD5): another user's login is
-        `wrong_account`, and unreadable accounts are `accounts_unreadable`; neither saves."""
+        `wrong_account`, a user Fyers did not name is `account_unconfirmed` (logging in again may
+        succeed), and unreadable accounts are `accounts_unreadable`; none of them saves."""
         try:
             self._auth().exchange(code)
-        except WrongAccountError:
+        except WrongAccountError as error:
+            if error.message == ACCOUNT_UNCONFIRMED:
+                logger.warning("Fyers login refused: the account could not be confirmed")
+                raise BrokerLoginError("account_unconfirmed") from None
             logger.warning("Fyers login refused: not the HAT broker account")
             raise BrokerLoginError("wrong_account") from None
         except AccountsUnreadableError:

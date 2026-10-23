@@ -24,7 +24,6 @@ from pydantic import BaseModel
 
 from app.hat.api.guard import frontend_write
 from app.hat.execution.fyers_auth import (
-    ACCOUNTS_UNREADABLE,
     AccountsUnreadableError,
     FyersAuthError,
     FyersAuthService,
@@ -51,7 +50,6 @@ URL_ERROR = "Failed to generate authentication URL"
 EXCHANGE_ERROR = "Token exchange failed"
 STORE_ERROR = "The Fyers token could not be saved"
 DISCONNECT_ERROR = "Failed to disconnect from Fyers"
-DB_ERROR = ACCOUNTS_UNREADABLE
 
 
 class AuthCodeRequest(BaseModel):
@@ -119,9 +117,9 @@ def exchange_auth_code(request: AuthCodeRequest, service: AuthService) -> Messag
         raise HTTPException(status_code=400, detail=error.message) from None
     except WrongAccountError as error:
         raise HTTPException(status_code=403, detail=error.message) from None
-    except AccountsUnreadableError:
+    except AccountsUnreadableError as error:
         # the broker accounts could not be read: fail closed, nothing was saved
-        raise HTTPException(status_code=503, detail=DB_ERROR) from None
+        raise HTTPException(status_code=503, detail=error.message) from None
     except FyersAuthError as error:
         raise HTTPException(status_code=500, detail=error.message) from None
     except TokenStoreError:
