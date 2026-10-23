@@ -148,6 +148,7 @@ from ..backtest.fills import (
 )
 from ..backtest.slots import SLOT_ORDER_TIME, is_slot_order, order_slots, trigger_rank
 from ..confighash import config_hash
+from ..data.identity import series_on
 from ..data.sessions import IST
 from ..data.ticks import tick_for_date
 from ..errors import HatError
@@ -304,7 +305,9 @@ class MarketData:
     `features`: the daily features (`date`, `instrument_id`, columns). `index_closes`:
     per index name, (date, close) oldest first. `members`: the universe's membership intervals,
     delisted instruments included. `industries`: each instrument's industry, either one name
-    or its classifications as (effective_from, industry), read point in time. `last_traded`: the
+    or its classifications as (effective_from, industry), read point in time. `series`: each
+    instrument's series as change points (first day, series) from its bars, so a scan reads
+    the series of its own day (`identity.series_on`), not today's. `last_traded`: the
     last session of each instrument delisted by the period's end. `breadth`: the features job's
     `breadth_pct` per session, read with the `regime.INDEX_NAME` and `regime.VIX_NAME` closes of
     `index_closes` only by a run under the `policy` regime rule (PR 68).
@@ -316,7 +319,7 @@ class MarketData:
     index_closes: Mapping[str, Sequence[tuple[date, Decimal]]]
     members: tuple[Interval, ...]
     industries: Mapping[str, str | Sequence[tuple[date, str]]] = field(default_factory=dict)
-    series: Mapping[str, str] = field(default_factory=dict)
+    series: Mapping[str, Sequence[tuple[date, str]]] = field(default_factory=dict)
     last_traded: Mapping[str, date] = field(default_factory=dict)
     # 5-minute bars of a session, keyed (instrument_id, date): (high, low) per bar in time order,
     # the 09:15 bar first, on the daily bars' (adjusted) scale. A session without them uses the
@@ -739,7 +742,7 @@ class _Run:
             bars=self._window(prev),
             regime_closes=self._closes_through(prev),
             features=self.features.get(prev),
-            series=dict(self.data.series),
+            series={i: s for i in self.data.series if (s := series_on(self.data.series, i, prev))},
         )
         published = watchlist.scan_and_publish(
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)

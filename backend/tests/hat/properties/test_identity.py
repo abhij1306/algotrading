@@ -12,9 +12,11 @@ from app.hat.data.identity import (
     best_per_isin,
     kept_id,
     merge_symbol_history,
+    series_changes,
+    series_on,
     series_rank,
 )
-from app.hat.data.isin_merge import keep_rows
+from app.hat.data.isin_merge import coverage_ids, keep_rows
 
 
 def test_series_rank_puts_the_normal_market_first() -> None:
@@ -77,3 +79,24 @@ def test_keep_rows_one_per_instrument_best_series() -> None:
     ids = ["k", "k", "x", "k"]
     series = ["BL", "EQ", "BE", "IL"]
     assert keep_rows(ids, series) == [1, 2]
+
+
+def test_coverage_ids_map_and_refuse_a_non_uuid() -> None:
+    old, kept = str(uuid.UUID(int=3)), str(uuid.UUID(int=4))
+    assert coverage_ids([old, kept], {old: kept}) == [kept]
+    try:
+        coverage_ids(["../x"], {})
+    except ValueError:
+        return
+    raise AssertionError("a non-uuid id was accepted")
+
+
+def test_series_on_reads_the_series_of_its_day() -> None:
+    d = date(2024, 1, 1)
+    rows = [("x", date(2024, 1, 3), "BE"), ("x", d, "EQ"), ("x", date(2024, 1, 2), "EQ")]
+    changes = series_changes(rows)
+    assert changes == {"x": [(d, "EQ"), (date(2024, 1, 3), "BE")]}
+    assert series_on(changes, "x", date(2023, 12, 31)) is None
+    assert series_on(changes, "x", date(2024, 1, 2)) == "EQ"
+    assert series_on(changes, "x", date(2024, 1, 9)) == "BE"
+    assert series_on(changes, "y", d) is None

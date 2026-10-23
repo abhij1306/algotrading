@@ -10,7 +10,8 @@ are not the day's market, so the day keeps the row of the best-ranked series.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Iterable, Sequence
+from bisect import bisect_right
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import TypeVar
@@ -21,6 +22,8 @@ __all__ = [
     "best_per_isin",
     "kept_id",
     "merge_symbol_history",
+    "series_changes",
+    "series_on",
     "series_rank",
 ]
 
@@ -50,6 +53,27 @@ def best_per_isin(
         if held is None or series_rank(series(row)) < series_rank(series(held)):
             best[key] = row
     return list(best.values())
+
+
+def series_changes(rows: Iterable[tuple[str, date, str]]) -> dict[str, list[tuple[date, str]]]:
+    """Each instrument's series as change points (first day, series), oldest first, from its
+    bars' (instrument id, day, series)."""
+    out: dict[str, list[tuple[date, str]]] = {}
+    for instrument_id, day, series in sorted(rows):
+        points = out.setdefault(instrument_id, [])
+        if not points or points[-1][1] != series:
+            points.append((day, series))
+    return out
+
+
+def series_on(
+    changes: Mapping[str, Sequence[tuple[date, str]]], instrument_id: str, day: date
+) -> str | None:
+    """The series the instrument traded under on `day` (its last bar's on or before it), or
+    None before its first bar."""
+    points = changes.get(instrument_id, ())
+    at = bisect_right(points, day, key=lambda p: p[0])
+    return points[at - 1][1] if at else None
 
 
 @dataclass(frozen=True)

@@ -46,7 +46,7 @@ import re
 import shutil
 import sys
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -355,23 +355,8 @@ def up(conn: Connection) -> MergeReport:
     for ddl in _AUDIT_DDL:
         conn.execute(text(ddl))
     report = MergeReport()
-    groups = _groups(conn)
-    mapping: dict[str, str] = {}
-    order: dict[str, int] = {}
-    ordered = [_ordered(members) for members in groups.values()]
-    for members in ordered:
-        kept = members[0]["id"]
-        for rank, m in enumerate(members):
-            order[m["id"]] = rank
-            conn.execute(
-                text(
-                    "INSERT INTO hat_isin_merge (old_id, kept_id, isin, series, instrument) "
-                    "VALUES (:o, :k, :i, :s, CAST(:r AS jsonb))"
-                ),
-                {"o": m["id"], "k": kept, "i": m["isin"], "s": m["series"], "r": json.dumps(m)},
-            )
-            if m["id"] != kept:
-                mapping[m["id"]] = kept
+    ordered = [_ordered(members) for members in _groups(conn).values()]
+    mapping, order = _record_members(conn, ordered)
     report.isins = len(ordered)
     if mapping:
         for table, column in _referencing(conn):
@@ -393,6 +378,36 @@ def up(conn: Connection) -> MergeReport:
             {"ids": list(mapping)},
         )
     report.removed = len(mapping)
+    _swap_unique(conn)
+    report.unique_key = NEW_UNIQUE
+    return report
+
+
+def _record_members(
+    conn: Connection, ordered: Sequence[Sequence[dict[str, Any]]]
+) -> tuple[dict[str, str], dict[str, int]]:
+    """Save every group member in `hat_isin_merge`; (old id -> kept id of the merged ones, each
+    member's rank in its group)."""
+    mapping: dict[str, str] = {}
+    order: dict[str, int] = {}
+    for members in ordered:
+        kept = members[0]["id"]
+        for rank, m in enumerate(members):
+            order[m["id"]] = rank
+            conn.execute(
+                text(
+                    "INSERT INTO hat_isin_merge (old_id, kept_id, isin, series, instrument) "
+                    "VALUES (:o, :k, :i, :s, CAST(:r AS jsonb))"
+                ),
+                {"o": m["id"], "k": kept, "i": m["isin"], "s": m["series"], "r": json.dumps(m)},
+            )
+            if m["id"] != kept:
+                mapping[m["id"]] = kept
+    return mapping, order
+
+
+def _swap_unique(conn: Connection) -> None:
+    """The unique key (market_id, isin) in place of (market_id, isin, series)."""
     names = _constraints(conn)
     if OLD_UNIQUE in names:
         conn.execute(text("ALTER TABLE hat_instrument DROP CONSTRAINT " + OLD_UNIQUE))
@@ -404,8 +419,6 @@ def up(conn: Connection) -> MergeReport:
                 + " UNIQUE (market_id, isin)"
             )
         )
-    report.unique_key = NEW_UNIQUE
-    return report
 
 
 def down(conn: Connection) -> MergeReport:
@@ -438,6 +451,24 @@ def down(conn: Connection) -> MergeReport:
                 {"row": json.dumps(row)},
             )
             report.count(table, action)
+    kept_of = _restore_instruments(conn, report)
+    _restore_rows(conn, changes, kept_of, where, report)
+    conn.execute(
+        text(
+            "ALTER TABLE hat_instrument ADD CONSTRAINT " + OLD_UNIQUE + " "
+            "UNIQUE (market_id, isin, series)"
+        )
+    )
+    conn.execute(text("DROP TABLE hat_isin_merge_row"))
+    conn.execute(text("DROP TABLE hat_isin_merge"))
+    report.isins = len(set(kept_of.values()))
+    report.unique_key = OLD_UNIQUE
+    return report
+
+
+def _restore_instruments(conn: Connection, report: MergeReport) -> dict[str, str]:
+    """Put the merged siblings back and the kept rows' series columns as they were; old id ->
+    kept id of every group member."""
     members = conn.execute(
         text("SELECT CAST(old_id AS text), CAST(kept_id AS text), instrument FROM hat_isin_merge")
     ).all()
@@ -465,6 +496,17 @@ def down(conn: Connection) -> MergeReport:
                 {"row": json.dumps(instrument)},
             )
             report.removed += 1
+    return kept_of
+
+
+def _restore_rows(
+    conn: Connection,
+    changes: Sequence[Any],
+    kept_of: Mapping[str, str],
+    where: Callable[[str], str],
+    report: MergeReport,
+) -> None:
+    """Insert the dropped rows again and point the repointed ones back at their old id."""
     columns = dict(_referencing(conn))
     for table, action, old, row in changes:
         if action == DROPPED:
@@ -486,17 +528,6 @@ def down(conn: Connection) -> MergeReport:
         else:
             continue
         report.count(table, action)
-    conn.execute(
-        text(
-            "ALTER TABLE hat_instrument ADD CONSTRAINT " + OLD_UNIQUE + " "
-            "UNIQUE (market_id, isin, series)"
-        )
-    )
-    conn.execute(text("DROP TABLE hat_isin_merge_row"))
-    conn.execute(text("DROP TABLE hat_isin_merge"))
-    report.isins = len(set(kept_of.values()))
-    report.unique_key = OLD_UNIQUE
-    return report
 
 
 def check(conn: Connection) -> dict[str, Any]:
@@ -596,12 +627,22 @@ def _rekey_parquet(
     _write_parquet(table, target)
 
 
+def coverage_ids(from_open: Iterable[object], mapping: Mapping[str, str]) -> list[str]:
+    """The coverage file's instrument ids mapped old -> kept, each checked to be a uuid."""
+    ids = (str(uuid.UUID(str(i))) for i in from_open)
+    return sorted({mapping.get(i, i) for i in ids})
+
+
 def _rekey_coverage(source: Path, target: Path, mapping: Mapping[str, str]) -> None:
     raw = json.loads(source.read_text(encoding="utf-8"))
-    raw["from_open"] = sorted({mapping.get(i, i) for i in raw.get("from_open", ())})
+    body = {
+        "from_open": coverage_ids(raw.get("from_open", ()), mapping),
+        "gap_from": raw.get("gap_from"),
+        "seen_until": raw.get("seen_until"),
+    }
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    temp.write_text(json.dumps(raw), encoding="utf-8")
+    temp.write_text(json.dumps(body), encoding="utf-8")
     os.replace(temp, target)
 
 
@@ -635,7 +676,7 @@ def rekey(root: Path, into: Path, mapping: Mapping[str, str]) -> RekeyReport:
         rel = source.relative_to(root)
         target = into / rel
         dataset = rel.parts[0] if len(rel.parts) > 1 else ""
-        if source.name.endswith(".tmp") or source.name.endswith(".lock"):
+        if source.name.endswith((".tmp", ".lock")):
             continue
         if dataset in REKEYED and source.suffix == ".parquet":
             _rekey_parquet(source, target, dataset, mapping, report)
