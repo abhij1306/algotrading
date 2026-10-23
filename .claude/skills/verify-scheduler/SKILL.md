@@ -147,12 +147,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `77e6e9abede27cc66d06e4f8e441f4438035b716fd60ce90f9e23c8d74581020`
+Covered digest: `6478c29d7204bd431728f588e90d62d86d9fa82bce3e26e73293126f0763b7b0`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 67: `MERGED_PRS` gains 67; no scheduler check changed.
 - PR 66: `MERGED_PRS` gains 66; no scheduler check changed.
 - PR 65: `MERGED_PRS` gains 65; no scheduler check changed.
 - PR 64: `MERGED_PRS` gains 64; no scheduler check changed.

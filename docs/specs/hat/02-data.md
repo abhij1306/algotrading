@@ -500,10 +500,12 @@ Implementation rules the table leaves open (PR 6; they follow the definitions ab
 #### HAT-DATA-077: Incremental features equal a full rebuild
 - **Statement:** The `features` job runs incrementally by date with a full-rebuild flag; both give identical results.
 - **Source:** PLAN PR 6 ("incremental by date; full rebuild flag"); T12.
-- **PR:** 6
-- **Verification:** PBT `features.incremental_equals_full`
+- **PR:** 6, 67
+- **Verification:** PBT `features.incremental_equals_full`, PBT `backtest.features_digest_pinned`
 - **Acceptance:**
   - Property: for every bar history and every sequence of incremental runs, the features for every date equal those of a full rebuild over the same bars. Harm: live features drift from backtest features and the shared-engine guarantee breaks.
+  - Property (PR 67): the backtest's market loader (`backtest.market.load_market`) reads the feature partitions only when the inputs digest the last complete `features` run stored equals the digest of the stored corporate actions over every instrument (`inputs_digest(stored_factors, None)`, what the nightly job runs with); it refuses otherwise (`backtest_features_stale`: a split stored after the last run, a rebuild ranked over a narrower universe, no run at all), or when a session of the run's window has no features partition (a run stopped before the last session). It reads the digest and the partitions under the features job's lock (shared), so a run rewriting them finishes first. When it loads, its snapshot records that digest (`actions_digest`) and the features it read equal a full rebuild over the same bars and actions. Harm: a backtest reads prices adjusted for a split while its features (ranks, ADTR, moving averages) were computed before it or over another universe, a mix the nightly scan never sees.
+- **Design (PR 67, G42):** the nightly job and the backtest read the same `features_daily` partitions, so live and backtest features are equal by construction once the partitions are current; the check makes that a stored assertion. The digest pins the actions and the RS universe (`*`, every instrument with a bar: the nightly job passes no universe), and `run_features` records it only after the last date is written, so a missing or different digest means some partition may predate the stored actions.
 
 #### HAT-DATA-078: HAT data code uses polars, pandas only at boundaries
 - **Statement:** `app/hat/**` computes with polars and DuckDB; pandas appears only at the boundary with existing modules via Arrow.
