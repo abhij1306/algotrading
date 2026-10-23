@@ -1028,13 +1028,23 @@ ENGINE = memory_engine()
 seed_hat_reference(ENGINE)
 
 
-@given(st.sampled_from(["running", "completed", "failed"]), st.booleans(), st.booleans())
-@settings(max_examples=25, deadline=None)
-@example("completed", True, False)  # a completed run of the version, not flagged for promotion
-def test_version_status_requires_run(status: str, same_version: bool, promoted: bool) -> None:
+@given(
+    st.sampled_from(["running", "completed", "failed"]),
+    st.booleans(),
+    st.booleans(),
+    st.sampled_from([SLOT_ORDER_TIME, SLOT_ORDER_SCORE, "random:3", None]),
+)
+@settings(max_examples=40, deadline=None)
+@example("completed", True, False, SLOT_ORDER_TIME)  # a run of the version, not flagged
+@example("completed", True, True, None)  # a promotion run recorded before PR 63
+@example("completed", True, True, SLOT_ORDER_SCORE)
+def test_version_status_requires_run(
+    status: str, same_version: bool, promoted: bool, slots: str | None
+) -> None:
     """A draft becomes `backtested` only with a completed run of that same version flagged for
-    promotion (PR 62); a run that is still running, failed, of another version or not flagged
-    is refused and leaves the draft a draft."""
+    promotion (PR 62) whose slots went in trigger order (`slot_order` `time`, PR 63); a run that
+    is still running, failed, of another version, not flagged, in another slot order or recorded
+    before PR 63 is refused and leaves the draft a draft."""
     with Session(ENGINE) as session:
         strategy = seed_default_strategies(session, uuid.uuid4())[0]
         draft = HatStrategyVersion(
@@ -1054,11 +1064,11 @@ def test_version_status_requires_run(status: str, same_version: bool, promoted: 
             period_end=DAYS[-1],
             data_snapshot={},
             status=status,
-            metrics={"for_promotion": promoted},
+            metrics={"for_promotion": promoted, **({} if slots is None else {"slot_order": slots})},
         )
         session.add(run)
         session.flush()
-        if status == "completed" and same_version and promoted:
+        if status == "completed" and same_version and promoted and slots == SLOT_ORDER_TIME:
             assert publish_version(session, draft.id, backtest_run_id=run.id).status == "backtested"
             assert draft.backtest_run_id == run.id
         else:

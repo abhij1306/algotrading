@@ -159,7 +159,7 @@ def add_run(world: World, version_id: str) -> str:
             period_end=date(2025, 12, 31),
             data_snapshot={},
             status="completed",
-            metrics={"for_promotion": True},  # a promotion run (HAT-BT-061)
+            metrics={"for_promotion": True, "slot_order": "time"},  # a promotion run (HAT-BT-061)
         )
         session.add(run)
         return str(run.id)

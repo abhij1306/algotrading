@@ -542,7 +542,7 @@ to an artefact that exists.
 | HAT-BT-050 | [09](09-backtest.md) | 12 | PBT `backtest.deterministic` |
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
 | HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62, 63 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
-| HAT-BT-061 | [09](09-backtest.md) | 2, 12, 62 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
+| HAT-BT-061 | [09](09-backtest.md) | 2, 12, 62, 63 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
 | HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |
 | HAT-OPS-002 | [10](10-ops.md) | 17 | PBT `ops.refuses_non_postgres` |
