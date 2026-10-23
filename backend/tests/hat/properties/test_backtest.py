@@ -25,6 +25,7 @@ from app.hat.backtest.fills import (
     stop_fill,
 )
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
+from app.hat.confighash import config_hash
 from app.hat.engine.backtest import (
     NSE_BANDS,
     REGIME_MULT_POLICY,
@@ -36,7 +37,6 @@ from app.hat.engine.backtest import (
     pre_break_low,
     upper_circuit_locked,
 )
-from app.hat.confighash import config_hash
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal
