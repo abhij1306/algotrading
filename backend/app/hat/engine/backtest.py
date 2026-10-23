@@ -363,6 +363,7 @@ class TradeRow:
     holding_days: int
     strategy_version_id: uuid.UUID
     risk_policy_version_id: uuid.UUID
+    score: Decimal | None = None  # the watchlist row's score (PR 65, N10)
 
 
 @dataclass(frozen=True)
@@ -1208,11 +1209,12 @@ class _Run:
     # --- the result --------------------------------------------------------------------------
 
     def _result(self) -> BacktestResult:
-        trade_rows = self._trades()
+        watch_rows = self._watch_rows()
+        trade_rows = self._trades(watch_rows)
         result = BacktestResult(
             trades=trade_rows,
             equity=tuple(self.equity),
-            watchlists=self._watch_rows(),
+            watchlists=watch_rows,
             signals=tuple(self.signal_rows),
             fills=self._fill_rows(),
             skips=dict(sorted(self.skips.items())),
@@ -1227,7 +1229,7 @@ class _Run:
         self.session.close()
         return BacktestResult(**{**result.__dict__, "metrics": metrics})
 
-    def _trades(self) -> tuple[TradeRow, ...]:
+    def _trades(self, watch_rows: Sequence[WatchRow]) -> tuple[TradeRow, ...]:
         rows = []
         query = (
             select(HatPosition, HatTradeResult, HatSignal)
@@ -1235,6 +1237,8 @@ class _Run:
             .join(HatSignal, HatSignal.id == HatPosition.signal_id)
             .where(HatPosition.bot_id == self.bot_id)
         )
+        # the watchlist rows in their sorted order, so a repeated key resolves the same each run
+        scores = {(w.playbook, w.instrument_id, w.trade_date): w.score for w in watch_rows}
         for position, result, signal in self.session.execute(query).all():
             qty = self.session.scalar(
                 select(func.sum(HatFill.qty))
@@ -1259,6 +1263,9 @@ class _Run:
                     holding_days=result.holding_days,
                     strategy_version_id=signal.strategy_version_id,
                     risk_policy_version_id=signal.risk_policy_version_id,
+                    score=scores.get(
+                        (signal.playbook, str(signal.instrument_id), signal.trade_date)
+                    ),
                 )
             )
         rows.sort(key=lambda t: (t.exit_date, t.entry_date, t.instrument_id, t.playbook))
@@ -1442,15 +1449,40 @@ def _stats_json(stats: ReturnStats | None) -> dict[str, Any] | None:
     return {"sr": stats.sr, "t": stats.t, "skew": stats.skew, "kurtosis": stats.kurtosis}
 
 
+# the shares of the trades, best first, that `tail_trimmed_r` drops (HAT-BT-040)
+TAIL_TRIM_PCTS = (1, 5, 10)
+
+
+def _tail_trimmed(rs: Sequence[Decimal]) -> dict[str, str | None]:
+    """The mean R without the best ceil(p% of the trades), for each p of `TAIL_TRIM_PCTS`."""
+    out: dict[str, str | None] = {}
+    for pct in TAIL_TRIM_PCTS:
+        mean = bt_metrics.tail_trimmed_mean(rs, -(-len(rs) * pct // 100))
+        out[f"top_{pct}pct"] = None if mean is None else _ratio(mean)
+    return out
+
+
+def _cagr(final: Decimal, initial: Decimal, sessions: int) -> float | None:
+    """The CAGR over `sessions` (`annualized_return`); None when it is not a finite real: a
+    final equity at or below 0, or a short run whose extrapolation overflows."""
+    if final <= 0:
+        return None
+    try:
+        return _float(bt_metrics.annualized_return(float(final), float(initial), sessions))
+    except OverflowError:
+        return None
+
+
 def compute_metrics(
     trades_: Sequence[TradeRow],
     equity: Sequence[tuple[date, Decimal]],
     spec: RunSpec,
 ) -> dict[str, Any]:
-    """The run's metrics (HAT-BT-040, HAT-BT-041): R statistics in Decimal, the standard
-    drawdown, return and Sharpe figures from `app.hat.backtest.metrics`, and the return moments
-    the deflated Sharpe ratio reads. The DSR itself depends on the family's trials and is added
-    when the run is recorded."""
+    """The run's metrics (HAT-BT-040, HAT-BT-041, HAT-BT-042): R statistics in Decimal, the
+    standard drawdown, return and Sharpe figures from `app.hat.backtest.metrics`, the return
+    moments the deflated Sharpe ratio reads, and the robustness figures of PR 65 (exposure, MAR,
+    the longest drawdown, the tail-trimmed mean R and the cost share). The DSR itself depends
+    on the family's trials and is added when the run is recorded."""
     rs = [t.r_multiple for t in trades_]
     count = len(rs)
     wins = [r for r in rs if r > 0]
@@ -1464,6 +1496,12 @@ def compute_metrics(
     trade_stats = bt_metrics.trade_stats([float(r) for r in rs])
     final = curve[-1]
     net = sum((t.realized_pnl for t in trades_), _ZERO)
+    fees = sum((t.fees for t in trades_), _ZERO)
+    cagr = _cagr(final, spec.initial_equity, len(equity))
+    mar = None if cagr is None else bt_metrics.mar_ratio(cagr, drawdown)
+    share = bt_metrics.cost_share(fees, net + fees)  # realized P&L is net of the charges
+    held = [(t.entry_date, t.exit_date) for t in trades_]
+    used = conventions(spec)
     return {
         "trades": count,
         "sum_r": _ratio(total_r),
@@ -1474,7 +1512,7 @@ def compute_metrics(
         "avg_mfe_r": _ratio(sum((t.mfe_r for t in trades_), _ZERO) / count) if count else None,
         "avg_mae_r": _ratio(sum((t.mae_r for t in trades_), _ZERO) / count) if count else None,
         "net_pnl": str(net),
-        "fees": str(sum((t.fees for t in trades_), _ZERO)),
+        "fees": str(fees),
         "initial_equity": str(spec.initial_equity),
         "final_equity": str(final),
         "total_return": _float(bt_metrics.total_return(float(final), float(spec.initial_equity))),
@@ -1482,14 +1520,21 @@ def compute_metrics(
         "sharpe_annual": _float(bt_metrics.sharpe_mean_std(returns)),
         "returns": _stats_json(stats),
         "sessions": len(equity),
+        "exposure": bt_metrics.exposure([day for day, _ in equity], held),  # HAT-BT-041
+        "cagr": cagr,
+        "mar": None if mar is None else _float(mar),
+        "longest_drawdown_sessions": bt_metrics.longest_drawdown(floats),
+        "tail_trimmed_r": _tail_trimmed(rs),
+        "cost_share": None if share is None else _ratio(share),
         "strategy_version_id": str(spec.strategy_version_id),
         "risk_policy_version_id": str(spec.policy.version_id),
         "cooldown_sessions": spec.policy.policy.cooldown_sessions,
         "known_gaps": known_gaps(spec),
         "entry_day_low": ENTRY_DAY_LOW,
-        **conventions(spec),
+        **used,
+        "conventions": used,  # the block `config_digest` hashes (PR 65)
         "for_promotion": spec.for_promotion,
-        "config_digest": config_digest(spec),
+        "config_digest": config_hash(used),
     }
 
 
@@ -1546,6 +1591,8 @@ TRADE_SCHEMA = pa.schema(
         ("holding_days", pa.int64()),
         ("strategy_version_id", pa.string()),
         ("risk_policy_version_id", pa.string()),
+        # the watchlist score (PR 65, N10): a float of the scorer, null without a watchlist row
+        ("score", pa.float64()),
     ]
 )
 
@@ -1557,6 +1604,7 @@ def trades_parquet(trades_: Sequence[TradeRow]) -> bytes:
             **{name: getattr(t, name) for name in TRADE_SCHEMA.names},
             "strategy_version_id": str(t.strategy_version_id),
             "risk_policy_version_id": str(t.risk_policy_version_id),
+            "score": None if t.score is None else float(t.score),
         }
         for t in trades_
     ]

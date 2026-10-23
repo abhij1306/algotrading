@@ -14,6 +14,11 @@ Checks that HAT does not import or boot the app wiring or any module outside the
 - `PBT metrics.sharpe_zero_volatility` Returns that never vary give exactly 0.0 for both Sharpe conventions, down to the volatility floor of 1e-12 per period (a series with a per-period deviation of 1e-13 is flat too). Harm: an enormous or infinite Sharpe ranks a flat strategy first.
 - `PBT metrics.sharpe_sign_follows_mean` With risk-free 0 the Sharpe has the sign of the mean return and is finite. Harm: a losing strategy is reported as profitable.
 - `PBT metrics.returns_guard_bad_capital` A non-positive initial capital or period count gives 0.0 for total return and CAGR, never a division error or a sign flip. Harm: a bad input prints a large false return.
+- `PBT metrics.longest_drawdown` The longest drawdown is the longest run of points below the running maximum (polars `cum_max`), 0 exactly when the curve never falls, shorter than the curve (PR 65). Harm: a run long under water reports a short recovery, or a return to the old peak still counts as under water.
+- `PBT metrics.exposure` Exposure is the share of the sessions inside the union of the held spans, both ends included, 0.0 without sessions (PR 65). Harm: an idle strategy reads as invested, or the exit day is missed.
+- `PBT metrics.mar_ratio` MAR has the CAGR's sign and times the drawdown depth gives the CAGR; None without a drawdown (PR 65). Harm: a deeper drawdown raises MAR, or a smooth run divides by zero.
+- `PBT metrics.tail_trimmed_mean` The mean without the `drop` largest values is the exact mean of the rest, never above the mean with one fewer dropped, None when nothing is left (PR 65). Harm: an edge resting on one outlier passes the tail test.
+- `PBT metrics.cost_share` The charges over the gross P&L, exact, in [0, 1] unless the charges turned a gain into a loss, None unless the gross is a gain (PR 65). Harm: costs that ate the edge read as a small share.
 - `CONF imports.hat_decoupled_from_legacy` The `app` modules that `app/hat` and `tests/hat` import are exactly the `SHARED` set in `test_conf_decoupling.py` (`app.base`, `app.database`, `app.paths`, `app.utils.env_loader`: infrastructure with no legacy code and no HAT rule); a new coupling fails, and a module no longer imported must leave the set. Harm: HAT quietly grows back into code it is meant to stand apart from.
 - `CONF imports.hat_suites_boot_no_legacy_app` Collecting `tests/hat` in a fresh interpreter loads neither `app.main` nor `app.routers` (the manual-trading singletons they once also listed were deleted in K4; `risk.no_manual_trading_path` keeps them deleted). Harm: HAT suites depend on booting the whole legacy app.
 - `CONF imports.legacy_does_not_import_hat` Only `app/database.py` (the table registry and schema upkeep) and `app/main.py` (the wiring) import `app.hat`; no other `app` module does. Harm: deleting or moving HAT code breaks the other side.
@@ -63,12 +68,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `5660b51be2ff0c0537fc729ed6aad873a9f12361045b77147be1d8717f488d65`
+Covered digest: `3b58ad73889581865dccb202fb4209319b329823069c9d65077377e7db5cd978`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 65 (G35): `backtest/metrics.py` gains `longest_drawdown`, `exposure`, `mar_ratio`, `tail_trimmed_mean` and `cost_share` (the last two on Decimals), with five new `metrics.*` properties. `metrics.mar_ratio` draws a drawdown of 0 or at least 1e-6 deep: a subnormal depth overflows the float quotient to infinity (found by the property; `compute_metrics` records a non-finite MAR as null).
 - `metrics.trade_stats_partition` found a subnormal gross loss giving an infinite profit factor; the HAT copy treats a gross loss below the floor as none and keeps the factor finite.
 - PR 12 rewrote `backtest/metrics.py` on polars (`pl.Series` in, the arithmetic unchanged; the population deviation is `std(ddof=0)`). The five `metrics.*` properties were moved to polars series with the same strategies and bounds, and each was shown failing again on the polars code (the `PR 12` breaks below). No property was narrowed.
 - `metrics.sharpe_zero_volatility` found that the legacy copy returned a Sharpe near 1e17 for a constant series (float noise passed `std > 0`); the HAT copy compares with a volatility floor of 1e-12. A deviation from the legacy function, recorded in the K1 PR.
@@ -211,6 +217,100 @@ tests/hat/properties/test_metrics.py:92: in test_returns_guard_bad_capital
 tests/hat/properties/test_metrics.py:101: in test_returns_guard_bad_capital
     assert metrics.total_return(final, initial) == 0.0
 E   assert -1.0 == 0.0
+```
+
+### PBT metrics.longest_drawdown
+
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: a point equal to the running peak counts as under water.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:123: in test_longest_drawdown
+    assert longest == max(len(r) for r in runs)
+E   assert 4 == 2
+E    +  where 2 = max(<generator object test_longest_drawdown.<locals>.<genexpr>>)
+E   Failing explicit example: test_longest_drawdown(
+E       equity=shape: (5,)
+E       Series: '' [f64]
+E       [
+```
+
+### PBT metrics.exposure
+
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: a span's exit date is not counted as held.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:150: in test_exposure
+    assert value == sum(1 for d in sessions if d in covered) / len(sessions)
+E   assert 0.0 == (1 / 1)
+E    +  where 1 = sum(<generator object test_exposure.<locals>.<genexpr>>)
+E    +  and   1 = len([datetime.date(2026, 1, 1)])
+E   Failing test case: test_exposure(
+E       days={0},
+E       held=[(datetime.date(2026, 1, 1), datetime.date(2026, 1, 1))],
+```
+
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the sweep's span stops before its exit session (code review of PR 65, the span loop replaced a session-by-trade scan).
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:150: in test_exposure
+    assert value == sum(1 for d in sessions if d in covered) / len(sessions)
+E   assert 0.0 == (1 / 1)
+E    +  where 1 = sum(<generator object test_exposure.<locals>.<genexpr>>)
+E    +  and   1 = len([datetime.date(2026, 1, 1)])
+E   Failing test case: test_exposure(
+E       days={0},
+E       held=[(datetime.date(2026, 1, 1), datetime.date(2026, 1, 1))],
+```
+
+### PBT metrics.mar_ratio
+
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: MAR divides by the (negative) drawdown, not its depth.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:169: in test_mar_ratio
+    assert math.isclose(mar * -drawdown, cagr, rel_tol=1e-9, abs_tol=1e-12)
+E   assert False
+E    +  where False = <built-in function isclose>((-2.0 * --0.5), 1.0, rel_tol=1e-09, abs_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+E   Failing test case: test_mar_ratio(
+E       cagr=1.0,
+E       drawdown=-0.5,
+```
+
+### PBT metrics.tail_trimmed_mean
+
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the trim drops the smallest values instead of the largest.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:189: in test_tail_trimmed_mean
+    assert trimmed == sum(rest, Decimal(0)) / len(rest)
+E   AssertionError: assert Decimal('3') == (Decimal('0') / 2)
+E    +  where Decimal('0') = sum([Decimal('1'), Decimal('-1')], Decimal('0'))
+E    +    where Decimal('0') = Decimal(0)
+E    +  and   2 = len([Decimal('1'), Decimal('-1')])
+E   Failing explicit example: test_tail_trimmed_mean(
+E       values=[Decimal('-1'), Decimal('5'), Decimal('1')],
+```
+
+### PBT metrics.cost_share
+
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the share divides by gross + charges.
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:211: in test_cost_share
+    assert share == charges / gross
+E   AssertionError: assert Decimal('0.5') == (Decimal('0.01') / Decimal('0.01'))
+E   Failing test case: test_cost_share(
+E       charges=Decimal('0.01'),
+E       net=Decimal('0'),
+E   )
+E   You can reproduce this test case by temporarily adding @reproduce_failure('6.170.5', b'AEEBQQA=') as a decorator on your test function
 ```
 
 ### CONF imports.hat_decoupled_from_legacy
