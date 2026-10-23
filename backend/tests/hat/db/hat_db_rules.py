@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
 from app.hat.ids import uuid7
+from app.hat.risk.modes import Mode
 from app.hat.schema import PG_DDL
 
 SEVEN_DAYS = timedelta(days=7)
@@ -229,7 +230,7 @@ def _domain_cases(conn: Connection) -> list[tuple[str, Callable[[str], None], tu
         (
             "hat_bot.execution_mode",
             bot_row("execution_mode"),
-            ("shadow", "confirm", "auto"),
+            tuple(Mode),
             ("", "signal", "AUTO", "live"),
         ),
         (

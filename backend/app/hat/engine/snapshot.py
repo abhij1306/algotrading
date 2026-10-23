@@ -18,10 +18,10 @@ from decimal import Decimal
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..execution.modes import SHADOW
 from ..models import HatBot, HatEvent, HatIndustry, HatPosition, HatSignal, HatTradeResult
 from ..money import require_exact
 from ..risk.caps import OpenPosition
+from ..risk.modes import Mode
 from ..time import as_utc, day_bounds, trade_date_of
 from . import journal, lifecycle
 
@@ -60,7 +60,7 @@ def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
 
 
 # A veto trade is a virtual position of a confirm or auto signal (`positions.is_veto`).
-_NOT_VETO = or_(HatPosition.is_virtual.is_(False), HatSignal.mode == SHADOW)
+_NOT_VETO = or_(HatPosition.is_virtual.is_(False), HatSignal.mode == Mode.SHADOW)
 
 
 def _slots(
@@ -115,7 +115,7 @@ def _slots(
                 avg_entry=entry,
                 last_price=prices.get(signal.instrument_id, entry),
                 current_stop=Decimal(signal.stop_price),
-                is_virtual=signal.mode == SHADOW,
+                is_virtual=signal.mode == Mode.SHADOW,
             )
         )
     return slots

@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 
 from ...base import Base
+from ..risk.modes import Mode
 from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, in_values, uuid_pk
 
 __all__ = [
@@ -32,7 +33,6 @@ __all__ = [
     "ORDER_SIDES",
     "ORDER_STATUSES",
     "SIGNAL_CONFIDENCES",
-    "SIGNAL_MODES",
     "HatApproval",
     "HatFill",
     "HatOrder",
@@ -47,7 +47,6 @@ BOT_ID = "hat_bot.id"
 INSTRUMENT_ID = "hat_instrument.id"
 SIGNAL_ID = "hat_signal.id"
 
-SIGNAL_MODES = ("shadow", "confirm", "auto")
 # `app.hat.engine.confidence.LABELS` (D132, PR 71)
 SIGNAL_CONFIDENCES = ("high", "medium", "low")
 ORDER_PURPOSES = ("entry", "stop_day", "stop_gtt", "exit_partial", "exit_full", "flatten")
@@ -109,7 +108,7 @@ class HatSignal(Base):
     __table_args__ = (
         UniqueConstraint("bot_id", "playbook", "instrument_id", "trade_date"),
         CheckConstraint("qty >= 0", name="ck_hat_signal_qty"),
-        CheckConstraint(in_values("mode", SIGNAL_MODES), name="ck_hat_signal_mode"),
+        CheckConstraint(in_values("mode", Mode), name="ck_hat_signal_mode"),
         CheckConstraint(in_values("state", TRADE_STATES), name="hat_signal_state_check"),
         CheckConstraint(
             in_values("confidence", SIGNAL_CONFIDENCES), name="hat_signal_confidence_check"

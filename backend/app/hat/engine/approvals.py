@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from ..models import HatApproval, HatEvent, HatPosition, HatSignal, HatTradeResult
 from ..money import exact
+from ..risk.modes import Mode
 from ..time import as_utc
 from . import journal, lifecycle, trades
 from .criteria.base import CriterionResult
@@ -317,7 +318,7 @@ def skipped_results(session: Session, start: datetime, end: datetime) -> list[De
         .join(HatApproval, HatApproval.signal_id == HatSignal.id)
         .where(
             HatPosition.is_virtual.is_(True),
-            HatSignal.mode != trades.SHADOW,
+            HatSignal.mode != Mode.SHADOW,
             HatApproval.decision.in_(_DECIDED_AWAY),
             HatPosition.closed_at >= as_utc(start),
             HatPosition.closed_at < as_utc(end),

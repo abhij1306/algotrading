@@ -44,11 +44,12 @@ from sqlalchemy.orm import Session
 from ..clock import SYSTEM_CLOCK, Clock
 from ..data.bars import Bar
 from ..data.gapscan import Gapper, is_candidate
-from ..execution.modes import AUTO, CONFIRM, bot_mode
+from ..execution.modes import bot_mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
 from ..money import exact
 from ..risk import controls
 from ..risk.decision import SignalContext
+from ..risk.modes import Mode
 from ..risk.sessions import SessionCalendar
 from ..time import IST, utc_now
 from . import lifecycle, positions, trades
@@ -348,9 +349,9 @@ def route_by_mode(
     if bot is None:
         raise positions.TradeError("unknown_bot")
     mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
-    if mode == AUTO:
+    if mode == Mode.AUTO:
         raise positions.TradeError("auto_needs_router")
-    if mode == CONFIRM:
+    if mode == Mode.CONFIRM:
         raise positions.TradeError("confirm_needs_router")
     return trades.open_entry(session, request, decide=decide, mode=mode)
 

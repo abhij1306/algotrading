@@ -11,13 +11,6 @@ from hat_fyers_support import LIVE_REPLIES
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from app.hat.execution.accounts import (
-    MODES,
-    ModeRefusedError,
-    UnknownModeError,
-    effective_mode,
-    request_mode,
-)
 from app.hat.execution.broker import (
     CODE_RATE_LIMITED,
     CODE_SESSION_EXPIRED,
@@ -31,16 +24,23 @@ from app.hat.execution.broker import (
     Side,
 )
 from app.hat.execution.fyers_adapter import TOKEN_CHECK_SECONDS, FyersHatBroker, map_session
-from app.hat.execution.modes import Gates
+from app.hat.execution.modes import (
+    Gates,
+    ModeRefusedError,
+    UnknownModeError,
+    capability_gated,
+    request_mode,
+)
 from app.hat.execution.session import (
     SessionOwnedError,
     SessionRegistry,
 )
 from app.hat.execution.tags import encode_tag
+from app.hat.risk.modes import Mode
 
 
 @given(
-    st.one_of(st.sampled_from(MODES), st.sampled_from(["live", "", "AUTO", "Shadow"])),
+    st.one_of(st.sampled_from(tuple(Mode)), st.sampled_from(["live", "", "AUTO", "Shadow"])),
     st.sampled_from(["active", "pending", "failed", "", "ACTIVE"]),
     st.fixed_dictionaries({"gtt_delivery": st.sampled_from([True, False, None, "true", 1])}),
     st.booleans(),
@@ -60,9 +60,9 @@ def test_confirm_and_auto_need_gtt(
     the policy's base weights, and such a request is refused with the first gate that fails; a
     mode outside the three runs as shadow and is refused as unknown, whatever the account."""
     gates = Gates(status, capabilities, ddpi_confirmed=ddpi, weights_confirmed=weights)
-    effective = effective_mode(mode, gates)
+    effective = capability_gated(mode, gates)
     gtt = status == "active" and capabilities["gtt_delivery"] is True
-    known = mode in MODES
+    known = mode in Mode
     ready = gtt and ddpi and weights
     assert effective == (mode if known and (mode == "shadow" or ready) else "shadow")
     if not known:
@@ -91,17 +91,17 @@ def test_the_fyers_adapter_unlocks_modes_on_an_active_account(status: str) -> No
     anywhere."""
     capabilities = FyersHatBroker(FakeBroker()).capabilities().to_json()
     assert capabilities["gtt_delivery"] is True
-    for mode in MODES:
+    for mode in Mode:
         expected = mode if status == "active" else "shadow"
         gates = Gates(status, capabilities, ddpi_confirmed=True, weights_confirmed=True)
-        assert effective_mode(mode, gates) == expected
+        assert capability_gated(mode, gates) == expected
         off = Gates(
             status,
             {**capabilities, "gtt_delivery": False},
             ddpi_confirmed=True,
             weights_confirmed=True,
         )
-        assert effective_mode(mode, off) == "shadow"
+        assert capability_gated(mode, off) == "shadow"
 
 
 reads = st.sampled_from(["funds", "positions", "holdings"])

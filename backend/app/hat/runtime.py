@@ -7,6 +7,8 @@ Virtual and real rows share tables (HAT-SCH-017): shadow mode writes `hat_order`
 
 from __future__ import annotations
 
+from .risk.modes import Mode
+
 __all__ = ["child_is_virtual", "position_is_virtual"]
 
 
@@ -17,9 +19,9 @@ def position_is_virtual(mode: str, *, skipped: bool = False) -> bool:
     A skipped auto-mode signal does not exist (auto never asks), so `skipped` only matters in
     confirm mode.
     """
-    if mode not in ("shadow", "confirm", "auto"):
+    if mode not in Mode:
         raise ValueError("unknown signal mode")
-    return mode == "shadow" or (mode == "confirm" and skipped)
+    return mode == Mode.SHADOW or (mode == Mode.CONFIRM and skipped)
 
 
 def child_is_virtual(parent_is_virtual: bool) -> bool:

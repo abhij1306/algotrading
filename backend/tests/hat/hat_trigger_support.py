@@ -19,9 +19,10 @@ from app.hat.data.sessions import IST
 from app.hat.engine.strategy.config import Playbook, StrategyConfig, parse_config
 from app.hat.engine.strategy.versions import seed_text
 from app.hat.engine.trigger import Candidate, DailyInputs, Trigger, TriggerMonitor
+from app.hat.risk.modes import Mode
 
 DAY = date(2026, 10, 21)
-MODES = ("shadow", "confirm", "auto")
+MODES = tuple(Mode)
 BOT = uuid.UUID("00000000-0000-7000-8000-0000000000c1")
 S1 = "stage2-contraction-breakout"
 S2 = "momentum-breakout-ep"

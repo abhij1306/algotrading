@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from datetime import datetime
 
 from sqlalchemy import CHAR, JSON, Column, DateTime, ForeignKey, Numeric, Uuid
@@ -38,6 +39,7 @@ def fk(target: str, *, nullable: bool = False, primary_key: bool = False) -> Col
 VERSION_STATUSES = ("draft", "backtested", "shadow", "live", "retired")
 
 
-def in_values(column: str, values: tuple[str, ...]) -> str:
-    """SQL text of `column IN (...)` for a plain CHECK constraint both dialects accept."""
-    return f"{column} IN ({', '.join(repr(v) for v in values)})"
+def in_values(column: str, values: Iterable[str]) -> str:
+    """SQL text of `column IN (...)` for a plain CHECK constraint both dialects accept (a
+    `StrEnum` member is written as its value)."""
+    return f"{column} IN ({', '.join(repr(str(v)) for v in values)})"

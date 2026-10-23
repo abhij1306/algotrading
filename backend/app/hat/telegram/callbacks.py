@@ -37,6 +37,7 @@ from ..execution.manage import FlattenReport, TradeManager
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..execution.submit import ENTRY
 from ..models import HatApproval, HatBot, HatOrder, HatSignal
+from ..risk.modes import Mode
 from ..settings import load_settings
 from .commands import Reply, queue_modes, rearm_all, refused
 from .confirm import PendingConfirmations
@@ -241,7 +242,7 @@ def _confirmed(ctx: ButtonContext, session: Session, data: str) -> tuple[str, st
     bots = list(session.scalars(select(HatBot).where(HatBot.id.in_(ids)).order_by(HatBot.id)))
     if not bots:
         return "confirm", "mode_auto", refused("unknown_bot")
-    return "confirm", "mode_auto", queue_modes(session, bots, "auto", ctx.now, ctx.chat_id)
+    return "confirm", "mode_auto", queue_modes(session, bots, Mode.AUTO, ctx.now, ctx.chat_id)
 
 
 def run_callback(ctx: ButtonContext, session: Session, data: str) -> tuple[str, str | None, Reply]:

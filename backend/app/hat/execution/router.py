@@ -70,19 +70,13 @@ from ..models import (
 from ..notify import LogNotifier, Notifier
 from ..risk import controls
 from ..risk.decision import Reason
+from ..risk.modes import Mode
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
 from .guard import ExecutionGuard
-from .modes import (
-    AUTO,
-    HIGH,
-    NO_GTT_DELIVERY,
-    NOT_HIGH_CONFIDENCE,
-    bot_mode,
-    real_orders_allowed,
-)
+from .modes import HIGH, NO_GTT_DELIVERY, NOT_HIGH_CONFIDENCE, bot_mode, real_orders_allowed
 from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
@@ -169,7 +163,7 @@ def unplaced_entry() -> ColumnElement[bool]:
     """A real entry committed but not placed: an auto signal in Triggered, or a confirm signal
     whose Take passed while it still awaits placement. Needs `HatApproval` outer-joined on the
     signal. Shared by the restart's recovery and the sweep, so they agree (PR 52)."""
-    return ((HatSignal.state == lifecycle.TRIGGERED) & (HatSignal.mode == AUTO)) | (
+    return ((HatSignal.state == lifecycle.TRIGGERED) & (HatSignal.mode == Mode.AUTO)) | (
         (HatSignal.state == lifecycle.AWAITING_APPROVAL) & (HatApproval.decision == approvals.TAKE)
     )
 
@@ -262,7 +256,7 @@ class ExecutionRouter:
             raise positions.TradeError("unknown_bot")
         mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
         outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
-        if outcome.mode != AUTO or outcome.state != lifecycle.TRIGGERED:
+        if outcome.mode != Mode.AUTO or outcome.state != lifecycle.TRIGGERED:
             session.commit()
             return outcome
         self._place_committed(session, outcome.signal_id, now, check)
@@ -403,7 +397,7 @@ class ExecutionRouter:
         if signal is None:
             raise positions.TradeError("unknown_signal")
         session.refresh(signal)
-        if signal.state not in _ROUTABLE or signal.mode == trades.SHADOW or signal.qty <= 0:
+        if signal.state not in _ROUTABLE or signal.mode == Mode.SHADOW or signal.qty <= 0:
             return None
         if signal.state == lifecycle.AWAITING_APPROVAL and not _taken(session, signal.id):
             return None  # a card is placed only after its Take passed (PR 52)
@@ -438,7 +432,7 @@ class ExecutionRouter:
         """Why the entry may not be placed now (a fixed code), or None."""
         if signal.trade_date != trade_date_of(now):
             return SIGNAL_EXPIRED  # its price, size and risk decision were for that session
-        if signal.mode == AUTO and signal.confidence != HIGH:
+        if signal.mode == Mode.AUTO and signal.confidence != HIGH:
             return NOT_HIGH_CONFIDENCE  # auto places only a high label (HAT-EXEC-014, D149)
         refusal = (
             placement_refusal(check, now, _stop_of(signal))

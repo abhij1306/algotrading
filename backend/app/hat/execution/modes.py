@@ -39,28 +39,23 @@ from ..engine.portfolio import lifecycle
 from ..errors import HatError
 from ..models import HatBot, HatBrokerAccount, HatModeChange, HatRiskPolicyVersion
 from ..models.strategy import ACCOUNT_ACTIVE
-from ..risk.modes import ModeChange
-from ..risk.modes import effective_mode as queued_mode
+from ..risk.modes import Mode, ModeChange, queued_mode_at
 from ..risk.policy import PolicyError, PolicyVersion, effective_version, parse_policy
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc, trade_date_of
 
 __all__ = [
-    "AUTO",
-    "CONFIRM",
     "DDPI_NOT_CONFIRMED",
     "HIGH",
-    "MODES",
     "NO_GTT_DELIVERY",
     "NOT_HIGH_CONFIDENCE",
-    "SHADOW",
     "WEIGHTS_NOT_CONFIRMED",
     "Gates",
     "ModeRefusedError",
     "UnknownModeError",
     "account_gates",
     "bot_mode",
-    "effective_mode",
+    "capability_gated",
     "gate_refusal",
     "ModeView",
     "mode_anchor",
@@ -72,10 +67,6 @@ __all__ = [
     "route_mode",
 ]
 
-SHADOW = "shadow"
-CONFIRM = "confirm"
-AUTO = "auto"
-MODES = (SHADOW, CONFIRM, AUTO)
 UNKNOWN_MODE = "unknown_mode"
 NO_GTT_DELIVERY = "no_gtt_delivery"
 DDPI_NOT_CONFIRMED = "ddpi_not_confirmed"
@@ -117,9 +108,9 @@ def gate_refusal(requested: str, gates: Gates) -> str | None:
     """The first gate that keeps `requested` from running, or None: `unknown_mode` outside the
     three modes; for confirm and auto `no_gtt_delivery` (an inactive account or no GTT for
     delivery), `ddpi_not_confirmed`, then `weights_not_confirmed`. Shadow needs none."""
-    if requested not in MODES:
+    if requested not in Mode:
         return UNKNOWN_MODE
-    if requested == SHADOW:
+    if requested == Mode.SHADOW:
         return None
     if not _gtt_ready(gates.account_status, gates.capabilities):
         return NO_GTT_DELIVERY
@@ -179,11 +170,11 @@ def real_orders_allowed(
     return _gtt_ready(account_status, capabilities) and reported is True
 
 
-def effective_mode(requested: str, gates: Gates) -> str:
+def capability_gated(requested: str, gates: Gates) -> str:
     """The mode a bot runs in: shadow unless `requested` is one of the three and passes every
     gate (`gate_refusal`)."""
-    if requested not in MODES or gate_refusal(requested, gates) is not None:
-        return SHADOW
+    if requested not in Mode or gate_refusal(requested, gates) is not None:
+        return Mode.SHADOW
     return requested
 
 
@@ -202,8 +193,8 @@ def route_mode(mode: str, confidence: str | None) -> str:
     """The route of an entry in effective `mode` (HAT-EXEC-014, D149): auto places only a
     signal labelled high; any other label, or none, goes to the owner as in confirm. Shadow
     and confirm are unchanged."""
-    if mode == AUTO and confidence != HIGH:
-        return CONFIRM
+    if mode == Mode.AUTO and confidence != HIGH:
+        return Mode.CONFIRM
     return mode
 
 
@@ -234,8 +225,8 @@ def requested_mode(session: Session, bot: HatBot, at: datetime) -> str:
     """The mode the user asked for that is in force at `at`: the latest queued change effective
     by then and not refused at its open, else the bot's stored mode; anything outside the three
     modes reads as shadow."""
-    mode = queued_mode(bot.execution_mode, _changes(session, bot.id), at)
-    return mode if mode in MODES else SHADOW
+    mode = queued_mode_at(bot.execution_mode, _changes(session, bot.id), at)
+    return mode if mode in Mode else Mode.SHADOW
 
 
 def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalendar | None) -> str:
@@ -245,11 +236,11 @@ def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalen
     of `at`'s session, gated by the account's gates at that open (a missing account is
     shadow)."""
     if lifecycle.routes_as_shadow(bot.lifecycle_state):
-        return SHADOW
+        return Mode.SHADOW
     anchor = mode_anchor(calendar, at)
     requested = requested_mode(session, bot, anchor)
     account = session.get(HatBrokerAccount, bot.broker_account_id)
-    return effective_mode(requested, account_gates(session, account, anchor))
+    return capability_gated(requested, account_gates(session, account, anchor))
 
 
 def pending_change(session: Session, bot: HatBot, at: datetime) -> HatModeChange | None:

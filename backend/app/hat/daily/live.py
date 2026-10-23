@@ -58,7 +58,7 @@ from ..engine.trigger import (
     upper_circuit_price,
 )
 from ..execution.manage import in_close_window
-from ..execution.modes import SHADOW, bot_mode
+from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..execution.series import series_changed
 from ..models import (
@@ -74,6 +74,7 @@ from ..models import (
 from ..ops.jobs import RunStatus
 from ..risk import controls
 from ..risk.decision import SignalContext
+from ..risk.modes import Mode
 from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
@@ -341,7 +342,7 @@ class LiveContexts:
         allocation = _allocation(session, bot_id, day, calendar)
         if bot is None or allocation is None:
             return base  # no allocation: the risk check rejects for the missing input
-        virtual = bot_mode(session, bot, at, calendar) == SHADOW
+        virtual = bot_mode(session, bot, at, calendar) == Mode.SHADOW
         # a Shadow or Probation sleeve has weight 0; its virtual entries use the nominal
         # allocation, health 1, and the book they are capped against counts it (HAT-PORT-050)
         nominal = virtual and allocation.virtual_capital is not None

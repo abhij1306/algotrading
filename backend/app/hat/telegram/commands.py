@@ -23,16 +23,10 @@ from sqlalchemy.orm import Session
 from ..data.calendar import session_calendar
 from ..errors import HatError
 from ..execution.mode_changes import request_mode_change
-from ..execution.modes import (
-    AUTO,
-    MODES,
-    NO_GTT_DELIVERY,
-    account_gates,
-    gate_refusal,
-)
+from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal
 from ..models import HatBot, HatBrokerAccount
 from ..risk import controls, kill
-from ..risk.modes import ModeChangeError, plan_mode_change
+from ..risk.modes import Mode, ModeChangeError, plan_mode_change
 from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
 from ..time import trade_date_of
@@ -294,14 +288,14 @@ def _mode_refusal(
 ) -> str | None:
     """Why the change may not be queued now (HAT-TG-032, HAT-GOV-085), checked without writing:
     the gates are read as they will stand at the open the change takes effect at."""
-    if to_mode not in MODES:
+    if to_mode not in Mode:
         return "unknown_mode"
     state = calendar.state(now)
     if state is SessionState.UNKNOWN:
         return "no_calendar"  # no row for today: whether the market is open is not known
     if state is not SessionState.CLOSED:
         return "market_hours"
-    if to_mode == AUTO and not _owner_accounts(session, bots):
+    if to_mode == Mode.AUTO and not _owner_accounts(session, bots):
         return "auto_not_owner"
     try:
         opens = plan_mode_change(to_mode, now, calendar).effective_from
@@ -355,7 +349,7 @@ def _mode(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
         return refused("unknown_bot")
     if len(bots) > 1:  # one name, several bots (one strategy on two accounts): name it by id
         return refused("ambiguous_bot", "Refused: ambiguous_bot (name the bot by its id)")
-    if to_mode != AUTO:
+    if to_mode != Mode.AUTO:
         return queue_modes(session, bots, to_mode, ctx.now, ctx.chat_id)
     calendar = session_calendar(session)
     if calendar is None:

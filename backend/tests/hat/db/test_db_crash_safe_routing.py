@@ -37,10 +37,10 @@ from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
 from app.hat.engine import journal, lifecycle
-from app.hat.execution import modes
 from app.hat.execution.router import MAX_ENTRY_REJECTIONS
 from app.hat.execution.submit import ENTRY
 from app.hat.models import HatApproval, HatEvent, HatOrder, HatPosition, HatSignal
+from app.hat.risk.modes import Mode
 
 pytestmark = pytest.mark.postgres
 
@@ -165,7 +165,7 @@ def test_db_crash_resumes_entry_once(
             for n, ok in enumerate(replies)
         ),
     )
-    with _seeded(clean_db, mode=modes.AUTO if path == "auto" else modes.CONFIRM, fake=fake) as (
+    with _seeded(clean_db, mode=Mode.AUTO if path == "auto" else Mode.CONFIRM, fake=fake) as (
         session,
         rig,
     ):
@@ -257,7 +257,7 @@ def test_db_concurrent_sweeps_settle_once(clean_db: Engine, threads: int, taken:
     no order, whatever the overlap. Harm: two overlapping sweeps open two veto trades for one
     card, record its expiry twice, or end a stranded Take twice."""
     _truncate(clean_db)
-    with _seeded(clean_db, mode=modes.CONFIRM) as (session, rig):
+    with _seeded(clean_db, mode=Mode.CONFIRM) as (session, rig):
         ids = [rig.route(instrument=n).signal_id for n in range(2)]
         if taken:
             try:
@@ -326,7 +326,7 @@ def test_db_concurrent_placements_send_one(clean_db: Engine, threads: int, path:
     connection, reaches the broker exactly once under one tag and ends EntryPlaced. Harm: two
     placements that both read no open tag reserve two tags and buy twice."""
     _truncate(clean_db)
-    with _seeded(clean_db, mode=modes.AUTO if path == "auto" else modes.CONFIRM) as (session, rig):
+    with _seeded(clean_db, mode=Mode.AUTO if path == "auto" else Mode.CONFIRM) as (session, rig):
         live = desks_for(clean_db, rig)
         live.recover(AT)
         router = live.by_account[rig.account_id].router

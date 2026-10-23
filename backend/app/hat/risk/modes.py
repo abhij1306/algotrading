@@ -1,17 +1,32 @@
-"""Execution-mode changes: queued outside market hours, effective at the next session open
-(HAT-GOV-084, HAT-SCH-086, HAT-TG-032). Pure; the queue's rows are `hat_mode_change`."""
+"""The execution modes, and mode changes: queued outside market hours, effective at the next
+session open (HAT-GOV-084, HAT-SCH-086, HAT-TG-032). Pure; the queue's rows are
+`hat_mode_change`. `Mode` is the one spelling of the modes: the schema CHECKs, the strategy
+config and the router all read it."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
+from typing import Literal
 
 from ..errors import HatError
 from ..time import as_utc
 from .sessions import SessionCalendar, SessionState
 
-MODES = ("shadow", "confirm", "auto")
+
+class Mode(StrEnum):
+    """How a bot's entries are routed: shadow (virtual, never at the broker), confirm (an
+    approval card first) or auto (placed; only a high-confidence signal, D149)."""
+
+    SHADOW = "shadow"
+    CONFIRM = "confirm"
+    AUTO = "auto"
+
+
+# A config field holding a mode: validates and dumps as the plain string (pydantic `Literal`).
+ModeField = Literal[Mode.SHADOW, Mode.CONFIRM, Mode.AUTO]
 
 
 class ModeChangeError(HatError):
@@ -29,7 +44,7 @@ def plan_mode_change(to_mode: str, requested_at: datetime, calendar: SessionCale
     """The queued change: refused unless `to_mode` is shadow, confirm or auto and the calendar
     says the market is closed at `requested_at`; effective at the first session open after it.
     An unknown calendar date, or no later open on record, is a refusal (fail closed)."""
-    if to_mode not in MODES:
+    if to_mode not in Mode:
         raise ModeChangeError("a mode is shadow, confirm or auto")
     if calendar.state(requested_at) is not SessionState.CLOSED:
         raise ModeChangeError("a mode changes only outside market hours")
@@ -39,7 +54,7 @@ def plan_mode_change(to_mode: str, requested_at: datetime, calendar: SessionCale
     return ModeChange(to_mode, as_utc(requested_at), effective)
 
 
-def effective_mode(initial: str, changes: Iterable[ModeChange], at: datetime) -> str:
+def queued_mode_at(initial: str, changes: Iterable[ModeChange], at: datetime) -> str:
     """The mode in force at `at`: the latest queued change whose `effective_from` has passed
     (ties broken by the later request), else `initial`."""
     moment = as_utc(at)

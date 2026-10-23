@@ -52,6 +52,7 @@ from ..models import (
     HatTradeResult,
 )
 from ..money import exact
+from ..risk.modes import Mode
 from ..time import as_utc, trade_date_of, utc_now
 from . import reads, render, store
 from .client import BotClient, Button, TelegramError
@@ -134,7 +135,7 @@ def _signal_message(session: Session, event: HatEvent, signer: ApprovalSigner) -
     if signal is None or signal.qty <= 0:
         return None
     approval = session.get(HatApproval, signal.id)
-    if signal.mode == "confirm" and approval is not None and approval.decision is None:
+    if signal.mode == Mode.CONFIRM and approval is not None and approval.decision is None:
         view = card_view(session, signal, approval)
         buttons = (
             (
@@ -143,7 +144,7 @@ def _signal_message(session: Session, event: HatEvent, signer: ApprovalSigner) -
             ),
         )
         return Outbound("card", signal.id, render.card_text(view), buttons)
-    if signal.mode == "shadow":
+    if signal.mode == Mode.SHADOW:
         virtual = session.scalar(
             select(HatPosition.id).where(
                 HatPosition.signal_id == signal.id, HatPosition.is_virtual.is_(True)
