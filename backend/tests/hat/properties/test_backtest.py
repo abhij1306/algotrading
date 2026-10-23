@@ -25,14 +25,14 @@ from app.hat.backtest.fills import (
     stop_fill,
 )
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
+from app.hat.confighash import config_hash
 from app.hat.engine.backtest import (
     NSE_BANDS,
     REGIME_MULT_POLICY,
     REGIME_MULT_RULES,
     BacktestError,
+    RunConventions,
     TradeRow,
-    check_conventions,
-    config_digest,
     lower_circuit_locked,
     pre_break_low,
     upper_circuit_locked,
@@ -265,25 +265,28 @@ def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
         after: int,
         weight: D | None,
         regime_rule: str,
-    ) -> object:
+    ) -> str:
         fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_model(), D(0))
         fills = BacktestFills(fills.model, bps)
         base = s.spec(s.config(), DAYS, fills=fills)
-        return dataclasses.replace(
+        run = dataclasses.replace(
             base,
-            entry_fill_rule=rule,
-            slot_order=slots,
-            ambiguous=ambiguous,
-            suspension_sessions=after,
-            sleeve_weight=weight,
-            regime_mult=regime_rule,
+            conventions=RunConventions(
+                entry_fill_rule=rule,
+                slot_order=slots,
+                ambiguous=ambiguous,
+                suspension_sessions=after,
+                sleeve_weight=weight,
+                regime_mult=regime_rule,
+            ),
         )
+        return config_hash(run.recorded_conventions())  # the run's `config_digest`
 
     def key(c: tuple) -> tuple:
         return (*c[:6], D("0.5") if c[6] is None else c[6], c[7])
 
     same = key(a) == key(b)  # Decimal(20) == Decimal("20.0")
-    assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
+    assert (spec(*a) == spec(*b)) is same
 
 
 # --- slot order on a capped day ---------------------------------------------
@@ -409,31 +412,66 @@ def test_path_rules_refused(rule: str, after: int) -> None:
     good_rule = rule in AMBIGUOUS_RULES
     good_after = not isinstance(after, bool) and 0 <= after <= 250
     if good_rule and good_after:
-        check_conventions(
-            PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
+        RunConventions(ambiguous=rule, suspension_sessions=after)
+        promoted = RunConventions(  # a promotion run sizes under `policy`
+            ambiguous=rule, suspension_sessions=after, regime_mult=REGIME_MULT_POLICY
         )
-        if after <= SUSPENSION_SESSIONS:  # a promotion run sizes under `policy`
-            check_conventions(
-                PENETRATION,
-                DEFAULT_SLIPPAGE_BPS,
-                True,
-                ambiguous=rule,
-                suspension_sessions=after,
-                regime_mult=REGIME_MULT_POLICY,
-            )
+        if after <= SUSPENSION_SESSIONS:
+            promoted.check_promotion(DEFAULT_SLIPPAGE_BPS)
         else:  # a promotion run marks a bar-less position down no later than the default
             with pytest.raises(BacktestError, match="backtest_promotion_late_suspension"):
-                check_conventions(
-                    PENETRATION,
-                    DEFAULT_SLIPPAGE_BPS,
-                    True,
-                    ambiguous=rule,
-                    suspension_sessions=after,
-                    regime_mult=REGIME_MULT_POLICY,
-                )
+                promoted.check_promotion(DEFAULT_SLIPPAGE_BPS)
         return
     code = "backtest_bad_ambiguous_rule" if not good_rule else "backtest_bad_suspension"
     with pytest.raises(BacktestError, match=code):
-        check_conventions(
-            PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
-        )
+        RunConventions(ambiguous=rule, suspension_sessions=after)
+
+
+PROMOTED = RunConventions(regime_mult=REGIME_MULT_POLICY)  # the conventions a promotion uses
+
+
+@pytest.mark.parametrize(
+    ("fields", "code"),
+    [
+        ({"entry_fill_rule": "midpoint"}, "backtest_bad_fill_rule"),
+        ({"slot_order": "random:x"}, "backtest_bad_slot_order"),
+        ({"ambiguous": "Pessimistic"}, "backtest_bad_ambiguous_rule"),
+        ({"suspension_sessions": -1}, "backtest_bad_suspension"),
+        ({"suspension_sessions": 5.0}, "backtest_bad_suspension"),
+        ({"sleeve_weight": D("1.01")}, "backtest_bad_sleeve_weight"),
+        ({"sleeve_weight": 0.5}, "backtest_bad_sleeve_weight"),
+        ({"sleeve_weight": D("NaN")}, "backtest_bad_sleeve_weight"),
+        ({"regime_mult": "2"}, "backtest_bad_regime_mult"),
+    ],
+)
+def test_conventions_refused_at_construction(fields: dict, code: str) -> None:
+    """A convention outside its rule never makes a `RunConventions`."""
+    with pytest.raises(BacktestError, match=code):
+        RunConventions(**fields)
+
+
+@pytest.mark.parametrize(
+    ("fields", "slippage", "code"),
+    [
+        ({}, D(0), "backtest_promotion_without_slippage"),
+        ({"entry_fill_rule": TOUCH}, DEFAULT_SLIPPAGE_BPS, "backtest_promotion_on_touch"),
+        (
+            {"slot_order": SLOT_ORDER_SCORE},
+            DEFAULT_SLIPPAGE_BPS,
+            "backtest_promotion_off_time_order",
+        ),
+        ({"suspension_sessions": 6}, DEFAULT_SLIPPAGE_BPS, "backtest_promotion_late_suspension"),
+        ({"sleeve_weight": D("0.5")}, DEFAULT_SLIPPAGE_BPS, "backtest_promotion_off_base_weight"),
+        ({"regime_mult": "1"}, DEFAULT_SLIPPAGE_BPS, "backtest_promotion_regime_variant"),
+    ],
+)
+def test_promotion_conventions_refused(fields: dict, slippage: D, code: str) -> None:
+    """A run flagged for promotion is refused at construction under any convention live does
+    not trade by; the same conventions make a sensitivity run."""
+    conventions = dataclasses.replace(PROMOTED, **fields)
+    fills = BacktestFills(load_cost_model(), slippage)
+    config = s.config()
+    with pytest.raises(BacktestError, match=code):
+        s.spec(config, DAYS, fills=fills, conventions=conventions, for_promotion=True)
+    s.spec(config, DAYS, fills=fills, conventions=conventions)
+    PROMOTED.check_promotion(DEFAULT_SLIPPAGE_BPS)
