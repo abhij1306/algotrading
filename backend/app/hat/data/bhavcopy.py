@@ -19,11 +19,12 @@ import zipfile
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal, Protocol
 
 from ..errors import HatError
+from ..money import exact
 from .reference import EQUITY_SERIES, ISIN_RE
 from .store import MAX_VOLUME, BarRow, DataStore, atomic_replace
 
@@ -149,16 +150,8 @@ def weekdays(start: date, end: date) -> list[date]:
 # --- parsers (HAT-DATA-093, 097) ----------------------------------------------------------------
 
 
-def _decimal(raw: str | None) -> Decimal | None:
-    try:
-        value = Decimal((raw or "").strip().replace(",", ""))
-    except InvalidOperation:
-        return None
-    return value if value.is_finite() else None
-
-
 def _integer(raw: str | None) -> int | None:
-    value = _decimal(raw)
+    value = exact(raw, grouped=True)
     if value is None or value != value.to_integral_value() or value < 0:
         return None
     return int(value)
@@ -252,9 +245,9 @@ def _read_row(layout: _Layout, day: date, row: dict[str, str]) -> tuple[BhavRow 
         return None, "wrong_date"
     isin = row[layout.isin].upper()
     open_, high, low, close = (
-        _decimal(row[c]) for c in (layout.open, layout.high, layout.low, layout.close)
+        exact(row[c], grouped=True) for c in (layout.open, layout.high, layout.low, layout.close)
     )
-    prev = _decimal(row[layout.prev])
+    prev = exact(row[layout.prev], grouped=True)
     volume = _integer(row[layout.volume])
     if (
         not ISIN_RE.match(isin)
@@ -269,7 +262,7 @@ def _read_row(layout: _Layout, day: date, row: dict[str, str]) -> tuple[BhavRow 
     ):
         return None, "invalid"
     symbol = row[layout.symbol].upper()
-    value = _decimal(row.get(layout.value))
+    value = exact(row.get(layout.value), grouped=True)
     return BhavRow(day, isin, series, symbol, open_, high, low, close, prev, volume, value), ""
 
 

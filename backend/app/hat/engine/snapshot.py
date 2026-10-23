@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from ..execution.modes import SHADOW
 from ..models import HatBot, HatEvent, HatIndustry, HatPosition, HatSignal, HatTradeResult
+from ..money import exact
 from ..risk.caps import OpenPosition
 from ..time import as_utc, day_bounds, trade_date_of
 from . import journal, lifecycle
@@ -205,5 +206,5 @@ def entry_price_of(session: Session, signal: HatSignal) -> Decimal:
         )
     )
     raw = (payload or {}).get("entry_price")
-    price = Decimal(str(raw)) if raw is not None else Decimal(signal.trigger_price)
-    return price if price.is_finite() and price > 0 else Decimal(signal.trigger_price)
+    price = exact(raw, floats=True, positive=True)
+    return price if price is not None else Decimal(signal.trigger_price)

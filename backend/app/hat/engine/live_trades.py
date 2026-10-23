@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from ..ids import uuid7
 from ..models import HatEvent, HatFill, HatOrder, HatPosition, HatSignal
+from ..money import require_exact
 from ..time import as_utc, day_bounds, trade_date_of
 from . import exits, journal, lifecycle
 from .botlock import lock_bot
@@ -569,9 +570,11 @@ def record_close_gaps(
         if official is None or not official.is_finite() or official <= 0:
             continue
         signal, _ = signal_and_bot(session, position)
-        live = Decimal(str(data["live_price"]))
+        live = require_exact(data["live_price"], "live_price", floats=True)
         gap = official - live
-        sma = {int(k): Decimal(str(v)) for k, v in (data.get("sma") or {}).items()}
+        sma = {
+            int(k): require_exact(v, "sma", floats=True) for k, v in (data.get("sma") or {}).items()
+        }
         journal.record(
             session,
             signal,

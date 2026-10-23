@@ -29,7 +29,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from datetime import time as clock_time
-from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 import pyarrow as pa
@@ -40,6 +40,7 @@ from ..clock import Clock
 from ..events import record
 from ..ids import uuid7
 from ..models import HatInstrument, HatJobRun, HatMarket
+from ..money import MONEY_SCALE, exact
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory, error_code
 from ..risk.controls import sync_health
@@ -77,7 +78,6 @@ PROBE_INTERVAL = timedelta(minutes=10)
 UNIVERSE_SERIES = ("EQ", "BE")
 BIG_MOVE = Decimal("0.20")
 REQUIRED_INDICES = ("NIFTY 500", "INDIA VIX")
-PRICE_PLACES = Decimal("0.0001")
 BREADTH_PART = "breadth"
 
 # Stable codes (never raw text): what a failed run records and alerts with.
@@ -152,22 +152,6 @@ class Candidate:
     volume: int | None
 
 
-def _price(raw: object) -> Decimal | None:
-    """A finite number as a Decimal at the store's 4 places; anything else is None."""
-    if isinstance(raw, bool) or not isinstance(raw, int | float | str | Decimal):
-        return None
-    try:
-        value = Decimal(str(raw).strip())
-    except InvalidOperation:
-        return None
-    if not value.is_finite():
-        return None
-    try:
-        return value.quantize(PRICE_PLACES, ROUND_HALF_EVEN)
-    except InvalidOperation:  # too large to hold at 4 places
-        return None
-
-
 def _volume(raw: object) -> int | None:
     if isinstance(raw, bool):
         return None
@@ -182,11 +166,11 @@ def parse_candidate(raw: Mapping[str, object]) -> Candidate:
     """A bulk-quote row as a `Candidate`; a field that cannot be read is None."""
     return Candidate(
         parse_data_date(raw.get("date")),
-        _price(raw.get("open")),
-        _price(raw.get("high")),
-        _price(raw.get("low")),
-        _price(raw.get("close")),
-        _price(raw.get("prev_close")),
+        exact(raw.get("open"), floats=True, places=MONEY_SCALE),
+        exact(raw.get("high"), floats=True, places=MONEY_SCALE),
+        exact(raw.get("low"), floats=True, places=MONEY_SCALE),
+        exact(raw.get("close"), floats=True, places=MONEY_SCALE),
+        exact(raw.get("prev_close"), floats=True, places=MONEY_SCALE),
         _volume(raw.get("volume")),
     )
 
@@ -496,7 +480,10 @@ def index_rows_from_mcp(rows: Iterable[Mapping[str, object]]) -> list[IndexRow]:
     found: dict[str, IndexRow] = {}
     for raw in rows:
         name = raw.get("indexName")
-        values = [_price(raw.get(k)) for k in ("open", "high", "low", "close")]
+        values = [
+            exact(raw.get(k), floats=True, places=MONEY_SCALE)
+            for k in ("open", "high", "low", "close")
+        ]
         if not isinstance(name, str) or not name.strip() or any(v is None for v in values):
             continue
         o, h, low, c = values

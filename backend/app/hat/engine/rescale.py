@@ -47,6 +47,7 @@ from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
 from ..errors import HatError
 from ..events import record
 from ..models import HatCorporateAction, HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
+from ..money import require_exact
 from ..notify import Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import as_utc, trade_date_of
@@ -158,7 +159,10 @@ def _rescale_events(session: Session, position_id: uuid.UUID) -> list[dict]:
 
 def applied_factors(session: Session, position_id: uuid.UUID) -> list[Fraction]:
     """The factors already applied to the position, oldest first."""
-    return [exact_factor(Decimal(str(p["factor"]))) for p in _rescale_events(session, position_id)]
+    return [
+        exact_factor(require_exact(p["factor"], "factor", floats=True))
+        for p in _rescale_events(session, position_id)
+    ]
 
 
 def _key(ex_date: date, action_type: str) -> str:

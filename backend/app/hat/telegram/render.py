@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 
+from ..money import exact
 from ..time import IST
 
 __all__ = [
@@ -109,13 +110,7 @@ class CardView:
 
 
 def _basis_decimal(raw: object) -> Decimal | None:
-    if not isinstance(raw, str | int):
-        return None
-    try:
-        value = Decimal(str(raw))
-    except ArithmeticError:
-        return None
-    return value if value.is_finite() else None
+    return exact(raw) if isinstance(raw, str | int) else None
 
 
 def confidence_line(label: str | None, basis: Mapping[str, object]) -> str:

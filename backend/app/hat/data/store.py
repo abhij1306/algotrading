@@ -40,6 +40,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ..errors import HatError
+from ..money import MONEY_SCALE, exact
 
 DATASET_BARS = "bars_daily_raw"
 DATASET_INDEX = "index_daily"
@@ -132,7 +133,6 @@ FACTOR_PLACES = 18  # cumulative factors are stored as decimal(20, 18)
 INVERSE_PLACES = 12  # and their reciprocals, for volume, as decimal(24, 12)
 FACTOR_MIN = Decimal("1e-9")  # a cumulative factor outside [1e-9, 100) cannot be held exactly
 FACTOR_MAX = Decimal(100)  # (a stock needs several reverse splits to get anywhere near it)
-_PRICE_QUANTUM = Decimal("0.0001")
 
 
 class StoreError(HatError):
@@ -196,7 +196,7 @@ class PartitionReport:
 def _money(value: Decimal | None) -> Decimal | None:
     if value is None:
         return None
-    if not value.is_finite() or value != value.quantize(_PRICE_QUANTUM):
+    if exact(value, places=MONEY_SCALE) != value:
         raise StoreError("store_price_precision")  # never rounded silently
     return value
 

@@ -17,13 +17,13 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..events import record
 from ..models import HatBot, HatEvent, HatStrategyVersion, HatUniverseVersion, HatWatchlistEntry
+from ..money import require_exact
 from . import lifecycle
 from .botlock import lock_bot
 from .portfolio.service import members_of
@@ -115,7 +115,7 @@ def scan_and_publish(
                 playbook=row.playbook,
                 instrument_id=uuid.UUID(row.instrument_id),
                 trade_date=trade_date,
-                score=Decimal(repr(row.score)),
+                score=require_exact(row.score, "score", floats=True),
                 criteria_results=row.criteria_results,
                 pivot=row.pivot,
                 planned_stop=row.planned_stop,

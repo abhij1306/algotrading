@@ -23,6 +23,7 @@ from typing import Any
 
 from app.hat.data.symbols import symbol_master
 
+from ..money import exact, require_exact
 from .broker import (
     CODE_INVALID_INTENT,
     CODE_RATE_LIMITED,
@@ -92,11 +93,7 @@ def _order_type(code: object) -> OrderType | None:
 
 def _book_price(value: object) -> Decimal | None:
     """A book row's limit price; None when it has none (0, missing or not a number)."""
-    try:
-        price = Decimal(str(value))
-    except InvalidOperation:
-        return None
-    return price if price.is_finite() and price > 0 else None
+    return exact(value, floats=True, positive=True)
 
 
 __all__ = [
@@ -185,20 +182,9 @@ def map_session(*, connected: bool, has_client: bool, store_error: bool) -> Sess
     return SessionStatus.LIVE if has_client else SessionStatus.EXPIRED
 
 
-def _decimal(value: object) -> Decimal:
-    if isinstance(value, bool):
-        raise InvalidOperation
-    result = Decimal(str(value))
-    if not result.is_finite():
-        raise InvalidOperation
-    return result
-
-
-def _positive_price(value: object) -> Decimal:
-    price = _decimal(value)
-    if price <= 0:
-        raise InvalidOperation
-    return price
+def _intent_price(value: object) -> Decimal:
+    """An order's price as HAT sends it: an exact positive Decimal; a float is refused (rule 8)."""
+    return require_exact(value, "price", positive=True)
 
 
 def _is_positive_qty(qty: object) -> bool:
@@ -425,9 +411,9 @@ class FyersHatBroker:
                 "order_tag": intent.tag,
             }
             if needs_limit:
-                order["price"] = float(_positive_price(intent.price))
+                order["price"] = float(_intent_price(intent.price))
             if needs_trigger:
-                order["trigger_price"] = float(_positive_price(intent.trigger_price))
+                order["trigger_price"] = float(_intent_price(intent.trigger_price))
         except (InvalidOperation, ValueError, TypeError):
             raise InvalidIntentError(CODE_INVALID_INTENT) from None
         return order
@@ -459,9 +445,9 @@ class FyersHatBroker:
                     raise InvalidOperation
                 params["quantity"] = qty
             if price is not None:
-                params["price"] = float(_positive_price(price))
+                params["price"] = float(_intent_price(price))
             if trigger_price is not None:
-                params["trigger_price"] = float(_positive_price(trigger_price))
+                params["trigger_price"] = float(_intent_price(trigger_price))
         except (InvalidOperation, ValueError, TypeError):
             raise InvalidIntentError(CODE_INVALID_INTENT) from None
         return self._write(lambda: self._broker.modify_order(broker_order_id, params))
@@ -479,7 +465,7 @@ class FyersHatBroker:
 
     @staticmethod
     def _gtt_prices(trigger: Decimal, limit: Decimal) -> tuple[float, float]:
-        trigger_price, limit_price = _positive_price(trigger), _positive_price(limit)
+        trigger_price, limit_price = _intent_price(trigger), _intent_price(limit)
         if limit_price >= trigger_price:
             raise InvalidOperation  # a sell stop's limit sits below its trigger
         return float(trigger_price), float(limit_price)
@@ -565,7 +551,7 @@ class FyersHatBroker:
             symbol=symbol_master.to_db(str(row["symbol"])),
             side=self._side(row["tran_side"] if "tran_side" in row else row["side"]),
             qty=whole,
-            trigger_price=_positive_price(trigger),
+            trigger_price=require_exact(trigger, "trigger", floats=True, positive=True),
             tag=tag,
             foreign=tag is None and shown not in (None, _GTT_UNTAGGED),
         )
@@ -658,7 +644,7 @@ class FyersHatBroker:
                 symbol=symbol_master.to_db(str(r["symbol"])),
                 side=self._side(r["side"]),
                 qty=int(r["tradedQty"]),
-                price=_positive_price(r["tradePrice"]),
+                price=require_exact(r["tradePrice"], "tradePrice", floats=True, positive=True),
                 traded_at=None,
                 gtt_tag=gtt_tag,
             )
@@ -677,7 +663,7 @@ class FyersHatBroker:
                     BrokerPosition(
                         symbol=symbol_master.to_db(str(r["symbol"])),
                         qty=qty if r["side"] == "LONG" else -qty,
-                        avg_price=_decimal(r["entry_price"]),
+                        avg_price=require_exact(r["entry_price"], "entry_price", floats=True),
                         product=str(r["product_type"]),
                     )
                 )
@@ -691,7 +677,7 @@ class FyersHatBroker:
                 BrokerHolding(
                     symbol=symbol_master.to_db(str(r["symbol"])),
                     qty=int(r["quantity"]),
-                    avg_price=_decimal(r.get("costPrice", 0)),
+                    avg_price=require_exact(r.get("costPrice", 0), "costPrice", floats=True),
                 )
                 for r in rows
             ]
@@ -702,9 +688,9 @@ class FyersHatBroker:
         return self._read(
             self._broker.fetch_funds,
             lambda f: BrokerFunds(
-                available=_decimal(f["available"]),
-                used=_decimal(f["used"]),
-                total=_decimal(f["total"]),
+                available=require_exact(f["available"], "available", floats=True),
+                used=require_exact(f["used"], "used", floats=True),
+                total=require_exact(f["total"], "total", floats=True),
             ),
         )
 

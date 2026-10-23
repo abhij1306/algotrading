@@ -25,6 +25,8 @@ from typing import Any, Literal, NamedTuple
 import polars as pl
 from pydantic import BaseModel, ConfigDict
 
+from ...money import require_exact
+
 Stage = Literal["universe", "setup", "trigger", "entry_filter"]
 STAGES: tuple[str, ...] = ("universe", "setup", "trigger", "entry_filter")
 
@@ -40,7 +42,7 @@ class ParamModel(BaseModel):
 
 def dec(value: float | int | Decimal) -> Decimal:
     """The decimal a number's shortest text names (exact for any price on a paise grid)."""
-    return value if isinstance(value, Decimal) else Decimal(repr(value))
+    return require_exact(value, "criterion input", floats=True)
 
 
 def finite(value: float | None) -> bool:

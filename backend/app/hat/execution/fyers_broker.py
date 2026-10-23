@@ -36,9 +36,11 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from threading import Lock
 from typing import Any, TypedDict
 
+from ..money import require_exact
 from ..settings import load_settings
 from ..time import trade_date_of, utc_now
 from .fyers_session import get_fyers_session
@@ -111,16 +113,16 @@ class PositionReply(TypedDict):
     symbol: str
     side: str  # LONG/SHORT
     quantity: int
-    entry_price: float
-    current_price: float
-    pnl: float
+    entry_price: Decimal
+    current_price: Decimal
+    pnl: Decimal
     product_type: str
 
 
 class FundsReply(TypedDict):
-    available: float
-    used: float
-    total: float
+    available: Decimal
+    used: Decimal
+    total: Decimal
 
 
 class FyersUnavailableError(Exception):
@@ -188,6 +190,12 @@ def profile_data(response: object) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise FyersUnavailableError("Fyers profile request failed")
     return data
+
+
+def _amount(value: object) -> Decimal:
+    """A reply's amount, exact (a JSON float read by its shortest text); a value that is not a
+    finite number raises, so the read fails closed."""
+    return require_exact(value, "amount", floats=True)
 
 
 def _float(value: object, default: float = 0.0) -> float:
@@ -800,11 +808,9 @@ class FyersBroker:
                     symbol=p.get("symbol"),
                     side=side,
                     quantity=abs(qty),
-                    entry_price=float(p.get("buyAvg", 0))
-                    if side == "LONG"
-                    else float(p.get("sellAvg", 0)),
-                    current_price=float(p.get("ltp", 0)),
-                    pnl=float(p.get("pl", 0)),
+                    entry_price=_amount(p.get("buyAvg" if side == "LONG" else "sellAvg", 0)),
+                    current_price=_amount(p.get("ltp", 0)),
+                    pnl=_amount(p.get("pl", 0)),
                     product_type=p.get("productType", "INTRADAY"),
                 )
             )
@@ -835,17 +841,17 @@ class FyersBroker:
         return FundsReply(available=available, used=used, total=total)
 
     @staticmethod
-    def _parse_funds_response(response: dict[str, Any]) -> tuple[float, float, float]:
-        available = float(response.get("available", 0) or 0)
-        used = float(response.get("used", 0) or 0)
-        total = float(response.get("total", 0) or (available + used))
+    def _parse_funds_response(response: dict[str, Any]) -> tuple[Decimal, Decimal, Decimal]:
+        available = _amount(response.get("available", 0) or 0)
+        used = _amount(response.get("used", 0) or 0)
+        total = _amount(response.get("total", 0) or (available + used))
         funds = response.get("fund_limit", [])
         if not isinstance(funds, list):
             return available, used, total
 
         for fund in funds:
             title = fund.get("title")
-            amount = float(fund.get("equityAmount", 0) or 0)
+            amount = _amount(fund.get("equityAmount", 0) or 0)
             if title == "Total Balance":
                 total = amount
             elif title == "Available Balance":

@@ -23,6 +23,7 @@ from typing import Any
 import polars as pl
 
 from ..data.ticks import tick_for_date
+from ..money import exact
 from .criteria import EvalContext
 from .regime_gate import regime_allows_longs
 from .stops import StopInputs, plan_stop_at_pivot
@@ -81,17 +82,6 @@ class ScanResult:
     evaluated: int  # members with a bar on `as_of`, which were evaluated
 
 
-def _dec(value: object) -> Decimal | None:
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, Decimal):
-        return value if value.is_finite() else None
-    if isinstance(value, int | float):
-        number = Decimal(repr(value))
-        return number if number.is_finite() else None
-    return None
-
-
 def _stage_json(stage: StageOutcome) -> dict[str, Any]:
     return {
         "stage": stage.stage,
@@ -126,7 +116,7 @@ def _extra(evaluation: PlaybookEvaluation, key: str) -> Decimal | None:
     passed criterion to report it), so the gate and the published level agree."""
     for stage in evaluation.stages:
         if stage.stage == "setup" and key in stage.levels:
-            return _dec(stage.levels[key])
+            return exact(stage.levels[key], floats=True)
     return None
 
 
@@ -147,7 +137,7 @@ def _planned_stop(
     contraction_low = _extra(evaluation, "final_contraction_low")
     if isinstance(rule, StopBelowFinalContractionLow) and contraction_low is None:
         return None
-    swing = [d for v in lows if v is not None and (d := _dec(v)) is not None]
+    swing = [d for v in lows if v is not None and (d := exact(v, floats=True)) is not None]
     plan = plan_stop_at_pivot(
         rule,
         StopInputs(entry=pivot, tick=tick, final_contraction_low=contraction_low, swing_lows=swing),
@@ -161,7 +151,7 @@ def next_session_tick(ctx: EvalContext) -> Decimal | None:
     session; across a month end with a holiday on its last weekday it reads one month early,
     which only the overnight planned stop uses (the live entry prices its own stop)."""
     history = ctx.history
-    closes = [None if c is None else _dec(c) for c in history.close]
+    closes = [None if c is None else exact(c, floats=True) for c in history.close]
     return tick_for_date(history.dates, closes, ctx.as_of + timedelta(days=1))
 
 
@@ -211,7 +201,7 @@ def _scan_playbook(
                 planned_stop=_planned_stop(
                     playbook, evaluation, pivot, lows, next_session_tick(ctx)
                 ),
-                adtr=_dec(adtr.get(instrument_id)),
+                adtr=exact(adtr.get(instrument_id), floats=True),
             )
         )
     return rows

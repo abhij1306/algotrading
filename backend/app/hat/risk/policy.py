@@ -9,11 +9,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
 from ..errors import HatError
+from ..money import exact
 from ..time import as_utc
 
 # Risk increases take effect no sooner than this after they are requested (assumption A in
@@ -57,14 +58,9 @@ class PolicyError(HatError):
 def to_decimal(value: object, name: str = "value") -> Decimal:
     """`value` as a finite Decimal. A float, a bool, None or a non-finite number is refused:
     money and ratios are never float (HAT-RISK-020, HAT-RISK-102)."""
-    if isinstance(value, bool) or isinstance(value, float) or value is None:
+    result = exact(value)
+    if result is None:
         raise PolicyError(f"{name}: not an exact number")
-    try:
-        result = value if isinstance(value, Decimal) else Decimal(str(value))
-    except (InvalidOperation, ValueError) as exc:
-        raise PolicyError(f"{name}: not a number") from exc
-    if not result.is_finite():
-        raise PolicyError(f"{name}: not finite")
     return result
 
 

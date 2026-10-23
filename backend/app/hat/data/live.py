@@ -30,7 +30,7 @@ import uuid
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any, Protocol
 
 from sqlalchemy.orm import Session
@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from app.hat.clock import SYSTEM_CLOCK, Clock
 
 from ..events import record
+from ..money import exact
 from ..notify import Notifier
 from ..time import trade_date_of
 from .bars import Bar, BarBuilder, Tick
@@ -122,19 +123,9 @@ class TickFeed(Protocol):
     ) -> Callable[[], None]: ...
 
 
-def _decimal(raw: object) -> Decimal | None:
-    if raw is None or isinstance(raw, bool):
-        return None
-    try:
-        value = Decimal(str(raw))
-    except InvalidOperation:
-        return None
-    return value if value.is_finite() else None
-
-
 def _exchange_time(payload: Mapping[str, Any]) -> datetime | None:
     for name in TICK_TIME_FIELDS:
-        value = _decimal(payload.get(name))
+        value = exact(payload.get(name), floats=True)
         if value is not None and value > 0:
             try:
                 return datetime.fromtimestamp(float(value), UTC)
@@ -157,13 +148,13 @@ def tick_from_payload(
     subtracts yesterday's total.
     """
     symbol = payload.get("symbol")
-    price = _decimal(payload.get("ltp"))
+    price = exact(payload.get("ltp"), floats=True)
     if not isinstance(symbol, str) or not symbol or price is None or price <= 0:
         return None
     when = _exchange_time(payload) or arrival
     day = trade_date_of(when)
-    cumulative = _decimal(payload.get("volume"))
-    traded = _decimal(payload.get("last_traded_qty"))
+    cumulative = exact(payload.get("volume"), floats=True)
+    traded = exact(payload.get("last_traded_qty"), floats=True)
     own = int(traded) if traded is not None and traded > 0 else 0
     qty = own
     if cumulative is not None and cumulative >= 0:
@@ -345,8 +336,8 @@ class LiveData:
     def _seed(self, payload: Mapping[str, Any], tick: Tick, now: datetime) -> None:
         """Seed the builder from the tick's exchange day high and low, when it has both and its
         own exchange time (the fields are as of that time, not the arrival)."""
-        high = _decimal(payload.get(DAY_HIGH_FIELD))
-        low = _decimal(payload.get(DAY_LOW_FIELD))
+        high = exact(payload.get(DAY_HIGH_FIELD), floats=True)
+        low = exact(payload.get(DAY_LOW_FIELD), floats=True)
         if high is not None and low is not None and _exchange_time(payload) is not None:
             self.builder.seed(tick, high, low, now)
 

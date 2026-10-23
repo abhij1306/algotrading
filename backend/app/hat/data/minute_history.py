@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import sys
 import time
 import uuid
@@ -38,7 +37,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import select
@@ -47,6 +46,7 @@ from sqlalchemy.orm import Session
 from ..errors import HatError
 from ..models import HatBrokerSymbol, HatInstrument, HatMarket
 from ..models.strategy import BROKER_FYERS
+from ..money import MONEY_SCALE, exact
 from ..time import as_utc, trade_date_of
 from .bars import Bar, BarBuilder, Tick
 from .bars_store import BarStore
@@ -75,7 +75,6 @@ __all__ = [
 
 CHUNK_DAYS = 100  # the most days of 1-minute candles one history request may span
 _MINUTE = timedelta(minutes=1)
-_PLACES = Decimal("0.0001")
 _WINDOW = timedelta(minutes=1)  # the per-minute call budget's window
 _PLAN_REFUSAL = "historical data available for your plan"
 # Fyers' answer once the app has spent its plan's daily requests ("Standard plan limit of 5,000
@@ -110,13 +109,9 @@ class MinuteCandle:
 
 
 def _price(raw: object) -> Decimal:
-    if isinstance(raw, bool) or not isinstance(raw, int | float) or not math.isfinite(raw):
-        raise MinuteHistoryError("history_bad_candle")
-    try:
-        value = Decimal(repr(raw)).quantize(_PLACES)
-    except InvalidOperation as exc:  # too large for the decimal context
-        raise MinuteHistoryError("history_bad_candle") from exc
-    if value <= 0:
+    """A candle price: a JSON number (never text), positive at the store's 4 places."""
+    value = exact(raw, floats=True, positive=True, places=MONEY_SCALE)
+    if value is None or not isinstance(raw, int | float):
         raise MinuteHistoryError("history_bad_candle")
     return value
 

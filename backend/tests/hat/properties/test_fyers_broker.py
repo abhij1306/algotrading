@@ -734,3 +734,49 @@ BUDGET_OPS = {
     "orders": lambda a: a.orders(),
     "gtts": lambda a: a.gtts(),
 }
+
+
+AMOUNTS = st.floats(min_value=-1e9, max_value=1e9, allow_nan=False, allow_infinity=False)
+NOT_AMOUNTS = st.sampled_from([math.nan, math.inf, -math.inf, "1,5", "abc", True, [1]])
+
+
+@given(
+    buy=AMOUNTS,
+    ltp=AMOUNTS,
+    pnl=AMOUNTS,
+    available=AMOUNTS,
+    used=AMOUNTS,
+    bad=st.none() | NOT_AMOUNTS,
+    where=st.sampled_from(["positions", "funds"]),
+)
+@example(buy=0.1, ltp=0.2, pnl=0.3, available=0.1, used=0.2, bad=None, where="funds")
+@NO_DEADLINE
+def test_reply_amounts_exact(
+    buy: float, ltp: float, pnl: float, available: float, used: float, bad: object, where: str
+) -> None:
+    """PBT fyers_broker.reply_amounts_exact (HAT-SCH-014, trading-safety rules 7 and 8; PR 75c): the
+    amounts of a positions or funds reply (JSON floats) are read exactly by `money.exact`, as
+    the Decimal each float's shortest text names, and a total Fyers leaves out is the exact sum
+    of the available and used amounts; an amount that is not a finite number fails the read
+    closed. Harm: 0.1 + 0.2 in float puts 0.30000000000000004 of free cash into sizing, or a NaN
+    average price reads as a position's cost."""
+    row = {"symbol": "NSE:TCS-EQ", "netQty": 5, "buyAvg": buy, "ltp": ltp, "pl": pnl}
+    funds = {"available": available, "used": used, "fund_limit": []}
+    if bad is not None:
+        (row if where == "positions" else funds)["buyAvg" if where == "positions" else "used"] = bad
+    reply = {"s": "ok", "netPositions": [row]} if where == "positions" else {"s": "ok", **funds}
+    adapter = FyersHatBroker(broker_over(ScriptedSdk(reply)))
+    read = adapter.positions if where == "positions" else adapter.funds
+    if bad is not None:
+        with pytest.raises(BrokerUnavailableError):
+            read()
+        return
+    if where == "positions":
+        [position] = adapter.positions()
+        assert position.avg_price == Decimal(repr(buy))
+        [raw] = broker_over(ScriptedSdk(reply)).get_positions()
+        assert (raw["current_price"], raw["pnl"]) == (Decimal(repr(ltp)), Decimal(repr(pnl)))
+        return
+    got = adapter.funds()
+    assert (got.available, got.used) == (Decimal(repr(available)), Decimal(repr(used)))
+    assert got.total == Decimal(repr(available)) + Decimal(repr(used))
