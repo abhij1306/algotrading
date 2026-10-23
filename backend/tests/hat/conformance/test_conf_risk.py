@@ -4,6 +4,7 @@ docs/decisions.md; a change to either is a deliberate, reviewed one."""
 
 import ast
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -25,7 +26,9 @@ from app.hat.risk.policy import (
     seed_policy,
 )
 
-OWNER_SEED = {
+OWNER_SEED = json.loads(
+    """
+{
     "risk_pct": "0.0025",
     "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},
     "adv_cap_pct": "0.01",
@@ -40,15 +43,17 @@ OWNER_SEED = {
         "L2": {"max_positions": 4, "risk_mult": "1.0"},
         "L3": {"max_positions": 6, "risk_mult": "1.0"},
         "up_after_wins": 2,
-        "down_after_losses": 2,
+        "down_after_losses": 2
     },
     "kill": {"account_drawdown_pct": "0.10", "bot_drawdown_pct": "0.10"},
     "base_weight": {"S1": "0.50", "S2": "0.50"},
     "cluster_cap": "1.00",
     "multiplier_bounds": {"lo": "0.25", "hi": "1.0"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.10", "full_mult": "1.0", "half_mult": "0.5"},
-    "weights_confirmed": True,
+    "weights_confirmed": true
 }
+"""
+)
 BACKEND = REPO_ROOT / "backend"
 
 
