@@ -600,7 +600,7 @@ class FillSync:
             for row, _symbol in gtts.by_tag.values()
             if row.id not in triggered
             and row.position_id is not None
-            and stop_confirmed(row, book, read_at, self._desk.settle_after) is False
+            and stop_confirmed(row, book, read_at, self._desk.positions.settle_after) is False
         }
         for position_id in sorted(gone):
             outcome = self._desk.check_gtt(session, position_id, now, book, read_at)

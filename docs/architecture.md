@@ -16,7 +16,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | `data` | NSE MCP client, bhavcopy, reference data, ingest, quality gate, corporate actions, Parquet store (`store.py`, `bars_store.py`), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, trades and shadow fills, approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle), backtest day loop |
 | `risk` | Risk policy and its versions, sizing, caps, exposure ladder, kill switches, modes, `evaluate_signal` |
-| `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py`), trade management (`manage.py`), GTT, reconciliation, mode gates |
+| `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py`), trade management (`manage.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
 | `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
 | `ops` | In-process scheduler, job runner, partitions, retention |
 | `daily` | `HatRuntime` wiring, the daily job table (`daily_jobs`), nightly and intraday job bodies, production parts |
@@ -62,6 +62,9 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 - **One path to the broker:** `execution/submit.py` (`reserve_order`, `send_order`) is the only
   caller of `HatBroker`; `FyersHatBroker` is its only implementation. `FakeBroker`
   (`tests/hat/fakes/broker.py`) is the only fake.
+- **One position desk per broker account** (`execution/position_desk.py:PositionDesk`, shared by
+  `StopDesk` and `TradeManager`): one re-entrant write lock per position, held by every stop write
+  and by a sale from its checks to its send; one settle rule for a lost answer (`settle_verdict`).
 - **One session owner per broker account** (`SessionRegistry.acquire`), one token store
   (`fyers_tokens.token_store`), one live socket (`LiveFeed`, built only in `main.py`).
 - **One clock, one mode:** code that needs "now" takes a `clock.Clock` (`SYSTEM_CLOCK` in

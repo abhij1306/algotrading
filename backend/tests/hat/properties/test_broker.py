@@ -39,6 +39,7 @@ from app.hat.execution.modes import (
     capability_gated,
     request_mode,
 )
+from app.hat.execution.position_desk import LOST_ANSWER_SETTLE, Verdict, settle_verdict
 from app.hat.execution.protect import stop_confirmed
 from app.hat.execution.session import (
     SessionOwnedError,
@@ -439,3 +440,25 @@ def test_stop_confirmed(
         placed_at=None if placed_ago is None else READ_AT - placed_ago,
     )
     assert stop_confirmed(row, book, READ_AT) is confirmed
+
+
+@pytest.mark.parametrize(
+    ("placed_ago", "found", "sale", "verdict"),
+    [
+        (timedelta(minutes=5), True, False, Verdict.ADOPT),  # held: adopted
+        (timedelta(seconds=10), True, True, Verdict.ADOPT),  # held, even when young
+        (timedelta(days=1), True, True, Verdict.ADOPT),  # held, of an earlier session
+        (timedelta(seconds=10), False, False, Verdict.WAIT),  # young: may still land
+        (timedelta(seconds=59), False, True, Verdict.WAIT),
+        (LOST_ANSWER_SETTLE, False, False, Verdict.EXPIRE),  # absent, old enough: never landed
+        (timedelta(minutes=5), False, True, Verdict.EXPIRE),
+        (timedelta(days=1), False, True, Verdict.STALE),  # a sale of an earlier session
+        (timedelta(days=1), False, False, Verdict.EXPIRE),  # a stop or entry of one
+        (None, False, True, Verdict.EXPIRE),  # never sent
+    ],
+)
+def test_settle_verdict(
+    placed_ago: timedelta | None, found: bool, sale: bool, verdict: Verdict
+) -> None:
+    placed_at = None if placed_ago is None else READ_AT - placed_ago
+    assert settle_verdict(placed_at, found, READ_AT, LOST_ANSWER_SETTLE, sale=sale) is verdict

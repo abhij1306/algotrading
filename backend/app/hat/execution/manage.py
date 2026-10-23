@@ -51,7 +51,6 @@ lower circuit the sale is left in the queue (a re-send would lose its place) and
 from __future__ import annotations
 
 import logging
-import threading
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -62,7 +61,7 @@ from time import monotonic
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..clock import SYSTEM_CLOCK, Clock
+from ..clock import Clock
 from ..engine import exits, live_trades, snapshot, trades
 from ..engine.botlock import lock_bot
 from ..engine.rescale import unhandled_actions
@@ -77,16 +76,16 @@ from ..models import (
 )
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, as_utc, trade_date_of
+from ..time import IST, trade_date_of
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import ALERT_SALE_UNFILLED, RESTING_AFTER, FillSync, SaleBand, SyncReport
 from .guard import ExecutionGuard
+from .position_desk import Verdict
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     CLOSED,
     FAILED,
     LIVE,
-    LOST_ANSWER_SETTLE,
     REPLACED,
     SWAPPED,
     UNSURE,
@@ -146,7 +145,6 @@ FLATTEN = "flatten"
 SETTLED = "settled"
 WAIT = "wait"
 UNREADABLE = "unreadable"
-EARLIER = "earlier_session"  # a lost sale of an earlier session, settled from holdings
 # What the broker's holdings say of a lost sale of an earlier session (`earlier_sale_verdict`).
 NEVER_SOLD = "never_sold"
 SOLD = "sold"
@@ -229,8 +227,6 @@ class TradeManager:
         notifier: Notifier | None = None,
         sending: Clock | None = None,
         ticker: Callable[[], float] = monotonic,
-        settle_after: timedelta = LOST_ANSWER_SETTLE,
-        clock: Clock = SYSTEM_CLOCK,
         band: SaleBand | None = None,
         resend: bool = False,
     ) -> None:
@@ -239,6 +235,9 @@ class TradeManager:
         self._resend = resend  # HAT_MPP_RESEND: resting market sales are sent again (PR 48)
         self._guard = guard
         self._desk = desk
+        # The position locks and the settle wait the stop desk uses; its clock stamps the sends.
+        self._positions = desk.positions
+        self._clock = desk.positions.clock
         self._fills = fills
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
@@ -246,26 +245,12 @@ class TradeManager:
         # time the run has taken so far (`ticker`, monotonic seconds).
         self._sending = sending
         self._ticker = ticker
-        # A sale whose answer was lost is looked up `settle_after` after its send; `clock`
-        # stamps the sends and is the one those waits are read by.
-        self._settle_after = settle_after
-        self._clock = clock
-        # One sale of a position at a time across threads: the live tick path, the close job
-        # and the Telegram flatten all sell through `_sell_qty`, whose "nothing else is selling"
-        # check and reservation must not interleave (each sale holds its position's lock from
-        # that check until the order is sent).
-        self._sale_locks: dict[uuid.UUID, threading.Lock] = {}
-        self._sale_locks_guard = threading.Lock()
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows), for the manager and its
         stop desk."""
         self._calendar = calendar
         self._desk.use_calendar(calendar)
-
-    def _sale_lock(self, position_id: uuid.UUID) -> threading.Lock:
-        with self._sale_locks_guard:
-            return self._sale_locks.setdefault(position_id, threading.Lock())
 
     # --- reading ------------------------------------------------------------------------------
 
@@ -439,10 +424,11 @@ class TradeManager:
     ) -> SendOutcome | None:
         """Sell `qty` of a real position at market under `purpose` (an exit or a flatten), when
         nothing else is selling it, the session allows it and the stop made room. Every refusal
-        is alerted; `rule_ids` are marked fired once the sale is out. Sales of one position are
-        serialised (`_sale_lock`); the position is re-read under the lock and `qty` capped at
-        what is still open."""
-        with self._sale_lock(position.id):
+        is alerted; `rule_ids` are marked fired once the sale is out. The position's write lock
+        (`PositionDesk.lock`) is held from the "nothing else is selling" check until the sale is
+        sent, so neither another sale nor a stop path (the fill sync's `protect`) interleaves;
+        the position is re-read under the lock and `qty` capped at what is still open."""
+        with self._positions.lock(position.id, "sale"):
             session.refresh(position)
             qty = min(qty, position.qty_open)
             if qty <= 0:
@@ -567,7 +553,7 @@ class TradeManager:
         self, session: Session, position: HatPosition, bot_id: uuid.UUID, now: datetime
     ) -> str:
         """Settle the position's sales of unknown outcome before it is sold again (under its
-        sale lock, so nothing else is sending them): one reserved and never sent is cancelled;
+        position lock, so nothing else is sending them): one reserved and never sent is cancelled;
         one sent with its answer lost is looked up by its tag once `settle_after` has passed
         (found: adopted; absent: it never landed, ends `expired` and its rules fire again).
         One found with shares sold is left to the fill sync, which records its fills with it
@@ -599,29 +585,29 @@ class TradeManager:
             book = {order.tag: order for order in self._broker.orders()}
         except BrokerUnavailableError:
             return UNREADABLE
-        settled = [self._settle_one(session, row, book.get(row.tag), bot_id) for row in lost]
-        earlier = [row for row, verdict in zip(lost, settled, strict=True) if verdict == EARLIER]
-        if earlier and not self._settle_earlier(session, position, earlier, now):
+        verdicts = [self._settle_one(session, row, book.get(row.tag), bot_id) for row in lost]
+        stale = [row for row, v in zip(lost, verdicts, strict=True) if v is Verdict.STALE]
+        if stale and not self._settle_earlier(session, position, stale, now):
             return UNREADABLE
-        return WAIT if WAIT in settled else SETTLED
+        return WAIT if Verdict.WAIT in verdicts else SETTLED
 
     def _settle_one(
         self, session: Session, row: HatOrder, found: BrokerOrder | None, bot_id: uuid.UUID
-    ) -> str:
-        """One lost sale against today's book: EARLIER (of an earlier session, absent), WAIT
-        (absent but young, or found with fills not yet recorded) or SETTLED (ended or adopted)."""
-        if found is None and self._earlier_session(row):
-            return EARLIER
-        if found is None and self._young(row):
-            return WAIT  # sent too recently: it may still be on its way
+    ) -> Verdict:
+        """One lost sale against today's book (`settle_verdict`): adopted, ended, or left
+        (WAIT: sent too recently; STALE: of an earlier session). One found with shares sold
+        waits for the fill sync, which adopts it with its fills."""
         if found is not None and found.filled_qty > 0:
-            return WAIT
-        if found is None:
+            return Verdict.WAIT
+        verdict = self._positions.verdict(row.placed_at, found is not None, sale=True)
+        if found is not None:
+            adopt_broker_order(session, row, found, bot_id, clock=self._clock)
+        elif verdict is Verdict.EXPIRE:
             end_lost_order(session, row)
         else:
-            adopt_broker_order(session, row, found, bot_id, clock=self._clock)
+            return verdict
         session.commit()
-        return SETTLED
+        return verdict
 
     def _settle_earlier(
         self, session: Session, position: HatPosition, rows: list[HatOrder], now: datetime
@@ -705,19 +691,6 @@ class TradeManager:
             },
         )
         return True
-
-    def _young(self, row: HatOrder) -> bool:
-        """Sent less than `settle_after` ago: its answer may still be on its way."""
-        return (
-            row.placed_at is not None
-            and self._clock.now() - as_utc(row.placed_at) < self._settle_after
-        )
-
-    def _earlier_session(self, row: HatOrder) -> bool:
-        """The order was sent on an earlier trade date than today's."""
-        return row.placed_at is not None and trade_date_of(as_utc(row.placed_at)) < trade_date_of(
-            self._clock.now()
-        )
 
     def _send_sale(
         self,
@@ -938,7 +911,7 @@ class TradeManager:
             "signal_id": str(signal.id),
             "position_id": str(position.id),
         }
-        with self._sale_lock(position.id):
+        with self._positions.lock(position.id, "sale_resend_cancel"):
             session.refresh(row)
             if row.status not in LIVE:
                 return
@@ -1067,14 +1040,17 @@ class TradeManager:
             return 0
         ended = 0
         for row in rows:
-            if row.tag in book or self._young(row):
-                continue  # the next sync adopts it; a young one may still be on its way
-            if row.purpose != ENTRY:
+            sale = row.purpose != ENTRY
+            if self._positions.verdict(row.placed_at, row.tag in book, sale=sale) is not (
+                Verdict.EXPIRE
+            ):
+                # held: the next sync adopts it; young: it may still be on its way; a sale of
+                # an earlier session: today's book cannot show it, settled from holdings
+                continue
+            if sale:
                 if row.placed_at is None:
                     row.status = "cancelled"
                 else:
-                    if self._earlier_session(row):
-                        continue  # today's book cannot show it: settled from holdings
                     end_lost_order(session, row)
                 session.commit()
                 continue
