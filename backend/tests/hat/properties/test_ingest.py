@@ -12,6 +12,7 @@ import tempfile
 import uuid
 from collections.abc import Mapping
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from app.hat.data.ingest import (
     wait_for_data,
 )
 from app.hat.data.mcp_client import McpClient, batches
+from app.hat.data.rowcheck import Candidate, row_ok
 from app.hat.data.store import (
     BAR_SCHEMA,
     BarRow,
@@ -314,3 +316,17 @@ def test_row_checks(
         and volume >= 0
     )
     assert accepted == expected
+
+
+def test_row_ok_refuses_a_price_the_store_cannot_hold() -> None:
+    """decimal(18, 4): 1e14 or a fifth decimal place is refused; trailing zeros are fine."""
+    day = date(2024, 1, 1)
+
+    def ok(high: str) -> bool:
+        return row_ok(
+            Candidate(day, Decimal(10), Decimal(high), Decimal(9), Decimal(11), Decimal(10), 5), day
+        )
+
+    assert ok("12.00000")
+    assert not ok("100000000000000")
+    assert not ok("12.00001")

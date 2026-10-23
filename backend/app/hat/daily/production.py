@@ -109,7 +109,7 @@ def production_parts(
             return url_source(PRICE_BANDS_URL.format(stamp=day.strftime("%d%m%Y")), fetch)
 
         return RuntimeParts(
-            store=DataStore(settings.data_root),
+            store=DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
             feed=feed,
             telegram=telegram,
             transport=HttpsTransport(telegram.token),

@@ -41,6 +41,7 @@ import pyarrow.parquet as pq
 
 from ..errors import HatError
 from ..money import MONEY_SCALE, exact
+from ..settings import DEFAULT_DUCKDB_MEMORY
 
 DATASET_BARS = "bars_daily_raw"
 DATASET_INDEX = "index_daily"
@@ -334,8 +335,12 @@ class DataStore:
         *,
         writer: Callable[[pa.Table, Path], None] | None = None,
         replace: Callable[[Path, Path], Any] = os.replace,
+        memory_limit: str = DEFAULT_DUCKDB_MEMORY,
+        temp_dir: Path | None = None,
     ) -> None:
         self.root = Path(root)
+        self.memory_limit = memory_limit
+        self.temp_dir = Path(temp_dir) if temp_dir is not None else self.root / "tmp"
         self._writer = writer or (lambda table, path: pq.write_table(table, path))
         self._replace = replace
 
@@ -481,8 +486,12 @@ class DataStore:
 
     def connect(self, actions: Iterable[ActionFactor] = ()) -> duckdb.DuckDBPyConnection:
         """An in-memory DuckDB connection with the four views; `actions` are the corporate actions
-        the adjusted view applies (from `hat_corporate_action`)."""
-        con = duckdb.connect(":memory:")
+        the adjusted view applies (from `hat_corporate_action`). DuckDB's own default is 80% of
+        RAM; the store's `memory_limit` caps it and a larger query spills to `temp_dir`."""
+        con = duckdb.connect(
+            ":memory:",
+            config={"memory_limit": self.memory_limit, "temp_directory": str(self.temp_dir)},
+        )
         self._dataset_view(con, DATASET_BARS, "bars_daily_raw")
         self._dataset_view(con, DATASET_INDEX, "index_daily")
         con.execute(

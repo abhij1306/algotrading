@@ -44,7 +44,11 @@ def bhav_rows(draw: st.DrawFn, day: date, min_size: int = 1, max_size: int = 8) 
     )
     rows = []
     for isin, ser in keys:
-        o, h, low, c, prev = (draw(prices) for _ in range(5))
+        # a bar that passes the row check: low <= open, close <= high
+        low, o, c, h = sorted(draw(prices) for _ in range(4))
+        if draw(st.booleans()):
+            o, c = c, o
+        prev = draw(prices)
         rows.append(
             BhavRow(
                 day,

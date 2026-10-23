@@ -1968,7 +1968,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         try:
             run = backtest_bot(
                 session,
-                DataStore(settings.data_root),
+                DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
                 args.bot,
                 args.start,
                 args.end,

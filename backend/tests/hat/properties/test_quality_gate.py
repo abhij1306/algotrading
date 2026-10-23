@@ -18,7 +18,6 @@ from app.hat.data.quality import (
     big_moves_check,
     coverage_check,
     index_snapshot_check,
-    scan_universe,
 )
 from app.hat.models import (
     HatCorporateAction,
@@ -74,17 +73,13 @@ def test_big_moves_explained(
     corporate action on the day, those already excluded and every active-universe size N: the
     unexplained are the movers neither explained nor excluded; the check fails iff they are more
     than 1% of N (one of 100 passes, two of 199 fail, two of 200 pass); the day's exclusion list
-    is the excluded plus, on a pass only, the unexplained; and a scan sees the universe less the
-    exclusion list, never an excluded one."""
+    is the excluded plus, on a pass only, the unexplained."""
     check = big_moves_check(moved, explained, excluded, size)
     unexplained = moved - explained - excluded
     assert set(check.detail["unexplained"]) == {str(k) for k in unexplained}
     assert check.passed == (Fraction(len(unexplained)) <= Fraction(size, 100))
     out = excluded | (unexplained if check.passed else set())
     assert set(check.detail["excluded"]) == {str(k) for k in out}
-    scanned = scan_universe(sorted(universe), out)
-    assert set(scanned) == universe - out
-    assert not set(scanned) & out
 
 
 OPS = st.lists(

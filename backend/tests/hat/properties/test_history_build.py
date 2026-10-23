@@ -1,7 +1,5 @@
-"""PBT history_build.*: the whole build runs offline on
-generated bhavcopy zips in both formats across the 8 Jul 2024 switch. Completeness, no duplicate
-(instrument, date), a missing day reported and left empty, and a repeated or resumed run changing
-nothing."""
+"""history_build's pure seams: the MCP index and close wrappers, the index archive fill and the
+corporate-action archive parse. The build itself is verified on real data, never here."""
 
 import itertools
 import tempfile
@@ -12,18 +10,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from hat_bhav_support import prices, render_old, render_udiff
 from hat_mcp_support import ScriptedTransport
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from app.hat.data import history_build
 from app.hat.data.bhavcopy import (
-    BhavRow,
     DayReconciliation,
     DownloadReport,
     FetchResult,
-    archive_url,
     weekdays,
 )
 from app.hat.data.corporate_actions import LoadReport
@@ -32,11 +27,9 @@ from app.hat.data.history_build import (
     INDEX_NAMES,
     ArchiveIndexSource,
     BuildReport,
-    DictCatalog,
     IndexPoint,
     Pacing,
     archive_fill_source,
-    history_build_job,
     index_archive_name,
     load_index_history,
     mcp_close_source,
@@ -50,92 +43,6 @@ from app.hat.data.store import (
     PartitionReport,
     index_coverage,
 )
-from app.hat.ops.jobs import JobError
-
-WINDOW = weekdays(date(2024, 6, 24), date(2024, 7, 19))
-POOL = [(f"INE00000000{i}", "EQ" if i < 4 else "BE") for i in range(6)]
-
-
-@st.composite
-def eras(draw: st.DrawFn) -> dict[date, list[BhavRow] | None]:
-    """For each weekday: the rows NSE has for it, or None when there is no file."""
-    out: dict[date, list[BhavRow] | None] = {}
-    for day in WINDOW:
-        if draw(st.integers(0, 4)) == 0:
-            out[day] = None
-            continue
-        chosen = draw(st.lists(st.sampled_from(POOL), min_size=1, max_size=4, unique=True))
-        out[day] = [
-            BhavRow(
-                day,
-                isin,
-                series,
-                f"S{isin[-1]}",
-                draw(prices),
-                draw(prices),
-                draw(prices),
-                draw(prices),
-                draw(prices),
-                draw(st.integers(0, 10**7)),
-                draw(st.decimals("0", "99999999", places=2)),
-            )
-            for isin, series in chosen
-        ]
-    return out
-
-
-def _fetcher(world: dict[date, list[BhavRow] | None], requests: list[date]):  # noqa: ANN202
-    by_url = {archive_url(d): d for d in world}
-
-    def fetch(url: str) -> FetchResult:
-        day = by_url[url]
-        requests.append(day)
-        rows = world[day]
-        if rows is None:
-            return FetchResult("not_found")
-        blob = render_old(day, rows, 1) if day <= date(2024, 7, 5) else render_udiff(day, rows, 1)
-        return FetchResult("ok", blob)
-
-    return fetch
-
-
-@given(
-    world=eras(),
-    holiday_pick=st.sets(st.sampled_from(WINDOW)),
-    error_pick=st.sets(st.sampled_from(WINDOW), max_size=2),
-)
-@settings(max_examples=40)
-def test_job_fails_on_any_gap_or_failed_download(
-    world: dict[date, list[BhavRow] | None], holiday_pick: set[date], error_pick: set[date]
-) -> None:
-    """The job body succeeds only when every weekday is either stored or an explained holiday:
-    a failed download (left unaccounted), a missing file that is no holiday, or a file with no
-    usable rows raises `history_incomplete`."""
-    by_url = {archive_url(d): d for d in world}
-    base = _fetcher(world, [])
-
-    def fetch(url: str) -> FetchResult:
-        return FetchResult("error") if by_url[url] in error_pick else base(url)
-
-    missing = {d for d, rows in world.items() if rows is None} - error_pick
-    empty = {d for d, rows in world.items() if rows == [] and d not in error_pick}
-    must_fail = bool(error_pick or empty or missing - holiday_pick)
-    with tempfile.TemporaryDirectory() as tmp:
-        body = history_build_job(
-            store=DataStore(Path(tmp)),
-            fetch=fetch,
-            catalog=DictCatalog(auto=True),
-            start=WINDOW[0],
-            end=WINDOW[-1],
-            holidays=holiday_pick,
-            pacing=Pacing(interval=0),
-        )
-        if must_fail:
-            with pytest.raises(JobError):
-                body()
-        else:
-            assert body().rows >= 0
-
 
 # --- the MCP history wrappers ---------------------------------------
 

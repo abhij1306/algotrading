@@ -13,11 +13,14 @@ broker shows such a sale; `HAT_MPP_PAGE_AFTER` is the misses before the owner is
 from the day high and low its tick carries only once a recorded tick confirms the field names
 (HAT-DATA-114). `HAT_SYMBOL_SILENT_SECONDS` is the silence after which a watched symbol is
 reported and subscribed again (default 120; HAT-DATA-116).
+`HAT_DUCKDB_MEMORY` caps every DuckDB connection of the data store (default 1GB, for an 8 GB
+machine shared with the app; a larger query spills to disk).
 """
 
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -30,6 +33,7 @@ from .errors import HatConfigError
 
 # MVP is single user (decision T1): one fixed tenant id unless HAT_USER_ID overrides it.
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
+DEFAULT_DUCKDB_MEMORY = "1GB"
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,7 @@ class HatSettings:
     exchange_day_range: bool = False
     symbol_silent_seconds: int = 120
     entry_timeout_minutes: int = 60
+    duckdb_memory: str = DEFAULT_DUCKDB_MEMORY
 
 
 def _is_true(raw: str | None) -> bool:
@@ -63,6 +68,16 @@ def _calls(raw: str | None, default: int | None, *, allow_off: bool = False) -> 
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+_MEMORY_RE = re.compile(r"\d+(\.\d+)?\s*(KB|MB|GB|TB|KIB|MIB|GIB|TIB)", re.IGNORECASE)
+
+
+def _memory(raw: str | None) -> str:
+    """A DuckDB memory limit such as `1GB` or `768MB`; anything unreadable is the default, so a
+    typo never fails every store connection."""
+    text = (raw or "").strip()
+    return text if _MEMORY_RE.fullmatch(text) else DEFAULT_DUCKDB_MEMORY
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
@@ -87,6 +102,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         exchange_day_range=_is_true(source.get("HAT_EXCHANGE_DAY_RANGE")),
         symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
         entry_timeout_minutes=_calls(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60) or 60,
+        duckdb_memory=_memory(source.get("HAT_DUCKDB_MEMORY")),
     )
 
 

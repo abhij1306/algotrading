@@ -57,6 +57,7 @@ from .bhavcopy import (
 )
 from .history_build import INDEX_NAMES, parse_index_archive_csv
 from .mcp_client import McpClient, McpError, parse_data_date
+from .rowcheck import Candidate, row_ok
 from .store import (
     DATASET_BARS,
     DATASET_MARKET_BREADTH,
@@ -139,19 +140,6 @@ def by_symbol(members: Iterable[Member]) -> dict[str, Member]:
 # --- row checks (HAT-DATA-042) ----------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Candidate:
-    """One fetched security-day after parsing, before the row checks."""
-
-    day: date | None
-    open: Decimal | None
-    high: Decimal | None
-    low: Decimal | None
-    close: Decimal | None
-    prev_close: Decimal | None
-    volume: int | None
-
-
 def _volume(raw: object) -> int | None:
     if isinstance(raw, bool):
         return None
@@ -172,28 +160,6 @@ def parse_candidate(raw: Mapping[str, object]) -> Candidate:
         exact(raw.get("close"), floats=True, places=MONEY_SCALE),
         exact(raw.get("prev_close"), floats=True, places=MONEY_SCALE),
         _volume(raw.get("volume")),
-    )
-
-
-def row_ok(c: Candidate, trade_date: date) -> bool:
-    """HAT-DATA-042: the row's date is the trade date, low <= open, close <= high, every price is
-    above zero, `prev_close` is null or above zero, and volume is not negative."""
-    if (
-        c.day != trade_date
-        or c.open is None
-        or c.high is None
-        or c.low is None
-        or c.close is None
-        or c.volume is None
-    ):
-        return False
-    prices = (c.open, c.high, c.low, c.close)
-    return (
-        all(p > 0 for p in prices)
-        and c.low <= c.open <= c.high
-        and c.low <= c.close <= c.high
-        and (c.prev_close is None or c.prev_close > 0)
-        and c.volume >= 0
     )
 
 
@@ -388,17 +354,6 @@ def _bar(
     )
 
 
-def quote_bars(
-    accepted: Mapping[str, Candidate], members: Mapping[str, Member], run_id: uuid.UUID
-) -> list[BarRow]:
-    """MCP rows as `bars_daily_raw` rows: `traded_value` null, source `mcp` (HAT-DATA-043)."""
-    return [
-        _bar(members[symbol], c, SOURCE_MCP, run_id)
-        for symbol, c in sorted(accepted.items())
-        if symbol in members
-    ]
-
-
 def write_raw_once(store: DataStore, day: date, rows: Sequence[BarRow]) -> bool:
     """Write the day's raw partition unless one exists; True when this call wrote it. A committed
     partition is never rewritten (HAT-DATA-043)."""
@@ -520,7 +475,8 @@ def bhavcopy_day(store: DataStore, fetch: Fetcher, trade_date: date) -> ParsedDa
 def _bhav_candidates(
     parsed: ParsedDay, members: Iterable[Member]
 ) -> tuple[dict[str, Candidate], dict[str, Decimal | None], int]:
-    """Accepted candidates by symbol, their traded values, and how many rows were violations."""
+    """Accepted candidates by symbol, their traded values, and how many rows were violations (the
+    parser already left out every row that fails `row_ok`, counted as `invalid`)."""
     keyed = {(m.isin, m.series): m for m in members}
     accepted: dict[str, Candidate] = {}
     traded: dict[str, Decimal | None] = {}
@@ -529,13 +485,12 @@ def _bhav_candidates(
         member = keyed.get((row.isin, row.series))
         if member is None:
             continue
-        candidate = Candidate(
-            row.trade_date, row.open, row.high, row.low, row.close, row.prev_close, row.volume
+        accepted.setdefault(
+            member.symbol,
+            Candidate(
+                row.trade_date, row.open, row.high, row.low, row.close, row.prev_close, row.volume
+            ),
         )
-        if not row_ok(candidate, parsed.day):
-            violations += 1
-            continue
-        accepted.setdefault(member.symbol, candidate)
         traded.setdefault(member.symbol, row.traded_value)
     return accepted, traded, violations
 

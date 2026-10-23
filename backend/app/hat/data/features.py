@@ -64,7 +64,6 @@ LOOKBACK_ROWS = 252  # rows before a date that any feature of the date can read
 LOOKBACK_SLACK_DAYS = 40  # store days read beyond those rows before falling back to a deeper read
 CHUNK_DAYS = 63
 BATCH_INSTRUMENTS = 500  # instruments per per-instrument computation
-DUCKDB_MEMORY = "768MB"
 DUCKDB_THREADS = 2
 FEATURES_PART = "features"
 BREADTH_PART = "breadth"
@@ -377,7 +376,6 @@ def _run_locked(
     targets = days if report.full else [d for d in days if not _has_partitions(store, d)]
     if targets:
         con = store.connect(actions)
-        con.execute(f"SET memory_limit='{DUCKDB_MEMORY}'")  # spills to disk beyond this
         con.execute(f"SET threads={DUCKDB_THREADS}")
         try:
             for start in range(0, len(targets), chunk_days):
@@ -447,7 +445,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     with SessionLocal() as session:
         actions = stored_factors(session)
     report = run_features(
-        DataStore(settings.data_root),
+        DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
         actions,
         through=args.through,
         full=args.full,
