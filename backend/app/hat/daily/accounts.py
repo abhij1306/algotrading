@@ -38,8 +38,9 @@ from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.entry_timeout import EntryWatch
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
+from ..execution.gtt_upkeep import GttUpkeep
 from ..execution.guard import ExecutionGuard
-from ..execution.manage import TradeManager, ViewSource
+from ..execution.manage import ManagerConfig, TradeManager, ViewSource
 from ..execution.mpp import MarketProtection
 from ..execution.position_desk import PositionDesk
 from ..execution.protect import StopDesk
@@ -280,11 +281,13 @@ class Desks:
             enabled=self._resend,
             page_after=self._page_after,
         )
+        upkeep = GttUpkeep(stops)  # one for the account: its fill sync and its manager
         fills = FillSync(
             broker,
             stops,
             notifier,
             mpp=mpp,
+            upkeep=upkeep,
             gtt_check_every=self._gtt_check_every,
             clock=clock,
         )
@@ -293,9 +296,8 @@ class Desks:
             guard,
             stops,
             fills,
+            ManagerConfig(upkeep, notifier=notifier, band=self._band),
             calendar=calendar,
-            notifier=notifier,
-            band=self._band,
         )
         router = ExecutionRouter(broker, guard, reconciler, notifier, issuer=issuer, clock=clock)
         return AccountDesk(

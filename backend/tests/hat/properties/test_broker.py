@@ -31,7 +31,18 @@ from app.hat.execution.fyers_adapter import (
     FyersHatBroker,
     map_session,
 )
-from app.hat.execution.manage import NEVER_SOLD, SOLD, UNKNOWN, earlier_sale_verdict
+from app.hat.execution.manage import (
+    NEVER_SOLD,
+    SETTLED,
+    SOLD,
+    UNKNOWN,
+    UNREADABLE,
+    WAIT,
+    SaleGate,
+    SaleStep,
+    earlier_sale_verdict,
+    sale_gate,
+)
 from app.hat.execution.modes import (
     Gates,
     ModeRefusedError,
@@ -407,6 +418,41 @@ def test_onboarding_status_keeps_the_status_through_an_outage(
 )
 def test_earlier_sale_verdict(qty_open: int, held: int, row_qty: int, verdict: str) -> None:
     assert earlier_sale_verdict(qty_open, held, row_qty) == verdict
+
+
+FLOOR = Decimal("240.15")
+SEND, HOLD = SaleStep.SEND, SaleGate(SaleStep.HOLD)
+
+
+@pytest.mark.parametrize(
+    ("settled", "qty", "busy", "open_now", "rejected", "floor", "gate"),
+    [
+        (SETTLED, 10, False, True, 0, None, SaleGate(SEND, attempts=2)),
+        (SETTLED, 10, False, True, 0, FLOOR, SaleGate(SEND, attempts=2, floor=FLOOR)),
+        (SETTLED, 10, False, True, 1, None, SaleGate(SEND, attempts=1)),
+        (SETTLED, 10, False, True, 2, FLOOR, SaleGate(SEND, attempts=0, floor=FLOOR)),
+        (SETTLED, 10, False, True, 2, None, HOLD),  # refused twice, told then, no band
+        (SETTLED, 10, False, True, 3, FLOOR, HOLD),  # the band limit was refused too
+        (UNREADABLE, 10, False, True, 0, None, SaleGate(SaleStep.REFUSE, "sale_unresolved")),
+        (UNREADABLE, 0, True, False, 3, None, SaleGate(SaleStep.REFUSE, "sale_unresolved")),
+        (WAIT, 10, False, True, 0, None, HOLD),  # a lost sale may still land
+        (SETTLED, 0, False, True, 0, None, HOLD),  # a settled sale took the rest
+        (SETTLED, 10, True, True, 0, None, HOLD),  # one sale at a time
+        (SETTLED, 10, False, False, 0, None, SaleGate(SaleStep.REFUSE, "market_closed")),
+        (SETTLED, 10, False, False, 3, None, SaleGate(SaleStep.REFUSE, "market_closed")),
+    ],
+)
+def test_sale_gate(
+    settled: str,
+    qty: int,
+    busy: bool,
+    open_now: bool,
+    rejected: int,
+    floor: Decimal | None,
+    gate: SaleGate,
+) -> None:
+    got = sale_gate(settled, qty, busy=busy, open_now=open_now, rejected=rejected, floor=floor)
+    assert got == gate
 
 
 READ_AT = datetime(2026, 10, 23, 5, 0, tzinfo=UTC)

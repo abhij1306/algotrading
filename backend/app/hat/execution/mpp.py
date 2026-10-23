@@ -5,11 +5,11 @@ price falls through it. `MarketProtection` holds the whole re-send, so it can be
 deleted as a unit; `submit` keeps only its hooks (`mark_resend`, and `rejected_sales`, which
 does not count a re-send as a rejection), the fill sync and the `TradeManager` call in here.
 
-- **Reading the book** (`note_sales`, every sync): the price the book shows for each of HAT's
-  working sales is recorded on its row (a market sale shows its protected limit), and each
-  market sale still working short of its quantity `RESTING_AFTER` after its send is reported
-  (`SyncReport.resting`), as is each HAT cancelled to send again that has now ended
-  (`resend_due`, `SyncReport.resend`).
+- **Reading the book** (`read_book`, the fill sync's market phase): each sale HAT cancelled to
+  send again that the book now shows ended is reported (`SyncReport.resend`); the price the
+  book shows for each of HAT's working sales is recorded on its row (a market sale shows its
+  protected limit), and each market sale still working short of its quantity `RESTING_AFTER`
+  after its send is reported (`SyncReport.resting`).
 - **Sending again** (`after_sync`, with `enabled`): a resting market sale is cancelled
   (`order.cancelled`, code `sale_resend`: not a rejection) and, once the book shows it ended, the
   shares it left are sent again as a fresh market sale through the exit path, at every sync
@@ -135,24 +135,25 @@ class MarketProtection:
     # --- the fill sync ----------------------------------------------------------------------------
 
     @staticmethod
-    def resend_due(session: Session, row: HatOrder) -> bool:
-        """A sale HAT cancelled to send it again that the book now shows ended."""
-        return (
-            row.purpose in EXIT_SALES
-            and row.status == "cancelled"
-            and resend_requested(session, row)
-        )
-
-    @staticmethod
-    def note_sales(
+    def read_book(
         session: Session,
         rows: Iterable[HatOrder],
+        ended: Iterable[HatOrder],
         book: TagBook,
         now: datetime,
         report: SyncReport,
     ) -> None:
-        """Record the price the book shows for each of HAT's working sales, and report each
-        market sale still working short of its quantity `RESTING_AFTER` after it was sent."""
+        """The fill sync's market phase over HAT's sales: each of the rows whose status this sync
+        moved (`ended`) that HAT cancelled to send again is due its re-send; then the price the
+        book shows for each working sale is recorded, and each market sale still working short
+        of its quantity `RESTING_AFTER` after it was sent is reported."""
+        for row in ended:
+            if (
+                row.purpose in EXIT_SALES
+                and row.status == "cancelled"
+                and resend_requested(session, row)
+            ):
+                report.resend.append(row.id)
         for row in rows:
             if row.purpose not in EXIT_SALES or row.status not in LIVE:
                 continue

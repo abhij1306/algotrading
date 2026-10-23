@@ -1,19 +1,23 @@
 """Broker fills into HAT's book (HAT-EXEC-060, -062, HAT-BRK-111; PR 15c).
 
 `FillSync.run` reads the broker's order book and trade book (both fail closed: an unreadable
-book raises and nothing is written) and then, for one broker account:
+book raises and nothing is written) and then, for one broker account, runs its phases in order:
+**settle** (steps 1-5: HAT's book only, no broker call, no position lock), **commit**, **market**
+(6b) and **protect** (6, 6c, 7). The phases after the commit start from what it returns, so no
+position lock is ever taken over an uncommitted fill (`PositionDesk`).
 
 1. adopts a pending or unconfirmed HAT order the broker shows under its tag
    (`submit.adopt_broker_order`), so a fill never lands on an order HAT thinks was not sent;
 2. records each new trade of an HT-tagged order as a fill (`live_trades.apply_entry_fill`,
-   `apply_exit_fill`) and has the `StopDesk` protect the position at once: an entry fill gets its
-   broker stop before anything else touches the position (HAT-EXEC-060), a sale resizes the stop,
-   and the last sale cancels it;
+   `apply_exit_fill`);
 3. attributes the SELL trade of a triggered GTT to that GTT: one under the GTT's own tag
    (`gtt_tag`: the adapter reads a row under one of HAT's GTT tags as that GTT's sale; whether
    Fyers puts the tag on the sale is [verify on a live account]) to the working GTT with that
    tag, and an untagged one to the GTT of the one open position on its symbol; a broker trade id
-   is recorded once across all orders, so an old trade never closes a newer position;
+   is recorded once across all orders, so an old trade never closes a newer position. Each
+   position a fill moved is protected in the protect phase, before anything else is done to it:
+   an entry fill gets its broker stop (HAT-EXEC-060), a sale resizes the stop, and the last sale
+   cancels it;
 4. moves order statuses (`submit.record_broker_status`): an entry that ended unfilled ends its
    signal Cancelled; a day stop that expired leaves its position to be protected again; a sale
    the broker took and then ended short records `order.rejected` and fires its rules again, so the
@@ -25,16 +29,16 @@ book raises and nothing is written) and then, for one broker account:
    `order.cancelled` event, so the alert is raised once; while the GTT's own sale (at its limit
    price and quantity) still works short of its quantity a minute after it was first seen (the
    price gapped below the limit), it rests: `gtt.triggered` is recorded and `gtt.unfilled`
-   raised once, and the sale is asked to go at the market at every sync until the book shows it
-   does (HAT-EXEC-066);
+   raised once, and the sale is asked to go at the market (the market phase) at every sync until
+   the book shows it does (HAT-EXEC-066);
 6. protects again every open real position of the account that has no stop the broker
    confirmed (a stop the broker refused twice was alerted; a stop whose answer was lost is
    settled by `StopDesk.protect`; each sync tries again);
-6b. (PR 48) has market price protection (`mpp.MarketProtection`) read HAT's sales in the book:
-   the price each shows, each market sale resting unfilled (`SyncReport.resting`) and each HAT
-   cancelled to send again that has now ended (`SyncReport.resend`), for the `TradeManager` to
-   send again; a triggered GTT's sale already at the market but still resting is its to ask
-   again;
+6b. the market phase: market price protection (PR 48, `mpp.MarketProtection.read_book`) reads
+   HAT's sales in the book: the price each shows, each market sale resting unfilled
+   (`SyncReport.resting`) and each HAT cancelled to send again that has now ended
+   (`SyncReport.resend`), for the `TradeManager` to send again; then each triggered GTT's resting
+   sale is asked to go at the market (one already at the market is `MarketProtection.remarket`'s);
 6c. (P1, HAT-EXEC-145) every `gtt_check_every` (`HAT_GTT_CHECK_MINUTES`, default 5), and on
    every run the 08:40 `gtt.check` asks for, reads the broker's GTT book before the order book
    and compares it with the GTTs HAT believes rest (`stop_plans.stop_confirmed`). A GTT a good read
@@ -49,6 +53,7 @@ book raises and nothing is written) and then, for one broker account:
    the remainder lands on the open position in step 2 and is protected like any entry fill.
 
 Each fill and its stop work commit as separate steps (the model's atomic steps, StopPlacement).
+Several fills of one position in one sync get one protect, after all of them are recorded.
 
 `watch_closely` tells the runtime when to read the books every loop step instead of every minute:
 while a real entry of today's signals may still fill, or a stop's answer is not in yet, a fill gets
@@ -221,8 +226,40 @@ class SyncReport:
     gtt_unprotected: list[uuid.UUID] = field(default_factory=list)
 
 
+@dataclass
+class _SyncPass:
+    """One fill sync's reads, and what its settle phase found for the phases after it."""
+
+    account_id: uuid.UUID
+    now: datetime
+    orders: list[BrokerOrder]
+    trades: list[BrokerTrade]
+    rows: dict[str, HatOrder]
+    book: TagBook
+    report: SyncReport
+    # positions to protect, in the order touched; True once a fill touched it (`_protect`
+    # counts it protected)
+    touched: dict[uuid.UUID, bool] = field(default_factory=dict)
+    ended: list[HatOrder] = field(default_factory=list)  # rows whose status the broker moved
+    resting: list[tuple[HatOrder, BrokerOrder, dict[str, str]]] = field(default_factory=list)
+    excess: list[tuple[str, int, int]] = field(default_factory=list)  # (tag, qty, filled)
+
+    def touch(self, position_id: uuid.UUID, *, fill: bool) -> None:
+        self.touched[position_id] = self.touched.get(position_id, False) or fill
+
+
+@dataclass(frozen=True)
+class _Settled:
+    """The settle phase's work once committed: the phases that take a position lock
+    (`PositionDesk.lock`) or call the broker start from this only, so none of them can run over
+    an uncommitted fill or status."""
+
+    sync: _SyncPass
+
+
 class FillSync:
-    """Fills for one broker account's session; `desk` places and moves its stops."""
+    """Fills for one broker account's session; `desk` places and moves its stops, `upkeep` (the
+    account's one `GttUpkeep`, shared with its `TradeManager`) checks its GTTs."""
 
     def __init__(
         self,
@@ -231,12 +268,13 @@ class FillSync:
         notifier: Notifier | None = None,
         *,
         mpp: MarketProtection,
+        upkeep: GttUpkeep,
         gtt_check_every: timedelta = GTT_CHECK_EVERY,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._desk = desk
-        self._upkeep = GttUpkeep(desk)  # the swap, nightly verify and GTT-book check
+        self._upkeep = upkeep
         self._clock = clock  # stamps the orders it adopts
         self._notifier = notifier or LogNotifier()
         self.mpp = mpp  # market price protection (PR 48), shared with the `TradeManager`
@@ -250,16 +288,30 @@ class FillSync:
     def run(
         self, session: Session, account_id: uuid.UUID, now: datetime, *, check_gtts: bool = False
     ) -> SyncReport:
-        """One pass over the broker's books. Raises BrokerUnavailableError when the order or the
-        trade book cannot be read (nothing is written then); an unreadable GTT book only skips
-        step 6c. `check_gtts` reads the GTT book whether or not it is due."""
+        """One pass over the broker's books, in phases: read, settle (steps 1-5: database
+        writes only), commit, market (6b), protect (6, 6c, 7). Raises BrokerUnavailableError
+        when the order or the trade book cannot be read (nothing is written then); an unreadable
+        GTT book only skips step 6c. `check_gtts` reads the GTT book whether or not it is due."""
+        sync = self._read(session, account_id, now, check_gtts=check_gtts)
+        self._settle(session, sync)
+        settled = self._commit(session, sync)
+        self._market(session, settled)
+        self._protect_all(session, settled)
+        return sync.report
+
+    # --- the phases -----------------------------------------------------------------------------
+
+    def _read(
+        self, session: Session, account_id: uuid.UUID, now: datetime, *, check_gtts: bool
+    ) -> _SyncPass:
+        """Read the books: the GTT book when due, then the order book and the trade book."""
         report = SyncReport()
         if check_gtts or self._gtts_due(now):
             # read before the order book: a GTT that triggered before this read has its sale there
             report.gtt_read_at = self._clock.now()
             report.gtt_book = self._read_gtts(account_id, now)
-        orders = self._broker.orders()
-        trades = self._broker.trades()
+        orders = list(self._broker.orders())
+        trades = list(self._broker.trades())
         rows = {
             row.tag: row
             for row in session.scalars(
@@ -268,16 +320,53 @@ class FillSync:
                 )
             )
         }
-        book = TagBook.of(orders)
-        self._adopt(session, rows, book, now, report)
-        self._trades(session, account_id, rows, trades, now, report)
-        self._statuses(session, rows, book, now, report)
-        self.mpp.note_sales(session, rows.values(), book, now, report)
-        self._gtt_sales(session, account_id, orders, now, report)
+        return _SyncPass(account_id, now, orders, trades, rows, TagBook.of(orders), report)
+
+    def _settle(self, session: Session, sync: _SyncPass) -> None:
+        """Steps 1-5 into HAT's book: adoptions, fills, statuses and the triggered GTTs' sales.
+        No broker call and no position lock; the positions they touch are protected later."""
+        self._adopt(session, sync)
+        self._trades(session, sync)
+        self._statuses(session, sync)
+        self._gtt_sales(session, sync)
+
+    @staticmethod
+    def _commit(session: Session, sync: _SyncPass) -> _Settled:
+        """Commit what the settle phase wrote (each step commits its own, so this is the
+        barrier, not the only commit): a position lock is never taken over an uncommitted row
+        (`PositionDesk`)."""
+        session.commit()
+        return _Settled(sync)
+
+    def _market(self, session: Session, settled: _Settled) -> None:
+        """Step 6b: market price protection reads HAT's sales in the book
+        (`MarketProtection.read_book`), then each triggered GTT's resting sale is asked to go at
+        the market (HAT-EXEC-066)."""
+        sync = settled.sync
+        self.mpp.read_book(
+            session, sync.rows.values(), sync.ended, sync.book, sync.now, sync.report
+        )
+        for gtt, order, alert in sync.resting:
+            self._market_gtt_sale(session, gtt, order, sync.now, alert)
+
+    def _protect_all(self, session: Session, settled: _Settled) -> None:
+        """Steps 6, 6c and 7: every position the settle phase touched is protected (an entry fill
+        gets its stop before anything else touches the position, HAT-EXEC-060), then the GTT
+        book is checked, then every position still without a stop is protected, a closed one's
+        unsure stops are cancelled and an emptied one closed."""
+        sync = settled.sync
+        account_id, now, report = sync.account_id, sync.now, sync.report
+        for position_id, fill in sync.touched.items():
+            if fill:
+                self._protect(session, position_id, now, report)
+            else:
+                # A stop that ended (a day stop expired at the close), a sale that ended short or
+                # a GTT that triggered unfilled: the position must still rest on a broker stop.
+                self._desk.protect(session, position_id, now)
+        for tag, qty, filled in sync.excess:
+            self._alert_excess(tag, qty, filled, now)  # after the stop
         if report.gtt_book is not None and report.gtt_read_at is not None:
-            self._check_gtts(
-                session, account_id, orders, report.gtt_book, report.gtt_read_at, now, report
-            )
+            self._check_gtts(session, sync, report.gtt_book, report.gtt_read_at)
             self._gtts_read_at = now
         for position_id in self._unprotected(session, account_id) - report.protected:
             self._protect(session, position_id, now, report)
@@ -287,49 +376,32 @@ class FillSync:
             self._desk.cancel_all(session, position_id, now)
         for position_id in self._emptied(session, account_id):
             self._close_emptied(session, position_id, now)
-        return report
 
-    def _trades(
-        self,
-        session: Session,
-        account_id: uuid.UUID,
-        rows: dict[str, HatOrder],
-        trades: Iterable[BrokerTrade],
-        now: datetime,
-        report: SyncReport,
-    ) -> None:
+    def _trades(self, session: Session, sync: _SyncPass) -> None:
         """Steps 2 and 3: each trade of an HT-tagged order, then each sale of a triggered GTT."""
-        trades = list(trades)
-        for trade in trades:
-            row = rows.get(trade.tag) if trade.tag else None
+        for trade in sync.trades:
+            row = sync.rows.get(trade.tag) if trade.tag else None
             if row is not None:
-                self._apply(session, row, trade, now, report)
-        gtts = self._working_gtts(session, account_id)
-        for trade in trades:
+                self._apply(session, row, trade, sync)
+        gtts = self._working_gtts(session, sync.account_id)
+        for trade in sync.trades:
             gtt = gtts.of(trade)
             if gtt is not None and trade.side is Side.SELL:
-                self._apply_gtt_trade(session, gtt, trade, now, report)
+                self._apply_gtt_trade(session, gtt, trade, sync)
 
-    def _gtt_sales(
-        self,
-        session: Session,
-        account_id: uuid.UUID,
-        orders: Iterable[BrokerOrder],
-        now: datetime,
-        report: SyncReport,
-    ) -> None:
+    def _gtt_sales(self, session: Session, sync: _SyncPass) -> None:
         """Step 5 over the order book: each triggered GTT's sale that ended short or rests."""
-        gtts = self._working_gtts(session, account_id)
-        for order in orders:
+        gtts = self._working_gtts(session, sync.account_id)
+        for order in sync.orders:
             gtt = gtts.of(order)
             if gtt is None:
                 continue
             if self._unfilled_trigger(order, gtt):
-                self._gtt_unfilled(session, gtt, order, now, report)
+                self._gtt_unfilled(session, gtt, order, sync)
             elif self._resting_trigger(session, order, gtt):
-                self._gtt_resting(session, gtt, order, now, report)
+                self._gtt_resting(session, gtt, order, sync)
         # a sale that filled or left the book before it counted as resting is forgotten
-        working = {order.order_id for order in orders}
+        working = {order.order_id for order in sync.orders}
         self._working_since = {
             order_id: since
             for order_id, since in self._working_since.items()
@@ -354,23 +426,16 @@ class FillSync:
     def _bot_of(session: Session, row: HatOrder) -> uuid.UUID | None:
         return session.scalar(select(HatSignal.bot_id).where(HatSignal.id == row.signal_id))
 
-    def _adopt(
-        self,
-        session: Session,
-        rows: dict[str, HatOrder],
-        book: TagBook,
-        now: datetime,
-        report: SyncReport,
-    ) -> None:
-        for row in rows.values():
-            found = book.for_row(row) if row.status in UNSURE else None
+    def _adopt(self, session: Session, sync: _SyncPass) -> None:
+        for row in sync.rows.values():
+            found = sync.book.for_row(row) if row.status in UNSURE else None
             if found is not None:
                 adopt_broker_order(
                     session, row, found, self._bot_of(session, row), clock=self._clock
                 )
                 session.commit()
-                report.adopted += 1
-                self._sale_ended(session, row, found, now)
+                sync.report.adopted += 1
+                self._sale_ended(session, row, found, sync.now)
 
     def _sale_ended(
         self, session: Session, row: HatOrder, found: BrokerOrder, now: datetime
@@ -397,20 +462,13 @@ class FillSync:
 
     # --- 2. and 3. fills ------------------------------------------------------------------------
 
-    def _apply(
-        self,
-        session: Session,
-        row: HatOrder,
-        trade: BrokerTrade,
-        now: datetime,
-        report: SyncReport,
-    ) -> None:
-        position_id = self._record(session, row, trade, now, report)
+    def _apply(self, session: Session, row: HatOrder, trade: BrokerTrade, sync: _SyncPass) -> None:
+        position_id = self._record(session, row, trade, sync.now, sync.report)
         if position_id is not None:
             # HAT-EXEC-060: the stop comes before any other action on the position.
-            self._protect(session, position_id, now, report)
+            sync.touch(position_id, fill=True)
             if row.purpose == ENTRY:
-                self._check_excess(session, row, trade.qty, now)  # the alert after the stop
+                self._check_excess(session, row, trade.qty, sync)  # alerted after the stop
 
     def _record(
         self,
@@ -441,20 +499,23 @@ class FillSync:
         report.fills += 1
         return position.id
 
-    def _check_excess(self, session: Session, row: HatOrder, qty: int, now: datetime) -> None:
+    @staticmethod
+    def _check_excess(session: Session, row: HatOrder, qty: int, sync: _SyncPass) -> None:
         """The fill of `qty` just recorded took the entry's fills above its quantity:
         `fill.excess`, once, on the fill that crosses it (each fill is recorded once; later fills
-        of the same excess are not alerted again). The fills stay recorded: shares refused here
-        would sit at the broker untracked, with no stop; recorded, the stop covers them and
-        reconciliation blocks the account's entries."""
-        filled = session.scalar(select(func.sum(HatFill.qty)).where(HatFill.order_id == row.id))
-        if not int(filled or 0) - qty <= row.qty < int(filled or 0):
-            return
-        logger.error("entry %s filled %s of %s", row.tag, filled, row.qty)
+        of the same excess are not alerted again), once the stop is placed. The fills stay
+        recorded: shares refused here would sit at the broker untracked, with no stop; recorded,
+        the stop covers them and reconciliation blocks the account's entries."""
+        filled = int(
+            session.scalar(select(func.sum(HatFill.qty)).where(HatFill.order_id == row.id)) or 0
+        )
+        if filled - qty <= row.qty < filled:
+            sync.excess.append((row.tag, row.qty, filled))
+
+    def _alert_excess(self, tag: str, qty: int, filled: int, now: datetime) -> None:
+        logger.error("entry %s filled %s of %s", tag, filled, qty)
         self._notifier.alert(
-            ALERT_FILL_EXCESS,
-            trade_date_of(now),
-            {"tag": row.tag, "qty": row.qty, "filled": int(filled or 0)},
+            ALERT_FILL_EXCESS, trade_date_of(now), {"tag": tag, "qty": qty, "filled": filled}
         )
 
     def _refused(
@@ -491,17 +552,12 @@ class FillSync:
         )
 
     def _apply_gtt_trade(
-        self,
-        session: Session,
-        gtt: HatOrder,
-        trade: BrokerTrade,
-        now: datetime,
-        report: SyncReport,
+        self, session: Session, gtt: HatOrder, trade: BrokerTrade, sync: _SyncPass
     ) -> None:
         seen = session.scalar(select(HatFill.id).where(HatFill.broker_trade_id == trade.trade_id))
         if seen is not None:
             return  # recorded before, on this or an older GTT
-        position_id = self._record(session, gtt, trade, now, report)
+        position_id = self._record(session, gtt, trade, sync.now, sync.report)
         if position_id is None:
             return
         filled = sum(session.scalars(select(HatFill.qty).where(HatFill.order_id == gtt.id)).all())
@@ -511,7 +567,7 @@ class FillSync:
             # position is protected (a part-filled sale may still sell the rest).
             gtt.status = "filled" if filled >= gtt.qty else "partially_filled"
             session.commit()
-        self._protect(session, position_id, now, report)
+        sync.touch(position_id, fill=True)
 
     def _protect(
         self, session: Session, position_id: uuid.UUID, now: datetime, report: SyncReport
@@ -546,19 +602,13 @@ class FillSync:
         return book
 
     def _check_gtts(
-        self,
-        session: Session,
-        account_id: uuid.UUID,
-        orders: Iterable[BrokerOrder],
-        book: frozenset[str],
-        read_at: datetime,
-        now: datetime,
-        report: SyncReport,
+        self, session: Session, sync: _SyncPass, book: frozenset[str], read_at: datetime
     ) -> None:
         """Step 6c: each position with a live GTT the book read at `read_at` no longer holds
         and no sale of it in the order book is checked and protected again by the desk."""
-        gtts = self._working_gtts(session, account_id)
-        triggered = {gtt.id for order in orders if (gtt := gtts.of(order)) is not None}
+        report = sync.report
+        gtts = self._working_gtts(session, sync.account_id)
+        triggered = {gtt.id for order in sync.orders if (gtt := gtts.of(order)) is not None}
         gone = {
             row.position_id
             for row, _symbol in gtts.by_tag.values()
@@ -567,7 +617,7 @@ class FillSync:
             and stop_confirmed(row, book, read_at, self._desk.positions.settle_after) is False
         }
         for position_id in sorted(gone):
-            outcome = self._upkeep.check_gtt(session, position_id, now, book, read_at)
+            outcome = self._upkeep.check_gtt(session, position_id, sync.now, book, read_at)
             if outcome in (FAILED, UNVERIFIED):
                 report.gtt_unprotected.append(position_id)
             else:
@@ -575,32 +625,19 @@ class FillSync:
 
     # --- 4. statuses ----------------------------------------------------------------------------
 
-    def _statuses(
-        self,
-        session: Session,
-        rows: dict[str, HatOrder],
-        book: TagBook,
-        now: datetime,
-        report: SyncReport,
-    ) -> None:
-        touched: set[uuid.UUID] = set()
-        for row in rows.values():
-            found = None if row.status in UNSURE else book.for_row(row)
+    def _statuses(self, session: Session, sync: _SyncPass) -> None:
+        for row in sync.rows.values():
+            found = None if row.status in UNSURE else sync.book.for_row(row)
             if found is None:
                 continue
             session.refresh(row)
             if record_broker_status(session, row, found, self._bot_of(session, row)):
                 session.commit()
-                report.statuses += 1
-                self._sale_ended(session, row, found, now)
+                sync.report.statuses += 1
+                sync.ended.append(row)
+                self._sale_ended(session, row, found, sync.now)
                 if row.position_id is not None and row.purpose != ENTRY:
-                    touched.add(row.position_id)
-                if self.mpp.resend_due(session, row):
-                    report.resend.append(row.id)
-        for position_id in touched - report.protected:
-            # A stop that ended (a day stop expired at the close) or a sale that ended short:
-            # the position must still rest on a broker stop.
-            self._desk.protect(session, position_id, now)
+                    sync.touch(row.position_id, fill=False)
 
     # --- 5. a GTT that triggered without a fill -------------------------------------------------
 
@@ -626,13 +663,9 @@ class FillSync:
         return any((payload or {}).get(TRIGGER_ORDER) == order_id for payload in payloads)
 
     def _gtt_unfilled(
-        self,
-        session: Session,
-        gtt: HatOrder,
-        order: BrokerOrder,
-        now: datetime,
-        report: SyncReport,
+        self, session: Session, gtt: HatOrder, order: BrokerOrder, sync: _SyncPass
     ) -> None:
+        now = sync.now
         position = session.get(HatPosition, gtt.position_id)
         signal = session.get(HatSignal, gtt.signal_id)
         if position is None or signal is None:
@@ -663,7 +696,7 @@ class FillSync:
             occurred_at=now,
         )
         session.commit()
-        report.unfilled_gtts += 1
+        sync.report.unfilled_gtts += 1
         self._notifier.alert(
             ALERT_GTT_UNFILLED,
             trade_date_of(now),
@@ -674,7 +707,7 @@ class FillSync:
                 "code": "gtt_triggered_unfilled",
             },
         )
-        self._desk.protect(session, position.id, now)
+        sync.touch(position.id, fill=False)
 
     # --- 5b. a GTT that triggered and whose sale rests unfilled ----------------------------------
 
@@ -711,18 +744,15 @@ class FillSync:
         return any((payload or {}).get(TRIGGER_ORDER) == order_id for payload in payloads)
 
     def _gtt_resting(
-        self,
-        session: Session,
-        gtt: HatOrder,
-        order: BrokerOrder,
-        now: datetime,
-        report: SyncReport,
+        self, session: Session, gtt: HatOrder, order: BrokerOrder, sync: _SyncPass
     ) -> None:
         """HAT-EXEC-066: the GTT triggered and its limit sale still works (the price gapped below
         the limit). Once the sale has worked `RESTING_AFTER` (a sale filling at once is left to
         fill), `gtt.triggered` is recorded and `gtt.unfilled` raised; from then on every sync
-        asks for the sale to go at the market until the book shows it does. The GTT row stays
-        live: its sale holds the shares, so no other stop or sale is placed over it."""
+        asks for the sale to go at the market (`_market_gtt_sale`) until the book shows it does.
+        The GTT row stays live: its sale holds the shares, so no other stop or sale is placed
+        over it."""
+        now = sync.now
         signal = session.get(HatSignal, gtt.signal_id)
         if signal is None:
             return
@@ -754,8 +784,19 @@ class FillSync:
                 occurred_at=now,
             )
             session.commit()
-            report.resting_gtts += 1
+            sync.report.resting_gtts += 1
             self._notifier.alert(ALERT_GTT_UNFILLED, trade_date_of(now), {**alert, "code": RESTING})
+        sync.resting.append((gtt, order, alert))
+
+    def _market_gtt_sale(
+        self,
+        session: Session,
+        gtt: HatOrder,
+        order: BrokerOrder,
+        now: datetime,
+        alert: dict[str, str],
+    ) -> None:
+        """Ask a triggered GTT's resting sale to go at the market; a refusal is alerted once."""
         if order.order_type is OrderType.MARKET:
             # Already at the market; under market price protection it can rest too (PR 48).
             self.mpp.remarket(session, gtt, order, now, alert)

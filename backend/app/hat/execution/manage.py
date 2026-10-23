@@ -28,15 +28,17 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   is adopted: `submit.adopt_broker_order`.) A sale of unknown outcome the book does not hold
   never landed: it ends `expired` and its rules fire again.
 
-A sale is retried once after a rejection with the next tag, and at most two rejected sales of one
-purpose are sent per signal (HAT-OPS-032); then (PR 48) one LIMIT sale at the day's lower circuit
-price is sent instead (the lowest price that can trade today, so no price check refuses it) and the
-owner is told (`sale.unfilled`, code `band_limit`); without a known band, or once that sale is
-refused too, `exit.not_placed` is raised and the broker stop keeps protecting the position. A
-rejection the broker sends after taking the sale counts the same (`FillSync`, HAT-EXEC-075). A sale
-whose answer was lost is looked up by its tag before the position is sold again (HAT-EXEC-065):
-found, it is adopted; absent after a good read, it ends `expired` and its rules fire again, so it
-never blocks the position's later sales. No sale, stop or fill sync waits for a reconciliation: a
+Every sale (an exit, a flatten, a market price protection re-send) is one `SaleOrder`, and one
+pure `sale_gate` decides whether and how it goes. A sale is retried once after a rejection with
+the next tag, and at most two rejected sales of one purpose are sent per signal (HAT-OPS-032);
+then (PR 48) one LIMIT sale at the day's lower circuit price is sent instead (the lowest price
+that can trade today, so no price check refuses it) and the owner is told (`sale.unfilled`, code
+`band_limit`); without a known band, or once that sale is refused too, `exit.not_placed` is
+raised and the broker stop keeps protecting the position. A rejection the broker sends after
+taking the sale counts the same (`FillSync`, HAT-EXEC-075). A sale whose answer was lost is
+looked up by its tag before the position is sold again (HAT-EXEC-065): found, it is adopted;
+absent after a good read, it ends `expired` and its rules fire again, so it never blocks the
+position's later sales. No sale, stop or fill sync waits for a reconciliation: a
 failed one blocks new entries only (D118).
 
 Market price protection (PR 48, behind `HAT_MPP_RESEND`) is `mpp.MarketProtection`: after each
@@ -48,10 +50,11 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import datetime, time, timedelta
 from decimal import Decimal
+from enum import StrEnum
 from time import monotonic
 
 from sqlalchemy import func, select
@@ -113,11 +116,16 @@ __all__ = [
     "FLATTEN",
     "CloseReport",
     "FlattenReport",
+    "ManagerConfig",
+    "SaleGate",
+    "SaleOrder",
+    "SaleStep",
     "StopsReport",
     "TradeManager",
     "ViewSource",
     "earlier_sale_verdict",
     "in_close_window",
+    "sale_gate",
 ]
 
 logger = logging.getLogger(__name__)
@@ -179,6 +187,88 @@ def in_close_window(now: datetime) -> bool:
     return EXITS_CLOSE_FROM <= local < EXITS_CLOSE_UNTIL
 
 
+@dataclass(frozen=True)
+class SaleOrder:
+    """One sale of a real position: `qty` shares under `purpose` (an exit, a flatten) for the
+    exit rules `rule_ids` (none for a flatten). `rule` is the rule its events name: the first
+    rule's name, else the purpose."""
+
+    position: HatPosition
+    purpose: str
+    qty: int
+    rule_ids: tuple[str, ...] = ()
+
+    @property
+    def rule(self) -> str:
+        return next((rid.partition(":")[2] for rid in self.rule_ids), "") or self.purpose
+
+
+class SaleStep(StrEnum):
+    HOLD = "hold"  # nothing now, nothing told: another sale works, a settle waits, budget spent
+    REFUSE = "refuse"  # nothing now, told (`exit.not_placed` with the gate's code)
+    SEND = "send"  # make room, then the market sale `attempts` times, then the band limit
+
+
+@dataclass(frozen=True)
+class SaleGate:
+    step: SaleStep
+    code: str | None = None  # REFUSE: the `exit.not_placed` reason
+    attempts: int = 0  # SEND: market sales left in the session's rejection budget
+    floor: Decimal | None = None  # SEND: the lower band a sale refused twice goes at once
+
+
+def sale_gate(
+    settled: str,
+    qty: int,
+    *,
+    busy: bool,
+    open_now: bool,
+    rejected: int,
+    floor: Decimal | None,
+) -> SaleGate:
+    """Whether a sale of `qty` shares goes out, and how: the one place the sale rules are decided
+    (HAT-OPS-032, HAT-EXEC-065, -066, -074, PR 48). `settled`: what settling the position's lost
+    sales found (`SETTLED`, `WAIT`, `UNREADABLE`); `busy`: another sale of it works at the
+    broker (a triggered GTT's sale is one); `open_now`: the session takes orders at the moment of
+    sending; `rejected`: the purpose's sales the broker refused this session; `floor`: the day's
+    lower circuit price, None when unknown.
+
+    The market sale goes `MAX_SALE_REJECTIONS - rejected` times; refused that often, once more as
+    a limit at `floor`. A budget spent before this sale was told then: HOLD."""
+    if settled == UNREADABLE:
+        return SaleGate(SaleStep.REFUSE, code="sale_unresolved")
+    if qty <= 0 or settled == WAIT or busy:
+        return SaleGate(SaleStep.HOLD)  # one sale at a time; the next evaluation sees what it left
+    if not open_now:
+        return SaleGate(SaleStep.REFUSE, code="market_closed")
+    if rejected > MAX_SALE_REJECTIONS or (rejected == MAX_SALE_REJECTIONS and floor is None):
+        return SaleGate(SaleStep.HOLD)
+    return SaleGate(SaleStep.SEND, attempts=MAX_SALE_REJECTIONS - rejected, floor=floor)
+
+
+@dataclass(frozen=True)
+class ManagerConfig:
+    """What a `TradeManager` is built with beside its broker, guard, stop desk and fill sync: the
+    account's one `GttUpkeep` (its `FillSync` holds the same), the notifier, the day's lower band
+    (for a sale refused twice, PR 48), and the time a sale is sent at: `sending` when given, else
+    the caller's `now` plus the time the run has taken so far (`ticker`, monotonic seconds)."""
+
+    upkeep: GttUpkeep
+    notifier: Notifier = field(default_factory=LogNotifier)
+    band: SaleBand | None = None
+    sending: Clock | None = None
+    ticker: Callable[[], float] = monotonic
+
+
+@dataclass(frozen=True)
+class _Sale:
+    """A sale under the position lock: the order, its signal and its market request."""
+
+    order: SaleOrder
+    signal: HatSignal
+    request: OrderRequest
+
+
 @dataclass
 class CloseReport:
     evaluated: int = 0
@@ -215,29 +305,24 @@ class TradeManager:
         guard: ExecutionGuard,
         desk: StopDesk,
         fills: FillSync,
+        config: ManagerConfig,
         *,
         calendar: SessionCalendar | None,
-        notifier: Notifier | None = None,
-        sending: Clock | None = None,
-        ticker: Callable[[], float] = monotonic,
-        band: SaleBand | None = None,
     ) -> None:
         self._broker = broker
-        self._band = band  # the day's lower band, for a sale refused twice (PR 48)
+        self._band = config.band
         self._guard = guard
         self._desk = desk
-        self._upkeep = GttUpkeep(desk)  # the swap, nightly verify and GTT-book check
+        self._upkeep = config.upkeep  # the swap, nightly verify and GTT-book check
         # The position locks and the settle wait the stop desk uses; its clock stamps the sends.
         self._positions = desk.positions
         self._clock = desk.positions.clock
         self._fills = fills
         self._mpp = fills.mpp  # market price protection (PR 48), shared with the fill sync
         self._calendar = calendar
-        self._notifier = notifier or LogNotifier()
-        # The time a sale is sent at: `sending` when given, else the caller's `now` plus the
-        # time the run has taken so far (`ticker`, monotonic seconds).
-        self._sending = sending
-        self._ticker = ticker
+        self._notifier = config.notifier
+        self._sending = config.sending
+        self._ticker = config.ticker
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows), for the manager and its
@@ -337,7 +422,7 @@ class TradeManager:
                     if not held:
                         held.append(self._held_shares())
                     qty = self._capped(session, position, qty, held[0])
-                sent = self._sell_qty(session, position, FLATTEN, qty, FLATTEN, (), now, sending)
+                sent = self._sell_qty(session, SaleOrder(position, FLATTEN, qty), now, sending)
             except Exception:  # one position's failure must not stop the others being sold
                 session.rollback()
                 logger.exception("flatten of position %s failed", position.id)
@@ -388,14 +473,14 @@ class TradeManager:
         if position is None:
             return None
         session.refresh(position)
-        rule = action.rule_ids[0].split(":", 1)[1]
-        if rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position.id):
+        purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
+        qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
+        order = SaleOrder(position, purpose, qty, tuple(action.rule_ids))
+        if order.rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position.id):
             # The stop resting at the broker is the hard stop; HAT sells at market only when no
             # stop the broker confirmed rests (HAT-EXEC-065).
             return None
-        purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
-        qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
-        return self._sell_qty(session, position, purpose, qty, rule, action.rule_ids, now, sending)
+        return self._sell_qty(session, order, now, sending)
 
     def _broker_stop_rests(self, session: Session, position_id: uuid.UUID) -> bool:
         """A stop the broker confirmed rests under the position, once any stop whose answer was
@@ -405,42 +490,24 @@ class TradeManager:
         return any(row.broker_order_id for row in self._desk.stops_of(session, position_id, *LIVE))
 
     def _sell_qty(
-        self,
-        session: Session,
-        position: HatPosition,
-        purpose: str,
-        qty: int,
-        rule: str,
-        rule_ids: Sequence[str],
-        now: datetime,
-        sending: Clock,
+        self, session: Session, order: SaleOrder, now: datetime, sending: Clock
     ) -> SendOutcome | None:
-        """Sell `qty` of a real position at market under `purpose` (an exit or a flatten), when
-        nothing else is selling it, the session allows it and the stop made room. Every refusal
-        is alerted; `rule_ids` are marked fired once the sale is out. The position's write lock
+        """Carry out `order` (an exit or a flatten) when `sale_gate` lets it go. Every refusal is
+        alerted; its `rule_ids` are marked fired once the sale is out. The position's write lock
         (`PositionDesk.lock`) is held from the "nothing else is selling" check until the sale is
         sent, so neither another sale nor a stop path (the fill sync's `protect`) interleaves;
-        the position is re-read under the lock and `qty` capped at what is still open."""
+        the position is re-read under the lock and the quantity capped at what is still open."""
+        position = order.position
         with self._positions.lock(position.id, "sale"):
             session.refresh(position)
-            qty = min(qty, position.qty_open)
-            if qty <= 0:
+            if min(order.qty, position.qty_open) <= 0 or position.closed_at is not None:
                 return None
-            return self._sell_locked(session, position, purpose, qty, rule, rule_ids, now, sending)
+            return self._sell_locked(session, order, now, sending)
 
     def _sell_locked(
-        self,
-        session: Session,
-        position: HatPosition,
-        purpose: str,
-        qty: int,
-        rule: str,
-        rule_ids: Sequence[str],
-        now: datetime,
-        sending: Clock,
+        self, session: Session, order: SaleOrder, now: datetime, sending: Clock
     ) -> SendOutcome | None:
-        if position.closed_at is not None:
-            return None
+        position = order.position
         signal = session.get(HatSignal, position.signal_id)
         bot = session.get(HatBot, position.bot_id)
         symbol = session.scalar(
@@ -449,98 +516,63 @@ class TradeManager:
         if signal is None or bot is None or symbol is None:
             return None
         settled = self._settle_sales(session, position, signal.bot_id, now)
-        if settled == UNREADABLE:
-            self._not_placed(signal, position, "sale_unresolved", now)
+        # a sale settled from holdings may have lowered the open quantity
+        order = replace(order, qty=min(order.qty, position.qty_open))
+        gate = self._gate(session, order, signal, settled, now, sending)
+        if gate.step is SaleStep.REFUSE:
+            self._not_placed(signal, position, str(gate.code), now)
             return None
-        qty = min(qty, position.qty_open)  # a sale settled from holdings may have lowered it
-        if qty <= 0:
+        if gate.step is SaleStep.HOLD:
             return None
-        if (
-            settled == WAIT
-            or self._desk.exit_working(session, position.id)
-            or self._desk.triggered_gtts(session, position.id, now)
-        ):
-            # one sale at a time (a triggered GTT's working sale is one, HAT-EXEC-066); the next
-            # evaluation sees what it left
-            return None
-        # Checked at the moment of sending: a close job that started at 15:24 still sends
-        # nothing from 15:30 on (HAT-EXEC-074).
-        if not self._orders_allowed(sending.now()):
-            self._not_placed(signal, position, "market_closed", now)
-            return None
-        rejected = rejected_sales(session, signal.id, purpose, now)
-        floor = None
-        if rejected >= MAX_SALE_REJECTIONS:
-            # Refused twice today and alerted then: one limit at the lower band (PR 48), or
-            # nothing more this session.
-            floor = self._floor(session, position, now) if rejected == MAX_SALE_REJECTIONS else None
-            if floor is None:
-                return None
-        if not self._desk.make_room(session, position.id, position.qty_open - qty, now):
+        if not self._desk.make_room(session, position.id, position.qty_open - order.qty, now):
             self._not_placed(signal, position, "stop_not_moved", now)
             return None
         request = OrderRequest(
             bot_id=signal.bot_id,
             signal_id=signal.id,
             broker_account_id=bot.broker_account_id,
-            purpose=purpose,
+            purpose=order.purpose,
             side=Side.SELL,
-            qty=qty,
+            qty=order.qty,
             order_type=OrderType.MARKET,
             symbol=symbol,
             position_id=position.id,
-            rule_ids=tuple(rule_ids),
+            rule_ids=order.rule_ids,
         )
-        if floor is not None:
-            return self._band_sale(session, signal, position, request, floor, rule, now)
-        return self._send_sale(session, signal, position, request, rule_ids, rule, now)
+        return self._send_sale(session, _Sale(order, signal, request), gate, now)
+
+    def _gate(
+        self,
+        session: Session,
+        order: SaleOrder,
+        signal: HatSignal,
+        settled: str,
+        now: datetime,
+        sending: Clock,
+    ) -> SaleGate:
+        """`sale_gate` over what is known of the sale now; the books it needs are read only
+        when the earlier rules let it through."""
+        position = order.position
+        through = settled == SETTLED and order.qty > 0
+        busy = through and (
+            self._desk.exit_working(session, position.id)
+            or bool(self._desk.triggered_gtts(session, position.id, now))
+        )
+        through = through and not busy
+        # Checked at the moment of sending: a close job that started at 15:24 still sends
+        # nothing from 15:30 on (HAT-EXEC-074).
+        open_now = through and self._orders_allowed(sending.now())
+        rejected = rejected_sales(session, signal.id, order.purpose, now) if open_now else 0
+        floor = self._floor(session, position, now) if open_now else None
+        return sale_gate(
+            settled, order.qty, busy=busy, open_now=open_now, rejected=rejected, floor=floor
+        )
 
     def _floor(self, session: Session, position: HatPosition, now: datetime) -> Decimal | None:
         """The day's lower circuit price of the position's instrument; None when unknown."""
         if self._band is None:
             return None
         return self._band.lower(session, position.instrument_id, now)
-
-    def _band_sale(
-        self,
-        session: Session,
-        signal: HatSignal,
-        position: HatPosition,
-        request: OrderRequest,
-        floor: Decimal,
-        rule: str,
-        now: datetime,
-    ) -> SendOutcome | None:
-        """A sale refused twice this session goes once more as a LIMIT at the day's lower circuit
-        price (PR 48): the lowest price that can trade today, so no protection band or price check
-        refuses it, and it fills against any buyer. The owner is told; refused too, the sale is
-        not tried again this session."""
-        self._notifier.alert(
-            ALERT_SALE_UNFILLED,
-            trade_date_of(now),
-            {
-                "bot_id": str(signal.bot_id),
-                "signal_id": str(signal.id),
-                "position_id": str(position.id),
-                "code": BAND_LIMIT,
-            },
-        )
-        limit = OrderRequest(
-            bot_id=request.bot_id,
-            signal_id=request.signal_id,
-            broker_account_id=request.broker_account_id,
-            purpose=request.purpose,
-            side=request.side,
-            qty=request.qty,
-            order_type=OrderType.LIMIT,
-            symbol=request.symbol,
-            position_id=request.position_id,
-            price=floor,
-            rule_ids=request.rule_ids,
-        )
-        return self._send_sale(
-            session, signal, position, limit, request.rule_ids, rule, now, attempts=1
-        )
 
     def _settle_sales(
         self, session: Session, position: HatPosition, bot_id: uuid.UUID, now: datetime
@@ -687,63 +719,87 @@ class TradeManager:
         return True
 
     def _send_sale(
+        self, session: Session, sale: _Sale, gate: SaleGate, now: datetime
+    ) -> SendOutcome | None:
+        """Carry out a SEND gate: the market sale for each attempt left in the rejection budget
+        (each refusal alerted), then, refused that often with the lower band known, once as a
+        LIMIT at it (PR 48): the lowest price that can trade today, so no protection band or
+        price check refuses it, and it fills against any buyer; the owner is told. Refused
+        too, the sale is not tried again this session (`exit.not_placed`) and the stop that made
+        room for it is put back."""
+        sent: SendOutcome | None = None
+        for _ in range(gate.attempts):
+            sent, done = self._attempt(session, sale, sale.request, sent, now)
+            if done:
+                return sent
+        if gate.floor is not None:
+            self._notifier.alert(
+                ALERT_SALE_UNFILLED,
+                trade_date_of(now),
+                {**self._detail(sale), "code": BAND_LIMIT},
+            )
+            limit = replace(sale.request, order_type=OrderType.LIMIT, price=gate.floor)
+            sent, done = self._attempt(session, sale, limit, sent, now)
+            if done:
+                return sent
+        self._not_placed(sale.signal, sale.order.position, "order_rejected", now)
+        self._desk.protect(session, sale.order.position.id, now)
+        return sent
+
+    def _attempt(
         self,
         session: Session,
-        signal: HatSignal,
-        position: HatPosition,
+        sale: _Sale,
         request: OrderRequest,
-        rule_ids: Sequence[str],
-        rule: str,
+        sent: SendOutcome | None,
         now: datetime,
-        attempts: int | None = None,
-    ) -> SendOutcome | None:
-        sent: SendOutcome | None = None
-        left = (
-            MAX_SALE_REJECTIONS - rejected_sales(session, signal.id, request.purpose, now)
-            if attempts is None
-            else attempts
-        )
-        for _ in range(left):
-            try:
-                tag = reserve_order(session, request)
-                sent = send_order(
-                    session,
-                    self._broker,
-                    self._guard,
-                    tag,
-                    symbol=request.symbol,
-                    bot_id=signal.bot_id,
-                    clock=self._clock,
-                    rule=rule,
-                )
-            except (OrderRefusedError, BrokerUnavailableError) as exc:
-                session.rollback()
-                code = getattr(exc, "code", "broker_unavailable")
-                self._release(session, signal.id, request.purpose)
-                self._not_placed(signal, position, code, now)
-                self._desk.protect(session, position.id, now)  # the stop made room for it
-                return sent
-            except UnresolvedOrderError:
-                return sent
-            if sent.status != "rejected":
-                # Placed, or unknown (looked up by tag before the position is sold again): the
-                # rule has fired; it fires again if the sale ends without selling.
-                if rule_ids:
-                    live_trades.mark_fired(session, position.id, rule_ids)
-                session.commit()
-                return sent
-            self._notifier.alert(
-                ALERT_SALE_REJECTED,
-                trade_date_of(now),
-                {"signal_id": str(signal.id), "tag": tag, "code": sent.code},
+    ) -> tuple[SendOutcome | None, bool]:
+        """One send of `request`: its outcome (`sent`, the last one, when nothing was sent), and
+        whether the sale is done (out, unknown, or refused before the broker took it); a sale
+        the broker rejected is alerted and not done."""
+        signal, position = sale.signal, sale.order.position
+        try:
+            tag = reserve_order(session, request)
+            sent = send_order(
+                session,
+                self._broker,
+                self._guard,
+                tag,
+                symbol=request.symbol,
+                bot_id=signal.bot_id,
+                clock=self._clock,
+                rule=sale.order.rule,
             )
-        if attempts is None:
-            floor = self._floor(session, position, now)
-            if floor is not None:
-                return self._band_sale(session, signal, position, request, floor, rule, now)
-        self._not_placed(signal, position, "order_rejected", now)
-        self._desk.protect(session, position.id, now)
-        return sent
+        except (OrderRefusedError, BrokerUnavailableError) as exc:
+            session.rollback()
+            code = getattr(exc, "code", "broker_unavailable")
+            self._release(session, signal.id, request.purpose)
+            self._not_placed(signal, position, code, now)
+            self._desk.protect(session, position.id, now)  # the stop made room for it
+            return sent, True
+        except UnresolvedOrderError:
+            return sent, True
+        if sent.status != "rejected":
+            # Placed, or unknown (looked up by tag before the position is sold again): the
+            # rule has fired; it fires again if the sale ends without selling.
+            if sale.order.rule_ids:
+                live_trades.mark_fired(session, position.id, sale.order.rule_ids)
+            session.commit()
+            return sent, True
+        self._notifier.alert(
+            ALERT_SALE_REJECTED,
+            trade_date_of(now),
+            {"signal_id": str(signal.id), "tag": tag, "code": sent.code},
+        )
+        return sent, False
+
+    @staticmethod
+    def _detail(sale: _Sale) -> dict[str, str]:
+        return {
+            "bot_id": str(sale.signal.bot_id),
+            "signal_id": str(sale.signal.id),
+            "position_id": str(sale.order.position.id),
+        }
 
     @staticmethod
     def _release(session: Session, signal_id: uuid.UUID, purpose: str) -> None:
@@ -857,10 +913,8 @@ class TradeManager:
         """A fresh market sale of `qty` shares under the purpose and rules of the sale `row`
         that HAT cancelled to send again (`mpp.MarketProtection`), through the exit path (the
         same session, lock and stop checks)."""
-        rule_ids = tuple(row.rule_ids or ())
-        rule = next((rid.partition(":")[2] for rid in rule_ids), "") or row.purpose
-        sending = self._sending_clock(now)
-        self._sell_qty(session, position, row.purpose, qty, rule, rule_ids, now, sending)
+        order = SaleOrder(position, row.purpose, qty, tuple(row.rule_ids or ()))
+        self._sell_qty(session, order, now, self._sending_clock(now))
 
     def _follow_rescales(self, session: Session, account_id: uuid.UUID, now: datetime) -> None:
         """`StopDesk.rescaled` for every open real position (HAT-EXEC-143); one position's
