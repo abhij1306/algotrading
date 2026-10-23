@@ -52,7 +52,6 @@ from .subscriptions import SubscriptionRegistry
 from .symbols import SymbolMaster, symbol_master
 
 __all__ = [
-    "CONNECT_STATUS_MESSAGES",
     "MONITOR_INTERVAL_S",
     "PREOPEN_FROM",
     "AuthHooks",
@@ -60,7 +59,6 @@ __all__ = [
     "CalendarSource",
     "TickListener",
     "calendar_source",
-    "connect_status_message",
 ]
 
 logger = logging.getLogger(__name__)
@@ -72,22 +70,6 @@ LOOP_ERROR_PAUSE_S = 1.0
 
 # A tick listener: called with each normalized tick on the event-loop thread.
 TickListener = Callable[[TickPayload], None]
-
-# User-facing message for each status that `connect()` returns.
-CONNECT_STATUS_MESSAGES: dict[str, str] = {
-    "started": "Live feed connection started",
-    "already_connected": "Live feed already connected",
-    "disconnected": "Live feed was explicitly disconnected",
-    "market_closed": "Live feed deferred because the market is closed",
-    "token_invalid": "Live feed deferred because the Fyers token is invalid or expired",
-    "error": "Live feed connection failed",
-}
-
-
-def connect_status_message(status: str) -> str:
-    """The message for a `connect()` status, with a generic one for an unknown status."""
-    return CONNECT_STATUS_MESSAGES.get(status, "Live feed connection completed")
-
 
 CalendarSource = Callable[[], SessionCalendar | None]
 

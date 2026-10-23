@@ -139,11 +139,6 @@ def index_snapshot_check(index_names: Iterable[str]) -> Check:
     return Check(CHECK_INDEX, has_required_indices(names), {"indices": len(names)})
 
 
-def scan_universe(universe: Collection[object], excluded: Collection[object]) -> list[object]:
-    """The instruments a scan may use on the day: the universe less the exclusion list."""
-    return [i for i in universe if i not in excluded]
-
-
 def evaluate(
     *,
     universe: int,

@@ -26,7 +26,7 @@ from app.hat.data.corporate_actions import (
     parse_action_text,
 )
 from app.hat.data.ingest import flag_symbol
-from app.hat.data.ratios import split_pair_ints
+from app.hat.data.ratios import split_pair_numbers
 from app.hat.data.store import (
     FACTOR_MAX,
     FACTOR_MIN,
@@ -152,7 +152,7 @@ def test_split_pair_decimal_face_value(a: int, b_tenths: int) -> None:
     """A face-value text with a decimal new value ("from Rs a to Rs b.t") reads as the number
     it says, not as separate integers (HAT and phase-1 parse the same text)."""
     new = f"{b_tenths // 10}.{b_tenths % 10}"
-    assert split_pair_ints(f"face value split from rs {a} to rs {new}") == (
+    assert split_pair_numbers(f"face value split from rs {a} to rs {new}") == (
         Fraction(a),
         Fraction(new),
     )

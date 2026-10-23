@@ -61,16 +61,6 @@ def find_bonus_ratio(text: str) -> tuple[int, int] | None:
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
 
-def split_pair_ints(text: str) -> tuple[Fraction, Fraction] | None:
-    """The first two numbers of a lower-cased face-value split text ("from 10 to 2" gives
-    (10, 2), "from rs 10 to rs 2.5" gives (10, 5/2)); None when fewer than two or the second is
-    zero."""
-    nums = [Fraction(n) for n in _NUMBER.findall(text)]
-    if len(nums) >= 2 and nums[1] != 0:
-        return nums[0], nums[1]
-    return None
-
-
 def split_pair_numbers(text: str) -> tuple[Fraction, Fraction] | None:
     """The old and new face value of a split text, decimals allowed ("from Rs 10 to Rs 2.5");
     None unless there are exactly two positive numbers."""

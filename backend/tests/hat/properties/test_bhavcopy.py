@@ -12,11 +12,13 @@ from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
 from app.hat.data.bhavcopy import (
+    FIRST_ISIN_DAY,
     BhavcopyError,
     BhavRow,
     BuildState,
     Downloader,
     FetchResult,
+    _old_date,
     archive_name,
     archive_url,
     parse_bhavcopy,
@@ -26,7 +28,7 @@ from app.hat.data.bhavcopy import (
 from app.hat.data.store import DataStore
 from app.hat.ids import uuid7
 
-OLD_DAYS = st.dates(date(2010, 1, 1), date(2024, 7, 5)).filter(lambda d: d.weekday() < 5)
+OLD_DAYS = st.dates(FIRST_ISIN_DAY, date(2024, 7, 5)).filter(lambda d: d.weekday() < 5)
 NEW_DAYS = st.dates(date(2024, 7, 8), date(2026, 10, 21)).filter(lambda d: d.weekday() < 5)
 ANY_WEEKDAY = st.one_of(OLD_DAYS, NEW_DAYS)
 
@@ -35,8 +37,8 @@ ANY_WEEKDAY = st.one_of(OLD_DAYS, NEW_DAYS)
 @example(day=date(2024, 7, 8))
 @given(day=ANY_WEEKDAY)
 def test_format_by_date(day: date) -> None:
-    """Every weekday from 2010-01-01 to today gets the old URL up to 2024-07-05 and the UDiFF URL
-    from 2024-07-08, with the date fields written as in table."""
+    """Every weekday from FIRST_ISIN_DAY to today gets the old URL up to 2024-07-05 and the UDiFF
+    URL from 2024-07-08, with the date fields written as in table."""
     url = archive_url(day)
     if day <= date(2024, 7, 5):
         month = day.strftime("%b").upper()
@@ -59,6 +61,17 @@ def test_format_by_date_weekend_has_no_file(day: date) -> None:
         assert exc.code == "bhavcopy_not_weekday"
     else:
         raise AssertionError("a weekend got a URL")
+
+
+@given(day=st.dates(date(2010, 1, 1), FIRST_ISIN_DAY - timedelta(days=1)))
+def test_no_file_before_first_isin_day(day: date) -> None:
+    """A weekday before FIRST_ISIN_DAY has no usable file (no ISIN column), so no name."""
+    try:
+        archive_name(day)
+    except BhavcopyError as exc:
+        assert exc.code == ("bhavcopy_not_weekday" if day.weekday() >= 5 else "bhavcopy_no_isin")
+    else:
+        raise AssertionError("a day before FIRST_ISIN_DAY got a file name")
 
 
 STATUSES = st.sampled_from(["ok", "ok", "not_found", "error"])
@@ -151,3 +164,8 @@ def test_traded_value_kept(day: date, rows: st.DataObject) -> None:
     assert [b.traded_value for b in bars] == [r.traded_value for r in data]
     assert all(b.source == "bhavcopy" for b in bars)
     assert bar(uuid7(), uuid7(), source="mcp", traded=None).traded_value is None
+
+
+def test_old_date_two_digit_year() -> None:
+    """The 13-JUL-2020 file writes "13-Jul-20"; it is the same day as "13-JUL-2020"."""
+    assert _old_date("13-Jul-20") == _old_date("13-JUL-2020") == date(2020, 7, 13)

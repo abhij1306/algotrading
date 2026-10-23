@@ -557,12 +557,3 @@ def load_industries(
             written += 1
     session.flush()
     return written, unmatched
-
-
-def instruments_without_industry(session: Session, market_id: uuid.UUID, on: date) -> list[str]:
-    """Active instruments with no industry row on `on`: reported, never given a shared one."""
-    return sorted(
-        instrument.symbol
-        for instrument in _active_by_symbol_series(session, market_id).values()
-        if current_industry(session, instrument.id, on) is None
-    )

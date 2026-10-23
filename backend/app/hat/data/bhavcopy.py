@@ -1,11 +1,11 @@
 """NSE bhavcopy: file names, the two parsers, the polite downloader and the day reconciliation
 (HAT-DATA-090..093, 097; HAT-DATA-011).
 
-Two file formats cover 2010 to today: the old CM bhavcopy up to 5 Jul 2024 and UDiFF from 8 Jul
-2024. Both parse into one `BhavRow` keyed by ISIN and series (symbol changes need no lookup: the
-ISIN does not change), which `to_bar_rows` turns into the `bars_daily_raw` rows the nightly ingest
-writes too. The downloader takes the network as a `Fetcher` function; only `http_fetcher` here
-touches a socket and no test or check calls it.
+Two file formats cover `FIRST_ISIN_DAY` (22 Jun 2011) to today: the old CM bhavcopy up to 5 Jul
+2024 and UDiFF from 8 Jul 2024. Both parse into one `BhavRow` keyed by ISIN and series (symbol
+changes need no lookup: the ISIN does not change), which `to_bar_rows` turns into the
+`bars_daily_raw` rows the nightly ingest writes too. The downloader takes the network as a
+`Fetcher` function; only `http_fetcher` here touches a socket and no test or check calls it.
 """
 
 from __future__ import annotations
@@ -26,13 +26,16 @@ from typing import Literal, Protocol
 from ..errors import HatError
 from ..money import exact
 from .reference import EQUITY_SERIES, ISIN_RE
+from .rowcheck import Candidate, row_ok
 from .store import MAX_VOLUME, BarRow, DataStore, atomic_replace
 
 logger = logging.getLogger(__name__)
 
 OLD_LAST_DAY = date(2024, 7, 5)
 UDIFF_FIRST_DAY = date(2024, 7, 8)
-HISTORY_START = date(2010, 1, 1)
+# [A] Old-format files before this day have no ISIN column (the 21-JUN-2011 header ends at
+# TIMESTAMP), so no bar can be keyed: the history starts here.
+FIRST_ISIN_DAY = date(2011, 6, 22)
 DEFAULT_INTERVAL_SECONDS = 1.0  # [A] about one request per second (HAT-DATA-092)
 SOURCE_BHAVCOPY = "bhavcopy"
 _MONTHS = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
@@ -101,7 +104,7 @@ class ParsedDay:
     day: date
     rows: list[BhavRow] = field(default_factory=list)
     skipped_series: int = 0
-    invalid: int = 0  # unreadable numbers, no ISIN or a malformed one
+    invalid: int = 0  # unreadable numbers, a bad ISIN, or a failed row check (HAT-DATA-042)
     wrong_date: int = 0  # rows dated another day than the file
     duplicates: int = 0  # a second row for one (ISIN, series): the first is kept
 
@@ -110,9 +113,12 @@ class ParsedDay:
 
 
 def format_for(day: date) -> str:
-    """The file format of a trading weekday; weekends and the gap 6-7 Jul 2024 have none."""
+    """The file format of a trading weekday; weekends, the gap 6-7 Jul 2024 and days before
+    `FIRST_ISIN_DAY` have none."""
     if day.weekday() >= 5:
         raise BhavcopyError("bhavcopy_not_weekday")
+    if day < FIRST_ISIN_DAY:
+        raise BhavcopyError("bhavcopy_no_isin")
     if day <= OLD_LAST_DAY:
         return FORMAT_OLD
     if day >= UDIFF_FIRST_DAY:
@@ -161,8 +167,11 @@ def _old_date(raw: str) -> date | None:
     parts = raw.strip().upper().split("-")
     if len(parts) != 3 or parts[1] not in _MONTHS:
         return None
+    year = parts[2]
+    if len(year) == 2:  # [A] at least the 13-JUL-2020 file writes "13-Jul-20"
+        year = "20" + year
     try:
-        return date(int(parts[2]), _MONTHS.index(parts[1]) + 1, int(parts[0]))
+        return date(int(year), _MONTHS.index(parts[1]) + 1, int(parts[0]))
     except ValueError:
         return None
 
@@ -259,6 +268,7 @@ def _read_row(layout: _Layout, day: date, row: dict[str, str]) -> tuple[BhavRow 
         or volume is None
         or volume >= MAX_VOLUME
         or not row[layout.symbol]
+        or not row_ok(Candidate(day, open_, high, low, close, prev, volume), day)
     ):
         return None, "invalid"
     symbol = row[layout.symbol].upper()

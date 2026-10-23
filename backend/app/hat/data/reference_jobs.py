@@ -13,7 +13,6 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,10 +36,6 @@ from .symbols import SymbolMaster
 
 logger = logging.getLogger(__name__)
 
-JOB_REFERENCE_WEEKLY = "reference.weekly"
-JOB_BANDS_NIGHTLY = "bands.nightly"
-JOB_CALENDAR_REFRESH = "calendar.refresh"
-
 TextSource = Callable[[], str]
 
 
@@ -56,11 +51,6 @@ class CircuitQuote:
 
 
 CircuitSource = Callable[[], Sequence[CircuitQuote]]
-
-
-def file_source(path: Path) -> TextSource:
-    """A source reading a local file (a recorded fixture or a download saved by an operator)."""
-    return lambda: path.read_text(encoding="utf-8")
 
 
 def _market_id(session: Session) -> object:

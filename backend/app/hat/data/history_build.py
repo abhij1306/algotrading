@@ -1,10 +1,12 @@
-"""The 2010-to-today historical build (HAT-DATA-090..097, HAT-DEC-I2).
+"""The historical build from 22 Jun 2011 to today (HAT-DATA-090..097, HAT-DEC-I2).
 
-    python -m app.hat.data.history_build --from 2010-01-01 [--to YYYY-MM-DD] [--resume]
+    python -m app.hat.data.history_build [--from 2011-06-22] [--to YYYY-MM-DD] [--resume]
 
-Runs by hand, once, against the real NSE archive and the two MCP servers. It downloads about
-4,150 bhavcopy zips at about one per second (roughly 70 minutes), keeps them untouched under
-`HAT_DATA_ROOT/raw/`, writes `bars_daily_raw` partitions, loads corporate actions and index
+The history starts at `bhavcopy.FIRST_ISIN_DAY`: older files have no ISIN, so an earlier `--from`
+is moved up to it. Runs by hand, once, against the real NSE archive and the two MCP servers. It
+downloads about 4,000 bhavcopy zips at about one per second (roughly 70 minutes), keeps them
+untouched under `HAT_DATA_ROOT/raw/`, writes `bars_daily_raw` partitions (a row failing the
+HAT-DATA-042 row check is left out and counted), loads corporate actions and index
 history, then validates 50 random symbol-days against `get_stock_history`. `--resume` skips every
 day already downloaded or known to have no file, so an interrupted run continues where it
 stopped; every step is idempotent (the same input rewrites the same files). Nothing in the tests
@@ -21,7 +23,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import io
 import logging
 import sys
@@ -39,9 +40,9 @@ from sqlalchemy import select
 from ..errors import HatError
 from ..ids import uuid7
 from ..money import exact
-from ..ops.jobs import JobError, JobResult
 from ..settings import operator_settings, process_env
 from .bhavcopy import (
+    FIRST_ISIN_DAY,
     BhavRow,
     BuildState,
     DayReconciliation,
@@ -55,7 +56,7 @@ from .bhavcopy import (
     to_bar_rows,
     weekdays,
 )
-from .corporate_actions import ActionRecord, LoadReport, Normalised, load_actions
+from .corporate_actions import ActionRecord, LoadReport, load_actions
 from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .run_report import save_report
 from .sessions import IST
@@ -73,9 +74,6 @@ logger = logging.getLogger(__name__)
 NIFTY_50 = "NIFTY 50"
 NIFTY_500 = "NIFTY 500"
 INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
-# [A] Each index's first day in the archive. Smallcap 250's start date is to be checked on the
-# first run (HAT-DATA-095); until then every index is expected from the start of the build.
-DEFAULT_INDEX_START = date(2010, 1, 1)
 SAMPLE_SIZE = 50
 MCP_HISTORY_MONTHS = 12
 # [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
@@ -100,24 +98,6 @@ class InstrumentCatalog(Protocol):
     def lookup(self, isin: str, series: str) -> object | None: ...
 
     def register(self, rows: Sequence[BhavRow]) -> None: ...
-
-
-class DictCatalog:
-    """An in-memory catalog (fixtures, dry runs). With `auto` it mints an id for unknown keys."""
-
-    def __init__(
-        self, ids: dict[tuple[str, str], object] | None = None, *, auto: bool = False
-    ) -> None:
-        self.ids: dict[tuple[str, str], object] = dict(ids or {})
-        self._auto = auto
-
-    def lookup(self, isin: str, series: str) -> object | None:
-        return self.ids.get((isin, series))
-
-    def register(self, rows: Sequence[BhavRow]) -> None:
-        if self._auto:
-            for row in rows:
-                self.ids.setdefault(row.key, uuid7())
 
 
 class DbCatalog:
@@ -437,6 +417,16 @@ class ValidationReport:
         return bool(self.mismatches)
 
 
+_SAMPLE_SQL = """
+SELECT symbol, date, close FROM (
+    SELECT instrument_id, symbol, date, close, ingest_run_id,
+        sha256(concat(?, ':', instrument_id, ':', CAST(date AS VARCHAR))) AS h
+    FROM bars_daily_raw ORDER BY h, ingest_run_id DESC LIMIT ?)
+QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
+ORDER BY h LIMIT ?
+"""
+
+
 def validate_build(
     store: DataStore,
     close_source: CloseSource,
@@ -444,28 +434,26 @@ def validate_build(
     sample_size: int = SAMPLE_SIZE,
     seed: int = 0,
 ) -> ValidationReport:
-    """Row counts per day, and `sample_size` random symbol-days compared with the MCP."""
+    """Row counts per day, and `sample_size` random symbol-days compared with the MCP.
+
+    The sample is the instrument-days with the smallest sha256 of `seed:instrument_id:day`, drawn
+    in DuckDB so only the sample reaches Python. Every run's row of one instrument-day has the
+    same hash, so the first `sample_size x runs` rows by (hash, newest run) hold at least
+    `sample_size` instrument-days, each with its latest row: no window over the whole table."""
     report = ValidationReport()
     con = store.connect()
     try:
         report.row_counts = dict(
             con.execute(
-                "SELECT date, count(*) FROM bars_daily GROUP BY date ORDER BY date"
+                "SELECT date, count(DISTINCT CAST(instrument_id AS UUID)) FROM bars_daily_raw "
+                "GROUP BY date ORDER BY date"
             ).fetchall()
         )
-        pool = con.execute(
-            "SELECT r.symbol, r.date, r.close FROM bars_daily_raw r "
-            "QUALIFY row_number() OVER (PARTITION BY instrument_id, date "
-            "ORDER BY ingest_run_id DESC) = 1 ORDER BY r.date, r.symbol, r.instrument_id"
-        ).fetchall()
+        runs = con.execute("SELECT count(DISTINCT ingest_run_id) FROM bars_daily_raw").fetchone()
+        pool = sample_size * max(runs[0] if runs else 0, 1)
+        chosen = con.execute(_SAMPLE_SQL, [str(seed), pool, sample_size]).fetchall()
     finally:
         con.close()
-
-    # a reproducible sample: the rows with the smallest hash of (seed, symbol, day)
-    def rank(row: tuple[str, date, Decimal]) -> str:
-        return hashlib.sha256(f"{seed}:{row[0]}:{row[1]}".encode()).hexdigest()
-
-    chosen = sorted(pool, key=rank)[:sample_size]
     for symbol, day, ours in sorted(chosen, key=lambda r: (r[1], r[0])):
         report.samples.append(SampleCheck(symbol, day, ours, close_source(symbol, day)))
     return report
@@ -490,9 +478,6 @@ class BuildReport:
     index: IndexLoadReport | None = None
     index_missing: dict[str, list[date]] = field(default_factory=dict)
     validation: ValidationReport | None = None
-
-
-ActionLoader = Callable[[], Normalised]
 
 
 @dataclass(frozen=True)
@@ -539,7 +524,8 @@ def run_history_build(
 ) -> BuildReport:
     """Download, parse, write, load, validate. Safe to repeat: raw zips are never fetched twice,
     a day's file is rewritten from the same zip with the same run id, and actions and index rows
-    are upserts."""
+    are upserts. A `start` before `FIRST_ISIN_DAY` is moved up to it (no older file is usable)."""
+    start = max(start, FIRST_ISIN_DAY)
     days = weekdays(start, end)
     state = BuildState.load(store.root / "build" / "state.json")
     if state.run_id is None:
@@ -565,7 +551,9 @@ def run_history_build(
         report.actions_unparsed = list(unparsed)
     if index_source is not None:
         report.index = load_index_history(store, index_source, start, end)
-        starts = index_starts or {n: max(start, DEFAULT_INDEX_START) for n in INDEX_NAMES}
+        # [A] every index is expected from the start of the build until Smallcap 250's own first
+        # day is checked (HAT-DATA-095)
+        starts = index_starts or dict.fromkeys(INDEX_NAMES, start)
         report.index_missing = index_coverage(store, trading_days, starts)
     if validation is not None:
         report.validation = validate_build(
@@ -614,31 +602,12 @@ def _record_left_out(report: BuildReport, parsed: ParsedDay) -> None:
     report.left_out["duplicates"] += parsed.duplicates
 
 
-def history_build_job(**kwargs: object) -> Callable[[], JobResult]:
-    """The `history.build` body for `run_job`: the arguments of `run_history_build`. It fails with
-    a stable code when the build left a problem, a mismatch or an unresolved security."""
-
-    def body() -> JobResult:
-        report = run_history_build(**kwargs)  # type: ignore[arg-type]
-        if report.validation is not None and report.validation.failed:
-            raise JobError("history_validation_failed")
-        if report.unresolved or report.problems or report.days.gaps or report.days.unaccounted:
-            raise JobError("history_incomplete")
-        if report.action_symbols_failed:
-            raise JobError("history_actions_incomplete")
-        if report.index is not None and report.index.failed:
-            raise JobError("history_index_incomplete")
-        return JobResult(calls=len(report.download.requested), rows=report.rows_written)
-
-    return body
-
-
 # --- command line (the only code here that reaches the network) -------------------------------
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m app.hat.data.history_build", description=__doc__)
-    p.add_argument("--from", dest="start", type=date.fromisoformat, default=date(2010, 1, 1))
+    p.add_argument("--from", dest="start", type=date.fromisoformat, default=FIRST_ISIN_DAY)
     p.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
     p.add_argument("--resume", action="store_true", help="skip days already downloaded or empty")
     p.add_argument("--interval", type=float, default=1.0, help="seconds between requests")
@@ -664,7 +633,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     from .mcp_client import client_from_env
 
     logging.basicConfig(level=logging.INFO)
-    store = DataStore(settings.data_root)
+    store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     with SessionLocal() as session:
         market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
         if market_id is None:
