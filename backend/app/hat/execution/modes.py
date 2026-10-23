@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from ..engine.portfolio import lifecycle
 from ..errors import HatError
 from ..models import HatBot, HatBrokerAccount, HatModeChange, HatRiskPolicyVersion
+from ..models.strategy import ACCOUNT_ACTIVE
 from ..risk.modes import ModeChange
 from ..risk.modes import effective_mode as queued_mode
 from ..risk.policy import PolicyError, PolicyVersion, effective_version, parse_policy
@@ -74,7 +75,6 @@ SHADOW = "shadow"
 CONFIRM = "confirm"
 AUTO = "auto"
 MODES = (SHADOW, CONFIRM, AUTO)
-ACCOUNT_ACTIVE = "active"
 UNKNOWN_MODE = "unknown_mode"
 NO_GTT_DELIVERY = "no_gtt_delivery"
 DDPI_NOT_CONFIRMED = "ddpi_not_confirmed"

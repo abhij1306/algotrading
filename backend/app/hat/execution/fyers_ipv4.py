@@ -11,21 +11,40 @@ SDK out. The hook wraps urllib3's `create_connection`, which every `requests` ca
 connection to a Fyers host (`fyers.in` or a subdomain) is opened only to the host's IPv4
 addresses, and with none it fails rather than fall back to IPv6. Any other host is untouched.
 TLS still checks the Fyers host name: only the TCP connect gets the address literal.
+
+A proxy would bypass the hook: `requests` (and the data socket's client) would connect to the
+proxy, which may reach Fyers over IPv6. So HAT refuses to start while a proxy variable would
+carry Fyers traffic (`require_direct_fyers`, PR 73, PR 25 follow-up 6), unless `NO_PROXY` names
+the whole Fyers domain or `*`.
 """
 
 from __future__ import annotations
 
 import socket
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from types import ModuleType
 
 import urllib3.util.connection as urllib3_connection
 
-__all__ = ["FYERS_DOMAIN", "connect_ipv4", "install", "is_fyers_host", "sdk"]
+from ..errors import HatConfigError
+
+__all__ = [
+    "FYERS_DOMAIN",
+    "PROXY_VARIABLES",
+    "connect_ipv4",
+    "fyers_proxy",
+    "install",
+    "is_fyers_host",
+    "require_direct_fyers",
+    "sdk",
+]
 
 FYERS_DOMAIN = "fyers.in"
 
+# what `requests` and the socket client read for an https or wss connection (either case)
+PROXY_VARIABLES = ("https_proxy", "all_proxy", "http_proxy")
+_NO_PROXY = "no_proxy"
 _lock = threading.Lock()
 _original: Callable[..., socket.socket] | None = None
 
@@ -63,6 +82,34 @@ def connect_ipv4(
             error = exc
     assert error is not None
     raise error
+
+
+def _set(env: Mapping[str, str], name: str) -> str | None:
+    """The first non-empty value of `name` in lower then upper case (as urllib reads it)."""
+    return next((env[key] for key in (name, name.upper()) if env.get(key, "").strip()), None)
+
+
+def fyers_proxy(env: Mapping[str, str]) -> str | None:
+    """The name of the first proxy variable that would carry Fyers traffic, or None: none is set,
+    or `NO_PROXY` is `*` or has an entry covering the whole Fyers domain (`fyers.in`, `.fyers.in`
+    or a parent). An entry for one host is not enough: the API, login and data socket hosts
+    differ; and `*` among other entries bypasses nothing, as urllib reads it. The value is never
+    returned (it can carry a password)."""
+    no_proxy = (_set(env, _NO_PROXY) or "").strip()
+    entries = [e.strip().lstrip(".").lower() for e in no_proxy.split(",")]
+    if no_proxy == "*" or any(
+        e and (FYERS_DOMAIN == e or FYERS_DOMAIN.endswith("." + e)) for e in entries
+    ):
+        return None
+    return next((name for name in PROXY_VARIABLES if _set(env, name) is not None), None)
+
+
+def require_direct_fyers(env: Mapping[str, str]) -> None:
+    """Refuse the start (`HatConfigError`, naming the variable) while a proxy would carry Fyers
+    traffic past the IPv4 pin."""
+    name = fyers_proxy(env)
+    if name is not None:
+        raise HatConfigError(f"fyers_proxy_set: {name}")
 
 
 def install() -> None:

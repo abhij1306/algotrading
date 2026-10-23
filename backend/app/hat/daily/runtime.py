@@ -42,7 +42,13 @@ from ..data.announcements import INTRADAY_FEEDS, poll_all, poll_interval
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
-from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
+from ..data.live import (
+    EventFeedHealth,
+    LiveData,
+    off_loop,
+    silence_alert,
+    threadsafe_provider,
+)
 from ..data.mcp_client import McpClient
 from ..data.staleness import SilenceWatch
 from ..data.store import DataStore
@@ -61,6 +67,7 @@ from ..models import (
     HatSignal,
     HatStrategyVersion,
 )
+from ..notify import Notifier
 from ..ops.jobs import JobError, SessionFactory, recover_interrupted
 from ..ops.scheduler import HatScheduler, ScheduledJob
 from ..risk.sessions import SessionCalendar, SessionState, is_trading_day
@@ -92,7 +99,7 @@ from .live import (
 from .market import DailyBook
 from .nightly import NightlyDeps, TextSources, nightly_jobs
 
-__all__ = ["STEP_SECONDS", "HatRuntime", "RuntimeParts", "daily_jobs"]
+__all__ = ["STEP_SECONDS", "HatRuntime", "RuntimeParts", "daily_jobs", "subscription_alert"]
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +108,18 @@ MINUTE = timedelta(minutes=1)
 RECONCILE_EVERY = timedelta(minutes=5)
 CALENDAR_EVERY = timedelta(minutes=10)
 STOPPING = "hat_stopping"
+
+
+def subscription_alert(notifier: Notifier, now: Callable[[], datetime]) -> Callable[[str], None]:
+    """`LiveSubscriptions`' alert as a health alert of today's trade date (`subscription_limit`:
+    the wanted set reached the provider's symbol limit, HAT-DATA-112; PR 73, PR 39), sent off the
+    loop (a notifier blocks on its transport)."""
+
+    def alert(code: str) -> None:
+        day = trade_date_of(now())
+        off_loop(lambda: notifier.alert(code, day, {}))
+
+    return alert
 
 
 class Feed(Protocol):
@@ -310,7 +329,9 @@ class HatRuntime:
         self.live.add_bar_listener(self.entries.on_bar)
         self.views = ExitViews(self.book, self.live_prices.price, clock, self.calendar)
         self.shadow = ShadowExits(sf, self.views, self.desks.managed)
-        self.subscriptions = LiveSubscriptions(registry, subscribe, unsubscribe)
+        self.subscriptions = LiveSubscriptions(
+            registry, subscribe, unsubscribe, subscription_alert(self.notifier, self._now)
+        )
         self.intraday = Intraday(
             session_factory=sf,
             clock=clock,

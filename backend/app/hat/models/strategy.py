@@ -28,8 +28,18 @@ from ..risk.policy import require_cooling_off
 from ._types import VERSION_STATUSES, JsonB, Timestamptz, fk, in_values, now_utc, uuid_pk
 
 BOT_ID = "hat_bot.id"
+# `hat_broker_account.status` and `.broker` values: the one copy every reader imports, from this
+# leaf so the API reads them without the execution or mode code (PR 73, PR 38 follow-up 3).
+ACCOUNT_PENDING = "pending"
+ACCOUNT_ACTIVE = "active"  # passed its capability check (HAT-BRK-092)
+ACCOUNT_FAILED = "failed"
+BROKER_FYERS = "fyers"
 
 __all__ = [
+    "ACCOUNT_ACTIVE",
+    "ACCOUNT_FAILED",
+    "ACCOUNT_PENDING",
+    "BROKER_FYERS",
     "HatBot",
     "HatBrokerAccount",
     "HatCriterionType",

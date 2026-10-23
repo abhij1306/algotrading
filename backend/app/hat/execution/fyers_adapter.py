@@ -53,7 +53,13 @@ from .broker import (
     SessionStatus,
     Side,
 )
-from .fyers_auth import FyersAuthError, FyersAuthService, get_fyers_auth
+from .fyers_auth import (
+    AccountsUnreadableError,
+    FyersAuthError,
+    FyersAuthService,
+    WrongAccountError,
+    get_fyers_auth,
+)
 from .fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     CLIENT_NOT_INITIALIZED,
@@ -316,8 +322,16 @@ class FyersHatBroker:
             raise BrokerLoginError("login_unavailable") from None
 
     def complete_login(self, code: str) -> SessionStatus:
+        """Trade the login code for a token through the one login flow, which checks the token's
+        Fyers user against the active broker accounts (HAT-DEC-BD5): another user's login is
+        `wrong_account`, and unreadable accounts are `accounts_unreadable`; neither saves."""
         try:
             self._auth().exchange(code)
+        except WrongAccountError:
+            logger.warning("Fyers login refused: not the HAT broker account")
+            raise BrokerLoginError("wrong_account") from None
+        except AccountsUnreadableError:
+            raise BrokerLoginError("accounts_unreadable") from None
         except TokenStoreError:
             logger.exception("Fyers token could not be stored")
             raise BrokerLoginError("token_store_failed") from None

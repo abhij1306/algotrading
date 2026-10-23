@@ -41,8 +41,9 @@ from app.hat.daily.intraday import Intraday
 from app.hat.daily.live import GateBoard
 from app.hat.daily.market import DailyData
 from app.hat.daily.nightly import NightlyDeps
-from app.hat.daily.runtime import HatRuntime, daily_jobs
+from app.hat.daily.runtime import HatRuntime, daily_jobs, subscription_alert
 from app.hat.data.store import BarRow, DataStore
+from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
 from app.hat.data.ticks import tick_for_date
 from app.hat.engine import exits, live_trades, trades
 from app.hat.errors import HatConfigError
@@ -69,6 +70,7 @@ from app.hat.models import (
     HatTradingCalendar,
 )
 from app.hat.models.ops import JOB_STATUSES
+from app.hat.notify import RecordingNotifier
 from app.hat.ops.jobs import (
     DEFAULT_ERROR_CODE,
     JobError,
@@ -83,7 +85,7 @@ from app.hat.risk import kill
 from app.hat.risk.sessions import SessionCalendar
 from app.hat.settings import load_settings
 from app.hat.telegram.reports import Reports
-from app.hat.time import IST, day_bounds
+from app.hat.time import IST, day_bounds, trade_date_of
 from app.paths import PROJECT_ROOT
 from app.utils.env_loader import TRUE_VALUES
 
@@ -1372,3 +1374,31 @@ def test_ex_date_job_behind_flag(raw: str | None) -> None:
             Days.TRADING,
             timedelta(minutes=1),
         )
+
+
+@given(
+    sizes=st.lists(st.integers(0, 12), min_size=1, max_size=6),
+    limit=st.integers(2, 10),
+    now=st.datetimes(datetime(2026, 1, 1), datetime(2027, 1, 1), timezones=st.just(UTC)),
+)
+def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime) -> None:
+    """PBT ops.subscription_limit_alerts (HAT-DATA-112; PR 73, PR 39): the runtime's
+    `subscription_alert` turns each sync whose wanted set (the symbols and the heartbeat) is at
+    or above the provider's limit into one health alert `subscription_limit` of the trade date
+    of the runtime's clock, and a sync below it raises none. Harm: the owner never hears that
+    symbols past the limit get no ticks, so their bars, triggers and live exits stay silent."""
+    notifier = RecordingNotifier()
+    subs = LiveSubscriptions(
+        SubscriptionRegistry(str.upper),
+        lambda _s: None,
+        lambda _s: None,
+        subscription_alert(notifier, lambda: now),
+        limit=limit,
+    )
+    for size in sizes:
+        watchlist = frozenset(f"NSE:S{n}-EQ" for n in range(size))
+        subs.sync(SubscriptionInputs(watchlist, frozenset(), frozenset()))
+    wanted = [size + 1 for size in sizes]  # the heartbeat is always held
+    assert notifier.alerts == [
+        ("subscription_limit", trade_date_of(now), {}) for n in wanted if n >= limit
+    ]

@@ -49,6 +49,8 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `CONF fyers_adapter_wraps_existing` The adapter reaches Fyers only through HAT's `FyersBroker`, `FyersSession` and `FyersAuthService`; the SDK's HTTP client `fyersModel` is imported only in `fyers_ipv4.py`, after its hook is installed, and session and auth take it from `fyers_ipv4.sdk` (the data socket's `FyersWebsocket` only in `data/provider/fyers_websocket.py`; GTT SDK calls only in `fyers_broker.py`), and nothing under `app/hat` imports `app.brokers`. Harm: a second, untested path to the broker, or an SDK client that reaches Fyers over IPv6.
 - `PBT fyers_ipv4.fyers_http_leaves_over_ipv4` Through a real `requests.Session` over a scripted resolver and socket, a request to a Fyers host (`fyers.in` or a subdomain, any case, a trailing dot) opens AF_INET sockets only, to its IPv4 addresses in order until one connects, none when it has no IPv4 address; any other host connects as urllib3 does by itself (HAT-BRK-093). Harm: orders leave over IPv6 and Fyers refuses every write with -50 (not the whitelisted IP), as the live test of 2026-10-22 found.
 - `PBT fyers_ipv4.is_fyers_host_exact` Exactly `fyers.in` and its subdomains are Fyers hosts (case and a trailing dot ignored); a look-alike is not. Harm: another host is forced onto IPv4, or a Fyers host escapes the hook.
+- `PBT fyers_ipv4.no_proxy_carries_fyers` (HAT-BRK-093, PR 73) For every environment of proxy variables (either case, set or empty) and `NO_PROXY` values, whenever `require_direct_fyers` lets HAT start, real `requests` (`get_environ_proxies`, `select_proxy`) uses no proxy for any Fyers host HAT reaches; when it refuses, `production_parts` fails with `fyers_proxy_set: <variable>`, never the value. Harm: a proxy carries orders to Fyers over IPv6 past the pin, and Fyers refuses every write (-50).
+- `CONF brk__account_constants_one_copy` (HAT-BRK-092, PR 73) No module but `models/strategy.py` defines an `ACCOUNT_*` status constant, and none compares an account's `status` or `broker` with a string (the checker is shown to catch a synthetic offender). Harm: a stale copy of a status survives a rename and a login, gate or view reads accounts by a value no row has.
 - `CONF ops__single_fyers_secret_store` Fyers credential words and the token file appear only in `fyers_auth.py`, `fyers_tokens.py` and `fyers_session.py`, and no HAT table holds a broker secret. Harm: a second copy of the Fyers token.
 - `CONF mvp_seed_scope` Only the Fyers adapter is registered and onboarding accepts no other broker (PR 8 extends this to the seeded strategies, markets and user). Harm: an unreviewed broker is onboarded.
 - `PBT fyers_tokens.expiry_next_ist_midnight` For every instant and zone, `token_expiry` is the first IST midnight after it (strictly later, at most a day, exactly 00:00 IST); a naive time is refused. Harm: a token outlives the Fyers day and orders go out on a dead session, or it expires early and the morning login is lost.
@@ -73,7 +75,9 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `PBT fyers_auth.credentials_precedence` Each credential comes from the first non-empty name in its list (the legacy name first); a missing one raises an error naming the primary variable and carrying no value, and the credentials' repr hides the secret. Harm: the wrong app credentials are used or the secret leaks.
 - `PBT fyers_auth.no_sdk_without_credentials` Without app credentials neither the login link nor the exchange builds an SDK session or touches the token file. Harm: a half-configured process calls Fyers with blank credentials.
 - `PBT fyers_auth_routes.cross_site_write_refused` (HAT-DEC-BD5, PR 38) For every write header (absent, `1`, other values), `Origin` (absent, a frontend origin, a page on another site, `null`), `Sec-Fetch-Site` and with or without the app's origin rule wired, both login POSTs run only when the header is `1` and the request names a frontend origin, or names none and is not marked cross-site or same-site. A refusal is a 403 with `guard.WRITE_REFUSED`, writes or removes no token and runs no hook. Five `@example`s pin the harmful shapes. Harm: any page the owner's browser opens logs HAT out of Fyers mid-session or plants its own token.
-- `PBT fyers_auth_routes.token_for_another_account_refused` (HAT-DEC-BD5, PR 38) For every set of broker accounts (broker, `account_ref`, status) and every user a token belongs to (None: the profile failed), `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`; otherwise 403 with `ACCOUNT_UNCONFIRMED` (unknown user) or `WRONG_ACCOUNT`, no file, and neither token nor code in the body or log. With the accounts unreadable (`db_down`: the table is dropped) it answers 503 with `DB_ERROR` and writes nothing. Harm: HAT trades or reconciles on another Fyers account.
+- `PBT fyers_auth_routes.token_for_another_account_refused` (HAT-DEC-BD5, PR 38) For every set of broker accounts (broker, `account_ref`, status) and every user a token belongs to (None: the profile failed), `POST /token` saves the token exactly when no Fyers account is active or the user is an active one's `account_ref`; otherwise 403 with `ACCOUNT_UNCONFIRMED` (unknown user) or `WRONG_ACCOUNT`, no file, and neither token nor code in the body or log. With the accounts unreadable (`db_down`: the table is dropped) it answers 503 with `DB_ERROR` and writes nothing. Harm: HAT trades or reconciles on another Fyers account. Since PR 73 the check is the service's (`FyersAuthService(account_refs=...)`), and the rig hands it `fyers_account_refs` over the SQLite accounts.
+- `PBT fyers_auth.accounts_read_in_order` (HAT-DEC-BD5, PR 73) Every exchange reads the accounts once, after Fyers has answered and the profile was read and just before the save (traced: exchange, profile, accounts, save); an account onboarded during the profile read counts, a rejected code reads none, a refused user saves nothing (`ACCOUNT_UNCONFIRMED` or `WRONG_ACCOUNT`). Harm: a login plants another account's token, or the read holds a connection while Fyers answers.
+- `PBT fyers_auth.complete_login_checks_the_account` (HAT-DEC-BD5, PR 73) The adapter's `complete_login` saves the token exactly when no Fyers account is active or the user is one; another user is `wrong_account`, unreadable accounts `accounts_unreadable`, and neither writes a file. Harm: a Telegram or job login saves a token for any Fyers user.
 - `PBT fyers_routes.failed_exchange_fixed_message` Every failure of the Fyers side answers 400 or 500 with one of the fixed messages, the body and the log carry no code, secret or echoed text, and no token file exists. Harm: Fyers text or the auth code reaches the browser or the log.
 - `PBT fyers_routes.missing_credentials_fixed` Without app credentials the link and the exchange answer 500 with the fixed message, never the variable text. Harm: configuration detail leaks to the client.
 - `PBT fyers_routes.good_exchange_connected` After a good exchange `status` is connected with the user id, disconnect flips it back, and the token never appears in a response or log. Harm: the page shows the wrong login state or the token leaks.
@@ -360,12 +364,13 @@ Live trade management (PR 15c):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `57302f17bbf2f9798baf6c1a3fe24c285fc9a18f57f48b280ce1343a29715502`
+Covered digest: `8dea47a14b2545542d4c998d3afa2b352aaaf13311e1873e46e79b3173bc2792`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73b (PR 38 follow-ups 1-3, PR 25 follow-up 6, PR 45 follow-up 7): the account check of a login moved into `FyersAuthService` (a required `account_refs` lookup, `active_fyers_refs` in production, read after the answer and before the save); `exchange` lost its `accept_user` keyword, the route its `_account_check`, and the adapter's `complete_login` maps `WrongAccountError` to `wrong_account` and `AccountsUnreadableError` to `accounts_unreadable`. The account status and broker values live in `models/strategy.py` (`submit`, `accounts`, `modes`, `daily/accounts`, `daily/production` and the dashboard import them). `fyers_ipv4.require_direct_fyers` refuses the production start while a proxy would carry Fyers traffic; the oracle (real `requests`) found that `*` among other `NO_PROXY` entries bypasses nothing. `fyers_auth_routes.token_for_another_account_refused` is unchanged in what it asserts. The data socket is not pinned to IPv4 (a read path). Nothing was narrowed.
 - PR 73 (PR 45 follow-up 2): `accounts.revoke_ddpi` withdraws the owner's DDPI confirmation at any time (`account_unknown`, `ddpi_note_required`, `ddpi_not_confirmed`), clearing the flag and its time and writing `broker.ddpi_revoked`; `account_gates` reads it at once, so a revoked flag narrows the mode from the next routing decision. Its properties are `admin.ddpi_revoked` and the postgres run of the runbook (`verify-portfolio`). Nothing was narrowed.
 - PR 48 (research G02, G03, G22; plan audit O2(c); HAT-EXEC-066, -075, 07 §6 step 3): `FillSync._sales` records the book's price (`_record_book_price`) on each sale and reports market sales resting a minute (`SyncReport.resting`) and ended re-sends (`SyncReport.resend`); `TradeManager._resend_sales` cancels a resting one (`mark_resend`, `order.cancelled` code `sale_resend`) and sends what it left again; `rejected_sales` does not count those. The re-send sits behind `HAT_MPP_RESEND` (default off) because the book shape of a protected sale is ASSUMED (`fyers_mpp_sale_assumed.json`, three shapes, all drawn) until the O2(c) live check. The lower-circuit lock is read from the last trade price alone (`daily/live.py:SaleBands`, PR 51's `locked_lower_circuit`): HAT's tick has no bid quantity. Each re-send churns the stop (protect places it again when the cancelled sale ends, then `make_room` moves it for the next sale); the properties allow it. The band-limit escalation after two rejections is on whenever the band is known (not behind the flag): it is one limit at the lowest price that can trade today. The GTT miss counter (`_gtt_misses`) is in memory and restarts at 0 after a restart; the paging of a re-sent HAT sale counts events, so it survives. `manage.async_sale_rejection_retried` and `manage.gtt_resting_marketed` pass unchanged. Nothing was narrowed.
 - PR 58: `trades.open_entry` fills `SignalContext.hard_stop_days` from `trades.last_hard_stop` (the bot's latest `hard_stop` close of the instrument at or before the trigger, a veto trade's excluded as in `_day_counts`). `trades.last_hard_stop` generates no veto trade (a virtual trade of a skipped confirm signal); the exclusion is the same `_NOT_VETO` filter the daily stop-out count uses.
@@ -1286,6 +1291,12 @@ Break: (PR 38 review) `exchange` answers `WRONG_ACCOUNT` for an unknown user too
 ```
 tests/hat/properties/test_fyers_auth_routes.py:375: in test_token_for_another_account_refused
 E   AssertionError: assert 'This Fyers l...that account.' == 'Could not co...log in again.'
+```
+
+Break: (PR 73) the route does not map `AccountsUnreadableError` (`except AccountsUnreadableError:` became `except ZeroDivisionError:`).
+
+```
+E   assert 500 == 503
 ```
 
 ### PBT fyers_auth.failed_exchange_fails_closed
@@ -4231,4 +4242,68 @@ Break: (PR 36, review) the alert carries no `kind`.
 ```
     assert detail["kind"] == journal.TRADE
 E   KeyError: 'kind'
+```
+
+### PBT fyers_auth.accounts_read_in_order
+
+Break: (PR 73) `exchange` skips the account check (`if not self._accepts(user_id):` became `if False:`).
+
+```
+    | AssertionError: assert True == False
+    |     assert trace == read + (["save"] if accepted else [])
+    | AssertionError: assert ['exchange', ...file', 'save'] == ['exchange', ...unts', 'save']
+```
+
+Break: (PR 73) the accounts are read before the exchange (`self._early = self._account_refs()` ahead of `_generate_token`, `_accepts` reading `self._early`).
+
+```
+    |     assert saved == accepted
+    | AssertionError: assert True == False
+    | Failing test case: test_accounts_read_in_order(
+    |     refs=frozenset(),
+    |     onboarded='XA1234',
+```
+
+### PBT fyers_auth.complete_login_checks_the_account
+
+Break: (PR 73) `complete_login` maps a refused user to `login_failed` (`raise BrokerLoginError("wrong_account")` became `"login_failed"`).
+
+```
+E   AssertionError: assert 'login_failed' == 'wrong_account'
+```
+
+### PBT fyers_ipv4.no_proxy_carries_fyers
+
+Break: (PR 73, found by the oracle while writing it) `*` among other `NO_PROXY` entries read as a bypass.
+
+```
+E   AssertionError: api.fyers.in
+E   assert 'http://user:pw-77ee@proxy.example:3128' is None
+```
+
+Break: (PR 73) a `NO_PROXY` entry for one Fyers host counts as the whole domain (`FYERS_DOMAIN == e or` became `e.endswith(FYERS_DOMAIN) or`).
+
+```
+E   AssertionError: api.fyers.in
+E   assert 'http://user:pw-77ee@proxy.example:3128' is None
+```
+
+Break: (PR 73) `production_parts` does not call `require_direct_fyers`.
+
+```
+E   AssertionError: assert 'HAT_TELEGRAM...EN is not set' == 'fyers_proxy_set: https_proxy'
+```
+
+### CONF brk__account_constants_one_copy
+
+Break: (PR 73) `execution/submit.py` defines its own `ACCOUNT_ACTIVE = "active"` again.
+
+```
+E   AssertionError: assert {'execution/s...OUNT_ACTIVE']} == {}
+```
+
+Break: (PR 73) `daily/production.py` compares `account.broker != "fyers"`.
+
+```
+E   AssertionError: assert {'daily/produ...th a string']} == {}
 ```

@@ -7,7 +7,7 @@ router; the login service runs on a temporary token file and a recording SDK, an
 accounts live in SQLite in memory."""
 
 import uuid
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 from unittest import mock
 
@@ -18,9 +18,8 @@ from hat_fyers_support import captured_logs, profile_ok, token_reply, token_stor
 from hat_support import memory_engine
 from hypothesis import example, given
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
-from app.database import get_db
 from app.hat.api import fyers_auth as routes
 from app.hat.api import guard
 from app.hat.execution.fyers_auth import (
@@ -29,6 +28,7 @@ from app.hat.execution.fyers_auth import (
     FyersAuthService,
     FyersCredentials,
     MissingCredentialsError,
+    fyers_account_refs,
     get_fyers_auth,
 )
 from app.hat.execution.fyers_tokens import TokenStore
@@ -84,11 +84,9 @@ REPLIES = st.one_of(
 )
 
 
-def _accounts_db(
-    accounts: Sequence[Account], down: bool = False
-) -> Callable[[], Iterator[Session]]:
-    """Sessions over the given broker accounts; `down`: a database without the table, so every
-    read raises (`OperationalError`)."""
+def _account_refs(accounts: Sequence[Account], down: bool = False) -> Callable[[], frozenset[str]]:
+    """`active_fyers_refs` over the given broker accounts in SQLite; `down`: a database without
+    the table, so every read raises (`OperationalError`)."""
     engine = memory_engine(HatBrokerAccount)
     if down:
         HatBrokerAccount.__table__.drop(engine)  # type: ignore[attr-defined]
@@ -107,11 +105,11 @@ def _accounts_db(
             )
         session.commit()
 
-    def db() -> Iterator[Session]:
+    def refs() -> frozenset[str]:
         with factory() as session:
-            yield session
+            return fyers_account_refs(session)
 
-    return db
+    return refs
 
 
 def client_for(
@@ -139,6 +137,7 @@ def client_for(
 
     service = FyersAuthService(
         store,
+        account_refs=_account_refs(accounts, db_down),
         session_factory=factory,
         credentials=credentials,
         on_token_change=lambda: None,
@@ -152,7 +151,6 @@ def client_for(
     app = FastAPI()
     app.include_router(routes.router)
     app.dependency_overrides[get_fyers_auth] = lambda: service
-    app.dependency_overrides[get_db] = _accounts_db(accounts, db_down)
     if wired:
         setattr(app.state, guard.ORIGIN_RULE, lambda origin: origin in FRONTEND)
     return TestClient(

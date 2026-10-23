@@ -158,7 +158,7 @@ to an artefact that exists.
 | HAT-DEC-BD2 | [01](01-decisions.md) | 13 | CONF `fyers_adapter_wraps_existing` |
 | HAT-DEC-BD3 | [01](01-decisions.md) | 2, 13 | CONF `no_deferred_integrations` |
 | HAT-DEC-BD4 | [01](01-decisions.md) | 1 | CONF `old_docs_removed` |
-| HAT-DEC-BD5 | [01](01-decisions.md) | 38 | CONF `hat_writes_guarded`, CONF `api_loopback_no_auth_wiring`, CONF `frontend_sends_write_header`, PBT `fyers_auth_routes.cross_site_write_refused`, PBT `fyers_auth_routes.token_for_another_account_refused` |
+| HAT-DEC-BD5 | [01](01-decisions.md) | 38, 73 | CONF `hat_writes_guarded`, CONF `api_loopback_no_auth_wiring`, CONF `frontend_sends_write_header`, PBT `fyers_auth_routes.cross_site_write_refused`, PBT `fyers_auth_routes.token_for_another_account_refused`, PBT `fyers_auth.accounts_read_in_order`, PBT `fyers_auth.complete_login_checks_the_account` |
 | HAT-DATA-010 | [02](02-data.md) | 4 | CONF `imports.engine_data_sources` |
 | HAT-DATA-011 | [02](02-data.md) | 5, 7 | PBT `ingest.sources_same_schema` |
 | HAT-DATA-020 | [02](02-data.md) | 4 | PBT `reference.instrument_identity_stable`, DB `reference.instrument_unique` |
@@ -228,7 +228,7 @@ to an artefact that exists.
 | HAT-DATA-104 | [02](02-data.md) | 14 | PBT `announcements.text_never_gates` |
 | HAT-DATA-110 | [02](02-data.md) | 14 | CONF `imports.no_second_websocket` |
 | HAT-DATA-111 | [02](02-data.md) | 14 | PBT `bars.listener_isolation` |
-| HAT-DATA-112 | [02](02-data.md) | 14, 39 | PBT `bars.subscription_set` |
+| HAT-DATA-112 | [02](02-data.md) | 14, 39, 73 | PBT `bars.subscription_set`, PBT `ops.subscription_limit_alerts`, CONF `ops.subscription_alert_wired` |
 | HAT-DATA-113 | [02](02-data.md) | 14 | PBT `bars.alignment` |
 | HAT-DATA-114 | [02](02-data.md) | 14, 22, 39 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`, PBT `bars.session_state_never_partial`, PBT `bars.trigger_never_uses_a_partial_session`, PBT `bars.seed_needs_ordered_prices`, PBT `bars.delayed_seed_spoiled_by_gap`, PBT `bars.live_flags_parsed` |
 | HAT-DATA-115 | [02](02-data.md) | 14 | PBT `bars.volume_pace` |
@@ -475,8 +475,8 @@ to an artefact that exists.
 | HAT-BRK-082 | [07](07-execution-and-brokers.md) | 13, 16, 23, 25, 50 | TLA `ExecutionRouter!NoEntryWithoutSession`, PBT `broker.token_refused_is_session_expired`, PBT `broker.token_refused_on_a_read_ends_the_check`, PBT `fyers_auth.a_good_exchange_saves_once_and_reports_in_order`, PBT `broker.rate_limit_is_its_own_code`, PBT `bars.minute_history_rate_limit_stops_run`, PBT `tags.an_unreachable_broker_is_not_a_rejection`, PBT `fyers_broker.budget_windows_hold`, PBT `fyers_broker.throttled_call_not_sent`, PBT `fyers_broker.writes_go_ahead_of_reads`, PBT `fyers_broker.limits_from_settings`, PBT `fyers_broker.late_429_still_pauses`, PBT `fyers_broker.breaker_opened_while_waiting_sends_nothing` |
 | HAT-BRK-090 | [07](07-execution-and-brokers.md) | 13, 25 | PBT `tags.fyers_payload_mapping`, PBT `tags.gtt_payloads`, PBT `tags.the_gtt_book_reads_only_resting_stops`, CONF `brk.recorded_writes` |
 | HAT-BRK-091 | [07](07-execution-and-brokers.md) | 13, 25 | CONF `brk.fyers_capabilities`, CONF `brk.recorded_writes`, PBT `broker.the_fyers_adapter_unlocks_modes_on_an_active_account` |
-| HAT-BRK-092 | [07](07-execution-and-brokers.md) | 13, 29 | TLA `OrderReconciliation!AccountActiveAfterCheck`, PBT `broker.session_check_refreshes_capabilities`, PBT `router.desks_start_with_the_adapters_capabilities` |
-| HAT-BRK-093 | [07](07-execution-and-brokers.md) | 25 | PBT `fyers_ipv4.fyers_http_leaves_over_ipv4`, PBT `fyers_ipv4.is_fyers_host_exact`, CONF `brk.fyers_adapter_wraps_existing` |
+| HAT-BRK-092 | [07](07-execution-and-brokers.md) | 13, 29, 73 | TLA `OrderReconciliation!AccountActiveAfterCheck`, PBT `broker.session_check_refreshes_capabilities`, PBT `router.desks_start_with_the_adapters_capabilities`, CONF `brk.account_constants_one_copy` |
+| HAT-BRK-093 | [07](07-execution-and-brokers.md) | 25, 73 | PBT `fyers_ipv4.fyers_http_leaves_over_ipv4`, PBT `fyers_ipv4.is_fyers_host_exact`, PBT `fyers_ipv4.no_proxy_carries_fyers`, CONF `brk.fyers_adapter_wraps_existing` |
 | HAT-BRK-100 | [07](07-execution-and-brokers.md) | 13 | PBT `tags.shape_and_roundtrip`, DB `runtime.order_tag_unique` |
 | HAT-BRK-101 | [07](07-execution-and-brokers.md) | 13 | TLA `OrderReconciliation!PersistBeforeCall`, TLA `OrderReconciliation!AtMostOneEntryPerSignal` |
 | HAT-BRK-102 | [07](07-execution-and-brokers.md) | 13, 28 | TLA `OrderReconciliation!UnconfirmedResolvedByTag`, TLA `OrderReconciliation!AtMostOneEntryPerSignal`, TLA `OrderReconciliation!LostEntryAdopted`, PBT `tags.a_timeout_is_looked_up_before_any_retry`, PBT `tags.idempotent_order_submission`, PBT `router.unresolved_entry_is_alerted_not_resent` |

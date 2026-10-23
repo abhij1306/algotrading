@@ -6,17 +6,22 @@ refused every write from it with code -50 ("only whitelisted IP"). These propert
 installed, over a scripted resolver and socket: nothing reaches the network.
 """
 
+import os
 import socket
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from unittest.mock import patch
 
+import pytest
 import requests
 import urllib3.util.connection as urllib3_connection
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+from app.hat.daily.production import production_parts
+from app.hat.errors import HatConfigError
 from app.hat.execution import fyers_ipv4
+from app.hat.settings import load_settings
 
 FYERS_HOSTS = ["api-t1.fyers.in", "api.fyers.in", "FYERS.IN", "api-t1.fyers.in.", "myapi.fyers.in"]
 OTHER_HOSTS = ["notfyers.in", "fyers.in.example.com", "www.nseindia.com", "api.telegram.org"]
@@ -145,3 +150,61 @@ def test_is_fyers_host_exact(host: str) -> None:
     dot; a name merely containing it is not."""
     name = host.rstrip(".").lower()
     assert fyers_ipv4.is_fyers_host(host) == (name == "fyers.in" or name.endswith(".fyers.in"))
+
+
+PROXY_NAMES = [
+    *fyers_ipv4.PROXY_VARIABLES,
+    *(name.upper() for name in fyers_ipv4.PROXY_VARIABLES),
+]
+PROXY_URL = "http://user:pw-77ee@proxy.example:3128"
+NO_PROXY_ENTRIES = [
+    "fyers.in",
+    ".fyers.in",
+    "in",
+    "api-t1.fyers.in",
+    "socket.fyers.in",
+    "*",
+    "example.com",
+    "notfyers.in",
+    " fyers.in ",
+]
+# the hosts HAT reaches: the API (orders, GTTs, quotes), the login and the data socket
+REACHED = ["api-t1.fyers.in", "api.fyers.in", "socket.fyers.in"]
+no_proxy_values = st.lists(st.sampled_from(NO_PROXY_ENTRIES), max_size=3).map(",".join)
+ENVS = st.fixed_dictionaries(
+    {},
+    optional={
+        **{name: st.sampled_from(["", PROXY_URL]) for name in PROXY_NAMES},
+        "no_proxy": no_proxy_values,
+        "NO_PROXY": no_proxy_values,
+    },
+)
+
+
+@given(env=ENVS)
+@example(env={"HTTPS_PROXY": PROXY_URL})
+@example(env={"https_proxy": PROXY_URL, "NO_PROXY": "fyers.in,*"})
+@example(env={"https_proxy": PROXY_URL, "no_proxy": "*"})
+@example(env={"ALL_PROXY": PROXY_URL, "no_proxy": "api-t1.fyers.in"})
+def test_no_proxy_carries_fyers(env: dict[str, str]) -> None:
+    """PBT fyers_ipv4.no_proxy_carries_fyers (HAT-BRK-093; PR 73, PR 25 follow-up 6): whenever
+    `require_direct_fyers` lets HAT start, `requests` (the SDK's client) uses no proxy for any
+    Fyers host HAT reaches, as it reads this environment; and when it refuses, the start of the
+    production parts fails with `HatConfigError` naming the variable, never its value. Harm: a
+    proxy carries orders to Fyers over IPv6 past the IPv4 pin, and Fyers refuses every write
+    from a non-whitelisted address (-50)."""
+    named = fyers_ipv4.fyers_proxy(env)
+    with patch.dict(os.environ, env, clear=True):
+        if named is None:
+            fyers_ipv4.require_direct_fyers(env)
+            for host in REACHED:
+                url = f"https://{host}/api/v3/orders"
+                proxies = requests.utils.get_environ_proxies(url)
+                assert requests.utils.select_proxy(url, proxies) is None, host
+        else:
+            assert named in fyers_ipv4.PROXY_VARIABLES
+            build = production_parts(load_settings(os.environ), feed=None)  # type: ignore[arg-type]
+            with pytest.raises(HatConfigError) as refused:
+                build()
+            assert str(refused.value) == f"fyers_proxy_set: {named}"
+            assert "pw-77ee" not in str(refused.value)

@@ -53,6 +53,7 @@ from ..engine import journal, lifecycle, live_trades, trades
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatEvent, HatOrder, HatPosition, HatSignal
+from ..models.strategy import ACCOUNT_ACTIVE
 from ..time import trade_date_of, utc_now
 from .broker import (
     CODE_INVALID_INTENT,
@@ -76,7 +77,6 @@ from .modes import NO_GTT_DELIVERY, real_orders_allowed
 from .tags import encode_tag, is_hat_tag
 
 __all__ = [
-    "ACCOUNT_ACTIVE",
     "EXIT_SALES",
     "MAX_SALE_REJECTIONS",
     "OrderRefusedError",
@@ -101,7 +101,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-ACCOUNT_ACTIVE = "active"
 ENTRY = "entry"
 GTT_PURPOSE = "stop_gtt"
 EVENT_ORDER_REJECTED = "order.rejected"

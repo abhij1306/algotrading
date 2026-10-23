@@ -58,6 +58,8 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `PBT ops.retry_after_failed_run` A failed run is retried `retry_after` after it ended, not after it started, so a body slower than the retry interval is not started again at once. Harm: a slow failing job runs back to back and hammers its source.
 - `PBT ops.chain_carries_past_midnight` A chained job without a window whose head finished late still starts for its own date on the next IST date until 08:30, and not after. Harm: a nightly chain whose ingest succeeded at 23:58 is dropped and the next day has no watchlist.
 - `PBT ops.stop_names_abandoned_jobs` `stop` waits up to its grace for running bodies and returns (and logs) the name of each one still running. Harm: a close or swap cut off by a shutdown leaves no trace of which job was abandoned.
+- `PBT ops.subscription_limit_alerts` (HAT-DATA-112, PR 73) The runtime's `subscription_alert` turns every sync whose wanted set (symbols and heartbeat) is at or above the limit into one `subscription_limit` alert of the clock's trade date, and none below it. Harm: the owner never hears that symbols past the limit get no ticks.
+- `CONF ops.subscription_alert_wired` (HAT-DATA-112, PR 73) Every `LiveSubscriptions(...)` under `app/hat` is given its alert (fourth argument or `alert=`), and the runtime builds one. Harm: `subscription_limit` reaches only the log, as it did before PR 73.
 - `PBT ops.stop_after_failed_start` After a start that failed part way, `stop` runs each step on what exists and stops the feed exactly once with no tick listener left, even when a step raises. Harm: a failed start leaves the provider socket and login hooks behind.
 - `PBT ops.daily_tick_matches_reference` `DailyData.tick` reads only the two closes `reference_close` can pick (each date's from its newest ingest run) and gives the tick `tick_for_date` gives over every close of the window. Harm: a stop or limit off the exchange's tick grid is rejected.
 - `PBT ops.ex_date_job_behind_flag` (PR 47, HAT-EXEC-145) For every value of `HAT_EXDATE_GTT_CHECK`, `gtt.ex_date:<account>` (08:40, retried every minute) is registered exactly when it is a true value, and every other job of the account is unchanged. Harm: the check runs on an unconfirmed broker behaviour, or the switch turns it on without a job.
@@ -153,6 +155,7 @@ Covered digest: `a98bec8c92ab144b17c55010ce71ff557a67d1fd3191f2d98805fe47ef10355
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73b (PR 39 follow-up): `daily/runtime.py` builds `LiveSubscriptions` with `subscription_alert(self.notifier, self._now)` (sent off the loop, the clock's trade date), and `daily/production.py` refuses the start while a proxy would carry Fyers traffic (`verify-execution`). `test_ops.py` and `test_conf_ops.py` gain one check each. Not covered by a property: the alert's detail (none: `LiveSubscriptions` passes the code only). Nothing was narrowed.
 - PR 68: `MERGED_PRS` gains 68; no scheduler check changed.
 - PR 73: `test_conf_verification.py` lists PR 73 as merged, `test_conf_ops.py` allows the admin command line `decimal`, `engine.rescale` and `engine.trades`, and `execution/accounts.py` gains `revoke_ddpi` (`verify-portfolio`). No job, job-run or harness rule changed. Nothing was narrowed.
 - PR 67: `MERGED_PRS` gains 67; no scheduler check changed.
@@ -976,4 +979,20 @@ Break: (PR 47) in `backend/app/hat/ops/trade_jobs.py`, `gtt.ex_date` is register
 
 ```
 ======================= 1 failed, 20 deselected in 2.19s =======================
+```
+
+### PBT ops.subscription_limit_alerts
+
+Break: (PR 73) the alert dates itself by the UTC date (`trade_date_of(now())` became `now().date()`).
+
+```
+E   AssertionError: assert [('subscripti...6, 1, 1), {})] == [('subscripti...6, 1, 2), {})]
+```
+
+### CONF ops.subscription_alert_wired
+
+Break: (PR 73) the runtime builds `LiveSubscriptions(registry, subscribe, unsubscribe)` without its alert (as before PR 73).
+
+```
+E   AssertionError: assert {'hat/daily/r...me.py': [332]} == {}
 ```

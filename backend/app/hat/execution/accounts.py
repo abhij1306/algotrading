@@ -25,16 +25,14 @@ from sqlalchemy.orm import Session
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount
+from ..models.strategy import ACCOUNT_ACTIVE, ACCOUNT_FAILED, ACCOUNT_PENDING, BROKER_FYERS
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import as_utc, trade_date_of
 from .broker import BrokerError, HatBroker
 from .fyers_adapter import build_fyers_broker
 from .modes import MODES, ModeRefusedError, UnknownModeError, effective_mode, request_mode
-from .submit import ACCOUNT_ACTIVE
 
 __all__ = [
-    "ACCOUNT_FAILED",
-    "ACCOUNT_PENDING",
     "ADAPTER_FACTORIES",
     "MODES",
     "ModeRefusedError",
@@ -47,11 +45,9 @@ __all__ = [
     "revoke_ddpi",
 ]
 
-ACCOUNT_PENDING = "pending"
-ACCOUNT_FAILED = "failed"
 
 # Every adapter registered in the MVP is the Fyers adapter (HAT-DEC-I8).
-ADAPTER_FACTORIES: dict[str, Callable[[], HatBroker]] = {"fyers": build_fyers_broker}
+ADAPTER_FACTORIES: dict[str, Callable[[], HatBroker]] = {BROKER_FYERS: build_fyers_broker}
 
 
 class OnboardingError(HatError):

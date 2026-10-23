@@ -233,3 +233,37 @@ def test_admin_checker_can_fail() -> None:
     assert "session.add()" in found
     assert "assigns .lifecycle_state" in found
     assert "select" in found
+
+
+def unalerted_subscriptions(source: str) -> list[int]:
+    """The lines of every `LiveSubscriptions(...)` in a module's source built without its
+    `alert` (the fourth positional argument or the keyword)."""
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "LiveSubscriptions"
+        and len(node.args) < 4
+        and not any(k.arg == "alert" for k in node.keywords)
+    ]
+
+
+def test_ops__subscription_alert_wired() -> None:
+    """CONF ops.subscription_alert_wired (HAT-DATA-112; PR 73, PR 39): every `LiveSubscriptions`
+    the app builds is given its alert, and the runtime builds one. Harm: `subscription_limit`
+    reaches only the log, so the owner never hears that symbols past the provider's limit get no
+    ticks."""
+    sources = {
+        str(path.relative_to(APP_ROOT)): path.read_text(encoding="utf-8")
+        for path in sorted((APP_ROOT / "hat").rglob("*.py"))
+    }
+    found = {
+        name: lines for name, text in sources.items() if (lines := unalerted_subscriptions(text))
+    }
+    assert found == {}
+    assert "LiveSubscriptions(" in sources["hat/daily/runtime.py"]
+    # the checker can fail: one built without its alert, one with it by keyword
+    assert unalerted_subscriptions(
+        "LiveSubscriptions(r, s, u)\nLiveSubscriptions(r, s, u, alert=a)\n"
+    ) == [1]

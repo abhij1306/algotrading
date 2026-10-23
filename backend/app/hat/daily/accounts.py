@@ -51,6 +51,7 @@ from ..execution.session import (
     refresh_capabilities,
 )
 from ..models import HatApproval, HatBot, HatBrokerAccount, HatPosition, HatSignal
+from ..models.strategy import ACCOUNT_ACTIVE
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
@@ -74,7 +75,6 @@ END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
 RECONCILE_FAILED = "reconcile.failed"
 BROKER_HEALTH = "broker_health"
-ACTIVE = "active"
 # The fill sync's cadence when nothing is watched closely (10-ops §3); the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
 FILL_SYNC_EVERY = timedelta(minutes=1)
@@ -228,7 +228,7 @@ class Desks:
             accounts = list(
                 session.scalars(
                     select(HatBrokerAccount)
-                    .where(HatBrokerAccount.status == ACTIVE)
+                    .where(HatBrokerAccount.status == ACCOUNT_ACTIVE)
                     .order_by(HatBrokerAccount.id)
                 )
             )
