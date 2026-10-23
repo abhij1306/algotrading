@@ -14,7 +14,7 @@ the sources are injected.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Protocol
@@ -39,7 +39,13 @@ from .bhavcopy import (
 )
 from .corporate_actions import ActionRecord, LoadReport
 from .history_validation import Validation, ValidationReport, validate_build
-from .index_history import INDEX_NAMES, IndexLoadReport, IndexSource, load_index_history
+from .index_history import (
+    INDEX_NAMES,
+    INDEX_STARTS,
+    IndexLoadReport,
+    IndexSource,
+    load_index_history,
+)
 from .pacing import Pacer
 from .store import DATASET_BARS, DataStore, PartitionReport, index_coverage, partition_report
 
@@ -100,9 +106,9 @@ class DbCatalog:
 
 @dataclass
 class BuildReport:
-    download: DownloadReport
-    days: DayReconciliation
-    partitions: PartitionReport
+    download: DownloadReport = field(default_factory=DownloadReport)
+    days: DayReconciliation = field(default_factory=DayReconciliation)
+    partitions: PartitionReport = field(default_factory=PartitionReport)
     rows_written: int = 0
     files_written: int = 0
     unresolved: set[tuple[str, str]] = field(default_factory=set)
@@ -112,7 +118,8 @@ class BuildReport:
     action_symbols_failed: int = 0
     actions_unparsed: list[str] = field(default_factory=list)  # archive texts, HAT-DATA-055
     index: IndexLoadReport | None = None
-    index_missing: dict[str, list[date]] = field(default_factory=dict)
+    index_missing: dict[str, list[date]] = field(default_factory=dict)  # no row, unexplained
+    index_absent: dict[str, list[date]] = field(default_factory=dict)  # the source has none
     validation: ValidationReport | None = None
 
 
@@ -128,7 +135,8 @@ class ActionHooks:
 @dataclass(frozen=True)
 class BuildPlan:
     """What the build covers: the store, the bhavcopy fetcher, the instrument catalog, the
-    period, the explained holidays, and whether days already done are skipped."""
+    period, the explained holidays, the weekend sessions (Budget Saturday, Muhurat: fetched like
+    a weekday), and whether days already done are skipped."""
 
     store: DataStore
     fetch: Fetcher
@@ -137,40 +145,60 @@ class BuildPlan:
     end: date
     holidays: Collection[date] = ()
     resume: bool = True
+    weekend_sessions: Collection[date] = ()
 
 
 @dataclass(frozen=True)
 class BuildSteps:
     """The pacer of the NSE archive requests (by default the downloader's one a second) and the
     optional steps after the bars: corporate actions, index history (with each index's first
-    expected day) and validation; a step left None is skipped."""
+    expected day, by default its first archive day, and the days its source is known to lack)
+    and validation; a step left None is skipped."""
 
     pacer: Pacer | None = None
     actions: ActionHooks | None = None
     index_source: IndexSource | None = None
-    index_starts: dict[str, date] | None = None
+    index_starts: Mapping[str, date] = field(default_factory=lambda: dict(INDEX_STARTS))
+    index_absent: Callable[[str], Collection[date]] | None = None
     validation: Validation | None = None
 
 
-def run_history_build(plan: BuildPlan, steps: BuildSteps | None = None) -> BuildReport:
+def build_days(start: date, end: date, weekend_sessions: Collection[date]) -> list[date]:
+    """The days the build asks NSE for: every weekday of the period and every weekend session in
+    it, in date order."""
+    extra = {d for d in weekend_sessions if start <= d <= end and d.weekday() >= 5}
+    return sorted(set(weekdays(start, end)) | extra)
+
+
+def run_history_build(
+    plan: BuildPlan,
+    steps: BuildSteps | None = None,
+    holder: dict[str, BuildReport] | None = None,
+) -> BuildReport:
     """Download, parse, write, load, validate. Safe to repeat: raw zips are never fetched twice,
     a day's file is rewritten from the same zip with the same run id, and actions and index rows
-    are upserts. A `start` before `FIRST_ISIN_DAY` is moved up to it (no older file is usable)."""
+    are upserts. A `start` before `FIRST_ISIN_DAY` is moved up to it (no older file is usable).
+    `holder["report"]` receives the report before the first step, so a run stopped by an
+    exception can still save what it did."""
     steps = steps or BuildSteps()
     store = plan.store
     start = max(plan.start, FIRST_ISIN_DAY)
-    days = weekdays(start, plan.end)
+    days = build_days(start, plan.end, plan.weekend_sessions)
+    report = BuildReport()
+    if holder is not None:
+        holder["report"] = report
     state = BuildState.load(store.root / "build" / "state.json")
     if state.run_id is None:
         state.run_id = str(uuid7())
         state.save()
-    download = Downloader(store, plan.fetch, state, steps.pacer).run(days, resume=plan.resume)
-    report = BuildReport(download, DayReconciliation(), PartitionReport())
+    Downloader(store, plan.fetch, state, steps.pacer).run(
+        days, resume=plan.resume, report=report.download
+    )
     for day in days:
         _write_day(store, plan.catalog, state.run_id, day, plan.resume, report)
     have = set(store.days(DATASET_BARS))
     report.days = reconcile_days(days, have, state.candidates, plan.holidays)
-    # every weekday that is not an explained holiday should have rows, so gaps show as missing
+    # every day asked for that is not an explained holiday should have rows: gaps show as missing
     trading_days = [d for d in days if d not in report.days.holidays]
     report.partitions = partition_report(store, DATASET_BARS, trading_days)
     if steps.actions is not None:
@@ -179,17 +207,31 @@ def run_history_build(plan: BuildPlan, steps: BuildSteps | None = None) -> Build
         report.action_symbols_failed = failed
         report.actions_unparsed = list(unparsed)
     if steps.index_source is not None:
-        report.index = load_index_history(store, steps.index_source, start, plan.end)
-        # [A] every index is expected from the start of the build until Smallcap 250's own first
-        # day is checked (HAT-DATA-095)
-        starts = steps.index_starts or dict.fromkeys(INDEX_NAMES, start)
-        report.index_missing = index_coverage(store, trading_days, starts)
+        starts = {name: max(start, steps.index_starts.get(name, start)) for name in INDEX_NAMES}
+        report.index = load_index_history(store, steps.index_source, start, plan.end, starts=starts)
+        report.index_missing, report.index_absent = split_absent(
+            index_coverage(store, trading_days, starts), steps.index_absent
+        )
     if steps.validation is not None:
         v = steps.validation
         report.validation = validate_build(
             store, v.close_source, sample_size=v.sample_size, seed=v.seed
         )
     return report
+
+
+def split_absent(
+    missing: Mapping[str, Sequence[date]], absent: Callable[[str], Collection[date]] | None
+) -> tuple[dict[str, list[date]], dict[str, list[date]]]:
+    """Per index, the missing days split into those its source is known to lack (NSE has no
+    archive file, or the file has no row for it) and the rest, which need the operator."""
+    unexplained: dict[str, list[date]] = {}
+    known: dict[str, list[date]] = {}
+    for name, days in missing.items():
+        lacking = set(absent(name)) if absent is not None else set()
+        unexplained[name] = [d for d in days if d not in lacking]
+        known[name] = [d for d in days if d in lacking]
+    return unexplained, known
 
 
 def _write_day(

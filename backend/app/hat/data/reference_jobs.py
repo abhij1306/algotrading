@@ -152,7 +152,8 @@ def calendar_refresh(
     *, holiday_list: TextSource, session_factory: SessionFactory
 ) -> Callable[[], JobResult]:
     """Yearly and on change: load holidays into `hat_trading_calendar`, with a row for every
-    other weekday of the years the list covers (`calendar.with_weekdays`)."""
+    other weekday of the years the list covers (`calendar.with_weekdays`), plus the recorded
+    past years the live list does not cover (`calendar.store_recorded_history`)."""
 
     def body() -> JobResult:
         try:
@@ -167,6 +168,9 @@ def calendar_refresh(
                 raise JobError("reference_no_market")
             full = hat_calendar.with_weekdays(days, market.session_open, market.session_close)
             changed = hat_calendar.upsert_calendar(session, market.id, full, replace_span=True)
+            changed += hat_calendar.store_recorded_history(
+                session, market, skip_years={d.day.year for d in full}
+            )
             session.commit()
         return JobResult(rows=changed)
 

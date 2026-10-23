@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from importlib import resources
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -23,6 +24,9 @@ from ..models import HatMarket, HatTradingCalendar
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc
 
+# NSE's holiday master lists only the current year; the years before come from this recorded file
+# (PR 72), so a history build from 2010 reads a past holiday as a holiday, not as a gap.
+RECORDED_HISTORY = "nse_holidays_history.json"
 _DATE_FORMATS = ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d")
 _SESSION_RE = re.compile(r"^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$")
 
@@ -106,6 +110,52 @@ def with_weekdays(
             out[day] = CalendarDay(day, True, session_open, session_close)
         day += timedelta(days=1)
     return sorted(out.values(), key=lambda d: d.day)
+
+
+def parse_recorded_history(text: str) -> list[CalendarDay]:
+    """The recorded past years (`{"holidays": {year: [ISO dates]}, "sessions": [{"date",
+    "note"}]}`): every listed holiday closed, every special session (Budget Saturday, Muhurat)
+    a trading day without its own hours (none were recorded, so a reader takes the market's
+    default session). A date that is both is a session. Raises on an unreadable file:
+    it is checked in, so a bad one is a bug, not a bad answer."""
+    payload = json.loads(text)
+    days = {
+        date.fromisoformat(raw): CalendarDay(date.fromisoformat(raw), False)
+        for year in payload["holidays"].values()
+        for raw in year
+    }
+    for entry in payload["sessions"]:
+        day = date.fromisoformat(entry["date"])
+        days[day] = CalendarDay(day, True, None, None, str(entry["note"])[:200] or None)
+    return sorted(days.values(), key=lambda d: d.day)
+
+
+def recorded_history() -> list[CalendarDay]:
+    """The recorded file shipped beside this module."""
+    return parse_recorded_history(
+        resources.files(__package__).joinpath(RECORDED_HISTORY).read_text(encoding="utf-8")
+    )
+
+
+def store_recorded_history(
+    session: Session, market: HatMarket, skip_years: Collection[int] = ()
+) -> int:
+    """Store the recorded past years with a row for every other weekday (`with_weekdays`), one
+    full snapshot per year so a corrected file replaces what an earlier one stored. A year in
+    `skip_years` (one the live holiday list covers) is left to that list. Returns rows changed."""
+    by_year: dict[int, list[CalendarDay]] = {}
+    for day in recorded_history():
+        if day.day.year not in skip_years:
+            by_year.setdefault(day.day.year, []).append(day)
+    return sum(
+        upsert_calendar(
+            session,
+            market.id,
+            with_weekdays(days, market.session_open, market.session_close),
+            replace_span=True,
+        )
+        for days in by_year.values()
+    )
 
 
 def _to_instant(day: date, wall: time) -> datetime:

@@ -93,8 +93,10 @@ class SessionCalendar:
         """The calendar's trading days, in date order."""
         return list(self._trading)
 
+    @cached_property
     def holidays(self) -> frozenset[date]:
-        """The dates the calendar holds as closed (holidays and listed weekends)."""
+        """The dates the calendar holds as closed (holidays and listed weekends). A property, as
+        the set it is: passing the bound method where a set was meant crashed PR 42's build."""
         return frozenset(day for day, row in self.days.items() if not row.is_trading)
 
     def previous_trading_day(self, day: date) -> date | None:

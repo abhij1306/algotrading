@@ -117,17 +117,16 @@ class ParsedDay:
 
 
 def format_for(day: date) -> str:
-    """The file format of a trading weekday; weekends, the gap 6-7 Jul 2024 and days before
-    `FIRST_ISIN_DAY` have none."""
-    if day.weekday() >= 5:
-        raise BhavcopyError("bhavcopy_not_weekday")
+    """The file format of a day's file, a weekend session's included (Budget Saturday,
+    Muhurat); the weekend 6-7 Jul 2024 between the formats and days before `FIRST_ISIN_DAY`
+    have none. Which days to ask for is the calendar's business, not this function's."""
     if day < FIRST_ISIN_DAY:
         raise BhavcopyError("bhavcopy_no_isin")
     if day <= OLD_LAST_DAY:
         return FORMAT_OLD
     if day >= UDIFF_FIRST_DAY:
         return FORMAT_UDIFF
-    raise BhavcopyError("bhavcopy_format_gap")  # unreachable for weekdays; kept explicit
+    raise BhavcopyError("bhavcopy_format_gap")
 
 
 def archive_name(day: date) -> str:
@@ -426,8 +425,12 @@ class Downloader:
         self._state = state
         self._pacer = pacer or Pacer(min_interval=DEFAULT_INTERVAL_SECONDS)
 
-    def run(self, days: Iterable[date], *, resume: bool = True) -> DownloadReport:
-        report = DownloadReport()
+    def run(
+        self, days: Iterable[date], *, resume: bool = True, report: DownloadReport | None = None
+    ) -> DownloadReport:
+        """Fill `report` (a new one by default) as each day is done, so a caller holding it
+        still sees the days done before an exception."""
+        report = report if report is not None else DownloadReport()
         for day in days:
             name = archive_name(day)
             if self._store.raw_exists(name):

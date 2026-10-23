@@ -290,7 +290,10 @@ def _bar(
     source: str,
     run_id: uuid.UUID,
     traded_value: Decimal | None = None,
+    series: str | None = None,
 ) -> BarRow:
+    """The member's bar; `series` is the bhavcopy row's own (the member's may be up to a week old,
+    from before an EQ/BE move), else the member's."""
     assert c.open is not None
     assert c.high is not None
     assert c.low is not None
@@ -300,7 +303,7 @@ def _bar(
         member.instrument_id,
         member.isin,
         member.symbol,
-        member.series,
+        series or member.series,
         c.open,
         c.high,
         c.low,
@@ -365,38 +368,47 @@ def bhavcopy_day(store: DataStore, fetch: Fetcher, trade_date: date) -> ParsedDa
         return None
 
 
-def _bhav_candidates(
-    parsed: ParsedDay, members: Iterable[Member]
-) -> tuple[dict[str, Candidate], dict[str, Decimal | None], int]:
-    """Accepted candidates by symbol, their traded values, and how many rows were violations (the
-    parser already left out every row that fails `row_ok`, counted as `invalid`)."""
+@dataclass
+class BhavCandidates:
+    """Accepted candidates by symbol, with each row's traded value and own series, and how many
+    rows were violations (the parser already left out every row that fails `row_ok`, counted
+    as `invalid`)."""
+
+    accepted: dict[str, Candidate] = field(default_factory=dict)
+    traded: dict[str, Decimal | None] = field(default_factory=dict)
+    series: dict[str, str] = field(default_factory=dict)
+    violations: int = 0
+
+
+def _bhav_candidates(parsed: ParsedDay, members: Iterable[Member]) -> BhavCandidates:
+    """The day's rows keyed to the members by ISIN, each carrying the series its row names (as
+    the history build writes it), not the member's from the last weekly refresh."""
     keyed = {m.isin: m for m in members}
-    accepted: dict[str, Candidate] = {}
-    traded: dict[str, Decimal | None] = {}
-    violations = parsed.invalid + parsed.wrong_date
+    out = BhavCandidates(violations=parsed.invalid + parsed.wrong_date)
     for row in parsed.rows:
         # by ISIN: a stock that moved series since the weekly refresh keeps its bar (audit D5)
         member = keyed.get(row.isin)
-        if member is None:
+        if member is None or member.symbol in out.accepted:
             continue
-        accepted.setdefault(
-            member.symbol,
-            Candidate(
-                row.trade_date, row.open, row.high, row.low, row.close, row.prev_close, row.volume
-            ),
+        out.accepted[member.symbol] = Candidate(
+            row.trade_date, row.open, row.high, row.low, row.close, row.prev_close, row.volume
         )
-        traded.setdefault(member.symbol, row.traded_value)
-    return accepted, traded, violations
+        out.traded[member.symbol] = row.traded_value
+        out.series[member.symbol] = row.series
+    return out
 
 
 def _lookup_actions(
     deps: IngestDeps, trade_date: date, flagged: Sequence[str], members: Mapping[str, Member]
 ) -> tuple[int, int]:
-    """`get_corporate_actions` for the flagged symbols only; (created, failed lookups)."""
+    """`get_corporate_actions` for the flagged symbols only; (created, failed). A lookup that
+    failed and an action whose factor conflicts with the stored one both count as failed (D220:
+    the stored factor stays and the conflict is alerted)."""
     found = ca.lookup_actions(
         deps.client, {s: members[s].instrument_id for s in flagged}, trade_date, trade_date
     )
-    return ca.store_actions(deps.session_factory, found.records), len(found.failed)
+    stored = ca.store_actions(deps.session_factory, found.records, (deps.notifier, trade_date))
+    return stored.created, len(found.failed) + len(stored.conflicts)
 
 
 def _store_indices(
@@ -484,7 +496,7 @@ def _fetch_and_write(
     by_sym = by_symbol(members)
     outcome = wait_for_data(lambda: _probe(deps, trade_date), trade_date, deps.clock, deps.sleep)
     report.probes = len(outcome.probes)
-    traded: dict[str, Decimal | None] = {}
+    bhav = BhavCandidates()
     if outcome.ready:
         report.source = SOURCE_MCP
         accepted = _fetch_mcp(deps, trade_date, symbols, report)
@@ -493,7 +505,8 @@ def _fetch_and_write(
         parsed = deps.fallback(trade_date) if deps.fallback is not None else None
         if parsed is None or not parsed.rows:
             raise JobError(CODE_NO_DATA)
-        accepted, traded, report.violations = _bhav_candidates(parsed, members)
+        bhav = _bhav_candidates(parsed, members)
+        accepted, report.violations = bhav.accepted, bhav.violations
     if not accepted:
         raise JobError(CODE_NO_ROWS)
     report.stored = len(accepted)
@@ -504,7 +517,7 @@ def _fetch_and_write(
         deps, trade_date, flagged, by_sym
     )
     rows = [
-        _bar(by_sym[s], c, report.source, run_id, traded.get(s))
+        _bar(by_sym[s], c, report.source, run_id, bhav.traded.get(s), bhav.series.get(s))
         for s, c in sorted(accepted.items())
         if s in by_sym
     ]

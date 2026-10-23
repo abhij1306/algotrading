@@ -61,7 +61,7 @@ from .bars import Bar, BarBuilder, Tick
 from .bars_basis import DailyRange, RawBasis, check_day, store_daily, to_raw
 from .bars_store import BarStore, RejectRow
 from .pacing import DayLimitError, Pacer, Sleep
-from .run_report import save_report
+from .run_report import save_report, stop_reason
 from .store import DataStore, atomic_replace
 
 if TYPE_CHECKING:
@@ -648,6 +648,7 @@ def load_minute_history(
     pacer: Pacer | None = None,
     resume: bool = False,
     retry_failed: bool = False,
+    holder: dict[str, HistoryReport] | None = None,
 ) -> HistoryReport:
     """Fetch the 1-minute history of each broker symbol in `instruments` (broker symbol ->
     instrument id) for `start..end`, aggregate it, convert it to the raw basis and write the
@@ -661,12 +662,15 @@ def load_minute_history(
     loaded over it is skipped, as is one that failed on its data (`_DATA_FAILURES`) unless
     `retry_failed`. A symbol that fails is reported and the run goes on; `failures_in_row`
     transport failures in a row, the day's call budget or too many plan-limit refusals stop it,
-    with the progress saved."""
+    with the progress saved. `holder["report"]` receives the report as soon as it exists, so a
+    run stopped by an exception can still save what it did."""
     limits = limits or HistoryLimits()
     progress = progress if progress is not None else Progress()
     start, end = _begin(progress, start, end, resume, limits.plan_days)
     report = HistoryReport(start, end, symbols=len(instruments))
     report.available_from = progress.available_from
+    if holder is not None:
+        holder["report"] = report
     dl = Download(
         history,
         store,
@@ -1016,22 +1020,34 @@ def _download(
     instruments = {m.broker_symbol: m.instrument_id for m in members if m.broker_symbol}
     unmapped = sum(1 for m in members if m.broker_symbol is None)
     today = datetime.now(IST).date()
-    report = load_minute_history(
-        history,
-        BarStore(root),
-        instruments,
-        today - timedelta(days=days),
-        today - timedelta(days=1),
-        basis=basis,
-        limits=limits,
-        progress=progress,
-        resume=args.resume,
-        retry_failed=args.retry_failed,
-    )
+    holder: dict[str, HistoryReport] = {}
+    try:
+        report = load_minute_history(
+            history,
+            BarStore(root),
+            instruments,
+            today - timedelta(days=days),
+            today - timedelta(days=1),
+            basis=basis,
+            limits=limits,
+            progress=progress,
+            resume=args.resume,
+            retry_failed=args.retry_failed,
+            holder=holder,
+        )
+    except BaseException as exc:  # save the coverage so far, then stop as before
+        if "report" in holder:
+            holder["report"].stopped = stop_reason(exc)
+            _save(root, holder["report"], unmapped)
+        raise
+    _save(root, report, unmapped)
+    return 1 if report.stopped or report.failed else 0
+
+
+def _save(root: Path, report: HistoryReport, unmapped: int) -> None:  # pragma: no cover
     text = report.summary() + f"active members without a Fyers symbol: {unmapped}\n"
     sys.stdout.write(text)
     save_report(root / PROGRESS_FILE.parent, text, datetime.now(IST))
-    return 1 if report.stopped or report.failed else 0
 
 
 if __name__ == "__main__":  # pragma: no cover

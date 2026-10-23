@@ -55,14 +55,15 @@ def test_format_by_date(day: date) -> None:
     assert archive_name(day) == url.rsplit("/", 1)[1]
 
 
-@given(day=st.dates(date(2010, 1, 1), date(2026, 10, 21)).filter(lambda d: d.weekday() >= 5))
-def test_format_by_date_weekend_has_no_file(day: date) -> None:
+def test_weekend_session_has_a_file_but_the_format_gap_has_none() -> None:
+    assert archive_name(date(2013, 11, 3)) == "cm03NOV2013bhav.csv.zip"
+    assert archive_name(date(2025, 2, 1)) == "BhavCopy_NSE_CM_0_0_0_20250201_F_0000.csv.zip"
     try:
-        archive_url(day)
+        archive_url(date(2024, 7, 6))
     except BhavcopyError as exc:
-        assert exc.code == "bhavcopy_not_weekday"
+        assert exc.code == "bhavcopy_format_gap"
     else:
-        raise AssertionError("a weekend got a URL")
+        raise AssertionError("the weekend between the formats got a URL")
 
 
 @given(day=st.dates(date(2010, 1, 1), FIRST_ISIN_DAY - timedelta(days=1)))
@@ -71,7 +72,7 @@ def test_no_file_before_first_isin_day(day: date) -> None:
     try:
         archive_name(day)
     except BhavcopyError as exc:
-        assert exc.code == ("bhavcopy_not_weekday" if day.weekday() >= 5 else "bhavcopy_no_isin")
+        assert exc.code == "bhavcopy_no_isin"
     else:
         raise AssertionError("a day before FIRST_ISIN_DAY got a file name")
 
