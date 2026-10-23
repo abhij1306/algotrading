@@ -21,7 +21,6 @@ coverage, never more: a restored opening range then fails closed.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -35,8 +34,9 @@ import pyarrow.parquet as pq
 
 from ..time import as_utc, trade_date_of
 from .bars import Bar
+from .store import atomic_replace
 
-__all__ = ["DATASET", "REJECTS", "SCHEMA", "BarRow", "BarStore", "Coverage", "RejectRow"]
+__all__ = ["DATASET", "REJECTS", "SCHEMA", "BarStore", "Coverage", "RejectRow"]
 
 DATASET = "bars_5m"
 PRICE = pa.decimal128(18, 4)
@@ -66,7 +66,9 @@ COVERAGE_NAME = "coverage.json"
 
 
 @dataclass(frozen=True)
-class BarRow:
+class BarRow5m:
+    """One stored 5-minute bar (this module's own row; the daily row is `store.BarRow`)."""
+
     instrument_id: str
     bar_start: datetime
     open: Decimal
@@ -93,8 +95,8 @@ class RejectRow:
     rule: str
 
 
-def row_from_bar(bar: Bar, instrument_id: uuid.UUID | str) -> BarRow:
-    return BarRow(
+def row_from_bar(bar: Bar, instrument_id: uuid.UUID | str) -> BarRow5m:
+    return BarRow5m(
         str(instrument_id),
         as_utc(bar.start),
         bar.open,
@@ -127,7 +129,7 @@ class BarStore:
     def path(self, day: date) -> Path:
         return self.partition(day) / FILE_NAME
 
-    def read(self, day: date) -> list[BarRow]:
+    def read(self, day: date) -> list[BarRow5m]:
         """Every stored row of `day`, ordered by (bar_start, instrument_id)."""
         return sorted(_rows(self._table(day)), key=lambda r: (r.bar_start, r.instrument_id))
 
@@ -160,7 +162,7 @@ class BarStore:
         rewritten once per call whatever the number of instruments (the minute-history download
         writes a batch of symbols at once, D7). Only the stored rows of the written instruments
         are turned into Python rows; the rest of the day is carried over as Arrow data."""
-        by_day: dict[date, dict[tuple[str, datetime], BarRow]] = {}
+        by_day: dict[date, dict[tuple[str, datetime], BarRow5m]] = {}
         for bar in bars:
             instrument_id = instrument_ids.get(bar.symbol)
             if instrument_id is None:
@@ -260,15 +262,9 @@ class BarStore:
         self._atomic(self.partition(day) / COVERAGE_NAME, json.dumps(body).encode())
 
     def _atomic(self, target: Path, data: bytes) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            temp.write_bytes(data)
-            os.replace(temp, target)
-        finally:
-            temp.unlink(missing_ok=True)
+        atomic_replace(target, lambda tmp: tmp.write_bytes(data))
 
-    def _replace(self, day: date, rest: pa.Table, rows: list[BarRow]) -> None:
+    def _replace(self, day: date, rest: pa.Table, rows: list[BarRow5m]) -> None:
         """Write `rest` (stored rows kept as they are) and `rows` as the day's file."""
         fresh = pa.table(
             {
@@ -288,18 +284,12 @@ class BarStore:
         self._atomic_table(self.path(day), table)
 
     def _atomic_table(self, target: Path, table: pa.Table) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-        try:
-            pq.write_table(table, temp)
-            os.replace(temp, target)
-        finally:
-            temp.unlink(missing_ok=True)
+        atomic_replace(target, lambda tmp: pq.write_table(table, tmp))
 
 
-def _rows(table: pa.Table) -> list[BarRow]:
+def _rows(table: pa.Table) -> list[BarRow5m]:
     return [
-        BarRow(
+        BarRow5m(
             str(r["instrument_id"]),
             as_utc(r["bar_start"]),
             r["open"],

@@ -29,7 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.hat.clock import require_aware
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 
 from ..errors import HatError
 from ..models import HatAnnouncement, HatInstrument, HatMarket

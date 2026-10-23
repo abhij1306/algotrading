@@ -11,8 +11,9 @@ store the NIFTY 500 and India VIX levels does not succeed.
 
 The body is idempotent (a crash between the body and its recording re-runs it): a raw partition
 that already exists is never rewritten, so a re-run reads it and carries on with the rest, and
-every other write is an upsert. Outcome events and the data-health state are written by
-`outcome_recorder` in the transaction that records the run's final status (HAT-DATA-045).
+every other write is an upsert. Outcome events and the data-health state are written by the
+job wiring (`daily.nightly.ingest_outcome_recorder`) in the transaction that records the run's
+final status (HAT-DATA-045), so ingest itself imports nothing from `risk` or `events`.
 
 Nothing here opens a connection: the MCP client, the bhavcopy fetcher and the sleep are
 injected. Stable error codes only ever leave this module (HAT-DATA-035).
@@ -22,7 +23,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -32,19 +32,12 @@ from datetime import time as clock_time
 from decimal import Decimal
 from typing import Any
 
-import pyarrow as pa
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from ..clock import Clock
-from ..events import record
 from ..ids import uuid7
-from ..models import HatInstrument, HatJobRun, HatMarket
 from ..money import MONEY_SCALE, exact
 from ..notify import LogNotifier, Notifier
-from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory, error_code
-from ..risk.controls import sync_health
-from ..time import IST, utc_now
+from ..ops.jobs import JobError, JobResult, SessionFactory, error_code
+from ..time import IST
 from . import corporate_actions as ca
 from .bhavcopy import (
     SOURCE_BHAVCOPY,
@@ -55,31 +48,24 @@ from .bhavcopy import (
     archive_name,
     parse_bhavcopy,
 )
-from .history_build import INDEX_NAMES, parse_index_archive_csv
+from .breadth import breadth_from_mcp, derive_breadth, write_breadth
+from .index_history import INDEX_NAMES, parse_index_archive_csv
 from .mcp_client import McpClient, McpError, parse_data_date
+from .pacing import Pacer
 from .rowcheck import Candidate, row_ok
-from .store import (
-    DATASET_BARS,
-    DATASET_MARKET_BREADTH,
-    MARKET_BREADTH_SCHEMA,
-    BarRow,
-    DataStore,
-    IndexRow,
-)
+from .store import DATASET_BARS, BarRow, DataStore, IndexRow, atomic_replace
+from .universe import Member, active_members
 
 logger = logging.getLogger(__name__)
 
 JOB_INGEST = "ingest.nightly"
 SOURCE_MCP = "mcp"
-SOURCE_DERIVED = "derived"  # breadth counted from our own bars when the MCP has none
 
 PROBE_START = clock_time(18, 0)
 CUTOFF = clock_time(22, 0)
 PROBE_INTERVAL = timedelta(minutes=10)
-UNIVERSE_SERIES = ("EQ", "BE")
 BIG_MOVE = Decimal("0.20")
 REQUIRED_INDICES = ("NIFTY 500", "INDIA VIX")
-BREADTH_PART = "breadth"
 
 # Stable codes (never raw text): what a failed run records and alerts with.
 CODE_NO_DATA = "ingest_no_data"
@@ -87,7 +73,6 @@ CODE_FETCH_FAILED = "ingest_fetch_failed"
 CODE_NO_UNIVERSE = "ingest_no_universe"
 CODE_NO_ROWS = "ingest_no_rows"
 CODE_INDEX_MISSING = "ingest_index_missing"
-CODE_NO_MARKET = "ingest_no_market"
 
 DayFallback = Callable[[date], "ParsedDay | None"]
 IndexCsv = Callable[[date], "str | None"]
@@ -95,33 +80,6 @@ SymbolSource = Callable[[date], Collection[str]]
 
 
 # --- the universe (HAT-DATA-041) --------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Member:
-    """One active EQ/BE instrument of the universe."""
-
-    instrument_id: uuid.UUID
-    isin: str
-    symbol: str
-    series: str
-
-
-def active_universe(session: Session) -> list[Member]:
-    """The active NSE instruments with series EQ or BE, in a stable order."""
-    market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
-    if market_id is None:
-        raise JobError(CODE_NO_MARKET)
-    rows = session.execute(
-        select(HatInstrument.id, HatInstrument.isin, HatInstrument.symbol, HatInstrument.series)
-        .where(
-            HatInstrument.market_id == market_id,
-            HatInstrument.active.is_(True),
-            HatInstrument.series.in_(UNIVERSE_SERIES),
-        )
-        .order_by(HatInstrument.symbol, HatInstrument.series, HatInstrument.id)
-    ).all()
-    return [Member(r[0], r[1], r[2], r[3]) for r in rows]
 
 
 def request_symbols(members: Iterable[Member]) -> list[str]:
@@ -364,72 +322,6 @@ def write_raw_once(store: DataStore, day: date, rows: Sequence[BarRow]) -> bool:
     return True
 
 
-def derive_breadth(frame_rows: Iterable[tuple[Decimal | None, Decimal, int]]) -> dict[str, Any]:
-    """Advances, declines and unchanged counted from (prev_close, close, volume) rows."""
-    advances = declines = unchanged = volume = 0
-    for prev, close, vol in frame_rows:
-        volume += vol
-        if prev is None or close == prev:
-            unchanged += 1
-        elif close > prev:
-            advances += 1
-        else:
-            declines += 1
-    total = advances + declines + unchanged
-    return {
-        "total_stocks": total,
-        "advances": advances,
-        "declines": declines,
-        "unchanged": unchanged,
-        "ad_ratio": (advances / declines) if declines else None,
-        "volume": volume,
-        "source": SOURCE_DERIVED,
-    }
-
-
-def _count(fields: Mapping[str, object], *names: str) -> int | None:
-    for name in names:
-        value = fields.get(name)
-        if isinstance(value, bool):
-            continue
-        if isinstance(value, float) and value.is_integer():
-            value = int(value)
-        if isinstance(value, int) and value >= 0:
-            return value
-    return None
-
-
-def breadth_from_mcp(fields: Mapping[str, object]) -> dict[str, Any] | None:
-    """The `get_market_breadth` fields as a row, or None when a count is missing."""
-    advances = _count(fields, "advances")
-    declines = _count(fields, "declines")
-    unchanged = _count(fields, "unchanged")
-    if advances is None or declines is None or unchanged is None:
-        return None
-    total = _count(fields, "totalStocks", "total_stocks", "total")
-    ratio = fields.get("adRatio", fields.get("ad_ratio"))
-    if isinstance(ratio, int | float) and not isinstance(ratio, bool):
-        ad_ratio: float | None = float(ratio)
-    else:
-        ad_ratio = advances / declines if declines else None
-    return {
-        "total_stocks": total if total is not None else advances + declines + unchanged,
-        "advances": advances,
-        "declines": declines,
-        "unchanged": unchanged,
-        "ad_ratio": ad_ratio,
-        "volume": _count(fields, "total_volume", "totalVolume", "volume") or 0,
-        "source": SOURCE_MCP,
-    }
-
-
-def write_breadth(store: DataStore, day: date, row: Mapping[str, Any]) -> None:
-    table = pa.table(
-        {k: [row[k]] for k in MARKET_BREADTH_SCHEMA.names}, schema=MARKET_BREADTH_SCHEMA
-    )
-    store.write_partition(DATASET_MARKET_BREADTH, day, BREADTH_PART, table)
-
-
 def index_rows_from_mcp(rows: Iterable[Mapping[str, object]]) -> list[IndexRow]:
     """`get_index_snapshot` rows as `IndexRow`s (names upper-cased as the history stores them);
     a row with an unreadable value is left out, and the first row of a repeated name wins."""
@@ -462,7 +354,7 @@ def bhavcopy_day(store: DataStore, fetch: Fetcher, trade_date: date) -> ParsedDa
     """Download (once, kept untouched in `raw/`) and parse the day's bhavcopy; None when NSE has
     no file or it cannot be read. This is the PR 5 downloader and parser, unchanged."""
     state = BuildState(store.root / "build" / "ingest_state.json")
-    Downloader(store, fetch, state, interval=0.0).run([trade_date], resume=False)
+    Downloader(store, fetch, state, Pacer()).run([trade_date], resume=False)
     name = archive_name(trade_date)
     if not store.raw_exists(name):
         return None
@@ -501,48 +393,10 @@ def _lookup_actions(
     deps: IngestDeps, trade_date: date, flagged: Sequence[str], members: Mapping[str, Member]
 ) -> tuple[int, int]:
     """`get_corporate_actions` for the flagged symbols only; (created, failed lookups)."""
-    created, failed = lookup_actions(
-        deps.client,
-        deps.session_factory,
-        {s: members[s].instrument_id for s in flagged},
-        trade_date,
-        trade_date,
+    found = ca.lookup_actions(
+        deps.client, {s: members[s].instrument_id for s in flagged}, trade_date, trade_date
     )
-    return created, len(failed)
-
-
-def lookup_actions(
-    client: McpClient,
-    session_factory: SessionFactory,
-    instruments: Mapping[str, object],
-    from_date: date,
-    to_date: date,
-) -> tuple[int, list[str]]:
-    """`get_corporate_actions` for each symbol (to its instrument id) over the dates, stored
-    idempotently (HAT-DATA-052). Returns (actions created, symbols whose lookup failed, came
-    back incomplete or held a row that could not be read: an unknown action is not "none")."""
-
-    def one(symbol: str) -> Callable[[], tuple[str, ca.Normalised | None]]:
-        def run() -> tuple[str, ca.Normalised | None]:
-            try:
-                page = client.corporate_actions(symbol, from_date, to_date)
-            except McpError:
-                return symbol, None
-            if page.incomplete:
-                return symbol, None
-            return symbol, ca.from_mcp(instruments[symbol], page.actions)
-
-        return run
-
-    results = client.map_calls([one(s) for s in sorted(instruments)])
-    records = [r for _, n in results if n is not None for r in n.records]
-    failed = sorted(s for s, n in results if n is None or n.unparsed)
-    created = 0
-    if records:
-        with session_factory() as session:
-            created = ca.load_actions(session, records).created
-            session.commit()
-    return created, failed
+    return ca.store_actions(deps.session_factory, found.records), len(found.failed)
 
 
 def _store_indices(
@@ -592,7 +446,7 @@ def run_ingest(deps: IngestDeps, trade_date: date, run_id: uuid.UUID) -> IngestR
     """One night's ingest. Raises `JobError` with a stable code when the day cannot be completed."""
     report = IngestReport(trade_date)
     with deps.session_factory() as session:
-        members = active_universe(session)
+        members = active_members(session)
     if not members:
         raise JobError(CODE_NO_UNIVERSE)
     report.universe = len(members)
@@ -671,11 +525,8 @@ def _keep_checks(store: DataStore, trade_date: date, report: IngestReport) -> No
     """Written before the partition and atomically (a temporary file renamed over), so a crash
     leaves either no partition or a partition with its counts."""
     folder = store.partition_dir(DATASET_BARS, trade_date)
-    folder.mkdir(parents=True, exist_ok=True)
-    counts = {name: getattr(report, name) for name in _CHECK_COUNTS}
-    temporary = folder / f".{CHECKS_FILE}.tmp"
-    temporary.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
-    os.replace(temporary, folder / CHECKS_FILE)
+    text = json.dumps({name: getattr(report, name) for name in _CHECK_COUNTS}, sort_keys=True)
+    atomic_replace(folder / CHECKS_FILE, lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
 
 def _restore_checks(store: DataStore, trade_date: date, report: IngestReport) -> None:
@@ -738,42 +589,3 @@ def ingest_body(
         return JobResult(calls=deps.client.log.calls, rows=report.stored)
 
     return body
-
-
-def outcome_recorder(
-    holder: Mapping[str, IngestReport], trade_date: date, clock: Clock | None = None
-) -> OnFinish:
-    """The `on_finish` hook of `ingest.nightly`: in the transaction that records the run's final
-    status it appends exactly one of `ingest.completed` and `ingest.failed`, and on a failure
-    trips the data-health kill so bots take no entry (HAT-DATA-045, 047). A success never clears
-    the health kill: only a passing quality gate does (HAT-DATA-065)."""
-
-    def hook(session: Session, row: HatJobRun) -> None:
-        now = utc_now(clock) if clock is not None else utc_now()
-        ok = row.status == "succeeded"
-        report = holder.get("report")
-        payload: dict[str, Any] = report.payload() if report is not None else {}
-        payload["trade_date"] = trade_date.isoformat()
-        payload["calls"] = row.calls
-        if not ok:
-            payload["error"] = row.error
-        record(
-            session,
-            aggregate_type="ingest",
-            aggregate_id=row.id,
-            event_type="ingest.completed" if ok else "ingest.failed",
-            actor="scheduler",
-            payload=payload,
-            occurred_at=now,
-        )
-        if not ok:
-            sync_health(
-                session,
-                scope="account",
-                bot_id=None,
-                failing=True,
-                reason="data_health",
-                now=now,
-            )
-
-    return hook

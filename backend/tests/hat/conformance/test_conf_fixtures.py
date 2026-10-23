@@ -113,7 +113,7 @@ def test_fixtures_index_history_no_data() -> None:
     """The `get_index_history` answer for a window older than the server keeps (the `error` text
     of the 22 Oct 2026 build) raises `mcp_no_data`, not `mcp_bad_response`, and
     ends that index's chain without a row."""
-    from app.hat.data.history_build import mcp_index_source
+    from app.hat.data.index_history import mcp_index_source
 
     reply = fixture_json("mcp_index_history_no_data.json")
     client = McpClient(ScriptedTransport([reply]), sleep=lambda _s: None)

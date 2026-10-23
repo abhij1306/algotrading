@@ -1,46 +1,27 @@
 """The historical build from 22 Jun 2011 to today (HAT-DATA-090..097, HAT-DEC-I2).
 
-    python -m app.hat.data.history_build [--from 2011-06-22] [--to YYYY-MM-DD] [--resume]
-
-The history starts at `bhavcopy.FIRST_ISIN_DAY`: older files have no ISIN, so an earlier `--from`
-is moved up to it. Runs by hand, once, against the real NSE archive and the two MCP servers. It
-downloads about 4,000 bhavcopy zips at about one per second (roughly 70 minutes), keeps them
-untouched under `HAT_DATA_ROOT/raw/`, writes `bars_daily_raw` partitions (a row failing the
-HAT-DATA-042 row check is left out and counted), loads corporate actions and index
-history, then validates 50 random symbol-days against `get_stock_history`. `--resume` skips every
-day already downloaded or known to have no file, so an interrupted run continues where it
-stopped; every step is idempotent (the same input rewrites the same files). Nothing in the tests
-or the verification touches the network: the sources below are injected.
-
-Environment: `HAT_DATA_ROOT` (data directory); the NSE bhavcopy MCP endpoint variable of the ops
-spec (corporate actions, recent index history and validation; without it those steps are
-skipped and the index comes from NSE's daily index archive alone); a PostgreSQL database as for
-the rest of HAT (`DB_*`). Add `--skip-actions`, `--skip-index` or
-`--skip-validation` to leave a step out.
+`run_history_build` downloads every NSE bhavcopy zip of the period (about 4,000 at about one per
+second), keeps them untouched under `HAT_DATA_ROOT/raw/`, writes `bars_daily_raw` partitions (a
+row failing the HAT-DATA-042 row check is left out and counted), then runs the steps it is given:
+corporate actions, index history (`index_history`) and validation (`history_validation`). The
+history starts at `bhavcopy.FIRST_ISIN_DAY`: older files have no ISIN, so an earlier start is
+moved up to it. With `resume` every day already downloaded or known to have no file is skipped,
+so an interrupted run continues where it stopped; every step is idempotent (the same input
+rewrites the same files). The command line is `history_cli`; nothing here reaches the network:
+the sources are injected.
 """
 
 from __future__ import annotations
 
-import argparse
-import csv
-import io
-import logging
-import sys
-import time
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
-from decimal import Decimal
-from pathlib import Path
+from datetime import date
 from typing import Protocol
 
 from sqlalchemy import select
 
-from ..errors import HatError
 from ..ids import uuid7
-from ..money import exact
-from ..settings import operator_settings, process_env
 from .bhavcopy import (
     FIRST_ISIN_DAY,
     BhavRow,
@@ -56,37 +37,11 @@ from .bhavcopy import (
     to_bar_rows,
     weekdays,
 )
-from .corporate_actions import ActionRecord, LoadReport, load_actions
-from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
-from .run_report import save_report
-from .sessions import IST
-from .store import (
-    DATASET_BARS,
-    DataStore,
-    IndexRow,
-    PartitionReport,
-    index_coverage,
-    partition_report,
-)
-
-logger = logging.getLogger(__name__)
-
-NIFTY_50 = "NIFTY 50"
-NIFTY_500 = "NIFTY 500"
-INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
-SAMPLE_SIZE = 50
-MCP_HISTORY_MONTHS = 12
-# [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
-INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
-# [A] Names the archive used before NSE's 2015 renaming; read as today's names.
-INDEX_ALIASES = {
-    "CNX NIFTY": NIFTY_50,
-    "S&P CNX NIFTY": NIFTY_50,
-    "CNX 500": NIFTY_500,
-    "S&P CNX 500": NIFTY_500,
-}
-REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD.txt per run day
-
+from .corporate_actions import ActionRecord, LoadReport
+from .history_validation import Validation, ValidationReport, validate_build
+from .index_history import INDEX_NAMES, IndexLoadReport, IndexSource, load_index_history
+from .pacing import Pacer
+from .store import DATASET_BARS, DataStore, PartitionReport, index_coverage, partition_report
 
 # --- instruments ---------------------------------------------------------------------------------
 
@@ -140,328 +95,6 @@ class DbCatalog:
             session.commit()
 
 
-# --- index history (HAT-DATA-095) ----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class IndexPoint:
-    day: date
-    row: IndexRow
-
-
-IndexSource = Callable[[str, date, date], Iterable[IndexPoint]]
-
-
-def index_point_from_mcp(name: str, row: dict) -> IndexPoint | None:
-    """One `get_index_history` row; None when a value or the date is missing."""
-    day = parse_data_date(row.get("date"))
-    values = [
-        exact(row.get(k), floats=True, grouped=True) for k in ("open", "high", "low", "close")
-    ]
-    if day is None or any(v is None for v in values):
-        return None
-    o, h, low, c = values
-    assert o is not None
-    assert h is not None
-    assert low is not None
-    assert c is not None
-    return IndexPoint(day, IndexRow(name.upper(), o, h, low, c))
-
-
-def mcp_index_source(client: McpClient) -> IndexSource:
-    """Chain `get_index_history` chunks (12 months each) back from `end` to `start`. A "no data"
-    answer is the server's depth and ends the chain; any other failure raises."""
-
-    def chunk(name: str, cursor: date) -> tuple[list[dict], date | None] | None:
-        try:
-            return client.index_history(name, cursor, MCP_HISTORY_MONTHS)
-        except McpError as exc:
-            if exc.code == CODE_NO_DATA:
-                return None
-            raise
-
-    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
-        cursor: date | None = end
-        while cursor is not None and cursor >= start:
-            answer = chunk(name, cursor)
-            if answer is None:
-                return
-            rows, nxt = answer
-            for row in rows:
-                point = index_point_from_mcp(name, row)
-                if point is not None and start <= point.day <= end:
-                    yield point
-            if nxt is None or nxt >= cursor:
-                break
-            cursor = nxt
-
-    return source
-
-
-def parse_index_archive_csv(
-    text: str, day: date, names: Collection[str] = INDEX_NAMES
-) -> list[IndexPoint]:
-    """NSE's `ind_close_all_DDMMYYYY.csv` rows for the wanted indices."""
-    wanted = {n.upper() for n in names}
-    points = []
-    for raw in csv.DictReader(io.StringIO(text)):
-        row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
-        name = row.get("index name", "").upper()
-        name = INDEX_ALIASES.get(name, name)
-        if name not in wanted:
-            continue
-        values = [
-            exact(row.get(k), floats=True, grouped=True)
-            for k in (
-                "open index value",
-                "high index value",
-                "low index value",
-                "closing index value",
-            )
-        ]
-        if any(v is None for v in values):
-            continue
-        o, h, low, c = values
-        assert o is not None
-        assert h is not None
-        assert low is not None
-        assert c is not None
-        points.append(IndexPoint(day, IndexRow(name, o, h, low, c)))
-    return points
-
-
-CODE_INDEX_ARCHIVE = "index_archive_error"
-
-
-class IndexArchiveError(HatError):
-    """An index archive file could not be fetched or held no index row; raised after the rows
-    that were available, so the index keeps them and is reported failed."""
-
-    code = CODE_INDEX_ARCHIVE
-
-
-def index_archive_name(day: date) -> str:
-    return f"ind_close_all_{day:%d%m%Y}.csv"
-
-
-class ArchiveIndexSource:
-    """Index rows from NSE's daily `ind_close_all_DDMMYYYY.csv`, for the days that have bars.
-    One file serves every index: it is fetched at most once per run, paced like the bhavcopy
-    downloader, and kept untouched under `raw/` so a later run reads it from disk. A day NSE has
-    no file for stays missing (reported by the coverage); a failed fetch, or an answer with no
-    index row (never kept, so the next run asks again), fails the indices that needed it."""
-
-    def __init__(
-        self, store: DataStore, fetch: Fetcher, pacing: Pacing, names: Collection[str] = INDEX_NAMES
-    ) -> None:
-        self._store = store
-        self._fetch = fetch
-        self._pacing = pacing
-        self._names = names
-        self._points: dict[date, list[IndexPoint]] = {}
-        self._bar_days: list[date] | None = None
-        self._last_start: float | None = None
-        self.requested: list[date] = []
-        self.not_found: list[date] = []
-        self.errors: list[date] = []
-
-    def __call__(self, name: str, start: date, end: date) -> Iterable[IndexPoint]:
-        wanted = name.upper()
-        if self._bar_days is None:
-            self._bar_days = self._store.days(DATASET_BARS)
-        days = [d for d in self._bar_days if start <= d <= end]
-        for day in days:
-            yield from (p for p in self._day(day) if p.row.index_name == wanted)
-        if any(day in self.errors for day in days):
-            raise IndexArchiveError(CODE_INDEX_ARCHIVE)
-
-    def _day(self, day: date) -> list[IndexPoint]:
-        if day not in self._points:
-            self._points[day] = self._read(day)
-        return self._points[day]
-
-    def _read(self, day: date) -> list[IndexPoint]:
-        name = index_archive_name(day)
-        if self._store.raw_exists(name):
-            return self._parse(self._store.read_raw(name), day)
-        self._wait_turn()
-        self.requested.append(day)
-        result = self._fetch(INDEX_ARCHIVE_URL + name)
-        if result.status == "not_found":
-            self.not_found.append(day)
-            return []
-        points = self._parse(result.data, day) if result.status == "ok" else []
-        if not points:  # an error, or an answer that is no index file (a block page, a cut body)
-            self.errors.append(day)
-            return []
-        self._store.store_raw(name, result.data)
-        return points
-
-    def _parse(self, data: bytes, day: date) -> list[IndexPoint]:
-        return parse_index_archive_csv(data.decode("utf-8-sig", errors="replace"), day, self._names)
-
-    def _wait_turn(self) -> None:
-        # the first request waits too: the bhavcopy downloader may have just asked the same host
-        last = self._pacing.clock() if self._last_start is None else self._last_start
-        remaining = self._pacing.interval - (self._pacing.clock() - last)
-        if remaining > 0:
-            self._pacing.sleep(remaining)
-        self._last_start = self._pacing.clock()
-
-
-def archive_fill_source(primary: IndexSource, archive: IndexSource) -> IndexSource:
-    """The primary source (the MCP) first; the archive fills the days before its first row, or
-    the whole range when it has none. A failure of either is raised after every row both could
-    give (the primary's first), so the index keeps them and is still reported failed."""
-
-    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
-        points: list[IndexPoint] = []
-        failure: Exception | None = None
-        try:
-            points.extend(primary(name, start, end))  # keeps the rows taken before a failure
-        except Exception as exc:  # re-raised below, after the archive fill
-            failure = exc
-        yield from points
-        first = min((p.day for p in points), default=end + timedelta(days=1))
-        if first > start:
-            try:
-                yield from archive(name, start, first - timedelta(days=1))
-            except Exception as exc:
-                failure = failure or exc
-        if failure is not None:
-            raise failure
-
-    return source
-
-
-@dataclass
-class IndexLoadReport:
-    days_written: int = 0
-    points: int = 0
-    failed: dict[str, str] = field(default_factory=dict)  # index -> stable code
-
-
-def load_index_history(
-    store: DataStore,
-    source: IndexSource,
-    start: date,
-    end: date,
-    names: Sequence[str] = INDEX_NAMES,
-) -> IndexLoadReport:
-    """Pull every index, then write each day once with all its indices (idempotent). An index
-    whose source fails is recorded with a stable code and keeps the rows it already gave; the
-    other indices still load."""
-    by_day: dict[date, dict[str, IndexRow]] = defaultdict(dict)
-    report = IndexLoadReport()
-    for name in names:
-        try:
-            for point in source(name, start, end):
-                by_day[point.day][point.row.index_name] = point.row
-        except Exception as exc:  # one index never stops the others, validation or the report
-            code = getattr(exc, "code", None)
-            report.failed[name] = code if isinstance(code, str) else "index_source_failed"
-            logger.warning("index history %s failed: %s", name, report.failed[name])
-    for day in sorted(by_day):
-        store.upsert_index(day, list(by_day[day].values()))
-        report.days_written += 1
-        report.points += len(by_day[day])
-    return report
-
-
-# --- validation (HAT-DATA-096) --------------------------------------------------------------------
-
-CloseSource = Callable[[str, date], Decimal | None]
-
-
-def mcp_close_source(client: McpClient) -> CloseSource:
-    """The close `get_stock_history` gives for a symbol on a day (raw, unadjusted)."""
-
-    def close(symbol: str, day: date) -> Decimal | None:
-        try:
-            rows = client.stock_history(symbol, day, 1)
-        except McpError:
-            return None
-        for row in rows:
-            if parse_data_date(row.get("date")) == day:
-                return exact(row.get("close"), floats=True, grouped=True)
-        return None
-
-    return close
-
-
-@dataclass(frozen=True)
-class SampleCheck:
-    symbol: str
-    day: date
-    ours: Decimal
-    theirs: Decimal | None
-
-    @property
-    def mismatch(self) -> bool:
-        return self.theirs is not None and self.theirs != self.ours
-
-
-@dataclass
-class ValidationReport:
-    row_counts: dict[date, int] = field(default_factory=dict)
-    samples: list[SampleCheck] = field(default_factory=list)
-
-    @property
-    def mismatches(self) -> list[SampleCheck]:
-        return [s for s in self.samples if s.mismatch]
-
-    @property
-    def unchecked(self) -> list[SampleCheck]:
-        return [s for s in self.samples if s.theirs is None]
-
-    @property
-    def failed(self) -> bool:
-        """True iff some sampled close differs from the MCP close (exact comparison)."""
-        return bool(self.mismatches)
-
-
-_SAMPLE_SQL = """
-SELECT symbol, date, close FROM (
-    SELECT instrument_id, symbol, date, close, ingest_run_id,
-        sha256(concat(?, ':', instrument_id, ':', CAST(date AS VARCHAR))) AS h
-    FROM bars_daily_raw ORDER BY h, ingest_run_id DESC LIMIT ?)
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-ORDER BY h LIMIT ?
-"""
-
-
-def validate_build(
-    store: DataStore,
-    close_source: CloseSource,
-    *,
-    sample_size: int = SAMPLE_SIZE,
-    seed: int = 0,
-) -> ValidationReport:
-    """Row counts per day, and `sample_size` random symbol-days compared with the MCP.
-
-    The sample is the instrument-days with the smallest sha256 of `seed:instrument_id:day`, drawn
-    in DuckDB so only the sample reaches Python. Every run's row of one instrument-day has the
-    same hash, so the first `sample_size x runs` rows by (hash, newest run) hold at least
-    `sample_size` instrument-days, each with its latest row: no window over the whole table."""
-    report = ValidationReport()
-    con = store.connect()
-    try:
-        report.row_counts = dict(
-            con.execute(
-                "SELECT date, count(DISTINCT CAST(instrument_id AS UUID)) FROM bars_daily_raw "
-                "GROUP BY date ORDER BY date"
-            ).fetchall()
-        )
-        runs = con.execute("SELECT count(DISTINCT ingest_run_id) FROM bars_daily_raw").fetchone()
-        pool = sample_size * max(runs[0] if runs else 0, 1)
-        chosen = con.execute(_SAMPLE_SQL, [str(seed), pool, sample_size]).fetchall()
-    finally:
-        con.close()
-    for symbol, day, ours in sorted(chosen, key=lambda r: (r[1], r[0])):
-        report.samples.append(SampleCheck(symbol, day, ours, close_source(symbol, day)))
-    return report
-
-
 # --- the build ---------------------------------------------------------------------------
 
 
@@ -484,15 +117,6 @@ class BuildReport:
 
 
 @dataclass(frozen=True)
-class Pacing:
-    """Request spacing and the clock it is measured on (injected by tests)."""
-
-    interval: float = 1.0
-    clock: Callable[[], float] = time.monotonic
-    sleep: Callable[[float], None] = time.sleep
-
-
-@dataclass(frozen=True)
 class ActionHooks:
     """Where corporate actions come from and where they are stored. The loader returns the
     records, the failed or partial lookups and the archive texts it could not parse."""
@@ -502,65 +126,68 @@ class ActionHooks:
 
 
 @dataclass(frozen=True)
-class Validation:
-    """The MCP close lookup and the size and seed of the sample compared with it."""
+class BuildPlan:
+    """What the build covers: the store, the bhavcopy fetcher, the instrument catalog, the
+    period, the explained holidays, and whether days already done are skipped."""
 
-    close_source: CloseSource
-    sample_size: int = SAMPLE_SIZE
-    seed: int = 0
+    store: DataStore
+    fetch: Fetcher
+    catalog: InstrumentCatalog
+    start: date
+    end: date
+    holidays: Collection[date] = ()
+    resume: bool = True
 
 
-def run_history_build(
-    *,
-    store: DataStore,
-    fetch: Fetcher,
-    catalog: InstrumentCatalog,
-    start: date,
-    end: date,
-    holidays: Collection[date] = (),
-    resume: bool = True,
-    pacing: Pacing | None = None,
-    actions: ActionHooks | None = None,
-    index_source: IndexSource | None = None,
-    index_starts: dict[str, date] | None = None,
-    validation: Validation | None = None,
-) -> BuildReport:
+@dataclass(frozen=True)
+class BuildSteps:
+    """The pacer of the NSE archive requests (by default the downloader's one a second) and the
+    optional steps after the bars: corporate actions, index history (with each index's first
+    expected day) and validation; a step left None is skipped."""
+
+    pacer: Pacer | None = None
+    actions: ActionHooks | None = None
+    index_source: IndexSource | None = None
+    index_starts: dict[str, date] | None = None
+    validation: Validation | None = None
+
+
+def run_history_build(plan: BuildPlan, steps: BuildSteps | None = None) -> BuildReport:
     """Download, parse, write, load, validate. Safe to repeat: raw zips are never fetched twice,
     a day's file is rewritten from the same zip with the same run id, and actions and index rows
     are upserts. A `start` before `FIRST_ISIN_DAY` is moved up to it (no older file is usable)."""
-    start = max(start, FIRST_ISIN_DAY)
-    days = weekdays(start, end)
+    steps = steps or BuildSteps()
+    store = plan.store
+    start = max(plan.start, FIRST_ISIN_DAY)
+    days = weekdays(start, plan.end)
     state = BuildState.load(store.root / "build" / "state.json")
     if state.run_id is None:
         state.run_id = str(uuid7())
         state.save()
-    pacing = pacing or Pacing()
-    downloader = Downloader(
-        store, fetch, state, interval=pacing.interval, clock=pacing.clock, sleep=pacing.sleep
-    )
-    download = downloader.run(days, resume=resume)
+    download = Downloader(store, plan.fetch, state, steps.pacer).run(days, resume=plan.resume)
     report = BuildReport(download, DayReconciliation(), PartitionReport())
     for day in days:
-        _write_day(store, catalog, state.run_id, day, resume, report)
+        _write_day(store, plan.catalog, state.run_id, day, plan.resume, report)
     have = set(store.days(DATASET_BARS))
-    report.days = reconcile_days(days, have, state.candidates, holidays)
+    report.days = reconcile_days(days, have, state.candidates, plan.holidays)
     # every weekday that is not an explained holiday should have rows, so gaps show as missing
     trading_days = [d for d in days if d not in report.days.holidays]
     report.partitions = partition_report(store, DATASET_BARS, trading_days)
-    if actions is not None:
-        records, failed, unparsed = actions.loader()
-        report.actions = actions.sink(records)
+    if steps.actions is not None:
+        records, failed, unparsed = steps.actions.loader()
+        report.actions = steps.actions.sink(records)
         report.action_symbols_failed = failed
         report.actions_unparsed = list(unparsed)
-    if index_source is not None:
-        report.index = load_index_history(store, index_source, start, end)
+    if steps.index_source is not None:
+        report.index = load_index_history(store, steps.index_source, start, plan.end)
         # [A] every index is expected from the start of the build until Smallcap 250's own first
         # day is checked (HAT-DATA-095)
-        starts = index_starts or dict.fromkeys(INDEX_NAMES, start)
+        starts = steps.index_starts or dict.fromkeys(INDEX_NAMES, start)
         report.index_missing = index_coverage(store, trading_days, starts)
-    if validation is not None:
+    if steps.validation is not None:
+        v = steps.validation
         report.validation = validate_build(
-            store, validation.close_source, sample_size=validation.sample_size, seed=validation.seed
+            store, v.close_source, sample_size=v.sample_size, seed=v.seed
         )
     return report
 
@@ -604,172 +231,3 @@ def _record_left_out(report: BuildReport, parsed: ParsedDay) -> None:
     report.left_out["wrong_date"] += parsed.wrong_date
     report.left_out["duplicates"] += parsed.duplicates
     report.left_out["other_series"] += parsed.other_series
-
-
-# --- command line (the only code here that reaches the network) -------------------------------
-
-
-def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="python -m app.hat.data.history_build", description=__doc__)
-    p.add_argument("--from", dest="start", type=date.fromisoformat, default=FIRST_ISIN_DAY)
-    p.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
-    p.add_argument("--resume", action="store_true", help="skip days already downloaded or empty")
-    p.add_argument("--interval", type=float, default=1.0, help="seconds between requests")
-    p.add_argument("--seed", type=int, default=0, help="seed of the validation sample")
-    p.add_argument(
-        "--actions-archive", help="an NSE corporate-action CSV (SYMBOL, PURPOSE, EX-DATE)"
-    )
-    p.add_argument("--skip-actions", action="store_true")
-    p.add_argument("--skip-index", action="store_true")
-    p.add_argument("--skip-validation", action="store_true")
-    return p.parse_args(argv)
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
-    end = args.end or date.today()
-    settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import SessionLocal
-
-    from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
-    from . import calendar as hat_calendar
-    from .bhavcopy import http_fetcher
-    from .mcp_client import client_from_env
-
-    logging.basicConfig(level=logging.INFO)
-    store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
-    with SessionLocal() as session:
-        market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
-        if market_id is None:
-            sys.stderr.write("history_no_market\n")
-            return 2
-        calendar = hat_calendar.session_calendar(session)
-        holidays = calendar.holidays() if calendar else frozenset()
-    client = client_from_env(process_env())
-
-    def instruments() -> list[tuple[object, str]]:
-        # read when the actions are loaded, so securities registered by the build are included
-        with SessionLocal() as session:
-            return [
-                (r.id, r.symbol)
-                for r in session.execute(select(HatInstrument.id, HatInstrument.symbol))
-            ]
-
-    def sink(records: Sequence[ActionRecord]) -> LoadReport:
-        with SessionLocal() as session:
-            result = load_actions(session, records)
-            session.commit()
-            return result
-
-    fetch = http_fetcher()
-    pacing = Pacing(interval=args.interval)
-    index_source = None
-    if not args.skip_index:
-        index_source = ArchiveIndexSource(store, fetch, pacing)
-        if client is not None:
-            index_source = archive_fill_source(mcp_index_source(client), index_source)
-    hooks = None
-    if not args.skip_actions and (client is not None or args.actions_archive):
-        hooks = _action_hooks(client, instruments, args.actions_archive, args.start, end, sink)
-    report = run_history_build(
-        store=store,
-        fetch=fetch,
-        catalog=DbCatalog(SessionLocal, market_id),
-        start=args.start,
-        end=end,
-        holidays=holidays,
-        resume=args.resume,
-        pacing=pacing,
-        actions=hooks,
-        index_source=index_source,
-        validation=Validation(mcp_close_source(client), seed=args.seed)
-        if client is not None and not args.skip_validation
-        else None,
-    )
-    summary = _summary(report)
-    sys.stdout.write(summary)
-    save_report(settings.data_root / REPORT_DIR, summary, datetime.now(IST))
-    return _exit_code(report)
-
-
-def _exit_code(report: BuildReport) -> int:
-    """Non-zero when anything needs the operator: a mismatch, an unplaced security, an unusable
-    file, a day with no file that is not a holiday, an action lookup or an index that failed."""
-    failed = report.validation is not None and report.validation.failed
-    incomplete = report.unresolved or report.problems or report.days.gaps or report.days.unaccounted
-    index_failed = report.index is not None and report.index.failed
-    return 1 if failed or incomplete or report.action_symbols_failed or index_failed else 0
-
-
-def _action_hooks(
-    client: McpClient | None,
-    instruments: Callable[[], list[tuple[object, str]]],
-    archive: str | None,
-    start: date,
-    end: date,
-    sink: Callable[[Sequence[ActionRecord]], LoadReport],
-) -> ActionHooks:
-    """Actions from the MCP (first) and an operator-supplied NSE archive CSV (fallback); the
-    loader keeps the first value per key. A failed or partial (warned) MCP lookup is counted;
-    an archive row naming a split, bonus or consolidation without a usable ratio is reported
-    (HAT-DATA-055), never dropped."""
-    from . import corporate_actions as ca
-
-    def loader() -> tuple[list[ActionRecord], int, list[str]]:
-        known = instruments()
-        records: list[ActionRecord] = []
-        unparsed: list[str] = []
-        failed = 0
-        for instrument_id, symbol in known if client is not None else []:
-            try:
-                page = client.corporate_actions(symbol, start, end)
-            except McpError:
-                failed += 1
-                continue
-            failed += page.incomplete
-            records.extend(ca.from_mcp(instrument_id, page.actions).records)  # type: ignore[arg-type]
-        if archive:
-            by_symbol = {symbol: instrument_id for instrument_id, symbol in known}
-            text = Path(archive).read_text(encoding="utf-8")
-            parsed = ca.from_archive_csv(text, lambda sym, _d: by_symbol.get(sym))
-            records.extend(parsed.records)
-            unparsed.extend(parsed.unparsed)
-            for purpose in parsed.unparsed:
-                logger.warning("archive action not parsed: %s", purpose)
-        return records, failed, unparsed
-
-    return ActionHooks(loader, sink)
-
-
-def _summary(report: BuildReport) -> str:
-    lines = [
-        f"downloaded {len(report.download.downloaded)}, already had "
-        f"{len(report.download.already_have)}, no file {len(report.download.candidates)}, "
-        f"errors {len(report.download.errors)}",
-        f"rows written {report.rows_written} in {report.files_written} files",
-        f"holiday candidates explained {len(report.days.holidays)}, "
-        f"gaps (not on the holiday list) {len(report.days.gaps)}",
-        f"unaccounted days {len(report.days.unaccounted)}, "
-        f"action lookups failed or partial {report.action_symbols_failed}, "
-        f"archive actions not parsed {len(report.actions_unparsed)}",
-        f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
-        f"left out {dict(report.left_out)}",
-    ]
-    if report.index is not None:
-        missing = {name: len(days) for name, days in report.index_missing.items() if days}
-        lines.append(
-            f"index: {report.index.days_written} days, {report.index.points} rows, "
-            f"failed {report.index.failed}, missing days {missing}"
-        )
-    if report.validation is not None:
-        lines.append(
-            f"validation: {len(report.validation.samples)} samples, "
-            f"{len(report.validation.mismatches)} mismatches, "
-            f"{len(report.validation.unchecked)} unchecked, row counts for "
-            f"{len(report.validation.row_counts)} days"
-        )
-    return "\n".join(lines) + "\n"
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

@@ -50,9 +50,10 @@ from typing import Protocol
 import polars as pl
 
 from ..data.bars import Bar
-from ..data.sessions import IST, SESSION_CLOSE, SESSION_OPEN
+from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..money import exact, require_exact
 from ..risk.caps import effective_max_chase_pct
+from ..time import IST
 from .criteria import CriterionResult, EvalContext, evaluate, evaluate_live, get_type
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE, LEVEL_PIVOT, LiveContext
 from .stops import StopInputs, floor_to_tick, plan_stop

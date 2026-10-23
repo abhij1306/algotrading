@@ -18,10 +18,11 @@ from __future__ import annotations
 import copy
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
 
 import polars as pl
 from sqlalchemy import select
@@ -31,7 +32,7 @@ from ..clock import Clock
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
-from ..data.corporate_actions import stored_factors
+from ..data.corporate_actions import lookup_actions, store_actions, stored_factors
 from ..data.features import features_job
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY, excluded_for, gate_body
@@ -59,9 +60,10 @@ from ..engine.rescale import (
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
-from ..models import HatBot, HatStrategyVersion
+from ..events import record
+from ..models import HatBot, HatJobRun, HatStrategyVersion
 from ..notify import LogNotifier, Notifier
-from ..ops.jobs import JobError, JobResult, SessionFactory
+from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
 from ..ops.partitions import events_partitions
 from ..ops.retention import purge_job
 from ..ops.scheduler import Days, ScheduledJob
@@ -70,6 +72,7 @@ from ..risk.controls import (
     ALERT_KILL_DRAWDOWN,
     evaluate_drawdown_kills,
     snapshot_bots,
+    sync_health,
 )
 from ..time import utc_now
 from .market import official_closes, scan_inputs
@@ -200,6 +203,45 @@ def _index_of(session: Session, bot: HatBot) -> str | None:
     return None if version is None else parse_config(version.config).regime.index
 
 
+def ingest_outcome_recorder(
+    holder: Mapping[str, nightly_ingest.IngestReport], trade_date: date, clock: Clock | None = None
+) -> OnFinish:
+    """The `on_finish` hook of `ingest.nightly`: in the transaction that records the run's final
+    status it appends exactly one of `ingest.completed` and `ingest.failed`, and on a failure
+    trips the data-health kill so bots take no entry (HAT-DATA-045, 047). A success never clears
+    the health kill: only a passing quality gate does (HAT-DATA-065)."""
+
+    def hook(session: Session, row: HatJobRun) -> None:
+        now = utc_now(clock) if clock is not None else utc_now()
+        ok = row.status == "succeeded"
+        report = holder.get("report")
+        payload: dict[str, Any] = report.payload() if report is not None else {}
+        payload["trade_date"] = trade_date.isoformat()
+        payload["calls"] = row.calls
+        if not ok:
+            payload["error"] = row.error
+        record(
+            session,
+            aggregate_type="ingest",
+            aggregate_id=row.id,
+            event_type="ingest.completed" if ok else "ingest.failed",
+            actor="scheduler",
+            payload=payload,
+            occurred_at=now,
+        )
+        if not ok:
+            sync_health(
+                session,
+                scope="account",
+                bot_id=None,
+                failing=True,
+                reason="data_health",
+                now=now,
+            )
+
+    return hook
+
+
 class Nightly:
     """The job bodies over one `NightlyDeps`. Each takes the trade date the run is kept under."""
 
@@ -232,9 +274,9 @@ class Nightly:
         deps.on_loaded()
         return result
 
-    def ingest_finished(self, day: date) -> nightly_ingest.OnFinish:
+    def ingest_finished(self, day: date) -> OnFinish:
         """`ingest.completed` or `ingest.failed`, in the transaction that records the run."""
-        return nightly_ingest.outcome_recorder(
+        return ingest_outcome_recorder(
             self._ingest_reports.setdefault(day, {}), day, self.deps.clock
         )
 
@@ -281,11 +323,12 @@ class Nightly:
             instruments = held_and_watchlisted(session, day)
         if target is None or not instruments:
             return
-        created, failed = nightly_ingest.lookup_actions(
-            _mcp(self.deps), self.deps.session_factory, instruments, target, target
+        found = lookup_actions(_mcp(self.deps), instruments, target, target)
+        created = store_actions(self.deps.session_factory, found.records)
+        logger.info(
+            "next-session actions: %d stored, %d lookups failed", created, len(found.failed)
         )
-        logger.info("next-session actions: %d stored, %d lookups failed", created, len(failed))
-        for symbol in failed:
+        for symbol in found.failed:
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
 
     def _quarantine_actions(self) -> None:
@@ -296,14 +339,12 @@ class Nightly:
         client = _mcp(self.deps)
         for since in sorted({r.since for r in rows}):
             instruments = {r.symbol: r.instrument_id for r in rows if r.since == since}
-            created, failed = nightly_ingest.lookup_actions(
-                client, self.deps.session_factory, instruments, since, since
-            )
+            found = lookup_actions(client, instruments, since, since)
             logger.info(
                 "quarantine actions of %s: %d stored, %d lookups failed",
                 since,
-                created,
-                len(failed),
+                store_actions(self.deps.session_factory, found.records),
+                len(found.failed),
             )
 
     def rescale(self, day: date) -> JobResult:

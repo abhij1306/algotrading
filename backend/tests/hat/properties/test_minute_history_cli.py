@@ -21,6 +21,7 @@ from hypothesis import strategies as st
 
 from app.hat.data import minute_history
 from app.hat.data.bars_basis import RawBasis
+from app.hat.data.universe import Member
 
 
 @given(
@@ -37,6 +38,8 @@ def test_root_and_report(source: str, count: int, refused: bool, unmapped: int) 
     `minute_history/report-YYYY-MM-DD.txt` there; it exits 1 exactly when the run stopped or a
     symbol failed (the budget never runs out here, so only refused symbols do either)."""
     symbols = {f"NSE:S{i}-EQ": uuid4() for i in range(count)}
+    members = [Member(i, "INE", s, "EQ", s) for s, i in symbols.items()]
+    members += [Member(uuid4(), "INE", f"U{i}", "EQ") for i in range(unmapped)]
 
     def history(request: dict[str, str]) -> dict[str, Any]:
         if refused:
@@ -49,7 +52,7 @@ def test_root_and_report(source: str, count: int, refused: bool, unmapped: int) 
             operator_env(scratch, source) as root,
             patch("app.hat.data.provider.fyers_websocket.fyers_history", return_value=history),
             patch("app.database.db_session_scope", return_value=nullcontext()),
-            patch.object(minute_history, "history_universe", return_value=(symbols, unmapped)),
+            patch("app.hat.data.universe.active_members", return_value=members),
             patch.object(
                 minute_history, "_basis", return_value=RawBasis([], lambda *_: {}, Decimal(0))
             ),

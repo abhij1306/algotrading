@@ -14,7 +14,6 @@ from decimal import Decimal
 
 from hypothesis import strategies as st
 
-from app.hat.data.sessions import IST
 from app.hat.risk.caps import OpenPosition
 from app.hat.risk.decision import RiskDecision, SignalContext
 from app.hat.risk.exposure import LadderState
@@ -22,6 +21,7 @@ from app.hat.risk.kill import KillState
 from app.hat.risk.policy import PolicyVersion, RiskPolicy, parse_policy, seed_policy
 from app.hat.risk.service import evaluate_signal
 from app.hat.risk.sessions import SessionCalendar, SessionDay
+from app.hat.time import IST
 
 D = Decimal
 BOT = uuid.UUID("00000000-0000-7000-8000-0000000000b1")

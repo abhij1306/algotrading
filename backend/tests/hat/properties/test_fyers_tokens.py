@@ -14,8 +14,8 @@ from hat_fyers_support import captured_logs, token_store
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from app.hat.data.sessions import IST
 from app.hat.execution.fyers_tokens import StoredToken, TokenStoreError, token_expiry
+from app.hat.time import IST
 
 ZONES = [UTC, IST, ZoneInfo("America/New_York"), ZoneInfo("Pacific/Auckland")]
 instants = st.datetimes(

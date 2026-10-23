@@ -17,7 +17,7 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.hat.data.sessions import IST
+from app.hat.time import IST
 
 from ..models import HatMarket, HatTradingCalendar
 from ..risk.sessions import SessionCalendar

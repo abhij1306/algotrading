@@ -78,7 +78,7 @@ def test_store__cli_root_after_env() -> None:
             commands[path.relative_to(REPO_ROOT).as_posix()] = ast.parse(text)
     assert set(commands) >= {
         "backend/app/hat/data/features.py",
-        "backend/app/hat/data/history_build.py",
+        "backend/app/hat/data/history_cli.py",
         "backend/app/hat/data/minute_history.py",
         "backend/app/hat/backtest/__main__.py",
     }

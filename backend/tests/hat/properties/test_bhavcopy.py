@@ -4,13 +4,14 @@ in-memory zips and fake fetchers (no network)."""
 
 import dataclasses
 import tempfile
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from hat_bhav_support import bar, bhav_rows, render_old, render_udiff
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
+from app.hat.clock import FixedClock
 from app.hat.data.bhavcopy import (
     FIRST_ISIN_DAY,
     BhavcopyError,
@@ -25,6 +26,7 @@ from app.hat.data.bhavcopy import (
     to_bar_rows,
     weekdays,
 )
+from app.hat.data.pacing import Pacer
 from app.hat.data.store import DataStore
 from app.hat.ids import uuid7
 
@@ -97,27 +99,26 @@ class CrashError(Exception):
 )
 def test_rate_limited(n: int, interval: int, durations: list[int]) -> None:
     """Whatever each request's duration, consecutive requests start at least `interval` apart."""
-    now = [0]
-    starts: list[int] = []
+    clock = FixedClock(datetime(2024, 1, 1, tzinfo=UTC))
+    starts: list[datetime] = []
     days = weekdays(date(2024, 1, 1), date(2024, 1, 31))[:n]
 
     def fetch(url: str) -> FetchResult:
-        starts.append(now[0])
-        now[0] += durations[len(starts) - 1]
+        starts.append(clock.now())
+        clock.advance(timedelta(seconds=durations[len(starts) - 1]))
         return FetchResult("not_found")
 
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
-        Downloader(
-            store,
-            fetch,
-            BuildState.load(store.root / "state.json"),
-            interval=interval,
-            clock=lambda: now[0],
-            sleep=lambda s: now.__setitem__(0, now[0] + s),
-        ).run(days)
+        pacer = Pacer(
+            min_interval=interval,
+            clock=clock,
+            sleep=lambda s: clock.advance(timedelta(seconds=s)),
+        )
+        Downloader(store, fetch, BuildState.load(store.root / "state.json"), pacer).run(days)
     assert len(starts) == n
-    assert all(b - a >= interval for a, b in zip(starts, starts[1:], strict=False))
+    gap = timedelta(seconds=interval)
+    assert all(b - a >= gap for a, b in zip(starts, starts[1:], strict=False))
 
 
 def _key(row: BhavRow) -> BhavRow:
