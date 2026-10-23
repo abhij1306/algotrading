@@ -158,8 +158,8 @@ def test_traded_value_kept(day: date, rows: st.DataObject) -> None:
     blob = render_old(day, data) if day <= date(2024, 7, 5) else render_udiff(day, data)
     parsed = parse_bhavcopy(day, blob)
     assert [r.traded_value for r in parsed.rows] == [r.traded_value for r in data]
-    ids = {r.key: uuid7() for r in parsed.rows}
-    bars, unresolved = to_bar_rows(parsed, lambda i, s: ids[(i, s)], uuid7())
+    ids = {r.isin: uuid7() for r in parsed.rows}
+    bars, unresolved = to_bar_rows(parsed, ids.get, uuid7())
     assert unresolved == []
     assert [b.traded_value for b in bars] == [r.traded_value for r in data]
     assert all(b.source == "bhavcopy" for b in bars)

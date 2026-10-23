@@ -1,12 +1,13 @@
 """A held instrument's series change (PR 47, HAT-EXEC-146; research G17).
 
-An instrument is (market, ISIN, series) (HAT-DATA-020), so when NSE moves a stock from EQ to BE
-or BZ the weekly reference refresh marks the EQ row delisted and lists the stock under a new
-instrument. A position opened on the old row keeps it: its prices stop, its Fyers symbol
-(`-EQ`) takes no order, and the broker cancels its GTT. Here such a position is found by its
-successor, the active instrument of the same market and ISIN under another series. While it has
-one, the position is manage-only (its exits see no view, `daily/live.py:ExitViews`), its broker
-stops go out under the successor's symbol (`StopDesk._target`), and the morning GTT check
+An instrument is (market, ISIN) (HAT-DATA-020, audit D5): when NSE moves a stock from EQ to BE
+or BZ, the weekly reference refresh keeps the instrument, sets its `series` and `series_since`
+(the refresh day) and rewrites its Fyers symbol for the new series (`-BE`; BZ has none). A
+position opened before that day was protected under the old series' symbol (`-EQ`), which takes
+no order, and the broker cancels its GTT. Such a position is found here: open, and its
+instrument's series changed after the day it opened. While it is, the position is manage-only
+(its exits see no view, `daily/live.py:ExitViews`), its broker stops go out under the
+instrument's current symbol (`StopDesk._target`), and the morning GTT check
 (`TradeManager.check_gtts`) alerts it URGENT on each run until the owner resolves it.
 
 ASM and GSM are surveillance lists, not series: the instrument master holds no such flag, so
@@ -24,37 +25,24 @@ from sqlalchemy.orm import Session
 
 from ..models import HatBrokerSymbol, HatInstrument, HatPosition
 from ..models.strategy import BROKER_FYERS
+from ..time import as_utc, trade_date_of
 
-__all__ = ["ALERT_SERIES_CHANGED", "broker_symbol", "series_changed", "successor"]
+__all__ = ["ALERT_SERIES_CHANGED", "broker_symbol", "series_changed"]
 
 ALERT_SERIES_CHANGED = "position.series_changed"
 
 
-def successor(session: Session, instrument_id: uuid.UUID) -> HatInstrument | None:
-    """The instrument a delisted row's stock trades under now: the active one of the same market
-    and ISIN under another series (the oldest id when several). None for an active row, or
-    when no other series of the ISIN is active."""
-    old = session.get(HatInstrument, instrument_id)
-    if old is None or old.active:
-        return None
-    return session.scalar(
-        select(HatInstrument)
-        .where(
-            HatInstrument.market_id == old.market_id,
-            HatInstrument.isin == old.isin,
-            HatInstrument.series != old.series,
-            HatInstrument.active.is_(True),
-        )
-        .order_by(HatInstrument.id)
-        .limit(1)
-    )
-
-
 def series_changed(session: Session, position: HatPosition) -> HatInstrument | None:
-    """The successor of an open position's instrument, else None."""
+    """The instrument of an open position when its series changed after the position's trade
+    date (so its stops went out under the old series' symbol), else None."""
     if position.closed_at is not None:
         return None
-    return successor(session, position.instrument_id)
+    instrument = session.get(HatInstrument, position.instrument_id)
+    if instrument is None or instrument.series_since is None:
+        return None
+    if instrument.series_since <= trade_date_of(as_utc(position.opened_at)):
+        return None
+    return instrument
 
 
 def broker_symbol(session: Session, instrument_id: uuid.UUID) -> str | None:

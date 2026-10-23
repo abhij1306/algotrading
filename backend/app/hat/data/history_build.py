@@ -92,10 +92,10 @@ REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD
 
 
 class InstrumentCatalog(Protocol):
-    """(isin, series) to instrument id. `register` adds securities that are seen in history but
-    not in the master, so a delisted stock keeps its bars."""
+    """ISIN to instrument id, whatever the series (audit D5). `register` adds securities that are
+    seen in history but not in the master, so a delisted stock keeps its bars."""
 
-    def lookup(self, isin: str, series: str) -> object | None: ...
+    def lookup(self, isin: str) -> object | None: ...
 
     def register(self, rows: Sequence[BhavRow]) -> None: ...
 
@@ -105,28 +105,31 @@ class DbCatalog:
 
     def __init__(self, session_factory: Callable, market_id: object) -> None:
         from ..models import HatInstrument
+        from .instruments import by_isin
 
         self._factory = session_factory
         self._market_id = market_id
         with session_factory() as session:
             self._ids = {
-                (r.isin, r.series): r.id
-                for r in session.scalars(
-                    select(HatInstrument).where(HatInstrument.market_id == market_id)
-                )
+                isin: r.id
+                for isin, r in by_isin(
+                    session.scalars(
+                        select(HatInstrument).where(HatInstrument.market_id == market_id)
+                    )
+                ).items()
             }
 
-    def lookup(self, isin: str, series: str) -> object | None:
-        return self._ids.get((isin, series))
+    def lookup(self, isin: str) -> object | None:
+        return self._ids.get(isin)
 
     def register(self, rows: Sequence[BhavRow]) -> None:
         from .instruments import register_history_instrument
 
         with self._factory() as session:
             for row in rows:
-                if (row.isin, row.series) in self._ids:
+                if row.isin in self._ids:
                     continue
-                self._ids[row.key] = register_history_instrument(
+                self._ids[row.isin] = register_history_instrument(
                     session,
                     self._market_id,  # type: ignore[arg-type]
                     isin=row.isin,
@@ -582,7 +585,7 @@ def _write_day(
         report.problems[day] = getattr(exc, "code", "bhavcopy_unreadable")
         return
     _record_left_out(report, parsed)
-    unknown = [r for r in parsed.rows if catalog.lookup(r.isin, r.series) is None]
+    unknown = [r for r in parsed.rows if catalog.lookup(r.isin) is None]
     if unknown:
         catalog.register(unknown)
     rows, unresolved = to_bar_rows(parsed, catalog.lookup, run_id)
@@ -600,6 +603,7 @@ def _record_left_out(report: BuildReport, parsed: ParsedDay) -> None:
     report.left_out["invalid"] += parsed.invalid
     report.left_out["wrong_date"] += parsed.wrong_date
     report.left_out["duplicates"] += parsed.duplicates
+    report.left_out["other_series"] += parsed.other_series
 
 
 # --- command line (the only code here that reaches the network) -------------------------------

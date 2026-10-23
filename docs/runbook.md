@@ -158,6 +158,27 @@ refuse inside a session (`market_hours`).
    `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl`; copy the reason into the check log.
 5. After the start, follow "Restart recovery: reconcile, then resume".
 
+### One instrument per ISIN: migrating an older database (P6b)
+
+A database or data root from before P6b has one instrument per (ISIN, series); writers refuse it
+(`isin_not_merged`). Stop HAT and run, from `backend/` (`$COMPOSE exec -w /app/backend backend`
+in the stack):
+
+1. `pg_dump` the database (Restore from backup is the way back if anything goes wrong).
+2. `python -m app.hat.data.isin_merge check`: instruments, ISINs, `isins_with_two_ids`.
+3. `python -m app.hat.data.isin_merge up`: one transaction; prints what it repointed, dropped
+   (a sibling's copy of a row the kept id already holds, reference tables only) and inserted,
+   then the check (`isins_with_two_ids: 0`). It aborts on a conflict in a signal, position or
+   other non-reference table (`isin_merge_conflict <table>`) and changes nothing. Repeating it
+   changes nothing. `down` undoes it from the audit tables `hat_isin_merge` and
+   `hat_isin_merge_row`, which `up` keeps.
+4. `python -m app.hat.data.isin_merge rekey --root <old root> --into <new root>` (a new or empty
+   directory, else `isin_merge_into_not_empty`): a new data root
+   with the merged ids (`bars_daily_raw` keeps one row per instrument and day; `bars_5m`, its
+   coverage files and `bars_5m_rejects` are re-keyed; everything else is hard-linked or copied).
+   Point `HAT_DATA_ROOT` at the new root and keep the old one until the next backup drill.
+5. `python -m app.hat.data.features --full` on the new root, then start HAT.
+
 ### Restart recovery: reconcile, then resume
 
 Covers every restart: planned, a crash, or the machine coming back after being down.
@@ -340,10 +361,13 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 
 ### Series change
 
+The weekly reference refresh keeps the instrument when NSE moves it to another series and
+rewrites its Fyers symbol (`-EQ` to `-BE`); a position opened before that day is affected.
+
 1. Alert: URGENT `position.series_changed` (symbol, old and new series, Fyers symbol or
    `unmapped`), at the 08:40 `gtt.check` and at every 23:00 `gtt.verify`.
 2. The position is manage-only: no exit rule runs on it, and its broker stops go out under the new
-   series' Fyers symbol (a GTT still under the old symbol is cancelled and placed again).
+   series' Fyers symbol (a GTT placed on or before the change day is cancelled and placed again).
    `unmapped` means no Fyers symbol is stored for the new series (BZ has none): no stop is sent
    (`stop.not_placed`, code `series_unmapped`) and a GTT under the old symbol is left as it is.
 3. Decide whether to keep it at Fyers yourself or `/flatten` it. The alert repeats until it is

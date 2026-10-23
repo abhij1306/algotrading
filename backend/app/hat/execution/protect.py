@@ -38,7 +38,8 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   outside the session, an intraday stop inside it. Until then the engine would trust it as the
   hard stop (`TradeManager._broker_stop_rests`); once ended, the engine sells on its own.
 - **A series change** (`_target`, HAT-EXEC-146): a position whose instrument moved to another
-  series (EQ to BE) has its stops placed under the successor's symbol (`series.successor`).
+  series (EQ to BE) after it opened has its stops placed under the instrument's current symbol
+  (`series.series_changed`).
 - **A lost answer** (`settle_lost`, HAT-EXEC-065): a stop whose placement answer was lost is
   settled against the broker once `settle_after` has passed since it was sent (a request still
   in flight could land later): a GTT against the broker's GTT book by its tag (else, for a GTT
@@ -336,18 +337,14 @@ class StopDesk:
         session.refresh(position)
         signal = session.get(HatSignal, position.signal_id)
         bot = session.get(HatBot, position.bot_id)
-        moved = series_changed(session, position)
-        # A series change re-maps the symbol stops go out under (HAT-EXEC-146): the old series'
-        # Fyers symbol takes no order.
-        symbol = (
-            moved.symbol
-            if moved is not None
-            else session.scalar(
-                select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
-            )
+        # The instrument's current symbol: after a series change (HAT-EXEC-146) the adapter maps
+        # it to the new series' Fyers symbol, as the old series' symbol takes no order.
+        symbol = session.scalar(
+            select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
         )
         if signal is None or bot is None or symbol is None:
             raise HatError("position without signal, bot or instrument")
+        moved = series_changed(session, position)
         unmapped = moved is not None and broker_symbol(session, moved.id) is None
         return _Target(position, signal, bot.broker_account_id, symbol, unmapped)
 
@@ -945,18 +942,18 @@ class StopDesk:
 
     def _old_series(self, session: Session, target: _Target, row: HatOrder) -> bool:
         """The GTT went out under the old series' symbol of a position whose instrument changed
-        series (HAT-EXEC-146): placed on or before the day the old row left the listing. That
-        symbol takes no order, so a GTT the broker still lists under it protects nothing. The
-        weekly refresh that delists runs on a Saturday, when no GTT is placed; one placed on that
-        day is counted old, so at worst it is placed again once. With no Fyers symbol for the new
-        series nothing could replace it, so it is left for the owner (the URGENT alert says
-        `unmapped`)."""
-        if target.unmapped or series_changed(session, target.position) is None:
+        series (HAT-EXEC-146): placed on or before the day the refresh saw the new series
+        (`series_since`). That symbol takes no order, so a GTT the broker still lists under it
+        protects nothing. The weekly refresh runs on a Saturday, when no GTT is placed; one placed
+        on that day is counted old, so at worst it is placed again once. With no Fyers symbol for
+        the new series nothing could replace it, so it is left for the owner (the URGENT alert
+        says `unmapped`)."""
+        moved = None if target.unmapped else series_changed(session, target.position)
+        if moved is None:
             return False
-        old = session.get(HatInstrument, target.position.instrument_id)
-        if row.placed_at is None or old is None or old.delisted_on is None:
+        if row.placed_at is None or moved.series_since is None:
             return True
-        return trade_date_of(as_utc(row.placed_at)) <= old.delisted_on
+        return trade_date_of(as_utc(row.placed_at)) <= moved.series_since
 
     @_serialised
     def check_gtt(

@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 
 from ..data.corporate_actions import stored_factors
 from ..data.features import STATE_FILE, inputs_digest
+from ..data.identity import series_changes
 from ..data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataStore
 from ..engine.backtest import LOOKBACK_SESSIONS, BacktestError, MarketData
 from ..engine.portfolio import regime
@@ -45,6 +46,10 @@ SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
        CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
        CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value
 FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
+"""
+# the series each bar traded under (one id per ISIN: the series is a dated attribute, audit D5)
+_SERIES_SQL = """
+SELECT CAST(instrument_id AS VARCHAR), date, series FROM bars_daily WHERE date BETWEEN ? AND ?
 """
 # every index the run reads, in one statement, so a concurrent upsert cannot split them
 _INDEX_SQL = """
@@ -77,18 +82,13 @@ def _industries(
     return found
 
 
-def _instruments(
-    session: Session, instruments: Iterable[uuid.UUID]
-) -> tuple[dict[str, str], dict[str, date]]:
+def _delisted(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, date]:
     wanted = set(instruments)
-    series: dict[str, str] = {}
-    delisted: dict[str, date] = {}
-    for row in session.scalars(select(HatInstrument)):
-        if row.id in wanted:
-            series[str(row.id)] = row.series
-            if row.delisted_on is not None:
-                delisted[str(row.id)] = row.delisted_on
-    return series, delisted
+    return {
+        str(row.id): row.delisted_on
+        for row in session.scalars(select(HatInstrument))
+        if row.id in wanted and row.delisted_on is not None
+    }
 
 
 def _features(store: DataStore, days: Iterable[date]) -> pl.DataFrame:
@@ -198,6 +198,7 @@ def load_market(
     instruments = {m.instrument_id for m in members}
     with store.connect(actions) as con:
         bars = con.execute(_BARS_SQL, [window[0], end]).pl()
+        traded = con.execute(_SERIES_SQL, [window[0], end]).fetchall()
         names = sorted({index, *((regime.INDEX_NAME, regime.VIX_NAME) if regime_inputs else ())})
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
     index_closes: dict[str, list[tuple[date, Decimal]]] = {name: [] for name in names}
@@ -210,7 +211,8 @@ def load_market(
         raise BacktestError("backtest_no_regime_inputs")
     wanted = {str(i) for i in instruments}
     bars = bars.filter(pl.col("instrument_id").is_in(sorted(wanted)))
-    series, delisted = _instruments(session, instruments)
+    series = series_changes(r for r in traded if r[0] in wanted)
+    delisted = _delisted(session, instruments)
     # Only an instrument delisted by the period's end has a last traded session in the run; one
     # delisted later simply has no more bars after `end`, which is not a delisting.
     last_traded: dict[str, date] = {}

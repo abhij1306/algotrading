@@ -130,9 +130,10 @@ def request_symbols(members: Iterable[Member]) -> list[str]:
 
 
 def by_symbol(members: Iterable[Member]) -> dict[str, Member]:
-    """Symbol to member; EQ wins over BE if two active members share a symbol."""
+    """Symbol to member (an active symbol names one ISIN, so one member; the lowest id would win
+    a tie)."""
     chosen: dict[str, Member] = {}
-    for m in sorted(members, key=lambda m: (m.series != "EQ", str(m.instrument_id))):
+    for m in sorted(members, key=lambda m: str(m.instrument_id)):
         chosen.setdefault(m.symbol, m)
     return chosen
 
@@ -477,12 +478,13 @@ def _bhav_candidates(
 ) -> tuple[dict[str, Candidate], dict[str, Decimal | None], int]:
     """Accepted candidates by symbol, their traded values, and how many rows were violations (the
     parser already left out every row that fails `row_ok`, counted as `invalid`)."""
-    keyed = {(m.isin, m.series): m for m in members}
+    keyed = {m.isin: m for m in members}
     accepted: dict[str, Candidate] = {}
     traded: dict[str, Decimal | None] = {}
     violations = parsed.invalid + parsed.wrong_date
     for row in parsed.rows:
-        member = keyed.get((row.isin, row.series))
+        # by ISIN: a stock that moved series since the weekly refresh keeps its bar (audit D5)
+        member = keyed.get(row.isin)
         if member is None:
             continue
         accepted.setdefault(

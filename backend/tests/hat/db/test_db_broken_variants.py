@@ -113,8 +113,8 @@ def drop_keyed(table: str, kind: str, columns: tuple[str, ...]) -> Break:
 VARIANTS: dict[str, list[tuple[str, Break]]] = {
     "reference.instrument_unique": [
         (
-            "unique (market_id, isin, series) dropped",
-            drop_keyed("hat_instrument", "u", ("market_id", "isin", "series")),
+            "unique (market_id, isin) dropped",
+            drop_keyed("hat_instrument", "u", ("market_id", "isin")),
         )
     ],
     "reference.broker_symbol_unique": [

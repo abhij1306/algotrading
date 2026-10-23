@@ -79,8 +79,8 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 ## Storage
 
 - PostgreSQL (`hat_*` tables, `init_db` creates them; no Alembic; HAT refuses SQLite at runtime):
-  reference (market, instrument, symbol history, bands, calendar, corporate actions,
-  announcements), strategy/risk/bot (criterion types, strategy versions, risk policy versions,
+  reference (market, instrument (one per ISIN, `data/identity.py`), symbol history, bands,
+  calendar, corporate actions, announcements), strategy/risk/bot (criterion types, strategy versions, risk policy versions,
   broker accounts, bots, kill switches, exposure), portfolio (universes, regime, allocations),
   runtime (watchlist, signal, approval, order, fill, position, trade result), ops (event, job run,
   quality, Telegram, snapshots, backtest runs). The event table is monthly-partitioned on Postgres.

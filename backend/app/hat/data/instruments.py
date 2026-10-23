@@ -26,7 +26,7 @@ from ..models import (
 )
 from ..models.strategy import BROKER_FYERS
 from ..time import utc_now
-from .reference import BandRow, IndustryRow, Security
+from .reference import BandRow, IndustryRow, Security, one_per_isin
 from .symbols import SymbolMaster
 
 logger = logging.getLogger(__name__)
@@ -51,6 +51,21 @@ class UpsertReport:
     renamed: int = 0
     delisted: int = 0
     reactivated: int = 0
+
+
+# The series a Fyers symbol is written for; BZ, BL, IL and the rest get none.
+FYERS_SERIES = frozenset({"EQ", "BE"})
+CODE_ISIN_NOT_MERGED = "isin_not_merged"
+
+
+def by_isin(instruments: Iterable[HatInstrument]) -> dict[str, HatInstrument]:
+    """The instruments by ISIN. Two rows for one ISIN mean the database predates one id per ISIN
+    (audit D5): `python -m app.hat.data.isin_merge up` has not run, so nothing may write."""
+    out: dict[str, HatInstrument] = {}
+    for instrument in instruments:
+        if out.setdefault(instrument.isin, instrument) is not instrument:
+            raise ReferenceDataError(CODE_ISIN_NOT_MERGED)
+    return out
 
 
 # --- symbol history ---------------------------------------------------------------------------
@@ -140,8 +155,8 @@ def apply_symbol_change(
 def resolve_symbol(
     session: Session, market_id: uuid.UUID, symbol: str, on: date
 ) -> HatInstrument | None:
-    """The one instrument whose symbol history covers (symbol, on). If several series share
-    the symbol, the active one wins, then EQ, then the lowest id: at most one is returned."""
+    """The one instrument whose symbol history covers (symbol, on). If several share the
+    symbol, the active one wins, then the lowest id: at most one is returned."""
     candidates = session.scalars(
         select(HatInstrument)
         .join(
@@ -158,7 +173,7 @@ def resolve_symbol(
     ).all()
     if not candidates:
         return None
-    return min(candidates, key=lambda i: (not i.active, i.series != "EQ", i.id.bytes))
+    return min(candidates, key=lambda i: (not i.active, i.id.bytes))
 
 
 @dataclass(frozen=True)
@@ -194,9 +209,9 @@ def seed_symbol_history(
         instrument = None
         if record.isin:
             instrument = session.scalar(
-                select(HatInstrument)
-                .where(HatInstrument.market_id == market_id, HatInstrument.isin == record.isin)
-                .order_by(HatInstrument.series != "EQ", HatInstrument.id)
+                select(HatInstrument).where(
+                    HatInstrument.market_id == market_id, HatInstrument.isin == record.isin
+                )
             )
         if instrument is None:
             instrument = resolve_symbol(session, market_id, record.new_symbol, date.max)
@@ -262,6 +277,10 @@ def _refresh_instrument(
 ) -> bool:
     """Bring one existing instrument in line with the listing; True when anything changed."""
     touched = False
+    if row.series != security.series:
+        # The ISIN moved to another series (EQ to BE, say): same instrument, new broker symbol.
+        row.previous_series, row.series, row.series_since = row.series, security.series, today
+        touched = True
     if row.symbol != security.symbol:
         apply_symbol_change(session, row.id, security.symbol, today)
         row.symbol = security.symbol
@@ -290,15 +309,15 @@ def upsert_instruments(
     complete: bool = True,
     still_listed: Collection[tuple[str, str]] = (),
 ) -> UpsertReport:
-    """Bring `hat_instrument` in line with a listing. Instruments are keyed by (market, isin,
-    series), so a rename keeps the id and records a history row; an instrument missing from a
-    `complete` listing is marked delisted, never deleted. `still_listed` holds (symbol, series)
-    pairs the source lists but this listing has no ISIN row for: they are not delisted."""
-    listing = {s.key: s for s in securities}
-    existing = {
-        (i.isin, i.series): i
-        for i in session.scalars(select(HatInstrument).where(HatInstrument.market_id == market_id))
-    }
+    """Bring `hat_instrument` in line with a listing. Instruments are keyed by (market, isin),
+    so a rename or a series change keeps the id (a rename records a history row); an instrument
+    missing from a `complete` listing is marked delisted, never deleted. `still_listed` holds
+    (symbol, series) pairs the source lists but this listing has no ISIN row for: they are not
+    delisted. An ISIN listed under two series keeps the best-ranked one (`one_per_isin`)."""
+    listing = {s.isin: s for s in one_per_isin(securities)}
+    existing = by_isin(
+        session.scalars(select(HatInstrument).where(HatInstrument.market_id == market_id))
+    )
     report = UpsertReport()
     active_before = sum(1 for i in existing.values() if i.active)
     seen_active = sum(1 for key in listing if key in existing and existing[key].active)
@@ -333,15 +352,14 @@ def register_history_instrument(
     symbol: str,
     first_seen: date,
 ) -> uuid.UUID:
-    """The instrument for (isin, series), created inactive when the master does not have it: a
-    security seen only in old bhavcopy files (delisted, merged or renamed away) must still own
-    its history (HAT-DATA-021). Name and face value are unknown here (the symbol and 0 stand in)
-    until a weekly refresh lists it. Repeating the call returns the same row."""
+    """The instrument of `isin`, created inactive under `series` when the master does not have
+    it: a security seen only in old bhavcopy files (delisted, merged or renamed away) must still
+    own its history (HAT-DATA-021). Name and face value are unknown here (the symbol and 0 stand
+    in) until a weekly refresh lists it. Repeating the call, under any series, returns the same
+    row."""
     row = session.scalar(
         select(HatInstrument).where(
-            HatInstrument.market_id == market_id,
-            HatInstrument.isin == isin,
-            HatInstrument.series == series,
+            HatInstrument.market_id == market_id, HatInstrument.isin == isin
         )
     )
     if row is not None:
@@ -380,7 +398,10 @@ class BrokerSymbolReport:
 def fyers_symbol(master: SymbolMaster, instrument: HatInstrument) -> str | None:
     """The Fyers symbol via `SymbolMaster.to_fyers`, or None when it does not map back to the
     instrument's NSE symbol (never write a mapping that could route an order to another stock).
-    BE series use the `-BE` suffix Fyers expects (`to_fyers` emits `-EQ` for equities)."""
+    It names the series the instrument trades under now: EQ as `-EQ` (what `to_fyers` emits), BE
+    as `-BE`; any other series has none (no order can be routed to it)."""
+    if instrument.series not in FYERS_SERIES:
+        return None
     try:
         symbol = master.to_fyers(instrument.symbol)
     except ValueError:

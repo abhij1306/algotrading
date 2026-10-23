@@ -994,7 +994,6 @@ class TradeManager:
         moved = series_changed(session, position)
         if moved is None:
             return False
-        old = session.get(HatInstrument, position.instrument_id)
         self._notifier.alert(
             ALERT_SERIES_CHANGED,
             trade_date_of(now),
@@ -1002,7 +1001,7 @@ class TradeManager:
                 "bot_id": str(position.bot_id),
                 "position_id": str(position.id),
                 "symbol": moved.symbol,
-                "from": old.series if old is not None else "",
+                "from": moved.previous_series or "",
                 "to": moved.series,
                 "broker_symbol": broker_symbol(session, moved.id) or "unmapped",
             },

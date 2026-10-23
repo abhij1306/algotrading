@@ -38,9 +38,15 @@ series = st.sampled_from(["EQ", "BE", "BZ"])
 
 @st.composite
 def bhav_rows(draw: st.DrawFn, day: date, min_size: int = 1, max_size: int = 8) -> list[BhavRow]:
-    """Distinct (isin, series) security-days; a share of them without a traded value."""
+    """Security-days of distinct ISINs (a file holds one row per ISIN once parsed); a share of
+    them without a traded value."""
     keys = draw(
-        st.lists(st.tuples(isins, series), min_size=min_size, max_size=max_size, unique=True)
+        st.lists(
+            st.tuples(isins, series),
+            min_size=min_size,
+            max_size=max_size,
+            unique_by=lambda k: k[0],
+        )
     )
     rows = []
     for isin, ser in keys:

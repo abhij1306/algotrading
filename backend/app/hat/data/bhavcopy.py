@@ -2,10 +2,12 @@
 (HAT-DATA-090..093, 097; HAT-DATA-011).
 
 Two file formats cover `FIRST_ISIN_DAY` (22 Jun 2011) to today: the old CM bhavcopy up to 5 Jul
-2024 and UDiFF from 8 Jul 2024. Both parse into one `BhavRow` keyed by ISIN and series (symbol
-changes need no lookup: the ISIN does not change), which `to_bar_rows` turns into the
-`bars_daily_raw` rows the nightly ingest writes too. The downloader takes the network as a
-`Fetcher` function; only `http_fetcher` here touches a socket and no test or check calls it.
+2024 and UDiFF from 8 Jul 2024. Both parse into one `BhavRow` per ISIN (symbol and series
+changes need no lookup: the ISIN does not change; a block-deal or similar window beside the
+normal market leaves the best-ranked series' row, `identity.series_rank`), which `to_bar_rows`
+turns into the `bars_daily_raw` rows the nightly ingest writes too. The downloader takes the
+network as a `Fetcher` function; only `http_fetcher` here touches a socket and no test or check
+calls it.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from typing import Literal, Protocol
 
 from ..errors import HatError
 from ..money import exact
+from .identity import best_per_isin
 from .reference import EQUITY_SERIES, ISIN_RE
 from .rowcheck import Candidate, row_ok
 from .store import MAX_VOLUME, BarRow, DataStore, atomic_replace
@@ -107,6 +110,7 @@ class ParsedDay:
     invalid: int = 0  # unreadable numbers, a bad ISIN, or a failed row check (HAT-DATA-042)
     wrong_date: int = 0  # rows dated another day than the file
     duplicates: int = 0  # a second row for one (ISIN, series): the first is kept
+    other_series: int = 0  # a row of an ISIN that also traded under a better-ranked series
 
 
 # --- file names (HAT-DATA-090) ------------------------------------------------------------------
@@ -278,8 +282,9 @@ def _read_row(layout: _Layout, day: date, row: dict[str, str]) -> tuple[BhavRow 
 
 def parse_bhavcopy(day: date, data: bytes) -> ParsedDay:
     """Parse the zip for `day` in the format its date selects. Only equity series are kept
-    (counted when skipped); a row that cannot be read, or is dated another day, is counted and
-    left out. An unusable file raises `BhavcopyError`."""
+    (counted when skipped), one row per ISIN (`other_series` counts the rest); a row that cannot
+    be read, or is dated another day, is counted and left out. An unusable file raises
+    `BhavcopyError`."""
     layout = _OLD if format_for(day) == FORMAT_OLD else _UDIFF
     reader = csv.DictReader(io.StringIO(_csv_text(data)))
     header = {(h or "").strip() for h in (reader.fieldnames or [])}
@@ -297,22 +302,25 @@ def parse_bhavcopy(day: date, data: bytes) -> ParsedDay:
         else:
             seen.add((parsed.isin, parsed.series))
             out.rows.append(parsed)
+    kept = best_per_isin(out.rows, lambda r: r.isin, lambda r: r.series)
+    out.other_series = len(out.rows) - len(kept)
+    out.rows = kept
     return out
 
 
 class InstrumentIds(Protocol):
-    def __call__(self, isin: str, series: str) -> object | None: ...
+    def __call__(self, isin: str) -> object | None: ...
 
 
 def to_bar_rows(
     parsed: ParsedDay, instrument_id: InstrumentIds, run_id: object
 ) -> tuple[list[BarRow], list[tuple[str, str]]]:
-    """`bars_daily_raw` rows for the parsed day and the (isin, series) keys with no instrument,
-    which are reported and not written."""
+    """`bars_daily_raw` rows for the parsed day (each with the series it traded under) and the
+    (isin, series) keys with no instrument, which are reported and not written."""
     rows: list[BarRow] = []
     unresolved: list[tuple[str, str]] = []
     for r in parsed.rows:
-        found = instrument_id(r.isin, r.series)
+        found = instrument_id(r.isin)
         if found is None:
             unresolved.append(r.key)
             continue

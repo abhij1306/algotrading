@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..money import exact
+from .identity import best_per_isin
 from .mcp_client import McpClient, McpError
 
 EQUITY_SERIES = frozenset({"EQ", "BE", "BZ", "BL", "BT", "IL", "IQ"})
@@ -32,7 +33,8 @@ _MONTHS = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
 
 @dataclass(frozen=True)
 class Security:
-    """One listed security: the instrument key is (isin, series)."""
+    """One listed security: the instrument key is the ISIN, the series is the one it is listed
+    under (audit D5)."""
 
     isin: str
     series: str
@@ -40,10 +42,6 @@ class Security:
     name: str
     face_value: Decimal
     listed_on: date | None = None
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return (self.isin, self.series)
 
 
 @dataclass(frozen=True)
@@ -136,7 +134,7 @@ def parse_equity_list_csv(text: str) -> list[Security]:
             face_value=face_value,
             listed_on=_parse_listing_date(row.get("DATE OF LISTING", "")),
         )
-        securities[security.key] = security
+        securities[(security.isin, security.series)] = security
     return list(securities.values())
 
 
@@ -145,20 +143,25 @@ def build_listing_from_mcp(
 ) -> ListingBuild:
     """The securities the MCP lists, with ISIN data from the CSV; the rest are unresolved."""
     by_symbol = {(s.symbol, s.series): s for s in csv_rows}
-    securities: dict[tuple[str, str], Security] = {}
+    securities: list[Security] = []
     unresolved = []
     for item in listed:
         match = by_symbol.get((item.symbol, item.series))
         if match is None:
             unresolved.append(item)
         else:
-            securities[match.key] = match
-    return ListingBuild(list(securities.values()), unresolved, "mcp")
+            securities.append(match)
+    return ListingBuild(one_per_isin(securities), unresolved, "mcp")
 
 
 def build_listing_from_csv(csv_rows: list[Security]) -> ListingBuild:
     """The fallback when the MCP listing fails: the CSV alone (HAT-DATA-023)."""
-    return ListingBuild(list({s.key: s for s in csv_rows}.values()), [], "csv")
+    return ListingBuild(one_per_isin(csv_rows), [], "csv")
+
+
+def one_per_isin(securities: Iterable[Security]) -> list[Security]:
+    """One security per ISIN, the best-ranked series' (`identity.series_rank`)."""
+    return best_per_isin(securities, lambda s: s.isin, lambda s: s.series)
 
 
 # --- price bands (HAT-DATA-025) --------------------------------------------------------------

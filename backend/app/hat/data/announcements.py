@@ -212,13 +212,13 @@ def match_instrument(
 ) -> uuid.UUID | None:
     """The instrument an item's company maps to, by ISIN, else by symbol, else None."""
     if isin:
-        found = session.scalars(
-            select(HatInstrument).where(
+        found = session.scalar(
+            select(HatInstrument.id).where(
                 HatInstrument.market_id == market_id, HatInstrument.isin == isin
             )
-        ).all()
-        if found:
-            return min(found, key=lambda i: (not i.active, i.series != "EQ", i.id.bytes)).id
+        )
+        if found is not None:
+            return found
     for candidate in (symbol, company.upper()):
         if candidate and _SYMBOL.match(candidate):
             instrument = resolve_symbol(session, market_id, candidate, on)
