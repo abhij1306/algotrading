@@ -92,12 +92,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `cb2afe9faeb0a838360422edb107d90e0ad461fd85561eedc109b486780a6671`
+Covered digest: `0a686f9e355a736fa71056a2a33089e4b352fed9c3968d42042f3b1234158811`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73: the spec gains three event types (03 §6) and the release and DDPI rules of 04, 05, 06 and 10 their PR 73 lines; `test_config.py` checks the assign event (`verify-criteria`). No schema, foundation helper or boundary changed. Nothing was narrowed.
 - PR 63: `engine/backtest.py` gained the slot order (`RunSpec.slot_order`, `backtest/slots.py`, recorded in `conventions` and `config_digest`) and `test_config.add_run` records `slot_order: time`; no governance check changed.
 - PR 62: `engine/backtest.py` gained the recorded fill conventions (`conventions`, `config_digest` via `confighash.config_hash`, `RunSpec.entry_fill_rule` and `for_promotion`) and `test_config.add_run` flags its run for promotion; no governance check reads them (properties in `verify-backtest`).
 - PR 48: `HatSettings` gains `mpp_resend` (`HAT_MPP_RESEND`, default off) and `mpp_page_after` (`HAT_MPP_PAGE_AFTER`, default 3); their parse is checked by `verify-execution`'s `mpp.resend_flag_parsed`. No governance check changed.

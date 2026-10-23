@@ -100,9 +100,13 @@ def request_policy_change(
     than any pending one, else `decrease`. A decrease takes effect at the next session open; an
     increase at the first session open at least 7 days after the request, and `GateError` is
     raised unless the evidence `evidence` reads (by default the backtest runs) passes the gate.
-    Raises `PolicyChangeError` inside market hours (or when the calendar does not know the day)
-    and when the calendar holds no such open.
+    Raises `PolicyChangeError` for the owner's request (`actor = user`) without the allowlisted
+    chat id its event carries (PR 73; PR 46 follow-up 4), inside market hours (or when the
+    calendar does not know the day) and when the calendar holds no such open; each before
+    anything is written.
     """
+    if actor == "user" and chat_id is None:
+        raise PolicyChangeError("the owner's policy change needs the chat id")
     if calendar.state(requested_at) is not SessionState.CLOSED:
         raise PolicyChangeError("a policy change is requested outside market hours")
     versions = load_versions(session, user_id)

@@ -578,7 +578,8 @@ refuse inside a session (`market_hours`).
    `$COMPOSE exec -w /app/backend backend python -m app.hat.engine.backtest --bot <bot> --version
    <version> --from 2010-01-01 --to <last trading day>` (09 §7); note `run_id`.
 7. `$ADMIN publish-version --version <version> --run <run_id>` (draft to backtested, HAT-BT-061),
-   then `$ADMIN assign-version --bot <bot> --version <version>`: the sleeve now scans with it.
+   then `$ADMIN assign-version --bot <bot> --version <version>`: the sleeve now scans with it
+   (an owner's act, recorded `sleeve.version_assigned` with the chat id).
 8. `$ADMIN promote --bot <bot> --to backtested`: refused (`backtest_gate`) unless the run's DSR
    probability is at least 0.95 with 200 or more trades (HAT-PORT-061); the sleeve then stays in
    Research. Then `$ADMIN promote --bot <bot> --to shadow` and
@@ -595,20 +596,35 @@ refuse inside a session (`market_hours`).
 9a. Once DDPI (or a POA) is active on the demat (plan audit O1): `$ADMIN confirm-ddpi --account
    <account> --since <date DDPI became active> --note "<what was registered>"`, outside market
    hours (refused with `market_hours`, `ddpi_date_in_future`, `ddpi_note_required` or
-   `ddpi_already_confirmed`); a bot reads it from the next session open.
+   `ddpi_already_confirmed`); a bot reads it from the next session open. If DDPI is withdrawn at
+   the depository, `$ADMIN revoke-ddpi --account <account> --note "<why>"` at any time, inside
+   market hours too and without the trading calendar: the account's bots run shadow from their
+   next routing decision.
 10. A new version of a running strategy: `$ADMIN save-draft --strategy <strategy> --config
     <file.yaml>` (an exported or edited config; refused inside a session, and an invalid config
     prints the paths and codes of its problems), then steps 6, 7 (publish only: a
     Live sleeve takes only a live version) and `shadow-version`; after 20 sessions,
     `promote-version` moves the sleeves of the version it replaces onto it (their open trades keep
-    their entry version, HAT-BOT-083).
+    their entry version, HAT-BOT-083). To shadow the new version on a sleeve of its own beside
+    the Live one: `$ADMIN add-sleeve --strategy <strategy> --account <account>` (a sleeve in
+    Research), then steps 7 and 8 for it. It is refused Live (`strategy_has_live_sleeve`) while
+    another sleeve of the strategy is Live or in Probation: retire that one first.
 11. A sleeve in Probation that has recovered: `$ADMIN promote --bot <bot> --to live` (refused
     with `still_failing` while it is not, HAT-PORT-060).
+11a. A position locked by a corporate action HAT cannot rescale (URGENT `corporate_action.unhandled`,
+    HAT-EXEC-144): `/flatten` a real one (it sells at most the shares the broker holds). A virtual
+    one, outside market hours: `$ADMIN resolve-action --position <position> --action
+    <ex-date>:<type> --close-at <price>` closes it at the ex-date's adjusted price (a real one is
+    refused, `real_position_flatten`).
 12. Record each step in the check log.
 
 ### Deploy and planned restart: `ops.deploy_window`
 
 1. Pick a time outside 08:30–15:35 IST on a trading day (weekends and NSE holidays are free).
+   A release that adds columns to `hat_allocation_daily` (such as PR 34's nominal allocation)
+   goes out after the session and before the 18:00 `allocate` of a trading day: rows written
+   before the columns existed have none, so the next session's virtual entries of Shadow and
+   Probation sleeves would fail closed (`no_allocation`, HAT-PORT-050) until the night after.
 2. Run the guard: `python scripts/hat_deploy_guard.py`. Exit 2 means refused. It treats every
    weekday as a trading day unless given `--calendar` with an export of `hat_trading_calendar`:
    `$COMPOSE exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -At -F, -c "select date, is_trading from hat_trading_calendar" > /tmp/hat_calendar.csv`.
@@ -918,11 +934,12 @@ After any change to `.env` (HAT-OPS-050):
   - Property: every `OPS` verification name used anywhere in `docs/specs/hat/` and every bullet of §4 has a matching procedure heading in this section. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
 
 #### HAT-OPS-091: The owner's admin command line
-- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves on an active account, publish a universe whose symbols and ISINs all match instruments, save a draft, publish, assign, shadow and promote a strategy version, move a sleeve along a lifecycle edge) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`promote`, `promote-version`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded. Input files are read only from `<HAT_DATA_ROOT>/admin/`.
+- **Statement:** The setup and release steps (seed the risk policy, onboard a broker account, seed the strategies and sleeves on an active account, publish a universe whose symbols and ISINs all match instruments, save a draft, publish, assign, shadow and promote a strategy version, add a further sleeve of a strategy, move a sleeve along a lifecycle edge, confirm or revoke DDPI, resolve a corporate action that locks a position) run through `python -m app.hat.admin` on the host, each a thin wrapper over the guarded service function in one transaction. It is never an HTTP route (HAT-DEC-T3). A refused command prints a fixed code, exits 2 and writes nothing. The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version`, `resolve-action`) record `actor = user` with the allowlisted chat id and `via = cli` (HAT-SCH-065). `onboard-account` commits its own result, so a failed check is recorded. Input files are read only from `<HAT_DATA_ROOT>/admin/`.
 - **Source:** Design review 2026-10-22 item 8 (no production caller for the forward lifecycle edges, `onboard_account`, `publish_version`, the seeds and the universe publish; nothing set `hat_bot.live_version_id`, so a fresh deploy never scanned); item 14 (keep the portfolio layer and wire it through this command line).
-- **PR:** 35
-- **Verification:** PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services`
+- **PR:** 35, 73
+- **Verification:** PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services`, PBT `admin.shadow_beside_live`, PBT `admin.ddpi_revoked`
 - **Acceptance:**
   - Property: the "First deploy" procedure, run through the command line on a fresh database, leaves a sleeve in Shadow with a strategy version and a live universe; Live is refused until the version is live, and the version only after 20 trading sessions of shadow; the owner's steps carry `actor = user`, the chat id and `via = cli`. Harm: a fresh deploy never scans, or a sleeve trades real money on an unproven version.
   - Property: every refused command exits 2 with the fixed code of the rule that refused it and leaves every table as it was. Harm: a half-applied release step (a version promoted but its sleeves not moved, a universe published but not given to the sleeves).
+  - Property (PR 73; PR 35 follow-up 5; the postgres suite, `tests/hat/db/test_db_admin.py`): the "First deploy" commands, run through `main` against Postgres, reach the same Shadow sleeve, and a refused one leaves the database as it was. Harm: the runbook passes on SQLite and fails on the production database (a lock, a type or a constraint SQLite does not enforce).
   - Property: the command line imports only the services it wraps, reads no table and writes no column itself, and nothing imports it. Harm: a setup command skips a service's guard, or the owner's commands become an unauthenticated API.

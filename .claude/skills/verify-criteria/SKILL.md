@@ -64,7 +64,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT scan.no_universe_publishes_nothing` A bot with no universe publishes and records nothing, so the same day's run after a universe is assigned still publishes. Harm: an empty "published" watchlist blocks that day's real one.
 - `PBT criteria.gap_up_contract` `gap_up` passes exactly when (open / previous close - 1) x 100 is at least `min_pct` (a 10.00% gap passes), and a missing or non-positive open or close fails closed. Harm: a 9.99% gap starts an EP trade the rule excludes, or a real 10% gap is missed.
 - `PBT criteria.volume_pace_contract` `volume_pace` passes exactly when the day's volume projected to the full session (V / elapsed share, a `Fraction`) is at least `vs_avg50` x the 50-day average volume; before the first bar is final, or with no volume or average, it fails closed. Harm: a thin early burst fires a breakout the volume rule rejects.
-- `PBT config.release_gate` On SQLite with the real `save_draft`, `publish_version`, `start_shadow`, `promote_version` and `assign_version` (PR 35): a version goes live only from shadow, outside market hours, after at least 20 trading sessions of shadow on the calendar; promotion retires the strategy's previous live version, moves the sleeves that ran it onto the new one and writes one `strategy.promoted` with the chat id; a refusal changes no version, sleeve or event; a Live or Probation sleeve is never pointed at a version that is not live. Harm: an untested edit trades real money, or two live versions of one strategy split the sleeves.
+- `PBT config.release_gate` On SQLite with the real `save_draft`, `publish_version`, `start_shadow`, `promote_version` and `assign_version` (PR 35): a version goes live only from shadow, outside market hours, after at least 20 trading sessions of shadow on the calendar; promotion retires the strategy's previous live version, moves the sleeves that ran it onto the new one and writes one `strategy.promoted` with the chat id; a refusal changes no version, sleeve or event; a Live or Probation sleeve is never pointed at a version that is not live; every assignment, and the promotion's move of a sleeve, records `sleeve.version_assigned` as the owner's, and naming the version a sleeve already runs records nothing (PR 73). Harm: an untested edit trades real money, or two live versions of one strategy split the sleeves.
 - `PBT criteria.early_volume_contract` `early_volume` passes exactly when the cumulative day volume at the trigger is at least `vs_adv20` x ADV(20); missing inputs fail closed. Harm: an EP gap on thin volume is bought.
 - `PBT criteria.catalyst_attached_contract` `catalyst_attached` passes exactly when a matched announcement was published in [at - within_hours, at], both ends included and nothing after `at`; `required_in` never changes the result. Harm: a stale or future-dated announcement is taken as the catalyst of a confirm-mode EP trade.
 - `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level and (with `confirm: close`, the default, or drawn explicitly; PR 49) whose close is at or above it, at that bar's final instant, with the level as the trigger price, the bar's close as the live price and the entry LIMIT at the larger of the level and that close rounded up to the tick, never below the level; the opening range level does not exist before its bar is final. `@example`s: a spike that closed back under the pivot then a bar that held, and the same spike under `confirm: high`. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20; or a failed break is bought below its level as it falls (plan audit N1).
@@ -145,12 +145,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `7524ab0c054359306e6fd3e53338c591e9c645f91e97a596f5267745cc063fca`
+Covered digest: `66231bc3e4ed56155d03871d8ffdc539ba2cf947e244df8488258957c8a9644a`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73 (PR 35 follow-ups 1, 3): `assign_version` takes the owner's `chat_id` and `now` and records `sleeve.version_assigned` (`_assigned`, also used by `promote_version` for the sleeves it moves); `add_sleeve` adds a further sleeve of a strategy (`unknown_strategy` otherwise). `config.release_gate` checks the event. Nothing was narrowed.
 - PR 63 (HAT-BT-026, HAT-BT-061): `publish_version` also refuses a promotion run whose metrics do not say `slot_order: time` (`run_not_for_promotion`), so a run recorded before PR 63 (slots by score) never promotes a version; `test_config.add_run` records `slot_order: time`. Property `backtest.version_status_requires_run` in `verify-backtest`.
 - PR 62 (O5, HAT-BT-061): `publish_version` also refuses a run whose metrics do not say `for_promotion: true` (`run_not_for_promotion`), so a version is never promoted on a run at perfect fills; `test_config.add_run` flags its run. The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the release-gate checks here are unchanged.
 - PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
@@ -1601,3 +1602,17 @@ E   Failing explicit example: test_release_gate(
 E       state='live',
 E       waited=20,
 ```
+
+Break: (PR 73) `assign_version` sets the version without the event (`_assigned(...)` became `bot.live_version_id = row.id`).
+
+```
+E   AssertionError: assert [] == [('user', '2d...cf9d54fe', 7)]
+```
+
+Break: (PR 73) `assign_version` records a repeat (the `bot.live_version_id == row.id` early return dropped).
+
+```
+    assert session.scalar(select(func.count()).select_from(HatEvent)) == before
+E   assert 8 == 7
+```
+

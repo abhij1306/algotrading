@@ -141,7 +141,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `63812abb6ad1f4a630d19693c3846f44cacf06592689553292b650afa06fd362`
+Covered digest: `660b5e10e05f765a5f41ebe01948d142277d837de5ee85b639cff3b8277f3976`
 
 ## Scope changes
 
@@ -163,6 +163,7 @@ Covered digest: `63812abb6ad1f4a630d19693c3846f44cacf06592689553292b650afa06fd36
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73: `strategy/versions.py` gains the `sleeve.version_assigned` event and `add_sleeve` (checked in `verify-criteria` and `verify-portfolio`); nothing the backtest reads changed. Nothing was narrowed.
 - `dsr.bounds_and_monotonicity_in_sr` holds on the domain where the slope 1 − γ3 (SR + SR0)/2 + ((γ4 − 1)/4) SR × SR0 is non-negative at both ends. Finding: outside it a higher SR with a heavy skew scores lower; that is the paper's formula (recorded in 09 §4), and the code is not changed.
 - `dsr.bounds_and_monotonicity_bad_denominator` found that a radicand of float noise around 0 gave DSR = 1.0; `RADICAND_FLOOR` (1e-12) now scores it undefined. With real moments the radicand is bounded below by a square (it is never negative), so the property generates moments below that bound (γ4 = 1, γ3 ≥ 1/SR).
 - `backtest.entry_fill_proxy_chase` draws the max chase from 0.5%, 1% and 5%: the generated opens gap up by at most 3%, so a 5% chase alone could never bite (found by its scratch break, which first survived).

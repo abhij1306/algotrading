@@ -17,10 +17,10 @@ Checks that the portfolio layer (`backend/app/hat/engine/portfolio/`) decides wh
 - `PBT universe.*` On the real membership rules: the members on a date are exactly the instruments with an interval holding it (delisted ones included for the dates they were in); an edit never changes the membership of an earlier date; the universe is (constituents plus includes) minus excludes; intervals stay ordered, non empty and non overlapping; leaving the universe blocks entries and never forces an exit; a seeded version is a draft that changes no membership until it is published. Harm: a backtest sees today's survivors, an edit rewrites history, or a universe change sells positions the strategy did not call for.
 - `PBT regime.*` The confirmation matches an independent model for any length; the inputs read nothing dated after the day, the VIX percentile is in [0, 100) and monotone, a missing or unusable input fails with a stable code; the classification is total, follows the precedence Bear, Correction, Bull volatile, Bull quiet and never moves to a safer state when conditions worsen; the multiplier table never rises toward Bear and a replacement table is held within the policy bounds; the `regime` job stores one row per day with the raw state, the confirmed state and one event. Harm: the regime reads the future, overlapping rows give different states by code order, or worse conditions raise exposure.
 - `PBT health.*` The multiplier is the full value under the first band, the half value from it to the second band and 0 (Probation) from the second band on, compared exactly at the edges, never rises with a deeper drawdown, and an unreadable equity pair fails instead of reading as healthy. Harm: a sleeve in a deep drawdown keeps full capital.
-- `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a Shadow or Probation sleeve keeps weight 0 with a nominal `virtual_capital` (base x regime x equity) and `virtual_risk_pct` (risk x regime), and through `run_allocation` and `LiveContexts` its virtual entries are accepted on it while a real one is `no_allocation` (`allocator.virtual_allocation`, `allocator.virtual_entries_sized`, PR 34); a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
+- `PBT allocator.*` On the real allocator and the nightly service on SQLite: weight = base x regime x health with both multipliers inside the bounds of the policy version in force at the trade date; a sleeve out of Live has weight 0; a weight never exceeds that product and equals it when no cap binds; capital = weight x equity rounded down and risk per trade = policy risk x regime x health; a Shadow or Probation sleeve keeps weight 0 with a nominal `virtual_capital` and `virtual_risk_pct` (risk x regime); `virtual_capital` comes from a pass of the same caps per sleeve, as if it alone were Live (base x regime) in place of its strategy's other sleeves beside the other strategies' real products, the other Shadow and Probation sleeves counting 0: it matches an oracle of the two caps, equals base x regime x equity when no cap binds, is the same with every other virtual sleeve removed, and the real weights are unchanged (PR 73), and through `run_allocation` and `LiveContexts` its virtual entries are accepted on it while a real one is `no_allocation` (`allocator.virtual_allocation`, `allocator.virtual_entries_sized`, PR 34); a multiplier moves at most 0.25 a day and a sleeve back from health 0 restarts at its target; every risk cluster stays within the cluster cap and the book within 1, with nothing redistributed; any number of sleeves in any order gives one row each; the allocation fails with no regime row and a rerun keeps the first rows; open positions are untouched. Harm: a sleeve gets more weight or risk than the policy allows, capital swings in one night, or a weight cut sells positions.
 - `PBT lifecycle.*` On the real guards and `transition`: the backtest gate needs DSR probability of at least 0.95 and 200 trades; the shadow gate needs 20 trading sessions after the start; the Student-t quantile is checked against a numerical integration of the t density; the probation trigger is health 0 or an expectancy interval below zero from 50 trades; the benchmark is the backtest expectancy times one minus the discount; retirement needs 3 months or 50 shadow trades with the failure still true; every guard answer equals an independently written rule table; a transition changes the state and writes its event together or does neither; the results a decision reads stop at the trade date's close; the allocation moves a health-zero sleeve to Probation. Harm: an unproven sleeve goes live, a sound one is benched on noise, or the state and its audit trail disagree.
 - `CONF portfolio.*` Only `service.transition` assigns `hat_bot.lifecycle_state` (by attribute, `setattr` or a bulk update); the regime, health, allocator, lifecycle and universe rules import no database, model, broker or data code; `hat_bot` pins a strategy version and a universe version, carries `lifecycle_state` with exactly the six lifecycle values and `risk_cluster`, and has no risk-number column. Harm: a second writer skips the lifecycle guard, a rule reads the database and the backtest applies a different rule, or a risk number bypasses the risk policy.
-- `PBT admin.*` Through the owner's admin command line (`python -m app.hat.admin`, PR 35) on SQLite with a fake broker and scripted backtest evidence: the first-deploy runbook takes a fresh database to a sleeve in Shadow that has a strategy version and a live universe, refuses `promote --to live` until the version itself is live, promotes the version only after 20 trading sessions of shadow, and records the owner's steps (`confirm-ddpi` among them, PR 45) as `actor = user` with the allowlisted chat id and `via = cli` (`admin.first_deploy`); every refused command exits 2 with the fixed code of the rule that refused it and leaves every table unchanged, a universe publish naming an unknown sleeve included, as do a universe or draft inside a session, a CSV ISIN that differs from the instrument's, sleeves on an account that is not active, an undecodable file, a file outside `<HAT_DATA_ROOT>/admin/`, and a `confirm-ddpi` inside a session, dated in the future, with a blank note, repeated or naming an unknown account (`admin.refusal_writes_nothing`). Harm: a fresh deploy never scans, a sleeve trades real money on an unproven version, or a refused release step is half applied.
+- `PBT admin.*` Through the owner's admin command line (`python -m app.hat.admin`, PR 35) on SQLite with a fake broker and scripted backtest evidence: the first-deploy runbook takes a fresh database to a sleeve in Shadow that has a strategy version and a live universe, refuses `promote --to live` until the version itself is live, promotes the version only after 20 trading sessions of shadow, and records the owner's steps (`confirm-ddpi` among them, PR 45) as `actor = user` with the allowlisted chat id and `via = cli` (`admin.first_deploy`); every refused command exits 2 with the fixed code of the rule that refused it and leaves every table unchanged, a universe publish naming an unknown sleeve included, as do a universe or draft inside a session, a CSV ISIN that differs from the instrument's, sleeves on an account that is not active, an undecodable file, a file outside `<HAT_DATA_ROOT>/admin/`, and a `confirm-ddpi` inside a session, dated in the future, with a blank note, repeated or naming an unknown account, and (PR 73) a `revoke-ddpi` of an unconfirmed or unknown account or with a blank note, an `add-sleeve` of an unknown strategy or on an account that is not active, a `resolve-action` inside a session or of an unknown position, and an owner's act (`assign-version` among them) without the owner's chat (`admin.refusal_writes_nothing`); with a strategy's sleeve Live, `add-sleeve` gives it a second sleeve (same account or another) that reaches Shadow on a new version while the Live one keeps the live version, every assignment and the promotion's move of the Live sleeve are recorded `sleeve.version_assigned` as the owner's, and the second sleeve is refused Live first on its version and then on the Live sleeve (`strategy_has_live_sleeve`, `admin.shadow_beside_live`); `revoke-ddpi`, inside or outside a session, with no trading calendar readable too, turns the account's DDPI gate off from that instant, keeps the dated reason, writes `broker.ddpi_revoked` as the owner's under the account's user (as `broker.ddpi_confirmed` is) and refuses a second revocation (`admin.ddpi_revoked`; the rig's user is not the settings' default, so an event filed under the default is seen). The postgres suite runs the same runbook through `main` on Postgres (`tests/hat/db/test_db_admin.py`). Harm: a fresh deploy never scans, a sleeve trades real money on an unproven version, or a refused release step is half applied.
 - `CONF ops.admin_cli_calls_services` `backend/app/hat/admin.py` imports only the services it wraps (and what they need), calls no session method, builds no query and assigns no attribute; no module imports it, so no route reaches it (HAT-DEC-T3). Harm: a setup command skips the guard a service enforces, or the owner's commands become an unauthenticated API.
 - `PBT regime.strategy_rules` `close_above_sma_and_rising` is true exactly when the close is above its SMA and the SMA is higher than `rising_days` sessions earlier; `sma_fast_above_slow_both_rising` exactly when SMA fast is above SMA slow and both are above their value `rising_days` sessions earlier; a configured fast/slow rule without `rising_days` reads 3 sessions (PR 55, owner default), one with it reads that many, and each gives what the function gives; a too-short series is false. Harm: the gate lets entries through in a falling market or blocks them in a rising one.
 - `PBT dsr.evidence_current_trials` The backtest evidence the lifecycle reads is the newest completed run of the sleeve's live version on its family, with the DSR deflated by the family's trial count and Sharpe variance at evaluation time (later failed runs and other versions counted), as `BacktestFacts`; no run is no evidence (HAT-BT-060). Harm: a sleeve passes the Research to Backtested gate on a stale trial count.
@@ -87,6 +87,8 @@ Checks:
 - `backend/tests/hat/properties/test_dsr.py`
 - `backend/tests/hat/conformance/test_conf_portfolio.py`
 - `backend/tests/hat/properties/test_admin.py`
+- `backend/tests/hat/hat_admin_support.py`
+- `backend/tests/hat/db/test_db_admin.py`
 - `backend/tests/hat/conformance/test_conf_ops.py`
 - `backend/app/hat/engine/regime_gate.py`
 
@@ -95,12 +97,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `dcce09448f68b32677f2f090c3707f9a7b85d5c47de495b18af2740304c8b2a2`
+Covered digest: `7defea38a0fec3148e9d0708b1ecaa2129af0c05576335bec941b9c47a885461`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 73 (PR 34 follow-up 1, PR 35 follow-ups 1-6, PR 45 follow-up 2): `allocator.allocate` computes `virtual_capital` from a nominal pass of the cluster and book caps per virtual sleeve (`_nominal`, `_capped`): the sleeve at base x regime in place of its strategy's other sleeves, beside the other strategies' real products, other virtual sleeves at 0 (code review: a single pass counted a strategy's base weight twice for a sleeve shadowing its Live sibling, and made one sleeve's paper capital depend on how many others were in shadow); `allocator.virtual_allocation` checks it against an oracle of the caps and with the other virtual sleeves removed. PR 34 follow-up 2 (old rows without the nominal columns) is a runbook step only (10 §9 "Deploy", step 1): the night's equity is not stored, so an old row cannot be repaired. `owner_transition` refuses Live while another sleeve of the strategy is Live or in Probation (`strategy_has_live_sleeve`), after locking the strategy row so two owners promoting sibling sleeves at once are ordered; no check runs two sessions against each other (a follow-up, like `confirm_ddpi`'s lock). `assign_version` naming the version a sleeve already runs records nothing; `revoke-ddpi` runs without the trading calendar; the DDPI events carry the account's user. The admin command line gains `add-sleeve`, `revoke-ddpi` and `resolve-action` (virtual positions only), and `assign-version` became an owner's act (it needs the owner's chat); `resolve_action`'s property is `rescale.resolution_ends_lock` in `verify-stops`. The `World` rig moved from `test_admin.py` to `hat_admin_support.py`, shared with the postgres run of the runbook; that run found the rig's backtest run naming a policy version that does not exist, which SQLite let through (fixed: it names the seeded one). Nothing was narrowed.
 - PR 66: `backtest/runs.py` scores the lifecycle evidence with `run_dsr` (a recorded run only, through the family floors N >= 5 and V >= 0.25 / 252, HAT-BT-042) and reads the newest run by completion time (HAT-BT-060); `BacktestFacts` and `lifecycle.backtest_gate` are unchanged, so no portfolio check changed (the evidence properties are `verify-backtest`'s `dsr.*`). The guard does not read the new `metrics.pbo` yet (PR 69).
 - PR 64: `backtest/runs.py:backtest_bot` takes its entry fill rule and slot order, and the new `ambiguous` (default `optimistic`) and `suspension_sessions` (default 5, HAT-BT-021), as one `RunConventions`, and passes them to `check_conventions`, which refuses an unknown rule (`backtest_bad_ambiguous_rule`) or a count outside 0..250 (`backtest_bad_suspension`) before the run is recorded, and a promotion run with a count above 5 (`backtest_promotion_late_suspension`). The lifecycle's evidence (`backtest_evidence`, `gate_evidence`) reads only promotion runs whose metrics carry the path rules (`lower_circuit`), so a sleeve whose only promotion runs predate PR 64 has no evidence until a new `--for-promotion` run; the ambiguous-day rule is not required (PR 69 caps the share). Properties `backtest.path_rules_refused` and `dsr.evidence_promoted_only` in `verify-backtest`.
 - PR 63: `backtest/runs.py:backtest_bot` takes `slot_order` (default `time`, HAT-BT-026) and refuses an unknown one (`backtest_bad_slot_order`) before the run is recorded and a promotion run off `time` (`backtest_promotion_off_time_order`). The lifecycle's evidence (`backtest_evidence`, `gate_evidence`) reads only promotion runs whose `slot_order` is `time`, so a sleeve whose only promotion runs predate PR 63 has no evidence until a new `--for-promotion` run. Properties `backtest.slot_order_refused` and `dsr.evidence_promoted_only` in `verify-backtest`. `test_admin.add_run` records `slot_order: time`, which `publish-version` now requires.
@@ -775,6 +778,36 @@ Break (PR 34): the nominal risk is multiplied by health.
 E   AssertionError: assert Decimal('0.000000') == (Decimal('0.0001') * Decimal('0.05'))
 ```
 
+Break: (PR 73) `_nominal` counts the sleeve's Live sibling (`else Decimal(0) if r[0].sleeve == me.sleeve else r[4]` became `else r[4]`). Check run: `test_allocator.py::test_virtual_allocation`.
+
+```
+E   AssertionError: assert Decimal('0.0001') == Decimal('0.0002')
+```
+
+Break: (PR 73) `_nominal` counts the other Shadow and Probation sleeves at base x regime (the pass of the first review round).
+
+```
+E   AssertionError: assert Decimal('0.0002') == Decimal('0.0003')
+```
+
+Break: (PR 73) `_nominal` ignores the cluster cap (`cluster_cap` became `Decimal(1000)`).
+
+```
+E   AssertionError: assert Decimal('0.0011') == Decimal('0.0010')
+```
+
+Break: (PR 73) `_capped` skips the book cap (`return _scale_down(weights, Decimal(1))` became `return weights`).
+
+```
+E   AssertionError: assert Decimal('0.0037') == Decimal('0.0036')
+```
+
+Break: (PR 73) `_nominal` leaves out the other strategies' Live products (`else ... r[4]` became `else Decimal(0)`).
+
+```
+E   AssertionError: assert Decimal('0.0037') == Decimal('0.0036')
+```
+
 ### PBT lifecycle.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -1162,6 +1195,68 @@ Break: (PR 45) `confirm_ddpi` records the event but leaves `ddpi_confirmed` fals
 
 ```
 E   AssertionError: assert {'broker_acco...irmed': False} == {'broker_acco...firmed': True}
+```
+
+Break: (PR 73) `owner_transition` without the Live guard (`if holder is not None` became `if False`) (`admin.shadow_beside_live`).
+
+```
+    assert (code, err) == (2, "refused: strategy_has_live_sleeve\n")
+E   AssertionError: assert (0, '') == (2, 'refused:...ive_sleeve\n')
+```
+
+Break: (PR 73) `promote_version` moves the Live sleeve without the event (`_assigned(...)` became `bot.live_version_id = row.id`) (`admin.shadow_beside_live`).
+
+```
+    assert moves == [(bot, v1, None), (second, v2, None), (bot, v2, 1)]
+E   AssertionError: assert [('f42685a4-a...03472', None)] == [('f42685a4-a...6c003472', 1)]
+```
+
+Break: (PR 73) `revoke_ddpi` keeps `ddpi_confirmed` (the `= False` line dropped) (`admin.ddpi_revoked`).
+
+```
+E   AssertionError: assert {'broker_acco...firmed': True} == {'broker_acco...irmed': False}
+```
+
+Break: (PR 73) `revoke_ddpi` revokes twice (the `ddpi_not_confirmed` refusal dropped) (`admin.ddpi_revoked`).
+
+```
+E   AssertionError: assert (0, '') == (2, 'refused:..._confirmed\n')
+```
+
+Break: (PR 73) `revoke_ddpi` records `broker.ddpi_confirmed` instead of `broker.ddpi_revoked` (`admin.ddpi_revoked`).
+
+```
+E   AssertionError: assert [] == [('user', 4242, 'cli')]
+```
+
+Break: (PR 73) `revoke_ddpi` keeps `ddpi_confirmed_at` (the `= None` line dropped). Check run: the postgres suite, `test_db_admin.py::test_admin__first_deploy_on_postgres`.
+
+```
+E   assert (False, datet...timezone.utc)) == (False, None)
+```
+
+Break: (PR 73) the rig's backtest run names a policy version that does not exist (`risk_policy_version_id=uuid.uuid4()`, as before PR 73). Check run: the postgres suite, `test_db_admin.py::test_admin__first_deploy_on_postgres`.
+
+```
+E   psycopg2.errors.ForeignKeyViolation: insert or update on table "hat_backtest_run" violates foreign key constraint "hat_backtest_run_risk_policy_version_id_fkey"
+```
+
+Break: (PR 73) `revoke-ddpi` loads the calendar first (`_calendar(session)` before the revoke branch) (`admin.ddpi_revoked`, `no_calendar`).
+
+```
+E   AssertionError: (('revoke-ddpi', '--account', '01a166c9-...', '--note', 'withdrawn at the DP'), 'refused: no_calendar\n')
+```
+
+Break: (PR 73) `revoke_ddpi` records without `user_id` (`admin.ddpi_revoked`).
+
+```
+E   AssertionError: assert [UUID('000000...00000000001')] == [UUID('000000...00000000073')]
+```
+
+Break: (PR 73) `confirm_ddpi` records without `user_id` (`admin.ddpi_revoked`).
+
+```
+E   AssertionError: assert [UUID('000000...00000000001')] == [UUID('000000...00000000073')]
 ```
 
 ### CONF ops.admin_cli_calls_services

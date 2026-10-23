@@ -44,6 +44,7 @@ __all__ = [
     "effective_mode",
     "onboard_account",
     "request_mode",
+    "revoke_ddpi",
 ]
 
 ACCOUNT_PENDING = "pending"
@@ -154,6 +155,48 @@ def confirm_ddpi(
         event_type="broker.ddpi_confirmed",
         actor="user",
         payload={"chat_id": chat_id, "via": "cli", "since": since.isoformat()},
+        user_id=account.user_id,
+        occurred_at=now,
+    )
+    session.flush()
+    return account
+
+
+def revoke_ddpi(
+    session: Session,
+    account_id: uuid.UUID,
+    *,
+    user_id: uuid.UUID,
+    note: str,
+    now: datetime,
+    chat_id: int,
+) -> HatBrokerAccount:
+    """Withdraw the owner's DDPI confirmation (PR 73, PR 45 follow-up 2): clears
+    `ddpi_confirmed` and its time, keeps the dated reason in `ddpi_note` and writes
+    `broker.ddpi_revoked` (actor user, via cli). Allowed at any time, inside market hours too: it
+    only narrows, and every gate read sees it at once, so the account's bots run shadow from
+    their next routing decision (HAT-GOV-085). Refused, writing nothing: an account that is not
+    the user's (`account_unknown`), one not confirmed (`ddpi_not_confirmed`), or an empty or
+    overlong note (`ddpi_note_required`)."""
+    account = session.get(HatBrokerAccount, account_id, with_for_update=True)
+    if account is None or account.user_id != user_id:
+        raise OnboardingError("account_unknown")
+    text = note.strip()
+    if not text or len(text) > DDPI_NOTE_MAX:
+        raise OnboardingError("ddpi_note_required")
+    if not account.ddpi_confirmed:
+        raise OnboardingError("ddpi_not_confirmed")
+    account.ddpi_confirmed = False
+    account.ddpi_confirmed_at = None
+    account.ddpi_note = f"revoked {trade_date_of(now).isoformat()}: {text}"
+    record(
+        session,
+        aggregate_type="session",
+        aggregate_id=account.id,
+        event_type="broker.ddpi_revoked",
+        actor="user",
+        payload={"chat_id": chat_id, "via": "cli"},
+        user_id=account.user_id,
         occurred_at=now,
     )
     session.flush()

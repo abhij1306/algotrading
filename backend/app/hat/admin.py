@@ -15,9 +15,13 @@ Commands, in first-deploy order:
     onboard-account --account-ref REF         capability check of the broker account (HAT-BRK-092)
     seed-strategies                           the two strategies, version 1 as a draft
     seed-bots --account ID                    one sleeve per strategy on an active account
+    add-sleeve --strategy ID --account ID     a further sleeve of a strategy, in Research: a new
+                                              version runs in shadow on it beside the Live one
     confirm-ddpi --account ID --since DATE --note TEXT
                                               the owner's word that DDPI is registered on the
                                               account's demat (HAT-GOV-085), outside market hours
+    revoke-ddpi --account ID --note TEXT      withdraws it, at any time: the account's bots run
+                                              shadow from their next routing decision
     publish-universe --constituents CSV --as-of DATE [--name N] [--include S]... [--exclude S]...
                      [--bot ID]...            a universe version from an NSE index CSV, made live
                                               and given to the sleeves (default: all of them)
@@ -28,12 +32,17 @@ Commands, in first-deploy order:
     shadow-version --version ID               backtested -> shadow; starts the 20 sessions
     promote --bot ID --to STATE               a lifecycle edge, under its guard (HAT-PORT-060)
     promote-version --version ID              shadow -> live after 20 sessions (HAT-BOT-084)
+    resolve-action --position ID --action KEY --close-at PRICE
+                                              closes a virtual position a corporate action
+                                              locked, at PRICE (HAT-EXEC-144; a real one is
+                                              refused: /flatten it)
 
 Input files (`--constituents`, `--config`) are names inside `<HAT_DATA_ROOT>/admin/`: a path that
 leaves that folder, or a file without the expected suffix, is refused (`file_outside_admin`).
 
-`confirm-ddpi`, `promote` and `promote-version` are the owner's acts: their events carry
-`actor = user`, the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
+`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version` and
+`resolve-action` are the owner's acts: their events carry `actor = user`, the allowlisted chat id
+(`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -58,9 +68,11 @@ from .data.reference import parse_industry_csv
 from .engine.portfolio import lifecycle
 from .engine.portfolio import service as portfolio
 from .engine.portfolio.service import BacktestEvidence
+from .engine.rescale import CLOSE_REASON, resolve_action
 from .engine.strategy import versions
 from .engine.strategy.config import ConfigError
 from .engine.strategy.yamlio import import_yaml
+from .engine.trades import close_position
 from .errors import HatConfigError, HatError
 from .execution.accounts import (
     ADAPTER_FACTORIES,
@@ -68,6 +80,7 @@ from .execution.accounts import (
     confirm_ddpi,
     onboard_account,
     require_active_account,
+    revoke_ddpi,
 )
 from .execution.broker import HatBroker
 from .risk.policy import RiskPolicy, effective_version
@@ -132,6 +145,9 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("seed-strategies")
     bots = commands.add_parser("seed-bots")
     bots.add_argument("--account", type=uuid.UUID, required=True)
+    sleeve = commands.add_parser("add-sleeve")
+    sleeve.add_argument("--strategy", type=uuid.UUID, required=True)
+    sleeve.add_argument("--account", type=uuid.UUID, required=True)
     universe = commands.add_parser("publish-universe")
     universe.add_argument("--constituents", required=True)
     universe.add_argument("--as-of", type=date.fromisoformat, required=True)
@@ -157,7 +173,25 @@ def _parser() -> argparse.ArgumentParser:
     ddpi.add_argument("--account", type=uuid.UUID, required=True)
     ddpi.add_argument("--since", type=date.fromisoformat, required=True)
     ddpi.add_argument("--note", required=True)
+    revoke = commands.add_parser("revoke-ddpi")
+    revoke.add_argument("--account", type=uuid.UUID, required=True)
+    revoke.add_argument("--note", required=True)
+    resolve = commands.add_parser("resolve-action")
+    resolve.add_argument("--position", type=uuid.UUID, required=True)
+    resolve.add_argument("--action", required=True)
+    resolve.add_argument("--close-at", type=_price, required=True)
     return parser
+
+
+def _price(raw: str) -> Decimal:
+    """A `--close-at` price: a finite decimal, never a float."""
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        raise argparse.ArgumentTypeError("not a price") from None
+    if not value.is_finite():
+        raise argparse.ArgumentTypeError("not a price")
+    return value
 
 
 def _calendar(session: Session) -> SessionCalendar:
@@ -263,6 +297,12 @@ def _setup(
         require_active_account(session, args.account)
         bots = versions.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
         return {"bots": [str(b.id) for b in bots]}
+    if command == "add-sleeve":
+        require_active_account(session, args.account)
+        bot = versions.add_sleeve(
+            session, user_id=user_id, strategy_id=args.strategy, broker_account_id=args.account
+        )
+        return {"bot_id": str(bot.id), "lifecycle_state": bot.lifecycle_state}
     if command == "publish-universe":
         return _publish_universe(session, args, deps, now)
     return None
@@ -287,9 +327,6 @@ def _release(
     if command == "publish-version":
         row = versions.publish_version(session, args.version, backtest_run_id=args.run)
         return {"version_id": str(row.id), "status": row.status}
-    if command == "assign-version":
-        bot = versions.assign_version(session, bot_id=args.bot, version_id=args.version)
-        return {"bot_id": str(bot.id), "live_version_id": str(bot.live_version_id)}
     if command == "shadow-version":
         row = versions.start_shadow(session, args.version, calendar=_calendar(session), now=now)
         return {"version_id": str(row.id), "status": row.status}
@@ -299,13 +336,18 @@ def _release(
 def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
-    """The owner's acts, `confirm-ddpi`, `promote-version` and `promote`, under the allowlisted
-    chat id."""
-    calendar = _calendar(session)
+    """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote-version`,
+    `resolve-action` and `promote`) under the allowlisted chat id."""
     try:
         chat_id = owner_chat_id(deps.env)
     except HatConfigError:
         raise AdminError("no_owner_chat") from None
+    if args.command == "revoke-ddpi":  # only narrows, so it needs no calendar (any time)
+        account = revoke_ddpi(
+            session, args.account, user_id=deps.user_id, note=args.note, now=now, chat_id=chat_id
+        )
+        return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
+    calendar = _calendar(session)
     if args.command == "confirm-ddpi":
         account = confirm_ddpi(
             session,
@@ -318,6 +360,23 @@ def _owner(
             chat_id=chat_id,
         )
         return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
+    if args.command == "assign-version":
+        bot = versions.assign_version(
+            session, bot_id=args.bot, version_id=args.version, chat_id=chat_id, now=now
+        )
+        return {"bot_id": str(bot.id), "live_version_id": str(bot.live_version_id)}
+    if args.command == "resolve-action":
+        position = resolve_action(
+            session,
+            args.position,
+            args.action,
+            price=args.close_at,
+            close=lambda p, price: close_position(session, p.id, price, CLOSE_REASON, now),
+            calendar=calendar,
+            chat_id=chat_id,
+            now=now,
+        )
+        return {"position_id": str(position.id), "closed": position.closed_at is not None}
     if args.command == "promote-version":
         row = versions.promote_version(
             session, args.version, calendar=calendar, now=now, chat_id=chat_id

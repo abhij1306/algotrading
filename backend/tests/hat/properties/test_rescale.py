@@ -442,6 +442,110 @@ def test_unhandled_is_manage_only(
         assert [p["action"] for p in flags] == ([f"{ex.isoformat()}:{kind}"] if spans else [])
 
 
+RESOLVE_CASES = st.sampled_from(
+    ["ok", "in_hours", "closed_day_ok", "wrong_action", "unknown", "no_price"]
+)
+
+
+@settings(max_examples=40, deadline=None)
+@given(
+    unhandled=UNHANDLED,
+    real=st.booleans(),
+    second=st.booleans(),  # a second unhandled action on the same position
+    case=RESOLVE_CASES,
+    price=st.integers(1_000, 20_000),
+)
+@example(unhandled=(TYPE_OTHER, Fraction(5)), real=False, second=False, case="ok", price=5_000)
+@example(unhandled=(TYPE_SPLIT, Fraction(10)), real=True, second=False, case="ok", price=5_000)
+def test_resolution_ends_lock(
+    unhandled: tuple[str, Fraction], real: bool, second: bool, case: str, price: int
+) -> None:
+    """HAT-EXEC-144 (PR 73; PR 31 follow-ups 1, 12): the owner's resolution of an unhandled
+    action on a virtual position, outside market hours, records one `corporate_action.resolved`
+    as the owner's, ends that action's lock and closes the position at the owner's price. A
+    real position is refused (`real_position_flatten`): its quantity and stop are on the old
+    scale and the lock is what caps `/flatten` at the shares held. A resolution inside a
+    session, of an action that does not lock the position, of an unknown position or without a
+    price is refused and writes nothing. Harm: a locked shadow position stays manage-only for
+    ever, or a real one sells or stops on an old-scale quantity the broker no longer holds."""
+    kind, f = unhandled
+    engine = memory_engine()
+    day = TRADE_DAY + timedelta(days=2)  # Friday: the action went ex on Thursday
+    with sessionmaker(bind=engine)() as session:
+        world = seed_engine_world(session, instruments=1)
+        position_id = open_trade(session, world).outcome.position_id
+        assert position_id is not None
+        iid = world.instruments[0]
+        if real:
+            _position(session, position_id).is_virtual = False
+        _action(session, iid, EX_DAY, kind, f)
+        if second:
+            _action(session, iid, day, TYPE_OTHER, Fraction(3, 2))
+        key = f"{EX_DAY.isoformat()}:{kind}"
+        now = datetime.combine(day, time(11 if case == "in_hours" else 20), tzinfo=IST)
+        if case == "closed_day_ok":
+            now = datetime.combine(day + timedelta(days=1), time(11), tzinfo=IST)  # Saturday
+        given_price = None if case == "no_price" else D(price) / 100
+        target = uuid.uuid4() if case == "unknown" else position_id
+        action = key
+        if case == "wrong_action":
+            action = f"{EX_DAY.isoformat()}:{'bonus' if kind == TYPE_SPLIT else 'split'}"
+        events_before = session.scalar(select(func.count()).select_from(HatEvent))
+        refusal = {"in_hours": "market_hours", "unknown": "position_unknown"}.get(case)
+        if refusal is None and real:
+            refusal = "real_position_flatten"
+        if refusal is None:
+            refusal = {
+                "wrong_action": "action_not_unhandled",
+                "no_price": "close_price_required",
+            }.get(case)
+        closes: list[Decimal] = []
+
+        def close(p: HatPosition, at_price: Decimal) -> bool:
+            closes.append(at_price)
+            return trades.close_position(session, p.id, at_price, rescale.CLOSE_REASON, now)
+
+        try:
+            rescale.resolve_action(
+                session,
+                target,
+                action,
+                price=given_price,
+                close=close,
+                calendar=CALENDAR,
+                chat_id=7,
+                now=now,
+            )
+        except rescale.ResolutionError as exc:
+            assert exc.code == refusal
+            session.rollback()
+            assert session.scalar(select(func.count()).select_from(HatEvent)) == events_before
+            assert closes == []
+            assert _position(session, position_id).closed_at is None
+            assert [a.action_type for a in _unhandled(session, position_id, day)][:1] == [kind]
+            return
+        assert refusal is None
+        session.commit()
+        resolved = list(
+            session.scalars(
+                select(HatEvent).where(
+                    HatEvent.aggregate_id == position_id,
+                    HatEvent.event_type == rescale.EVENT_RESOLVED,
+                )
+            )
+        )
+        assert [(e.actor, e.payload["action"], e.payload["chat_id"]) for e in resolved] == [
+            ("user", key, 7)
+        ]
+        assert closes == [given_price]
+        assert _position(session, position_id).closed_at is not None
+        assert _unhandled(session, position_id, day) == []
+
+
+def _unhandled(session: Session, position_id: uuid.UUID, day: date) -> list[HatCorporateAction]:
+    return rescale.unhandled_actions(session, _position(session, position_id), day)
+
+
 @settings(max_examples=30, deadline=None)
 @given(
     neutral=st.lists(

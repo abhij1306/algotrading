@@ -12,9 +12,14 @@ When a cap binds, `final_weight` is below `base x regime_mult x health_mult`; ot
 product holds exactly (row by row, HAT-PORT-050).
 
 A Shadow or Probation sleeve keeps weight 0 but gets a nominal allocation for its virtual
-entries (design review 2026-10-22 item 8): `virtual_capital = base x regime_mult x equity` and
-`virtual_risk_pct = risk_pct x regime_mult`, health taken as 1. It is never capped and never
-reaches a real entry; every other sleeve has none.
+entries (design review 2026-10-22 item 8): `virtual_capital = w_nominal x equity` and
+`virtual_risk_pct = risk_pct x regime_mult`, health taken as 1. `w_nominal` is the weight the
+sleeve would hold were it alone Live with health 1 in place of its strategy's other sleeves:
+`base x regime_mult` put through the same two caps together with the other strategies' Live
+products, the other Shadow and Probation sleeves counting 0 (PR 73, PR 34 follow-up 1). So its
+paper book stays within equity and its cluster's cap, its P&L compares with a Live sleeve's
+capped weight, and it does not depend on how many other sleeves are in shadow. It never
+changes a real weight and never reaches a real entry; every other sleeve has none.
 """
 
 from __future__ import annotations
@@ -104,6 +109,39 @@ def _scale_down(weights: list[Decimal], limit: Decimal) -> list[Decimal]:
         return [(w * limit / total).quantize(_WEIGHT_PLACES, rounding=ROUND_DOWN) for w in weights]
 
 
+def _capped(
+    rows: Sequence[tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal]],
+    products: list[Decimal],
+    cluster_cap: Decimal,
+) -> list[Decimal]:
+    """`products` held to the risk cluster cap per cluster, then to the whole book (1)."""
+    weights = list(products)
+    for cluster in {r[0].cluster for r in rows}:
+        members = [i for i, r in enumerate(rows) if r[0].cluster == cluster]
+        scaled = _scale_down([weights[i] for i in members], cluster_cap)
+        for i, w in zip(members, scaled, strict=True):
+            weights[i] = w
+    return _scale_down(weights, Decimal(1))
+
+
+def _nominal(
+    rows: Sequence[tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal]],
+    index: int,
+    cluster_cap: Decimal,
+) -> Decimal:
+    """The weight the virtual sleeve at `index` would hold were it Live with health 1 in place of
+    its strategy's other sleeves, beside the other strategies' Live weights: the other Shadow
+    and Probation sleeves count 0, so one sleeve's paper capital never depends on how many
+    others are in shadow, and a sleeve shadowing its strategy's Live one never counts the
+    strategy's base weight twice."""
+    me = rows[index][0]
+    products = [  # a virtual sleeve's real product is 0 (health 0)
+        r[1] * r[2] if i == index else Decimal(0) if r[0].sleeve == me.sleeve else r[4]
+        for i, r in enumerate(rows)
+    ]
+    return _capped(rows, products, cluster_cap)[index]
+
+
 def allocate(
     sleeves: Sequence[SleeveInput], policy: RiskPolicy, total_equity: Decimal
 ) -> list[Allocation]:
@@ -130,18 +168,16 @@ def allocate(
             else:
                 health = Decimal(0)
             rows.append((s, base, regime, health, base * regime * health))
-    weights = [r[4] for r in rows]
-    for cluster in {r[0].cluster for r in rows}:
-        members = [i for i, r in enumerate(rows) if r[0].cluster == cluster]
-        scaled = _scale_down([weights[i] for i in members], policy.cluster_cap)
-        for i, w in zip(members, scaled, strict=True):
-            weights[i] = w
-    weights = _scale_down(weights, Decimal(1))
+    weights = _capped(rows, [r[4] for r in rows], policy.cluster_cap)
+    nominal = [
+        _nominal(rows, i, policy.cluster_cap) if r[0].lifecycle_state in VIRTUAL_STATES else None
+        for i, r in enumerate(rows)
+    ]
     out = []
     with localcontext() as ctx:
         ctx.prec = _PRECISION
-        for (s, base, regime, health, _), final in zip(rows, weights, strict=True):
-            nominal = s.lifecycle_state in VIRTUAL_STATES
+        for (s, base, regime, health, _), final, paper in zip(rows, weights, nominal, strict=True):
+            virtual = s.lifecycle_state in VIRTUAL_STATES
             out.append(
                 Allocation(
                     bot_id=s.bot_id,
@@ -151,12 +187,12 @@ def allocate(
                     final_weight=final,
                     capital=(final * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN),
                     risk_pct=policy.risk_pct * regime * health,
-                    virtual_capital=(base * regime * total_equity).quantize(
+                    virtual_capital=(paper * total_equity).quantize(
                         _MONEY_PLACES, rounding=ROUND_DOWN
                     )
-                    if nominal
+                    if paper is not None
                     else None,
-                    virtual_risk_pct=policy.risk_pct * regime if nominal else None,
+                    virtual_risk_pct=policy.risk_pct * regime if virtual else None,
                 )
             )
     return out

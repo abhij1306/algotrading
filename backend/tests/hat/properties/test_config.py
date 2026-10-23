@@ -612,10 +612,24 @@ def test_release_gate(state: str, waited: int, replaces: bool, in_hours: bool) -
         real_money = state in (lifecycle.LIVE, lifecycle.PROBATION)
         if real_money:
             with pytest.raises(VersionError) as refused:
-                assign_version(session, bot_id=bot.id, version_id=version.id)
+                assign_version(
+                    session, bot_id=bot.id, version_id=version.id, chat_id=7, now=gate_night(start)
+                )
             assert refused.value.code == "version_not_live"
         else:
-            assert assign_version(session, bot_id=bot.id, version_id=version.id) is bot
+            assigned = assign_version(
+                session, bot_id=bot.id, version_id=version.id, chat_id=7, now=gate_night(start)
+            )
+            assert assigned is bot
+            recorded = session.scalars(
+                select(HatEvent).where(
+                    HatEvent.event_type == "sleeve.version_assigned",
+                    HatEvent.aggregate_id == bot.id,
+                )
+            ).all()
+            assert [(e.actor, e.payload["version_id"], e.payload["chat_id"]) for e in recorded] == [
+                ("user", str(version.id), 7)
+            ]
             bot.live_version_id = None if previous is None else previous.id
         session.flush()
         now = gate_night(start + waited)
@@ -650,5 +664,22 @@ def test_release_gate(state: str, waited: int, replaces: bool, in_hours: bool) -
             assert len(promoted) == 1
             assert promoted[0].payload["bots"] == ([str(bot.id)] if previous else [])
             assert promoted[0].payload["chat_id"] == 7
-            assert assign_version(session, bot_id=bot.id, version_id=version.id) is bot
+            assigned_events = session.scalars(
+                select(HatEvent)
+                .where(
+                    HatEvent.event_type == "sleeve.version_assigned",
+                    HatEvent.aggregate_id == bot.id,
+                )
+                .order_by(HatEvent.id)
+            ).all()
+            if previous is not None:  # the promotion moved the sleeve: recorded (PR 73)
+                assert assigned_events[-1].payload["version_id"] == str(version.id)
+                assert assigned_events[-1].payload["replaced"] == previous.version
+            before = session.scalar(select(func.count()).select_from(HatEvent))
+            assert (
+                assign_version(session, bot_id=bot.id, version_id=version.id, chat_id=7, now=now)
+                is bot
+            )
+            if previous is not None:  # it already runs the version: a repeat records nothing
+                assert session.scalar(select(func.count()).select_from(HatEvent)) == before
         session.rollback()

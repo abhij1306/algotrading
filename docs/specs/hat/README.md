@@ -278,7 +278,7 @@ to an artefact that exists.
 | HAT-SCH-060 | [03](03-schema.md) | 3 | CONF `schema.event_columns`, DB `events.partitioned` |
 | HAT-SCH-061 | [03](03-schema.md) | 3 | DB `events.append_only` |
 | HAT-SCH-062 | [03](03-schema.md) | 3, 36 | PBT `events.atomic_with_state`, PBT `journal.validates_before_writing` |
-| HAT-SCH-063 | [03](03-schema.md) | 3, 9 | CONF `events.catalogue`, PBT `events.unknown_type_rejected` |
+| HAT-SCH-063 | [03](03-schema.md) | 3, 9, 73 | CONF `events.catalogue`, PBT `events.unknown_type_rejected` |
 | HAT-SCH-064 | [03](03-schema.md) | 3, 9 | PBT `events.correlation`, PBT `events.correlation_links_the_signal` |
 | HAT-SCH-065 | [03](03-schema.md) | 3, 16 | PBT `events.user_actor_chat_id` |
 | HAT-SCH-066 | [03](03-schema.md) | 3, 17 | DB `events.partitions_ahead`, DB `events.partitions_job` |
@@ -353,7 +353,7 @@ to an artefact that exists.
 | HAT-BOT-081 | [04](04-criteria-and-bots.md) | 8 | PBT `config.hash_canonical` |
 | HAT-BOT-082 | [04](04-criteria-and-bots.md) | 8 | PBT `config.yaml_round_trip` |
 | HAT-BOT-083 | [04](04-criteria-and-bots.md) | 11, 15 | PBT `config.trade_keeps_entry_version`, TLA `TradeLifecycle!VersionPinned` |
-| HAT-BOT-084 | [04](04-criteria-and-bots.md) | 8, 9, 12, 35 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate` |
+| HAT-BOT-084 | [04](04-criteria-and-bots.md) | 8, 9, 12, 35, 73 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate`, PBT `admin.shadow_beside_live` |
 | HAT-PORT-010 | [05](05-portfolio-regime-allocation.md) | 2, 9 | CONF `bot_sleeve_columns`, PBT `allocator.sleeve_count_agnostic` |
 | HAT-PORT-011 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.cluster_cap` |
 | HAT-PORT-020 | [05](05-portfolio-regime-allocation.md) | 2, 9 | DB `governance.universe_version_immutable`, DB `governance.one_live_version` |
@@ -366,14 +366,14 @@ to an artefact that exists.
 | HAT-PORT-033 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `regime.multiplier_table` |
 | HAT-PORT-034 | [05](05-portfolio-regime-allocation.md) | 9 | DB `portfolio.unique_keys`, TLA `SleeveLifecycle!RegimeNeverChangesLifecycle` |
 | HAT-PORT-040 | [05](05-portfolio-regime-allocation.md) | 9, 46 | PBT `health.bands`, TLA `SleeveLifecycle!ProbationOnHealthZero` |
-| HAT-PORT-050 | [05](05-portfolio-regime-allocation.md) | 9, 34 | PBT `allocator.formula_and_bounds`, PBT `allocator.virtual_allocation`, PBT `allocator.virtual_entries_sized` |
+| HAT-PORT-050 | [05](05-portfolio-regime-allocation.md) | 9, 34, 73 | PBT `allocator.formula_and_bounds`, PBT `allocator.virtual_allocation`, PBT `allocator.virtual_entries_sized` |
 | HAT-PORT-051 | [05](05-portfolio-regime-allocation.md) | 9, 10 | PBT `allocator.bounds_from_policy`, DB `governance.risk_increase_cooling_off` |
 | HAT-PORT-052 | [05](05-portfolio-regime-allocation.md) | 9, 10 | PBT `allocator.capital_and_risk` |
 | HAT-PORT-053 | [05](05-portfolio-regime-allocation.md) | 9, 17 | TLA `DailyCycle!AllocateAfterRegime`, PBT `allocator.no_effect_on_open_positions` |
 | HAT-PORT-054 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.smoothing` |
 | HAT-PORT-055 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.cash_remainder` |
 | HAT-PORT-056 | [05](05-portfolio-regime-allocation.md) | 2, 9 | DB `portfolio.unique_keys`, TLA `JobScheduler!AtMostOnceSuccess` |
-| HAT-PORT-060 | [05](05-portfolio-regime-allocation.md) | 9, 12, 35 | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `admin.first_deploy` |
+| HAT-PORT-060 | [05](05-portfolio-regime-allocation.md) | 9, 12, 35, 73 | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `admin.first_deploy`, PBT `admin.shadow_beside_live` |
 | HAT-PORT-061 | [05](05-portfolio-regime-allocation.md) | 9, 12, 66 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions` |
 | HAT-PORT-062 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.shadow_days` |
 | HAT-PORT-063 | [05](05-portfolio-regime-allocation.md) | 9, 18 | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`, PBT `router.non_live_sleeve_routes_as_shadow` |
@@ -421,9 +421,9 @@ to an artefact that exists.
 | HAT-GOV-082 | [06](06-risk-and-governance.md) | 16 | TLA `KillSwitch!FlattenNeedsConfirm` |
 | HAT-GOV-083 | [06](06-risk-and-governance.md) | 2, 9, 35 | TLA `SleeveLifecycle!NoLiveWithoutEvidence`, DB `governance.live_requires_evidence`, PBT `config.release_gate` |
 | HAT-GOV-084 | [06](06-risk-and-governance.md) | 10 | TLA `ExecutionRouter!ModeChangeNextSession`, PBT `router.mode_change_takes_effect_next_session` |
-| HAT-GOV-085 | [06](06-risk-and-governance.md) | 45 | PBT `router.mode_gates_hold_bots_in_shadow`, PBT `router.open_settles_mode_changes`, PBT `broker.confirm_and_auto_need_gtt`, PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing` |
+| HAT-GOV-085 | [06](06-risk-and-governance.md) | 45, 73 | PBT `router.mode_gates_hold_bots_in_shadow`, PBT `router.open_settles_mode_changes`, PBT `broker.confirm_and_auto_need_gtt`, PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, PBT `admin.ddpi_revoked` |
 | HAT-GOV-090 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_direction_classification` |
-| HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12, 17, 34 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused` |
+| HAT-GOV-091 | [06](06-risk-and-governance.md) | 2, 10, 12, 17, 34, 73 | DB `governance.risk_increase_cooling_off`, PBT `caps.increase_gate`, PBT `dsr.gate_evidence`, PBT `caps.policy_change_inside_session_or_without_evidence_is_refused` |
 | HAT-GOV-092 | [06](06-risk-and-governance.md) | 2 | DB `governance.risk_version_immutable` |
 | HAT-GOV-093 | [06](06-risk-and-governance.md) | 9, 10 | PBT `caps.policy_direction_classification` |
 | HAT-GOV-094 | [06](06-risk-and-governance.md) | 10 | PBT `caps.policy_change_emits_event` |
@@ -493,7 +493,7 @@ to an artefact that exists.
 | HAT-EXEC-141 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.preserves_position`, PBT `rescale.applied_once`, PBT `rescale.factor_exact`, DB `governance.rescale_moves_stop` |
 | HAT-EXEC-142 | [07](07-execution-and-brokers.md) | 21, 31 | PBT `rescale.pending_is_manage_only` |
 | HAT-EXEC-143 | [07](07-execution-and-brokers.md) | 21 | PBT `rescale.broker_stop_follows` |
-| HAT-EXEC-144 | [07](07-execution-and-brokers.md) | 31 | PBT `rescale.unhandled_is_manage_only`, PBT `manage.flatten_capped_at_holdings`, PBT `corporate_actions.factor_parse_unparseable_is_reported`, PBT `rescale.price_neutral_changes_nothing` |
+| HAT-EXEC-144 | [07](07-execution-and-brokers.md) | 31, 73 | PBT `rescale.unhandled_is_manage_only`, PBT `manage.flatten_capped_at_holdings`, PBT `corporate_actions.factor_parse_unparseable_is_reported`, PBT `rescale.price_neutral_changes_nothing`, PBT `rescale.resolution_ends_lock` |
 | HAT-EXEC-145 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.ex_date_gtt_replaced`, PBT `ops.ex_date_job_behind_flag`, PBT `manage.ex_date_check_serialised` |
 | HAT-EXEC-146 | [07](07-execution-and-brokers.md) | 47 | PBT `manage.series_change_remapped` |
 | HAT-TG-005 | [08](08-telegram.md) | 16 | PBT `telegram.unknown_chat_has_no_effect` |
@@ -574,7 +574,7 @@ to an artefact that exists.
 | HAT-OPS-071 | [10](10-ops.md) | 16, 17 | PBT `telegram.report_content` |
 | HAT-OPS-072 | [10](10-ops.md) | 16, 17 | PBT `ops.status_matches_db` |
 | HAT-OPS-090 | [10](10-ops.md) | 17 | CONF `ops.runbook_complete` |
-| HAT-OPS-091 | [10](10-ops.md) | 35 | PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services` |
+| HAT-OPS-091 | [10](10-ops.md) | 35, 73 | PBT `admin.first_deploy`, PBT `admin.refusal_writes_nothing`, CONF `ops.admin_cli_calls_services`, PBT `admin.shadow_beside_live`, PBT `admin.ddpi_revoked` |
 | HAT-VER-010 | [11](11-verification.md) | 1 | CONF `spec_requirements_well_formed` |
 | HAT-VER-011 | [11](11-verification.md) | 2-17 | CONF `traceability_points_to_methods` |
 | HAT-VER-020 | [11](11-verification.md) | 10, 11, 13, 15, 16, 17 | CONF `ci_runs_models_for_merged_targets` |

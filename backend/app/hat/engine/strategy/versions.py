@@ -10,8 +10,10 @@ written then. Nothing here commits; the caller's transaction decides.
 The release gate (HAT-BOT-084, HAT-GOV-083, PR 35): `start_shadow` moves a backtested version to
 `shadow`, `promote_version` makes it `live` after 20 trading sessions of shadow and moves the
 sleeves of the version it replaces onto it, and `assign_version` points a sleeve at the version it
-runs (a sleeve that can place real orders only at a live one). The owner runs them through the
-local admin command line (`app.hat.admin`).
+runs (a sleeve that can place real orders only at a live one). Every change of a sleeve's version
+is recorded as `sleeve.version_assigned` (PR 73). `add_sleeve` gives a strategy a further sleeve,
+so a new version can run in shadow beside the sleeve that trades the live one. The owner runs them
+through the local admin command line (`app.hat.admin`).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ PERSONAS = {
 DEFAULT_RISK_CLUSTER = "momentum-long"  # S1 and S2 share one cluster (HAT-PORT-011)
 EVENT_CREATED = "strategy.version_created"
 EVENT_PROMOTED = "strategy.promoted"
+EVENT_ASSIGNED = "sleeve.version_assigned"
 # A sleeve in these lifecycle states places real orders, or may again without a new gate (an
 # owner promotion out of Probation), so it only ever runs a live version.
 REAL_MONEY_STATES = frozenset({LIVE, PROBATION})
@@ -255,7 +258,7 @@ def promote_version(
             session.scalars(select(HatBot).where(HatBot.live_version_id == previous.id)).all()
         )
         for bot in moved:
-            bot.live_version_id = row.id
+            _assigned(session, bot, row, chat_id=chat_id, now=now)
     row.status = "live"
     row.promoted_at = now
     session.flush()
@@ -281,11 +284,20 @@ def promote_version(
     return row
 
 
-def assign_version(session: Session, *, bot_id: uuid.UUID, version_id: uuid.UUID) -> HatBot:
+def assign_version(
+    session: Session,
+    *,
+    bot_id: uuid.UUID,
+    version_id: uuid.UUID,
+    chat_id: int,
+    now: datetime,
+) -> HatBot:
     """Point a sleeve at the version it scans and trades with (`live_version_id`): a version of
     its own strategy that has left draft and is not retired. A sleeve that places real orders
     (Live, Probation) takes only a live version, so an unpromoted version never trades real
-    money. Open trades keep their entry version (HAT-BOT-083)."""
+    money. Open trades keep their entry version (HAT-BOT-083). The change is recorded as the
+    owner's `sleeve.version_assigned` (PR 73); naming the version the sleeve already runs changes
+    nothing and records nothing."""
     bot = session.get(HatBot, bot_id, with_for_update=True)
     if bot is None:
         raise VersionError("unknown_bot")
@@ -297,9 +309,41 @@ def assign_version(session: Session, *, bot_id: uuid.UUID, version_id: uuid.UUID
         raise VersionError("version_not_released")
     if bot.lifecycle_state in REAL_MONEY_STATES and row.status != "live":
         raise VersionError("version_not_live")
-    bot.live_version_id = row.id
+    if bot.live_version_id == row.id:  # a repeated step: nothing changes, nothing is recorded
+        return bot
+    _assigned(session, bot, row, chat_id=chat_id, now=now)
     session.flush()
     return bot
+
+
+def _assigned(
+    session: Session, bot: HatBot, row: HatStrategyVersion, *, chat_id: int, now: datetime
+) -> None:
+    """Point `bot` at `row` and record `sleeve.version_assigned` as the owner's (`actor = user`,
+    the allowlisted chat, `via = cli`), with the version it ran before (None for its first)."""
+    before = (
+        None
+        if bot.live_version_id is None
+        else session.get(HatStrategyVersion, bot.live_version_id)
+    )
+    bot.live_version_id = row.id
+    record(
+        session,
+        aggregate_type="bot",
+        aggregate_id=bot.id,
+        event_type=EVENT_ASSIGNED,
+        actor="user",
+        payload={
+            "version_id": str(row.id),
+            "version": row.version,
+            "replaced": None if before is None else before.version,
+            "chat_id": chat_id,
+            "via": "cli",
+        },
+        bot_id=bot.id,
+        user_id=bot.user_id,
+        occurred_at=now,
+    )
 
 
 # --- the two seeds ----------------------------------------------------------------------------
@@ -372,6 +416,23 @@ def create_bot(
     session.add(bot)
     session.flush()
     return bot
+
+
+def add_sleeve(
+    session: Session, *, user_id: uuid.UUID, strategy_id: uuid.UUID, broker_account_id: uuid.UUID
+) -> HatBot:
+    """A further sleeve of one of the user's strategies (PR 73, PR 35 follow-up 3), in Research
+    and asking for confirm like any new sleeve: the owner assigns it a backtested version and
+    promotes it to Shadow, so a new version books shadow trades of its own while the strategy's
+    Live sleeve trades the live one. Only one sleeve of a strategy holds real money at a time
+    (`portfolio.service.owner_transition`, `strategy_has_live_sleeve`). Refused for a strategy
+    that is not the user's (`unknown_strategy`); the caller checks the account is active."""
+    strategy = session.get(HatStrategy, strategy_id)
+    if strategy is None or strategy.user_id != user_id:
+        raise VersionError("unknown_strategy")
+    return create_bot(
+        session, user_id=user_id, strategy_id=strategy_id, broker_account_id=broker_account_id
+    )
 
 
 def seed_default_bots(
