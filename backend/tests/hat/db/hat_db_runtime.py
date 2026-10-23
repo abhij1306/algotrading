@@ -1,7 +1,6 @@
 """Database rules of the runtime tables and the event log, each as a check
 body over a Postgres connection. Same contract as `hat_db_rules.py`: a check raises
-AssertionError when the database does not enforce its rule, and `test_db_broken_variants.py`
-requires each to fail once the trigger, index or constraint is removed."""
+AssertionError when the database does not enforce its rule."""
 
 import threading
 import time
@@ -1034,18 +1033,11 @@ CHECK_DAYS = (
 SPEC_MONTHS_AHEAD = 2
 
 
-def check_events__partitions_ahead(
-    conn: Connection, ensure: Callable[[Connection, date], None] | None = None
-) -> None:
+def check_events__partitions_ahead(conn: Connection) -> None:
     """After the ensure step runs at date d, partitions cover d's month and the 2 after it, and
     an event at any instant in that range lands in the partition of its UTC month."""
-
-    def default_ensure(connection: Connection, day: date) -> None:
-        ensure_event_partitions(connection, day)
-
-    run = ensure or default_ensure
     for day in CHECK_DAYS:
-        run(conn, day)
+        ensure_event_partitions(conn, day)
         months = months_to_cover(day, SPEC_MONTHS_AHEAD)
         children = _children(conn)
         for first in months:

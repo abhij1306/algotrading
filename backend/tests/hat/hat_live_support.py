@@ -6,41 +6,12 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
-from decimal import Decimal
 from html import escape
 from typing import Any
-from uuid import UUID
-
-from sqlalchemy.orm import Session
 
 from app.hat.data.mcp_client import McpTransportError
-from app.hat.models import HatInstrument, HatInstrumentSymbolHistory
 
 EPOCH = date(2000, 1, 1)
-
-
-def add_instrument(
-    session: Session, market_id: UUID, symbol: str, isin: str, *, series: str = "EQ"
-) -> HatInstrument:
-    """An active instrument with its symbol history, as the weekly refresh leaves it."""
-    instrument = HatInstrument(
-        market_id=market_id,
-        isin=isin,
-        series=series,
-        symbol=symbol,
-        name=f"{symbol} Ltd",
-        face_value=Decimal(10),
-        active=True,
-    )
-    session.add(instrument)
-    session.flush()
-    session.add(
-        HatInstrumentSymbolHistory(
-            instrument_id=instrument.id, symbol=symbol, valid_from=EPOCH, valid_to=None
-        )
-    )
-    session.flush()
-    return instrument
 
 
 def rss_item(

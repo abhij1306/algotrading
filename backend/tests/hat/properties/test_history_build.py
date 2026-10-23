@@ -1,9 +1,8 @@
-"""history_build's pure seams: the MCP index and close wrappers, the index archive fill and the
-corporate-action archive parse. The build itself is verified on real data, never here."""
+"""history_build's pure seams: the MCP index and close wrappers and the corporate-action
+archive parse. The build itself is verified on real data, never here."""
 
-import itertools
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -18,30 +17,17 @@ from app.hat.data import history_build
 from app.hat.data.bhavcopy import (
     DayReconciliation,
     DownloadReport,
-    FetchResult,
     weekdays,
 )
 from app.hat.data.corporate_actions import LoadReport
 from app.hat.data.history_build import (
-    CODE_INDEX_ARCHIVE,
-    INDEX_NAMES,
-    ArchiveIndexSource,
     BuildReport,
-    IndexPoint,
-    Pacing,
-    archive_fill_source,
-    index_archive_name,
-    load_index_history,
     mcp_close_source,
     mcp_index_source,
 )
-from app.hat.data.mcp_client import CODE_BAD_RESPONSE, CODE_TIMEOUT, McpClient, McpError
+from app.hat.data.mcp_client import CODE_BAD_RESPONSE, McpClient, McpError
 from app.hat.data.store import (
-    BarRow,
-    DataStore,
-    IndexRow,
     PartitionReport,
-    index_coverage,
 )
 
 # --- the MCP history wrappers ---------------------------------------
@@ -133,137 +119,6 @@ def test_mcp_index_source_ends_at_depth(
     asked = [date.fromisoformat(args["endDate"]) for _s, _t, args in transport.calls]
     assert sum(d < depth for d in asked) == (1 if reaches else 0)
     assert all(d < depth for d in asked[-1:]) == reaches  # the no-data answer was the last call
-
-
-FILL_DAYS = weekdays(date(2023, 9, 1), date(2023, 11, 30))
-OLD_NAMES = {"NIFTY 50": "CNX Nifty", "NIFTY 500": "CNX 500"}  # the archive's names before 2015
-
-
-def _archive_csv(day: date, old_names: bool) -> bytes:
-    """An `ind_close_all` file in NSE's layout [A]; values tagged .5 so archive rows are known."""
-    lines = [
-        "Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,"
-        "Closing Index Value,Points Change,Change(%),Volume,Turnover (Rs. Cr.),P/E,P/B,Div Yield"
-    ]
-    for name in (*INDEX_NAMES, "NIFTY BANK"):
-        shown = OLD_NAMES.get(name, name.title()) if old_names else name.title()
-        v = f"{day.toordinal()}.5"
-        lines.append(f'"{shown}",{day:%d-%m-%Y},{v},{v},{v},{v},1.0,0.1,100,"1,234.5",20,3,1')
-    return ("\n".join(lines) + "\n").encode()
-
-
-def _bars(store: DataStore, days: set[date]) -> None:
-    one = Decimal(1)
-    for day in days:
-        store.write_bars(
-            day,
-            [
-                BarRow(
-                    "i1",
-                    "INE000000001",
-                    "S1",
-                    "EQ",
-                    one,
-                    one,
-                    one,
-                    one,
-                    None,
-                    1,
-                    None,
-                    "bhavcopy",
-                    "r",
-                )
-            ],
-        )
-
-
-@given(
-    bars=st.sets(st.sampled_from(FILL_DAYS), min_size=1),
-    depths=st.fixed_dictionaries(
-        {n: st.one_of(st.none(), st.sampled_from(FILL_DAYS)) for n in INDEX_NAMES}
-    ),
-    files=st.dictionaries(
-        st.sampled_from(FILL_DAYS),
-        st.sampled_from(["ok", "old_names", "not_found", "error", "garbage"]),
-    ),
-    usual=st.sampled_from(["ok", "old_names"]),
-    broken=st.sets(st.sampled_from(INDEX_NAMES)),
-)
-@settings(max_examples=40, deadline=None)
-def test_archive_fills_before_mcp_depth(
-    bars: set[date],
-    depths: dict[str, date | None],
-    files: dict[date, str],
-    usual: str,
-    broken: set[str],
-) -> None:
-    """With the MCP serving each index only from its depth (or not at all), the daily
-    `ind_close_all` archive fills every earlier day that has bars, under today's index names
-    whatever the file calls them, and the MCP's rows win from its depth on. Only a day whose
-    file NSE lacks or failed to send stays missing. Each file is fetched once for all indices,
-    requests are spaced by the interval, and a rerun reads stored files from disk and asks
-    again only for the days that failed. A failed fetch, or an answer that is no index file
-    (never kept), fails the indices that needed that day; an MCP failing after its first rows
-    still gets the archive fill and is reported with its own code."""
-    far = date.max
-    first = {n: min((d for d in bars if d >= (depths[n] or far)), default=far) for n in depths}
-
-    def primary(name: str, start: date, end: date) -> Iterator[IndexPoint]:
-        for day in sorted(d for d in bars if d >= first[name] and start <= d <= end):
-            v = Decimal(day.toordinal())
-            yield IndexPoint(day, IndexRow(name, v, v, v, v))
-        if name in broken:
-            raise McpError(CODE_TIMEOUT)
-
-    now = [0.0]
-    asked: list[tuple[date, float]] = []
-    by_url = {history_build.INDEX_ARCHIVE_URL + index_archive_name(d): d for d in FILL_DAYS}
-
-    def fetch(url: str) -> FetchResult:
-        day = by_url[url]
-        asked.append((day, now[0]))
-        kind = files.get(day, usual)
-        if kind in ("not_found", "error"):
-            return FetchResult(kind)  # type: ignore[arg-type]
-        if kind == "garbage":
-            return FetchResult("ok", b"<html>Access Denied</html>")
-        return FetchResult("ok", _archive_csv(day, kind == "old_names"))
-
-    def sleep(seconds: float) -> None:
-        now[0] += seconds
-
-    pacing = Pacing(interval=2.0, clock=lambda: now[0], sleep=sleep)
-    errors = {d for d, kind in files.items() if kind in ("error", "garbage")}
-    failed = errors | {d for d, kind in files.items() if kind == "not_found"}
-    with tempfile.TemporaryDirectory() as tmp:
-        store = DataStore(Path(tmp))
-        _bars(store, bars)
-        archive = ArchiveIndexSource(store, fetch, pacing)
-        report = load_index_history(
-            store, archive_fill_source(primary, archive), FILL_DAYS[0], FILL_DAYS[-1]
-        )
-        assert report.failed == {
-            n: CODE_TIMEOUT if n in broken else CODE_INDEX_ARCHIVE
-            for n in INDEX_NAMES
-            if n in broken or any(d < first[n] for d in bars & errors)
-        }
-        before = max(first.values())
-        assert sorted(d for d, _t in asked) == sorted(d for d in bars if d < before)
-        assert all(t >= 2.0 for _d, t in asked[:1])  # the first request waits its turn too
-        assert all(b - a >= 2.0 for (_d, a), (_e, b) in itertools.pairwise(asked))
-        missing = index_coverage(store, sorted(bars), dict.fromkeys(INDEX_NAMES, FILL_DAYS[0]))
-        for name in INDEX_NAMES:
-            assert missing[name] == sorted(d for d in bars if d < first[name] and d in failed)
-        con = store.connect()
-        rows = con.execute("SELECT index_name, date, close FROM index_daily").fetchall()
-        con.close()
-        assert {n for n, _d, _c in rows} <= set(INDEX_NAMES)
-        for name, day, close in rows:
-            assert close == day.toordinal() + (Decimal(0) if day >= first[name] else Decimal("0.5"))
-        asked.clear()
-        again = ArchiveIndexSource(store, fetch, pacing)
-        load_index_history(store, archive_fill_source(primary, again), FILL_DAYS[0], FILL_DAYS[-1])
-        assert sorted(d for d, _t in asked) == sorted(d for d in bars if d < before and d in failed)
 
 
 @given(

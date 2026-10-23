@@ -1,29 +1,18 @@
-"""PBT ingest.* (..045, 048, 049; ): the MCP client's batching, concurrency and date check, the
-nightly ingest (probe,
-universe, row checks, raw write-once, outcome event, call budget, index and breadth), symbol
-renames from the stored bars, and the Parquet store both sources write.
-
-`ingest.event_and_state_atomic` is a check: an ingest outcome and its event are written by
-one transaction; the nightly ingest's own hook is checked by `ingest.outcome_event`."""
+"""PBT ingest.*: the MCP client's batching, concurrency and date check, the nightly ingest's
+probe schedule and row checks, and the Parquet store both sources write."""
 
 import dataclasses
 import math
 import tempfile
 import uuid
 from collections.abc import Mapping
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pyarrow.parquet as pq
-from hat_ingest_support import (
-    TRADE_DAY,
-    day_at,
-    sleeper,
-)
 from hat_mcp_support import ScriptedTransport
-from hat_support import event_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
@@ -40,11 +29,15 @@ from app.hat.data.store import (
     DataStore,
 )
 from app.hat.ids import uuid7
-from app.hat.models import HatJobRun
+from app.hat.time import IST
 
-ENGINE = event_engine(HatJobRun)
+TRADE_DAY = date(2026, 10, 20)
 
-outcomes = st.sampled_from(["ingest.completed", "ingest.failed", "quality.failed"])
+
+def day_at(hour: int, minute: int = 0) -> datetime:
+    return datetime(TRADE_DAY.year, TRADE_DAY.month, TRADE_DAY.day, hour, minute, tzinfo=IST)
+
+
 # --- the Parquet store and the index history -----------
 
 BAR_DAY = date(2024, 5, 6)
@@ -264,7 +257,9 @@ def test_probe_schedule(start: int, ready: int | None) -> None:
         matched = ready_at is not None and clock.now() >= ready_at
         return TRADE_DAY if matched else DAY_BEFORE
 
-    outcome = wait_for_data(probe, TRADE_DAY, clock, sleeper(clock))
+    outcome = wait_for_data(
+        probe, TRADE_DAY, clock, lambda seconds: clock.advance(timedelta(seconds=seconds))
+    )
     minutes = [int((t - day_at(0)).total_seconds() // 60) for t in outcome.probes]
     scheduled = list(range(max(start, 18 * MINUTES), CUTOFF_MINUTE, 10))
     hit = None if ready is None else next((m for m in scheduled if m >= ready), None)
