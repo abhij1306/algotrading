@@ -301,12 +301,19 @@ class HatScheduler:
                     now,
                     trading=self._trading,
                     succeeded=job.name in done,
-                    running=self._running_day.get(job.name) == day,
+                    running=self._running_since(job, day),
                 )
                 if code == JOB_MISSED and any(name not in done for name in job.after):
                     continue  # it waits on a job that has not succeeded: that one is alerted
                 if code is not None:
                     self._alert(job.name, day, code, None)
+
+    def _running_since(self, job: ScheduledJob, day: date) -> bool:
+        """Whether `job` runs for `day` and started before its deadline: one started after it
+        (a late process) has missed it, not hung."""
+        started = self._attempted.get((job.name, day))
+        deadline = datetime.combine(day, job.at, tzinfo=IST) + job.deadline
+        return self._running_day.get(job.name) == day and started is not None and started < deadline
 
     def _alert(self, name: str, day: date, code: str, error: str | None) -> None:
         """Send `code` for (name, day) unless it was alerted before: in this process, or on the
