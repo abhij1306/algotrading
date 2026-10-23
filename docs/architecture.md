@@ -117,7 +117,8 @@ the session), announcements poll, the calendar check.
 TLA+ models in `verification/tla/` (ExecutionRouter, OrderReconciliation, StopPlacement,
 KillSwitch, ApprovalToken, TradeLifecycle, JobScheduler, NightlyPipeline, DailyCycle,
 RegimeConfirmation, SleeveLifecycle; each with `broken/` variants), Hypothesis properties in
-`backend/tests/hat/properties/`, Postgres checks in `tests/hat/db/`, conformance checks in
+`backend/tests/hat/properties/`, Postgres checks in `tests/hat/db/` (only what a real server
+enforces: triggers, partial unique indexes, CHECK constraints, row and advisory locks), conformance checks in
 `tests/hat/conformance/`. The `verify-*` skills in `.claude/skills/` say
 how to run and update each area and record a digest of the files they cover.
 

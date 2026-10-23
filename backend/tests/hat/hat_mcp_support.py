@@ -8,38 +8,14 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date
-from datetime import time as clock_time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from uuid import UUID
-
-from sqlalchemy.orm import Session
 
 from app.hat.data.mcp_client import McpTransportError
 from app.hat.data.reference import Security
-from app.hat.models import (
-    HatBrokerSymbol,
-    HatIndustry,
-    HatInstrument,
-    HatInstrumentSymbolHistory,
-    HatJobRun,
-    HatMarket,
-    HatPriceBand,
-    HatTradingCalendar,
-)
 
 FIXTURES = Path(__file__).parent / "fixtures"
-REFERENCE_TABLES = (
-    HatMarket,
-    HatInstrument,
-    HatInstrumentSymbolHistory,
-    HatBrokerSymbol,
-    HatPriceBand,
-    HatIndustry,
-    HatTradingCalendar,
-    HatJobRun,
-)
 
 
 def fixture_text(name: str) -> str:
@@ -109,19 +85,6 @@ class ListingServer:
             {"symbol": s, "series": series} for s, series in self.listed if s.startswith(prefix)
         ]
         return {"segment": "EQUITY", "returned": len(rows[:limit]), "stocks": rows[:limit]}
-
-
-def seed_market(session: Session) -> UUID:
-    market = HatMarket(
-        code="NSE",
-        timezone="Asia/Kolkata",
-        currency="INR",
-        session_open=clock_time(9, 15),
-        session_close=clock_time(15, 30),
-    )
-    session.add(market)
-    session.flush()
-    return market.id
 
 
 def security(

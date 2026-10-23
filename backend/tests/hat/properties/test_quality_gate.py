@@ -1,16 +1,8 @@
-"""PBT quality_gate.*: the nightly quality gate's four checks
-(coverage, OHLC, big moves, index snapshot), the rows and events it writes, the health kill it
-trips and clears, and the quarantine of unexplained big movers. Pure checks plus the
-real ingest and gate over an in-memory database and a temporary store; no network."""
+"""PBT quality_gate.*: the nightly quality gate's pure checks (coverage, big moves, index
+snapshot)."""
 
-from datetime import date, timedelta
-from decimal import Decimal
 from fractions import Fraction
 
-from hat_ingest_support import (
-    TRADE_DAY,
-    World,
-)
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
@@ -19,11 +11,6 @@ from app.hat.data.quality import (
     coverage_check,
     index_snapshot_check,
 )
-from app.hat.models import (
-    HatCorporateAction,
-)
-
-DAY_BEFORE = TRADE_DAY - timedelta(days=1)
 
 
 @given(universe=st.integers(0, 6000), stored=st.integers(0, 6000))
@@ -37,22 +24,6 @@ def test_coverage_threshold(universe: int, stored: int) -> None:
     never passes."""
     expected = universe >= 1 and Fraction(stored, universe) >= Fraction(99, 100)
     assert coverage_check(universe, stored).passed == expected
-
-
-def _action(world: World, symbol: str, day: date, kind: str = "split") -> None:
-    """A stored action of the instrument; a `dividend` changes no price (factor 1)."""
-    with world.factory() as session:
-        session.add(
-            HatCorporateAction(
-                instrument_id=world.ids[f"{symbol}:EQ"],
-                ex_date=day,
-                action_type=kind,
-                adjustment_factor=Decimal(1) if kind == "dividend" else Decimal("0.5"),
-                raw_text=kind,
-                source="nse_mcp",
-            )
-        )
-        session.commit()
 
 
 @settings(max_examples=60)
@@ -80,16 +51,6 @@ def test_big_moves_explained(
     assert check.passed == (Fraction(len(unexplained)) <= Fraction(size, 100))
     out = excluded | (unexplained if check.passed else set())
     assert set(check.detail["excluded"]) == {str(k) for k in out}
-
-
-OPS = st.lists(
-    st.tuples(
-        st.sampled_from(("quarantine", "action", "clear", "check")),
-        st.integers(0, 2),  # instrument
-        st.integers(1, 4),  # days before TRADE_DAY
-    ),
-    max_size=14,
-)
 
 
 @given(

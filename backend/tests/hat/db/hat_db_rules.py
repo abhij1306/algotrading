@@ -1,8 +1,8 @@
-"""The database rules of each as a check body over a Postgres connection.
+"""The database rules, each as a check body over a Postgres connection.
 
 A check raises AssertionError when the database does not enforce its rule. `test_db_*.py` runs
-each check against the real schema; `test_db_broken_variants.py` removes the trigger, index or
-constraint inside a transaction and requires the same check to fail.
+each check against the real schema: triggers, partial unique indexes, CHECK constraints and row
+locks only a real server enforces.
 """
 
 import threading
@@ -19,7 +19,6 @@ from sqlalchemy.exc import DBAPIError
 from app.hat import models as m
 from app.hat.ids import uuid7
 from app.hat.risk.modes import Mode
-from app.hat.schema import PG_DDL
 
 SEVEN_DAYS = timedelta(days=7)
 
@@ -866,8 +865,3 @@ def check_migration__ensure_idempotent(
         raise AssertionError("the ensure step failed when run again") from exc
     assert catalog(engine) == once, "a repeated ensure changed the catalog"
     assert once["triggers"], "ensure created no triggers"
-
-
-def broken_ddl_without_replace() -> tuple[str, ...]:
-    """PG_DDL with `CREATE OR REPLACE TRIGGER` weakened to `CREATE TRIGGER`."""
-    return tuple(s.replace("CREATE OR REPLACE TRIGGER", "CREATE TRIGGER") for s in PG_DDL)

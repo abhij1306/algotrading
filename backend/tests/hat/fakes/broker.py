@@ -77,21 +77,6 @@ def funds_reply(available: object, used: object = 0.0) -> dict[str, Any]:
     return {"s": "ok", "code": 200, "message": "", "fund_limit": rows}
 
 
-def modify_leg(fields: dict[str, Any]) -> dict[str, Any]:
-    """The quantity (None when unchanged) and trigger a modify sends, whichever its shape: an
-    order's fields (`qty`, `stopPrice`) or a GTT's leg (`orderInfo.leg1`)."""
-    leg = fields.get("orderInfo", {}).get("leg1")
-    if leg is not None:
-        return {"qty": leg.get("qty"), "trigger": leg["triggerPrice"]}
-    return {"qty": fields.get("qty"), "trigger": fields.get("stopPrice")}
-
-
-def position_row(symbol: str, qty: int, average: object, product: str = "CNC") -> dict[str, Any]:
-    """A Fyers `netPositions` row: net quantity `qty` (negative short) at `average`."""
-    side_average = "buyAvg" if qty >= 0 else "sellAvg"
-    return {"symbol": symbol, "netQty": qty, side_average: average, "productType": product}
-
-
 class _Landed(dict[str, Any]):
     """A lost-answer reply for an order that did reach the broker."""
 
