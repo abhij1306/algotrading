@@ -799,7 +799,7 @@ Every user-initiated event carries `actor = user` and the Telegram chat ID in th
   - Property: for every existing event row and every UPDATE (any column) or DELETE statement on it, Postgres raises `hat_event is append-only` and the row is unchanged; with the trigger dropped (broken variant) the check fails. Harm: the system of record for audits, veto scoring and replay can be rewritten after the fact.
 
 #### HAT-SCH-062: State changes and their events commit together
-- **Statement:** `app/hat/events.record(...)` writes in the caller's transaction, so a state change and its event commit or roll back together. A trade's lifecycle state changes only through the trade journal (`engine/journal.record`, PR 36), which moves the state and appends its event in that one transaction and refuses an engine decision the transition table forbids before writing either (HAT-EXEC-042).
+- **Statement:** `app/hat/events.record(...)` writes in the caller's transaction, so a state change and its event commit or roll back together. A trade's lifecycle state changes only through the trade journal (PR 36): `journal.record` moves the state and appends its event in that one transaction, and `journal.approval_sent` moves a signal to AwaitingApproval in the transaction that writes its `hat_approval` row, which stands for that step's event on replay; the journal refuses an engine decision the transition table forbids before writing either (HAT-EXEC-042).
 - **Source:** SCH "Event log" ("State tables are updated in the same transaction as the event, so the two can't drift"); PLAN PR 3; architecture audit 2026-10-22 F1.
 - **PR:** 3, 36
 - **Verification:** PBT `events.atomic_with_state`, PBT `journal.validates_before_writing`

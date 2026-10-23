@@ -199,24 +199,15 @@ def mismatches(session: Session) -> list[Mismatch]:
     an own position not yet Closed (so a signal stored as ended over a live position is read),
     its own position, and an open veto trade (a virtual position of a confirm or auto signal,
     HAT-EXEC-032) against its own fold. Ordered by signal id, trades first."""
-    found: list[Mismatch] = []
-    for signal in session.scalars(
-        select(HatSignal)
-        .where(or_(HatSignal.state.in_(lifecycle.ACTIVE_STATES), _own_position_open()))
-        .order_by(HatSignal.id)
-    ):
-        stored, disagrees = signal.state, False
-        for position in session.scalars(
-            select(HatPosition).where(HatPosition.signal_id == signal.id)
-        ):
-            if position.is_virtual and signal.mode != SHADOW:
-                continue  # its veto trade, below
-            held = signal.state in lifecycle.POSITION_STATES or position.state != lifecycle.CLOSED
-            if held and position.state != signal.state:
-                stored, disagrees = f"position:{position.state}", True  # the rows disagree
-        replayed = _replayed(signal.id, lambda s=signal: replay_state(session, s.id))
-        if disagrees or replayed != stored:
-            found.append((signal.id, TRADE, stored, replayed))
+    found = [
+        mismatch
+        for signal in session.scalars(
+            select(HatSignal)
+            .where(or_(HatSignal.state.in_(lifecycle.ACTIVE_STATES), _own_position_open()))
+            .order_by(HatSignal.id)
+        )
+        if (mismatch := _trade_mismatch(session, signal)) is not None
+    ]
     for position in session.scalars(
         select(HatPosition)
         .join(HatSignal, HatSignal.id == HatPosition.signal_id)
@@ -236,9 +227,22 @@ def mismatches(session: Session) -> list[Mismatch]:
     return found
 
 
+def _trade_mismatch(session: Session, signal: HatSignal) -> Mismatch | None:
+    """The signal's own trade against its fold; its own position must hold the signal's state."""
+    stored, disagrees = signal.state, False
+    for position in session.scalars(select(HatPosition).where(HatPosition.signal_id == signal.id)):
+        if position.is_virtual and signal.mode != SHADOW:
+            continue  # its veto trade, checked on its own
+        held = signal.state in lifecycle.POSITION_STATES or position.state != lifecycle.CLOSED
+        if held and position.state != signal.state:
+            stored, disagrees = f"position:{position.state}", True  # the rows disagree
+    replayed = _replayed(signal.id, lambda: replay_state(session, signal.id))
+    return (signal.id, TRADE, stored, replayed) if disagrees or replayed != stored else None
+
+
 def _replayed(signal_id: uuid.UUID, replay: Callable[[], str]) -> str:
     try:
         return replay()
-    except lifecycle.LifecycleStateError as err:
-        logger.error("events of signal %s do not fold: %s", signal_id, err)
+    except lifecycle.LifecycleStateError:
+        logger.exception("events of signal %s do not fold", signal_id)
         return UNFOLDABLE
