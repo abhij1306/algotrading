@@ -1,7 +1,7 @@
 """PBT fyers_broker.*: the circuit breaker follows its model and is
 per instance, nothing is sent while it is open, only an explicit Fyers error is a rejection (a lost,
-garbled or id-less answer is SUBMIT_UNCONFIRMED), and no price that is not a finite positive number
-reaches the SDK. Runs on the real `FyersBroker` over a recording SDK stand-in."""
+garbled or id-less answer is SUBMIT_UNCONFIRMED), and the adapter's reply parsers read amounts
+exactly. Runs on the real `FyersBroker` (the transport) over a recording SDK stand-in."""
 
 import json
 import math
@@ -13,6 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from hat.fakes.broker import funds_reply
 from hat.fakes.fyers_sdk import READ_LISTS, RecordingSdk, broker_over
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
@@ -26,7 +27,7 @@ from app.hat.execution.broker import (
     OrderType,
     Side,
 )
-from app.hat.execution.fyers_adapter import FyersHatBroker
+from app.hat.execution.fyers_adapter import FyersHatBroker, parse_funds, parse_positions
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     MAX_PAUSE,
@@ -43,9 +44,12 @@ from app.hat.execution.fyers_broker import (
 )
 from app.hat.execution.tags import encode_tag
 
-ORDER = {"symbol": "NSE:TCS-EQ", "quantity": 5, "side": "BUY", "type": "MARKET", "product": "CNC"}
-GTT = {"symbol": "NSE:TCS-EQ", "quantity": 5, "side": "SELL", "product": "CNC",
-       "trigger_price": 100.0, "price": 99.0}  # fmt: skip
+# SDK payloads as the adapter builds them (the transport sends them as they are)
+ORDER = {"symbol": "NSE:TCS-EQ", "qty": 5, "type": 2, "side": 1, "productType": "CNC",
+         "limitPrice": 0, "stopPrice": 0, "validity": "DAY", "disclosedQty": 0,
+         "offlineOrder": False}  # fmt: skip
+GTT = {"side": -1, "symbol": "NSE:TCS-EQ", "productType": "CNC",
+       "orderInfo": {"leg1": {"price": 99.0, "triggerPrice": 100.0, "qty": 5}}}  # fmt: skip
 NO_DEADLINE = settings(deadline=None)
 
 
@@ -223,69 +227,6 @@ def test_a_rejection_with_an_id_stays_rejected(
     assert len(sdk.calls) == 1
 
 
-BAD_PRICES = st.one_of(
-    st.sampled_from(
-        [
-            math.nan,
-            math.inf,
-            -math.inf,
-            0.0,
-            -0.0,
-            -1.0,
-            "nan",
-            "inf",
-            "-5",
-            "abc",
-            None,
-            "",
-            [],
-            {},
-        ]
-    ),
-    st.floats(max_value=0, allow_nan=False),
-)
-GOOD_PRICES = st.floats(min_value=0.05, max_value=1e7, allow_nan=False, allow_infinity=False)
-
-
-@given(order_type=st.sampled_from(["LIMIT", "SL", "SL-M"]), bad=BAD_PRICES, good=GOOD_PRICES)
-@NO_DEADLINE
-def test_a_price_that_is_not_finite_and_positive_never_reaches_the_sdk(
-    order_type: str, bad: object, good: float
-) -> None:
-    """A limit or trigger price that is NaN, infinite, zero, negative or not a number makes a
-    definite rejection and no SDK call; the same order with a finite positive price is sent with
-    exactly that price."""
-    sdk = RecordingSdk()
-    broker = broker_over(sdk)
-    needs_limit = order_type in {"LIMIT", "SL"}
-    needs_trigger = order_type in {"SL", "SL-M"}
-    base = {**ORDER, "type": order_type, "price": good, "trigger_price": good}
-    for field in [
-        f for f, needed in (("price", needs_limit), ("trigger_price", needs_trigger)) if needed
-    ]:
-        result = broker.place_order({**base, field: bad})
-        assert result["status"] == "REJECTED"
-        assert sdk.calls == []
-    sent = broker.place_order(base)
-    assert sent["status"] == "SUBMITTED"
-    (_, payload), = sdk.calls  # fmt: skip
-    assert payload["limitPrice"] == (good if needs_limit else 0)
-    assert payload["stopPrice"] == (good if needs_trigger else 0)
-
-
-@given(bad=BAD_PRICES, good=GOOD_PRICES, field=st.sampled_from(["price", "trigger_price"]))
-@NO_DEADLINE
-def test_a_gtt_with_a_bad_price_never_reaches_the_sdk(bad: object, good: float, field: str) -> None:
-    """A GTT place or modify with a non-finite or non-positive price is refused before the SDK."""
-    sdk = RecordingSdk()
-    broker = broker_over(sdk)
-    placed = broker.place_gtt({**GTT, "price": good, "trigger_price": good, field: bad})
-    modified = broker.modify_gtt("GTT1", {"price": good, "trigger_price": good, field: bad})
-    assert placed["status"] == "REJECTED"
-    assert modified["status"] == "REJECTED"
-    assert sdk.calls == []
-
-
 @given(threshold=st.integers(1, 4))
 @NO_DEADLINE
 def test_brokers_do_not_share_a_breaker_unless_given_one(threshold: int) -> None:
@@ -314,7 +255,7 @@ LIST_READS = {
     "fetch_tradebook": "tradebook",
     "fetch_holdings": "holdings",
     "fetch_gtt_orders": "gtt_orderbook",
-    "get_positions": "positions",
+    "fetch_positions": "positions",
 }
 
 
@@ -628,48 +569,37 @@ BUDGET_OPS = {
 
 
 AMOUNTS = st.floats(min_value=-1e9, max_value=1e9, allow_nan=False, allow_infinity=False)
-NOT_AMOUNTS = st.sampled_from([math.nan, math.inf, -math.inf, "1,5", "abc", True, [1]])
+NOT_AMOUNTS = st.sampled_from([math.nan, math.inf, -math.inf, "1,5", "abc", True, [1], None])
 
 
 @given(
-    buy=AMOUNTS,
-    ltp=AMOUNTS,
-    pnl=AMOUNTS,
+    buy=st.floats(min_value=0.01, max_value=1e9),
     available=AMOUNTS,
     used=AMOUNTS,
     bad=st.none() | NOT_AMOUNTS,
-    where=st.sampled_from(["positions", "funds"]),
 )
-@example(buy=0.1, ltp=0.2, pnl=0.3, available=0.1, used=0.2, bad=None, where="funds")
+@example(buy=0.1, available=0.1, used=0.2, bad=None)
 @NO_DEADLINE
-def test_reply_amounts_exact(
-    buy: float, ltp: float, pnl: float, available: float, used: float, bad: object, where: str
-) -> None:
-    """PBT fyers_broker.reply_amounts_exact (trading-safety rules 7 and 8; PR 75c): the
-    amounts of a positions or funds reply (JSON floats) are read exactly by `money.exact`, as
-    the Decimal each float's shortest text names, and a total Fyers leaves out is the exact sum
-    of the available and used amounts; an amount that is not a finite number fails the read
-    closed, while a fund row HAT does not read never fails it. Harm: 0.1 + 0.2 in float puts
-    0.30000000000000004 of free cash into sizing, a NaN average price reads as a position's cost,
-    or an odd collateral row blocks every entry."""
-    row = {"symbol": "NSE:TCS-EQ", "netQty": 5, "buyAvg": buy, "ltp": ltp, "pl": pnl}
+def test_reply_amounts_exact(buy: float, available: float, used: float, bad: object) -> None:
+    """PBT fyers_broker.reply_amounts_exact (trading-safety rules 7 and 8): the adapter's parsers
+    read a position's average and the funds rows (JSON floats) as the Decimal each float's
+    shortest text names, a "Total Balance" Fyers leaves out is the exact sum, and an amount that
+    is missing or not a finite number raises, while a fund row HAT does not read never does.
+    Harm: 0.1 + 0.2 in float puts 0.30000000000000004 of free cash into sizing, a missing
+    average reads as a cost of 0, or an odd collateral row blocks every entry."""
+    row = {"symbol": "NSE:TCS-EQ", "netQty": 5, "buyAvg": buy, "productType": "CNC"}
     unread = {"title": "Collaterals", "equityAmount": "NaN"}  # a row HAT does not read
-    funds = {"available": available, "used": used, "fund_limit": [unread]}
+    funds = funds_reply(available, used)
+    funds["fund_limit"] = [*funds["fund_limit"][:2], unread]  # no "Total Balance" row
     if bad is not None:
-        (row if where == "positions" else funds)["buyAvg" if where == "positions" else "used"] = bad
-    reply = {"s": "ok", "netPositions": [row]} if where == "positions" else {"s": "ok", **funds}
-    adapter = FyersHatBroker(broker_over(ScriptedSdk(reply)))
-    read = adapter.positions if where == "positions" else adapter.funds
-    if bad is not None:
-        with pytest.raises(BrokerUnavailableError):
-            read()
+        row["buyAvg"] = funds["fund_limit"][1]["equityAmount"] = bad
+        with pytest.raises((ValueError, TypeError, ArithmeticError)):
+            parse_positions([row])
+        with pytest.raises((ValueError, TypeError, ArithmeticError)):
+            parse_funds(funds)
         return
-    if where == "positions":
-        [position] = adapter.positions()
-        assert position.avg_price == Decimal(repr(buy))
-        [raw] = broker_over(ScriptedSdk(reply)).get_positions()
-        assert (raw["current_price"], raw["pnl"]) == (Decimal(repr(ltp)), Decimal(repr(pnl)))
-        return
-    got = adapter.funds()
+    [position] = parse_positions([row])
+    assert position.avg_price == Decimal(repr(buy))
+    got = parse_funds(funds)
     assert (got.available, got.used) == (Decimal(repr(available)), Decimal(repr(used)))
     assert got.total == Decimal(repr(available)) + Decimal(repr(used))
