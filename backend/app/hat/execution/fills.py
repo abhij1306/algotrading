@@ -317,6 +317,31 @@ class FillSync:
                 self._apply_gtt_trade(session, gtt, trade, now, report)
         self._statuses(session, rows, book, now, report)
         self._sales(session, rows, book, now, report)
+        self._gtt_sales(session, account_id, orders, now, report)
+        if report.gtt_book is not None and report.gtt_read_at is not None:
+            self._check_gtts(
+                session, account_id, orders, report.gtt_book, report.gtt_read_at, now, report
+            )
+            self._gtts_read_at = now
+        for position_id in self._unprotected(session, account_id) - report.protected:
+            self._protect(session, position_id, now, report)
+        for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
+            # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
+            # once settled, a stop that landed is cancelled, so it never rests under no shares.
+            self._desk.cancel_all(session, position_id, now)
+        for position_id in self._emptied(session, account_id):
+            self._close_emptied(session, position_id, now)
+        return report
+
+    def _gtt_sales(
+        self,
+        session: Session,
+        account_id: uuid.UUID,
+        orders: Iterable[BrokerOrder],
+        now: datetime,
+        report: SyncReport,
+    ) -> None:
+        """Step 5 over the order book: each triggered GTT's sale that ended short or rests."""
         gtts = self._working_gtts(session, account_id)
         for order in orders:
             gtt = gtts.of(order)
@@ -333,20 +358,6 @@ class FillSync:
             for order_id, since in self._working_since.items()
             if order_id in working
         }
-        if report.gtt_book is not None and report.gtt_read_at is not None:
-            self._check_gtts(
-                session, account_id, orders, report.gtt_book, report.gtt_read_at, now, report
-            )
-            self._gtts_read_at = now
-        for position_id in self._unprotected(session, account_id) - report.protected:
-            self._protect(session, position_id, now, report)
-        for position_id in self._closed_with_unsure_stops(session, account_id) - report.protected:
-            # A sale may close a position while one of its stops is still unsure (HAT-EXEC-065):
-            # once settled, a stop that landed is cancelled, so it never rests under no shares.
-            self._desk.cancel_all(session, position_id, now)
-        for position_id in self._emptied(session, account_id):
-            self._close_emptied(session, position_id, now)
-        return report
 
     def _close_emptied(self, session: Session, position_id: uuid.UUID, now: datetime) -> None:
         """Step 7 for one position (one failing leaves the others closed)."""

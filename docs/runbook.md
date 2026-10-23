@@ -319,7 +319,8 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    the broker cancelled (ex-date, series change, a cancel in the Fyers app) is ended (code
    `gtt_cancelled_by_broker`) and replaced at once, a GTT outside the session and an intraday stop
    inside it; a refused replacement is retried at each sync, and meanwhile the engine sells on its
-   own hard stop. An unreadable GTT book changes nothing and raises `gtt.unverified`
+   own hard stop. A position whose new series is `unmapped` gets no replacement (`stop.not_placed`,
+   code `series_unmapped`; see Series change). An unreadable GTT book changes nothing and raises `gtt.unverified`
    (`gtt_book_unread`) once until a read succeeds.
 2. Check the Fyers GTT page against `/positions`: every open real position needs one GTT at its
    current stop.

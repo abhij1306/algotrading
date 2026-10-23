@@ -1018,12 +1018,13 @@ class TradeManager:
         book cannot be read (nothing is placed or ended then) or a position is left unprotected;
         a GTT the broker refuses is alerted (`stop.not_placed`) and the fill sync tries again."""
         report = StopsReport()
+        synced = self.sync(session, account_id, now, check_gtts=True)
+        # after the sync, so a position its fills closed is not alerted
         moved = [
             position
             for position in self.open_positions(session, account_id)
             if self._alert_series_change(session, position, now)
         ]
-        synced = self.sync(session, account_id, now, check_gtts=True)
         if synced is None or synced.gtt_book is None or synced.gtt_read_at is None:
             report.unread = True
             return report
