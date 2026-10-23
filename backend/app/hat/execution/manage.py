@@ -144,6 +144,7 @@ FLATTEN = "flatten"
 SETTLED = "settled"
 WAIT = "wait"
 UNREADABLE = "unreadable"
+EARLIER = "earlier_session"  # a lost sale of an earlier session, settled from holdings
 # What the broker's holdings say of a lost sale of an earlier session (`earlier_sale_verdict`).
 NEVER_SOLD = "never_sold"
 SOLD = "sold"
@@ -595,24 +596,29 @@ class TradeManager:
             book = {order.tag: order for order in self._broker.orders()}
         except BrokerUnavailableError:
             return UNREADABLE
-        earlier: list[HatOrder] = []
-        waiting = False
-        for row in lost:
-            found = book.get(row.tag)
-            if found is None and self._earlier_session(row):
-                earlier.append(row)
-            elif found is None and self._young(row):
-                waiting = True  # sent too recently: it may still be on its way
-            elif found is None:
-                end_lost_order(session, row)
-            elif found.filled_qty > 0:
-                waiting = True
-            else:
-                adopt_broker_order(session, row, found, bot_id, clock=self._clock)
-            session.commit()
+        settled = [self._settle_one(session, row, book.get(row.tag), bot_id) for row in lost]
+        earlier = [row for row, verdict in zip(lost, settled, strict=True) if verdict == EARLIER]
         if earlier and not self._settle_earlier(session, position, earlier, now):
             return UNREADABLE
-        return WAIT if waiting else SETTLED
+        return WAIT if WAIT in settled else SETTLED
+
+    def _settle_one(
+        self, session: Session, row: HatOrder, found: BrokerOrder | None, bot_id: uuid.UUID
+    ) -> str:
+        """One lost sale against today's book: EARLIER (of an earlier session, absent), WAIT
+        (absent but young, or found with fills not yet recorded) or SETTLED (ended or adopted)."""
+        if found is None and self._earlier_session(row):
+            return EARLIER
+        if found is None and self._young(row):
+            return WAIT  # sent too recently: it may still be on its way
+        if found is not None and found.filled_qty > 0:
+            return WAIT
+        if found is None:
+            end_lost_order(session, row)
+        else:
+            adopt_broker_order(session, row, found, bot_id, clock=self._clock)
+        session.commit()
+        return SETTLED
 
     def _settle_earlier(
         self, session: Session, position: HatPosition, rows: list[HatOrder], now: datetime
