@@ -34,6 +34,7 @@ on:
       - backend/app/hat/execution/fyers_adapter.py
       - backend/app/hat/execution/manage.py
       - backend/app/hat/execution/mode_changes.py
+      - backend/app/hat/execution/order_book.py
       - backend/app/hat/execution/protect.py
       - backend/app/hat/execution/reconcile.py
       - backend/app/hat/execution/router.py
@@ -41,8 +42,10 @@ on:
       - backend/app/hat/execution/submit.py
       - backend/app/hat/ops/jobs.py
       - backend/app/hat/ops/scheduler.py
-      - backend/app/hat/risk/controls.py
+      - backend/app/hat/risk/bots.py
       - backend/app/hat/risk/decision.py
+      - backend/app/hat/risk/drawdown.py
+      - backend/app/hat/risk/kill_ops.py
       - backend/app/hat/risk/service.py
       - backend/app/hat/risk/sessions.py
       - backend/app/hat/telegram/commands.py

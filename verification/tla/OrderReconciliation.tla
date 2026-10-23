@@ -204,7 +204,7 @@ Record(t) ==
                    diverged, divergeCount, blocked, alerts, restarts, violUnresolved,
                    violUnreconciled, violBlocked, violInactive>>
 
-\* code: backend/app/hat/execution/submit.py:resolve_by_tag  (look the tag up in the broker's
+\* code: backend/app/hat/execution/order_book.py:resolve_by_tag  (look the tag up in the broker's
 \* order book, which may lag: a found order is adopted with its broker id; absent clears the
 \* unknown state)
 Lookup(t) ==
@@ -260,7 +260,7 @@ Repair ==
                    checked, owners, reconciled, divergeCount, blocked, alerts, restarts,
                    violUnresolved, violUnreconciled, violBlocked, violInactive>>
 
-\* code: backend/app/hat/execution/submit.py:resolve_by_tag  (environment: the order book it
+\* code: backend/app/hat/execution/order_book.py:resolve_by_tag  (environment: the order book it
 \* reads catches up and shows the orders that landed under the tag)
 BookCatchesUp(t) ==
     /\ seen[t] < book[t]

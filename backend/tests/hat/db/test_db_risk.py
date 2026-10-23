@@ -21,7 +21,8 @@ from app.hat.models import (
     HatRiskPolicyVersion,
 )
 from app.hat.risk import policy_service
-from app.hat.risk.controls import evaluate_drawdown_kills, rearm_kill, snapshot_bots, trip_kill
+from app.hat.risk.drawdown import evaluate_drawdown_kills, snapshot_bots
+from app.hat.risk.kill_ops import rearm_kill, trip_kill
 from app.hat.risk.policy import CoolingOffError, seed_policy
 from app.hat.risk.policy_service import (
     apply_due_versions,

@@ -56,6 +56,9 @@ HAT_PACKAGE = "app.hat."
 WRITER_MODULES = (
     "app.hat.events",
     "app.hat.risk.controls",
+    "app.hat.risk.kill_ops",
+    "app.hat.risk.drawdown",
+    "app.hat.risk.bots",
     "app.hat.execution.mode_changes",
     "app.hat.telegram",
 )

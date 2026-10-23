@@ -60,7 +60,7 @@ from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
 from ..ops.trade_jobs import job_name, trade_jobs
-from ..risk.controls import sync_health
+from ..risk.kill_ops import sync_health
 from ..risk.sessions import SessionCalendar
 from ..time import trade_date_of, utc_now
 

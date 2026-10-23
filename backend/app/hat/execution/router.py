@@ -68,7 +68,7 @@ from ..models import (
     HatSignal,
 )
 from ..notify import LogNotifier, Notifier
-from ..risk import controls
+from ..risk import kill_ops
 from ..risk.decision import Reason
 from ..risk.modes import Mode
 from ..risk.service import evaluate_signal
@@ -81,6 +81,7 @@ from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
     OrderRequest,
+    OrderSender,
     SendOutcome,
     UnresolvedOrderError,
     reserve_order,
@@ -171,7 +172,7 @@ def unplaced_entry() -> ColumnElement[bool]:
 def _kill_refusal(session: Session, bot_id: uuid.UUID) -> str | None:
     """A kill switch or a pause that came on after the risk check (the bot's lock is released
     when the signal commits) stops the entry: the bot is manage-only."""
-    kill = controls.kill_state(session, bot_id)
+    kill = kill_ops.kill_state(session, bot_id)
     for tripped, reason in (
         (kill.account_tripped, Reason.KILL_ACCOUNT),
         (kill.bot_tripped, Reason.KILL_BOT),
@@ -220,6 +221,7 @@ class ExecutionRouter:
         self._broker = broker
         self._guard = guard
         self._clock = clock  # stamps each entry's send
+        self._sender = OrderSender(broker, guard, clock)
         self._reconciler = reconciler
         self._notifier = notifier or LogNotifier()
         # Signs each approval card's token (the Telegram signer). Without one a confirm card
@@ -419,7 +421,7 @@ class ExecutionRouter:
                 )
                 return None
             return self._not_placed(session, signal, refusal, now)
-        return self._send_entry(session, signal, account_id, symbol, now)
+        return self._send_entry(session, signal, account_id, now)
 
     def _preflight(
         self,
@@ -455,7 +457,6 @@ class ExecutionRouter:
         session: Session,
         signal: HatSignal,
         account_id: uuid.UUID,
-        symbol: str,
         now: datetime,
     ) -> SendOutcome | None:
         """Send the entry under its open tag or a new one; a rejected entry is retried once."""
@@ -470,10 +471,8 @@ class ExecutionRouter:
                 refusal = self._guard.refusal(signal.bot_id, account_id, is_entry=True)
                 if refusal is not None:
                     return self._not_placed(session, signal, refusal, now)
-                tag = reserve_order(
-                    session, self._entry_request(session, signal, account_id, symbol)
-                )
-            done, sent = self._send_once(session, signal, tag, symbol, now, previous=sent)
+                tag = reserve_order(session, self._entry_request(session, signal, account_id))
+            done, sent = self._send_once(session, signal, tag, now, previous=sent)
             if done:
                 return sent
             tag = None  # the one retry: a new logical order, so the next tag
@@ -483,7 +482,6 @@ class ExecutionRouter:
         session: Session,
         signal: HatSignal,
         tag: str,
-        symbol: str,
         now: datetime,
         *,
         previous: SendOutcome | None,
@@ -491,15 +489,7 @@ class ExecutionRouter:
         """One send of `tag`: (finished, the outcome to return). Not finished only after a
         rejection that may still be retried."""
         try:
-            sent = send_order(
-                session,
-                self._broker,
-                self._guard,
-                tag,
-                symbol=symbol,
-                bot_id=signal.bot_id,
-                clock=self._clock,
-            )
+            sent = send_order(session, self._sender, tag)
         except (OrderRefusedError, BrokerUnavailableError) as exc:
             code = exc.code if isinstance(exc, OrderRefusedError) else "broker_unavailable"
             if self._release_unsent(session, tag):
@@ -519,7 +509,7 @@ class ExecutionRouter:
         return False, sent
 
     def _entry_request(
-        self, session: Session, signal: HatSignal, account_id: uuid.UUID, symbol: str
+        self, session: Session, signal: HatSignal, account_id: uuid.UUID
     ) -> OrderRequest:
         price = snapshot.entry_price_of(session, signal)
         return OrderRequest(
@@ -530,7 +520,6 @@ class ExecutionRouter:
             side=Side.BUY,
             qty=signal.qty,
             order_type=OrderType.LIMIT,
-            symbol=symbol,
             price=price,
         )
 

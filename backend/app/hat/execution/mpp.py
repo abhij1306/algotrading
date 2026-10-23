@@ -40,8 +40,8 @@ from ..time import as_utc, day_bounds, trade_date_of
 from .broker import BrokerOrder, HatBroker, OrderType
 from .fills import ALERT_SALE_UNFILLED, RESTING_AFTER, SaleBand, SyncReport
 from .manage import EXIT_PARTIAL
+from .order_book import EXIT_SALES, TagBook, mark_resend, resend_event, resend_requested
 from .stop_plans import LIVE
-from .submit import EXIT_SALES, TagBook, mark_resend, resend_event, resend_requested
 
 if TYPE_CHECKING:
     from .protect import StopDesk

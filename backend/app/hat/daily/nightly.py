@@ -68,13 +68,13 @@ from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
 from ..ops.partitions import events_partitions
 from ..ops.retention import purge_job
 from ..ops.scheduler import Days, JobBody, ScheduledJob
-from ..risk.controls import (
+from ..risk.drawdown import (
     ALERT_FALLBACK_MARKS,
     ALERT_KILL_DRAWDOWN,
     evaluate_drawdown_kills,
     snapshot_bots,
-    sync_health,
 )
+from ..risk.kill_ops import sync_health
 from ..time import utc_now
 from .market import official_closes, scan_inputs
 

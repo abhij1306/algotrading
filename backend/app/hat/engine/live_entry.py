@@ -47,7 +47,7 @@ from ..data.gapscan import Gapper, is_candidate
 from ..execution.modes import bot_mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
 from ..money import exact
-from ..risk import controls
+from ..risk import kill_ops
 from ..risk.decision import SignalContext
 from ..risk.modes import Mode
 from ..risk.service import evaluate_signal
@@ -480,7 +480,7 @@ class DataHealthKill:
     def _write(self, stale: bool, at: datetime) -> None:
         try:
             with self._session_factory() as session:
-                controls.sync_health(
+                kill_ops.sync_health(
                     session,
                     scope="account",
                     bot_id=None,

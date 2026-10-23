@@ -90,6 +90,14 @@ from .broker import (
     Side,
 )
 from .gtt_upkeep import GttUpkeep
+from .order_book import (
+    EXIT_SALES,
+    MAX_SALE_REJECTIONS,
+    TagBook,
+    adopt_broker_order,
+    record_broker_status,
+    rejected_sales,
+)
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     ALERT_GTT_UNFILLED,
@@ -101,14 +109,6 @@ from .protect import (
     StopDesk,
 )
 from .stop_plans import LIVE, STOP_DAY, STOP_GTT, UNSURE, WORKING, stop_confirmed
-from .submit import (
-    EXIT_SALES,
-    MAX_SALE_REJECTIONS,
-    TagBook,
-    adopt_broker_order,
-    record_broker_status,
-    rejected_sales,
-)
 
 if TYPE_CHECKING:
     from .mpp import MarketProtection

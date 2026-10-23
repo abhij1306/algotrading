@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, time
 from decimal import Decimal
@@ -70,6 +69,7 @@ from .broker import (
 from .entry_cancel import EntryCancel
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
+from .order_book import EXIT_SALES, adopt_broker_order, adopt_gtt, end_lost_order, find_gtt
 from .position_desk import PositionDesk, Verdict, serialised
 from .series import broker_symbol, series_changed
 from .stop_plans import (
@@ -85,16 +85,13 @@ from .stop_plans import (
     raise_only,
 )
 from .submit import (
-    EXIT_SALES,
     AwaitingFillsError,
     OrderRefusedError,
     OrderRequest,
+    OrderSender,
     SendOutcome,
+    TickSource,
     UnresolvedOrderError,
-    adopt_broker_order,
-    adopt_gtt,
-    end_lost_order,
-    find_gtt,
     reserve_order,
     send_order,
 )
@@ -109,7 +106,6 @@ __all__ = [
     "ALERT_STOP_NOT_PLACED",
     "SWAP_AT",
     "StopDesk",
-    "TickSource",
 ]
 
 logger = logging.getLogger(__name__)
@@ -142,9 +138,6 @@ EXIT_WORKING = "exit_working"
 VERIFIED = "verified"
 REPLACED = "replaced"
 UNVERIFIED = "unverified"
-
-# The instrument's tick for a position's stop prices (`data.ticks.tick_for_date`, HAT-EXEC-053).
-TickSource = Callable[[Session, HatPosition], Decimal | None]
 
 
 @dataclass(frozen=True)
@@ -180,6 +173,7 @@ class StopDesk:
         self._positions = positions
         self._clock = positions.clock
         self._tick_for = tick_for
+        self._sender = OrderSender(broker, guard, self._clock, tick_for)
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
         self.entries = EntryCancel(broker)  # the entry remainders it cancels
@@ -341,31 +335,19 @@ class StopDesk:
             side=Side.SELL,
             qty=position.qty_open,
             order_type=OrderType.SL if gtt else OrderType.SL_M,
-            symbol=target.symbol,
             position_id=position.id,
             price=gtt_limit_price(trigger, tick) if gtt and tick is not None else None,
             trigger_price=trigger,
         )
 
-    def _send(
-        self, session: Session, target: StopTarget, tag: str, tick: Decimal | None
-    ) -> SendOutcome | str:
+    def _send(self, session: Session, target: StopTarget, tag: str) -> SendOutcome | str:
         """One send of a reserved stop: the outcome, or a refusal code (nothing was sent, or it
         cannot be told)."""
         if target.unmapped:
             self._release_unsent(session, tag)
             return CODE_SERIES_UNMAPPED
         try:
-            return send_order(
-                session,
-                self._broker,
-                self._guard,
-                tag,
-                symbol=target.symbol,
-                bot_id=target.signal.bot_id,
-                clock=self._clock,
-                tick_size=tick,
-            )
+            return send_order(session, self._sender, tag)
         except OrderRefusedError as exc:
             self._release_unsent(session, tag)
             return exc.code
@@ -410,7 +392,7 @@ class StopDesk:
                 session.rollback()
                 self.alert(alert, target, now, getattr(exc, "code", "reservation_failed"))
                 return False
-            sent = self._send(session, target, tag, tick)
+            sent = self._send(session, target, tag)
             if isinstance(sent, str):
                 self.alert(alert, target, now, sent)
                 return False
@@ -429,7 +411,7 @@ class StopDesk:
         return not isinstance(sent, str) and sent.status in LIVE
 
     def _resent(self, session: Session, target: StopTarget, row: HatOrder) -> SendOutcome | str:
-        return self._send(session, target, row.tag, self._tick_for(session, target.position))
+        return self._send(session, target, row.tag)
 
     # --- lost answers (HAT-EXEC-065) ---------------------------------------------------------
 

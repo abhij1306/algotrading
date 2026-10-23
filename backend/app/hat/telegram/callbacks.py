@@ -34,8 +34,8 @@ from ..engine import approvals, lifecycle
 from ..engine.approvals import ApprovalDecision, Placement
 from ..events import record
 from ..execution.manage import FlattenReport, TradeManager
+from ..execution.order_book import ENTRY
 from ..execution.router import ExecutionRouter, PlacementCheck
-from ..execution.submit import ENTRY
 from ..models import HatApproval, HatBot, HatOrder, HatSignal
 from ..risk.modes import Mode
 from ..settings import load_settings

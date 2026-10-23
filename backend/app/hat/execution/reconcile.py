@@ -35,7 +35,7 @@ from ..notify import Notifier
 from ..time import trade_date_of
 from .broker import BrokerHolding, BrokerOrder, BrokerPosition, HatBroker
 from .guard import ExecutionGuard
-from .submit import TagBook, adopt_broker_order
+from .order_book import TagBook, adopt_broker_order
 from .tags import is_hat_tag
 
 __all__ = [
