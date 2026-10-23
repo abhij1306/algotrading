@@ -807,8 +807,9 @@ def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D])
     longest run of sessions below the running peak of the curve (the initial equity first),
     `mar` the CAGR over the drawdown's depth (both null when the CAGR overflows, never a crash),
     `tail_trimmed_r` the mean R without the best ceil(1, 5, 10 % of the trades), and
-    `cost_share` the fees over net P&L + fees. Harm: the tuning report shows a strategy that is idle most of the time, under water for months,
-    resting on one outlier trade or eaten by costs as robust."""
+    `cost_share` the fees over net P&L + fees. Harm: the tuning report shows a strategy that
+    is idle most of the time, under water for months, resting on one outlier trade or eaten by
+    costs as robust."""
     trades = sorted(
         (
             _trade(max(a, b), r, n, entry=min(a, b), fees=D(fee))
