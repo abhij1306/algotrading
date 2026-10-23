@@ -105,6 +105,11 @@ def _fraction(raw: str | None, default: Decimal) -> Decimal:
     return default if value is None else value
 
 
+def _count(raw: str | None, default: int) -> int:
+    """`_calls` where no cap is not allowed: always a positive whole number."""
+    return _calls(raw, default) or default
+
+
 _MEMORY_RE = re.compile(r"\d+(\.\d+)?\s*(KB|MB|GB|TB|KIB|MIB|GIB|TIB)", re.IGNORECASE)
 
 
@@ -128,26 +133,25 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         enabled=_is_true(source.get("HAT_ENABLED")),
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
-        broker_calls_per_second=_calls(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8) or 8,
-        broker_calls_per_minute=_calls(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180) or 180,
+        broker_calls_per_second=_count(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8),
+        broker_calls_per_minute=_count(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180),
         broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
         mpp_resend=_is_true(source.get("HAT_MPP_RESEND")),
-        mpp_page_after=_calls(source.get("HAT_MPP_PAGE_AFTER"), 3) or 3,
+        mpp_page_after=_count(source.get("HAT_MPP_PAGE_AFTER"), 3),
         exchange_day_range=_is_true(source.get("HAT_EXCHANGE_DAY_RANGE")),
-        symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
-        entry_timeout_minutes=_calls(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60) or 60,
+        symbol_silent_seconds=_count(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120),
+        entry_timeout_minutes=_count(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60),
         duckdb_memory=_memory(source.get("HAT_DUCKDB_MEMORY")),
-        gtt_check_minutes=_calls(source.get("HAT_GTT_CHECK_MINUTES"), 5) or 5,
-        history_daily_limit=_calls(source.get("HAT_HISTORY_DAILY_LIMIT"), PLAN_CALLS_PER_DAY)
-        or PLAN_CALLS_PER_DAY,
-        history_reserve=_calls(source.get("HAT_HISTORY_RESERVE"), 500) or 500,
-        history_per_minute=_calls(source.get("HAT_HISTORY_PER_MINUTE"), 50) or 50,
-        history_plan_days=_calls(source.get("HAT_HISTORY_PLAN_DAYS"), 365) or 365,
-        history_chunk_days=_calls(source.get("HAT_HISTORY_CHUNK_DAYS"), 100) or 100,
+        gtt_check_minutes=_count(source.get("HAT_GTT_CHECK_MINUTES"), 5),
+        history_daily_limit=_count(source.get("HAT_HISTORY_DAILY_LIMIT"), PLAN_CALLS_PER_DAY),
+        history_reserve=_count(source.get("HAT_HISTORY_RESERVE"), 500),
+        history_per_minute=_count(source.get("HAT_HISTORY_PER_MINUTE"), 50),
+        history_plan_days=_count(source.get("HAT_HISTORY_PLAN_DAYS"), 365),
+        history_chunk_days=_count(source.get("HAT_HISTORY_CHUNK_DAYS"), 100),
         history_envelope_tol=_fraction(source.get("HAT_HISTORY_ENVELOPE_TOL"), Decimal("0.005")),
         history_max_reject_pct=_fraction(source.get("HAT_HISTORY_MAX_REJECT_PCT"), Decimal("0.5")),
-        history_max_reject_run=_calls(source.get("HAT_HISTORY_MAX_REJECT_RUN"), 12) or 12,
-        history_write_batch=_calls(source.get("HAT_HISTORY_WRITE_BATCH"), 25) or 25,
+        history_max_reject_run=_count(source.get("HAT_HISTORY_MAX_REJECT_RUN"), 12),
+        history_write_batch=_count(source.get("HAT_HISTORY_WRITE_BATCH"), 25),
     )
 
 

@@ -318,7 +318,7 @@ class HistoryLimits:
             min(values) < 1
             or self.max_clamps < 0
             or self.failures_in_row < 1
-            or not self.max_reject_pct >= 0
+            or self.max_reject_pct < 0
         ):
             raise MinuteHistoryError("history_bad_limits")
 
@@ -693,11 +693,7 @@ def load_minute_history(
     # symbols that failed last time go last, so a few bad ones cannot block a resume forever
     for symbol in sorted(instruments, key=lambda s: (s in progress.failed, s)):
         first = max(start, progress.available_from or start)
-        if resume and first <= end and progress.covers(symbol, first, end):
-            report.skipped += 1
-            continue
-        if resume and not retry_failed and progress.failed.get(symbol) in _DATA_FAILURES:
-            report.skipped_failed += 1
+        if resume and _skipped(progress, report, symbol, first, end, retry_failed):
             continue
         code = (
             "history_plan_limit"  # the plan serves nothing of the period
@@ -725,6 +721,20 @@ def load_minute_history(
             _flush(store, basis, batch, progress, report)
     _flush(store, basis, batch, progress, report)
     return report
+
+
+def _skipped(
+    progress: Progress, report: HistoryReport, symbol: str, first: date, end: date, retry: bool
+) -> bool:
+    """Whether a resume skips `symbol` (counted in the report): loaded over the period, or
+    failed on its data and not asked to `retry`."""
+    if first <= end and progress.covers(symbol, first, end):
+        report.skipped += 1
+        return True
+    if not retry and progress.failed.get(symbol) in _DATA_FAILURES:
+        report.skipped_failed += 1
+        return True
+    return False
 
 
 def _begin(
