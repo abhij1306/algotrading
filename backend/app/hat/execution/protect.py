@@ -86,6 +86,7 @@ from .stop_plans import (
 )
 from .submit import (
     EXIT_SALES,
+    AwaitingFillsError,
     OrderRefusedError,
     OrderRequest,
     SendOutcome,
@@ -120,6 +121,8 @@ EVENT_GTT_TRIGGERED = "gtt.triggered"
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
 CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
+# a lost stop found in the book with shares sold: the fill sync records its fills
+CODE_AWAITING_FILLS = "awaiting_fills"
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
@@ -369,6 +372,8 @@ class StopDesk:
         except BrokerUnavailableError:
             self._release_unsent(session, tag)
             return BROKER_UNAVAILABLE
+        except AwaitingFillsError:
+            return CODE_AWAITING_FILLS
         except UnresolvedOrderError:
             return "unresolved"
 
@@ -420,8 +425,11 @@ class StopDesk:
 
     def resend(self, session: Session, target: StopTarget, row: HatOrder) -> bool:
         """Send a stop reserved earlier whose outcome is not known yet (by its own tag)."""
-        sent = self._send(session, target, row.tag, self._tick_for(session, target.position))
+        sent = self._resent(session, target, row)
         return not isinstance(sent, str) and sent.status in LIVE
+
+    def _resent(self, session: Session, target: StopTarget, row: HatOrder) -> SendOutcome | str:
+        return self._send(session, target, row.tag, self._tick_for(session, target.position))
 
     # --- lost answers (HAT-EXEC-065) ---------------------------------------------------------
 
@@ -527,10 +535,18 @@ class StopDesk:
             rows = self.settled_stops(session, target, STOP_GTT)
             step = plan(ProtectStep.SETTLE)
         if step.step is ProtectStep.RESEND:
-            if any(self.resend(session, target, row) for row in step.rows):
-                return PROTECTED
+            filled = False
+            for row in step.rows:
+                sent = self._resent(session, target, row)
+                if not isinstance(sent, str) and sent.status in LIVE:
+                    return PROTECTED
+                filled = filled or sent == CODE_AWAITING_FILLS
             rows = self.stops_of(session, position.id)
             step = plan(ProtectStep.RESEND)
+            if filled and step.step is ProtectStep.WAIT_LOST:
+                # The lost stop rested and sold: not a stop that failed, so nothing is alerted;
+                # the fill sync records its fills and protects what is left.
+                step = ProtectPlan(ProtectStep.WAIT_LOST)
         return self._carry_out(session, target, step, now)
 
     def _carry_out(

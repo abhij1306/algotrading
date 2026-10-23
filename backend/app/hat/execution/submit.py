@@ -80,6 +80,7 @@ from .tags import encode_tag, is_hat_tag
 
 __all__ = [
     "EXIT_SALES",
+    "AwaitingFillsError",
     "MAX_SALE_REJECTIONS",
     "OrderRefusedError",
     "OrderRequest",
@@ -129,6 +130,11 @@ class OrderRefusedError(HatError):
 
 class UnresolvedOrderError(HatError):
     """An order whose outcome is unknown and cannot be looked up by tag: not retried."""
+
+
+class AwaitingFillsError(UnresolvedOrderError):
+    """A stop or sale whose answer was lost, found in the broker's book with shares sold: not
+    sent again; the fill sync adopts it with its fills (`found_verdict`)."""
 
 
 @dataclass(frozen=True)
@@ -565,7 +571,7 @@ def _lookup_before_retry(
             raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
         return None
     if row.purpose != ENTRY and found_verdict(found.filled_qty) is Verdict.WAIT:
-        raise UnresolvedOrderError("found with shares sold: the fill sync adopts it")
+        raise AwaitingFillsError("found with shares sold: the fill sync adopts it")
     adopt_broker_order(session, row, found, bot_id, clock=clock)
     session.commit()
     return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
