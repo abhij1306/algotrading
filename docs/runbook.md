@@ -346,6 +346,17 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    day; the sale stays in the queue and expires at the close, and the next session sells again.
 3. Decide whether to `/flatten` (it waits for a working sale) or sell yourself at Fyers.
 
+### Sale settled from holdings
+
+1. Alert: `sale.settled_from_holdings` with a code `sold` or `unknown`, `qty_from` and `qty_to`.
+   A sale of an earlier session whose answer was lost (the app was down at the close, or the book
+   was unreadable) was settled from the Fyers holdings: the shares no longer held are taken as
+   sold, the position's open quantity dropped to the shares held (`position.qty_corrected`), and
+   its exits go on with that quantity.
+2. Those shares' sale price is not in today's book, so the position's P&L misses them. Check the
+   Fyers tradebook or contract note of that day. A position left at 0 shares stays open,
+   with no trade result, and sells nothing.
+
 ### Failed nightly job
 
 1. Alert or `/status` shows a failed job. List today's runs:

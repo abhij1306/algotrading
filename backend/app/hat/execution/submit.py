@@ -543,14 +543,16 @@ def _check_allowed(
 ) -> None:
     if row.is_virtual:
         raise OrderRefusedError("virtual_order")
-    account = session.get(HatBrokerAccount, row.broker_account_id)
-    if account is None or account.status != ACCOUNT_ACTIVE:
-        raise OrderRefusedError("account_not_active")
     is_entry = row.purpose == ENTRY
     refusal = guard.refusal(bot_id, row.broker_account_id, is_entry=is_entry)
     if refusal is not None:
         raise OrderRefusedError(refusal)
     if is_entry:
+        # Only an entry needs an active account: a stop or a sale goes out whatever the row's
+        # status (exits are never blocked, D118); the broker session refuses it if it must.
+        account = session.get(HatBrokerAccount, row.broker_account_id)
+        if account is None or account.status != ACCOUNT_ACTIVE:
+            raise OrderRefusedError("account_not_active")
         if row.side != Side.BUY.value:
             raise OrderRefusedError("entry_must_buy")
         if not real_orders_allowed(
