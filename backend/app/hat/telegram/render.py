@@ -54,8 +54,15 @@ __all__ = [
 # PR 47: a held instrument that changed series is manage-only until the owner resolves it.
 # PR 48: a sale resting unfilled, locked at the lower circuit or sent as a band limit.
 # PR 36: a trade whose stored state is not the fold of its events (the nightly journal check).
+# P5: a job that failed, missed its deadline or hangs; a calendar about to run out; a drawdown
+# kill tripped (bots manage-only).
 URGENT_ALERTS = frozenset(
     {
+        "job.failed",
+        "job.missed",
+        "job.running_long",
+        "calendar.short",
+        "kill.drawdown",
         "journal.mismatch",
         "gtt.unverified",
         "gtt.unfilled",

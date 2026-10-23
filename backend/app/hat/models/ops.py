@@ -12,6 +12,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 
 from ...base import Base
@@ -54,6 +55,8 @@ class HatJobRun(Base):
     rows = Column(Integer, nullable=False, default=0)
     # An error code, never raw provider or database text.
     error = Column(Text)
+    # When the owner was told this run failed, missed or ran past its deadline (P5): once.
+    alerted_at = Column(Timestamptz)
 
 
 class HatQualityCheck(Base):
@@ -153,8 +156,11 @@ class HatDailyBotSnapshot(Base):
 
     bot_id = fk("hat_bot.id", primary_key=True)
     trade_date = Column(Date, primary_key=True)
+    # allocation capital + realised P&L + `open_pnl` (P5: marked to market at the close)
     equity = Column(Money, nullable=False)
     equity_peak = Column(Money, nullable=False)
+    # the marked P&L of the positions open at the snapshot (0 on rows before P5)
+    open_pnl = Column(Money, nullable=False, default=0, server_default=text("0"))
     open_risk = Column(Money, nullable=False)
     realized_r = Column(Ratio, nullable=False)
     exposure_level = Column(Text, nullable=False)

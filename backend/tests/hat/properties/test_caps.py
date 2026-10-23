@@ -2,7 +2,7 @@
 the caps, invariants, kill thresholds and policy-change rules, on the real
 `app.hat.risk.service.evaluate_signal` and the pure rules it composes. Money is Decimal."""
 
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -112,6 +112,42 @@ def test_kill_threshold_boundary(peak: Decimal) -> None:
     at_limit = peak * D("0.90")
     assert kill.drawdown_breached(at_limit, peak, SEED.account_drawdown_pct)
     assert not kill.drawdown_breached(at_limit + D("0.01"), peak, SEED.account_drawdown_pct)
+
+
+# --- mark-to-market equity (P5, X9) ---
+
+
+def _held(price: str | None, fresh: bool, stop: str = "90") -> kill.Holding:
+    # 10 shares bought at 100 with 5 of fees
+    return kill.Holding(10, D("-1005"), D(stop), None if price is None else D(price), fresh)
+
+
+def test_mark_fresh_trade_is_the_mark() -> None:
+    assert kill.mark_of(_held("80", True)) == (D("80"), False)
+    assert kill.open_pnl([_held("110", True)]) == (D("95"), 0)
+
+
+def test_mark_stale_or_missing_never_higher() -> None:
+    """A stale trade above the stop marks at the stop; one below it marks at the trade; no trade
+    marks at the stop; nothing known marks at zero. Never above what is known."""
+    assert kill.mark_of(_held("120", False)) == (D("90"), True)
+    assert kill.mark_of(_held("70", False)) == (D("70"), True)
+    assert kill.mark_of(_held(None, False)) == (D("90"), True)
+    assert kill.mark_of(_held("NaN", True, stop="0")) == (D("0"), True)
+    assert kill.open_pnl([_held("110", True), _held(None, False)]) == (D("95") + D("-105"), 1)
+
+
+def test_live_point_peak() -> None:
+    """Before any snapshot the peak is the capital; after one, its peak restated for a change of
+    capital; never below the equity."""
+    at = datetime(2026, 10, 23, 6, 0, tzinfo=UTC)
+    assert kill.live_point(None, None, at, D("95000"), D("100000")).peak == D("100000")
+    last = EquityPoint(at, D("100000"), D("110000"))
+    assert kill.live_point(last, D("100000"), at, D("99000"), D("100000")).peak == D("110000")
+    halved = kill.live_point(last, D("100000"), at, D("49000"), D("50000"))
+    assert halved.peak == D("55000")
+    assert kill.drawdown_breached(halved.equity, halved.peak, D("0.10"))
+    assert kill.live_point(last, D("100000"), at, D("120000"), D("100000")).peak == D("120000")
 
 
 # --- no adding to a position ---

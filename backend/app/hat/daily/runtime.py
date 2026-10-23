@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import logging
 import threading
 import uuid
@@ -45,10 +46,12 @@ from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
 from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
 from ..data.mcp_client import McpClient
+from ..data.quality import JOB_QUALITY
 from ..data.staleness import SilenceWatch
 from ..data.store import DataStore
 from ..data.subscriptions import HAT_OWNER, LiveSubscriptions, SubscriptionRegistry
 from ..engine.live_entry import DataHealthKill, TriggerService
+from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB
 from ..engine.strategy.config import StrategyConfig, parse_config
 from ..engine.trigger import TriggerMonitor, locked_upper_circuit
 from ..execution.broker import HatBroker
@@ -64,8 +67,9 @@ from ..models import (
 )
 from ..notify import Notifier
 from ..ops.jobs import JobError, SessionFactory, recover_interrupted, reopen, run_job
-from ..ops.scheduler import HatScheduler, ScheduledJob
-from ..risk.sessions import SessionCalendar, is_trading_day
+from ..ops.scheduler import DEFAULT_DEADLINE, HatScheduler, ScheduledJob
+from ..ops.trade_jobs import EXITS_CLOSE, GTT_CHECK, GTT_SWAP, GTT_VERIFY
+from ..risk.sessions import SessionCalendar, calendar_short, is_trading_day
 from ..settings import HatSettings, require_postgres
 from ..telegram.callbacks import ManagerFlattener, RouterDesk
 from ..telegram.client import BotClient, TelegramTransport
@@ -78,8 +82,17 @@ from ..telegram.reports import Reports, telegram_jobs
 from ..telegram.service import TelegramService, run_relay
 from ..telegram.tokens import ApprovalSigner
 from ..time import IST, trade_date_of, utc_now
-from .accounts import Desks, account_jobs
-from .intraday import LIVE_PREPARE, PREPARE_AT, Intraday, intraday_jobs
+from .accounts import END_SESSION, Desks, account_jobs
+from .intraday import (
+    EXITS_CLOSE_SHADOW,
+    GAPSCAN,
+    LIVE_PREPARE,
+    MODES_APPLY,
+    PREPARE_AT,
+    WATCHLIST_EXPIRE,
+    Intraday,
+    intraday_jobs,
+)
 from .live import (
     ExitViews,
     GateBoard,
@@ -92,7 +105,25 @@ from .live import (
     stale_feed,
 )
 from .market import DailyBook
-from .nightly import NightlyDeps, TextSources, nightly_jobs
+from .nightly import (
+    BANDS_NIGHTLY,
+    CA_ADJUST,
+    CA_RESCALE,
+    CALENDAR_REFRESH,
+    CLOSE_GAPS,
+    EVENTS_PARTITIONS,
+    FEATURES,
+    INGEST_NIGHTLY,
+    JOURNAL_CHECK,
+    REFERENCE_WEEKLY,
+    RETENTION_PURGE,
+    SCAN,
+    SNAPSHOT_BOTS,
+    WATCHLIST_DIGEST,
+    NightlyDeps,
+    TextSources,
+    nightly_jobs,
+)
 
 __all__ = [
     "ALERT_POOL",
@@ -109,6 +140,8 @@ STEP_SECONDS = 5.0  # the periodic loop: live exits on the latest prices
 MINUTE = timedelta(minutes=1)
 RECONCILE_EVERY = timedelta(minutes=5)
 CALENDAR_EVERY = timedelta(minutes=10)
+DRAWDOWN_EVERY = MINUTE  # the drawdown kills on equity marked to market (P5, X9)
+ALERT_CALENDAR_SHORT = "calendar.short"
 STOPPING = "hat_stopping"
 
 
@@ -178,6 +211,53 @@ class RuntimeParts:
     prevalidated_token: bool | None = None
 
 
+# How long after its time (`at`) each job's run has to have succeeded before the owner is told
+# (P5, `ops/scheduler.py:overdue`), by the job's name without its account. The one table of
+# deadlines; a job not in it gets `DEFAULT_DEADLINE`. Each is set by what waits on the job.
+_NIGHTLY_DONE = timedelta(hours=6, minutes=30)  # the chain from 18:00 by 00:30
+JOB_DEADLINES: Mapping[str, timedelta] = {
+    INGEST_NIGHTLY: timedelta(hours=4, minutes=30),  # its wait ends at 22:00
+    CA_ADJUST: _NIGHTLY_DONE,
+    JOB_QUALITY: _NIGHTLY_DONE,
+    FEATURES: _NIGHTLY_DONE,
+    REGIME_JOB: _NIGHTLY_DONE,
+    ALLOCATE_JOB: _NIGHTLY_DONE,
+    SCAN: _NIGHTLY_DONE,
+    WATCHLIST_DIGEST: _NIGHTLY_DONE,
+    CLOSE_GAPS: _NIGHTLY_DONE,
+    SNAPSHOT_BOTS: timedelta(hours=1),  # 23:30: the drawdown kills of the day
+    JOURNAL_CHECK: timedelta(hours=1),
+    GTT_VERIFY: timedelta(hours=1),  # 23:00
+    CALENDAR_REFRESH: timedelta(hours=1),
+    BANDS_NIGHTLY: timedelta(hours=1),  # 07:45: the bands before the pre-open
+    CA_RESCALE: timedelta(minutes=20),  # 08:40: before the 09:00 pre-open
+    GTT_CHECK: timedelta(minutes=20),  # 08:40: before the open
+    LIVE_PREPARE: timedelta(minutes=15),  # 08:45: armed by the pre-open
+    MODES_APPLY: timedelta(minutes=10),
+    GAPSCAN: timedelta(minutes=10),  # window 09:16-09:20
+    EXITS_CLOSE: timedelta(minutes=10),  # window 15:20-15:25
+    EXITS_CLOSE_SHADOW: timedelta(minutes=10),
+    GTT_SWAP: timedelta(minutes=15),  # 15:25: the overnight stops are GTTs
+    WATCHLIST_EXPIRE: timedelta(minutes=30),
+    END_SESSION: timedelta(minutes=30),
+    REFERENCE_WEEKLY: timedelta(hours=2),
+    EVENTS_PARTITIONS: timedelta(hours=1),
+    RETENTION_PURGE: timedelta(hours=2),
+}
+
+
+def with_deadlines(
+    jobs: tuple[ScheduledJob, ...], deadlines: Mapping[str, timedelta] = JOB_DEADLINES
+) -> tuple[ScheduledJob, ...]:
+    """`jobs` with their deadline from `deadlines`, by the name before any `:account`."""
+    return tuple(
+        dataclasses.replace(
+            job, deadline=deadlines.get(job.name.split(":", 1)[0], DEFAULT_DEADLINE)
+        )
+        for job in jobs
+    )
+
+
 def daily_jobs(
     nightly: NightlyDeps,
     intraday: Intraday,
@@ -185,12 +265,15 @@ def daily_jobs(
     views: ExitViews,
     reports: Reports,
 ) -> tuple[ScheduledJob, ...]:
-    """Every job of the daily cycle (the job table, `CONF ops.job_registry`)."""
-    return (
-        *nightly_jobs(nightly),
-        *intraday_jobs(intraday),
-        *account_jobs(desks, nightly.session_factory, views, nightly.clock),
-        *telegram_jobs(reports),
+    """Every job of the daily cycle (the job table, `CONF ops.job_registry`), each with its
+    deadline."""
+    return with_deadlines(
+        (
+            *nightly_jobs(nightly),
+            *intraday_jobs(intraday),
+            *account_jobs(desks, nightly.session_factory, views, nightly.clock),
+            *telegram_jobs(reports),
+        )
     )
 
 
@@ -223,6 +306,7 @@ class HatRuntime:
         self._tasks: list[asyncio.Task[None]] = []
         self._calendar: SessionCalendar | None = None
         self._last: dict[str, datetime] = {}
+        self._calendar_alerted: date | None = None
         self.started = False
         self.scheduler: HatScheduler | None = None
 
@@ -384,7 +468,9 @@ class HatRuntime:
             on_loaded=self.book.reset,
         )
         self.jobs = daily_jobs(nightly, self.intraday, self.desks, self.views, self.reports)
-        self.scheduler = HatScheduler(self.jobs, sf, clock, trading=self.trading)
+        self.scheduler = HatScheduler(
+            self.jobs, sf, clock, trading=self.trading, notifier=self.notifier
+        )
 
     async def _recover(self) -> None:
         """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh
@@ -445,7 +531,7 @@ class HatRuntime:
     def periodic(self, now: datetime) -> None:
         """One pass of the periodic work (blocking: runs off the loop). Each part fails alone."""
         steps: list[tuple[str, timedelta, Callable[[], object]]] = [
-            ("calendar", CALENDAR_EVERY, self._read_calendar),
+            ("calendar", CALENDAR_EVERY, lambda: self._check_calendar(now)),
         ]
         if self.trading(trade_date_of(now)):
             steps += [
@@ -463,6 +549,13 @@ class HatRuntime:
                 steps.append(("exits", timedelta(0), lambda: self._live_exits(now)))
                 steps.append(
                     (
+                        "drawdown",
+                        DRAWDOWN_EVERY,
+                        lambda: self.intraday.drawdown(now, self.settings.user_id),
+                    )
+                )
+                steps.append(
+                    (
                         "entries",
                         timedelta(0),
                         lambda: self.desks.cancel_stale_entries(now, self.entries),
@@ -477,6 +570,18 @@ class HatRuntime:
                 step()
             except Exception:
                 logger.exception("periodic step %s failed", name)
+
+    def _check_calendar(self, now: datetime) -> None:
+        """Read the calendar again, and tell the owner once a day while it holds no trading day
+        more than a week ahead (`calendar.short`): the trade-date jobs stop when it runs out."""
+        calendar = self._read_calendar()
+        today = trade_date_of(now)
+        if calendar_short(calendar, today) and self._calendar_alerted != today:
+            self._calendar_alerted = today
+            last = calendar.trading_days()[-1:] if calendar is not None else []
+            self.notifier.alert(
+                ALERT_CALENDAR_SHORT, today, {"last": last[0].isoformat() if last else "none"}
+            )
 
     def _watch_sessions(self, now: datetime) -> None:
         if self.trading(trade_date_of(now)):
@@ -570,6 +675,8 @@ class HatRuntime:
 
     async def stop(self) -> None:
         """Stop in reverse order; each step runs even if an earlier one failed."""
+        if self.scheduler is not None:
+            self.scheduler.begin_stop()  # the halt fails the ingest's wait: not an alert
         self._halt.set()
         self._stop.set()
         steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [

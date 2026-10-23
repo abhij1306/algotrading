@@ -249,3 +249,70 @@ def account_series(bot_snapshots: Iterable[tuple[datetime, Decimal]]) -> list[Eq
         peak = totals[at] if peak is None else max(peak, totals[at])
         points.append(EquityPoint(at, totals[at], peak))
     return points
+
+
+# --- Mark-to-market equity (P5, owner decision X9) ---------------------------------------------
+
+
+@dataclass(frozen=True)
+class Holding:
+    """One open real position as its equity is marked: the shares still held, the net cash of
+    its fills so far (sales less purchases, less fees: negative while held), its broker stop and
+    the latest trade of its instrument (None: none known) with whether that trade is fresh."""
+
+    qty: int
+    cash: Decimal
+    stop: Decimal
+    price: Decimal | None
+    fresh: bool
+
+
+def _usable(value: Decimal | None) -> Decimal | None:
+    """`value` as a positive finite price, else None."""
+    if value is None:
+        return None
+    try:
+        found = exact_input(value, "price")
+    except MissingInputError:
+        return None
+    return found if found > 0 else None
+
+
+def mark_of(holding: Holding) -> tuple[Decimal, bool]:
+    """The price `holding` is marked at and whether it is a fallback. A fresh trade is the mark.
+    Otherwise (no trade, a stale one, an unreadable one) the most conservative price known: the
+    lower of the last trade and the stop, so a missing or stale price never marks a holding
+    higher than either; zero when neither is known (the shares count for nothing)."""
+    price = _usable(holding.price)
+    if price is not None and holding.fresh:
+        return price, False
+    known = [p for p in (price, _usable(holding.stop)) if p is not None]
+    return (min(known) if known else Decimal(0)), True
+
+
+def open_pnl(holdings: Iterable[Holding]) -> tuple[Decimal, int]:
+    """The marked P&L of the open holdings (each one's fill cash plus its shares at its mark,
+    which is its realised P&L once it is sold out) and how many were marked by a fallback."""
+    total = Decimal(0)
+    fallbacks = 0
+    for holding in holdings:
+        price, fallback = mark_of(holding)
+        total += holding.cash + holding.qty * price
+        fallbacks += fallback
+    return total, fallbacks
+
+
+def live_point(
+    previous: EquityPoint | None,
+    previous_capital: Decimal | None,
+    at: datetime,
+    equity: Decimal,
+    capital: Decimal,
+) -> EquityPoint:
+    """The equity marked at `at` against its running peak: the last snapshot's peak restated
+    for any change of capital since (`rebase_peak`), or the capital itself before the first
+    snapshot (a new sleeve starts at its capital), and never below the equity."""
+    if previous is None:
+        return EquityPoint(at, equity, max(equity, capital))
+    base = rebase_peak(previous.equity, previous.peak, previous_capital, capital)
+    return EquityPoint(at, equity, max(equity, base))

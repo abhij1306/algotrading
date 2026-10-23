@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from functools import cached_property
 
@@ -121,6 +121,21 @@ def is_trading_day(calendar: SessionCalendar | None, day: date) -> bool:
     """A day the calendar holds as a trading day; an unknown day (or no calendar) is not one."""
     found = calendar.days.get(day) if calendar is not None else None
     return found is not None and found.is_trading
+
+
+CALENDAR_AHEAD = timedelta(days=7)
+
+
+def calendar_short(
+    calendar: SessionCalendar | None, today: date, ahead: timedelta = CALENDAR_AHEAD
+) -> bool:
+    """True when the calendar holds no trading day after `today + ahead` (or there is no
+    calendar): every trade-date job stops once its days run out (`is_trading_day`), so a
+    calendar that is not refreshed (the year-end gap) must be noticed before then (P5)."""
+    if calendar is None:
+        return True
+    days = calendar.trading_days()
+    return not days or days[-1] <= today + ahead
 
 
 def next_session_open(calendar: SessionCalendar, after: datetime) -> datetime | None:

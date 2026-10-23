@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time
 from decimal import ROUND_CEILING, Decimal
 
@@ -27,15 +27,17 @@ from ..models import (
     HatBot,
     HatDailyBotSnapshot,
     HatExposureState,
+    HatFill,
     HatKillSwitch,
     HatModeChange,
+    HatOrder,
     HatPosition,
     HatSignal,
     HatTradeResult,
 )
 from ..ops.jobs import JobResult
 from ..settings import load_settings
-from ..time import IST, as_utc, utc_now
+from ..time import IST, as_utc, trade_date_of, utc_now
 from . import kill
 from .exposure import ClosedTrade, LadderState, apply_trade
 from .modes import ModeChange, plan_mode_change
@@ -43,6 +45,10 @@ from .policy import RiskPolicy
 from .sessions import SessionCalendar
 
 SNAPSHOT_AT = time(15, 30)  # the close: a snapshot is read as taken at the session close (IST)
+ALERT_KILL_DRAWDOWN = "kill.drawdown"  # a drawdown kill tripped: the scope is manage-only
+ALERT_FALLBACK_MARKS = "drawdown.fallback_marks"  # holdings marked without a fresh price
+# An instrument's latest trade and whether it is fresh; (None, False) when none is known.
+Marks = Callable[[uuid.UUID], tuple[Decimal | None, bool]]
 
 logger = logging.getLogger(__name__)
 
@@ -270,9 +276,10 @@ def _capital_by_snapshot(
 ) -> dict[tuple[uuid.UUID, date], Decimal]:
     """The allocation capital each snapshot's equity was measured against, so a planned
     reallocation can be told from a loss (HAT-RISK-066): its equity less the realised P&L of the
-    real trades closed by it. Not the allocation row of its date: the snapshot runs on its own
-    time (PR 33), so that row may be missing or have been written after it. A snapshot with no
-    allocation of its bot on or before its date has no known capital (left out)."""
+    real trades closed by it and the marked P&L of those still open (`open_pnl`). Not the
+    allocation row of its date: the snapshot runs on its own time (PR 33), so that row may be
+    missing or have been written after it. A snapshot with no allocation of its bot on or before
+    its date has no known capital (left out)."""
     bots = {s.bot_id for s in snaps}
     first = dict(
         session.execute(
@@ -298,26 +305,35 @@ def _capital_by_snapshot(
             continue
         cut = _snapshot_instant(s.trade_date)
         realized = sum((p for at, p in closed.get(s.bot_id, []) if at <= cut), Decimal(0))
-        out[(s.bot_id, s.trade_date)] = Decimal(s.equity) - realized
+        out[(s.bot_id, s.trade_date)] = Decimal(s.equity) - realized - Decimal(s.open_pnl or 0)
     return out
 
 
-def evaluate_drawdown_kills(session: Session, policy: RiskPolicy, now: datetime) -> list[str]:
+def evaluate_drawdown_kills(
+    session: Session,
+    policy: RiskPolicy,
+    now: datetime,
+    live: Mapping[uuid.UUID, tuple[Decimal, Decimal]] | None = None,
+) -> list[str]:
     """Trip the account and bot kills from `hat_daily_bot_snapshot` (HAT-RISK-060/061): a
     switch trips when a snapshot after its last re-arm is at or past its drawdown threshold.
+    `live` (each bot's (equity, capital) marked at `now`, `live_equity`) adds a point at `now`
+    to each series, so a drawdown trips during the session on the same thresholds (P5, X9).
     Returns the scopes tripped now (`account`, or a bot id).
 
-    Equity is allocation capital plus realised P&L, so a cut in a sleeve's capital by the
-    allocator is not a loss. The bot series carries peaks that `snapshot_bots` already restated
-    for reallocation; the account series is restated here from the allocation history
-    (`kill.adjusted_series`). A snapshot with zero allocated capital is not measured: nothing
-    was at risk (HAT-RISK-066).
+    Equity is allocation capital plus realised P&L plus the open positions marked to market, so
+    a cut in a sleeve's capital by the allocator is not a loss. The bot series carries peaks that
+    `snapshot_bots` already restated for reallocation; the account series is restated here from
+    the allocation history (`kill.adjusted_series`). A snapshot with zero allocated capital is not
+    measured: nothing was at risk (HAT-RISK-066).
     """
     snaps = session.scalars(select(HatDailyBotSnapshot)).all()
     capital = _capital_by_snapshot(session, snaps)
     tripped: list[str] = []
     by_bot: dict[uuid.UUID, list[kill.EquityPoint]] = {}
-    for s in snaps:
+    last: dict[uuid.UUID, HatDailyBotSnapshot] = {}
+    for s in sorted(snaps, key=lambda row: row.trade_date):
+        last[s.bot_id] = s
         if capital.get((s.bot_id, s.trade_date)) == 0:
             continue
         by_bot.setdefault(s.bot_id, []).append(
@@ -325,6 +341,21 @@ def evaluate_drawdown_kills(session: Session, policy: RiskPolicy, now: datetime)
                 _snapshot_instant(s.trade_date), Decimal(s.equity), Decimal(s.equity_peak)
             )
         )
+    for bot_id, (equity, cap) in (live or {}).items():
+        if cap == 0:
+            continue
+        before = last.get(bot_id)
+        previous = (
+            None
+            if before is None
+            else kill.EquityPoint(
+                _snapshot_instant(before.trade_date),
+                Decimal(before.equity),
+                Decimal(before.equity_peak),
+            )
+        )
+        known = None if before is None else capital.get((bot_id, before.trade_date))
+        by_bot.setdefault(bot_id, []).append(kill.live_point(previous, known, now, equity, cap))
     for bot_id, series in by_bot.items():
         if kill.tripped_since(
             series, policy.bot_drawdown_pct, _last_rearm(session, "bot", bot_id)
@@ -342,6 +373,12 @@ def evaluate_drawdown_kills(session: Session, policy: RiskPolicy, now: datetime)
         kill.SnapshotPoint(_snapshot_instant(day), equity, cap)
         for day, (equity, cap) in totals.items()
     )
+    live_capital = sum((cap for _, cap in (live or {}).values()), Decimal(0))
+    if live_capital != 0:
+        previous = account[-1] if account else None
+        known = None if previous is None else totals[previous.at.date()][1]
+        equity = sum((equity for equity, _ in (live or {}).values()), Decimal(0))
+        account.append(kill.live_point(previous, known, now, equity, live_capital))
     if kill.tripped_since(
         account, policy.account_drawdown_pct, _last_rearm(session, "account", None)
     ) and trip_kill(session, scope="account", bot_id=None, reason="drawdown_account", now=now):
@@ -485,8 +522,8 @@ def ladder_state(session: Session, bot_id: uuid.UUID) -> LadderState:
 # --- The nightly snapshot ---------------------------------------------------------------------
 
 
-def _realized(session: Session, bot_id: uuid.UUID, trade_date: date) -> Decimal:
-    """The bot's cumulative realised P&L of real trades closed by the snapshot of `trade_date`."""
+def _realized(session: Session, bot_id: uuid.UUID, cut: datetime) -> Decimal:
+    """The bot's cumulative realised P&L of real trades closed by `cut`."""
     return sum(
         (
             Decimal(r.realized_pnl)
@@ -496,7 +533,7 @@ def _realized(session: Session, bot_id: uuid.UUID, trade_date: date) -> Decimal:
                 .where(
                     HatPosition.bot_id == bot_id,
                     HatPosition.is_virtual.is_(False),
-                    HatPosition.closed_at <= _snapshot_instant(trade_date),
+                    HatPosition.closed_at <= cut,
                 )
             )
         ),
@@ -504,14 +541,70 @@ def _realized(session: Session, bot_id: uuid.UUID, trade_date: date) -> Decimal:
     )
 
 
+def _holdings(session: Session, bot_id: uuid.UUID, marks: Marks) -> list[kill.Holding]:
+    """The bot's open real positions as `kill.open_pnl` marks them: the net cash of each one's
+    fills (`write_result` sums the same fills once it closes), its stop and its latest trade."""
+    out = []
+    for position in session.scalars(
+        select(HatPosition).where(
+            HatPosition.bot_id == bot_id,
+            HatPosition.is_virtual.is_(False),
+            HatPosition.closed_at.is_(None),
+        )
+    ):
+        cash = Decimal(0)
+        for side, qty, price, fee in session.execute(
+            select(HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
+            .join(HatOrder, HatOrder.id == HatFill.order_id)
+            .where(HatOrder.signal_id == position.signal_id)
+        ):
+            cash += (1 if side == "sell" else -1) * qty * Decimal(price) - Decimal(fee)
+        price, fresh = marks(position.instrument_id)
+        out.append(
+            kill.Holding(position.qty_open, cash, Decimal(position.current_stop), price, fresh)
+        )
+    return out
+
+
+def _allocation_on(session: Session, bot_id: uuid.UUID, day: date) -> HatAllocationDaily | None:
+    """The bot's latest allocation on or before `day` (the capital in force)."""
+    return session.scalar(
+        select(HatAllocationDaily)
+        .where(HatAllocationDaily.bot_id == bot_id, HatAllocationDaily.trade_date <= day)
+        .order_by(HatAllocationDaily.trade_date.desc())
+        .limit(1)
+    )
+
+
+def live_equity(
+    session: Session, now: datetime, marks: Marks
+) -> tuple[dict[uuid.UUID, tuple[Decimal, Decimal]], int]:
+    """Each allocated bot's equity marked at `now` (capital in force + realised P&L so far +
+    its open positions at `marks`, `kill.open_pnl`) with its capital, for
+    `evaluate_drawdown_kills(live=...)`; and how many holdings were marked by a fallback (no
+    fresh trade: the lower of the last trade and the stop)."""
+    out: dict[uuid.UUID, tuple[Decimal, Decimal]] = {}
+    fallbacks = 0
+    for bot in session.scalars(select(HatBot)).all():
+        allocation = _allocation_on(session, bot.id, trade_date_of(now))
+        if allocation is None:
+            continue
+        pnl, missed = kill.open_pnl(_holdings(session, bot.id, marks))
+        fallbacks += missed
+        capital = Decimal(allocation.capital)
+        out[bot.id] = (capital + _realized(session, bot.id, now) + pnl, capital)
+    return out, fallbacks
+
+
 def _snapshot_peak(
     session: Session, bot_id: uuid.UUID, trade_date: date, equity: Decimal, capital: Decimal
 ) -> Decimal:
     """The running peak at `trade_date`: the previous snapshot's peak restated for any change of
-    allocation capital since (`kill.rebase_peak`), or the equity itself when the bot has no
-    earlier snapshot. Rounded up to the stored 4 places, so rounding never hides a drawdown.
+    allocation capital since (`kill.rebase_peak`), or, when the bot has no earlier snapshot, its
+    capital (a new sleeve starts there, so a first day's loss is measured; `kill.live_point`).
+    Rounded up to the stored 4 places, so rounding never hides a drawdown.
 
-    The previous capital is the one that snapshot used (its equity less its realised P&L), not
+    The previous capital is the one that snapshot used (its equity less its P&L), not
     an allocation row read now: the snapshot runs on its own time (PR 33), so an `allocate` that
     committed after it, or a night with no allocation of its own, would give another capital."""
     previous = session.scalars(
@@ -521,7 +614,7 @@ def _snapshot_peak(
         .limit(1)
     ).first()
     if previous is None:
-        return equity
+        return max(equity, capital)
     before = _capital_by_snapshot(session, [previous]).get((bot_id, previous.trade_date))
     base = kill.rebase_peak(
         Decimal(previous.equity), Decimal(previous.equity_peak), before, capital
@@ -529,14 +622,21 @@ def _snapshot_peak(
     return max(equity, base.quantize(Decimal("0.0001"), rounding=ROUND_CEILING))
 
 
-def snapshot_bots(session: Session, trade_date: date) -> JobResult:
-    """`snapshot.bots` (HAT-OPS): write one `hat_daily_bot_snapshot` per bot for `trade_date`.
+def _no_marks(_instrument_id: uuid.UUID) -> tuple[Decimal | None, bool]:
+    return None, False
 
-    Equity = the sleeve's allocation capital + its cumulative realised P&L
-    ("allocation + realised P&L"); the peak is the largest equity seen so far, restated
-    for any change of allocation capital so a planned reallocation never reads as a loss
-    (HAT-RISK-066, `_snapshot_peak`); open risk
-    is the sum of (entry - stop) x qty over its open real positions. Idempotent: a rerun for the
+
+def snapshot_bots(
+    session: Session, trade_date: date, marks: Marks = _no_marks
+) -> tuple[JobResult, int]:
+    """`snapshot.bots` (HAT-OPS): write one `hat_daily_bot_snapshot` per bot for `trade_date`.
+    Returns the result and how many holdings were marked by a fallback.
+
+    Equity = the sleeve's allocation capital + its cumulative realised P&L + its open real
+    positions marked at `marks` (the day's official closes; P5, X9: `open_pnl`, stored); the
+    peak is the largest equity seen so far, restated for any change of allocation capital so a
+    planned reallocation never reads as a loss (HAT-RISK-066, `_snapshot_peak`); open risk is the
+    sum of (entry - stop) x qty over its open real positions. Idempotent: a rerun for the
     same date rewrites the same row, so a crash after the body and before the success is
     recorded does no harm. The capital is the bot's latest allocation on or before the date
     (PR 33): the job runs on its own time, not after `allocate`, so a night whose quality gate
@@ -544,16 +644,15 @@ def snapshot_bots(session: Session, trade_date: date) -> JobResult:
     force. Bots never allocated are skipped.
     """
     rows = 0
+    fallbacks = 0
     for bot in session.scalars(select(HatBot)).all():
-        allocation = session.scalar(
-            select(HatAllocationDaily)
-            .where(HatAllocationDaily.bot_id == bot.id, HatAllocationDaily.trade_date <= trade_date)
-            .order_by(HatAllocationDaily.trade_date.desc())
-            .limit(1)
-        )
+        allocation = _allocation_on(session, bot.id, trade_date)
         if allocation is None:
             continue
-        equity = Decimal(allocation.capital) + _realized(session, bot.id, trade_date)
+        pnl, missed = kill.open_pnl(_holdings(session, bot.id, marks))
+        fallbacks += missed
+        realized = _realized(session, bot.id, _snapshot_instant(trade_date))
+        equity = Decimal(allocation.capital) + realized + pnl
         peak = _snapshot_peak(session, bot.id, trade_date, equity, Decimal(allocation.capital))
         open_risk = sum(
             (
@@ -588,6 +687,7 @@ def snapshot_bots(session: Session, trade_date: date) -> JobResult:
         values = {
             "equity": equity,
             "equity_peak": peak,
+            "open_pnl": pnl,
             "open_risk": open_risk,
             "realized_r": day_r,
             "exposure_level": ladder_state(session, bot.id).level,
@@ -600,4 +700,4 @@ def snapshot_bots(session: Session, trade_date: date) -> JobResult:
             for key, value in values.items():
                 setattr(existing, key, value)
         rows += 1
-    return JobResult(calls=0, rows=rows)
+    return JobResult(calls=0, rows=rows), fallbacks

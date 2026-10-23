@@ -65,7 +65,12 @@ from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.partitions import events_partitions
 from ..ops.retention import purge_job
 from ..ops.scheduler import Days, ScheduledJob
-from ..risk.controls import evaluate_drawdown_kills, snapshot_bots
+from ..risk.controls import (
+    ALERT_FALLBACK_MARKS,
+    ALERT_KILL_DRAWDOWN,
+    evaluate_drawdown_kills,
+    snapshot_bots,
+)
 from ..time import utc_now
 from .market import official_closes, scan_inputs
 
@@ -343,13 +348,27 @@ class Nightly:
         return result
 
     def snapshot(self, day: date) -> JobResult:
-        """Each bot's equity, peak and open risk for `day`, then the drawdown kills on them."""
+        """Each bot's equity (its open positions marked at the day's official closes), peak and
+        open risk for `day`, then the drawdown kills on them. A holding with no close of `day`
+        is marked at its stop (`kill.mark_of`) and alerted by count; each scope tripped is
+        alerted."""
+        closes = official_closes(self.deps.store, day)
         with self.deps.session_factory() as session:
-            result = snapshot_bots(session, day)
-            evaluate_drawdown_kills(
+            result, fallbacks = snapshot_bots(
+                session, day, lambda instrument_id: (closes.get(instrument_id), True)
+            )
+            tripped = evaluate_drawdown_kills(
                 session, policy_at(session, self.deps.user_id, day), self._now()
             )
             session.commit()
+        if fallbacks:
+            self.deps.notifier.alert(ALERT_FALLBACK_MARKS, day, {"holdings": fallbacks})
+        for scope in tripped:
+            self.deps.notifier.alert(
+                ALERT_KILL_DRAWDOWN,
+                day,
+                {"scope": scope, "basis": "close", "fallback_marks": fallbacks},
+            )
         return result
 
     def scan(self, day: date) -> JobResult:

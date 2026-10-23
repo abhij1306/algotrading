@@ -18,8 +18,9 @@
 (*   variable has a finite domain); BrokenMode names a deliberately broken *)
 (*   variant ("none" is the real protocol).                                *)
 (* Assumptions: each action below is one database transaction (atomic) or  *)
-(*   one environment change; an equity snapshot reads the drawdown state   *)
-(*   and acts on it in the same transaction (the snapshot.bots job); the   *)
+(*   one environment change; an equity read (the snapshot.bots job, the    *)
+(*   intraday drawdown step) reads the drawdown state and acts on it in    *)
+(*   the same transaction; the                                             *)
 (*   entry gate reads the live health inputs and the stored switches in    *)
 (*   one step; an exit that is due and enabled is eventually sent, and a   *)
 (*   health check that can act eventually does (weak fairness); the        *)
@@ -110,8 +111,9 @@ Gated(b) ==
 
 EntryAllowed(b) == Gated(b) = {}
 
-\* code: backend/app/hat/risk/controls.py:evaluate_drawdown_kills  (snapshot.bots reads the
-\* account equity against its peak; a breach trips the account kill and ends pending approvals)
+\* code: backend/app/hat/risk/controls.py:evaluate_drawdown_kills  (snapshot.bots, and every
+\* minute of the session Intraday.drawdown, reads the account equity marked to market against
+\* its peak; a breach trips the account kill and ends pending approvals)
 SnapshotAccount ==
     /\ \E breach \in BOOLEAN :
          /\ acctSeen' = (acctSeen \/ breach)

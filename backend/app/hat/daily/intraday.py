@@ -32,7 +32,7 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..data.announcements import attached_announcements
 from ..data.gapscan import ALERT_LATE, gap_scan_body, is_late
-from ..data.live import LiveData
+from ..data.live import LiveData, usable_price
 from ..data.mcp_client import McpClient
 from ..data.subscriptions import LiveSubscriptions, load_inputs
 from ..engine.live_entry import (
@@ -43,6 +43,7 @@ from ..engine.live_entry import (
     ep_setup_passes,
     watchlist_candidates,
 )
+from ..engine.portfolio.service import policy_at
 from ..engine.trades import expire_watchlist
 from ..engine.trigger import TriggerMonitor
 from ..engine.watchlist import bot_universe_members
@@ -62,7 +63,8 @@ from ..money import require_exact
 from ..notify import Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
-from ..time import utc_now
+from ..risk.controls import ALERT_KILL_DRAWDOWN, evaluate_drawdown_kills, live_equity
+from ..time import trade_date_of, utc_now
 from .live import CalendarSource, PriceBook, ShadowExits
 from .market import DailyBook
 
@@ -126,6 +128,35 @@ class Intraday:
 
     def _now(self) -> datetime:
         return utc_now(self._clock)
+
+    # --- during the session -------------------------------------------------------------------
+
+    def drawdown(self, now: datetime, user_id: uuid.UUID) -> list[str]:
+        """The drawdown kills on equity marked to market now (P5, owner decision X9): each
+        bot's open positions at their latest trade, or the lower of a stale trade and the stop
+        when no fresh one is known (`kill.mark_of`). Each scope tripped is alerted, with how many
+        holdings were marked by that fallback. Returns the scopes tripped."""
+
+        def mark(instrument_id: uuid.UUID) -> tuple[Decimal | None, bool]:
+            quote = self._prices.quote(instrument_id)
+            if quote is None:
+                return None, False
+            return quote.price, usable_price(quote, now)[1] is None
+
+        day = trade_date_of(now)
+        with self._session_factory() as session:
+            live, fallbacks = live_equity(session, now, mark)
+            tripped = evaluate_drawdown_kills(session, policy_at(session, user_id, day), now, live)
+            session.commit()
+        if fallbacks:
+            logger.warning("intraday drawdown: %d holdings marked without a fresh price", fallbacks)
+        for scope in tripped:
+            self._notifier.alert(
+                ALERT_KILL_DRAWDOWN,
+                day,
+                {"scope": scope, "basis": "intraday", "fallback_marks": fallbacks},
+            )
+        return tripped
 
     # --- 08:45 --------------------------------------------------------------------------------
 
