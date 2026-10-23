@@ -209,18 +209,21 @@ class BacktestFacts:
 
 
 def backtest_refusal(facts: BacktestFacts) -> str | None:
-    """Research -> Backtested (HAT-PORT-061): why the evidence run fails the gate, the first
-    failing condition's code, or None when it passes. The run needs a deflated Sharpe
-    probability of at least 0.95 and 200 trades (`backtest_gate`), sessions spanning five years
-    (`backtest_span_short`), no known gap naming a playbook the version enables
-    (`backtest_gap_in_playbook`), ambiguous days within the cap (`backtest_ambiguous_days`),
-    and sizing as live: the policy's base weight of the sleeve now (`backtest_off_base_weight`)
-    under the live regime rule (`backtest_regime_rule`). An absent fact fails its condition."""
+    """Research -> Backtested (HAT-PORT-061): why the evidence run fails the gate, the first failing
+    condition's code, or None when it passes. The run needs a deflated Sharpe probability of at
+    least 0.95 and 200 trades (`backtest_gate`), sessions spanning five years
+    (`backtest_span_short`), the version's playbooks known (`backtest_no_playbooks`: its config does
+    not parse) and no known gap naming one of them (`backtest_gap_in_playbook`), ambiguous days
+    within the cap (`backtest_ambiguous_days`), and sizing as live: the policy's base weight of the
+    sleeve now (`backtest_off_base_weight`) under the live regime rule (`backtest_regime_rule`). An
+    absent fact fails its condition."""
     if not backtest_gate(facts.dsr_prob, facts.trades):
         return "backtest_gate"
     if not span_gate(facts.first_session, facts.last_session):
         return "backtest_span_short"
-    if facts.gapped_playbooks & facts.playbooks or not facts.playbooks:
+    if not facts.playbooks:
+        return "backtest_no_playbooks"
+    if facts.gapped_playbooks & facts.playbooks:
         return "backtest_gap_in_playbook"
     if not ambiguous_gate(facts.ambiguous_days, facts.held_sessions):
         return "backtest_ambiguous_days"

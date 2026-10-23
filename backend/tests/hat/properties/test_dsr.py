@@ -922,20 +922,23 @@ GATE_FACTS = {
     st.sampled_from(["0.5", "0.25", "x"]),
     st.booleans(),
     st.booleans(),
+    st.booleans(),
 )
 @settings(max_examples=30, deadline=None)
-@example("momentum-breakout-ep", set(), "0.5", True, True)  # S2 enables the EP playbook
-@example("stage2-contraction-breakout", {"known_gaps"}, "0.5", True, True)  # no gap list
+@example("momentum-breakout-ep", set(), "0.5", False, True, True)  # S2 enables the EP playbook
+@example("stage2-contraction-breakout", {"known_gaps"}, "0.5", False, True, True)  # no gap list
+@example("stage2-contraction-breakout", set(), "0.5", True, True, True)  # malformed metrics
 def test_evidence_gate_facts(
-    seed: str, dropped: set[str], weight: str, policy: bool, parses: bool
+    seed: str, dropped: set[str], weight: str, garbled: bool, policy: bool, parses: bool
 ) -> None:
     """The lifecycle evidence carries what the rest of the gate reads (PR 69, HAT-PORT-061): the
     run's first and last session, held sessions and ambiguous days, the playbooks its known gaps
     name (the EP playbook for `episodic_pivot_not_backtested`; every playbook of the version when
-    the run recorded no gap list), the playbooks the version enables (none when its config does not
-    parse), the run's sleeve weight and regime rule, and the base weight of the version's own sleeve
-    in the policy in force (none without a policy). A fact the run did not record is absent. Harm:
-    the gate passes a sleeve on a fact the run never recorded, or on another version's playbooks."""
+    the run recorded no readable gap list), the playbooks the version enables (none when its config
+    does not parse), the run's sleeve weight and regime rule, and the base weight of the version's
+    own sleeve in the policy in force (none without a policy). A fact the run did not record, or
+    recorded malformed, is absent; none raises. Harm: the gate passes a sleeve on a fact the run
+    never recorded, or on another version's playbooks."""
     with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
         strategies, universes = _world(session, 1, 1)
         strategy, (live, _) = strategies[0]
@@ -956,17 +959,24 @@ def test_evidence_gate_facts(
         recorded = {k: v for k, v in GATE_FACTS.items() if k not in dropped}
         if "sleeve_weight" in recorded:
             recorded["sleeve_weight"] = weight
+        if garbled:  # a malformed date and gap list fail closed, never raise
+            recorded = {
+                **recorded,
+                **{k: "2020-13-01" for k in ("first_session", "last_session") if k in recorded},
+                **({"known_gaps": [{"code": 1}]} if "known_gaps" in recorded else {}),
+            }
         run = _start(session, live, universe)
         runs.complete_run(session, run, _result(0.1, 60, 5, "0.4", extra=recorded), root=Path(tmp))
         facts = runs.backtest_evidence(session, bot)
         enabled = frozenset(p.name for p in config.playbooks) if parses else frozenset()
         assert facts.playbooks == enabled
-        assert facts.gapped_playbooks == (
-            frozenset({EP_PLAYBOOK}) if "known_gaps" in recorded else enabled
+        readable = "known_gaps" in recorded and not garbled
+        assert facts.gapped_playbooks == (frozenset({EP_PLAYBOOK}) if readable else enabled)
+        first, last = (
+            None if garbled or recorded.get(k) is None else date.fromisoformat(recorded[k])
+            for k in ("first_session", "last_session")
         )
-        first, last = (recorded.get(k) for k in ("first_session", "last_session"))
-        assert facts.first_session == (None if first is None else date.fromisoformat(first))
-        assert facts.last_session == (None if last is None else date.fromisoformat(last))
+        assert (facts.first_session, facts.last_session) == (first, last)
         assert facts.held_sessions == recorded.get("held_sessions", 0)
         assert facts.ambiguous_days == recorded.get("ambiguous_days")
         raw = recorded.get("sleeve_weight")

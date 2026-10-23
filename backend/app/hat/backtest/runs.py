@@ -628,7 +628,10 @@ def _count(metrics: Mapping[str, Any], key: str) -> int | None:
 
 def _day(metrics: Mapping[str, Any], key: str) -> date | None:
     raw = metrics.get(key)
-    return date.fromisoformat(raw) if isinstance(raw, str) else None
+    try:
+        return date.fromisoformat(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return None
 
 
 def _weight(raw: object) -> Decimal | None:
@@ -656,10 +659,10 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
     playbooks = frozenset(() if config is None else (p.name for p in config.playbooks))
     gaps = metrics.get("known_gaps")
-    # a run without its gap list may have any gap: every playbook counts as named
+    # a run without a readable gap list may have any gap: every playbook counts as named
     gapped = (
         frozenset(p for code in gaps for p in GAP_PLAYBOOKS.get(code, ()))
-        if isinstance(gaps, list)
+        if isinstance(gaps, list) and all(isinstance(code, str) for code in gaps)
         else playbooks
     )
     base = (

@@ -588,8 +588,8 @@ refuse inside a session (`market_hours`).
    (an owner's act, recorded `sleeve.version_assigned` with the chat id).
 8. `$ADMIN promote --bot <bot> --to backtested`: refused (`backtest_gate`) unless the run's DSR
    probability is at least 0.95 with 200 or more trades, and since PR 69 with the condition's code
-   unless its sessions span five years (`backtest_span_short`), no known gap names a playbook the
-   version enables (`backtest_gap_in_playbook`: S2's EP playbook until PR 70), its ambiguous days
+   unless its sessions span five years (`backtest_span_short`), the version's config parses
+   (`backtest_no_playbooks`), no known gap names a playbook the version enables (`backtest_gap_in_playbook`: S2's EP playbook until PR 70), its ambiguous days
    are within the cap (`backtest_ambiguous_days`) and it sized at the base weight under `policy`
    (`backtest_off_base_weight`, `backtest_regime_rule`) (HAT-PORT-061); the sleeve then stays in
    Research. Then `$ADMIN promote --bot <bot> --to shadow` and

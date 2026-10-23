@@ -242,7 +242,8 @@ KNOWN_GAPS = (
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
 )
 # The playbooks a known gap names: the lifecycle gate refuses a version that enables one of them
-# on this evidence (PR 69, HAT-PORT-061). A gap not listed here holds for every playbook.
+# on this evidence (PR 69, HAT-PORT-061). A gap not listed here names no playbook: it holds for
+# all of them alike, a measured approximation of the daily-bar loop, and blocks none.
 GAP_PLAYBOOKS: dict[str, tuple[str, ...]] = {"episodic_pivot_not_backtested": (EP_PLAYBOOK,)}
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it

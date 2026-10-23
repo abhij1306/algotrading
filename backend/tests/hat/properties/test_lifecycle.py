@@ -90,7 +90,9 @@ def model_refusal(f: BacktestFacts) -> str | None:
         anniversary = date(f.first_session.year + 5, 2, 28)
     if (anniversary - f.last_session).days > 7:
         return "backtest_span_short"
-    if not f.playbooks or f.gapped_playbooks & f.playbooks:
+    if not f.playbooks:
+        return "backtest_no_playbooks"
+    if f.gapped_playbooks & f.playbooks:
         return "backtest_gap_in_playbook"
     if f.ambiguous_days is None or f.held_sessions == 0 or f.ambiguous_days * 10 > f.held_sessions:
         return "backtest_ambiguous_days"
@@ -130,17 +132,16 @@ PASSING = BacktestFacts(
 @example(replace(PASSING, regime_mult="1"))
 @example(replace(PASSING, dsr_prob=D("0.9499")))
 def test_backtest_refusal(facts: BacktestFacts) -> None:
-    """Research to Backtested (HAT-PORT-061, D150) passes only on evidence whose DSR
-    probability is at least 0.95 with 200 trades (`backtest_gate`), whose sessions span five
-    years, the last no more than 7 days short of the first's fifth anniversary
-    (`backtest_span_short`), whose known gaps name no playbook the version enables
-    (`backtest_gap_in_playbook`), whose ambiguous days are at most 10% of the sessions a trade
-    was held (`backtest_ambiguous_days`), and which was sized at the policy's base weight of
-    the sleeve now (`backtest_off_base_weight`) under the live regime rule `policy`
-    (`backtest_regime_rule`); the first failing condition is the refusal's code, and an
-    absent fact fails its condition. The guard gives the same answer. Harm: a sleeve is
-    promoted on a short or optimistic history, on a playbook the backtest never traded, or on
-    a sizing live does not use."""
+    """Research to Backtested (HAT-PORT-061, D150) passes only on evidence whose DSR probability is
+    at least 0.95 with 200 trades (`backtest_gate`), whose sessions span five years, the last no
+    more than 7 days short of the first's fifth anniversary (`backtest_span_short`), whose version's
+    playbooks are known (`backtest_no_playbooks`) and whose known gaps name none of them
+    (`backtest_gap_in_playbook`), whose ambiguous days are at most 10% of the sessions a trade was
+    held (`backtest_ambiguous_days`), and which was sized at the policy's base weight of the sleeve
+    now (`backtest_off_base_weight`) under the live regime rule `policy` (`backtest_regime_rule`);
+    the first failing condition is the refusal's code, and an absent fact fails its condition. The
+    guard gives the same answer. Harm: a sleeve is promoted on a short or optimistic history, on a
+    playbook the backtest never traded, or on a sizing live does not use."""
     want = model_refusal(facts)
     assert lifecycle.backtest_refusal(facts) == want
     verdict = lifecycle.guard("research", "backtested", Evidence(today=START, backtest=facts))
