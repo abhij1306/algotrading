@@ -1,4 +1,4 @@
-"""PBT symbols.* (HAT-DATA-024, K2): symbol conversion is total, pure, and round-trips between the
+"""PBT symbols.*: symbol conversion is total, pure, and round-trips between the
 database ticker and the Fyers symbol; indexes and equities never swap series; aliases and renames
 resolve to one ticker."""
 

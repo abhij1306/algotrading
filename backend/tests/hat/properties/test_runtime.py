@@ -1,4 +1,4 @@
-"""PBT runtime.virtual_consistency (HAT-SCH-017): virtual and real rows share tables, and the
+"""PBT runtime.virtual_consistency: virtual and real rows share tables, and the
 `is_virtual` flag of a position, its orders and their fills agree with the signal that opened it.
 
 The rows are built through `app/hat/runtime.py`, written to the real tables, and the rules are

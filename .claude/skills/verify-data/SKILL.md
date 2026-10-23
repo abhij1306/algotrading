@@ -5,9 +5,9 @@ description: How to run, read and update the checks behind Hire a Trader's histo
 
 # verify-data
 
-Checks that the 2010-to-today build writes each trading day once, in the right format era, with exact prices; that Parquet files are written atomically and raw files never change; that the adjusted view equals raw prices times the product of later factors, exactly; that corporate actions load once however many sources and reruns bring them; and that the build is idempotent and resumable. Requirement IDs (index: `docs/invariants.md`): (HAT-DATA-011 source schema, 052..055, 080..085, 090..097), (T6, B27, I2), (HAT-OVR-052).
+Checks that the 2010-to-today build writes each trading day once, in the right format era, with exact prices; that Parquet files are written atomically and raw files never change; that the adjusted view equals raw prices times the product of later factors, exactly; that corporate actions load once however many sources and reruns bring them; and that the build is idempotent and resumable. Requirement IDs (index: `docs/invariants.md`): (source schema, 052..055, 080..085, 090..097), (T6, B27, I2),.
 
-The features half (PR 6) checks that every feature of date d uses bars up to d only and equals its documented definition on adjusted bars; that `rs_pct`, `mom_rank` and breadth are the specified percentiles and counts; that a split changes no feature; that an incremental run equals a full rebuild; and that the job is idempotent. Requirement IDs (index: `docs/invariants.md`): (HAT-DATA-070..078), (T11).
+The features half checks that every feature of date d uses bars up to d only and equals its documented definition on adjusted bars; that `rs_pct`, `mom_rank` and breadth are the specified percentiles and counts; that a split changes no feature; that an incremental run equals a full rebuild; and that the job is idempotent. Requirement IDs (index: `docs/invariants.md`):, (T11).
 
 ## Properties
 
@@ -58,8 +58,8 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT history_build.index_failure_isolated` An index whose source fails is recorded with a stable code and keeps the rows it gave; the other indices load in full, validation and the report still run, and the exit code and the job flag the run exactly when an index failed. Harm: one index's error loses the whole build's report, or a failed index passes unnoticed.
 - `PBT history_build.mcp_close_source_exact` The MCP close for a symbol-day is the row dated that day, exactly; other days, missing rows and unreadable closes give None. Harm: validation compares against a neighbouring day.
 - `PBT history_build.mcp_corporate_actions_page` An `error` answer is a failed lookup, never an empty list; a `warning` marks the page incomplete. Harm: a failed lookup reads as no corporate actions.
-- `PBT history_build.archive_unparsed_reported` Every archive row naming a split, bonus or consolidation without a usable ratio reaches the loader's unparsed list (the build report's `actions_unparsed` and its summary); a parseable split beside them is still loaded (HAT-DATA-055, PR 31). Harm: a consolidation in the archive leaves the adjusted history wrong and nobody is told.
-- `PBT history_build.cli_passes_calendar_holidays` Driving `main` (the command line) over a stored calendar (any mix of trading and non-trading rows in the window, sometimes another market's rows too), with the real build, no file for any day and the database, store, fetcher and MCP client patched in: every NSE non-trading date is reported as an explained holiday and every other weekday as a gap, `main` exits 1 exactly when there is a gap, and nothing reaches the network. Harm: a full-history run crashes at the reconciliation after hours of downloads (PR 42), or counts the wrong holidays.
+- `PBT history_build.archive_unparsed_reported` Every archive row naming a split, bonus or consolidation without a usable ratio reaches the loader's unparsed list (the build report's `actions_unparsed` and its summary); a parseable split beside them is still loaded. Harm: a consolidation in the archive leaves the adjusted history wrong and nobody is told.
+- `PBT history_build.cli_passes_calendar_holidays` Driving `main` (the command line) over a stored calendar (any mix of trading and non-trading rows in the window, sometimes another market's rows too), with the real build, no file for any day and the database, store, fetcher and MCP client patched in: every NSE non-trading date is reported as an explained holiday and every other weekday as a gap, `main` exits 1 exactly when there is a gap, and nothing reaches the network. Harm: a full-history run crashes at the reconciliation after hours of downloads, or counts the wrong holidays.
 - `PBT history_build.cli_root_and_report` Driving `main` with `HAT_DATA_ROOT` set only in `.env`, only in the environment, in both, or blank in the environment over a `.env` value (`operator_env` in `hat_support.py`; every candidate root and the default sit in one scratch directory, and the database module, whose import loads the repository's `.env`, is imported before the environment is set): the run writes only under the root that rule gives (the build state included), and `history_build/report-YYYY-MM-DD.txt` there ends with exactly the summary it printed. Harm: a full-history build writes gigabytes to the repo's `data_system/hat/` instead of the data volume, or its report is lost with the terminal.
 - `CONF fixtures.index_history_no_data` The `error` text the MCP sent for a window before its depth in the 22 Oct 2026 build (`mcp_index_history_no_data.json`) raises `mcp_no_data` from `index_history` and ends `mcp_index_source` with no row. Harm: the recorded server answer drifts from the rule that recognises it.
 - `CONF store.data_root` The settings' default root is `app.paths.HAT_DATA_ROOT`, defined only there, and raw names cannot leave a store's root. Harm: data written outside the data volume.
@@ -80,7 +80,7 @@ The features half (PR 6) checks that every feature of date d uses bars up to d o
 - `PBT features.job_idempotent` The `features` body run twice writes nothing the second time; a crash at any write followed by re-runs ends with the same files and values as an uninterrupted run. Harm: a re-run after a lost job record corrupts or skips dates.
 - `PBT features.pandas_equivalence` SMA50/150/200 equal the frozen `stage2_metrics` averages (`backend/tests/hat/fixtures/rs_oracle.json`) and the 0-99 integer rating of `compute_rs_map` equals round(0.99 x rs_pct / 100) (an exact .5 may differ by one); high_52w is never below pandas' (highest high vs highest close). Harm: two RS implementations disagree on the same data.
 - `CONF features.schema` Every written features partition has exactly the `FEATURE_NAMES` columns (instrument_id text, the rest float64), unique instrument ids, in `date=` directories. Harm: criteria read a missing or renamed column and score every stock zero.
-- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters; none is left since PR 12 moved `backtest/metrics.py` to polars. Harm: two indicator implementations diverge.
+- `CONF imports.hat_polars_only` No module under `app/hat` imports pandas except listed boundary adapters; none is left moved `backtest/metrics.py` to polars. Harm: two indicator implementations diverge.
 
 ## Run
 
@@ -158,43 +158,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `e3300125401e5625a80bcf5aed5ac9be00342b62f3fcaec6da93e1110e2a7a4f`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- A cumulative factor outside [1e-9, 100) is refused with `store_factor_range` (the view holds factors as decimal(20,18)); `adjusted_view_idempotent` skips such worlds, and `test_cumulative_factor_out_of_range_is_refused` pins the refusal. Several compounded reverse splits could reach it: a follow-up if real data does.
-- The adjusted-view exactness properties draw factors with finite decimal reciprocals and at most 18 places (factors are stored to 18 places and their reciprocals, for volume, to 12), so an arbitrary rational factor such as 2/3 is rounded in the view, for prices and volume alike; real factors (splits, bonuses) are ratios of small integers. A bar volume of 10^14 or more is refused (`store_bad_volume`).
-- The old CM (`cmDDMMMYYYYbhav.csv`) and UDiFF column lists are `[A]`, written from the published layouts and shared fixtures, not from a real download; the first real run validates them.
-- The MCP normaliser for nightly bars is PR 7's; `ingest.sources_same_schema` covers the shared writer that both sources use.
-- `bulk_quotes` and its date check do not apply to history: validation compares against the `date` field of `get_stock_history` rows.
-- Smallcap 250's first date is `[A]` (default 2010-01-01); a gap is reported, not hidden.
-- The index archive CSV parser (`parse_index_archive_csv`) is covered by unit examples only, as MCP is the primary source for index history.
-- History-only securities register as inactive instruments with their symbol as name; renames across history are not recorded until a weekly refresh (follow-up).
-- Features: windows are over each instrument's own rows, and the generated histories include gaps (a day without a bar), short series, ties and a cloned instrument; the store-based properties (`split_invariant`, `incremental_equals_full`, `job_idempotent`) run 8 examples each with 253 to 330 bars, because each writes one Parquet file per day.
-- Features are float64: the spec's "exact for Decimal inputs" is checked against an exact Fraction evaluation within 1e-9 relative, and the first-run frames are not byte-compared across different frame starts (a re-run after a crash gives the same values within 1e-9, not the same bytes; a re-run with nothing to do writes nothing).
-- A close counts as above its SMA50 only when it exceeds it by more than a relative 1e-12 (`ABOVE_MARGIN`); the property compares with the exact comparison on generated prices (paise), where the two always agree.
-- Differences from the legacy pandas `compute_rs_map` and `stage2_metrics`, recorded and not matched (owner rule D59): `rs_pct` is a 0-100 float (average rank / n x 100), the pandas rating an integer 0-99 (the same rank x 99, rounded); `high_52w` and `low_52w` use the day's high and low, pandas uses closes (so `high_52w >= pandas high_52`); features cover instruments with fewer than 253 bars (null where a window is not full), pandas leaves them out. `features.pandas_equivalence` checks the parts that agree.
-- Instruments outside the universe get null `rs_pct` and `mom_rank`; the universe is one static set per run (point-in-time membership arrives with PR 9).
-- The advance/decline ratio of HAT-DATA-076 comes from `get_market_breadth` in the nightly ingest (PR 7), not from the features job.
-- A correction of bars of an already featured date is not detected: the caller runs with `full`.
-- Runs are serialised with a file lock (`.features.lock` under the data root); two concurrent rebuilds are not tested, the lock is `fcntl.flock` as the index upsert uses.
-- K3 edited `test_conf_imports.py` (the live-data skill owns the rewritten `no_second_websocket` and `single_feed_import_rule`): the checks here (`imports.hat_polars_only` and the rest) are unchanged and still pass.
-
-- PR 7 (nightly ingest and quality gate): the nightly properties run 12 to 30 examples each, because each builds an in-memory database and a Parquet store in a temporary directory; `row_checks`, `flag_rule` and `coverage_threshold` are pure and run 300 or more. The MCP index-snapshot and breadth answers are `[A]` layouts (`McpClient.index_snapshot`, `market_breadth`) until the first live run (Q21). PR 23: the live run of 2026-10-22 confirmed the index layout and found breadth in snake_case (`total_volume`, `total_stocks`, `ad_ratio`); `breadth_from_mcp` reads `total_volume` and the `Nse` and day-rig fixtures send the recorded reply. When the server has no breadth, the day's breadth is counted from our own bars and marked `derived` (a spec addition). The exclusion list of `big_moves_explained` is an injected input: who chooses it is an open owner question. Raw `prev_close` is stored on bars for the first time (null for bhavcopy rows). `ingest.sources_same_schema` still covers the shared writer by its own rows; the real MCP normaliser is exercised by the other ingest properties.
-- PR 42 added `history_build.cli_passes_calendar_holidays`, the first check that runs `main`: it patches only its boundaries (`app.database.SessionLocal` with an in-memory SQLite calendar, `DataStore`, `http_fetcher`, `client_from_env`) and records the real `run_history_build` report; name lookups and sockets are blocked and recorded, and the property asserts none was attempted. Nothing was narrowed.
-- PR 43 (PR 41 follow-ups 1 and 7): the command lines take their settings from `operator_settings()` (loads `.env` first) and hand its root to their stores, and `history_build` appends its summary to `history_build/report-YYYY-MM-DD.txt` (`run_report.save_report`). `DataStore` no longer has a default root (`app.paths.HAT_DATA_ROOT`): nothing but the old `store.data_root` check used it, which now checks the settings' default instead. The PR 42 property no longer patches `DataStore`: it shares `_drive_main` with `history_build.cli_root_and_report` and runs in a scratch root from the environment. `CONF store.cli_root_after_env` is a source check: it does not run `features` or the backtest, whose `main` needs a real database. Only a run that finishes saves its report: one interrupted or failed by an exception saves none (follow-up). The report file is named by the wall clock's IST day, so the properties match it by pattern. Nothing was narrowed.
-- PR 33 (design review item 12): the gate fills the exclusion list itself (the quarantine), so `big_moves_explained` no longer treats it as an owner-chosen input; it draws universe sizes 0 to 1100, and the end-to-end gate properties use 100 to 300 instruments (1% of fewer than 100 is no mover at all). `big_moves_end_to_end` and `quarantine_*` run 10 to 12 examples (one database and store each); `quarantine_release` runs 40 sequences of up to 14 steps over three instruments and four earlier days. A passing gate is never run again for its day (one success per job and day), so the retry of `quarantine_one_mover` is a gate failing another check (India VIX not stored) and then passing on fixed data. `quarantine_lookup` calls `Nightly._quarantine_actions` directly (the next-session lookup of `ca.adjust` needs the position and watchlist tables, and is `test_rescale.py`'s); it runs 20 examples. The gate still measures moves on raw close against `prev_close`, not on adjusted prices as the HAT-DATA-062 property words it (unchanged from PR 7; follow-up). Nothing was narrowed.
-- PR 31 (design review 2026-10-22 item 6, HAT-EXEC-144): `from_archive_csv` reports a purpose text naming a consolidation as unparsed (it was ignored as a dividend is); `corporate_actions.factor_parse_unparseable_is_reported` draws the word (split, bonus, two consolidation forms). Rights issues and demergers are still ignored by the archive path. CodeAnt round: the history build kept only the archive's records, so its unparsed rows (splits and bonuses too, since PR 5) were dropped unseen; `ActionHooks.loader` now also returns them, `BuildReport.actions_unparsed` holds them, the summary counts them and each is logged. They do not fail the build (a real archive has odd texts; the operator reads the report). Nothing was narrowed.
-
-- PR 44 (index history to 2010): the MCP keeps index history only from about Oct 2023, and the build now fills earlier days from NSE's daily `ind_close_all_DDMMYYYY.csv` (`ArchiveIndexSource`, `archive_fill_source`), which needs no MCP. Its URL and column layout and the pre-2015 names (`INDEX_ALIASES`: CNX Nifty, CNX 500 and their S&P forms) are `[A]` until the orchestrator's rerun; the properties render that assumed layout. The archive is asked only for days that have bars, so a day the bhavcopy lacks is never filled from the index file. The no-data fixture (`mcp_index_history_no_data.json`) holds only the `error` text the brief quoted: `similar_indices` and `hint` were elided there and nothing reads them. `archive_fills_before_mcp_depth` runs 40 examples over 65 weekdays with a fake clock; `index_failure_isolated` runs 30 builds of one week. The review round made archive fetch errors fail the index, refused to keep a 200 answer with no index row, let the archive fill after an MCP failure, and paced the first archive request (the bhavcopy downloader may have just asked the same host). A day NSE has no index file for is asked again on every run (not remembered like bhavcopy candidates; follow-up). Nothing was narrowed.
-- PR 47 (research G01, HAT-DATA-052, -062): `from_mcp` stores an action of factor 1 as `dividend` or `notice` (price-neutral, `PRICE_NEUTRAL_TYPES`); `stored_factors` and the quarantine's `explained` rows leave them out. `corporate_actions.upsert_idempotent`'s oracle gives each factor-1 row its kind (`_mcp_kind`); `quality_gate.quarantine_lookup` draws a dividend set that releases nothing (and an `@example`). CodeAnt round: `gate_inputs` leaves price-neutral rows out of the day's explained set too, and `big_moves_end_to_end` draws dividends on the day. The archive loader still ignores dividends (its ex-dates come from the MCP). Nothing was narrowed.
-- PR 75b (architecture audit A-F3): `history_build`'s command line reads the holidays off the one `SessionCalendar` (`data.calendar.session_calendar`) instead of the deleted `MarketCalendar`; the same dates. No data check changed.
+Covered digest: `82a4d111b3f7e7b860db0ee46ae9c25139d781ec2c3a5b4cae142173571f6fd2`
 
 ## Scratch breaks
 
-Each check was shown to catch a deliberate break in the real code (HAT-VER-072), then the break was removed and the check returned to passing.
+Each check was shown to catch a deliberate break in the real code, then the break was removed and the check returned to passing.
 
 ### DB reference.corporate_action_load_on_postgres
 
@@ -294,7 +262,7 @@ E   Failing test case: test_factor_parse_unparseable_is_reported(
 E       text='',  # or any other generated value
 ```
 
-Break (PR 31): in `backend/app/hat/data/corporate_actions.py`: `from_archive_csv` no longer reports a consolidation text (it is ignored).
+Break: in `backend/app/hat/data/corporate_actions.py`: `from_archive_csv` no longer reports a consolidation text (it is ignored).
 
 ```
 E   assert 0 == 1
@@ -310,13 +278,6 @@ Break: a later load overwrites the stored factor.
 tests/hat/properties/test_corporate_actions.py F
 ```
 
-
-Break: (PR 47) `from_mcp` drops an action of factor 1 again (main before PR 47).
-
-```
-E   AssertionError: assert [] == [('2010-01-01....0, 'notice')]
-E     Right contains one more item: ('2010-01-01', 1.0, 'notice')
-```
 
 ### PBT store.atomic_write
 
@@ -564,7 +525,7 @@ E
 
 ### PBT history_build.mcp_index_source_ends_at_depth
 
-Break: (PR 44) `index_history` does not recognise the no-data answer (the `NO_DATA_PREFIX` check removed). Also fails `CONF fixtures.index_history_no_data`.
+Break: `index_history` does not recognise the no-data answer (the `NO_DATA_PREFIX` check removed). Also fails `CONF fixtures.index_history_no_data`.
 
 ```
 E   app.hat.data.mcp_client.McpError: mcp_bad_response
@@ -573,15 +534,9 @@ E       present={datetime.date(2021, 1, 1)},  # or any other generated value
 E       depth=datetime.date(2021, 1, 4),
 ```
 
-Break: (PR 44) every MCP error ends the chain (in `mcp_index_source`'s `chunk`, `if exc.code == CODE_NO_DATA: return None` / `raise` to `return None`).
-
-```
-E   Failed: DID NOT RAISE McpError
-```
-
 ### CONF fixtures.index_history_no_data
 
-Break: (PR 44) the same as the first break of `mcp_index_source_ends_at_depth`: the no-data check removed from `index_history`.
+Break: the same as the first break of `mcp_index_source_ends_at_depth`: the no-data check removed from `index_history`.
 
 ```
 FAILED tests/hat/conformance/test_conf_fixtures.py::test_fixtures_index_history_no_data
@@ -590,94 +545,19 @@ E   app.hat.data.mcp_client.McpError: mcp_bad_response
 
 ### PBT history_build.archive_fills_before_mcp_depth
 
-Break: (PR 44) no archive fill (`if first > start:` to `if False:` in `archive_fill_source`).
+Break: no archive fill (`if first > start:` to `if False:` in `archive_fill_source`).
 
 ```
 E   assert [] == [datetime.date(2023, 9, 1)]
 E     Right contains one more item: datetime.date(2023, 9, 1)
 ```
 
-Break: (PR 44) the archive is asked for the whole range, over the MCP's days too (`archive(name, start, first - timedelta(days=1))` to `archive(name, start, end)`).
-
-```
-    | AssertionError: assert [datetime.date(2023, 9, 4)] == []
-    | AssertionError: assert Decimal('738767.5000') == (738767 + Decimal('0'))
-```
-
-Break: (PR 44) the pre-2015 names are not mapped (the `INDEX_ALIASES` line removed from `parse_index_archive_csv`). Before the property drew a default file kind (`usual`) this break survived 40 examples: old-named files were too rare.
-
-```
-E   assert [datetime.date(2023, 9, 1)] == []
-E     Left contains one more item: datetime.date(2023, 9, 1)
-```
-
-Break: (PR 44) no per-run cache (`if day not in self._points:` to `if True:`): each file is fetched once per index.
-
-```
-E   assert [datetime.dat...e(2023, 9, 1)] == [datetime.date(2023, 9, 1)]
-E     Left contains 3 more items, first extra item: datetime.date(2023, 9, 1)
-```
-
-Break: (PR 44) a fetched file is used but not kept (`store_raw` dropped): the rerun fetches it again.
-
-```
-E   assert [datetime.date(2023, 9, 1)] == []
-E     Left contains one more item: datetime.date(2023, 9, 1)
-```
-
-Break: (PR 44 review) an MCP failure drops the archive fill (`failure = exc` to `raise exc` in `archive_fill_source`).
-
-```
-    | AssertionError: assert [] == [datetime.date(2023, 9, 1)]
-```
-
-Break: (PR 44 review) archive fetch errors fail nothing (the `if any(day in self.errors ...)` raise to `if False:`).
-
-```
-E   AssertionError: assert {} == {'NIFTY 50': ...rchive_error'}
-```
-
-Break: (PR 44 review) a 200 answer with no index row is kept (`if not points:` to `if result.status != "ok":`).
-
-```
-    | AssertionError: assert [] == [datetime.date(2023, 9, 1)]
-    | AssertionError: assert {} == {'NIFTY 50': ...rchive_error'}
-```
-
-Break: (PR 44 review) the first archive request does not wait.
-
-```
-E   assert False
-```
-
-Break: (PR 44) unpaced requests (the `_wait_turn()` call removed).
-
-```
-E   assert False
-E    +  where False = all(<generator object test_archive_fills_before_mcp_depth.<locals>.<genexpr> at 0x7f1da7c9ab60>)
-```
-
 ### PBT history_build.index_failure_isolated
 
-Break: (PR 44) one index's failure stops the load (`except Exception` to `except ZeroDivisionError` in `load_index_history`).
+Break: one index's failure stops the load (`except Exception` to `except ZeroDivisionError` in `load_index_history`).
 
 ```
     | app.hat.data.mcp_client.McpError: mcp_bad_response
-```
-
-Break: (PR 44) `_exit_code` ignores a failed index.
-
-```
-E   AssertionError: assert 0 == 1
-E    +  where 0 = <function _exit_code at 0x7f5e4877da60>(BuildReport(...))
-```
-
-Break: (PR 44) `history_build_job` ignores a failed index (`raise JobError("history_index_incomplete")` to `pass`).
-
-```
-E   Failed: DID NOT RAISE JobError
-E   Failing test case: test_index_failure_isolated(
-E       failing={'NIFTY 50': (False, 0)},
 ```
 
 ### PBT history_build.mcp_close_source_exact
@@ -710,7 +590,7 @@ E       [] and False is True)
 
 ### PBT history_build.cli_passes_calendar_holidays
 
-Break: (PR 42) `main` passes `calendar.holidays` (the method) again, as before the fix. It reproduces the real run's crash.
+Break: `main` passes `calendar.holidays` (the method) again, as before the fix. It reproduces the real run's crash.
 
 ```
 tests/hat/properties/test_history_build.py:323: in test_cli_passes_calendar_holidays
@@ -723,16 +603,9 @@ E   TypeError: 'method' object is not iterable
 E   Failing test case: test_cli_passes_calendar_holidays(
 ```
 
-Break: (PR 42) the network guard: the property stops patching the fetcher (the `http_fetcher` patch line points at `archive_url` instead), so the real `requests` fetcher runs. The fetcher turns every exception into an `error` answer, so the guard records each name lookup and connect and the property asserts none happened.
-
-```
-E   AssertionError: assert [('nsearchive...EAM: 1>), ...] == []
-E     Left contains 20 more items, first extra item: ('nsearchives.nseindia.com', 443, <AddressFamily.AF_UNSPEC: 0>, <SocketKind.SOCK_STREAM: 1>)
-```
-
 ### PBT history_build.cli_root_and_report
 
-Break: (PR 43) `history_build` takes its settings from `load_settings` again (imported under the name `operator_settings`, so `.env` is not loaded). With the root set only in `.env` the build state and the report land in the default root; the CONF check fails too.
+Break: `history_build` takes its settings from `load_settings` again (imported under the name `operator_settings`, so `.env` is not loaded). With the root set only in `.env` the build state and the report land in the default root; the CONF check fails too.
 
 ```
 tests/hat/properties/test_history_build.py:344: in test_cli_root_and_report
@@ -741,45 +614,15 @@ E   AssertionError: ['.env', 'default/build/state.json', 'default/history_build/
 E   assert {'.env', 'default'} == {'.env', 'env_file'}
 ```
 
-Break: (PR 43) `main` no longer saves its summary.
-
-```
-tests/hat/properties/test_history_build.py:344: in test_cli_root_and_report
-tests/hat/properties/test_history_build.py:360: in test_cli_root_and_report
-E   AssertionError: ['.env', 'env_file/build/state.json']
-E   assert 0 == 1
-E    +  where 0 = len([])
-```
-
 ### CONF store.cli_root_after_env
 
-Break: (PR 43) `features.main` imports `load_settings` under the name `operator_settings`.
+Break: `features.main` imports `load_settings` under the name `operator_settings`.
 
 ```
 tests/hat/conformance/test_conf_store.py:96: in test_store__cli_root_after_env
 E   AssertionError: backend/app/hat/data/features.py
 E   assert 'load_settings' not in {'load_settings': 'operator_settings'}
 ============================== 1 failed in 0.23s ===============================
-```
-
-Break: (PR 43) `minute_history` reads `load_settings()` again instead of `operator_settings()`.
-
-```
-tests/hat/conformance/test_conf_store.py:96: in test_store__cli_root_after_env
-E   AssertionError: backend/app/hat/data/minute_history.py
-E   assert 'load_settings' not in {'operator_settings': 'operator_settings', 'load_settings': 'load_settings'}
-========================= 1 failed, 2 passed in 0.38s ==========================
-```
-
-Break: (PR 43) `DataStore` gets a default root again.
-
-```
-tests/hat/conformance/test_conf_store.py:105: in test_store__cli_root_after_env
-E   AssertionError: DataStore
-E   assert PosixPath('data_system/hat') is <class 'inspect._empty'>
-E    +  where PosixPath('data_system/hat') = <Parameter "root: 'Path' = PosixPath('data_system/hat')">.default
-E    +  and   <class 'inspect._empty'> = <class 'inspect.Parameter'>.empty
-E    +    where <class 'inspect.Parameter'> = inspect.Parameter
 ```
 
 ### CONF store.data_root
@@ -1074,7 +917,7 @@ E     {'data/features.py': 'pandas'}
 E     Full diff:
 ```
 
-Break (PR 12, the adapter list emptied): in `backend/app/hat/backtest/metrics.py`: `backtest/metrics.py` imports pandas again.
+Break: in `backend/app/hat/backtest/metrics.py`: `backtest/metrics.py` imports pandas again.
 
 ```
 tests/hat/conformance/test_conf_imports.py F
@@ -1196,7 +1039,7 @@ E   )
 ```
 
 
-Second break (PR 23): `breadth_from_mcp` reads only `totalVolume`/`volume` (main), so the recorded snake_case reply stores a volume of 0.
+Second break: `breadth_from_mcp` reads only `totalVolume`/`volume` (main), so the recorded snake_case reply stores a volume of 0.
 
 ```
 1 failed: assert market["volume"][0] == sent["total_volume"]  (0 != 5853019065)
@@ -1316,7 +1159,7 @@ E       tripped_before=True,
 E   )
 ```
 
-Break (audit L4): a retry failing the same checks records again and alerts again (`persist`'s same-failure check to `if False:`, `gate_body`'s `if news:` to `if True:`).
+Break: a retry failing the same checks records again and alerts again (`persist`'s same-failure check to `if False:`, `gate_body`'s `if news:` to `if True:`).
 
 ```
 E   assert 3 == 1
@@ -1325,33 +1168,9 @@ E   Failing test case: test_rows_written(
 E       retries=2,
 ```
 
-Break: only `gate_body` alerts on every retry (`if news:` to `if True:`).
-
-```
-E   AssertionError: assert 3 == 1
-E    +  where 3 = len(alerts)
-```
-
-Break: (PR 33) the cap ignored: any unexplained mover fails the check (`passed = not unexplained`). Fails `big_moves_explained`, `big_moves_end_to_end` and `quarantine_one_mover`.
-
-```
-E   AssertionError: assert False == (Fraction(1, 1) <= Fraction(1, 1))
-E    +  where False = Check(name='big_moves', passed=False, detail={'moved': 1, 'unexplained': ['1'], 'excluded': [], 'cap_percent': 1}).passed
-```
-
-Break: (PR 47, CodeAnt) `gate_inputs` counts a dividend on the day as explaining the move (the `PRICE_NEUTRAL_TYPES` filter removed). Fails `big_moves_end_to_end`, which now draws dividends.
-
-```
-E   AssertionError: assert ('PASS' == 'PASS'
-E       PASS) == False
-E   Failing explicit example: test_big_moves_end_to_end(
-E       size=100,
-E       movers={0, 1},
-```
-
 ### PBT quality_gate.quarantine_one_mover
 
-Break: (PR 33) `gate_body` does not insert the quarantine (the `quarantine(session, new, trade_date, now)` call removed).
+Break: `gate_body` does not insert the quarantine (the `quarantine(session, new, trade_date, now)` call removed).
 
 ```
 E   AssertionError: assert set() == {('01a16355-3...0, 20), True)}
@@ -1359,16 +1178,9 @@ E     Extra items in the right set:
 E     ('01a16355-3381-7697-866a-428ed46ff1d8', datetime.date(2026, 10, 20), True)
 ```
 
-Break: (PR 33 review) a failing gate quarantines too (`if result.passed:` to `if True:` in `gate_body`). Also fails `quarantine_cap` and `rows_written`.
-
-```
-E   AssertionError: assert ({('01a16365-...d', 'S0000')]) == (set(), [])
-E     At index 0 diff: {('01a16365-2685-7081-b3b5-46364c59220d', datetime.date(2026, 10, 20), True)} != set()
-```
-
 ### PBT quality_gate.quarantine_cap
 
-Break: (PR 33, before the review fix moved the test to the whole result) movers quarantined above the cap too (`if moves.passed:` to `if True:` in `gate_body`); the retry then passes, the quarantined movers being excluded. Since the review fix the same break is `if result.passed:` to `if True:`, shown under `quarantine_one_mover`.
+Break: movers quarantined above the cap too (`if moves.passed:` to `if True:` in `gate_body`); the retry then passes, the quarantined movers being excluded. Since the review fix the same break is `if result.passed:` to `if True:`, shown under `quarantine_one_mover`.
 
 ```
     | AssertionError: assert {('01a16356-e...0, 20), True)} == set()
@@ -1377,7 +1189,7 @@ Break: (PR 33, before the review fix moved the test to the whole result) movers 
 
 ### PBT quality_gate.quarantine_release
 
-Break: (PR 33) no release on a corporate action (`if action is not None:` to `if False:` in `standing_quarantine`).
+Break: no release on a corporate action (`if action is not None:` to `if False:` in `standing_quarantine`).
 
 ```
 E   AssertionError: assert {'01a16355-57...eab55b6e8a38'} == set()
@@ -1385,34 +1197,9 @@ E     Extra items in the left set:
 E     '01a16355-57a9-770b-8a10-eab55b6e8a38'
 ```
 
-Break: (PR 33) standing quarantines not excluded (`excluded=skipped | standing` to `excluded=skipped`).
-
-```
-E   AssertionError: assert set() == {'01a16365-bb...4467f05a335e'}
-E     Extra items in the right set:
-E     '01a16365-bbae-7367-be2a-4467f05a335e'
-```
-
-Break: (PR 33 review) `clear` releases only active instruments (`HatInstrument.active.is_(True)` added back).
-
-```
-E   assert 0 == 1
-E    +  where 1 = len([(2, datetime.date(2026, 10, 19))])
-E   Failing test case: test_quarantine_release(
-```
-
-Break: (PR 33) `clear` matches the symbol as typed (`symbol.strip().upper()` to `symbol`).
-
-```
-E   assert 0 == 1
-E    +  where 1 = len([(1, datetime.date(2026, 10, 17))])
-E   Failing explicit example: test_quarantine_release(
-E       ops=[('quarantine', 1, 3), ('clear', 1, 1)],
-```
-
 ### PBT quality_gate.quarantine_lookup
 
-Break: (PR 33 review) `ca.adjust` does not look up the quarantines' actions (`if not rows:` to `if True:` in `Nightly._quarantine_actions`).
+Break: `ca.adjust` does not look up the quarantines' actions (`if not rows:` to `if True:` in `Nightly._quarantine_actions`).
 
 ```
 E   AssertionError: assert set() == {('S0000', '2...'2026-10-18')}
@@ -1421,17 +1208,9 @@ E     ('S0000', '2026-10-18', '2026-10-18')
 ```
 
 
-Break: (PR 47) in `backend/app/hat/data/quality.py`, the `explained` subquery counts price-neutral rows (a dividend releases the quarantine).
-
-```
-E   AssertionError: assert set() == {'01a164d3-d4...6e0a665c98b5'}
-E     Extra items in the right set:
-E     '01a164d3-d49d-71e4-ae01-6e0a665c98b5'
-```
-
 ### PBT history_build.archive_unparsed_reported
 
-Break: in `backend/app/hat/data/history_build.py`: the loader drops the archive's unparsed rows (main before PR 31).
+Break: in `backend/app/hat/data/history_build.py`: the loader drops the archive's unparsed rows (main before).
 
 ```
 E   AssertionError: assert [] == ['Face value split']

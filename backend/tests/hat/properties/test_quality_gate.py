@@ -1,6 +1,6 @@
-"""PBT quality_gate.* (HAT-DATA-060..065, HAT-DEC-I14): the nightly quality gate's four checks
+"""PBT quality_gate.*: the nightly quality gate's four checks
 (coverage, OHLC, big moves, index snapshot), the rows and events it writes, the health kill it
-trips and clears, and the quarantine of unexplained big movers (PR 33). Pure checks plus the
+trips and clears, and the quarantine of unexplained big movers. Pure checks plus the
 real ingest and gate over an in-memory database and a temporary store; no network."""
 
 import tempfile
@@ -179,7 +179,7 @@ def _quarantine_alerts(world: World) -> list[tuple[str, str]]:
 def test_big_moves_explained(
     moved: set[int], explained: set[int], excluded: set[int], universe: set[int], size: int
 ) -> None:
-    """HAT-DATA-062 (PR 33). For every set of instruments that moved over 20%, those with a
+    """. For every set of instruments that moved over 20%, those with a
     corporate action on the day, those already excluded and every active-universe size N: the
     unexplained are the movers neither explained nor excluded; the check fails iff they are more
     than 1% of N (one of 100 passes, two of 199 fail, two of 200 pass); the day's exclusion list
@@ -214,7 +214,7 @@ def test_big_moves_end_to_end(
     """The same rule over stored bars and corporate actions: for every universe of 100 to 250
     instruments, the gate's big_moves check fails iff the movers with no price-changing
     corporate action on the trade date that are not excluded are more than 1% of it (a dividend
-    on the day explains nothing, PR 47), and the day's scans exclude the given instruments plus,
+    on the day explains nothing), and the day's scans exclude the given instruments plus,
     on a pass, those movers."""
     names = [s for s, _, _ in symbols_of(size)]
     with tempfile.TemporaryDirectory() as tmp:
@@ -245,7 +245,7 @@ def test_big_moves_end_to_end(
 @example(size=100, wanted=1, failing=2)
 @example(size=300, wanted=3, failing=1)
 def test_quarantine_one_mover(size: int, wanted: int, failing: int) -> None:
-    """HAT-DATA-062 (PR 33, design review item 12): for every universe of N instruments and up to
+    """: for every universe of N instruments and up to
     1% of it moving over 20% with no corporate action, the big_moves check passes. While another
     check fails (India VIX not stored, for `failing` runs) nothing is quarantined or alerted as
     quarantined; once the data is fixed the retry passes (no health kill left), and each mover
@@ -287,7 +287,7 @@ def test_quarantine_one_mover(size: int, wanted: int, failing: int) -> None:
 @example(size=100, over=1, retries=0)
 @example(size=299, over=1, retries=1)
 def test_quarantine_cap(size: int, over: int, retries: int) -> None:
-    """HAT-DATA-062 (PR 33): for every universe of N instruments and more than 1% of it moving
+    """: for every universe of N instruments and more than 1% of it moving
     over 20% unexplained (2 of 100, 3 of 299), the gate fails the big_moves check, trips the
     health kill and alerts `quality.failed` once; nothing is quarantined, alerted as quarantined
     or added to the day's exclusion list, also on a retry."""
@@ -329,7 +329,7 @@ OPS = st.lists(
 @example(ops=[("quarantine", 0, 2), ("action", 0, 3)])
 @example(ops=[("quarantine", 1, 3), ("clear", 1, 1)])
 def test_quarantine_release(ops: list[tuple[str, int, int]]) -> None:
-    """HAT-DATA-062 (PR 33): for every sequence of quarantines, stored corporate actions, owner
+    """: for every sequence of quarantines, stored corporate actions, owner
     clears and gate reads over earlier days, against a model: a quarantine stands on a later day
     iff no corporate action with ex-date `since` was stored for its instrument and the owner did
     not clear it (a corporate action on another date does not release it); a gate read releases
@@ -417,8 +417,8 @@ def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
     """For every night's data (good, a bad row, no India VIX stored, an unexplained 50% move) and
     either health state before it, the gate writes exactly four rows, one per check, PASS iff all
     four pass; a failure writes one `quality.failed` event, raises one alert, fails the job and
-    leaves the health kill tripped, however often the scheduler retries it on the same data
-    (audit L4: a retry every 10 minutes until midnight re-alerted each time); only a passing
+    leaves the health kill tripped, however often the scheduler retries it on the same data;
+    only a passing
     gate clears it."""
     names = [s for s, _, _ in symbols_of(4)]
     with tempfile.TemporaryDirectory() as tmp:
@@ -478,7 +478,7 @@ def test_rows_written(kind: str, tripped_before: bool, retries: int) -> None:
 def test_quarantine_lookup(
     quarantined: dict[int, int], found: set[int], unreadable: set[int], dividend: set[int]
 ) -> None:
-    """HAT-DATA-062 (PR 33): each night `ca.adjust` asks the MCP again for the actions of every
+    """: each night `ca.adjust` asks the MCP again for the actions of every
     open quarantine's instrument on its `since` date, and only those; an action it stores
     releases that quarantine at the next gate read, while an unreadable answer or none leaves
     it standing, and nothing is alerted for it (the quarantine was alerted already). A

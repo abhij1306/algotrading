@@ -1,4 +1,4 @@
-"""The corporate-action loader against real Postgres (HAT-DATA-052, 094): the unique key the
+"""The corporate-action loader against real Postgres: the unique key the
 database enforces never trips through repeated, overlapping and conflicting loads."""
 
 from datetime import date, time

@@ -1,4 +1,4 @@
-"""CONF checks of the features dataset (HAT-DATA-070): every partition the features job writes
+"""CONF checks of the features dataset: every partition the features job writes
 has exactly the declared columns, one row per instrument, in `date=` partitions."""
 
 import tempfile
@@ -22,7 +22,7 @@ from app.hat.ids import uuid7
 
 
 def test_features__schema() -> None:
-    """HAT-DATA-070: each written partition has exactly the declared feature columns
+    """Each written partition has exactly the declared feature columns
     (instrument_id text, the rest float64), unique instrument ids, and sits in
     `features_daily/date=YYYY-MM-DD/`."""
     spec = ["instrument_id", *FEATURE_NAMES]

@@ -1,5 +1,4 @@
-"""DB checks for crash-safe routing and the approval sweep on PostgreSQL (PR 52; HAT-OPS-003,
-HAT-EXEC-030, HAT-EXEC-023; audit T-F4, T-F7, T-F15).
+"""DB checks for crash-safe routing and the approval sweep on PostgreSQL.
 
 The real router, desks and recovery over the real Fyers adapter on `FakeBroker`, committing to a
 real database: a process dies right after a commit or a broker call (`crash_after`), a new one
@@ -150,7 +149,7 @@ def _stranded(session: Session, signal_id: uuid.UUID) -> bool:
 def test_db_crash_resumes_entry_once(
     clean_db: Engine, path: str, replies: list[bool], k: int, error: str
 ) -> None:
-    """HAT-OPS-003, HAT-EXEC-023 on PostgreSQL: an auto entry or a Take whose process dies (or
+    """On PostgreSQL: an auto entry or a Take whose process dies (or
     whose placement raises) right after its k-th commit or broker call is, after a restart's
     recovery and two resume passes on the same database, placed or ended exactly once: at most
     two entry orders under distinct tags, at most one the broker took, none left waiting with no
@@ -251,7 +250,7 @@ def _sweep_together(engine: Engine, rig: Rig, now: object, threads: int) -> None
 @example(threads=4, taken=True)
 @given(threads=st.integers(min_value=2, max_value=6), taken=st.booleans())
 def test_db_concurrent_sweeps_settle_once(clean_db: Engine, threads: int, taken: bool) -> None:
-    """HAT-EXEC-030, HAT-EXEC-032 on PostgreSQL: sweeps running at once from several threads
+    """On PostgreSQL: sweeps running at once from several threads
     over two undecided cards past their 5 minutes (and, when `taken`, one of them a Take whose
     placement crashed) leave the state one sweep leaves: each untaken card Expired with exactly
     one veto trade, and on the next trade date the stranded Take Rejected `signal_expired` with
@@ -321,7 +320,7 @@ def test_db_concurrent_sweeps_settle_once(clean_db: Engine, threads: int, taken:
 @example(threads=2, path="take")
 @given(threads=st.integers(min_value=2, max_value=6), path=st.sampled_from(("auto", "take")))
 def test_db_concurrent_placements_send_one(clean_db: Engine, threads: int, path: str) -> None:
-    """HAT-EXEC-021, HAT-OPS-003 (PR 52) on PostgreSQL: an entry left unplaced (an auto signal
+    """on PostgreSQL: an entry left unplaced (an auto signal
     in Triggered, or a passed Take) placed from several threads at once through the account's
     one router (the trigger path, a Take and the periodic resume share it), each on its own
     connection, reaches the broker exactly once under one tag and ends EntryPlaced. Harm: two

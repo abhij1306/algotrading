@@ -1,4 +1,4 @@
-"""PBT exec.router.* (HAT-EXEC-010, -012, -020, -023, -030..032, HAT-BRK-110, HAT-GOV-084): the
+"""PBT exec.router.* (..032): the
 execution router of `app.hat.execution.router` on SQLite, with the real risk checks, the real
 Fyers adapter and `FakeBroker` beneath it. Nothing reaches a real broker."""
 
@@ -123,7 +123,7 @@ CONDITIONS = st.one_of(
             ("stale_feed", replace(LIVE, feed_stale=None)),
             ("quality_failed", replace(LIVE, quality_failed=True)),
             ("regime_gate", replace(LIVE, gate_on=False)),
-            # PR 51: the live price read at placement (the rig's stop is 95)
+            # the live price read at placement (the rig's stop is 95)
             ("price_unknown", replace(LIVE, ltp=None)),
             (PRICE_STALE, replace(LIVE, ltp=None, ltp_refusal=PRICE_STALE)),
             (PRICE_OUT_OF_BAND, replace(LIVE, ltp=None, ltp_refusal=PRICE_OUT_OF_BAND)),
@@ -138,7 +138,7 @@ CONDITIONS = st.one_of(
 @settings(max_examples=30, deadline=None)
 @given(MODE, st.booleans(), CONDITIONS)
 def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCheck]) -> None:
-    """HAT-EXEC-010, -012, -020, -022: one accepted trigger, routed by the bot's effective mode
+    """One accepted trigger, routed by the bot's effective mode
     (confirm and auto fall back to shadow without GTT for delivery). Shadow opens a virtual
     position and calls no broker; confirm writes the approval card expiring 5 minutes later and
     calls no broker; auto sends exactly one LIMIT BUY CNC order, HT-tagged, for the risk-sized
@@ -214,7 +214,7 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
 def test_take_rechecks_max_chase(
     chase_bp: int, after_s: int, conditions: tuple[str, PlacementCheck]
 ) -> None:
-    """HAT-EXEC-030, -031, -022, HAT-TG-043: a Take before expiry places the real order exactly
+    """A Take before expiry places the real order exactly
     when the live conditions allow an entry (market hours, a fresh feed, a passed quality gate,
     the regime gate on) and its price is within the trigger's max-chase percentage; otherwise it
     records the decision, ends the signal Rejected with the reason and places nothing; a Take at
@@ -291,7 +291,7 @@ ACTIONS = st.lists(
 @settings(max_examples=30, deadline=None)
 @given(ACTIONS)
 def test_skip_and_expiry_become_one_veto_trade(actions: list[tuple[str, int]]) -> None:
-    """HAT-EXEC-032, HAT-TG-045: whatever mix of Skips, expiry sweeps and late Takes arrives, a
+    """Whatever mix of Skips, expiry sweeps and late Takes arrives, a
     confirm signal that was not taken ends Cancelled (skip) or Expired, with exactly one virtual
     veto trade at the card's quantity and stop, no broker call, and a replay of the signal's and
     the veto trade's events that gives their stored states. Harm: the veto score counts a skip
@@ -345,7 +345,7 @@ def test_skip_and_expiry_become_one_veto_trade(actions: list[tuple[str, int]]) -
 @settings(max_examples=20, deadline=None)
 @given(st.lists(st.booleans(), min_size=1, max_size=4))
 def test_rejected_entry_is_retried_once(replies: list[bool]) -> None:
-    """HAT-EXEC-023: an auto entry the broker rejects is alerted and retried once under the next
+    """An auto entry the broker rejects is alerted and retried once under the next
     tag; a second rejection ends the signal Rejected with one `entry.not_placed` alert, and no
     third order is sent. Harm: a rejected order is re-sent without limit, or a failure is
     silent."""
@@ -381,7 +381,7 @@ def test_rejected_entry_is_retried_once(replies: list[bool]) -> None:
 @settings(max_examples=20, deadline=None)
 @given(st.booleans(), st.booleans())
 def test_reconcile_before_first_order(foreign_ht: bool, unreadable: bool) -> None:
-    """HAT-BRK-110: the session's first real order waits for a successful reconciliation; a
+    """The session's first real order waits for a successful reconciliation; a
     broker that cannot be read, or a book with an HT order HAT does not know, places nothing and
     ends the entry Rejected with an alert. Harm: an order goes out on top of a book HAT has not
     matched, doubling a position after a restart."""
@@ -448,7 +448,7 @@ class GuardSpy:
 @settings(max_examples=20, deadline=None)
 @given(st.integers(min_value=1, max_value=3), st.booleans())
 def test_routine_reconcile_keeps_gate(runs: int, unreadable: bool) -> None:
-    """HAT-BRK-110, `OrderReconciliation`: once the trade date reconciled, the periodic re-runs,
+    """`OrderReconciliation`: once the trade date reconciled, the periodic re-runs,
     readable or not, never close the entry gate while they read the book, and a run that cannot
     read the book leaves it open. Harm: an entry on another thread lands inside the five-minutely
     read, is refused `not_reconciled`, and is lost."""
@@ -505,7 +505,7 @@ def _foreign_ht_row() -> dict[str, object]:
 @settings(max_examples=10, deadline=None)
 @given(st.booleans(), st.booleans())
 def test_older_read_never_overrides_newer(first_unknown: bool, second_unknown: bool) -> None:
-    """HAT-BRK-111: when a reconciliation that read the book earlier finishes after one that
+    """When a reconciliation that read the book earlier finishes after one that
     read it later, the later read's result stays in force: an older clean book never clears a
     newer mismatch, and an older mismatch never re-blocks after a newer clean book. Harm: the
     router's run and the periodic run race, and entries open over a book with an unknown HT
@@ -535,7 +535,7 @@ def test_older_read_never_overrides_newer(first_unknown: bool, second_unknown: b
 @example([(0, True), (1, False)])
 @example([(0, False), (0, True)])
 def test_entry_gate_keyed_by_trade_date(runs: list[tuple[int, bool]]) -> None:
-    """HAT-BRK-110, -111, D118: an entry is accepted on a trade date only after a successful
+    """An entry is accepted on a trade date only after a successful
     reconciliation of that date (a success on an earlier date opens nothing), and a failed run
     after it never closes the gate; a stop or a sale is never refused by the reconciliation
     state. Each step moves the clock on by 0..2 trade dates and runs a reconciliation that reads
@@ -614,7 +614,7 @@ class _NoHealth:
 @given(landed=st.booleans(), repeats=st.integers(min_value=1, max_value=3))
 @example(landed=True, repeats=1)
 def test_unresolved_entry_is_alerted_not_resent(landed: bool, repeats: int) -> None:
-    """HAT-BRK-102, -103: an auto entry whose answer was lost, landed behind a lagging order book
+    """An auto entry whose answer was lost, landed behind a lagging order book
     or never landed, is placed once: every later attempt finds nothing by tag, sends nothing and
     raises one `entry.unresolved` alert, and the signal is not rejected while the order may be
     live. Harm: a lagging book doubles the position, or a stuck entry is silent until the
@@ -640,7 +640,7 @@ def test_unresolved_entry_is_alerted_not_resent(landed: bool, repeats: int) -> N
     st.integers(min_value=0, max_value=29),
 )
 def test_resumed_entry_waits_for_feed(earlier: bool, late: bool, heard: bool, ago: int) -> None:
-    """HAT-OPS-003, HAT-DATA-116 (audit H1, M2): after a restart, an auto entry a crash left in
+    """: after a restart, an auto entry a crash left in
     Triggered is placed only once the live feed has been heard from (within 30 s) and its account
     has reconciled (at the start or `late`, by a later reconciliation), once; one of an earlier
     session is never placed and ends Rejected `signal_expired`. Harm: a restart during a feed
@@ -835,12 +835,12 @@ STOP_REPLIES = {
 def test_fill_sync_cadence(
     gaps: list[int], placed: int, filled: int, earlier: bool, stop: str, down: frozenset[int]
 ) -> None:
-    """HAT-EXEC-060 (review 2026-10-22 item 1): the periodic passes, `gaps` loop steps of 5 s
+    """(review 2026-10-22 item 1): the periodic passes, `gaps` loop steps of 5 s
     apart, read an account's fills at every pass while a real entry of today's signals may still
     fill (from the pass it is sent until the pass that reads its fill) or a stop's answer is not
     in yet, and otherwise at the first pass and then once a minute: an entry of the previous
     session still shown working and a stop the broker refused do not speed it up. A pass whose
-    read failed (`down`: an outage, or the call budget refusing it, PR 50) is tried again at the
+    read failed (`down`: an outage, or the call budget refusing it) is tried again at the
     next pass, never waited for. Harm: an entry filled just after a sync
     sits up to a minute at the broker with no stop, or a refused stop is re-sent every 5 s until
     its tag's sequence runs out."""
@@ -870,7 +870,7 @@ def test_fill_sync_cadence(
                 rig.fake.script("place_order", STOP_REPLIES[stop]())
             due = last is None or now - last >= timedelta(minutes=1) or _watched(session, now)
             if due and n in down:
-                # an outage, or (odd passes) the call budget refusing the read (PR 50): either
+                # an outage, or (odd passes) the call budget refusing the read: either
                 # way the 5-second cadence yields and the next pass reads again
                 failure = (
                     FyersRateLimitedError("Fyers fetch_tradebook request limit reached")
@@ -892,7 +892,7 @@ def test_fill_sync_cadence(
 @settings(max_examples=40, deadline=None)
 @given(st.lists(st.sampled_from(("fyers", "other", "unknown")), min_size=1, max_size=5))
 def test_one_login_per_broker(brokers: list[str]) -> None:
-    """Trading-safety rule 9 (audit L2): the production adapters log in once per broker, so the
+    """Trading-safety rule 9: the production adapters log in once per broker, so the
     desks get at most one adapter per broker; a second active account of a broker refuses the
     start, and a broker without an adapter gets no desk. Harm: two accounts trade and reconcile
     through one login, and the allocation counts the same funds twice."""
@@ -919,7 +919,7 @@ PRE_OPEN = datetime(2026, 10, 21, 3, 0, tzinfo=UTC)  # 08:30 IST, before the ses
 @settings(max_examples=20, deadline=None)
 @given(MODE, MODE, st.integers(min_value=0, max_value=300))
 def test_mode_change_takes_effect_next_session(start: str, target: str, minutes: int) -> None:
-    """HAT-EXEC-011, HAT-GOV-084, HAT-DEC-I9: a mode change queued outside market hours routes
+    """A mode change queued outside market hours routes
     nothing differently until the next session opens and everything after it; a change asked
     inside market hours is refused and writes nothing; the open applies it to the bot row once.
     Harm: a bot switches to real orders mid-session."""
@@ -975,7 +975,7 @@ def test_mode_change_takes_effect_next_session(start: str, target: str, minutes:
 @given(stored=st.booleans(), live=st.booleans())
 @example(stored=True, live=False)
 def test_a_stored_capability_never_enables_a_real_entry(stored: bool, live: bool) -> None:
-    """HAT-EXEC-012, HAT-BRK-092: an auto entry reaches the broker only when the account's
+    """An auto entry reaches the broker only when the account's
     stored capabilities and the adapter's own both report GTT for delivery. A stored `true` the
     adapter does not report routes the bot as auto but places nothing and ends the signal
     Rejected `no_gtt_delivery` before any order is reserved; a stored `false` routes as
@@ -997,7 +997,7 @@ def test_a_stored_capability_never_enables_a_real_entry(stored: bool, live: bool
 @settings(max_examples=20, deadline=None)
 @given(stored=st.booleans(), live=st.booleans())
 def test_desks_start_with_the_adapters_capabilities(stored: bool, live: bool) -> None:
-    """HAT-BRK-092, HAT-EXEC-012: building the desks rewrites each account's stored
+    """Building the desks rewrites each account's stored
     capabilities to its adapter's before any routing reads them, so the first signal after a
     start routes by the adapter's GTT value: auto when it reports GTT, shadow when it does not,
     whatever the row said. Harm: a stale row sends confirm cards or auto entries the placement
@@ -1066,7 +1066,7 @@ SESSION_CHECKS = st.lists(
 @settings(max_examples=25, deadline=None)
 @given(SESSION_CHECKS, st.booleans())
 def test_broker_health_follows_the_session(checks: list[tuple[int, str]], feed_down: bool) -> None:
-    """HAT-RISK-063 (design review item 5): after every session check of a trading day, the
+    """(design review item 5): after every session check of a trading day, the
     account's bots have `broker_health` tripped iff the session is not live (a failed read counts
     as not live) between 09:05 and the 15:30 close IST, and cleared otherwise; the check never
     touches another reason (a tripped `feed_health` stays), the account switch or a bot of
@@ -1131,7 +1131,7 @@ KILLS = st.sampled_from(tuple(KILL_REASON))
 @settings(max_examples=30, deadline=None)
 @given(KILLS, st.sampled_from(("none", "pending", UNCONFIRMED)))
 def test_refused_entry_is_not_sent(kill: str, reserved: str) -> None:
-    """HAT-EXEC-020,: an auto entry whose bot became manage-only after its risk check (a
+    """: an auto entry whose bot became manage-only after its risk check (a
     kill switch or a pause, in the gap between the signal's commit and the placement) sends
     nothing. A reserved order that never reached the broker is cancelled and the signal ends
     Rejected with the reason; one that may have reached it is only left to reconciliation: it
@@ -1188,7 +1188,7 @@ def test_refused_entry_is_not_sent(kill: str, reserved: str) -> None:
 @settings(max_examples=40, deadline=None)
 @given(state=st.sampled_from(sleeves.STATES), mode=MODE, gtt=st.booleans())
 def test_non_live_sleeve_routes_as_shadow(state: str, mode: str, gtt: bool) -> None:
-    """HAT-PORT-063, HAT-EXEC-012: a bot whose sleeve is not Live (research, backtested, shadow,
+    """A bot whose sleeve is not Live (research, backtested, shadow,
     probation, retired) runs shadow whatever mode it asked for and whatever its account can do:
     `bot_mode` is shadow and the router places nothing at the broker. A Live sleeve runs the
     mode its account allows. Harm: a sleeve with no evidence, or one in probation, places real
@@ -1217,7 +1217,7 @@ def test_non_live_sleeve_routes_as_shadow(state: str, mode: str, gtt: bool) -> N
 @settings(max_examples=30, deadline=None)
 @given(st.sampled_from(("missing", "expired", "unknown", "live")), st.integers(-3, 3))
 def test_entry_needs_live_session(status: str, offset: int) -> None:
-    """HAT-OPS-023: an accepted auto entry is placed only when its broker account has a live
+    """An accepted auto entry is placed only when its broker account has a live
     `hat_broker_session` for the trade date of the placement; otherwise nothing is sent and the
     signal ends Rejected with `broker_session_not_live`. A live session of another day does not
     count. Harm: an entry goes out on an account nobody logged in today, or whose session
@@ -1243,7 +1243,7 @@ def test_entry_needs_live_session(status: str, offset: int) -> None:
             assert _rejected_reason(session, signal.id) == SESSION_NOT_LIVE
 
 
-# --- HAT-GOV-085, HAT-EXEC-014: the owner's gates and auto by confidence -----------------------
+# --- the owner's gates and auto by confidence -----------------------
 
 OPENED = CALENDAR.days[AT.date()].open_at
 assert OPENED is not None
@@ -1259,7 +1259,7 @@ assert OPENED < AT
 @example(mode=modes.AUTO, ddpi="after_open", weights=True)
 @example(mode=modes.CONFIRM, ddpi="before_open", weights=False)
 def test_mode_gates_hold_bots_in_shadow(mode: str, ddpi: str, weights: bool) -> None:
-    """HAT-GOV-085: a Live bot on an account with GTT for delivery runs the mode it asked for
+    """A Live bot on an account with GTT for delivery runs the mode it asked for
     only while the owner had confirmed DDPI on its account by the session's open (one set
     during the session waits for the next open; one revoked holds it back at once) and the
     policy in force at the open confirms the base weights; otherwise it runs shadow and calls
@@ -1296,7 +1296,7 @@ def test_mode_gates_hold_bots_in_shadow(mode: str, ddpi: str, weights: bool) -> 
 @given(st.sampled_from((modes.HIGH, "medium", "low", None, "HIGH", "")))
 @example(None)
 def test_auto_places_only_high_confidence(confidence: str | None) -> None:
-    """HAT-EXEC-014, D149: an accepted auto signal labelled high sends exactly one entry order;
+    """An accepted auto signal labelled high sends exactly one entry order;
     any other label, or none, is routed as confirm: an approval card, the signal in
     AwaitingApproval and no broker call. Harm: a medium- or low-confidence trade is bought
     without the owner's approval."""
@@ -1319,7 +1319,7 @@ def test_auto_places_only_high_confidence(confidence: str | None) -> None:
 @given(st.sampled_from((modes.HIGH, "medium", "low")))
 @example("low")
 def test_placement_rechecks_confidence(label: str) -> None:
-    """HAT-EXEC-014, D149: placement reads the stored label again, so an auto signal stored
+    """Placement reads the stored label again, so an auto signal stored
     without a high one (written by another path) is never sent: it ends Rejected with
     `not_high_confidence` and no broker call. Harm: the auto rule rests on one write, and a
     medium- or low-confidence trade is bought without the owner's approval."""
@@ -1357,7 +1357,7 @@ def test_placement_rechecks_confidence(label: str) -> None:
 def test_open_settles_mode_changes(
     start: str, target: str, ddpi_at_open: bool, weights_at_open: bool
 ) -> None:
-    """HAT-GOV-085, HAT-GOV-084: a change queued in the evening, while every gate passed, is
+    """A change queued in the evening, while every gate passed, is
     settled at the next open by the gates as they stand then: applied (the bot row takes the
     mode, one `mode.applied`) or refused with the gate's code (the bot keeps its mode, one
     `mode.apply_refused`, and the change never routes an entry). A second run at the same open
@@ -1407,7 +1407,7 @@ def test_open_settles_mode_changes(
         assert modes.requested_mode(session, bot, AT) == after
 
 
-# --- crash safety (PR 52, audit T-F4, T-F7) ---------------------------------------------------
+# --- crash safety ---------------------------------------------------
 
 
 def _left_stranded(session: Session, signal_id: uuid.UUID) -> bool:
@@ -1457,7 +1457,7 @@ def _left_stranded(session: Session, signal_id: uuid.UUID) -> bool:
 def test_crash_resumes_entry_once(
     path: str, replies: list[bool], k: int, error: str, again: int
 ) -> None:
-    """HAT-OPS-003, HAT-EXEC-023 (PR 52, audit T-F4, T-F7): an auto entry, or a Take, whose
+    """: an auto entry, or a Take, whose
     process dies (or whose placement raises) right after any commit or broker call is, after the
     restart's recovery and resume (run twice), placed or ended exactly once: at most two entry
     orders under distinct tags (a crash after the second rejection never sends a third), at most
@@ -1551,7 +1551,7 @@ SWEEP_ACTIONS = st.lists(
 @example(actions=[("place", 0, 10), ("take_crashed", 1, 20), ("sweep", 0, 400)], sweeps=2)
 @given(actions=SWEEP_ACTIONS, sweeps=st.integers(min_value=2, max_value=4))
 def test_sweep_idempotent(actions: list[tuple[str, int, int]], sweeps: int) -> None:
-    """HAT-EXEC-030, HAT-EXEC-032 (PR 52, audit T-F15, T-F7): for every interleaving of Takes,
+    """: for every interleaving of Takes,
     Skips, Takes whose placement crashed, re-driven placements and sweeps over two cards, running
     the approval sweep any number of times at one moment gives the state one sweep gives; no card
     yields more than one entry order and a re-driven placement never buys a card not taken; once
@@ -1641,7 +1641,7 @@ def test_sweep_idempotent(actions: list[tuple[str, int, int]], sweeps: int) -> N
     path=st.sampled_from(("auto", "take")),
 )
 def test_stranded_entry_ends_next_day(k: int, order: list[str], path: str) -> None:
-    """HAT-OPS-003, HAT-EXEC-030 (PR 52, audit T-F7): an auto entry or a Take whose process died
+    """: an auto entry or a Take whose process died
     after its k-th step and never came back that day is, on a later trade date, never placed:
     the sweep or the restart's resume (in any order, any number of times) ends it Rejected
     `signal_expired`, cancelling an entry order reserved and never sent, while one that may have
@@ -1694,7 +1694,7 @@ def test_stranded_entry_ends_next_day(k: int, order: list[str], path: str) -> No
 @example(bad=0)
 @given(bad=st.integers(min_value=0, max_value=1))
 def test_sweep_survives_a_bad_signal(bad: int) -> None:
-    """HAT-EXEC-030 (PR 52): when ending one stranded entry raises (a database error on that
+    """: when ending one stranded entry raises (a database error on that
     signal), the sweep goes on: every other earlier-day stranded entry ends Rejected
     `signal_expired`, the failing one is left as it was (no order), and the next sweep, once it
     no longer fails, ends it. Harm: one bad row stops the sweep every minute and every stranded

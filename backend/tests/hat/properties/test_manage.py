@@ -1,4 +1,4 @@
-"""PBT manage.* (HAT-EXEC-060..064, HAT-DEC-B17, HAT-RISK-070): broker stops and exits of
+"""PBT manage.*: broker stops and exits of
 real positions (`app.hat.execution.protect`, `fills`, `manage`) on SQLite, through the real Fyers
 adapter over `FakeBroker`. Nothing reaches a real broker."""
 
@@ -95,7 +95,7 @@ def _writes_since(rig: ManageRig, start: int) -> list[tuple[str, object]]:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-060, HAT-DEC-B17: a real fill rests on a broker stop for its open quantity
+# a real fill rests on a broker stop for its open quantity
 # ---------------------------------------------------------------------------------------
 
 
@@ -111,7 +111,7 @@ def _writes_since(rig: ManageRig, start: int) -> list[tuple[str, object]]:
 def test_real_fill_protected(
     chunks: list[int], times: list[datetime], refusals: int, resize_refused: bool
 ) -> None:
-    """HAT-EXEC-060, HAT-DEC-B17: each entry fill the sync reads is followed, before any other
+    """Each entry fill the sync reads is followed, before any other
     broker write, by the position's stop: placed for the open quantity when none rests (an
     intraday SL-M in the session before 15:25, a GTT from 15:25 on and after the close), resized
     to the open quantity when one does. Its trigger is on the tick and never above the stop. A
@@ -170,7 +170,7 @@ def test_real_fill_protected(
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-060, HAT-DEC-B17 (F2): the rest of a part-filled entry is cancelled once the
+# (F2): the rest of a part-filled entry is cancelled once the
 # position is sold, and any share of it that still fills is held and protected
 # ---------------------------------------------------------------------------------------
 
@@ -234,7 +234,7 @@ def _held_is_protected(rig: ManageRig, signal_id: object, entry: HatOrder) -> No
 def test_entry_remainder_tracked(
     first: int, steps: list[tuple[str, int]], cancel_lands: bool
 ) -> None:
-    """HAT-EXEC-060, HAT-DEC-B17 (F2): an entry fills in chunks while its stop fills and HAT
+    """(F2): an entry fills in chunks while its stop fills and HAT
     flattens. Once the position is sold, the unfilled rest of the entry is cancelled at the
     broker; a chunk that fills first (the cancel refused or too late) adds to the position, which
     stays open until the broker shows the entry ended, and gets a stop for it. After every sync
@@ -292,7 +292,7 @@ def test_entry_remainder_tracked(
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-064, HAT-RISK-070: the broker stop follows the stop up, never down
+# the broker stop follows the stop up, never down
 # ---------------------------------------------------------------------------------------
 
 
@@ -306,7 +306,7 @@ def test_entry_remainder_tracked(
     ),
 )
 def test_broker_stop_only_tightens(night: bool, moves: list[tuple[Decimal, bool]]) -> None:
-    """HAT-EXEC-064, HAT-RISK-070, HAT-SCH-081: when the position's stop rises, its working
+    """When the position's stop rises, its working
     broker stop (intraday or GTT) is modified up to it, rounded down to the tick, so it is never
     above the stop; it is never modified down; a modify the broker refuses leaves the stop where
     it was and is alerted. Harm: a loosened broker stop, or a broker stop above the price HAT
@@ -344,7 +344,7 @@ def test_broker_stop_only_tightens(night: bool, moves: list[tuple[Decimal, bool]
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-061: the 15:25 swap places the GTT before it cancels the intraday stop
+# the 15:25 swap places the GTT before it cancels the intraday stop
 # ---------------------------------------------------------------------------------------
 
 GTT_REPLIES = st.sampled_from(
@@ -365,7 +365,7 @@ def _gtt_reply(kind: str) -> object:
 @settings(max_examples=30, deadline=None)
 @given(first=GTT_REPLIES, second=GTT_REPLIES, cancel_refused=st.booleans())
 def test_swap_leaves_no_gap(first: str, second: str, cancel_refused: bool) -> None:
-    """HAT-EXEC-061: `gtt.swap` cancels the intraday stop only after the broker confirmed the
+    """`gtt.swap` cancels the intraday stop only after the broker confirmed the
     GTT that replaces it; a GTT the broker refuses (after the one retry) or does not confirm
     leaves the intraday stop working, raises `gtt.swap_failed` and fails the job so it is tried
     again; an intraday stop the broker does not cancel also fails the job. Harm: the day stop is
@@ -398,7 +398,7 @@ def test_swap_leaves_no_gap(first: str, second: str, cancel_refused: bool) -> No
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-063, HAT-OPS-024: the nightly verify covers every open real position
+# the nightly verify covers every open real position
 # ---------------------------------------------------------------------------------------
 
 
@@ -414,7 +414,7 @@ TICKS = st.sampled_from([D("0.01"), D("0.05"), D("0.10")])
 @example(reply="ok", raised=D("0.03"), ticks=(D("0.01"), D("0.05")))
 @example(reply="not_found", raised=D("0.03"), ticks=(D("0.01"), D("0.05")))
 def test_verify_covers(reply: str, raised: Decimal, ticks: tuple[Decimal, Decimal]) -> None:
-    """HAT-EXEC-063, HAT-OPS-024, HAT-EXEC-064: each night every open real position's GTT is
+    """Each night every open real position's GTT is
     refreshed to the current stop (`gtt.refreshed`), never below the trigger it rests at: when
     the instrument's tick changed since the GTT last moved, a coarser tick that floors the stop
     lower leaves the trigger where it is. A GTT whose refresh the broker refuses is cancelled,
@@ -481,7 +481,7 @@ def _event_count(session: Session, row: HatOrder, kind: str) -> int:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-070: real exits run the shared stack, and no kill switch blocks them
+# real exits run the shared stack, and no kill switch blocks them
 # ---------------------------------------------------------------------------------------
 
 KILLS = st.sampled_from(["none", "account", "bot", "pause"])
@@ -515,7 +515,7 @@ def _reconciled_as(rig: ManageRig, session: Session, state: str) -> None:
 @example(kill="none", reconciled="never", path=[D(139)])
 @example(kill="none", reconciled="yesterday", path=[D(95)])
 def test_real_exits_never_blocked(kill: str, reconciled: str, path: list[Decimal]) -> None:
-    """HAT-EXEC-070, HAT-DEC-B17, D118: a real position's live exits come from the same
+    """A real position's live exits come from the same
     exit stack as a shadow position's, and are sent as MARKET SELL CNC orders whatever kill
     switch or pause is on and whatever the reconciliation state (none today, only yesterday's, a
     failed run, a mismatch): the broker sees the same stop and sales as with today's success
@@ -570,14 +570,14 @@ def test_real_exits_never_blocked(kill: str, reconciled: str, path: list[Decimal
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-074: no sale reaches the broker from 15:30 on, however long the run takes
+# no sale reaches the broker from 15:30 on, however long the run takes
 # ---------------------------------------------------------------------------------------
 
 
 @settings(max_examples=25, deadline=None)
 @given(start=st.integers(min_value=0, max_value=9), took=st.integers(min_value=0, max_value=10))
 def test_no_sale_after_close(start: int, took: int) -> None:
-    """HAT-EXEC-074, HAT-DEC-B18: a sale is checked against the time it is sent at, not the
+    """A sale is checked against the time it is sent at, not the
     time its run started: a run that starts at 15:2x and reaches the sale `took` minutes later
     sends it only before 15:30, else raises `exit.not_placed` and leaves the broker stop
     resting. With no clock injected, the time sent is the run's start plus the monotonic time
@@ -614,7 +614,7 @@ ENDINGS["rejected"] = (5, lifecycle.REJECTED)
 @settings(max_examples=15, deadline=None)
 @given(ending=st.sampled_from(sorted(ENDINGS)), lost=st.booleans())
 def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
-    """HAT-EXEC-041: an entry the broker ends with nothing filled ends its signal:
+    """An entry the broker ends with nothing filled ends its signal:
     Cancelled when it was cancelled or expired at the close, Rejected when the exchange rejected
     it after the broker took it; one whose send answer was lost and that is first found already
     ended ends Rejected when it is adopted. No position opens and no stop is placed. Harm: a
@@ -640,7 +640,7 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-046 (PR 49): an entry nothing of which filled is cancelled on a failed break or
+#: an entry nothing of which filled is cancelled on a failed break or
 # after the timeout
 # ---------------------------------------------------------------------------------------
 
@@ -668,7 +668,7 @@ def test_unfilled_entry_cancelled(
     seen_first: bool,
     retried: bool,
 ) -> None:
-    """HAT-EXEC-046 (PR 49): a real entry nothing of which has filled is
+    """: a real entry nothing of which has filled is
     asked to be cancelled at the broker exactly once, at the first check where a final bar
     later than the trigger bar closed below the signal's level or the timeout has passed since
     the entry was placed; then the fill sync ends its signal Cancelled with no position. The
@@ -749,7 +749,7 @@ def test_unfilled_entry_cancelled(
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-062: a GTT that triggers and fills only in part
+# a GTT that triggers and fills only in part
 # ---------------------------------------------------------------------------------------
 
 
@@ -778,7 +778,7 @@ def _child_tag(gtt: HatOrder, shape: str | None) -> str | None:
 )
 @example(part=0.5, ended=True, child="bare", stray=True)
 def test_gtt_trigger_handled(part: float, ended: bool, child: str | None, stray: bool) -> None:
-    """HAT-EXEC-062, -066, HAT-DEC-B17: a GTT that triggered and filled only in part is not
+    """A GTT that triggered and filled only in part is not
     resized or doubled while its sale may still sell the rest (the only write is asking that sale
     to go at the market); once that sale ends short, `gtt.unfilled` is raised and the shares left
     get a new stop for exactly their quantity. The sale is the GTT's whether it carries the GTT's
@@ -867,7 +867,7 @@ def test_gtt_resting_marketed(
     foreign: bool,
     child: str | None,
 ) -> None:
-    """HAT-EXEC-066, HAT-EXEC-062: a GTT that triggered while the price was below its limit
+    """A GTT that triggered while the price was below its limit
     leaves its limit sale working at the broker. The fill sync records `gtt.triggered` and raises
     `gtt.unfilled` (code `gtt_triggered_resting`) once, and asks the broker to make that order a
     market sale (exactly `{order_type: MARKET}` on the order's id) at every sync until the book
@@ -980,7 +980,7 @@ def test_gtt_resting_marketed(
 @example(extra=3, parts=1, syncs=2)
 @example(extra=3, parts=3, syncs=1)
 def test_a_second_order_under_one_tag_is_tracked(extra: int, parts: int, syncs: int) -> None:
-    """HAT-BRK-103, HAT-DEC-B17: when the broker holds a second order under an entry's tag (Fyers
+    """When the broker holds a second order under an entry's tag (Fyers
     does not enforce tag uniqueness) and it fills, every share is recorded on the position, its
     stop covers them all, and `fill.excess` is raised once, however many partial fills make up
     the excess and however many syncs follow, only once the stop covers every share. Harm:
@@ -1032,7 +1032,7 @@ def test_a_second_order_under_one_tag_is_tracked(extra: int, parts: int, syncs: 
 @given(status=st.sampled_from([1, 5, 7]), before=st.booleans(), syncs=st.integers(1, 3))
 @example(status=5, before=False, syncs=1)
 def test_a_dead_second_order_never_ends_the_entry(status: int, before: bool, syncs: int) -> None:
-    """HAT-BRK-103: a second order under a filled entry's tag that the broker cancels, rejects or
+    """A second order under a filled entry's tag that the broker cancels, rejects or
     expires with nothing filled, listed before or after the entry's own order, leaves the entry
     row on its own broker order id and status, its signal as it was and the position open under
     its stops. Harm: the duplicate's status is read as the entry's, and an open position's
@@ -1059,7 +1059,7 @@ def test_a_dead_second_order_never_ends_the_entry(status: int, before: bool, syn
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-065: a lost broker answer never freezes a position
+# a lost broker answer never freezes a position
 # ---------------------------------------------------------------------------------------
 
 LOST_GTT = st.sampled_from(["unconfirmed", "unconfirmed_landed", "raises"])
@@ -1108,7 +1108,7 @@ def _sold(rig: ManageRig, start: int) -> list[dict[str, Any]]:
 @example(path="late_fill", gtt="unconfirmed", sale="unconfirmed", young=False)
 @example(path="swap", gtt="unconfirmed_landed", sale="unconfirmed_landed", young=False)
 def test_lost_answers_never_freeze(path: str, gtt: str, sale: str, young: bool) -> None:
-    """HAT-EXEC-065, HAT-DEC-B17: a GTT whose placement answer was lost (timed out, raised,
+    """A GTT whose placement answer was lost (timed out, raised,
     id-less), placed for a fill after 15:25 or by the 15:25 swap, is settled against the
     broker's GTT book by the next sync or swap: adopted when it landed, else ended and placed
     again, so the position rests on a stop the broker confirmed. Until it is settled (sent too
@@ -1158,7 +1158,7 @@ def test_lost_answers_never_freeze(path: str, gtt: str, sale: str, young: bool) 
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-075, HAT-OPS-032: a sale the broker took and then rejected is retried once, alerted
+# a sale the broker took and then rejected is retried once, alerted
 # ---------------------------------------------------------------------------------------
 
 SALE_ENDINGS = {"rejected": 5, "cancelled": 1, "expired": 7}
@@ -1173,14 +1173,14 @@ SALE_ENDINGS = {"rejected": 5, "cancelled": 1, "expired": 7}
 @example(ending="rejected", part=0, again=True)
 @example(ending="cancelled", part=1, again=False)
 def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> None:
-    """HAT-EXEC-075, HAT-OPS-032: a sale the broker accepted and then ended short (rejected by
+    """A sale the broker accepted and then ended short (rejected by
     the exchange or RMS, cancelled, expired) records `order.rejected` (relayed as the health
     alert), fires its rule again and is sent once more under the next tag for what is still
     open: the full exit stays a full exit, never lost to a later partial. A second such ending
     raises `exit.not_placed` and nothing more is sent that session; the position is protected
     again each time. Harm: a sale the broker drops leaves the position unsold with its rule
-    spent, silently. After every step the signal's stored state is the fold of its events
-    (HAT-EXEC-042, PR 36): the retry's `order.placed` while the trade is already ExitPending is
+    spent, silently. After every step the signal's stored state is the fold of its events: the
+    retry's `order.placed` while the trade is already ExitPending is
     kept as a non-step. Harm: the log and the trade table disagree once a sale is retried.
     (Orders are stamped on the rig's trade day, so the session's rejections are counted on
     it.)"""
@@ -1253,7 +1253,7 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
 )
 @example(parts=[0], ends=False)
 def test_a_resting_sale_is_never_stopped_over(parts: list[int], ends: bool) -> None:
-    """HAT-EXEC-060, HAT-EXEC-065: while a full sale the broker accepted still works (resting,
+    """While a full sale the broker accepted still works (resting,
     or part filled), no sync places or grows a stop over the shares it sells: `make_room`
     cancelled the stops for it, and a new stop would hold the shares and the sale be refused.
     Once the sale ends short, the next sync protects what is left. Harm: a stop rests under
@@ -1307,7 +1307,7 @@ def _sale_rows(rig: ManageRig, position: HatPosition) -> list[HatOrder]:
     path=st.sampled_from(["late_fill", "swap"]),
 )
 def test_a_settled_answer_never_sells_twice(case: str, path: str) -> None:
-    """HAT-EXEC-065: settling a lost answer never leaves a second seller behind. A GTT whose
+    """Settling a lost answer never leaves a second seller behind. A GTT whose
     answer was lost and that landed, still unsettled when a sale closes the position, is
     cancelled at the broker by the first sync after the settle wait (`closed_sweep`). A lost
     sale that the broker filled is left to the fill sync, which records its fills, and no
@@ -1380,7 +1380,7 @@ def test_a_settled_answer_never_sells_twice(case: str, path: str) -> None:
 @example(order="sale", landed=False, young=True)
 @example(order="entry", landed=False, young=True)
 def test_the_close_ends_only_settled_answers(order: str, landed: bool, young: bool) -> None:
-    """HAT-EXEC-065, HAT-EXEC-074: after the close, an entry or a sale whose answer was lost
+    """After the close, an entry or a sale whose answer was lost
     and that the broker's book does not hold ends (an entry's signal Rejected, a sale
     `expired`); one the book holds is left for the sync to adopt, and one sent less than the
     settle wait ago is left for the next run, since it may still be on its way. Harm: an order
@@ -1413,7 +1413,7 @@ def test_the_close_ends_only_settled_answers(order: str, landed: bool, young: bo
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-144: /flatten of a position spanning an unhandled action sells what the broker holds
+# /flatten of a position spanning an unhandled action sells what the broker holds
 # ---------------------------------------------------------------------------------------
 
 
@@ -1430,7 +1430,7 @@ def test_the_close_ends_only_settled_answers(order: str, landed: bool, young: bo
 def test_flatten_capped_at_holdings(
     action: tuple[str, str] | None, held: int | None, days: int, twin: bool
 ) -> None:
-    """HAT-EXEC-144: a position spanning an action the rescale cannot handle (a consolidation
+    """A position spanning an action the rescale cannot handle (a consolidation
     leaves fewer shares than HAT holds) is flattened for at most the shares the broker holds of
     the symbol; a readable book of none sells nothing, an unreadable one sells the open
     quantity (a flatten is never blocked). Two positions of the symbol (`twin`) share the held
@@ -1496,7 +1496,7 @@ def test_flatten_capped_at_holdings(
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-145, -146, -063 (PR 47): GTTs around an ex-date, a series change, an old GTT
+#: GTTs around an ex-date, a series change, an old GTT
 # ---------------------------------------------------------------------------------------
 
 # How the GTT book shows a GTT the broker cancelled: ASSUMED until the O2(b) live check.
@@ -1541,7 +1541,7 @@ def _read_book(rig: ManageRig, start: int) -> bool:
 @example(ex=0, kind=TYPE_SPLIT, shape="cancelled", refused=False)
 @example(ex=2, kind=TYPE_DIVIDEND, shape="cancelled", refused=False)
 def test_ex_date_gtt_replaced(ex: int | None, kind: str, shape: str, refused: bool) -> None:
-    """HAT-EXEC-145 (PR 47, research G01): at 08:40 every open real position with a stored action
+    """: at 08:40 every open real position with a stored action
     (a dividend's too) of ex-date today or the next session has its GTT checked against the
     broker's GTT book. One the book no longer holds (cancelled, or gone) is ended `cancelled`,
     alerted `gtt.missing` and placed again at the current stop; a GTT the broker refuses before
@@ -1622,7 +1622,7 @@ def test_ex_date_gtt_replaced(ex: int | None, kind: str, shape: str, refused: bo
 )
 @example(shape="cancelled", other="protect")
 def test_ex_date_check_serialised(shape: str, other: str) -> None:
-    """HAT-EXEC-145 (PR 47, CodeAnt): the 08:40 check runs on the job's thread while the fill
+    """: the 08:40 check runs on the job's thread while the fill
     sync runs on its own over the same desk. When the other path reaches the position between
     the check ending the broker-cancelled GTT and placing its new one, it waits on the
     position's stop lock and then finds the new GTT: exactly one GTT is placed. Harm: two GTT
@@ -1703,7 +1703,7 @@ class _Book:
 def test_series_change_remapped(
     successor: str, shape: str, renamed: bool, cancel_ok: bool, morning: bool
 ) -> None:
-    """HAT-EXEC-146 (PR 47, research G17): when the instrument of an open real position leaves
+    """: when the instrument of an open real position leaves
     the listing and the same ISIN trades on under another series (EQ to BE), the position is
     manage-only (no exit view), alerted URGENT `position.series_changed` naming the new series
     and its Fyers symbol (or `unmapped`) by the morning check and every nightly verify, and its
@@ -1848,7 +1848,7 @@ def _check_series_morning(
 @example(age=299, cancel_ok=True, raised=D(0))
 @example(age=365, cancel_ok=False, raised=D("0.50"))
 def test_verify_renews_old_gtt(age: int, cancel_ok: bool, raised: Decimal) -> None:
-    """HAT-EXEC-063 (PR 47, research G24): the nightly verify cancels a GTT placed 300 days ago
+    """: the nightly verify cancels a GTT placed 300 days ago
     or more and places it again at the current stop (cancel first: the market is shut, and two
     GTTs must never rest together), with no `gtt.missing` alarm; a younger GTT, or one whose
     cancel the broker refuses, is refreshed in place as before and tried again the next night.

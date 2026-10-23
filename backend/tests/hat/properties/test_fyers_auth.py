@@ -1,4 +1,4 @@
-"""PBT fyers_auth.* (HAT-OPS-051, K2): the login flow trades an auth code for a token through one
+"""PBT fyers_auth.*: the login flow trades an auth code for a token through one
 store, fails closed on anything Fyers or the disk gets wrong, never logs or raises the token, the
 secret or the code, lets a logout win over a login in flight, and keeps its status cache honest.
 Runs on a temporary token file and a recording SDK session."""
@@ -447,7 +447,7 @@ def test_accounts_read_in_order(
     token: str,
     code: str,
 ) -> None:
-    """PBT fyers_auth.accounts_read_in_order (HAT-DEC-BD5; PR 73, PR 38 follow-ups 1 and 2): every
+    """PBT fyers_auth.accounts_read_in_order: every
     exchange checks the token's Fyers user against the active Fyers broker accounts, which the
     service reads itself, once, after Fyers has answered and the profile was read and just before
     the save: an account onboarded while Fyers answers counts, a rejected code reads no account,
@@ -523,7 +523,7 @@ def test_accounts_read_in_order(
 def test_complete_login_checks_the_account(
     refs: frozenset[str], user: str | None, down: bool, token: str, code: str
 ) -> None:
-    """PBT fyers_auth.complete_login_checks_the_account (HAT-DEC-BD5; PR 73, PR 38 follow-up 1):
+    """PBT fyers_auth.complete_login_checks_the_account:
     the adapter's `complete_login` goes through the same check as the HTTP route. It saves the
     token exactly when no Fyers account is active or the user is one; another user is
     `wrong_account`, a user Fyers did not name is `account_unconfirmed`, unreadable accounts are

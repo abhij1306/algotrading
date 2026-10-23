@@ -1,4 +1,4 @@
-"""Fakes for the PR 14 verification suites: an RSS renderer, a priced cm-market listing server
+"""Fakes for the verification suites: an RSS renderer, a priced cm-market listing server
 and a database holding instruments and announcements. No network anywhere."""
 
 from __future__ import annotations

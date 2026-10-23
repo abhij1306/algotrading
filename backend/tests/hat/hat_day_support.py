@@ -1,4 +1,4 @@
-"""The simulated trading day of PR 17 (`DB ops.simulated_day`): a market built from the committed
+"""The simulated trading day of a market built from the committed
 golden-replay fixture, and fakes for everything outside HAT's code that `HatRuntime` reaches
 through `RuntimeParts`. Nothing here opens a connection: the feed is driven by the check, the NSE
 MCP and the bhavcopy archive answer from the fixture, Telegram is `FakeTransport` and the broker
@@ -221,7 +221,7 @@ def load_market() -> Market:
 
 def seed_store(store: DataStore, market: Market, through: date = DAY_BEFORE) -> None:
     """The history the nightly jobs build on: bars, index levels and features through
-    `through`, as the PR 4 build leaves them."""
+    `through`, as the build leaves them."""
     for day in market.days:
         if day > through:
             break

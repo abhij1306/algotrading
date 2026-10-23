@@ -5,17 +5,17 @@ description: How to run, read and update the checks behind Hire a Trader's runti
 
 # verify-events
 
-Checks that the database refuses what the runtime tables must never hold (a second signal per day, a duplicate order tag or fill, a lowered stop, an edited or deleted event), that `events.record` writes in the caller's transaction and only the catalogued types, that monthly event partitions always exist ahead of time, and that the purge touches only the chat logs. Requirement IDs (index: `docs/invariants.md`): (HAT-SCH-051..058, 061..068, 073, 081, 091), (I15), (HAT-RISK-070), (HAT-TG-050), (job `events.partitions`).
+Checks that the database refuses what the runtime tables must never hold (a second signal per day, a duplicate order tag or fill, a lowered stop, an edited or deleted event), that `events.record` writes in the caller's transaction and only the catalogued types, that monthly event partitions always exist ahead of time, and that the purge touches only the chat logs. Requirement IDs (index: `docs/invariants.md`): (..068, 073, 081, 091), (I15),,, (job `events.partitions`).
 
 ## Properties
 
 - `DB runtime.*` Postgres rejects a second `hat_signal` for one (bot, playbook, instrument, trade_date) (also when two transactions race), a signal with a null or dangling strategy or risk-policy version, an order purpose, side, status, approval decision, signal mode or quantity outside its domain, a second order with the same tag, a second fill for one (order, broker trade), and a second trade result for one position. Harm: a duplicated trigger opens two positions, an order of unknown purpose escapes the exit-only paths, a re-polled fill doubles a position.
 - `DB ops.snapshot_unique` Postgres rejects a second `hat_daily_bot_snapshot` for one bot and day and an exposure level outside L1 to L3. Harm: the drawdown kill switch reads an ambiguous equity.
-- `DB governance.signal_confidence_immutable` Postgres refuses an UPDATE that changes `hat_signal.confidence` or `confidence_basis` (alone or with the state) and a label other than high, medium, low; other columns move freely and an update writing the same values passes (D132, HAT-EXEC-015). Harm: a signal's label is raised after the fact and auto or the owner acts on evidence it never had.
+- `DB governance.signal_confidence_immutable` Postgres refuses an UPDATE that changes `hat_signal.confidence` or `confidence_basis` (alone or with the state) and a label other than high, medium, low; other columns move freely and an update writing the same values passes (D132). Harm: a signal's label is raised after the fact and auto or the owner acts on evidence it never had.
 - `DB governance.stop_only_rises` For every pair (old, new) of stops, an UPDATE of `hat_position.current_stop` raises when new is below old and succeeds when it is equal or higher, with the row unchanged after a refusal. Harm: a bug widens a stop and a planned small loss becomes a large one (invariant 1).
 - `DB events.append_only` Every UPDATE (any column) and every DELETE on `hat_event`, one row or all rows, in any partition, raises `hat_event is append-only` and leaves the log unchanged. Harm: the audit trail can be rewritten.
 - `DB events.partitioned` `hat_event` is a RANGE (recorded_at) partitioned table with the specified columns, an identity id that strictly increases, primary key (id, recorded_at), and the actor CHECK. Harm: one unbounded table, or a log that cannot hold what replay needs.
-- `DB events.partitions_job` The `events.partitions` job (registered every day at 00:30 by PR 17): an event two months past a day with no partitions is refused before the job runs for that day and lands in its month's partition after; a run that leaves less than one month of partitions ahead alerts `events.partitions_short` and fails with that code. Harm: the partitions run out unseen and, on the first day of an uncovered month, every trade write fails.
+- `DB events.partitions_job` The `events.partitions` job (registered every day at 00:30 by): an event two months past a day with no partitions is refused before the job runs for that day and lands in its month's partition after; a run that leaves less than one month of partitions ahead alerts `events.partitions_short` and fails with that code. Harm: the partitions run out unseen and, on the first day of an uncovered month, every trade write fails.
 - `DB events.partitions_ahead` After the ensure step runs at any date d, partitions cover d's month and the two after it, and an event at any instant (including the first and last microsecond of a month) lands in the partition of its UTC month. Harm: on the first day of an uncovered month every event insert fails, and with it every state change.
 - `PBT events.atomic_with_state` For every sequence of stop moves failing at any point before commit (before the state write, between the two writes, after both, by a refused event type, or rolled back by the caller), the state change and its event are both stored or both absent. Harm: the log says a stop moved when it did not.
 - `PBT events.unknown_type_rejected` For every string outside the catalogue (random text and near misses such as case changes and suffixes), `record()` raises and writes nothing; every catalogue type records. Harm: a typo creates an event no replay or discipline metric reads.
@@ -25,7 +25,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `PBT runtime.virtual_consistency` For every set of trades written through `position_is_virtual` and `child_is_virtual`, a fill has its order's `is_virtual`, an order its position's, and a position is virtual exactly when its signal's mode was shadow or it was skipped in confirm mode; an unknown mode raises. Harm: virtual trades count as real P&L or real positions lose their broker stops.
 - `PBT retention.purge_scope` For every set of rows and run date, a Telegram message or command-log row is gone exactly when it is older than one year (IST date), rows of every other table and files under the data root are untouched, and a second run deletes nothing. Harm: trade history is deleted or chat logs outlive their year.
 - `PBT telegram.retention_purge` Through the real `run_job`, the `retention.purge` job leaves exactly the last year of both chat tables, records one success, and a repeat is a no-op. Harm: as above, with a job that runs twice.
-- `PBT events.user_actor_chat_id` `record()` refuses an event with `actor = 'user'` whose payload has no integer `chat_id` (a bool is not one), takes one that has it, and takes any other actor without it; `actor` is typed as the four actors. Harm: a user action in the log cannot be traced to the chat that sent it (HAT-SCH-065).
+- `PBT events.user_actor_chat_id` `record()` refuses an event with `actor = 'user'` whose payload has no integer `chat_id` (a bool is not one), takes one that has it, and takes any other actor without it; `actor` is typed as the four actors. Harm: a user action in the log cannot be traced to the chat that sent it.
 - `PBT ingest.event_and_state_atomic` An ingest outcome row and its `ingest.*` / `quality.failed` event are both stored or both absent for every failure point before commit. Harm: the night's ingest status and the audit log disagree.
 - `PBT events.correlation_links_the_signal` `record()` refuses an Orders or Positions event whose correlation id is not the signal id of the `hat_order` or `hat_position` row it is about, or that names no such row, and writes nothing; an event that names its own signal is stored. Harm: an order's events are filed under another trade and its history cannot be replayed.
 
@@ -82,33 +82,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `5ad80d6e74be46521655b2dd33c3c207cce8c2351f576141fa03a886dfacc8c2`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- PR 71 (D132, HAT-EXEC-015): `hat_signal` gains `confidence` (CHECK `hat_signal_confidence_check`, added by `PG_DDL` to an older table) and `confidence_basis`, and the trigger `hat_signal_confidence_guard` refuses changing either; an older database gets both columns nullable (a signal stored before PR 71 has no label and reads low). New DB `governance.signal_confidence_immutable` with four broken variants (trigger dropped, firing on the label only, the function checking the label only, the CHECK dropped); `migration.ensure_idempotent` drops and restores them and the columns. `signal.triggered` carries `confidence`. Nothing was narrowed.
-- PR 73: the catalogue gains `corporate_action.resolved` (Positions), `sleeve.version_assigned` (Portfolio) and `broker.ddpi_revoked` (Sessions): 48 types. Nothing was narrowed.
-- PR 32 changed `test_telegram.py` (the HAT-TG-011 offset property, checked by `verify-telegram`); `telegram.retention_purge`, the check covered here, is unchanged and passes.
-- `watchlist.published` carries no correlation id: it belongs to a bot and a day, not to one signal, although the event catalogue groups it with signals. `record()` and `events.correlation` exempt it. Recorded as a finding in the PR.
-- `record()` requires `payload.chat_id` for `actor = user` but does not decide which event types are user-initiated: that is the Telegram layer's call (PR 16, HAT-SCH-065).
-- `PBT events.ids_increasing` runs on SQLite only (the properties job has no Postgres); the Postgres identity is checked by `DB events.partitioned`.
-- The order status set is the owner-pending default of HAT-SCH-058; the check mirrors it and changes with the owner's answer.
-- `TLA OrderReconciliation!AtMostOneEntryPerSignal` and `TLA StopPlacement!StopOnlyTightens` (named on HAT-SCH-051 and HAT-SCH-081) are not built here: the models are assigned to the router and stop-placement code, which their actions map to. They are in `KNOWN_GAPS` in `test_conf_verification.py`; the database checks `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises at the database.
-- `hat_telegram_message` and `hat_command_log` have no foreign key, so they are exempt from the `user_id` chain check (`CHAIN_EXEMPT` in `test_conf_schema.py`), like `hat_kill_switch`: a finding on HAT-SCH-012.
-- Sleeve lifecycle, regime and allocation events are not in the catalogue, so they are not recorded; PR 9 adds them with a spec change.
-
-- PR 7 added an optional `on_finish` hook to `run_job` (`ops/jobs.py`), called inside the final-status transaction; the events and the job-run recording it touches are unchanged, and the ingest outcome events (`ingest.completed`, `ingest.failed`, `quality.failed`) are written through the existing `events.record`.
-- PR 15b: `record()` checks that an order or position event's correlation id is its row's signal id (`_check_linked_signal`, HAT-SCH-064). `test_events.py`'s other properties now seed the order or position row their events name; none of them was narrowed.
-- PR 16 added `events.user_actor_chat_id` and typed `record(actor=...)` as `Actor` (engine, user, broker, scheduler); the catalogue and the other properties are unchanged.
-- PR 27 added `gtt.triggered` to the Orders group (HAT-EXEC-066: a GTT triggered with its sale resting below the limit; the payload names the broker order it became). The catalogue now holds 40 types; the text above no longer gives a count. The properties are unchanged.
-- PR 29 added `broker.capabilities_changed` to the Sessions group (HAT-BRK-092: a live session check rewrote the account's capabilities from the adapter; the payload has `gtt_delivery` and `was_gtt_delivery`). The catalogue holds 41 types. The properties are unchanged.
-- PR 31 added `corporate_action.unhandled` to the Positions group (HAT-EXEC-144: a position spans an action the rescale cannot handle; the payload has `action`, `factor`, `symbol` and `virtual`). The catalogue holds 42 types. The properties are unchanged.
+Covered digest: `edfd7e46117194e69b76140a95ef0575dc875524b86d09f1db628acaea0ebb63`
 
 ## Scratch breaks
 
-Each check was shown to catch a deliberate break in the real code (HAT-VER-072), then the break was removed and the check returned to passing.
+Each check was shown to catch a deliberate break in the real code, then the break was removed and the check returned to passing.
 
 ### DB runtime.*
 
@@ -132,7 +110,7 @@ E   AssertionError: the database refused: another day
 
 ### DB governance.signal_confidence_immutable
 
-Break: (PR 71) in `backend/app/hat/schema.py`: the trigger function compares only the label, so the basis can be rewritten.
+Break: in `backend/app/hat/schema.py`: the trigger function compares only the label, so the basis can be rewritten.
 
 ```
 tests/hat/db/test_db_runtime.py F

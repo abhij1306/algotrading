@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's crite
 
 # verify-criteria
 
-Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Requirement IDs (index: `docs/invariants.md`): (HAT-CRIT-010..040, 100..123; HAT-BOT-050, 052, 060, 061, 070..072, 080..084), (HAT-EXEC-120..122), (HAT-DEC-B2..B7, B22, T10), (HAT-OVR-002, 003), (HAT-SCH-016, 032).
+Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Requirement IDs (index: `docs/invariants.md`): (..123; ..072, 080..084),, (..B7, B22, T10),,.
 
 ## Properties
 
@@ -25,7 +25,7 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT criteria.prior_move_contract` `prior_move` passes exactly when some low-then-high pair inside the trailing window rose at least `min_pct`, never using a high that came before its low. Harm: stocks with no prior run-up pass the EP setup.
 - `PBT criteria.earnings_growth_contract` `earnings_growth` reads only rows filed on or before the date (point in time), and is no data without any. Harm: tomorrow's earnings leak into today's decision.
 - `PBT criteria.neglect_contract` `neglect` measures the 63-session return on bars up to the previous session only, and passes when its absolute value is at most the maximum (a rise fails `already_extended`, a fall `already_fell`); with `max_range_126d_pct` the 126-session high/low range of those bars must be at most it (`range_too_wide`). Harm: a stock that already ran, or one that collapsed or swung wildly, passes as neglected, or the evaluation day's own move changes the answer.
-- `PBT criteria.vcp_contract` `vcp` passes exactly when the contraction count, depth ratios, final depth, volume dry-up (against the 50 sessions before the base starts, PR 57) and every enabled structural rule meet the parameters, never reads a bar after the date, reports the pivot, final contraction low and the exact dry-up ratio, and fails closed on missing data. Harm: a loose or noisy base is called a volatility contraction pattern and its stop sits in the wrong place.
+- `PBT criteria.vcp_contract` `vcp` passes exactly when the contraction count, depth ratios, final depth, volume dry-up (against the 50 sessions before the base starts) and every enabled structural rule meet the parameters, never reads a bar after the date, reports the pivot, final contraction low and the exact dry-up ratio, and fails closed on missing data. Harm: a loose or noisy base is called a volatility contraction pattern and its stop sits in the wrong place.
 - `PBT criteria.vcp_structure_narrows` The structural rules (`max_high_spread_pct`, `min_first_depth_pct`, `min_contraction_bars`) are off when null and only narrow: a base passing with them passes identically without them, and one rejected only by them fails on one of their reasons. Harm: a sweep rule admits a base the default rejects, or the default config changes.
 - `PBT criteria.vcp_base_high` With `pivot_source: base_high` the pattern scores but does not gate: every base (at least 15 sessions, with 50 before it) passes, with the default's score when it passes and 0 (and `pattern` naming the rule) when not; the pivot is the base's highest high and the low strictly below it, and a flat base fails `flat_base`. Harm: a template-only variant has no breakout level, or the wrong one, or a stop at the entry price.
 - `PBT criteria.vcp_parity` The ported `vcp` finds the same contraction chain as a transcription of the legacy detector on generated bars, and matches a frozen oracle of the legacy output on accepted cases. Harm: the port quietly changes which patterns the bot trades.
@@ -46,13 +46,8 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT config.no_risk_keys` A config naming a risk or sizing key at any depth is refused with `risk_key`. Harm: a strategy edit could raise risk without the cooling-off gate.
 - `PBT config.yaml_round_trip` Export then import gives the same config and hash, the text is stable under a second export, and both seeds round-trip. Harm: an exported strategy cannot be re-imported unchanged.
 - `PBT config.save_creates_version` Each save adds one draft with the next number (no gaps) whose config and hash are the validated ones, publishing freezes a draft, and a save inside the market session writes nothing. Harm: history has holes or a live strategy changes mid-session.
-- `PBT config.new_bot_mode_confirm` A bot created through the service asks for confirm whatever its config names; any other requested mode is refused. It still runs shadow while its sleeve is in research and its gates are closed (PR 45, HAT-BOT-061, HAT-DEC-B2). Harm: a new bot places real orders before it has a shadow record, or the owner must remember to switch every bot out of shadow.
-- `CONF criterion_instance_schema` An instance has exactly the seven documented fields. Harm: a field the spec never approved changes what a criterion means.
+- `PBT config.new_bot_mode_confirm` A bot created through the service asks for confirm whatever its config names; any other requested mode is refused. It still runs shadow while its sleeve is in research and its gates are closed. Harm: a new bot places real orders before it has a shadow record, or the owner must remember to switch every bot out of shadow.
 - `CONF criterion_type_registry` The stored `param_schema` of every type equals the schema generated from its parameter model, and the registry holds exactly the catalogue. Harm: app and catalogue validation disagree.
-- `CONF criterion_catalogue_complete` The registered types and their stages are 25 types, each in a known stage. Harm: a config refers to a type with no schema, or a type exists nobody specified.
-- `CONF bot_seed_default_mode` Both seeds declare `execution_mode: shadow`. Harm: a bot could start live.
-- `CONF seed_bots_confirm` Every seeded bot row asks for confirm and starts in research, one per seeded strategy (PR 45). Harm: a seeded bot trades real money before shadow evidence exists, or never leaves shadow.
-- `CONF risk_policy_seed_bot_limits` The seed risk policy holds p_max 0.20 for S1, 0.25 for S2 and 6 open positions. Harm: the bots size against limits that differ from the approved design.
 - `CONF import_graph_boundaries` The `app.hat.engine.criteria` package exists in the import graph (the rule is not vacuous) and reaches no broker, execution, database, ORM, router, Telegram or web module, directly or transitively. Harm: a criterion starts to depend on I/O and stops being a pure function of its data.
 - `CONF mvp_seed_scope` The seeds create exactly S1 and S2 on NSE, and every strategy and bot row they create is owned by the one user (the broker half of this check is in verify-execution). Harm: a stray strategy or a row owned by nobody ships with the MVP.
 - `PBT scan.watchlist_gates` A watchlist row exists exactly for the members that traded on the scan date (a member whose last bar is older is not evaluated) and pass the universe stage, the regime gate and the setup, in that order, with those three stages recorded as passed; a closed gate gives no rows; rows are best score first; bars after the scan date change nothing; a playbook scanned live only (episodic pivot) never produces a nightly row. Harm: a symbol shown that failed a stage proposes a trade the strategy would never take.
@@ -61,14 +56,14 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT scan.no_universe_publishes_nothing` A bot with no universe publishes and records nothing, so the same day's run after a universe is assigned still publishes. Harm: an empty "published" watchlist blocks that day's real one.
 - `PBT criteria.gap_up_contract` `gap_up` passes exactly when (open / previous close - 1) x 100 is at least `min_pct` (a 10.00% gap passes), and a missing or non-positive open or close fails closed. Harm: a 9.99% gap starts an EP trade the rule excludes, or a real 10% gap is missed.
 - `PBT criteria.volume_pace_contract` `volume_pace` passes exactly when the day's volume projected to the full session (V / elapsed share, a `Fraction`) is at least `vs_avg50` x the 50-day average volume; before the first bar is final, or with no volume or average, it fails closed. Harm: a thin early burst fires a breakout the volume rule rejects.
-- `PBT config.release_gate` On SQLite with the real `save_draft`, `publish_version`, `start_shadow`, `promote_version` and `assign_version` (PR 35): a version goes live only from shadow, outside market hours, after at least 20 trading sessions of shadow on the calendar; promotion retires the strategy's previous live version, moves the sleeves that ran it onto the new one and writes one `strategy.promoted` with the chat id; a refusal changes no version, sleeve or event; a Live or Probation sleeve is never pointed at a version that is not live; every assignment, and the promotion's move of a sleeve, records `sleeve.version_assigned` as the owner's, and naming the version a sleeve already runs records nothing (PR 73). Harm: an untested edit trades real money, or two live versions of one strategy split the sleeves.
+- `PBT config.release_gate` On SQLite with the real `save_draft`, `publish_version`, `start_shadow`, `promote_version` and `assign_version`: a version goes live only from shadow, outside market hours, after at least 20 trading sessions of shadow on the calendar; promotion retires the strategy's previous live version, moves the sleeves that ran it onto the new one and writes one `strategy.promoted` with the chat id; a refusal changes no version, sleeve or event; a Live or Probation sleeve is never pointed at a version that is not live; every assignment, and the promotion's move of a sleeve, records `sleeve.version_assigned` as the owner's, and naming the version a sleeve already runs records nothing. Harm: an untested edit trades real money, or two live versions of one strategy split the sleeves.
 - `PBT criteria.early_volume_contract` `early_volume` passes exactly when the cumulative day volume at the trigger is at least `vs_adv20` x ADV(20); missing inputs fail closed. Harm: an EP gap on thin volume is bought.
 - `PBT criteria.catalyst_attached_contract` `catalyst_attached` passes exactly when a matched announcement was published in [at - within_hours, at], both ends included and nothing after `at`; `required_in` never changes the result. Harm: a stale or future-dated announcement is taken as the catalyst of a confirm-mode EP trade.
-- `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level and (with `confirm: close`, the default, or drawn explicitly; PR 49) whose close is at or above it, at that bar's final instant, with the level as the trigger price, the bar's close as the live price and the entry LIMIT at the larger of the level and that close rounded up to the tick, never below the level; the opening range level does not exist before its bar is final. `@example`s: a spike that closed back under the pivot then a bar that held, and the same spike under `confirm: high`. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20; or a failed break is bought below its level as it falls (plan audit N1).
+- `PBT criteria.price_breaks_level_contract` Through the real bar builder and trigger monitor, a `price_breaks_level` playbook fires once, on the first final bar in [09:20, 15:20] whose high is strictly above the level and (with `confirm: close`, the default, or drawn explicitly;) whose close is at or above it, at that bar's final instant, with the level as the trigger price, the bar's close as the live price and the entry LIMIT at the larger of the level and that close rounded up to the tick, never below the level; the opening range level does not exist before its bar is final. `@example`s: a spike that closed back under the pivot then a bar that held, and the same spike under `confirm: high`. Harm: a breakout is bought on a touch, before the opening range exists, or after 15:20; or a failed break is bought below its level as it falls (plan audit N1).
 - `PBT criteria.adtr_filter_contract` `adtr_filter` passes exactly when entry - stop is at most `max_multiple` x ADTR(20); a stop at or above the entry, or a missing input, fails closed. Harm: an entry whose stop is wider than the stock's daily range is stopped out by noise.
 - `PBT criteria.max_chase_contract` `max_chase` passes exactly when price <= level x (1 + pct/100) and the stock is not locked at its upper circuit (unknown circuit state fails closed), and (`test_max_chase_always_applied`) the filters evaluated at a trigger always hold exactly one `max_chase`: an enabled one in place, a disabled or deleted one last with the last configured percentage, else the strategy default (S1 5, S2 2, else 2), even when a configured filter holds the highest allowed order (10000). Harm: deleting max_chase lets a bot buy any distance above the breakout, or into a locked circuit it cannot exit.
 - `PBT criteria.trigger_conjunction` A playbook triggers exactly when it has at least one blocking enabled trigger criterion and every blocking one passes on the same bar; disabled criteria are not evaluated, `catalyst_attached` blocks only in a mode in its `required_in`, and a daily-bar trigger (`neglect`) counts with the result the candidate was built with and fails closed without one. Harm: one passing criterion fires an entry the others reject, or an all-disabled playbook buys every bar.
-- `PBT criteria.entry_filters_skip` On SQLite with the real `open_entry`: the stop is planned first, then the entry filters in order with max_chase always present; the first failure is stored as a Rejected signal with that reason and stage `entry_filter`, no position, and no risk call; with no failure the signal goes to the risk check. The filters read the entry LIMIT (the larger of the level and the price, up to the tick; PR 49). Harm: a trade the filters reject is opened, or a skip leaves no reason.
+- `PBT criteria.entry_filters_skip` On SQLite with the real `open_entry`: the stop is planned first, then the entry filters in order with max_chase always present; the first failure is stored as a Rejected signal with that reason and stage `entry_filter`, no position, and no risk call; with no failure the signal goes to the risk check. The filters read the entry LIMIT (the larger of the level and the price, up to the tick;). Harm: a trade the filters reject is opened, or a skip leaves no reason.
 - `PBT criteria.level_expression` `pivot` and `opening_range_high` name one level each and `max(consolidation_high, opening_range_high)` the larger of two that must both exist; a missing or non-positive level, or any other expression, has no level (`level_undefined`), and the config refuses an unknown expression. Harm: a zero level, or the consolidation high alone before the opening range exists, fires at the open.
 - `PBT criteria.ep_candidate_bands` The EP candidates of a gap scan are, in scan order, exactly the gappers with a gap of at least 10% (exact), in the universe, with a known 10% or 20% band or no band (F&O), whose EP setup passes. Harm: a 2% or 5% band stock that can lock at its circuit after the entry becomes an EP trade.
 - `PBT criteria.catalyst_required_in_confirm` On the seeded episodic-pivot playbook with every other trigger passing, a missing catalyst blocks exactly in the modes its `required_in` lists (the seed: confirm) and is recorded, not blocking, elsewhere. Harm: a confirm-mode EP trade reaches the owner with no news behind the gap, or shadow EP trades stop for want of a catalyst feed.
@@ -142,42 +137,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `bb83207b16f64ca4ea20f2aefc51914c8a69025b8f76e124d3c6e01c53d70b3f`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- PR 75a: `engine/trades.py` split into `trades`, `snapshot` and `positions` (`verify-execution`); `test_config.py` reads `positions.exit_rules_of`, and `test_conf_boundaries.py` gains CONF `no_private_imports` (`verify-governance`). No criteria check changed.
-- PR 73 (PR 35 follow-ups 1, 3): `assign_version` takes the owner's `chat_id` and `now` and records `sleeve.version_assigned` (`_assigned`, also used by `promote_version` for the sleeves it moves); `add_sleeve` adds a further sleeve of a strategy (`unknown_strategy` otherwise). `config.release_gate` checks the event. Nothing was narrowed.
-- PR 63 (HAT-BT-026, HAT-BT-061): `publish_version` also refuses a promotion run whose metrics do not say `slot_order: time` (`run_not_for_promotion`), so a run recorded before PR 63 (slots by score) never promotes a version; `test_config.add_run` records `slot_order: time`. Property `backtest.version_status_requires_run` in `verify-backtest`.
-- PR 62 (O5, HAT-BT-061): `publish_version` also refuses a run whose metrics do not say `for_promotion: true` (`run_not_for_promotion`), so a version is never promoted on a run at perfect fills; `test_config.add_run` flags its run. The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the release-gate checks here are unchanged.
-- PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
-- PR 12: `publish_version` also refuses a run that is not `completed` (`run_not_completed`, HAT-BT-061). The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the checks here were re-run unchanged and pass.
-- `rs_rank` has no `weights` parameter: the 3/6/9/12-month blend is fixed by the `rs_pct` feature column , so a per-instance blend would not reach the data. `momentum_rank.windows` is a subset of the feature windows 21, 63, 126, 252.
-- `vcp` is a port of the legacy detector, not a copy. Dropped (other criteria or outside the spec): the Stage 2 gate, the RS gate, overhead resistance, the volume slope, the grade and the breakout test. A contraction's depth uses the highest high and lowest low of its own bars. The final contraction low is the segment minimum, which can be lower than the legacy pivot low; `vcp_parity` records this. The pivot is the highest high of the final contraction. `MIN_BASE_BARS` stays 15. The score is the mean of four linear sub-scores (an `[OWNER-PENDING]` default).
-- PR 15a evaluates the seven live criteria. `catalyst_attached` blocks only in the modes its `required_in` lists, whatever its `mode` field (HAT-CRIT-118 as revised), and `price_breaks_level` breaks on the final bar's high (HAT-CRIT-119 `[OWNER-PENDING]`). Only shadow bots get live candidates until the router (PR 15b); `open_entry` refuses confirm and auto.
-- `neglect` is a trigger type that the Q-EP setup also holds, so it is evaluated here and allowed in a setup list (`extra_stages`).
-- `PBT criteria.fundamentals_point_in_time` (HAT-DEC-I5) is not built: it needs the fundamentals feed (Phase 2). `earnings_growth_contract` covers the point-in-time rule on the criterion itself.
-- `PBT regime.strategy_rules` (HAT-BOT-053) and the shared per-bot cap property of HAT-BOT-050 were built in PR 11 (`verify-portfolio`, `verify-execution`); the config model only stores the regime rule.
-- The config does not store `version`; the version number lives on the row. The YAML shape of the seeds (implicit stage and order, one inline playbook named `default`) is accepted and stored in the canonical form (explicit stage and order, `playbooks` list).
-- `create_bot` always starts shadow. A config's own `execution_mode` is accepted (the seeds declare shadow) but a mode change goes through the mode-change service of a later PR.
-- A `level` expression with a comma must be quoted in YAML (`"max(consolidation_high, opening_range_high)"`): unquoted, the comma ends the flow mapping and the block does not parse.
-- PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
-- PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
-- PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
-- PR 55: `FastAboveSlow.rising_days` defaults to 3 (owner default, plan audit N7); its property is `regime.strategy_rules` in `verify-portfolio`. The S2 seed and its spec YAML state `rising_days: 3` explicitly, so the seed checks are unchanged.
-- PR 56 (research G07, plan audit "PR 56"): `neglect` passes on the absolute 63-session move, so a fall beyond the limit now fails `already_fell`; the optional `max_range_126d_pct` (off by default) adds a 126-session range check on the bars before the date (`range_too_wide`). A negative `max_return_63d_pct` stays valid (stored configs keep loading) but never passes. With the range on, fewer than 126 sessions is `no_data`, checked after the return. `make_rows` gained a `trend` style so large moves of either sign occur. Nothing was narrowed; `criteria.neglect_contract` now covers both signs and the range.
-- PR 54 (plan audit N2): a criterion reads the numeric `extras` of the criteria before it in its stage (`EvalContext.levels`, set by `evaluate_stage` on a copy of the context), which `close_vs_pivot` needs for `vcp`'s pivot. `close_vs_pivot` is a hard S1 setup criterion after `vcp`; a symbol whose `vcp` finds no base now stops at `close_vs_pivot` (`no_pivot`) instead of `below_threshold`. The scan publishes the setup stage's `levels` (`StageOutcome.levels`), so the gate and the watchlist row use one pivot; `ep_setup_passes` evaluates the EP setup through `evaluate_stage` (threshold 0, so only hard criteria decide) to pass levels too. `EvalContext` keeps its read bars in a dict its `with_levels` copies share. No property was narrowed; `hat_config_support` generates the new stop `min_pct` but not `close_vs_pivot` (valid only after a `vcp`; `config.close_vs_pivot_needs_vcp` covers it).
-- PR 57 (research G25-G27, plan audit "PR 57"): `vcp`'s dry-up baseline is the 50 sessions before the base starts (a base starting fewer than 50 sessions into the history is `no_data`), so `vcp_contract` now checks that baseline and the exact `dryup_ratio`. New params, off by default: `max_high_spread_pct`, `min_first_depth_pct`, `min_contraction_bars` (reasons `highs_not_level`, `first_depth_too_shallow`, `contraction_too_short`, checked after the final depth and before the dry-up) and `pivot_source: vcp|base_high` (the `pattern` extra appears only under `base_high`; a flat base fails `flat_base`). The zero-volume baseline check runs only when the pattern holds, as before, so it never hides a pattern reason. `scan.py` is unchanged: it already publishes the setup stage's `pivot` level. The golden replay and `vcp_parity` pass unchanged. Nothing was narrowed; `vcp_contract` draws the structural rules, and `hat_config_support` draws all four new params.
-- PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
-
-- PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
-- PR 49 (plan audit N1, G20; HAT-CRIT-119, -122): `price_breaks_level` gains `confirm: close|high` (default `close`: the final bar must also close at or above the level), reading the new `LiveContext.bar_close`; the trigger monitor fills it with the bar's close. The entry is `trigger.entry_limit` (max(level, close) rounded up to the tick), and the entry filters read that price (`plan_entry` passes `replace(ctx, price=entry).for_entry(...)`: `max_chase` reads `price`, `adtr_filter` reads `entry`, and the trigger context's other inputs are kept). `criteria.price_breaks_level_contract` draws `confirm` (unset, `close`, `high`) and asserts the entry; `criteria.entry_filters_skip`'s oracle reads the entry LIMIT; `level_expression` and `catalyst_required_in_confirm` give their contexts a bar close. The seed YAMLs are unchanged (the default applies). The backtest is untouched (it does not evaluate `price_breaks_level`; its fill proxies are in `backtest/fills.py`). Nothing was narrowed.
+Covered digest: `f32d07cdf4bd87f272b73ecfb95d67d72ec59d1b7105e8e6dfff8e5dd550d284`
 
 ## Scratch breaks
 
-One recorded break per check (HAT-VER-072): the real code was changed as described, the check was run and failed, and the code was restored.
+One recorded break per check: the real code was changed as described, the check was run and failed, and the code was restored.
 
 ### PBT criteria.series_in_contract
 
@@ -433,78 +397,6 @@ Break: `neglect` includes the evaluation day's bar in the 63-day return.
 | AssertionError: assert (not False and 'already_extended' == 'no_data'
 ```
 
-Break: (PR 56) `neglect` uses the signed return again, so a fall beyond the limit passes.
-
-```
-E   AssertionError: assert 'ok' == 'already_fell'
-E     - already_fell
-E     + ok
-E   Failing test case: test_neglect_contract(
-E       rng=Lcg(2),
-E       style='trend',
-E       length=65,
-E       max_ret=0.0,
-E       max_range=None,  # or any other generated value
-E   )
-FAILED tests/hat/properties/test_criteria.py::test_neglect_contract - Asserti [cut]
-```
-
-Break: (PR 56) `neglect` ignores `max_range_126d_pct`.
-
-```
-E   AssertionError: assert 'ok' == 'range_too_wide'
-E     - range_too_wide
-E     + ok
-E   Failing test case: test_neglect_contract(
-E       rng=Lcg(0),
-E       style='trend',  # or any other generated value
-E       length=127,
-E       max_ret=100.0,
-E       max_range=5.0,
-E   )
-FAILED tests/hat/properties/test_criteria.py::test_neglect_contract - Asserti [cut]
-```
-
-Break: (PR 56) the 126-session range reads the bars up to the date (`ctx.history`), so the gap day counts.
-
-```
-  | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
-  +-+---------------- 1 ----------------
-    | Traceback (most recent call last):
-    |   File "tests/hat/properties/test_criteria.py", line 654, in test_neglect_contract
-    |     assert evaluate("neglect", params, context([*previous, today])) == result  # gap day unread
-    | AssertionError: assert CriterionResu...e', extras={}) == CriterionResu...k', extras={})
-    |   Omitting 2 identical items, use -vv to show
-    |   Differing attributes:
-    |   ['passed', 'score', 'reason']
-    |   Drill down into differing attribute passed:
-    |     passed: False != True [cut]
-    |   ...Full output truncated (8 lines hidden), use '-vv' to show
-    | Failing test case: test_neglect_contract(
-    |     rng=Lcg(0),  # or any other generated value
-    |     style='tie',
-    |     length=127,
-    |     max_ret=10.0,
-    |     max_range=5.0,
-    | )
-    +---------------- 2 ----------------
-    | Traceback (most recent call last):
-    |   File "tests/hat/properties/test_criteria.py", line 647, in test_neglect_contract
-    |     assert result.reason == want
-    | AssertionError: assert 'range_too_wide' == 'no_data'
-    |   - no_data
-    |   + range_too_wide
-    | Failing test case: test_neglect_contract(
-    |     rng=Lcg(0),
-    |     style='trend',  # or any other generated value
-    |     length=126,
-    |     max_ret=100.0,
-    |     max_range=5.0,
-    | )
-    +------------------------------------
-FAILED tests/hat/properties/test_criteria.py::test_neglect_contract - Excepti [cut]
-```
-
 ### PBT criteria.vcp_contract
 
 Break: `vcp` ignores the volume dry-up rule.
@@ -522,135 +414,9 @@ E       params={
 E           'contractions': [2, 6],
 ```
 
-Break: (PR 57) the dry-up baseline is the last 50 bars again, including the base.
-
-```
-  | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
-  +-+---------------- 1 ----------------
-    | Traceback (most recent call last):
-    |   File "tests/hat/properties/test_criteria.py", line 835, in test_vcp_contract
-    |     assert result.extras["dryup_ratio"] == pytest.approx(float(final_volume / average))
-    | AssertionError: assert 0.36140187405020635 == 0.2916630930473436 ± 2.9e-07
-    |   comparison failed
-    |   Obtained: 0.36140187405020635
-    |   Expected: 0.2916630930473436 ± 2.9e-07
-    | Failing test case: test_vcp_contract(
-    |     # The test always failed when commented parts were varied together.
-    |     rng=Lcg(1),
-    |     depths=[8, 3],
-    |     quiet=20,
-    |     params={
-    |         'contractions': [2, 6],
-    |         'depth_ratio_max': 0.5,  # or any other generated value
-    |         'final_depth_max_pct': 5.0,  # or any other generated value
-    |         'lookback_days': 60,  # or any other generated value
-    |         'dryup_vs_avg50': 0.5,  # or any other generated value
-    |     },
-    |     structure={'max_high_spread_pct': None,
-    |         'min_first_depth_pct': None,
-    |         'min_contraction_bars': None},
-    | )
-    | Explanation:
-    |     These lines were always and only run by failing test cases:
-    |         app/hat/engine/criteria/vcp.py:237
-    |         app/hat/engine/criteria/vcp.py:279
-    |         tests/hat/properties/test_criteria.py:812
-    +---------------- 2 ----------------
-    | Traceback (most recent call last):
-    |   File "tests/hat/properties/test_criteria.py", line 808, in test_vcp_contract
-    |     assert evaluate("vcp", params, context(cut)).reason == "no_data"
-    | AssertionError: assert 'ok' == 'no_data'
-    |   - no_data
-    |   + ok
-    | Failing test case: test_vcp_contract(
-    |     # The test always failed when commented parts were varied together.
-    |     rng=Lcg(0),
-FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
-```
-
-Break: (PR 57) `vcp` ignores `min_contraction_bars`.
-
-```
-E   assert False
-E    +  where False = all(<generator object test_vcp_contract.<locals>.<genexpr>>)
-E   Failing test case: test_vcp_contract(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(0),
-E       depths=[8, 3],
-E       quiet=20,
-E       params={
-E           'contractions': [2, 6],
-E           'depth_ratio_max': 0.5,  # or any other generated value
-E           'final_depth_max_pct': 5.0,  # or any other generated value
-E           'lookback_days': 60,  # or any other generated value
-E           'dryup_vs_avg50': 0.5,  # or any other generated value
-E       },
-FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - assert False
-```
-
-Break: (PR 57) `vcp` ignores `min_first_depth_pct`.
-
-```
-E   AssertionError: assert Fraction(82800, 10009) >= Fraction(15, 1)
-E    +  where Fraction(15, 1) = Fraction('15.0')
-E    +    where '15.0' = str(15.0)
-E   Failing test case: test_vcp_contract(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(0),
-E       depths=[8, 3],
-E       quiet=20,
-E       params={
-E           'contractions': [2, 6],
-E           'depth_ratio_max': 0.5,  # or any other generated value
-E           'final_depth_max_pct': 5.0,  # or any other generated value
-E           'lookback_days': 60,  # or any other generated value
-E           'dryup_vs_avg50': 0.5,  # or any other generated value
-FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert Fraction(82800, 10009) >= Fraction(15, 1)
-```
-
-Break: (PR 57) `vcp` ignores `max_high_spread_pct`.
-
-```
-E   AssertionError: assert Fraction(32100, 10009) <= Fraction(3, 1)
-E    +  where Fraction(3, 1) = Fraction('3.0')
-E    +    where '3.0' = str(3.0)
-E   Failing test case: test_vcp_contract(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(0),
-E       depths=[8, 3],
-E       quiet=20,
-E       params={
-E           'contractions': [2, 6],
-E           'depth_ratio_max': 0.5,  # or any other generated value
-E           'final_depth_max_pct': 5.0,  # or any other generated value
-E           'lookback_days': 60,  # or any other generated value
-E           'dryup_vs_avg50': 0.5,  # or any other generated value
-FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert Fraction(32100, 10009) <= Fraction(3, 1)
-```
-
-Break: (PR 57) with fewer than 50 sessions before the base, `vcp` falls back to the last 50 bars instead of `no_data`.
-
-```
-E   AssertionError: assert 'ok' == 'no_data'
-E     - no_data
-E     + ok
-E   Failing test case: test_vcp_contract(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(0),
-E       depths=shrinking_depths(
-E           8,  # or any other generated value
-E           40,  # or any other generated value
-E           2,
-E       ),
-E       quiet=20,  # or any other generated value
-E       params={'contractions': [2, 6],
-E           'depth_ratio_max': 0.5,
-FAILED tests/hat/properties/test_criteria.py::test_vcp_contract - AssertionError: assert 'ok' == 'no_data'
-```
-
 ### PBT criteria.vcp_base_high
 
-Break: (PR 57) under `base_high` the pivot is the final contraction's high.
+Break: under `base_high` the pivot is the final contraction's high.
 
 ```
 E   assert 107.43 == 109.22
@@ -668,46 +434,6 @@ E           'dryup_vs_avg50': 0.5},  # or any other generated value
 E       structure={'max_high_spread_pct': None,
 E           'min_first_depth_pct': None,
 FAILED tests/hat/properties/test_criteria.py::test_vcp_base_high - assert 107.43 == 109.22
-```
-
-Break: (PR 57) `base_high` still fails a base whose pattern breaks a rule.
-
-```
-E   AssertionError: assert False
-E    +  where False = CriterionResult(passed=False, score=0.0, value=1.0, reason='too_few_contractions', extras= [cut]
-E   Failing test case: test_vcp_base_high(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(1),
-E       depths=shrinking_depths(
-E           8,  # or any other generated value
-E           40,  # or any other generated value
-E           1,
-E       ),
-E       quiet=20,  # or any other generated value
-E       params={'contractions': [2, 6],
-E           'depth_ratio_max': 0.5,
-E           'final_depth_max_pct': 5.0,
-FAILED tests/hat/properties/test_criteria.py::test_vcp_base_high - AssertionError: assert False
-```
-
-Break: (PR 57) `base_high` passes a flat base, whose low equals its pivot.
-
-```
-E   AssertionError: assert (True, 'ok') == (False, 'flat_base')
-E     At index 0 diff: True != False
-E     Full diff:
-E       (
-E     -     False,
-E     -     'flat_base',
-E     +     True,
-E     +     'ok',
-E       )
-E   Failing test case: test_vcp_base_high(
-E       # The test always failed when commented parts were varied together.
-E       rng=Lcg(0),  # or any other generated value
-E       depths=[8],  # or any other generated value
-E       quiet=20,  # or any other generated value
-FAILED tests/hat/properties/test_criteria.py::test_vcp_base_high - AssertionError: assert (True, 'ok') == (False, 'flat_base')
 ```
 
 ### PBT criteria.vcp_parity
@@ -729,7 +455,7 @@ E       walk=True,
 
 ### PBT criteria.vcp_structure_narrows
 
-Break: (PR 57) a null `min_contraction_bars` is not off: it reads as 7 bars.
+Break: a null `min_contraction_bars` is not off: it reads as 7 bars.
 
 ```
   | ExceptionGroup: Hypothesis found 2 distinct failures. (2 sub-exceptions)
@@ -777,7 +503,7 @@ FAILED tests/hat/properties/test_criteria.py::test_vcp_structure_narrows - Excep
 
 ### PBT criteria.close_vs_pivot_contract
 
-Break: (PR 54) a close exactly at the limit fails (`<=` to `<` in `close_vs_pivot`).
+Break: a close exactly at the limit fails (`<=` to `<` in `close_vs_pivot`).
 
 ```
 E   AssertionError: assert False == True
@@ -790,22 +516,9 @@ E       rng=Lcg(0),  # or any other generated value
 FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_contract - [cut]
 ```
 
-Break: (PR 54) no pivot passes (`no_pivot` returns a pass).
-
-```
-E   AssertionError: assert (True, 'ok') == (False, 'no_pivot')
-E
-E     At index 0 diff: True != False
-E     Use -v to get more diff
-E   Failing test case: test_close_vs_pivot_contract(
-E       rng=Lcg(0),
-E       style='walk',
-FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_contract - [cut]
-```
-
 ### PBT criteria.close_vs_pivot_stage
 
-Break: (PR 54) `evaluate_stage` passes the bare context, so no criterion sees an earlier level.
+Break: `evaluate_stage` passes the bare context, so no criterion sees an earlier level.
 
 ```
 E   AssertionError: assert False == True
@@ -818,69 +531,17 @@ E       # The test always failed when commented parts were varied together.
 FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_stage - Ass [cut]
 ```
 
-Break: (PR 54) `EvalContext.with_levels` writes the levels into the shared context (`staged = self`).
-
-```
-E   AssertionError: assert {'pivot': 96....3698961157904} == {}
-E
-E     Left contains 4 more items:
-E     {'contraction_count': 2.0,
-E      'dryup_ratio': 0.5663698961157904,
-E      'final_contraction_low': 93.77,
-E      'pivot': 96.88}
-FAILED tests/hat/properties/test_criteria.py::test_close_vs_pivot_stage - Ass [cut]
-```
-
 ### PBT scoring.stage_levels
 
-Break: (PR 54) a later criterion overrides a level (`levels.setdefault(key, value)` to `levels[key] = value`).
+Break: a later criterion overrides a level (`levels.setdefault(key, value)` to `levels[key] = value`).
 
 ```
 FAILED tests/hat/properties/test_scoring.py::test_stage_levels - ExceptionGro [cut]
 ```
 
-Break: (PR 54) the scan reads the last outcome's raw `extras` instead of the stage's `levels`.
-
-```
-E   AssertionError: assert {'pivot': 2.0} == {'pivot': 1.0}
-E
-E     Differing items:
-E     {'pivot': 2.0} != {'pivot': 1.0}
-E     Use -v to get more diff
-E   Failing test case: test_stage_levels(
-E       probes=[('pivot', 1.0, True, 'hard'), ('pivot', 2.0, True, 'hard')],
-FAILED tests/hat/properties/test_scoring.py::test_stage_levels - AssertionErr [cut]
-```
-
-Break: (PR 54) a failed result's extras become levels (`if result.passed:` to `if True:`).
-
-```
-E   AssertionError: assert {'pivot': 1.0} == {}
-E
-E     Left contains 1 more item:
-E     {'pivot': 1.0}
-E     Use -v to get more diff
-E   Failing test case: test_stage_levels(
-E       # The test always failed when commented parts were varied together.
-FAILED tests/hat/properties/test_scoring.py::test_stage_levels - AssertionErr [cut]
-```
-
-Break: (PR 54) `with_levels` writes into the shared context (`staged = self`).
-
-```
-E   AssertionError: assert {'pivot': 1.0} == {}
-E
-E     Left contains 1 more item:
-E     {'pivot': 1.0}
-E     Use -v to get more diff
-E   Failing test case: test_stage_levels(
-E       # The test always failed when commented parts were varied together.
-FAILED tests/hat/properties/test_scoring.py::test_stage_levels - AssertionErr [cut]
-```
-
 ### PBT scoring.numeric_levels
 
-Break: (PR 54) a Decimal's finiteness is read with `math.isfinite`.
+Break: a Decimal's finiteness is read with `math.isfinite`.
 
 ```
 E   ValueError: cannot convert signaling NaN to float
@@ -893,7 +554,7 @@ FAILED tests/hat/properties/test_scoring.py::test_numeric_levels - ValueError [c
 
 ### PBT config.close_vs_pivot_needs_vcp
 
-Break: (PR 54) the config never refuses `close_vs_pivot` (`raise` to `pass`).
+Break: the config never refuses `close_vs_pivot` (`raise` to `pass`).
 
 ```
 E   Failed: DID NOT RAISE ConfigError
@@ -903,27 +564,6 @@ E       gate_at=0,  # or any other generated value
 E       vcp_at=None,  # or any other generated value
 E       gate_on=True,
 E       vcp_on=False,  # or any other generated value
-FAILED tests/hat/properties/test_config.py::test_close_vs_pivot_needs_vcp - F [cut]
-```
-
-Break: (PR 54, review round) a scored `close_vs_pivot` is saved (the `close_vs_pivot_not_hard` raise to `pass`).
-
-```
-    | AssertionError: assert 'close_vs_pivot_not_hard' in {'close_vs_pivot_needs_vcp'}
-    | Failed: DID NOT RAISE ConfigError
-FAILED tests/hat/properties/test_config.py::test_close_vs_pivot_needs_vcp - B [cut]
-```
-
-Break: (PR 54) a disabled `vcp` counts as the pivot source.
-
-```
-E   Failed: DID NOT RAISE ConfigError
-E   Failing test case: test_close_vs_pivot_needs_vcp(
-E       gate_at=0,  # or any other generated value
-E       vcp_at=0,
-E       gate_on=True,
-E       vcp_on=False,
-E   )
 FAILED tests/hat/properties/test_config.py::test_close_vs_pivot_needs_vcp - F [cut]
 ```
 
@@ -1120,40 +760,13 @@ E         'playbooks': [{'name': 'breakout',
 
 ### PBT config.new_bot_mode_confirm
 
-Break: (PR 45) `create_bot` accepts a shadow bot (`(None, "confirm", "shadow")`).
+Break: `create_bot` accepts a shadow bot (`(None, "confirm", "shadow")`).
 
 ```
 E   Failed: DID NOT RAISE VersionError
 E   Failing test case: test_new_bot_mode_confirm(
 E       mode='shadow',
 E   )
-```
-
-Break: (before PR 45, as `config.new_bot_mode_shadow`) `create_bot` starts a bot in `confirm`.
-
-```
-E   AssertionError: assert 'confirm' == 'shadow'
-E
-E     - shadow
-E     + confirm
-E   Failing test case: test_new_bot_mode_shadow(
-E       mode=None,
-E   )
-E   Explanation:
-E       These lines were always and only run by failing test cases:
-E           /data/workspace/wt/hat/pr08-criteria/backend/app/hat/engine/strategy/versions.py:219
-```
-
-### CONF criterion_instance_schema
-
-Break: `Instance` gains an eighth field, `note`.
-
-```
-E   AssertionError: assert {'enabled', '... 'stage', ...} == {'enabled', '..., 'type', ...}
-E
-E     Extra items in the left set:
-E     'note'
-E     Use -v to get more diff
 ```
 
 ### CONF criterion_type_registry
@@ -1171,73 +784,6 @@ E                                'maxItems': 20,
 E                                'minItems': 1,
 E                                'title': 'Series',
 E
-```
-
-### CONF criterion_catalogue_complete
-
-Break: `max_chase` is left out of the registry.
-
-```
-E   AssertionError: assert {'series_in':...niverse', ...} == {'series_in':...niverse', ...}
-E
-E     Omitting 23 identical items, use -vv to show
-E     Right contains 1 more item:
-E     {'max_chase': 'entry_filter'}
-E     Use -v to get more diff
-```
-
-Break: (PR 54) the `close_vs_pivot` row is left out of the registry.
-
-```
-E   AssertionError: assert 24 == 25
-E    +  where 24 = len({'series_in': 'universe', 'min_turnover': 'universe', 'min_price': 'universe', 'price_band_allowed': 'universe', ...})
-FAILED tests/hat/conformance/test_conf_criteria.py::test_criterion_catalogue_complete
-```
-
-### CONF bot_seed_default_mode
-
-Break: The S2 seed declares `execution_mode: confirm`.
-
-```
-E   AssertionError: assert 'confirm' == 'shadow'
-E
-E     - shadow
-E     + confirm
-```
-
-### CONF seed_bots_confirm
-
-Break: (PR 45) `create_bot` starts the seeded bots in shadow.
-
-```
-E   AssertionError: assert {'shadow'} == {'confirm'}
-E     Extra items in the left set:
-E     'shadow'
-```
-
-Break: (before PR 45, as `seed_bots_shadow`) `create_bot` starts a bot in `confirm`.
-
-```
-E   AssertionError: assert {'confirm'} == {'shadow'}
-E
-E     Extra items in the left set:
-E     'confirm'
-E     Extra items in the right set:
-E     'shadow'
-E     Use -v to get more diff
-```
-
-### CONF risk_policy_seed_bot_limits
-
-Break: The seed policy gives S2 a position cap of 0.30.
-
-```
-E   AssertionError: assert {'stage2-cont...t-ep': '0.30'} == {'stage2-cont...t-ep': '0.25'}
-E
-E     Omitting 1 identical items, use -vv to show
-E     Differing items:
-E     {'momentum-breakout-ep': '0.30'} != {'momentum-breakout-ep': '0.25'}
-E     Use -v to get more diff
 ```
 
 ### CONF import_graph_boundaries
@@ -1280,12 +826,6 @@ Break: in `backend/app/hat/engine/scan.py`: a closed regime gate no longer stops
 ```
 FAILED tests/hat/properties/test_scan.py::test_watchlist_gates - ExceptionGro [cut]
 ============================== 1 failed in 1.64s ===============================
-```
-
-Break: in `backend/app/hat/engine/scan.py`: a member whose last bar is before the scan date is evaluated.
-
-```
-FAILED tests/hat/properties/test_scan.py::test_watchlist_gates - AssertionErr [cut]
 ```
 
 ### PBT scan.no_row_for_removed
@@ -1377,31 +917,6 @@ E    +  where datetime.datetime(2026, 10, 21, 9, 20, 2, tzinfo=zoneinfo.ZoneInfo
 E    +  and   datetime.datetime(2026, 10, 21, 9, 15, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) = ist(datetime.date(2026, 10, 21), 9, 15)
 ```
 
-Break: (PR 49) `price_breaks_level` ignores the close (`held = True`): the spike that closed back under the pivot fires.
-
-```
-E   AssertionError: assert datetime.datetime(2026, 10, 21, 9, 25, 2, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) == (datetime.datetime(2026, 10, 21, 9, 15, tzinfo=zoneinfo.ZoneInfo(key='Asia/Kolkata')) + datetime.timedelta(seconds=902))
-```
-
-Break: (PR 49) `entry_limit` returns the bar's close (`limit = price`), the old entry.
-
-```
-E   AssertionError: assert Decimal('99.90') == Decimal('100.00')
-E   Failing explicit example: test_price_breaks_level_contract(
-```
-
-Break: (PR 49) `entry_limit` leaves the price off the tick grid (`return limit`).
-
-```
-E   AssertionError: assert Decimal('100.01') == Decimal('100.05')
-```
-
-Break: (PR 49) `entry_limit` rounds down to the tick (`ROUND_FLOOR`).
-
-```
-E   AssertionError: assert Decimal('100.00') == Decimal('100.05')
-```
-
 ### PBT criteria.adtr_filter_contract
 
 Break: in `backend/app/hat/engine/criteria/live.py`: `width <= max_multiple x ADTR` became `<`.
@@ -1428,25 +943,6 @@ E       level=10000,
 E       pct=2.0,
 ```
 
-Break: in `backend/app/hat/engine/trigger.py`: `entry_filter_instances` returns the enabled filters as they are (`if any(...MAX_CHASE...)` became `if True:`), so a deleted max_chase is not applied.
-
-```
-E   assert 0 == 1
-E    +  where 0 = len([])
-E   Failing test case: test_max_chase_always_applied(
-E       # The test always failed when commented parts were varied together.
-E       filters=([], 'deleted'),
-E       configured=None,  # or any other generated value
-```
-
-Break: in `backend/app/hat/engine/trigger.py`: the forced max_chase is built as a validated config `Instance`, so a filter at order 10000 gives it order 10001 and planning fails.
-
-```
-E   pydantic_core._pydantic_core.ValidationError: 1 validation error for Instance
-E   order
-E     Input should be less than or equal to 10000 [type=less_than_equal, input_value=10001, input_type=int]
-```
-
 ### PBT criteria.trigger_conjunction
 
 Break: in `backend/app/hat/engine/trigger.py`: `fired = bool(blocking_results) and all(blocking_results)` became `all(blocking_results)` (an empty trigger set fires).
@@ -1455,14 +951,6 @@ Break: in `backend/app/hat/engine/trigger.py`: `fired = bool(blocking_results) a
 E   assert True == ((False))
 E    +  where True = TriggerEvaluation(fired=True, outcomes=(), level=None).fired
 E    +  and   False = bool([])
-```
-
-Break: in `backend/app/hat/engine/trigger.py`: `evaluate_trigger` ignores the candidate's daily-bar results (`result = None`), so `neglect` is evaluated live and never passes.
-
-```
-E   AssertionError: assert False == ((True and True))
-E    +  where False = TriggerEvaluation(fired=False, outcomes=(CriterionOutcome(type='neglect', order=0, blocking=True, result=CriterionResult(passed=False, sco [cut]
-E   Failing explicit example: test_trigger_conjunction(
 ```
 
 ### PBT criteria.entry_filters_skip
@@ -1476,22 +964,6 @@ E     - adtr_filter
 E     + max_chase
 E   Failing test case: test_entry_filters_skip(
 E       # The test always failed when commented parts were varied together.
-```
-
-Break: (PR 49) `plan_entry` runs the filters on the bar's close, not the entry LIMIT (`entry=price`).
-
-```
-E   AssertionError: assert None == 'adtr_filter'
-E   Failing test case: test_entry_filters_skip(
-```
-
-Break: (PR 49, CodeAnt) `plan_entry` leaves the filter context's `price` at the bar's close (`ctx.for_entry(` for `replace(ctx, price=entry).for_entry(`), so `max_chase` checks the close, not the LIMIT rounded up to the tick. It passed until the `@example` (close 90.91, level 90.01, 1%: LIMIT 90.95) was added.
-
-```
-E   AssertionError: assert None == 'max_chase'
-E   Failing explicit example: test_entry_filters_skip(
-E       entry=9091,
-E       level=9001,
 ```
 
 ### PBT criteria.level_expression
@@ -1535,43 +1007,5 @@ E   Failed: DID NOT RAISE VersionError
 E   Failing explicit example: test_release_gate(
 E       state='shadow',
 E       waited=19,
-```
-
-Break: (2) `promote_version` leaves the sleeves on the version it replaces.
-
-```
-E   AssertionError: assert UUID('bdb267bc-d16e-4df5-8582-211ca6e2d722') == UUID('ab2ec9ca-ce2d-4de4-b352-ed088a69b4b5')
-E    +  where UUID('bdb267bc-...') = <app.hat.models.strategy.HatBot object>.live_version_id
-E   Failing explicit example: test_release_gate(
-E       state='live',
-```
-
-Break: (3) `promote_version` does not retire the previous live version.
-
-```
-E   sqlalchemy.exc.IntegrityError: (sqlite3.IntegrityError) UNIQUE constraint failed: hat_strategy_version.strategy_id
-E   [SQL: UPDATE hat_strategy_version SET status=?, promoted_at=? WHERE hat_strategy_version.id = ?]
-```
-
-Break: (4) `assign_version` points a Live sleeve at a version still in shadow.
-
-```
-E   Failed: DID NOT RAISE VersionError
-E   Failing explicit example: test_release_gate(
-E       state='live',
-E       waited=20,
-```
-
-Break: (PR 73) `assign_version` sets the version without the event (`_assigned(...)` became `bot.live_version_id = row.id`).
-
-```
-E   AssertionError: assert [] == [('user', '2d...cf9d54fe', 7)]
-```
-
-Break: (PR 73) `assign_version` records a repeat (the `bot.live_version_id == row.id` early return dropped).
-
-```
-    assert session.scalar(select(func.count()).select_from(HatEvent)) == before
-E   assert 8 == 7
 ```
 

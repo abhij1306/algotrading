@@ -1,6 +1,6 @@
-"""Shared setup for the HAT verification suites (HAT-VER-040).
+"""Shared setup for the HAT verification suites.
 
-This conftest is HAT's own (K1). The HAT suites boot no FastAPI app and import no legacy test
+This conftest is HAT's own. The HAT suites boot no FastAPI app and import no legacy test
 helper: their doubles are in `tests/hat/fakes/` (`from hat.fakes.broker import FakeBroker`), and
 the parent `tests/conftest.py` imports `app.main` and the legacy singletons only inside the
 fixtures that ask for them, which no HAT test does (CONF `imports.hat_decoupled`).

@@ -1,4 +1,4 @@
-"""PBT mcp.* (HAT-DATA-030, 033, 034, 035): the MCP client's session, retries, call log and error
+"""PBT mcp.*: the MCP client's session, retries, call log and error
 text."""
 
 import logging

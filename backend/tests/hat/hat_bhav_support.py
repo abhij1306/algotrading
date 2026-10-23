@@ -1,4 +1,4 @@
-"""Builders for the PR 5 verification: tiny bhavcopy zips in both NSE formats, bar rows and fake
+"""Builders for the verification: tiny bhavcopy zips in both NSE formats, bar rows and fake
 fetchers. Everything is generated in memory; no file here is a download."""
 
 import io
@@ -75,7 +75,7 @@ def _f(value: Decimal | int | None) -> str:
 
 
 def render_old(day: date, rows: list[BhavRow], other_series: int = 0) -> bytes:
-    """The old `cmDDMMMYYYYbhav.csv` layout (the column list is `[A]`, see HAT-DATA-093)."""
+    """The old `cmDDMMMYYYYbhav.csv` layout (the column list is `[A]`, see )."""
     stamp = f"{day.day:02d}-{MONTHS[day.month - 1]}-{day.year}"
     lines = [OLD_HEADER]
     for r in rows:

@@ -1,5 +1,5 @@
 """CONF: the parsers and the client's unwrapping agree with the recorded fixtures (the shapes the
-real servers returned on 21 Oct 2026, and the `[A]` NSE file layouts of HAT-DATA-025..027)."""
+real servers returned on 21 Oct 2026, and the `[A]` NSE file layouts of )."""
 
 from datetime import date, time
 from decimal import Decimal
@@ -111,7 +111,7 @@ def test_fixtures_history_mcp() -> None:
 
 def test_fixtures_index_history_no_data() -> None:
     """The `get_index_history` answer for a window older than the server keeps (the `error` text
-    of the 22 Oct 2026 build, HAT-DATA-095) raises `mcp_no_data`, not `mcp_bad_response`, and
+    of the 22 Oct 2026 build) raises `mcp_no_data`, not `mcp_bad_response`, and
     ends that index's chain without a row."""
     from app.hat.data.history_build import mcp_index_source
 

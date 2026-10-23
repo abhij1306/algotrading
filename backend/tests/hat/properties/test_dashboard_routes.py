@@ -1,4 +1,4 @@
-"""PBT dashboard_routes.* (HAT-DEC-T3, HAT-OPS-072): the read-only `/api/hat/*` routes. Every
+"""PBT dashboard_routes.*: the read-only `/api/hat/*` routes. Every
 answer validates against its response model, money and weights leave as decimal strings equal to
 the stored values, the `limit` of the list routes is bounded (anything outside 1..200 is a 422),
 lists hold exactly the rows they promise in their order, and a failed read is a fixed message

@@ -1,10 +1,10 @@
-"""PBT criteria.* (HAT-CRIT-040, 100..114, 120, 123): the library's pure criteria against exact
+"""PBT criteria.* (..114, 120, 123): the library's pure criteria against exact
 oracles.
 
 Every test checks the common contract (repeated calls agree, a row dated after the
 evaluation date changes nothing, the score is in [0, 1], missing data fails closed) and then the
 criterion's own rule against an independent computation in `Fraction`s over integer paise. The
-live trigger and entry-filter types (`gap_up` .. `max_chase`, HAT-CRIT-115..119, 121, 122) read a
+live trigger and entry-filter types (`gap_up` .. `max_chase`) read a
 `LiveContext`; their contracts, the trigger conjunction, the entry-filter skip and the EP candidate
 rule are checked at the end, the breakout through the real bar builder and trigger monitor.
 """
@@ -95,7 +95,7 @@ def sma_of(rows: list[Row], n: int, back: int = 0) -> Fraction | None:
     return mean([rupees(r.close) for r in rows[end - n : end]])
 
 
-# --- HAT-CRIT-100 series_in ------------------------------------------------------------------
+# --- series_in ------------------------------------------------------------------
 
 SERIES = ["EQ", "BE", "SM", "N1", "BZ"]
 
@@ -115,7 +115,7 @@ def test_series_in_contract(rng: Lcg, series: str | None, allowed: list[str]) ->
         assert result.passed == (series in allowed)
 
 
-# --- HAT-CRIT-101 min_turnover ---------------------------------------------------------------
+# --- min_turnover ---------------------------------------------------------------
 
 
 @given(
@@ -145,7 +145,7 @@ def test_min_turnover_contract(rng: Lcg, length: int, days: int, inr_cr: float, 
     assert fails_closed("min_turnover", {"days": days, "inr_cr": inr_cr}, ctx)
 
 
-# --- HAT-CRIT-102 min_price ------------------------------------------------------------------
+# --- min_price ------------------------------------------------------------------
 
 
 @given(
@@ -163,7 +163,7 @@ def test_min_price_contract(rng: Lcg, inr: float, close: int) -> None:
     assert fails_closed("min_price", {"inr": inr}, ctx)
 
 
-# --- HAT-CRIT-103 price_band_allowed ---------------------------------------------------------
+# --- price_band_allowed ---------------------------------------------------------
 
 BANDS = [2, 5, 10, 20, "none"]
 
@@ -194,7 +194,7 @@ def test_price_band_allowed_contract(rng: Lcg, history: list, allowed: list | No
     assert result.passed == (name in (BANDS if allowed is None else allowed))
 
 
-# --- HAT-CRIT-104 adr_min --------------------------------------------------------------------
+# --- adr_min --------------------------------------------------------------------
 
 
 @given(
@@ -228,7 +228,7 @@ def _feature_bars(rows: list[Row]) -> pl.DataFrame:
     return bars.select(BAR_COLUMNS)
 
 
-# --- HAT-CRIT-105 sma_above ------------------------------------------------------------------
+# --- sma_above ------------------------------------------------------------------
 
 SIDES = st.sampled_from(["close", 10, 50, 150, 200])
 
@@ -256,7 +256,7 @@ def test_sma_above_contract(rng: Lcg, style: str, length: int, a: object, b: obj
     assert fails_closed("sma_above", params, ctx)
 
 
-# --- HAT-CRIT-106 sma_rising -----------------------------------------------------------------
+# --- sma_rising -----------------------------------------------------------------
 
 
 @given(
@@ -281,7 +281,7 @@ def test_sma_rising_contract(rng: Lcg, style: str, length: int, sma: int, lookba
     assert fails_closed("sma_rising", params, ctx)
 
 
-# --- HAT-CRIT-107 / 108 52-week position -----------------------------------------------------
+# --- 52-week position -----------------------------------------------------
 
 MIN_PCT = st.sampled_from([0.0, 1.0, 10.0, 30.0, 100.0])
 
@@ -323,7 +323,7 @@ def test_pct_from_52w_high_contract(rng: Lcg, style: str, length: int, max_below
     assert fails_closed("pct_from_52w_high", params, ctx)
 
 
-# --- HAT-CRIT-109 rs_rank --------------------------------------------------------------------
+# --- rs_rank --------------------------------------------------------------------
 
 PCT = st.sampled_from([0.0, 10.0, 69.99, 70.0, 70.01, 95.0, 99.5, 100.0])
 
@@ -394,7 +394,7 @@ def test_rs_pct_is_a_universe_percentile(rng: Lcg, count: int, shuffle: Lcg) -> 
     assert all(0.0 <= v <= 100.0 for v in values)
 
 
-# --- HAT-CRIT-110 momentum_rank --------------------------------------------------------------
+# --- momentum_rank --------------------------------------------------------------
 
 
 @given(
@@ -454,7 +454,7 @@ def test_momentum_rank_contract(
     assert passes("absent", windows, match) is None
 
 
-# --- HAT-CRIT-111 consolidation --------------------------------------------------------------
+# --- consolidation --------------------------------------------------------------
 
 
 @given(
@@ -492,7 +492,7 @@ def test_consolidation_contract(rng, style, length, days, max_range, higher) -> 
     assert fails_closed("consolidation", params, ctx)
 
 
-# --- HAT-CRIT-112 ma_surf --------------------------------------------------------------------
+# --- ma_surf --------------------------------------------------------------------
 
 
 @given(
@@ -520,7 +520,7 @@ def test_ma_surf_contract(rng, style, length, mas, max_dist) -> None:  # noqa: A
     assert fails_closed("ma_surf", params, ctx)
 
 
-# --- HAT-CRIT-113 prior_move -----------------------------------------------------------------
+# --- prior_move -----------------------------------------------------------------
 
 
 @given(
@@ -552,7 +552,7 @@ def test_prior_move_contract(rng, style, length, min_pct, within) -> None:  # no
     assert fails_closed("prior_move", params, ctx)
 
 
-# --- HAT-CRIT-114 earnings_growth ------------------------------------------------------------
+# --- earnings_growth ------------------------------------------------------------
 
 
 @given(
@@ -596,7 +596,7 @@ def test_earnings_growth_contract(rng: Lcg, filed: list, accelerating: bool) -> 
     assert result.passed == ok
 
 
-# --- HAT-CRIT-120 neglect --------------------------------------------------------------------
+# --- neglect --------------------------------------------------------------------
 
 
 @given(
@@ -610,7 +610,7 @@ def test_earnings_growth_contract(rng: Lcg, filed: list, accelerating: bool) -> 
 def test_neglect_contract(
     rng: Lcg, style: str, length: int, max_ret: float, max_range: float | None
 ) -> None:
-    """HAT-CRIT-120 (PR 56): on the bars before the date, `passed` iff |ret63| x 100 <=
+    """: on the bars before the date, `passed` iff |ret63| x 100 <=
     max_return_63d_pct and, when `max_range_126d_pct` is set, the 126-session range (max high /
     min low - 1) x 100 is at most it; a rise fails `already_extended`, a fall `already_fell`
     (both before the range is read), a wide range `range_too_wide`, and too few bars for the
@@ -654,7 +654,7 @@ def test_neglect_contract(
     assert evaluate("neglect", params, context([*previous, today])) == result  # gap day unread
 
 
-# --- HAT-CRIT-123 close_vs_pivot ------------------------------------------------------------
+# --- close_vs_pivot ------------------------------------------------------------
 
 ABOVE = st.sampled_from([0.0, 0.0, 0.5, 1.0, 2.0, 2.5, 10.0])
 
@@ -674,7 +674,7 @@ def close_vs_pivot_holds(close: Fraction, pivot: Fraction, max_above: float) -> 
 def test_close_vs_pivot_contract(
     rng: Lcg, style: str, length: int, offset: int, max_above: float
 ) -> None:
-    """HAT-CRIT-123: with a pivot level P > 0 from an earlier criterion, `passed` iff close x 100
+    """With a pivot level P > 0 from an earlier criterion, `passed` iff close x 100
     <= P x (100 + max_above_pct), exact (a close equal to the limit passes), and the value is
     the close's percentage above P; without a pivot the result fails with `no_pivot`, and
     without bars with `no_data`. Harm: a name that broke out days ago is published with a stale
@@ -700,7 +700,7 @@ def test_close_vs_pivot_contract(
         )
 
 
-# --- HAT-CRIT-040 vcp ------------------------------------------------------------------------
+# --- vcp ------------------------------------------------------------------------
 
 ORACLE = json.loads(
     (Path(__file__).resolve().parents[1] / "fixtures" / "vcp_oracle.json").read_text("utf-8")
@@ -749,7 +749,7 @@ VCP_PARAMS = st.fixed_dictionaries(
         "dryup_vs_avg50": st.sampled_from([0.5, 0.7, 1.0, 1.0]),
     }
 )
-# PR 57: the structural rules, each off (None) by default.
+# the structural rules, each off (None) by default.
 STRUCTURE = st.fixed_dictionaries(
     {
         "max_high_spread_pct": st.sampled_from([None, None, 3.0, 8.0, 30.0]),
@@ -790,9 +790,9 @@ def shrinking_depths(first: int, ratio: int, count: int) -> list[int]:
 def test_vcp_contract(
     rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict
 ) -> None:
-    """HAT-CRIT-040: a reported base meets every enabled rule: the count, the depth ratios, the
-    final depth, the dry-up against the mean volume of the 50 sessions before the base starts
-    (PR 57; `no_data` with fewer), and the enabled structural rules (PR 57): every contraction
+    """A reported base meets every enabled rule: the count, the depth ratios, the
+    final depth, the dry-up against the mean volume of the 50 sessions before the base starts,
+    and the enabled structural rules: every contraction
     at least `min_contraction_bars` bars, the first at least `min_first_depth_pct` deep, and
     every contraction high within `max_high_spread_pct` of the highest. Harm: a loose base, a noise
     wiggle or a decelerating down-staircase enters the watchlist, or the base's own quiet bars
@@ -850,7 +850,7 @@ def test_vcp_contract(
 def test_vcp_structure_narrows(
     rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict
 ) -> None:
-    """PR 57: the structural rules are off by default and only narrow: a base that passes with
+    """The structural rules are off by default and only narrow: a base that passes with
     them passes, identically, without them; one that fails only with them fails on one of their
     reasons. Harm: turning a sweep rule on admits a base the default rejects, or the default
     config changes."""
@@ -878,7 +878,7 @@ def test_vcp_structure_narrows(
 def test_vcp_base_high(
     rng: Lcg, depths: list[int], quiet: int, params: dict, structure: dict, style: str
 ) -> None:
-    """PR 57 (G26): with `pivot_source: base_high` the pattern scores but does not gate. Where
+    """With `pivot_source: base_high` the pattern scores but does not gate. Where
     the default `vcp` passes, base_high passes with the same score and contractions; where it
     fails on a pattern rule, base_high passes with score 0 and `pattern` naming that rule; a
     missing history or a short base fails the same way in both. The pivot is the base's highest
@@ -922,7 +922,7 @@ def test_vcp_base_high(
 def test_close_vs_pivot_stage(
     rng: Lcg, depths: list[int], lift: int, max_above: float, pivot_first: bool
 ) -> None:
-    """HAT-CRIT-123 in a stage: `close_vs_pivot` after `vcp` reads the pivot `vcp` reported for
+    """In a stage: `close_vs_pivot` after `vcp` reads the pivot `vcp` reported for
     that date (as the S1 seed orders them), fails with `no_pivot` when `vcp` found no base or
     runs later, and the shared context is never changed, so the level does not reach another
     stage or playbook. The stage's `levels` (what the scan publishes) hold the first passed
@@ -1031,7 +1031,7 @@ def test_vcp_parity(rng: Lcg, depths: list[int], quiet: int, walk: bool, length:
     the pullback chain at 60 bars and at most four pullbacks) both find the same pullbacks, hence
     the same count; the final contraction low is the same unless a lower low sits inside the final
     pullback before its pivot low, where the spec's "minimum low of the final contraction" is
-    lower (HAT-CRIT-040)."""
+    lower."""
     rows = make_rows(rng, length) if walk else vcp_rows(rng, sorted(depths, reverse=True), quiet)
     high, low, close = (
         [float(rupees(getattr(r, k))) for r in rows] for k in ("high", "low", "close")
@@ -1115,8 +1115,8 @@ BASE_PARAMS: dict[str, dict] = {
 @given(k=st.integers(1, 40), pct=st.sampled_from([1, 5, 10, 25, 30, 100]))
 @SLOW
 def test_inclusive_edges_contract(k: int, pct: int) -> None:
-    """A value exactly on its threshold passes and one hair beyond it fails (HAT-CRIT-107, 111,
-    112, 113): the two sides of each rule are built so the percentage is exact in paise."""
+    """A value exactly on its threshold passes and one hair beyond it fails: the two sides of
+    each rule are built so the percentage is exact in paise."""
     unit = 100 * k  # paise; `unit * (100 + pct) / 100` is a whole number of paise
     up = unit * (100 + pct) // 100
     # pct_from_52w_low: low 252 sessions back, last close `pct` above it
@@ -1147,7 +1147,7 @@ def test_inclusive_edges_contract(k: int, pct: int) -> None:
     assert not passes("ma_surf", "max_distance_pct", pct - 0.01, rows)
 
 
-# --- live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122) -------------
+# --- live trigger and entry-filter criteria -------------
 
 PAISE = st.integers(1, 5_000_000)  # ₹0.01 .. ₹50,000.00
 MAYBE_PAISE = st.one_of(st.none(), st.integers(-100, 0), PAISE)
@@ -1179,7 +1179,7 @@ def assert_no_data(result: CriterionResult) -> None:
 @example(open_=10_999, prev=10_000, min_pct=10.0)
 @given(open_=MAYBE_PAISE, prev=MAYBE_PAISE, min_pct=st.sampled_from([0.5, 5.0, 10.0, 12.5, 20.0]))
 def test_gap_up_contract(open_: int | None, prev: int | None, min_pct: float) -> None:
-    """HAT-CRIT-115: passes iff (open / previous close - 1) x 100 >= min_pct, exactly; a missing
+    """Passes iff (open / previous close - 1) x 100 >= min_pct, exactly; a missing
     or non-positive open or close fails closed. Harm: a 9.99% gap (or a float rounding of 10%)
     starts an EP trade the rule excludes, or a real 10% gap is missed."""
     ctx = LiveContext(at=AT, open_price=maybe(open_), prev_close=maybe(prev))
@@ -1204,7 +1204,7 @@ def test_gap_up_contract(open_: int | None, prev: int | None, min_pct: float) ->
 def test_volume_pace_contract(
     volume: int | None, bars: int | None, avg: int | None, mult: float
 ) -> None:
-    """HAT-CRIT-116: with `bars` five-minute bars final, the day's volume projected to the full
+    """With `bars` five-minute bars final, the day's volume projected to the full
     session, V x 75 / bars, is at least vs_avg50 x the 50-day average volume. No elapsed share
     (before the first bar is final, or after the close), no volume or no average fails closed.
     Harm: a thin early burst, or a pace measured against the wrong share of the day, fires a
@@ -1232,7 +1232,7 @@ def test_volume_pace_contract(
     mult=st.sampled_from([0.1, 0.25, 0.5, 1.0, 2.0]),
 )
 def test_early_volume_contract(volume: int | None, adv: int | None, mult: float) -> None:
-    """HAT-CRIT-117: the cumulative day volume at the trigger is at least vs_adv20 x ADV(20),
+    """The cumulative day volume at the trigger is at least vs_adv20 x ADV(20),
     exactly; no volume or no ADV fails closed. Harm: an EP gap on thin volume is bought."""
     ctx = LiveContext(at=AT, cum_volume=volume, adv20=None if adv is None else Decimal(adv))
     result = live_contract("early_volume", {"vs_adv20": mult}, ctx)
@@ -1252,7 +1252,7 @@ def test_early_volume_contract(volume: int | None, adv: int | None, mult: float)
     required=st.lists(st.sampled_from(MODES), unique=True, max_size=3),
 )
 def test_catalyst_attached_contract(offsets: list[int], hours: int, required: list[str]) -> None:
-    """HAT-CRIT-118: passes iff an announcement matched to the instrument was published in
+    """Passes iff an announcement matched to the instrument was published in
     [at - within_hours, at] (both ends included, nothing after `at`); `required_in` does not
     change the result, only whether it blocks (`trigger_conjunction`). Harm: a stale or
     future-dated announcement is taken as the catalyst of a confirm-mode EP trade."""
@@ -1296,7 +1296,7 @@ def oracle_level(expr: str, pivot: int, consolidation: int, first_high: int | No
     pivot=10_000,
     consolidation=10_000,
     confirm=None,
-)  # PR 49 (N1): the second bar spikes through and closes back below; the third holds above
+)  # the second bar spikes through and closes back below; the third holds above
 @example(
     steps=[(300, 10_050, 1), (310, 9_990, 1)],
     expr="pivot",
@@ -1319,7 +1319,7 @@ def test_price_breaks_level_contract(
     consolidation: int,
     confirm: str | None,
 ) -> None:
-    """HAT-CRIT-119, HAT-BOT-071, HAT-EXEC-120: driven through the real bar builder and trigger
+    """Driven through the real bar builder and trigger
     monitor, a `price_breaks_level` playbook fires once, on the first final bar whose high is
     strictly above the level, whose close is at or above it (`confirm: close`, the default; PR
     49) and whose final instant is in [09:20, 15:20]; the trigger's time is that instant, its
@@ -1384,7 +1384,7 @@ def test_price_breaks_level_contract(
 def test_adtr_filter_contract(
     entry: int | None, stop: int | None, adtr: int | None, mult: float
 ) -> None:
-    """HAT-CRIT-121: passes iff entry - stop <= max_multiple x ADTR(20), exactly; a stop at or
+    """Passes iff entry - stop <= max_multiple x ADTR(20), exactly; a stop at or
     above the entry, or any missing input, fails closed. Harm: an entry whose stop is wider than
     the stock's daily range is taken, and the stop is hit by ordinary noise."""
     ctx = LiveContext(at=AT, entry=maybe(entry), stop=maybe(stop), adtr20=maybe(adtr))
@@ -1436,7 +1436,7 @@ def chase_filters(draw: st.DrawFn) -> tuple[list[dict], str]:
 def test_max_chase_contract(
     price: int | None, level: int | None, pct: float, locked: bool | None
 ) -> None:
-    """HAT-CRIT-122: passes iff price <= level x (1 + pct/100), exactly, and the stock is not
+    """Passes iff price <= level x (1 + pct/100), exactly, and the stock is not
     locked at its upper circuit; an unknown circuit state or a missing price or level fails
     closed. Harm: an entry far above the breakout, or one into a locked upper circuit that
     cannot be exited, is bought."""
@@ -1450,7 +1450,7 @@ def test_max_chase_contract(
     assert result.passed == (not locked and price <= level * (1 + oracle_pct(pct) / 100))
 
 
-DOCUMENTED_CHASE = {S1: Fraction(5), S2: Fraction(2)}  # HAT-CRIT-122 defaults; 2 otherwise
+DOCUMENTED_CHASE = {S1: Fraction(5), S2: Fraction(2)}  # defaults; 2 otherwise
 
 
 @example(
@@ -1469,7 +1469,7 @@ DOCUMENTED_CHASE = {S1: Fraction(5), S2: Fraction(2)}  # HAT-CRIT-122 defaults; 
 def test_max_chase_always_applied(
     filters: tuple[list[dict], str], configured: Decimal | None, strategy: str
 ) -> None:
-    """HAT-CRIT-122 (part of `max_chase_contract`): the entry filters evaluated at a trigger hold
+    """(part of `max_chase_contract`): the entry filters evaluated at a trigger hold
     exactly one max_chase whatever the config says. An enabled one keeps its place and
     percentage; a disabled or deleted one is evaluated last with the playbook's last configured
     percentage, else the strategy's documented default (5 for S1, 2 for S2, else 2), even when
@@ -1542,7 +1542,7 @@ def live_contexts(draw: st.DrawFn) -> LiveContext:
 def test_trigger_conjunction(
     items: list[dict], ctx: LiveContext, mode: str, daily: bool | None
 ) -> None:
-    """HAT-EXEC-121, HAT-CRIT-118: a playbook triggers iff it has at least one blocking enabled
+    """A playbook triggers iff it has at least one blocking enabled
     trigger criterion and every blocking one passes on the same bar; a disabled criterion is not
     evaluated, and `catalyst_attached` blocks only in a mode listed in its `required_in` (its
     result is recorded either way). A daily-bar trigger (`neglect`) counts with the result the
@@ -1587,7 +1587,7 @@ def test_trigger_conjunction(
     expr=st.sampled_from([*LEVEL_EXPRESSIONS, "close", "max(pivot, opening_range_high)"]),
 )
 def test_level_expression(levels: dict[str, int | None], expr: str) -> None:
-    """HAT-BOT-071: `pivot` and `opening_range_high` name one level each; `max(consolidation_high,
+    """`pivot` and `opening_range_high` name one level each; `max(consolidation_high,
     opening_range_high)` is the larger of the two and exists only when both do. A missing or
     non-positive level, or any other expression, has no level (the criterion fails closed with
     `level_undefined`), and the config refuses an unknown expression. Harm: a breakout level of
@@ -1639,7 +1639,7 @@ def gappers(draw: st.DrawFn) -> list[Gapper]:
 )  # exactly a 10% gap on a 20% band
 @given(items=gappers(), passing=st.sets(st.sampled_from([f"S{n}" for n in range(8)])))
 def test_ep_candidate_bands(items: list[Gapper], passing: set[str]) -> None:
-    """HAT-BOT-052: the EP candidates of a gap scan are, in scan order, exactly the gappers with
+    """The EP candidates of a gap scan are, in scan order, exactly the gappers with
     an open at least 10% above the previous close, in the universe, with a known 10% or 20% band
     or no band (an F&O name), whose EP setup passes. Harm: a 2% or 5% band stock, which can lock
     at its circuit right after the entry, or one whose band is unknown, becomes an EP trade."""
@@ -1663,7 +1663,7 @@ def test_ep_candidate_bands(items: list[Gapper], passing: set[str]) -> None:
     required=st.one_of(st.none(), st.lists(st.sampled_from(MODES), unique=True)),
 )
 def test_catalyst_required_in_confirm(catalyst: bool, required: list[str] | None) -> None:
-    """HAT-CRIT-118, HAT-EXEC-034: on the seeded episodic-pivot playbook, with every other
+    """On the seeded episodic-pivot playbook, with every other
     trigger criterion passing, a missing catalyst blocks the trigger exactly in the modes its
     `required_in` lists (the seed: confirm only) and is recorded, not blocking, in the others.
     Harm: a confirm-mode EP trade reaches the owner with no news behind the gap, or shadow EP
@@ -1743,7 +1743,7 @@ def oracle_filter(
 def test_entry_filters_skip(
     entry: int, level: int, stop_pct: float, adtr: int, items: list[dict], band: str
 ) -> None:
-    """HAT-EXEC-122, HAT-CRIT-121, HAT-CRIT-122: at a trigger the stop is planned first, then the
+    """At a trigger the stop is planned first, then the
     entry filters run in their configured order with max_chase always present (last, at the
     strategy default, when the config disabled or deleted it). The first failure is the skip:
     the signal is stored Rejected with that reason and stage `entry_filter`, no position opens
@@ -1764,7 +1764,7 @@ def test_entry_filters_skip(
         cand = candidate(book, daily=daily, bot_id=world.bot_id, instrument_id=world.instruments[0])
         ctx = LiveContext(at=AT, price=paise(entry))
         plan = plan_entry(cand, ctx, paise(level))
-        # PR 49: the entry is the larger of the level and the price, up to the 0.05 tick
+        # the entry is the larger of the level and the price, up to the 0.05 tick
         limit = math.ceil(Fraction(max(entry, level), 5)) * 5
         assert plan.entry == paise(limit) >= paise(level)
         entry = limit

@@ -53,8 +53,7 @@ engine, each even if the other failed.
   token and save it) and `POST /disconnect`. Fyers redirects to the registered `REDIRECT_URI`;
   the backend serves no callback, so paste the `auth_code` from the redirected URL into the login
   dialog in the app header. The token file is owned by `app/hat/execution/fyers_tokens.py`.
-- The read-only dashboard, `app/hat/api/dashboard.py`, under `/api/hat` (GET only, HAT-DEC-T3;
-  kill, re-arm, mode and flatten are Telegram commands): `/status`, `/bots`, `/watchlist`,
+- The read-only dashboard, `app/hat/api/dashboard.py`, under `/api/hat` (GET only, kill, re-arm, mode and flatten are Telegram commands): `/status`, `/bots`, `/watchlist`,
   `/signals`, `/positions`, `/allocations`, `/regime` and `/events` (`signals`, `regime` and
   `events` take `limit`, 1..200, default 50). Money and weights are decimal strings. The
   frontend page `frontend/app/hat/page.tsx` polls them every 15 s.
@@ -67,13 +66,14 @@ engine, each even if the other failed.
   code. Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to
   date -- architecture, invariants, CLAUDE.md, decisions -- and they stay compact.** The canonical
   docs: `docs/architecture.md` (module map, data flow, seams), `docs/invariants.md` (the
-  money-safety and trading rules, plus the index of `HAT-*` IDs that code, tests and skills cite),
+  money-safety and trading rules),
   `docs/decisions.md` (decisions in force), `docs/runbook.md` (operator procedures).
 - **Verification, not unit tests.** HAT code is proved with TLA+ models (`verification/tla/`),
   Hypothesis properties (`backend/tests/hat/properties/`), Postgres checks
   (`backend/tests/hat/db/`) and CONF checks (`backend/tests/hat/conformance/`). Do not write
-  example-based unit tests for HAT code; show each new check failing on a deliberate break. A new
-  check or ID gets one line in `docs/invariants.md`. The `verify-*` skills in `.claude/skills/` say
+  example-based unit tests for HAT code; show each new check failing on a deliberate break. A
+  conformance check enforces a structural rule of the code, never a copy of a doc or a hand-kept
+  list. The `verify-*` skills in `.claude/skills/` say
   how to run, read and update each area, and record a digest of the files they cover: after
   changing a covered file, re-confirm the area and refresh the digest with
   `python backend/tests/hat/conformance/hat_conf_skills.py <skill>`.
@@ -84,7 +84,7 @@ engine, each even if the other failed.
   owned by `fyers_tokens.py`.
 - **Schema.** `init_db()` runs `Base.metadata.create_all` and HAT's own upkeep
   (`app/hat/schema.py`). There is no Alembic and no legacy table: HAT uses a fresh PostgreSQL
-  database, and it refuses to run on any other (HAT-SCH-105). Postgres-only behaviour is tested
+  database, and it refuses to run on any other. Postgres-only behaviour is tested
   with `@pytest.mark.postgres` tests (CI job `backend-postgres`).
 - **Import rule.** `app/hat` and `tests/hat` import only the shared modules listed in
   `SHARED` in `tests/hat/conformance/test_conf_decoupling.py` (`app.base`, `app.database`,
@@ -93,7 +93,7 @@ engine, each even if the other failed.
   in `def` routes, which FastAPI runs in its threadpool, or behind `asyncio.to_thread`. Never
   block in `async def`. SDK callbacks arrive on SDK threads: hand work to the event loop with
   `asyncio.run_coroutine_threadsafe` or `loop.call_soon_threadsafe`. The server binds to
-  `BACKEND_HOST` (default `127.0.0.1`) and there is no API auth, by decision (HAT-DEC-BD5). The two
+  `BACKEND_HOST` (default `127.0.0.1`) and there is no API auth, by decision. The two
   Fyers login POSTs are the only writes. Each depends on `app/hat/api/guard.py`'s
   `frontend_write`, which needs the `X-HAT-Request: 1` header and a frontend `Origin`, and any new
   write route must depend on it too. Errors never carry broker or database text.

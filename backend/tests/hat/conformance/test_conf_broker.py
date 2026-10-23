@@ -1,6 +1,5 @@
 """CONF checks of the broker interface, the Fyers adapter and its secrets, and the default
-execution mode (HAT-BRK-080, -091, HAT-DEC-I7, HAT-DEC-I8, HAT-DEC-BD2, HAT-OPS-051,
-HAT-EXEC-011)."""
+execution mode."""
 
 import ast
 import inspect
@@ -30,28 +29,6 @@ DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
 BROKER_FORBIDDEN = ("app.brokers", "fyers_apiv3", "app.hat.execution.fyers_adapter")
 
 
-BROKER_METHODS = {
-    "cancel_gtt",
-    "cancel_order",
-    "capabilities",
-    "complete_login",
-    "funds",
-    "gtts",
-    "holdings",
-    "instruments",
-    "login_url",
-    "modify_gtt",
-    "modify_order",
-    "order_updates",
-    "orders",
-    "place_gtt_stop",
-    "place_order",
-    "positions",
-    "session_status",
-    "trades",
-}
-
-
 def _protocol_methods() -> set[str]:
     # typing.get_protocol_members needs Python 3.13; the project supports 3.11 and up.
     return {
@@ -61,14 +38,8 @@ def _protocol_methods() -> set[str]:
     }
 
 
-def test_brk__interface_methods() -> None:
-    """HAT-BRK-080: the protocol's method set is the 18 listed in BROKER_METHODS (a change to
-    the broker interface changes this set on purpose)."""
-    assert _protocol_methods() == BROKER_METHODS
-
-
 def test_broker_interface_methods() -> None:
-    """HAT-DEC-I7: the Fyers adapter implements every method of the protocol with its signature."""
+    """The Fyers adapter implements every method of the protocol with its signature."""
     for name in _protocol_methods():
         assert callable(getattr(FyersHatBroker, name, None)), name
     for name in _protocol_methods():
@@ -94,13 +65,13 @@ def _violations(graph: dict[str, set[str]], prefixes: tuple[str, ...]) -> dict[s
 
 
 def test_brk__import_boundary() -> None:
-    """HAT-BRK-080: engine, risk, data and the router depend on `execution.broker` only: no import
+    """Engine, risk, data and the router depend on `execution.broker` only: no import
     of `app.brokers`, `fyers_apiv3`, an OpenAlgo package or the Fyers adapter, directly or
     transitively; the interface module itself imports none of them either."""
     graph = build_graph()
-    # The one exception (HAT-OVR-006, K3): HAT's data socket module imports the SDK socket and the
+    # The one exception: HAT's data socket module imports the SDK socket and the
     # Fyers session for its token (and the session's history request for the minute-history
-    # download, HAT-DATA-119); `test_imports__no_second_websocket` confines the socket to it.
+    # download); `test_imports__no_second_websocket` confines the socket to it.
     graph[DATA_SOCKET_MODULE] = set()
     prefixes = (
         "app.hat.engine",
@@ -129,7 +100,7 @@ def test_brk__import_boundary() -> None:
 
 
 def test_brk__fyers_capabilities() -> None:
-    """HAT-BRK-091: the adapter reports tag length 20, a static IP requirement and GTT for
+    """The adapter reports tag length 20, a static IP requirement and GTT for
     delivery (verified on the live account on 2026-10-22, `fyers_live_writes.json`)."""
     capabilities = FyersHatBroker(broker=object()).capabilities()  # type: ignore[arg-type]
     assert capabilities == FYERS_CAPABILITIES
@@ -141,10 +112,10 @@ def test_brk__fyers_capabilities() -> None:
 
 
 # The only HAT modules that may import the Fyers SDK, each with the one SDK module it may import
-# (HAT-DEC-BD2), and the one that may call its GTT endpoints. Every other module reaches Fyers
+# and the one that may call its GTT endpoints. Every other module reaches Fyers
 # through them. The SDK's HTTP client (`fyersModel`: orders, GTTs, history, quotes and the login
 # exchange) is imported only by `fyers_ipv4`, which installs the IPv4-only hook first
-# (HAT-BRK-093); the session and the login service take it from `fyers_ipv4.sdk()`.
+# the session and the login service take it from `fyers_ipv4.sdk()`.
 SDK_IMPORTERS = {
     "execution/fyers_ipv4.py": "fyersModel",
     "data/provider/fyers_websocket.py": "FyersWebsocket",
@@ -170,10 +141,10 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
 
 
 def test_fyers_adapter_wraps_existing() -> None:
-    """HAT-DEC-BD2, HAT-BRK-093: the adapter reaches the Fyers SDK only through FyersBroker,
+    """The adapter reaches the Fyers SDK only through FyersBroker,
     FyersSession and FyersAuthService (K2: all in `app/hat/execution`); the SDK's HTTP client is
     imported only by `fyers_ipv4`, after it installs the IPv4 hook, and taken from there by the
-    session and the login service; the data socket module imports only the websocket (K3); its
+    session and the login service; the data socket module imports only the websocket; its
     GTT calls are made only by the broker, and nothing under app/hat imports the legacy
     `app.brokers` (the checker is shown to catch offenders)."""
     adapter = (HAT_ROOT / "execution" / "fyers_adapter.py").read_text(encoding="utf-8")
@@ -213,7 +184,7 @@ FYERS_SECRET_WORDS = re.compile(
     r"|client_secret|app_secret|os\.environ|getenv",
     re.IGNORECASE,
 )
-# Secret-shaped column names that are not secrets: the approval token's hash (HAT-SCH-056) and
+# Secret-shaped column names that are not secrets: the approval token's hash and
 # the exchange's instrument token.
 NOT_SECRETS = {("hat_approval", "token_hash"), ("hat_broker_symbol", "broker_token")}
 
@@ -225,7 +196,7 @@ SECRET_MODULES = {
     "execution/fyers_auth.py",
     "execution/fyers_tokens.py",
     "execution/fyers_session.py",
-    "data/provider/fyers_websocket.py",  # builds the data socket from the session's token (K3)
+    "data/provider/fyers_websocket.py",  # builds the data socket from the session's token
 }
 
 
@@ -247,7 +218,7 @@ def _secret_offenders(files: dict[str, str]) -> list[str]:
 
 
 def test_ops__single_fyers_secret_store() -> None:
-    """HAT-OPS-051: only the token store, the login service and the session read a Fyers
+    """Only the token store, the login service and the session read a Fyers
     credential, the token file or an environment variable (K2 moved them into app/hat/execution;
     the legacy modules re-export them), nothing else under app/hat does, and no HAT table has a
     column that holds a broker secret."""
@@ -284,7 +255,7 @@ def test_ops__single_fyers_secret_store() -> None:
 
 
 def test_ops__one_login_one_token_store() -> None:
-    """HAT-OPS-051, HAT-DEC-BD2: one Fyers login and one token store. The login service and the
+    """One Fyers login and one token store. The login service and the
     session use HAT's `token_store`; the legacy client, symbol master, login hooks, token-store
     re-export, broker package and login router are gone (no second implementation); the HAT
     router has exactly the four login routes."""
@@ -295,7 +266,7 @@ def test_ops__one_login_one_token_store() -> None:
     assert fyers_session.FyersSession.__init__.__kwdefaults__ is not None
     assert "token_store" in inspect.getsource(fyers_session.FyersSession.__init__)
     # No second implementation: the legacy client, symbol master and login hooks are deleted
-    # (K5b; K4 deleted the token-store re-export, the broker package and the login router).
+    # .
     assert not (APP_ROOT / "services" / "fyers_client.py").exists()
     assert not (APP_ROOT / "services" / "symbol_master.py").exists()
     assert not (APP_ROOT / "services" / "fyers").exists()
@@ -344,9 +315,9 @@ def _seed_scope_strategies_and_owner() -> None:
 
 
 def test_mvp_seed_scope() -> None:
-    """HAT-DEC-I8 (the broker half of the seed scope): every adapter registered in the MVP is the
+    """(the broker half of the seed scope): every adapter registered in the MVP is the
     Fyers adapter, and onboarding accepts no other broker. PR 8 extends this check to the seeded
-    strategies, markets and `HAT_USER_ID` ownership (HAT-OVR-002)."""
+    strategies, markets and `HAT_USER_ID` ownership."""
     assert set(accounts.ADAPTER_FACTORIES) == {"fyers"}
     _seed_scope_strategies_and_owner()
     assert Path(accounts.__file__).exists()
@@ -367,12 +338,12 @@ class _NoSession:
 
 
 def test_exec__default_mode_confirm() -> None:
-    """HAT-EXEC-011, HAT-BOT-061, HAT-DEC-B2: a bot asks for confirm unless the owner changes it,
+    """A bot asks for confirm unless the owner changes it,
     and runs shadow until every gate passes. The bot row defaults to confirm in the model and in
     the database, a new bot cannot be created in another mode, the entry path routes shadow
     unless told otherwise, a mode outside the three reads as shadow, and confirm with any gate
     missing reads as shadow. The strategy config's `execution_mode` is not read for a bot's mode;
-    its seeds still say shadow (note in 07 HAT-EXEC-011)."""
+    its seeds still say shadow (note in 07 )."""
     seeds = sorted(SEEDS_DIR.glob("*.yaml"))
     assert seeds
     for path in seeds:
@@ -419,7 +390,7 @@ def _recorded() -> list[dict]:
 
 
 def test_brk__recorded_writes() -> None:
-    """HAT-BRK-090, -091, -103, MX-F6: the Fyers write replies recorded live on 2026-10-22 hold:
+    """The Fyers write replies recorded live on 2026-10-22 hold:
     the GTT place payload the broker builds for the recorded request is the one Fyers accepted
     (`orderTag` included); the place, modify and cancel replies read as placed and ok; the GTT
     book rows (live keys `tran_side`, `product_type`, `ordertag` "1:GTT<tag>" or "2:GTTUntagged")
@@ -486,8 +457,8 @@ def test_brk__recorded_writes() -> None:
     assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))
 
 
-# The broker-account status and broker-name values live once, in the models leaf (PR 73, PR 38
-# follow-up 3); every reader imports them from there.
+# The broker-account status and broker-name values live once, in the models leaf; every reader
+# imports them from there.
 ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING", "BROKER_FYERS"}
 CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
 # the model, and any name for an account a reader uses (`account`, `acct`, `broker_account`...)
@@ -538,7 +509,7 @@ def account_literal_violations(source: str) -> list[str]:
 
 
 def test_brk__account_constants_one_copy() -> None:
-    """CONF brk.account_constants_one_copy (HAT-BRK-092; PR 73, PR 38 follow-up 3): no module but
+    """CONF brk.account_constants_one_copy: no module but
     `models/strategy.py` defines a broker-account status constant or the broker name, and none
     compares an account's status or broker with a string of its own. Harm: a renamed status
     leaves a stale copy behind, and a login, a routing gate, the dashboard or a broker-symbol

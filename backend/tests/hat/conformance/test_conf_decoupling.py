@@ -1,7 +1,6 @@
-"""CONF checks that HAT stands on its own (K1, the cleanup plan's "Decouple HAT"): nothing under
-`app/hat` or `tests/hat` imports `app.main`, a router, a test helper outside `tests/hat` or any
-`app` module that is not listed in SHARED; and nothing outside HAT imports it except the database
-upkeep hook and the app wiring."""
+"""CONF checks that HAT stands on its own: nothing under `app/hat` or `tests/hat` imports
+`app.main`, a router, a test helper outside `tests/hat` or any `app` module that is not listed in
+SHARED; and nothing outside HAT imports it except the database upkeep hook and the app wiring."""
 
 import ast
 import json
@@ -9,8 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from hat_conf_repo import APP_ROOT
-from hat_conf_spec import REPO_ROOT
+from hat_conf_repo import APP_ROOT, REPO_ROOT
 
 BACKEND = REPO_ROOT / "backend"
 HAT_APP = APP_ROOT / "hat"
@@ -24,7 +22,7 @@ HAT_TESTS = BACKEND / "tests" / "hat"
 SHARED = {
     "app.base": "the declarative base of the models",
     "app.database": "the engine, sessions and schema creation (Postgres only)",
-    "app.paths": "the repository roots and `HAT_DATA_ROOT` (HAT-OVR-052)",
+    "app.paths": "the repository roots and `HAT_DATA_ROOT`",
     "app.utils.env_loader": "the `.env` loader and the boolean-flag parser",
 }
 
@@ -105,7 +103,7 @@ def _owner(name: str) -> str | None:
 
 
 def test_imports__hat_decoupled_from_legacy() -> None:
-    """HAT-OVR-040 (K1): HAT code and HAT tests import no router, `app.main`, test helper outside
+    """: HAT code and HAT tests import no router, `app.main`, test helper outside
     `tests/hat` or any `app` module that is not listed in SHARED; and each SHARED module is still
     imported (a stale entry hides a removed coupling)."""
     imports = _legacy_imports()
@@ -116,7 +114,7 @@ def test_imports__hat_decoupled_from_legacy() -> None:
 
 
 def test_imports__legacy_does_not_import_hat() -> None:
-    """HAT-OVR-040 (K1, risk inversion): outside `app/hat`, only `app.database` (schema upkeep),
+    """: outside `app/hat`, only `app.database` (schema upkeep),
     `app.main` (wiring) import HAT. No other legacy module does: there are no re-export shims."""
     offenders = []
     for path in sorted(APP_ROOT.rglob("*.py")):
@@ -137,7 +135,7 @@ def test_imports__legacy_does_not_import_hat() -> None:
 
 
 def test_imports__hat_suites_boot_no_legacy_app() -> None:
-    """HAT-OVR-040 (K1): collecting every HAT suite (conftests, fakes and test modules) loads
+    """: collecting every HAT suite (conftests, fakes and test modules) loads
     neither `app.main`, a router, nor the manual-trading singletons. Run in a fresh interpreter,
     so what other tests imported earlier does not hide a load."""
     code = (

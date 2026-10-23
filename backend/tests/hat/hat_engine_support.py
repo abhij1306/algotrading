@@ -174,7 +174,7 @@ def seed_engine_world(
 
 def add_bot(session: Session, world: World) -> World:
     """A second bot of `world`'s owner, strategy version and universe, on another broker
-    account: the global open-risk cap is the owner's (HAT-RISK-030)."""
+    account: the global open-risk cap is the owner's."""
     first = session.get(HatBot, world.bot_id)
     bot = HatBot(
         id=uuid.uuid4(),

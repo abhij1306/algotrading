@@ -1,4 +1,4 @@
-"""PBT fyers_session.* (HAT-OPS-051, K2): the session builds an SDK model only from a token that is
+"""PBT fyers_session.*: the session builds an SDK model only from a token that is
 usable now, drops it when the token expires, is removed or turns unreadable, picks up a re-login,
 and validates with at most one retry. Runs on a temporary token file, a controlled clock and a
 recording model; nothing reaches Fyers."""

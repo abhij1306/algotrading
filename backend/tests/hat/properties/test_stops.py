@@ -1,5 +1,5 @@
-"""PBT for initial stop rules (HAT-EXEC-050..052, HAT-BOT-062), NSE tick sizes (HAT-EXEC-053) and
-stop pricing at the broker (HAT-EXEC-062)."""
+"""PBT for initial stop rules, NSE tick sizes and
+stop pricing at the broker."""
 
 from datetime import date, timedelta
 from decimal import Decimal
@@ -31,7 +31,7 @@ triggers = st.decimals(min_value=Decimal("0.01"), max_value=Decimal("500000"), p
 
 @given(triggers, ticks)
 def test_gtt_limit_offset(trigger: Decimal, tick: Decimal) -> None:
-    """HAT-EXEC-062: for every trigger T > 0 and tick, the limit is T x 0.99 rounded down to the
+    """For every trigger T > 0 and tick, the limit is T x 0.99 rounded down to the
     tick and below T; when that is not a positive price the stop is refused, not guessed."""
     try:
         limit = gtt_limit_price(trigger, tick)
@@ -80,7 +80,7 @@ def grid_floor(x: Fraction, tick: Decimal) -> Fraction:
 def test_final_contraction_low(
     entry: Decimal, low: Decimal, buffer: Decimal, max_pct: Decimal, min_pct: Decimal
 ) -> None:
-    """HAT-EXEC-050: stop = low x (1 - buffer/100) rounded down to the tick; it is skipped when
+    """Stop = low x (1 - buffer/100) rounded down to the tick; it is skipped when
     it is not below the entry, more than max_pct percent below it, or, with min_pct above 0,
     less than min_pct percent below it (`stop_too_narrow`; min_pct 0 is off); a taken stop is on
     the tick grid, below the entry, and within [min_pct, max_pct]; every skip reason is one the
@@ -128,7 +128,7 @@ def test_final_contraction_low(
 def test_contraction_stop_at_the_fill(
     pivot: Decimal, above: int, low: Decimal, max_pct: int, min_pct: int
 ) -> None:
-    """HAT-EXEC-050: the contraction stop the scan plans at the pivot, re-checked at a fill at
+    """The contraction stop the scan plans at the pivot, re-checked at a fill at
     or above it (the backtest's `check_width`), is the live plan at that fill, for every
     min_pct: a stop too narrow at the pivot is not dropped overnight, since a higher entry only
     widens it. Harm: the backtest skips (as `stop_input_missing`) trades live would take, so
@@ -148,7 +148,7 @@ def test_contraction_stop_at_the_fill(
 
 @given(prices, st.lists(prices, min_size=1, max_size=20), st.integers(0, 20))
 def test_low_of_day(entry: Decimal, lows: list[Decimal], buffer_ticks: int) -> None:
-    """HAT-EXEC-051: stop = the lowest low of the day so far less buffer_ticks ticks, rounded
+    """Stop = the lowest low of the day so far less buffer_ticks ticks, rounded
     down to the tick (the lows here are on a 0.01 grid, the tick is 0.05); strictly below the
     entry or skipped. Harm: a stop above the day's low is hit by normal noise; one at or above
     the entry is not a stop; one off the tick grid is refused by the exchange."""
@@ -174,7 +174,7 @@ def test_low_of_day(entry: Decimal, lows: list[Decimal], buffer_ticks: int) -> N
 def test_custom_rules(
     entry: Decimal, pct: Decimal, multiple: Decimal, lows: list[Decimal], tick: Decimal
 ) -> None:
-    """HAT-EXEC-052, HAT-BOT-062: pct_below_entry, atr_multiple and swing_low give the formula
+    """Pct_below_entry, atr_multiple and swing_low give the formula
     rounded down to the tick, strictly below the entry, else a skip with a fixed reason; a rule
     whose input is missing is a skip, never a guess; the dispatcher gives what each function
     gives.
@@ -215,7 +215,7 @@ def test_custom_rules(
         assert plan_stop(rule, bare).skip == stops.SKIP_BAD_INPUT
 
 
-# --- tick sizes (HAT-EXEC-053) ----------------------------------------------------------------
+# --- tick sizes ----------------------------------------------------------------
 
 # The NSE slabs since 15 April 2025, from the circular: (lowest price of the slab in paise, tick).
 NSE_SLABS_PAISE = [
@@ -258,7 +258,7 @@ def close_histories(draw: st.DrawFn) -> tuple[list[date], list[Decimal | None], 
 @example(price=100_001)
 @given(price=st.one_of(st.sampled_from(SLAB_EDGES), st.integers(1, 10_000_000)))
 def test_tick_size_slabs(price: int) -> None:
-    """HAT-EXEC-053: the tick of a price is the NSE slab it falls in (0.01 below ₹250, 0.05 to
+    """The tick of a price is the NSE slab it falls in (0.01 below ₹250, 0.05 to
     ₹1,000, 0.10 to ₹5,000, 0.50 to ₹10,000, 1.00 to ₹20,000, 5.00 above), each upper bound
     inclusive; a non-positive price has none. Harm: a stop or GTT price off the exchange's tick
     grid is refused by the broker, leaving a position with no stop."""
@@ -271,7 +271,7 @@ def test_tick_size_slabs(price: int) -> None:
 def test_tick_size_reference_close(
     history: tuple[list[date], list[Decimal | None], date],
 ) -> None:
-    """HAT-EXEC-053 (part of `tick_size_slabs`): the tick of a trade date is set from the last
+    """(part of `tick_size_slabs`): the tick of a trade date is set from the last
     close before the first day of its month, else (a listing this month) the latest close before
     the trade date; never from the trade date's own close or a later one. Harm: a stock that
     crossed ₹250 this month is priced on the new grid a month early and its stop is refused."""

@@ -1,4 +1,4 @@
-"""PBT mode.* (HAT-GOV-084, HAT-SCH-086, HAT-TG-032): mode changes queue outside market hours."""
+"""PBT mode.*: mode changes queue outside market hours."""
 
 from datetime import datetime, time, timedelta
 

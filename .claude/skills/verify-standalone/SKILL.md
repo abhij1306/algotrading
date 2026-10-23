@@ -14,11 +14,11 @@ Checks that HAT does not import or boot the app wiring or any module outside the
 - `PBT metrics.sharpe_zero_volatility` Returns that never vary give exactly 0.0 for both Sharpe conventions, down to the volatility floor of 1e-12 per period (a series with a per-period deviation of 1e-13 is flat too). Harm: an enormous or infinite Sharpe ranks a flat strategy first.
 - `PBT metrics.sharpe_sign_follows_mean` With risk-free 0 the Sharpe has the sign of the mean return and is finite. Harm: a losing strategy is reported as profitable.
 - `PBT metrics.returns_guard_bad_capital` A non-positive initial capital or period count gives 0.0 for total return and CAGR, never a division error or a sign flip. Harm: a bad input prints a large false return.
-- `PBT metrics.longest_drawdown` The longest drawdown is the longest run of points below the running maximum (polars `cum_max`), 0 exactly when the curve never falls, shorter than the curve (PR 65). Harm: a run long under water reports a short recovery, or a return to the old peak still counts as under water.
-- `PBT metrics.exposure` Exposure is the share of the sessions inside the union of the held spans, both ends included, 0.0 without sessions (PR 65). Harm: an idle strategy reads as invested, or the exit day is missed.
-- `PBT metrics.mar_ratio` MAR has the CAGR's sign and times the drawdown depth gives the CAGR; None without a drawdown (PR 65). Harm: a deeper drawdown raises MAR, or a smooth run divides by zero.
-- `PBT metrics.tail_trimmed_mean` The mean without the `drop` largest values is the exact mean of the rest, never above the mean with one fewer dropped, None when nothing is left (PR 65). Harm: an edge resting on one outlier passes the tail test.
-- `PBT metrics.cost_share` The charges over the gross P&L, exact, in [0, 1] unless the charges turned a gain into a loss, None unless the gross is a gain (PR 65). Harm: costs that ate the edge read as a small share.
+- `PBT metrics.longest_drawdown` The longest drawdown is the longest run of points below the running maximum (polars `cum_max`), 0 exactly when the curve never falls, shorter than the curve. Harm: a run long under water reports a short recovery, or a return to the old peak still counts as under water.
+- `PBT metrics.exposure` Exposure is the share of the sessions inside the union of the held spans, both ends included, 0.0 without sessions. Harm: an idle strategy reads as invested, or the exit day is missed.
+- `PBT metrics.mar_ratio` MAR has the CAGR's sign and times the drawdown depth gives the CAGR; None without a drawdown. Harm: a deeper drawdown raises MAR, or a smooth run divides by zero.
+- `PBT metrics.tail_trimmed_mean` The mean without the `drop` largest values is the exact mean of the rest, never above the mean with one fewer dropped, None when nothing is left. Harm: an edge resting on one outlier passes the tail test.
+- `PBT metrics.cost_share` The charges over the gross P&L, exact, in [0, 1] unless the charges turned a gain into a loss, None unless the gross is a gain. Harm: costs that ate the edge read as a small share.
 - `CONF imports.hat_decoupled_from_legacy` The `app` modules that `app/hat` and `tests/hat` import are exactly the `SHARED` set in `test_conf_decoupling.py` (`app.base`, `app.database`, `app.paths`, `app.utils.env_loader`: infrastructure with no legacy code and no HAT rule); a new coupling fails, and a module no longer imported must leave the set. Harm: HAT quietly grows back into code it is meant to stand apart from.
 - `CONF imports.hat_suites_boot_no_legacy_app` Collecting `tests/hat` in a fresh interpreter loads neither `app.main` nor `app.routers` (the manual-trading singletons they once also listed were deleted in K4; `risk.no_manual_trading_path` keeps them deleted). Harm: HAT suites depend on booting the whole legacy app.
 - `CONF imports.legacy_does_not_import_hat` Only `app/database.py` (the table registry and schema upkeep) and `app/main.py` (the wiring) import `app.hat`; no other `app` module does. Harm: deleting or moving HAT code breaks the other side.
@@ -41,7 +41,7 @@ No check touches the network or a database. The decoupling checks read source fi
 - A failing `imports.hat_decoupled_from_legacy` names the module and the HAT file. Fix the import (use a HAT module, or inject the dependency); add to `SHARED` only a module that holds no HAT rule and no feature code, with its reason written next to the entry.
 - A failing `imports.hat_suites_boot_no_legacy_app` lists the loaded legacy modules. Find the first import that pulled them (a test helper, a root `conftest.py` import) and make it lazy or HAT-local; never filter the list.
 - A failing `metrics.*` property is a real bug in `app/hat/backtest/metrics.py`; the legacy copy has the same flaw for a constant series (found here, fixed with `VOLATILITY_FLOOR`).
-- A failing `fixtures.vcp_oracle_frozen` means the file changed. The legacy detector it came from is deleted (K5a), so the file is now the only record of those outputs: regenerate it only on purpose, from a recovered `pattern.py`, and change the recorded hash with it.
+- A failing `fixtures.vcp_oracle_frozen` means the file changed. The legacy detector it came from is deleted, so the file is now the only record of those outputs: regenerate it only on purpose, from a recovered `pattern.py`, and change the recorded hash with it.
 
 ## Updating
 
@@ -68,30 +68,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `8104db21d65a603e63c1e139b8717c1d64dd2bc8900786cad40ac5d8b2212754`
-
-## Scope changes
-
-Every narrowing of a property or strategy, with its reason (HAT-VER-034):
-
-- PR 69: `backtest/metrics.py` gains `held_sessions`, the count `exposure` divides by the sessions (the lifecycle gate reads it); `exposure` itself is unchanged, and no import direction changed.
-- PR 68 (O6): `backtest/metrics.py` gains `invested_share`, the exact Decimal mean of the sessions' invested shares (None without a session); the backtest checks it through PBT `backtest.invested_share` (verify-backtest). No metrics check changed.
-- PR 65 (G35): `backtest/metrics.py` gains `longest_drawdown`, `exposure`, `mar_ratio`, `tail_trimmed_mean` and `cost_share` (the last two on Decimals), with five new `metrics.*` properties. `metrics.mar_ratio` draws a drawdown of 0 or at least 1e-6 deep: a subnormal depth overflows the float quotient to infinity (found by the property; `compute_metrics` records a non-finite MAR as null).
-- `metrics.trade_stats_partition` found a subnormal gross loss giving an infinite profit factor; the HAT copy treats a gross loss below the floor as none and keeps the factor finite.
-- PR 12 rewrote `backtest/metrics.py` on polars (`pl.Series` in, the arithmetic unchanged; the population deviation is `std(ddof=0)`). The five `metrics.*` properties were moved to polars series with the same strategies and bounds, and each was shown failing again on the polars code (the `PR 12` breaks below). No property was narrowed.
-- `metrics.sharpe_zero_volatility` found that the legacy copy returned a Sharpe near 1e17 for a constant series (float noise passed `std > 0`); the HAT copy compares with a volatility floor of 1e-12. A deviation from the legacy function, recorded in the K1 PR.
-- K6 emptied `PENDING` in `test_conf_decoupling.py` and replaced it, with `PERMANENT`, by one `SHARED` set holding `app.base`, `app.database`, `app.paths` and `app.utils.env_loader`. They are kept as HAT-neutral shared infrastructure rather than moved into HAT: after K6 they hold no legacy code (`database.py` creates only HAT tables and Postgres only, `paths.py` has the roots and `HAT_DATA_ROOT`, `env_loader.py` parses `.env`), and moving them would duplicate the engine and the one `.env` loader. No check was narrowed: a new coupling is still refused.
-
-- K4 removed `services/execution/paper_book.py`, `brokers/*` and `services/fyers/token_store.py` from `SHIMS` (deleted), added `config.py` (it imports HAT's token store for the legacy data fetcher) and shortened `NEVER_LOADED` to the app and the routers. No check was narrowed: the deleted modules cannot be imported and `risk.no_manual_trading_path` asserts they stay gone.
-- K2 moved the six Fyers and symbol modules out of `PENDING` in `test_conf_decoupling.py`, added the six legacy re-export modules to `SHIMS` (they may import HAT; HAT may not import them), and added `database.py` and `main.py` to the wiring files the legacy-does-not-import-HAT check allows. The decoupling check is stricter for HAT (no `app.brokers`, `app.services` or `app.routers` import) and no check was narrowed.
-- K3 removed the four live-feed entries from `PENDING` in `test_conf_decoupling.py` (the data socket, the provider session, the live market service and the subscription registry moved into HAT or no longer touch it); `PENDING` now holds the K6 database modules only. `SHIMS` lists the legacy `live_market_service.py` and `ws_manager.py`, which import HAT.
-- K5b emptied `SHIMS` (it is deleted from `test_conf_decoupling.py`): `utils/clock.py`, `services/fyers/auth_flow.py`, `services/fyers_client.py`, `services/symbol_master.py`, `services/live_market_service.py` and `utils/ws_manager.py` were deleted, and `config.py` no longer imports HAT. `PENDING` (`app.database`, `app.paths`, `app.utils.env_loader`, all K6) is unchanged. No check was narrowed.
-- PR 44 added `test_fixtures_index_history_no_data` to `test_conf_fixtures.py` (a verify-data check of the MCP's no-data answer); the frozen VCP oracle check is unchanged and still passes.
-- PR 75b (architecture audit A-F3): `data/sessions.py` keeps only `IST` and the default session times; `MarketHoursPolicy` and `MarketPhase` are deleted (the session comes only from `SessionCalendar`). No standalone check changed.
+Covered digest: `76e9fbf4ff3489c910e5eb149b3ecafee0c714a6a4e0c176a742ddb87f5f4909`
 
 ## Scratch breaks
 
-Each check was shown to catch a deliberate break in the real code or fixture (HAT-VER-072), then the break was removed and the check returned to passing.
+Each check was shown to catch a deliberate break in the real code or fixture, then the break was removed and the check returned to passing.
 
 ### PBT metrics.drawdown_bounds
 
@@ -106,7 +87,7 @@ E    +  where np.False_ = all()
 E    +    where all = (0    0.0\n1    1.0\ndtype: float64 <= 0 & 0    0.0\n1    1.0\ndtype: float64 > -1).all
 ```
 
-Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: drawdown measured from the first value.
+Break: in `backend/app/hat/backtest/metrics.py`: drawdown measured from the first value.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -131,7 +112,7 @@ E    +  where 0 = TradeStats(total=1, wins=0, losses=0, win_rate=0.0, avg_win=0.
 E    +  and   0 = TradeStats(total=1, wins=0, losses=0, win_rate=0.0, avg_win=0.0, avg_loss=0.0, profit_factor=0.0).losses
 ```
 
-Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: a trade of exactly 0 is neither win nor loss.
+Break: in `backend/app/hat/backtest/metrics.py`: a trade of exactly 0 is neither win nor loss.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -156,27 +137,6 @@ E    +  where 7.860675556700752e+16 = <function sharpe_mean_std at 0x7fb2f6bbbb6
 E    +    where <function sharpe_mean_std at 0x7fb2f6bbbb60> = metrics.sharpe_mean_std
 ```
 
-Break: in `backend/app/hat/backtest/metrics.py`: the excess-CAGR floor compared on the annualised deviation (a per-period 1e-13 passes it).
-
-```
-tests/hat/properties/test_metrics.py F
-tests/hat/properties/test_metrics.py:63: in test_sharpe_zero_volatility
-tests/hat/properties/test_metrics.py:75: in test_sharpe_zero_volatility
-E   assert 31497039417.435608 == 0.0
-```
-
-Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: the volatility floor replaced by `std > 0`.
-
-```
-tests/hat/properties/test_metrics.py F
-  + Exception Group Traceback (most recent call last):
-  |   File "/tmp/claude-1000/-data-workspace-wt-hat-pr12-backtest/b5cc6546-d93d-4f00-8bcc-c5ce687ba958/scratchpad/pr12/root4/backend/tests/hat/properties/test_metrics.py", line 63, in test_sharpe_zero_volatility
-  |     st.floats(min_value=-0.2, max_value=0.2, allow_nan=False),
-  |                ^^^
-  |   File "/data/workspace/algotrading/venv/lib/python3.14/site-packages/hypothesis/core.py", line 2299, in wrapped_test
-  |     raise the_error_hypothesis_found
-```
-
 ### PBT metrics.sharpe_sign_follows_mean
 
 Break: in `backend/app/hat/backtest/metrics.py`: the mean taken as an absolute value.
@@ -190,7 +150,7 @@ E   Failing test case: test_sharpe_sign_follows_mean(
 E       series=Series([0.0, -0.5]),
 ```
 
-Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: the mean of absolute returns.
+Break: in `backend/app/hat/backtest/metrics.py`: the mean of absolute returns.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -210,7 +170,7 @@ Break: in `backend/app/hat/backtest/metrics.py`: the capital guard removed from 
 tests/hat/properties/test_metrics.py F
 ```
 
-Break (PR 12, polars): in `backend/app/hat/backtest/metrics.py`: the capital guard lets a negative capital through.
+Break: in `backend/app/hat/backtest/metrics.py`: the capital guard lets a negative capital through.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -224,7 +184,7 @@ E   assert -1.0 == 0.0
 
 ### PBT metrics.longest_drawdown
 
-Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: a point equal to the running peak counts as under water.
+Break: in `backend/app/hat/backtest/metrics.py`: a point equal to the running peak counts as under water.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -240,21 +200,7 @@ E       [
 
 ### PBT metrics.exposure
 
-Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: a span's exit date is not counted as held.
-
-```
-tests/hat/properties/test_metrics.py F
-tests/hat/properties/test_metrics.py:150: in test_exposure
-    assert value == sum(1 for d in sessions if d in covered) / len(sessions)
-E   assert 0.0 == (1 / 1)
-E    +  where 1 = sum(<generator object test_exposure.<locals>.<genexpr>>)
-E    +  and   1 = len([datetime.date(2026, 1, 1)])
-E   Failing test case: test_exposure(
-E       days={0},
-E       held=[(datetime.date(2026, 1, 1), datetime.date(2026, 1, 1))],
-```
-
-Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the sweep's span stops before its exit session (code review of PR 65, the span loop replaced a session-by-trade scan).
+Break: in `backend/app/hat/backtest/metrics.py`: a span's exit date is not counted as held.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -270,7 +216,7 @@ E       held=[(datetime.date(2026, 1, 1), datetime.date(2026, 1, 1))],
 
 ### PBT metrics.mar_ratio
 
-Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: MAR divides by the (negative) drawdown, not its depth.
+Break: in `backend/app/hat/backtest/metrics.py`: MAR divides by the (negative) drawdown, not its depth.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -286,7 +232,7 @@ E       drawdown=-0.5,
 
 ### PBT metrics.tail_trimmed_mean
 
-Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the trim drops the smallest values instead of the largest.
+Break: in `backend/app/hat/backtest/metrics.py`: the trim drops the smallest values instead of the largest.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -302,7 +248,7 @@ E       values=[Decimal('-1'), Decimal('5'), Decimal('1')],
 
 ### PBT metrics.cost_share
 
-Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the share divides by gross + charges.
+Break: in `backend/app/hat/backtest/metrics.py`: the share divides by gross + charges.
 
 ```
 tests/hat/properties/test_metrics.py F
@@ -332,7 +278,7 @@ E     Use -v to get more diff
 FAILED tests/hat/conformance/test_conf_decoupling.py::test_imports__hat_decoupled_from_legacy
 ```
 
-Break (K6, `SHARED` replaced `PENDING`): appended `import app.utils.logger` to `app/hat/money.py`, a module that is not in `SHARED`.
+Break: appended `import app.utils.logger` to `app/hat/money.py`, a module that is not in `SHARED`.
 
 ```
 tests/hat/conformance/test_conf_decoupling.py F                          [100%]
@@ -341,7 +287,7 @@ E   AssertionError: {'app.utils.logger': ['app/hat/money.py']}
 E   assert {'app.utils.l...at/money.py']} == {}
 ```
 
-Break (K6, a stale entry): added `"app.config": "break"` to `SHARED` although nothing under HAT imports it.
+Break: added `"app.config": "break"` to `SHARED` although nothing under HAT imports it.
 
 ```
 tests/hat/conformance/test_conf_decoupling.py F                          [100%]
@@ -376,7 +322,7 @@ tests/hat/conformance/test_conf_decoupling.py:144: in test_imports__legacy_does_
 E   AssertionError: assert ['utils/market_hours.py'] == []
 ```
 
-Break (K4, after `SHIMS` shrank): a deleted shim recreated as `app/services/execution/paper_book.py` importing `app.hat.money`.
+Break: a deleted shim recreated as `app/services/execution/paper_book.py` importing `app.hat.money`.
 
 ```
 tests/hat/conformance/test_conf_decoupling.py F                          [100%]
@@ -388,7 +334,7 @@ E     Use -v to get more diff
 FAILED tests/hat/conformance/test_conf_decoupling.py::test_imports__legacy_does_not_import_hat
 ```
 
-Break (K5b, after `SHIMS` was deleted): recreated `app/utils/clock.py` re-exporting `app.hat.clock.SYSTEM_CLOCK`.
+Break: recreated `app/utils/clock.py` re-exporting `app.hat.clock.SYSTEM_CLOCK`.
 
 ```
 tests/hat/conformance/test_conf_decoupling.py F

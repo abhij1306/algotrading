@@ -1,4 +1,4 @@
-"""PBT rescale.* (HAT-EXEC-140..143, audit F3): an open position spanning a split or bonus is
+"""PBT rescale.*: an open position spanning a split or bonus is
 rescaled before the ex-date open (quantity ⌊q / f⌋, prices × f, once per action, with its event),
 no exit fires from the action alone, the instrument is manage-only until the rescale is done, the
 broker stop follows it down, and the night before looks the next session's actions up for the held
@@ -62,7 +62,7 @@ D = Decimal
 EX_DAY = TRADE_DAY + timedelta(days=1)  # Thursday: the ex-date after an entry on Wednesday
 MORNING = datetime.combine(EX_DAY, time(8, 40), tzinfo=IST)
 OPEN = datetime.combine(EX_DAY, time(9, 16), tzinfo=IST)
-# Split a -> b gives b / a; a bonus of x for y held gives y / (x + y) (HAT-DATA-055).
+# Split a -> b gives b / a; a bonus of x for y held gives y / (x + y).
 RATIOS = st.sampled_from(
     [
         (TYPE_SPLIT, Fraction(1, 2)),
@@ -107,7 +107,7 @@ def _r_distance(p: HatPosition) -> Fraction:
     return (current - initial) / (entry - initial)
 
 
-# --- HAT-EXEC-141: the rescale keeps the position -----------------------------------------------
+# --- the rescale keeps the position -----------------------------------------------
 
 
 def _decision(result: exits.Evaluation) -> tuple[list[tuple[str, tuple[str, ...]]], list[str]]:
@@ -195,7 +195,7 @@ def test_preserves_position(
             assert abs(Fraction(sold) - Fraction(was) / f) <= 1 / f + 1, (sold, was)
 
 
-# --- HAT-EXEC-141: each action once, never for a position opened on or after it -----------------
+# --- each action once, never for a position opened on or after it -----------------
 
 
 @settings(max_examples=40, deadline=None)
@@ -294,7 +294,7 @@ def test_factor_exact(d: int, n: int, places: int) -> None:
             rescale.exact_factor(stored)
 
 
-# --- HAT-EXEC-142: until rescaled, no exit and no entry ---------------------------------------
+# --- until rescaled, no exit and no entry ---------------------------------------
 
 
 class _Book:
@@ -364,7 +364,7 @@ def test_pending_is_manage_only(ratio: tuple[str, Fraction], pending: bool, pric
             assert outcome.position_id is None
 
 
-# --- HAT-EXEC-144: an action the rescale cannot handle leaves the position manage-only -----------
+# --- an action the rescale cannot handle leaves the position manage-only -----------
 
 # A rights issue or demerger (`other`), and a consolidation however it is typed (factor above 1).
 UNHANDLED = st.sampled_from(
@@ -389,7 +389,7 @@ UNHANDLED = st.sampled_from(
 def test_unhandled_is_manage_only(
     unhandled: tuple[str, Fraction], offset: int, split: bool, runs: int, price: int
 ) -> None:
-    """HAT-EXEC-144 (design review item 6, option A): for every stored action the rescale cannot
+    """(design review item 6, option A): for every stored action the rescale cannot
     handle whose ex-date falls after the day a position opened, however often `ca.rescale`
     runs, the action is never applied, the position gets no exit view at any price and its
     instrument is manage-only, and exactly one `corporate_action.unhandled` names the
@@ -460,7 +460,7 @@ RESOLVE_CASES = st.sampled_from(
 def test_resolution_ends_lock(
     unhandled: tuple[str, Fraction], real: bool, second: bool, case: str, price: int
 ) -> None:
-    """HAT-EXEC-144 (PR 73; PR 31 follow-ups 1, 12): the owner's resolution of an unhandled
+    """: the owner's resolution of an unhandled
     action on a virtual position, outside market hours, records one `corporate_action.resolved`
     as the owner's, ends that action's lock and closes the position at the owner's price. A
     real position is refused (`real_position_flatten`): its quantity and stop are on the old
@@ -561,7 +561,7 @@ def _unhandled(session: Session, position_id: uuid.UUID, day: date) -> list[HatC
 def test_price_neutral_changes_nothing(
     neutral: list[tuple[str, int]], other: str, runs: int
 ) -> None:
-    """HAT-DATA-052, HAT-EXEC-144 (PR 47): a stored price-neutral action (a dividend or any
+    """: a stored price-neutral action (a dividend or any
     action of factor 1, kept for its ex-date) changes nothing a price-changing action decides:
     whatever its ex-date around the entry day, beside a split, an unhandled action or none,
     `ca.rescale` applies, flags and leaves manage-only exactly what it does without it, the exit
@@ -620,7 +620,7 @@ def test_price_neutral_changes_nothing(
     assert outcomes[1] == outcomes[0]
 
 
-# --- HAT-EXEC-143: the broker stop follows the rescale down ---------------------------------------
+# --- the broker stop follows the rescale down ---------------------------------------
 
 
 def _refuse_larger(rig: ManageRig, size: int) -> None:
@@ -702,7 +702,7 @@ def test_broker_stop_follows(
                 assert (D(stop.trigger_price), stop.qty) == (resting, size)
 
 
-# --- HAT-EXEC-140: the night before ---------------------------------------------------------------
+# --- the night before ---------------------------------------------------------------
 
 
 def _seed_symbols(session: Session, ids: list[uuid.UUID]) -> dict[str, uuid.UUID]:

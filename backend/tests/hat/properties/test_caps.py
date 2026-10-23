@@ -1,4 +1,4 @@
-"""PBT caps.* (HAT-RISK-030..035, 050, 060/061, 070..076, 100..104; HAT-GOV-090/091/093/094):
+"""PBT caps.* (..076, 100..104; ):
 the caps, invariants, kill thresholds and policy-change rules, on the real
 `app.hat.risk.service.evaluate_signal` and the pure rules it composes. Money is Decimal."""
 
@@ -76,7 +76,7 @@ def accepted_risk(parts: dict) -> Decimal:
     return decision.risk_amount
 
 
-# --- HAT-RISK-030: global open risk ---
+# --- global open risk ---
 
 
 @given(
@@ -118,7 +118,7 @@ def test_global_open_risk_boundary() -> None:
     )
 
 
-# --- HAT-RISK-031..034: per-bot caps ---
+# --- per-bot caps ---
 
 
 @given(levels_=st.sampled_from(("L1", "L2", "L3")), attempts=st.integers(1, 12))
@@ -186,7 +186,7 @@ def test_daily_stopouts(stopouts: int) -> None:
         assert decision.accepted
 
 
-# --- HAT-RISK-036: per-instrument cooldown after a hard stop (PR 58) ---
+# --- per-instrument cooldown after a hard stop ---
 
 COOLDOWN_CALENDAR = calendar_around(TRADE_DAY, span=40)
 
@@ -249,7 +249,7 @@ def test_cooldown_shortening_is_increase(current: int, proposed: int) -> None:
             policy_with(cooldown_sessions=bad)
 
 
-# --- HAT-RISK-035: exits are never blocked ---
+# --- exits are never blocked ---
 
 junk = st.one_of(
     st.none(),
@@ -291,7 +291,7 @@ def test_exits_never_blocked(
     assert decision.reason is None
 
 
-# --- HAT-RISK-050: the regime gate ---
+# --- the regime gate ---
 
 
 @given(st.sampled_from((S1, S2)))
@@ -303,7 +303,7 @@ def test_regime_gate_blocks_entries(strategy: str) -> None:
     assert decide(valid_ctx(strategy_key=strategy, gate_on=True)).accepted
 
 
-# --- HAT-RISK-060/061: kill thresholds ---
+# --- kill thresholds ---
 
 STEPS = st.lists(
     st.decimals(min_value=D("50"), max_value=D("200"), places=2), min_size=1, max_size=15
@@ -369,7 +369,7 @@ def test_kill_isolation(snapshots: list) -> None:
     assert [p.equity for p in series] == [totals[d] for d in sorted(totals)]
 
 
-# --- HAT-RISK-071/072: no adding to a position ---
+# --- no adding to a position ---
 
 
 @given(
@@ -407,7 +407,7 @@ def test_no_pyramiding(held_count: int, strategy: str) -> None:
     assert decision.reason == Reason.POSITION_EXISTS
 
 
-# --- HAT-RISK-073..076: invariants 3 to 6 ---
+# --- invariants 3 to 6 ---
 
 
 @given(entry_and_stop(), st.one_of(st.none(), money("0", "6000")))
@@ -542,7 +542,7 @@ def test_max_chase_always(
         assert decision.accepted, decision.reason
 
 
-# --- HAT-RISK-104: HAT's own kill switches are the halt ---
+# --- HAT's own kill switches are the halt ---
 
 
 @given(st.booleans(), st.booleans(), st.booleans(), st.booleans())
@@ -571,7 +571,7 @@ def test_hat_kill_is_authority(account: bool, bot: bool, health: bool, paused: b
     assert set(inspect.signature(evaluate_signal).parameters) == {"ctx", "band_pct"}
 
 
-# --- the price band (HAT-RISK-100, HAT-RISK-101) ---
+# --- the price band ---
 
 
 @given(
@@ -603,7 +603,7 @@ def test_price_band_width_fails_closed(band: Decimal) -> None:
     assert evaluate_signal(valid_ctx(), band_pct=band).reason == Reason.MISSING_INPUT
 
 
-# --- HAT-RISK-101/102: total, typed, fail closed ---
+# --- total, typed, fail closed ---
 
 garbage_ctx = st.builds(SignalContext, **dict.fromkeys(FIELDS, junk))
 
@@ -685,7 +685,7 @@ def test_fail_closed_naive_time_and_no_policy() -> None:
     assert decide(valid_ctx(strategy_key="unknown")).reason == Reason.MISSING_INPUT
 
 
-# --- HAT-GOV-090/093: increase or decrease ---
+# --- increase or decrease ---
 
 # field path -> (a more permissive value, a more restrictive value), written out literally from the
 # table; a higher number is more permissive except for `up_after_wins`.
@@ -762,7 +762,7 @@ def test_policy_direction_classification(pair: tuple) -> None:
 
 @given(st.sampled_from(("multiplier_bounds.hi", "base_weight.S1", "base_weight.S2")))
 def test_multiplier_and_weight_raises_are_increases(name: str) -> None:
-    """HAT-GOV-093: allowing a multiplier above 1 or a larger base weight is an increase."""
+    """Allowing a multiplier above 1 or a larger base weight is an increase."""
     doc = seed_policy().to_json()
     if name == "multiplier_bounds.hi":
         doc["multiplier_bounds"]["hi"] = "1.5"
@@ -771,7 +771,7 @@ def test_multiplier_and_weight_raises_are_increases(name: str) -> None:
     assert classify_direction(SEED, parse_policy(doc)) == "increase"
 
 
-# --- HAT-GOV-091: the evidence gate ---
+# --- the evidence gate ---
 
 trades = st.lists(
     st.tuples(st.decimals(min_value=D("-3"), max_value=D("6"), places=2), st.booleans()),
@@ -824,7 +824,7 @@ def test_increase_gate_rejects_junk(evidence: object) -> None:
     assert increase_gate_ok(evidence) is False  # type: ignore[arg-type]
 
 
-# --- HAT-GOV-094: changes are events ---
+# --- changes are events ---
 
 DB_ENGINE = memory_engine()
 USER = load_settings().user_id
@@ -910,9 +910,9 @@ def test_policy_change_emits_event(steps: list) -> None:
 
 @given(st.sampled_from(("raise", "lower")))
 def test_policy_change_inside_session_or_without_evidence_is_refused(kind: str) -> None:
-    """A change requested inside market hours, the owner's request without its chat id (PR 73),
+    """A change requested inside market hours, the owner's request without its chat id,
     an increase without evidence (the default source, the backtest runs, has no completed run:
-    HAT-GOV-091) and a request with no session open to take effect at are refused, and write
+    ) and a request with no session open to take effect at are refused, and write
     nothing."""
     with Session(DB_ENGINE) as session:
         try:

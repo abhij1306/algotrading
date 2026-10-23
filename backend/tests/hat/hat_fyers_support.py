@@ -1,4 +1,4 @@
-"""Shared setup for the Fyers session, login and token-store properties (K2).
+"""Shared setup for the Fyers session, login and token-store properties.
 
 Everything runs on a temporary token file, a controlled clock and recording stand-ins for the
 Fyers SDK (`hat.fakes.fyers_sdk`). Nothing reaches Fyers, and no real token file is read.

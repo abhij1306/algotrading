@@ -1,4 +1,4 @@
-"""The owner's admin command line against Postgres (HAT-OPS-091, PR 73; PR 35 follow-up 5).
+"""The owner's admin command line against Postgres.
 
 The properties run the commands on SQLite; this runs the "First deploy" runbook through `main`
 on the production database, inside a transaction that is rolled back, so the row locks, types

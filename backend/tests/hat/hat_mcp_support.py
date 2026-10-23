@@ -1,4 +1,4 @@
-"""Fakes for the PR 4 verification suites: a scripted MCP transport, a fake cm-market listing
+"""Fakes for the verification suites: a scripted MCP transport, a fake cm-market listing
 server and helpers to build a database holding the reference tables. No network anywhere."""
 
 from __future__ import annotations

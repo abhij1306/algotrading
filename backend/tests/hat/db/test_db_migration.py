@@ -1,4 +1,4 @@
-"""DB checks for the migration mechanism (HAT-SCH-101, HAT-SCH-103)."""
+"""DB checks for the migration mechanism."""
 
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -77,12 +77,12 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
         with engine.begin() as connection:
             connection.execute(text("ALTER TABLE hat_instrument DROP COLUMN delisted_on"))
             connection.execute(text("ALTER TABLE hat_job_run DROP COLUMN rows"))
-            # A database from before PR 45: bots defaulted to shadow and no DDPI columns.
+            # A database from before bots defaulted to shadow and no DDPI columns.
             connection.execute(
                 text("ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'shadow'")
             )
             connection.execute(text("ALTER TABLE hat_broker_account DROP COLUMN ddpi_confirmed"))
-            # A database from before PR 71: signals carried no confidence label.
+            # A database from before signals carried no confidence label.
             connection.execute(text("ALTER TABLE hat_signal DROP COLUMN confidence CASCADE"))
             connection.execute(text("ALTER TABLE hat_signal DROP COLUMN confidence_basis CASCADE"))
             connection.execute(
@@ -126,7 +126,7 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
 
 
 def _old_seed_superseded(pg_engine: Engine) -> None:
-    """HAT-RISK-011 (PR 46): `init_db()` moves a user still on the PR 10 seed to the current seed as
+    """: `init_db()` moves a user still on the PR 10 seed to the current seed as
     an `initial` version: the immutability trigger lets the old row be superseded, the cooling-off
     CHECK accepts the new one, and a second run writes nothing."""
     user = uuid.uuid4()

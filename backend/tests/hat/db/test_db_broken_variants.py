@@ -1,4 +1,4 @@
-"""Every DB check must fail when the rule it checks is removed (HAT-SCH-102, HAT-VER-032).
+"""Every DB check must fail when the rule it checks is removed.
 
 Each variant removes or weakens one trigger, index or constraint inside a transaction (Postgres
 DDL is transactional, so nothing persists) and requires the matching check to raise

@@ -1,4 +1,4 @@
-"""PBT fyers_broker.* (HAT-BRK-081, HAT-DEC-BD2, K2): the circuit breaker follows its model and is
+"""PBT fyers_broker.*: the circuit breaker follows its model and is
 per instance, nothing is sent while it is open, only an explicit Fyers error is a rejection (a lost,
 garbled or id-less answer is SUBMIT_UNCONFIRMED), and no price that is not a finite positive number
 reaches the SDK. Runs on the real `FyersBroker` over a recording SDK stand-in."""
@@ -195,7 +195,7 @@ REFUSED_WITH_ID = next(
 def test_a_rejection_with_an_id_stays_rejected(
     place: str, order_id: str, code: int, message: str
 ) -> None:
-    """HAT-BRK-081: an explicit error stays a rejection though it carries the id of the order
+    """An explicit error stays a rejection though it carries the id of the order
     Fyers created and refused (`id`, `id_fyers`, as recorded for an RMS refusal): the broker
     answers REJECTED with no order id, and the adapter `rejected` with no broker id, never placed
     or unconfirmed. Harm: a refused order read as placed leaves the signal waiting on an order
@@ -325,7 +325,7 @@ LIST_READS = {
 )
 @NO_DEADLINE
 def test_an_ok_reply_without_its_list_is_unreadable(method: str, shape: str) -> None:
-    """HAT-BRK-081: an ok reply that does not carry its list under the documented key (missing,
+    """An ok reply that does not carry its list under the documented key (missing,
     null, the wrong type, nested elsewhere) raises `FyersUnavailableError`, never reads as an
     empty book; the reply with its list, empty, reads as empty. Harm: after a lost answer the
     tag lookup reads "not found" and sends the order again; a session end ends a working entry."""
@@ -372,7 +372,7 @@ def test_a_circuit_opening_mid_place_is_not_sent(method: str) -> None:
     assert reply["message"] == BROKER_CIRCUIT_OPEN
 
 
-# --- the call budget (PR 50, HAT-BRK-082; research G18, O3) ---------------------------------
+# --- the call budget ---------------------------------
 
 BUDGET_DAY = date(2026, 10, 23)
 
@@ -419,7 +419,7 @@ def test_budget_windows_hold(
     per_day: int | None,
     steps: list[tuple[str, float, float]],
 ) -> None:
-    """HAT-BRK-082 (PR 50): for every limit and sequence of calls, pauses and day changes, no
+    """: for every limit and sequence of calls, pauses and day changes, no
     second holds more than `per_second` granted calls, no minute more than `per_minute`, no day
     more than `per_day`; a read is granted only while the window (and the day) leaves the share
     kept for writes free; nothing is granted inside a pause (at most `MAX_PAUSE`); a call is
@@ -488,7 +488,7 @@ def test_budget_windows_hold(
 @example(op="place_gtt", source="budget", retry_after=None)
 @example(op="orders", source="http429_json", retry_after="2")
 def test_throttled_call_not_sent(op: str, source: str, retry_after: str | None) -> None:
-    """HAT-BRK-082 (PR 50): a call the budget cannot grant is never sent, and one Fyers answers
+    """: a call the budget cannot grant is never sent, and one Fyers answers
     with HTTP 429 (a JSON error body, or none) is sent once and not again; either way a read
     fails closed with `broker_rate_limited`, a write is refused with `broker_rate_limited` as not
     sent (burning no retry), the circuit counts nothing, and a 429 pauses the whole budget for
@@ -532,7 +532,7 @@ def test_throttled_call_not_sent(op: str, source: str, retry_after: str | None) 
 @settings(max_examples=3, deadline=None)
 @given(retry_after=st.sampled_from([None, "2", "30"]))
 def test_late_429_still_pauses(retry_after: str | None) -> None:
-    """HAT-BRK-082 (PR 50, CodeAnt): a write Fyers answers HTTP 429 only after the guard gave up
+    """: a write Fyers answers HTTP 429 only after the guard gave up
     waiting is an unknown outcome for its caller (`SUBMIT_UNCONFIRMED`, one breaker failure, as
     any timeout), and the 429 still pauses the budget for its Retry-After when it lands. Harm:
     a slow broker's 429 is lost and HAT keeps calling into the limit."""
@@ -566,7 +566,7 @@ def test_late_429_still_pauses(retry_after: str | None) -> None:
     op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"])
 )
 def test_breaker_opened_while_waiting_sends_nothing(op: str) -> None:
-    """HAT-BRK-082 (PR 50, CodeAnt): a call that waited for the budget while another call opened
+    """: a call that waited for the budget while another call opened
     the circuit sends nothing: a read fails closed and a write is answered as when the circuit
     was open before it asked. Harm: calls queued behind the budget reach a broker the breaker
     has just declared down."""
@@ -596,7 +596,7 @@ def test_breaker_opened_while_waiting_sends_nothing(op: str) -> None:
     op=st.sampled_from(["place_order", "place_gtt", "modify_gtt", "cancel_gtt", "orders", "gtts"])
 )
 def test_writes_go_ahead_of_reads(op: str) -> None:
-    """HAT-BRK-082 (PR 50): reads may use only `READ_SHARE` of a window, so once they have spent
+    """: reads may use only `READ_SHARE` of a window, so once they have spent
     it every write (an order, a stop, a GTT) is still sent and every read is refused unsent; and
     while a write waits for a call, a read is not granted one even when the window has room.
     Harm: the 5-second fill sync's reads take the calls a stop placement waits for, and the
@@ -644,7 +644,7 @@ def test_writes_go_ahead_of_reads(op: str) -> None:
 def test_limits_from_settings(
     per_second: str | None, per_minute: str | None, per_day: str | None
 ) -> None:
-    """HAT-BRK-082 (PR 50): the budget's limits come from the settings, so a plan with higher
+    """: the budget's limits come from the settings, so a plan with higher
     limits (Fyers Prime) is a configuration change only: a positive whole number is taken as
     given, `0` or `off` lifts the day cap, and anything unset or unreadable is the default (8,
     180, 5,000). Harm: a typo in the environment stops every broker call, or Prime's limits

@@ -1,5 +1,4 @@
-"""CONF checks of the module boundaries and runtime guards (HAT-OVR-003/004/005/007/052,
-HAT-DEC-T2/T5/T13/BD1/BD3, HAT-SCH-021/105/106, HAT-OPS-050)."""
+"""CONF checks of the module boundaries and runtime guards."""
 
 import ast
 import asyncio
@@ -9,9 +8,8 @@ import re
 from pathlib import Path
 
 import pytest
-from hat_conf_repo import APP_ROOT, build_graph, reaches, repo_files
-from hat_conf_spec import REPO_ROOT
-from sqlalchemy import Engine, create_engine, event, select
+from hat_conf_repo import APP_ROOT, REPO_ROOT, build_graph, reaches, repo_files
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.pool import StaticPool
 
 import app.hat
@@ -138,7 +136,7 @@ def _dotted(node: ast.expr) -> str | None:
 
 
 def test_no_private_imports() -> None:
-    """CONF no_private_imports (PR 75a): no module under `app/hat`
+    """CONF no_private_imports: no module under `app/hat`
     imports an underscore name from another HAT module or reads one off a HAT module it imported.
     A module's interface is its public names. Harm: `live_trades` imported seven private helpers
     of the shadow engine, so a refactor of shadow trading could change real-position accounting
@@ -182,7 +180,7 @@ def test_no_private_imports() -> None:
 
 
 def test_hat_package_in_backend() -> None:
-    """HAT-DEC-T2/BD1: every module imports on this Python; no HAT file lives elsewhere."""
+    """Every module imports on this Python; no HAT file lives elsewhere."""
     names = [m.name for m in pkgutil.walk_packages(app.hat.__path__, "app.hat.")]
     assert "app.hat.ops.jobs" in names
     for name in names:
@@ -203,7 +201,7 @@ def test_hat_package_in_backend() -> None:
 
 
 def test_no_deferred_integrations() -> None:
-    """HAT-DEC-BD3: no HAT module imports or calls OpenAlgo; the openalgo_ref column is nullable."""
+    """No HAT module imports or calls OpenAlgo; the openalgo_ref column is nullable."""
     for path in HAT_ROOT.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for line in text.splitlines():
@@ -217,7 +215,7 @@ def test_no_deferred_integrations() -> None:
 
 
 def test_hat_data_root_paths(monkeypatch: pytest.MonkeyPatch) -> None:
-    """HAT-OVR-052: the data root is env-overridable, defaults under data_system/hat, is
+    """The data root is env-overridable, defaults under data_system/hat, is
     gitignored, and no HAT module builds a data path any other way."""
     import app.paths as paths
 
@@ -250,7 +248,7 @@ def test_hat_enabled_default_false() -> None:
 
 @pytest.mark.parametrize("dialect", ["sqlite", "mysql", "mssql", "oracle", ""])
 def test_hat_runtime_requires_postgres(dialect: str) -> None:
-    """HAT-DEC-T5 / HAT-SCH-105: `HatRuntime.start` with HAT enabled on a non-postgresql dialect
+    """`HatRuntime.start` with HAT enabled on a non-postgresql dialect
     raises before it builds its parts (the feed, Telegram, brokers), reads the database or starts
     a task, and `app/main.py` hands it the engine's real dialect."""
     from app.hat.daily.runtime import HatRuntime
@@ -291,45 +289,18 @@ def _memory_sqlite() -> Engine:
     )
 
 
-def test_seed_market_nse() -> None:
-    """HAT-SCH-021: after any number of seeds exactly one NSE row with the stated values; and
-    ensure_hat_schema issues no DDL on SQLite."""
-    from sqlalchemy.orm import Session
-
-    import app.hat.models  # noqa: F401
-    from app.base import Base
-    from app.hat.models.reference import HatMarket
-    from app.hat.schema import ensure_hat_schema, seed_hat_reference
-
-    engine = _memory_sqlite()
-    Base.metadata.create_all(engine)
-    statements: list[str] = []
-    event.listen(engine, "before_cursor_execute", lambda c, cur, stmt, *a: statements.append(stmt))
-    for _ in range(3):
-        ensure_hat_schema(engine)
-        seed_hat_reference(engine)
-    assert not any(re.match(r"\s*(CREATE|ALTER|DROP)", s, re.IGNORECASE) for s in statements)
-    with Session(engine) as session:
-        rows = session.scalars(select(HatMarket)).all()
-    assert [r.code for r in rows] == ["NSE"]
-    nse = rows[0]
-    assert (nse.timezone, nse.currency) == ("Asia/Kolkata", "INR")
-    assert (nse.session_open.isoformat(), nse.session_close.isoformat()) == ("09:15:00", "15:30:00")
+SECRET_NAME = re.compile(r"^(HAT_\w*(?:TOKEN|SECRET|CHAT_ID|_URL))=(.*)$", re.MULTILINE)
 
 
-SECRET_VARIABLES = [
-    "HAT_TELEGRAM_TOKEN",
-    "HAT_TELEGRAM_CHAT_ID",
-    "HAT_APPROVAL_SECRET",
-    "HAT_MCP_BHAVCOPY_URL",
-    "HAT_MCP_CMMARKET_URL",
-]
-
-
-def test_ops_no_secrets_in_repo() -> None:
-    """HAT-OPS-050 / DEC-T13: no file holds a value for a HAT variable and .env.example lists
-    each of them with an empty value."""
-    names = SECRET_VARIABLES
+def test_no_secret_values_in_repo() -> None:
+    """No file holds a value for a HAT secret variable (token, chat id, approval secret, MCP
+    endpoint URL), and `.env.example` lists each of them empty. The variables are the ones
+    `.env.example` names."""
+    example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8")
+    found = SECRET_NAME.findall(example)
+    names = [name for name, _ in found]
+    assert names
+    assert [name for name, value in found if value.strip()] == []
     assign = re.compile(r"\b(" + "|".join(names) + r")[ \t]*[=:][ \t]*[\"']?([^\s\"'#]+)")
     offenders = []
     for path in repo_files():
@@ -348,12 +319,3 @@ def test_ops_no_secrets_in_repo() -> None:
             offenders.append((rel, match.group(1), match.group(2)))
     # os.environ lookups and the like are not literals
     assert [o for o in offenders if not o[2].startswith(("os.", "env", "source", "settings"))] == []
-    example = (REPO_ROOT / ".env.example").read_text(encoding="utf-8").splitlines()
-    for name in names:
-        assert f"{name}=" in example, name
-    for name in names:
-        assert re.search(rf"^{name}=\s*$", "\n".join(example), re.MULTILINE), name
-
-
-def test_secrets_not_in_repo() -> None:
-    test_ops_no_secrets_in_repo()

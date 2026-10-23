@@ -99,7 +99,7 @@ class FakeBroker:
         self.profile: dict[str, Any] | BaseException = {"fy_id": "XA00000"}
         self.book: list[dict[str, Any]] = []
         # How many of the newest `book` rows the order book does not show yet (Fyers' book can
-        # lag a placed order: HAT-BRK-103).
+        # lag a placed order: ).
         self.lagging = 0
         self.gtts: list[dict[str, Any]] = []
         self.place_gtt_reply: object = None

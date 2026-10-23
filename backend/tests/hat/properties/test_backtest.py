@@ -1,4 +1,4 @@
-"""PBT backtest.* (09, HAT-BT-010..061): the day loop of `app.hat.engine.backtest` on generated
+"""PBT backtest.* (09): the day loop of `app.hat.engine.backtest` on generated
 markets (random walks on a paise grid, `hat_backtest_support`), against rules written out
 independently: the live scan run directly, the fill proxies, R and money identities, and the
 version and run rules of `publish_version`.
@@ -133,7 +133,7 @@ def _assert_parity(result: BacktestResult, data: MarketData, day: date) -> None:
         assert math.isclose(float(got.score), want.score, abs_tol=1e-6)
 
 
-# --- HAT-BT-010 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS))
@@ -206,7 +206,7 @@ def test_nightly_scan_parity(paths: dict, night: int, raw: tuple[int, int, str])
     assert ran == published
 
 
-# --- HAT-BT-011 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 def _upto(result: BacktestResult, day: date) -> dict[str, list]:
@@ -254,7 +254,7 @@ def test_nightly_no_lookahead(
     closes, the later nights' features), publish the same watchlist (levels, score, ADTR and
     criteria results) as night d did on the store cut at d (G39). Both hold the same corporate
     actions (none): a split stored after d re-scales every earlier bar by design (the adjusted
-    view, HAT-BT-012), so it is out of scope here."""
+    view), so it is out of scope here."""
     cfg = s.config()
     symbol = sorted(base)[pick % len(base)]
     future = next(iter(other.values()))
@@ -279,7 +279,7 @@ def test_nightly_no_lookahead(
         assert later.watchlist(nxt) == cut.watchlist(nxt)
 
 
-# --- HAT-BT-012 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS), st.integers(s.WARM_UP + 1, SESSIONS - 1), st.booleans())
@@ -303,7 +303,7 @@ def test_survivorship_free(paths: dict, gone: int, removed: bool) -> None:
         _assert_parity(result, data, DAYS[n])
 
 
-# --- HAT-BT-013 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS))
@@ -318,7 +318,7 @@ def test_version_pinned(paths: dict) -> None:
     assert result.metrics["risk_policy_version_id"] == str(pinned[1])
 
 
-# --- HAT-BT-020 / 021 -------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------
 
 
 FILL_TICKS = st.sampled_from([D("0.01"), D("0.05"), D("0.10")])
@@ -360,8 +360,8 @@ def test_entry_fill_proxy(open_: D, high: D, level: D, tick: D) -> None:
 )
 @RUNS
 def test_entry_fill_proxy_chase(paths: dict, chase: D, rule: str) -> None:
-    """In a run, every opened entry records its watchlist level as the trigger price
-    (HAT-CRIT-119) and filled at the proxy price of that level, within max chase of it: a
+    """In a run, every opened entry records its watchlist level as the trigger price and filled
+    at the proxy price of that level, within max chase of it: a
     gap-over beyond level x (1 + pct/100) is never bought, under either entry fill rule, and
     every watchlist row the rule fills on its day becomes a signal or a counted skip. The
     generated opens gap up by at most 3%, so the chase is drawn below that too."""
@@ -401,8 +401,8 @@ def test_entry_fill_proxy_chase(paths: dict, chase: D, rule: str) -> None:
 @given(s.paths(SESSIONS), st.sampled_from([1, 30]))
 @RUNS
 def test_stop_on_instrument_tick(paths: dict, scale: int) -> None:
-    """Every opened entry's stop is the live plan on the instrument's NSE tick of the trade date
-    (HAT-EXEC-053): entry x 0.95 rounded down to the tick set by the closes before that date.
+    """Every opened entry's stop is the live plan on the instrument's NSE tick of the trade
+    date: entry x 0.95 rounded down to the tick set by the closes before that date.
     Prices are scaled into the 0.01 and the 0.10 slab. Harm: backtest stops sit on a grid the
     live trigger never uses, so backtest and live risk differ."""
     scaled = {
@@ -428,7 +428,7 @@ def test_stop_on_instrument_tick(paths: dict, scale: int) -> None:
         assert signal.stop_price == floor_to_tick(entry * D("0.95"), tick)
 
 
-# --- HAT-BT-020: the entry day (PR 60) ---------------------------------------------------------
+# --- the entry day ---------------------------------------------------------
 
 LOWS = st.lists(st.tuples(PRICE, PRICE), min_size=1, max_size=8)
 
@@ -592,7 +592,7 @@ def test_contraction_stop_too_wide(paths: dict, max_pct: float) -> None:
     assert result.skips.get(SKIP_TOO_WIDE, 0) == triggers
 
 
-# --- HAT-BT-025: entry filters at the trigger (PR 61) -------------------------------------------
+# --- entry filters at the trigger -------------------------------------------
 
 
 @given(
@@ -629,7 +629,7 @@ def test_adtr_filter_applied(paths: dict, multiple: float, blank: set[date]) -> 
             assert (day, iid) not in bought
 
 
-# --- HAT-RISK-036: the per-instrument cooldown (PR 58) -----------------------------------------
+# --- the per-instrument cooldown -----------------------------------------
 
 
 @given(s.paths(SESSIONS), st.integers(0, 4), st.sampled_from([1, 2]))
@@ -792,7 +792,7 @@ def test_exit_fill_proxy_close(paths: dict) -> None:
         assert any(f.price == close for f in sells)
 
 
-# --- HAT-BT-024 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS), st.integers(0, 50).map(D))
@@ -811,14 +811,14 @@ def test_decimal_money(paths: dict, slippage: D) -> None:
     assert result.equity[-1][1] - s.spec(s.config(), DAYS).initial_equity == net
 
 
-# --- HAT-BT-032 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS))
 @RUNS
 def test_trades_match_metrics(paths: dict) -> None:
     """The trade count and sum of R in `trades.parquet` equal the run's metrics, and each trade
-    carries the score of the watchlist row it entered from (PR 65, N10), in the record and in
+    carries the score of the watchlist row it entered from, in the record and in
     the file. Harm: the confidence buckets (D132) group trades by a score they did not have."""
     result = _run(s.market(paths, DAYS))
     table = pq.read_table(pa.BufferReader(trades_parquet(result.trades)))
@@ -831,7 +831,7 @@ def test_trades_match_metrics(paths: dict) -> None:
     assert table.column("score").to_pylist() == [float(x) for x in scores]
 
 
-# --- HAT-BT-040 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS))
@@ -853,7 +853,7 @@ def test_r_and_expectancy(paths: dict) -> None:
         assert result.metrics["expectancy_r"] is None
 
 
-# --- HAT-BT-041 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 _NO_FEES = D(0)
@@ -915,9 +915,9 @@ def test_metrics_bounds(rows: list[tuple[int, D]], curve: list[D], rnd: object) 
 @example([(0, 2, D(-1), 5), (5, 6, D(4), 0)], [D(100), D(90), D(95), D(80), D(120)])
 @example([], [D(10) ** 12])  # one session far above the start: the CAGR overflows, so no MAR
 def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D]) -> None:
-    """A run's robustness figures (PR 65) restate its trades and equity: `exposure` is the share
+    """A run's robustness figures restate its trades and equity: `exposure` is the share
     of its sessions inside some trade's entry..exit span (`held_sessions` their count, and
-    `first_session` and `last_session` the span's ends, which the lifecycle gate reads, PR 69),
+    `first_session` and `last_session` the span's ends, which the lifecycle gate reads),
     `longest_drawdown_sessions` the
     longest run of sessions below the running peak of the curve (the initial equity first),
     `mar` the CAGR over the drawdown's depth (both null when the CAGR overflows, never a crash),
@@ -965,7 +965,7 @@ def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D])
     assert metrics["cost_share"] == share
 
 
-# --- HAT-BT-050 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 
 @given(s.paths(SESSIONS), st.randoms(use_true_random=False))
@@ -994,7 +994,7 @@ def test_deterministic(paths: dict, rnd: object) -> None:
     assert first.metrics["known_gaps"] == list(KNOWN_GAPS)
 
 
-# --- HAT-BT-020..022: recorded fill conventions (PR 62) -----------------------------------------
+# --- recorded fill conventions -----------------------------------------
 
 SLIPPAGES = st.sampled_from([D(0), D("-0"), D(5), DEFAULT_SLIPPAGE_BPS, D("20.0"), D(50)])
 
@@ -1006,9 +1006,8 @@ SLIPPAGES = st.sampled_from([D(0), D("-0"), D(5), DEFAULT_SLIPPAGE_BPS, D("20.0"
 def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool) -> None:
     """Every run's metrics record its fill path (open, low, high, close), entry fill rule,
     gap-through rule (min(open, stop)), trigger proxy, slippage, cost model, slot order
-    (`time` by default, PR 63) and path rules (PR 64: the ambiguous-day rule, `optimistic` by
-    default, the lower-circuit carry and the suspension markdown), both as flat keys and as one
-    `conventions` block (PR 65), whether it is flagged for promotion, and `config_digest`, the
+    (`time` by default) and path rules, both as flat keys and as one
+    `conventions` block, whether it is flagged for promotion, and `config_digest`, the
     hash of exactly those conventions; a
     `touch` run also reports the touch gap. A run flagged for promotion at a slippage of 0, or
     under `touch`, is refused. Harm: runs under different fill conventions read as comparable
@@ -1034,11 +1033,11 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
         "trigger_proxy": TRIGGER_PROXY,
         "slippage_bps": "0" if bps == 0 else format(bps.normalize(), "f"),  # -0 too
         "cost_model": fills.model.to_json(),
-        "slot_order": SLOT_ORDER_TIME,  # the default (PR 63)
+        "slot_order": SLOT_ORDER_TIME,  # the default
         "ambiguous": AMBIGUOUS_OPTIMISTIC,  # the defaults of PR 64
         "lower_circuit": "carry_to_next_unlocked_open",
         "suspension_markdown": {"after_sessions": SUSPENSION_SESSIONS, "band_pct": "5"},
-        "sleeve_weight": "0.5",  # the policy's base weight of S1 (PR 68)
+        "sleeve_weight": "0.5",  # the policy's base weight of S1
         "regime_mult": regime,
         "health_mult": "1",
     }
@@ -1067,9 +1066,9 @@ CONVENTIONS = st.tuples(
 @given(CONVENTIONS, CONVENTIONS)
 def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
     """Two runs' `config_digest`s are equal exactly when their entry fill rule, slippage (20
-    and 20.0 bps alike, -0 and 0 alike), cost model, slot order (PR 63), ambiguous-day rule,
-    bar-less sessions before the markdown (PR 64), sleeve weight (the policy's 0.50 when none
-    is given, 0.5 and 0.50 alike) and regime rule (PR 68) are. Harm: a run under other
+    and 20.0 bps alike, -0 and 0 alike), cost model, slot order, ambiguous-day rule,
+    bar-less sessions before the markdown, sleeve weight (the policy's 0.50 when none
+    is given, 0.5 and 0.50 alike) and regime rule are. Harm: a run under other
     conventions passes for a rerun, or a rerun reads as another convention."""
 
     def spec(
@@ -1102,7 +1101,7 @@ def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
     assert (config_digest(spec(*a)) == config_digest(spec(*b))) is same  # type: ignore[arg-type]
 
 
-# --- HAT-BT-026: slot order on a capped day (PR 63) ---------------------------------------------
+# --- slot order on a capped day ---------------------------------------------
 
 
 def _before(x: tuple[D | None, D | None], y: tuple[D | None, D | None], rule: str) -> int:
@@ -1190,7 +1189,7 @@ def test_slot_order_refused(rule: str) -> None:
     )
     if ok:
         check_conventions(PENETRATION, DEFAULT_SLIPPAGE_BPS, False, rule)
-        if rule == SLOT_ORDER_TIME:  # a promotion run sizes under `policy` (PR 69)
+        if rule == SLOT_ORDER_TIME:  # a promotion run sizes under `policy`
             check_conventions(
                 PENETRATION, DEFAULT_SLIPPAGE_BPS, True, rule, regime_mult=REGIME_MULT_POLICY
             )
@@ -1257,7 +1256,7 @@ def test_slot_order_applied(paths: dict, rule: str, fill: str) -> None:
             refused = refused or sig.reason == "max_positions"
 
 
-# --- HAT-BT-021 / 022: path pessimism (PR 64) ---------------------------------------------------
+# --- path pessimism ---------------------------------------------------
 
 # A market of one instrument: a flat consolidation at 100 (pivot 101) for the warm-up, then a
 # break that enters at 101.01 under penetration, with a 5% stop at 95.95 (1R = 5.06).
@@ -1463,7 +1462,7 @@ def test_path_rules_refused(rule: str, after: int) -> None:
         check_conventions(
             PENETRATION, DEFAULT_SLIPPAGE_BPS, False, ambiguous=rule, suspension_sessions=after
         )
-        if after <= SUSPENSION_SESSIONS:  # a promotion run sizes under `policy` (PR 69)
+        if after <= SUSPENSION_SESSIONS:  # a promotion run sizes under `policy`
             check_conventions(
                 PENETRATION,
                 DEFAULT_SLIPPAGE_BPS,
@@ -1490,7 +1489,7 @@ def test_path_rules_refused(rule: str, after: int) -> None:
         )
 
 
-# --- HAT-BT-061 -------------------------------------------------------------------------------
+# --- -------------------------------------------------------------------------------
 
 ENGINE = memory_engine()
 seed_hat_reference(ENGINE)
@@ -1510,7 +1509,7 @@ def test_version_status_requires_run(
     status: str, same_version: bool, promoted: bool, slots: str | None
 ) -> None:
     """A draft becomes `backtested` only with a completed run of that same version flagged for
-    promotion (PR 62) whose slots went in trigger order (`slot_order` `time`, PR 63); a run that
+    promotion whose slots went in trigger order (`slot_order` `time`); a run that
     is still running, failed, of another version, not flagged, in another slot order or recorded
     before PR 63 is refused and leaves the draft a draft."""
     with Session(ENGINE) as session:
@@ -1547,7 +1546,7 @@ def test_version_status_requires_run(
         session.rollback()
 
 
-# --- HAT-BT-011 / 012: the market loader --------------------------------------------------------
+# --- the market loader --------------------------------------------------------
 
 LOAD_DAYS = s.sessions(10)
 KINDS = st.sampled_from(["listed", "gone_before", "gone_after"])
@@ -1581,7 +1580,7 @@ def test_market_point_in_time(rows: list[tuple[str, int, bool]], end_n: int) -> 
     instrument delisted by the end has its last bar on or before its delisting as its last
     traded session, and one delisted after the end has none; every industry classification
     comes with its effective date, so the industry in force on a day is never a later
-    reclassification (HAT-BT-011, HAT-BT-012)."""
+    reclassification."""
     start, end = LOAD_DAYS[1], LOAD_DAYS[end_n]
     engine = memory_engine()
     universe = uuid.uuid4()
@@ -1659,7 +1658,7 @@ def test_market_point_in_time(rows: list[tuple[str, int, bool]], end_n: int) -> 
             assert industry_on(data, iid, day) == want
 
 
-# --- HAT-DATA-077: the features the loop reads are the night's ----------------------------------
+# --- the features the loop reads are the night's ----------------------------------
 
 
 @given(
@@ -1734,7 +1733,7 @@ def test_features_digest_pinned(
     )
 
 
-# --- HAT-BT-014: sizing through the sleeve's allocation (PR 68) --------------------------------
+# --- sizing through the sleeve's allocation --------------------------------
 
 WEIGHTS = st.integers(1, 100).map(lambda n: D(n) / 100)
 HISTORY = regime.SMA_SLOW + regime.VIX_WINDOW  # index sessions before the market's first
@@ -1823,8 +1822,8 @@ def test_sized_from_allocation(paths: dict, weight: D, rule: str, rnd: object) -
     under `1` (clamped to the policy's bounds) and under `policy` the regime engine's (v1 inputs,
     3-day rule warmed up from the run's first session, smoothed 0.25 a night), and a night without
     its regime inputs has no allocation, so that day's entries are rejected unsized. No accepted
-    entry risks more than its allocation's capital x risk per trade (HAT-BT-014, HAT-PORT-050,
-    HAT-PORT-052). Harm: the backtest sizes trades as live never would, so its percentage results
+    entry risks more than its allocation's capital x risk per trade. Harm: the backtest sizes
+    trades as live never would, so its percentage results
     describe another book."""
     data = _regime_market(paths, rnd)
     spec = dataclasses.replace(s.spec(s.config(), DAYS), sleeve_weight=weight, regime_mult=rule)
@@ -1859,8 +1858,8 @@ def test_sized_from_allocation(paths: dict, weight: D, rule: str, rnd: object) -
 def test_invested_share(paths: dict) -> None:
     """Every session records the share of the account's mark held in open positions: in
     [0, 1], above 0 exactly on the sessions a trade was open at the close (entered on or
-    before, exited after, or held to the period's end), and `invested_share` is their mean
-    (PR 68, audit O6). Harm: the report hides how little of the account a sleeve deploys, so
+    before, exited after, or held to the period's end), and `invested_share` is their mean.
+    Harm: the report hides how little of the account a sleeve deploys, so
     its percentage returns read as a full book's."""
     result = _run(s.market(paths, DAYS))
     days = [d for d, _ in result.equity]
@@ -1903,7 +1902,7 @@ def test_invested_share(paths: dict) -> None:
 @example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # above the cluster cap
 @example(None, REGIME_MULT_ONE, D("0.50"), D("0.4"), False)  # the base weight above it too
 @example(D("0.5"), REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion off the base weight
-@example(None, REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion under regime 1 (PR 69)
+@example(None, REGIME_MULT_ONE, D("0.50"), D(1), True)  # promotion under regime 1
 @example(None, REGIME_MULT_POLICY, D("0.50"), D(1), True)  # promotion as live sizes it
 def test_sizing_conventions_refused(
     weight: object, rule: str, base: D | None, cap: D, promote: bool
@@ -1912,11 +1911,11 @@ def test_sizing_conventions_refused(
     as is a regime rule other than `1` and `policy` (`backtest_bad_regime_mult`); a run for
     promotion is refused with a weight of its own (`backtest_promotion_off_base_weight`) or
     under regime rule `1` (`backtest_promotion_regime_variant`; live sizes under the regime
-    engine, PR 69); with no weight given, a policy
+    engine); with no weight given, a policy
     without the sleeve's base weight, or with one of 0, is refused (`backtest_no_base_weight`),
     and a weight above the policy's cluster cap, which the allocator would cut, is refused
     (`backtest_weight_above_cluster_cap`); otherwise the run records the weight used,
-    normalised (HAT-BT-014). Harm: a run sized on a weight of 0, above the whole account, above
+    normalised. Harm: a run sized on a weight of 0, above the whole account, above
     what the allocator gives or on a guess passes for evidence, or a promotion rides on a
     sizing live never uses."""
     policy = s.policy_version()
@@ -1974,8 +1973,8 @@ def test_regime_inputs_loaded(paths: dict, with_vix: bool, rated: set[int], pct:
     """Under the `policy` regime rule `load_market` reads what the regime job reads: the NIFTY
     500 and India VIX closes and each session's breadth from the features job, equal to
     `portfolio.jobs.read_series` and `read_breadth`; without a VIX close or any breadth in the
-    store it refuses (`backtest_no_regime_inputs`), and without the rule it reads neither
-    (PR 68). The generated history is too short for the job's breadth, so the sessions in
+    store it refuses (`backtest_no_regime_inputs`), and without the rule it reads neither. The
+    generated history is too short for the job's breadth, so the sessions in
     `rated` have theirs rewritten to `pct`.
     Harm: the regime-sized backtest reads other inputs than the nightly regime job, or sizes
     on a regime it could not compute."""

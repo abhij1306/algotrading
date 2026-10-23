@@ -1,4 +1,4 @@
-"""DB checks of the risk services against Postgres (HAT-GOV-091/094, HAT-SCH-033/073, HAT-RISK-060):
+"""DB checks of the risk services against Postgres:
 the real policy, kill and snapshot code writes rows the database constraints accept, and a
 service that skips its own rule is stopped by the database."""
 
@@ -126,7 +126,7 @@ def test_risk__kill_rows_pass_the_scope_check(conn: Connection) -> None:
 def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -> None:
     """`snapshot.bots` writes one row per bot and day however often it runs; equity is allocation
     capital plus realised P&L, so a cut of capital with no trade is a reallocation and trips
-    nothing (HAT-RISK-066), while a realised loss 10% under the restated peak trips the bot kill
+    nothing, while a realised loss 10% under the restated peak trips the bot kill
     and, the world holding this one bot, the account kill with it (both 10%, D128)."""
     w = b.world(conn)
     day = date(2026, 10, 19)

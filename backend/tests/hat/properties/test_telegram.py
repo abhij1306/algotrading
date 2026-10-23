@@ -1,4 +1,4 @@
-"""PBT telegram.* (08; HAT-TG-005..050, HAT-DEC-T15, HAT-DEC-I13, HAT-SCH-056, HAT-OPS-071): the
+"""PBT telegram.* (08; ): the
 Telegram service, event relay, notifier, reports and command log of `app.hat.telegram`, on
 SQLite, over a recording fake of the Bot API transport (`hat_telegram_support.FakeTransport`)
 and the real router over the Fyers adapter and `FakeBroker`. Nothing reaches Telegram or a
@@ -163,7 +163,7 @@ def test_retention_purge(
     assert second.rows == first.rows
 
 
-# --- shared helpers for the PR 16 properties ---------------------------------------------------
+# --- shared helpers for the properties ---------------------------------------------------
 
 D = Decimal
 # Rows the service writes for every update (its log, its message links, its cursors).
@@ -244,7 +244,7 @@ def alert_code(text: str) -> str:
     return text.split("\n", 1)[0].split(": ", 1)[1].rsplit(" (", 1)[0]
 
 
-# --- HAT-DEC-T15, HAT-TG-024: one alert per health failure -------------------------------------
+# --- one alert per health failure -------------------------------------
 
 HEALTH = st.lists(
     st.sampled_from(
@@ -309,11 +309,11 @@ def _held_position(rig: TgRig) -> HatPosition:
 def test_health_alert_for_every_failure(
     health: list[str], rejections: int, direct: list[str]
 ) -> None:
-    """HAT-DEC-T15, HAT-OPS-071: every `quality.failed`, `feed.stale`, `broker.session_lost`,
+    """Every `quality.failed`, `feed.stale`, `broker.session_lost`,
     `broker.capabilities_changed`, `corporate_action.unhandled` and `order.rejected` event
     becomes exactly one health alert in the chat, and every other alert the services raise
     becomes one message; an alert whose event the relay sends is not sent twice.
-    `gtt.unverified`, `gtt.unfilled`, `fill.excess` and `corporate_action.unhandled` (HAT-EXEC-144)
+    `gtt.unverified`, `gtt.unfilled`, `fill.excess` and `corporate_action.unhandled`
     are URGENT. Harm: the owner does
     not learn that a bot went manage-only or an order failed, or learns it twice and starts
     ignoring alerts."""
@@ -369,7 +369,7 @@ def test_health_alert_for_every_failure(
 @example(count=3, held=0, minutes=5)  # committed late, inside the wait: still sent
 @example(count=3, held=0, minutes=61)  # after the wait: dropped
 def test_relay_late_commit(count: int, held: int, minutes: int) -> None:
-    """HAT-DEC-T15, HAT-TG-024: an event whose transaction commits after the relay has passed
+    """An event whose transaction commits after the relay has passed
     its id (a lower id committed late) is still relayed, exactly once, if it commits within
     `GAP_WAIT`; the events around it are relayed once each, and an id that never fills is
     given up after `GAP_WAIT`. Harm: a health alert or approval card held by a slow
@@ -411,7 +411,7 @@ def test_relay_late_commit(count: int, held: int, minutes: int) -> None:
     assert all("feed.stale" in text for text in texts)
 
 
-# --- HAT-TG-005, HAT-DEC-I13: other chats change nothing ---------------------------------------
+# --- other chats change nothing ---------------------------------------
 
 
 @SLOW
@@ -425,7 +425,7 @@ def test_relay_late_commit(count: int, held: int, minutes: int) -> None:
 @example(chat=CHAT + 1, inbound=("text", "/kill"))
 @example(chat=CHAT + 1, inbound=("button", "take"))
 def test_unknown_chat_has_no_effect(chat: int, inbound: tuple[str, str]) -> None:
-    """HAT-TG-005, HAT-DEC-I13: an update from any chat but the allowlisted one, even a valid
+    """An update from any chat but the allowlisted one, even a valid
     Take of a live card or the Confirm of a pending flatten, changes no table but one refused
     `hat_command_log` row (`unknown_chat`), gets no reply, no answer and no edit, and calls no
     broker. Harm: a stranger controls the bots."""
@@ -449,13 +449,13 @@ def test_unknown_chat_has_no_effect(chat: int, inbound: tuple[str, str]) -> None
     assert (row.chat_id, row.accepted, row.reason) == (chat, False, "unknown_chat")
 
 
-# --- HAT-TG-012, HAT-SCH-074: one log row per update ------------------------------------------
+# --- one log row per update ------------------------------------------
 
 
 @SLOW
 @given(COMMAND_TEXTS, st.sampled_from((AT, EVENING, ist(date(2026, 10, 24), 11))), st.booleans())
 def test_every_command_logged(text: str, now: datetime, killed: bool) -> None:
-    """HAT-TG-012, HAT-SCH-074: whatever the text and the system state, handling one message
+    """Whatever the text and the system state, handling one message
     writes exactly one `hat_command_log` row with the sender's chat id; a refused one carries a
     reason and changed nothing. Harm: discipline metrics and audits miss user actions."""
     rig = TgRig().at(now)
@@ -474,7 +474,7 @@ def test_every_command_logged(text: str, now: datetime, killed: bool) -> None:
         assert state(rig) == before
 
 
-# --- HAT-TG-030: the closed command set ---------------------------------------------------------
+# --- the closed command set ---------------------------------------------------------
 
 UNPARSED = st.one_of(
     ANY_TEXT.filter(lambda t: parse(t) is None),
@@ -503,7 +503,7 @@ UNPARSED = st.one_of(
 @given(UNPARSED, st.sampled_from((AT, EVENING)))
 @example("@", AT)  # not a command, so it names no other bot (found in PR 75a)
 def test_unknown_command_rejected(text: str, now: datetime) -> None:
-    """HAT-TG-030, HAT-DEC-B12: a text that is not one of the ten commands with its arguments
+    """A text that is not one of the ten commands with its arguments
     (an order, a gate override, a command with extra words) is refused (`unknown_command` or
     `bad_arguments`) and changes nothing. Harm: malformed input triggers an action."""
     rig = TgRig().at(now)
@@ -549,7 +549,7 @@ def _cased(name: str, upper: list[bool]) -> str:
 )
 @example("/kill", BOT_USERNAME + "x", [False] * len(BOT_USERNAME), AT)
 def test_other_bot_ignored(text: str, other: str, upper: list[bool], now: datetime) -> None:
-    """HAT-TG-030: in a group, a command addressed to another bot (`/kill@other_bot`) is
+    """In a group, a command addressed to another bot (`/kill@other_bot`) is
     ignored: one refused row (`other_bot`), no reply, no state change, no broker call. The same
     command addressed to this bot, its `getMe` username in any case, runs as if unsuffixed; while
     `getMe` fails, every suffixed command is refused (fail closed).
@@ -589,13 +589,13 @@ def test_other_bot_ignored(text: str, other: str, upper: list[bool], now: dateti
     assert state(rig) != before
 
 
-# --- HAT-TG-031: no order from text -------------------------------------------------------------
+# --- no order from text -------------------------------------------------------------
 
 
 @SLOW
 @given(st.lists(st.one_of(COMMAND_TEXTS, st.sampled_from(("take", "yes", "TAKE"))), max_size=6))
 def test_no_free_text_orders(texts: list[str]) -> None:
-    """HAT-TG-031: whatever text arrives, even the Take button's own callback data typed as a
+    """Whatever text arrives, even the Take button's own callback data typed as a
     message while a card is open, no order is placed and no entry `hat_order` is written. Harm:
     a typo or a forged message opens a position outside the risk policy."""
     rig = TgRig()
@@ -607,7 +607,7 @@ def test_no_free_text_orders(texts: list[str]) -> None:
         assert session.scalars(select(HatOrder).where(HatOrder.purpose == "entry")).all() == []
 
 
-# --- HAT-TG-011: none dropped, none applied twice --------------------------------------------
+# --- none dropped, none applied twice --------------------------------------------
 
 
 class CrashError(BaseException):
@@ -731,7 +731,7 @@ class FailingService(CrashingService):
 def test_offset_commits_with_update(
     updates: list[tuple[int, str]], crashes: list[tuple[int, str]]
 ) -> None:
-    """HAT-TG-011: for every sequence of updates (text commands, messages from other chats,
+    """For every sequence of updates (text commands, messages from other chats,
     commands whose handler fails, updates that fail before a handler runs, commands that meet a
     passing database error once, a Take button) and every crash point in the poll loop (before
     an update runs, at the commit of its command-log row and offset, after it), polling again
@@ -787,7 +787,7 @@ def test_offset_commits_with_update(
         assert takes == []
 
 
-# --- HAT-TG-013: user events are attributed -----------------------------------------------------
+# --- user events are attributed -----------------------------------------------------
 
 USER_EVENTS = frozenset(
     {
@@ -827,7 +827,7 @@ USER_ACTIONS = st.lists(
 @given(USER_ACTIONS)
 @example([("/flatten", AT), ("confirm", AT)])  # a confirmed flatten (rarely drawn in 15)
 def test_user_events_attributed(actions: list[tuple[str, datetime]]) -> None:
-    """HAT-TG-013: every event a command or a button press records about the user's action
+    """Every event a command or a button press records about the user's action
     (pause, resume, kill, re-arm, mode change, Take, Skip, flatten) has `actor = 'user'` and the
     sender's chat id in its payload, and every accepted state change records one. Harm: skips,
     pauses and flattens cannot be counted in the discipline metrics."""
@@ -854,7 +854,7 @@ def test_user_events_attributed(actions: list[tuple[str, datetime]]) -> None:
             assert any(e.event_type in USER_EVENTS for e in new), action
 
 
-# --- HAT-TG-014: no secret, token or broker text in output --------------------------------------
+# --- no secret, token or broker text in output --------------------------------------
 
 
 class Captured(logging.Handler):
@@ -891,7 +891,7 @@ SECRET_TEXT = st.text(
 @SLOW
 @given(st.binary(min_size=32, max_size=48), SECRET_TEXT, SECRET_TEXT)
 def test_no_secret_in_output(secret: bytes, bot_token: str, broker_text: str) -> None:
-    """HAT-TG-014: no message sent and no log record written contains the bot token, the
+    """No message sent and no log record written contains the bot token, the
     approval secret, an issued card token or button, or the text of a broker error, even when
     the broker rejects the entry with that text and the HTTP layer fails with the token in its
     URL and error body. Harm: a leaked token or secret lets an outsider control the bot or
@@ -938,7 +938,7 @@ def test_no_secret_in_output(secret: bytes, bot_token: str, broker_text: str) ->
             assert value not in text
 
 
-# --- HAT-TG-020: only the allowlisted chat ------------------------------------------------------
+# --- only the allowlisted chat ------------------------------------------------------
 
 
 @SLOW
@@ -962,7 +962,7 @@ def test_no_secret_in_output(secret: bytes, bot_token: str, broker_text: str) ->
 )
 @example(["route", "relay", "take"])  # a Take on a live card clears its buttons
 def test_send_only_to_allowlist(actions: list[str]) -> None:
-    """HAT-TG-020: whatever the service, the relay, the notifier and the reports send, every
+    """Whatever the service, the relay, the notifier and the reports send, every
     `sendMessage` and `editMessageReplyMarkup` goes to the allowlisted chat, and an update from
     another chat is not answered at all. Harm: trade details and approval buttons reach
     someone else."""
@@ -995,7 +995,7 @@ def test_send_only_to_allowlist(actions: list[str]) -> None:
             assert payload["chat_id"] == CHAT
 
 
-# --- HAT-TG-021: login prompts ------------------------------------------------------------------
+# --- login prompts ------------------------------------------------------------------
 
 
 class Links:
@@ -1015,7 +1015,7 @@ class Links:
 def test_login_prompt_links(
     offset: int, statuses: list[str], inactive: bool, positions: list[str]
 ) -> None:
-    """HAT-TG-021: on a trading day the 08:30 job sends one prompt with one link per active
+    """On a trading day the 08:30 job sends one prompt with one link per active
     account, once however often it is run; the 09:05 job sends one iff some active account has
     no live `hat_broker_session` that day, listing exactly those, and it is URGENT, naming
     their real open positions, iff those accounts hold any; on a non-trading day neither sends
@@ -1111,7 +1111,7 @@ def test_login_prompt_links(
             assert f" {held} open position(s) " in head
 
 
-# --- HAT-TG-022: the watchlist digest -----------------------------------------------------------
+# --- the watchlist digest -----------------------------------------------------------
 
 POOL = tuple(f"W{n:02d}" for n in range(14))
 WATCHLIST = st.dictionaries(
@@ -1122,7 +1122,7 @@ WATCHLIST = st.dictionaries(
 @SLOW
 @given(WATCHLIST, WATCHLIST)
 def test_watchlist_digest_content(yesterday: dict[str, int], today: dict[str, int]) -> None:
-    """HAT-TG-022: for two consecutive watchlists of a bot, the digest's new symbols are today
+    """For two consecutive watchlists of a bot, the digest's new symbols are today
     minus yesterday, the dropped ones yesterday minus today, and the top list is the first
     min(10, n) of today by score descending; the message says exactly that. Harm: the owner acts
     on a wrong summary of what the bot will trade."""
@@ -1176,7 +1176,7 @@ def test_watchlist_digest_content(yesterday: dict[str, int], today: dict[str, in
 @SLOW
 @given(st.lists(st.integers(min_value=1, max_value=3), min_size=1, max_size=3))
 def test_watchlist_digest_once(sends: list[int]) -> None:
-    """HAT-TG-022 (audit L7): each night's digest of a bot goes out once, however often the
+    """: each night's digest of a bot goes out once, however often the
     nightly job sends it (a retry after a later bot's send failed); the next night's watchlist
     gets its own. Harm: every retry repeats the digests already delivered."""
     rig = TgRig()
@@ -1201,7 +1201,7 @@ def test_watchlist_digest_once(sends: list[int]) -> None:
         assert len(rig.transport.texts()) == night + 1
 
 
-# --- HAT-TG-023: the card is the signal ---------------------------------------------------------
+# --- the card is the signal ---------------------------------------------------------
 
 
 @SLOW
@@ -1211,7 +1211,7 @@ def test_watchlist_digest_once(sends: list[int]) -> None:
     st.integers(min_value=1, max_value=200),
 )
 def test_card_matches_signal(mode: str, entry_ticks: int, risk_ticks: int) -> None:
-    """HAT-TG-023: the approval card (confirm) or the shadow message of a signal shows the
+    """The approval card (confirm) or the shadow message of a signal shows the
     `hat_signal` row's trigger price, stop, qty and risk exactly; a card shows the approval's
     expiry and offers exactly two controls, Take and Skip, signed for that signal; a shadow
     message offers none. Harm: the owner approves a trade other than the one the engine places,
@@ -1251,7 +1251,7 @@ def test_card_matches_signal(mode: str, entry_ticks: int, risk_ticks: int) -> No
     assert {c.signal_id for c in claims if c} == {signal.id}
 
 
-# --- HAT-TG-024, HAT-OPS-071: reports -----------------------------------------------------------
+# --- reports -----------------------------------------------------------
 
 REFUSALS = st.lists(
     st.sampled_from(("market_closed", "stale_feed", "quality_failed", "regime_gate")), max_size=3
@@ -1281,7 +1281,7 @@ def _refused_check(reason: str) -> PlacementCheck:
 def test_report_content(
     refusals: list[str], snapshots: list[tuple[int, int, int]], fills: int
 ) -> None:
-    """HAT-TG-024: the 15:35 digest lists exactly the day's `signal.rejected` signals with their
+    """The 15:35 digest lists exactly the day's `signal.rejected` signals with their
     reason codes; the 15:40 report shows each bot's open risk, realised R and equity against its
     peak from its latest `hat_daily_bot_snapshot`; every fill, partial, close and stop move of a
     real position is one message, and none of a virtual one. Harm: rejected signals, drawdowns
@@ -1393,7 +1393,7 @@ DAY_KIND = st.sampled_from(("trading", "holiday", "unknown"))
 @example(kinds=["trading"] * 5 + ["unknown"] * 9, day=4)  # a calendar that runs out on a Friday
 @example(kinds=["trading"] * 3 + ["unknown"] * 11, day=2)  # ... and on a Wednesday
 def test_veto_digest_on_week_end(kinds: list[str], day: int) -> None:
-    """HAT-TG-024, HAT-EXEC-130: the weekly veto digest goes out on a trading day exactly when
+    """The weekly veto digest goes out on a trading day exactly when
     no later weekday of its week may still trade (a holiday in the calendar does not; a day
     the calendar does not have yet may). Saturdays and Sundays never trade. Harm: the "weekly"
     digest comes every day once the calendar runs out, or never in a week with a holiday."""
@@ -1422,7 +1422,7 @@ def test_veto_digest_on_week_end(kinds: list[str], day: int) -> None:
     assert is_week_end(calendar, target) is expected
 
 
-# --- HAT-TG-032: /mode only outside market hours ------------------------------------------------
+# --- /mode only outside market hours ------------------------------------------------
 
 
 @SLOW
@@ -1433,7 +1433,7 @@ def test_veto_digest_on_week_end(kinds: list[str], day: int) -> None:
 @example(quarter=40, word="auto")  # 10:00 IST on the trade day
 @example(quarter=80, word="confirm")  # 20:00 IST
 def test_mode_outside_hours(quarter: int, word: str) -> None:
-    """HAT-TG-032: `/mode` is refused inside market hours and for any value but shadow,
+    """`/mode` is refused inside market hours and for any value but shadow,
     confirm and auto, writing no `hat_mode_change`; an accepted one (auto only after its
     confirmation) queues the change for the next session open of `hat_trading_calendar`.
     Harm: switching to auto mid-session, or a mode that trades around the risk policy."""
@@ -1458,7 +1458,7 @@ def test_mode_outside_hours(quarter: int, word: str) -> None:
     assert row.to_mode == word.lower()
 
 
-# --- HAT-TG-038: /mode names one bot and says which gate refuses it ----------------------------
+# --- /mode names one bot and says which gate refuses it ----------------------------
 
 
 @SLOW
@@ -1472,7 +1472,7 @@ def test_mode_outside_hours(quarter: int, word: str) -> None:
 @example(word="auto", ddpi=True, weights=False, twin=False)
 @example(word="auto", ddpi=True, weights=True, twin=True)
 def test_mode_names_a_bot_and_its_gate(word: str, ddpi: bool, weights: bool, twin: bool) -> None:
-    """HAT-TG-038, HAT-GOV-085: `/mode <mode>` without a bot is refused and writes nothing;
+    """`/mode <mode>` without a bot is refused and writes nothing;
     `/mode <bot> confirm|auto` is refused with the first gate that would hold the bot back at
     the next open (`ddpi_not_confirmed`, then `weights_not_confirmed`) and writes nothing, or is
     queued (auto after its confirmation); `/status` then shows the queued change beside the mode
@@ -1532,7 +1532,7 @@ def test_mode_names_a_bot_and_its_gate(word: str, ddpi: bool, weights: bool, twi
     assert f"{now}; {word} from " in (status.reply.text or "")
 
 
-# --- HAT-TG-033: second confirmation ------------------------------------------------------------
+# --- second confirmation ------------------------------------------------------------
 
 
 def _count(session: Session, where: ColumnElement[bool]) -> int:
@@ -1556,7 +1556,7 @@ CONFIRM_ACTIONS = st.lists(
 @example([("/flatten", 0), ("press", 10), ("replay", 0)])
 @example([("/kill", 0), ("/arm", 0), ("press", 301)])
 def test_second_confirm(actions: list[tuple[str, int]]) -> None:
-    """HAT-TG-033: auto, a re-arm and a flatten happen only when the Confirm button of their
+    """Auto, a re-arm and a flatten happen only when the Confirm button of their
     command is pressed in the allowlisted chat before the confirmation's 5 minutes are up, and
     each confirmation acts at most once: a replayed press, a late press or a press from another
     chat does nothing. Harm: one mistyped message switches to real-money auto, re-arms after a
@@ -1602,7 +1602,7 @@ def test_second_confirm(actions: list[tuple[str, int]]) -> None:
     assert +got == +want
 
 
-# --- HAT-TG-035, HAT-GOV-082: flatten -----------------------------------------------------------
+# --- flatten -----------------------------------------------------------
 
 
 @SLOW
@@ -1612,7 +1612,7 @@ def test_second_confirm(actions: list[tuple[str, int]]) -> None:
     st.booleans(),
 )
 def test_flatten_logged(when: tuple[int, int], parts: int, killed: bool) -> None:
-    """HAT-TG-035, HAT-GOV-082: a confirmed `/flatten` sells only: every order it sends has
+    """A confirmed `/flatten` sells only: every order it sends has
     purpose flatten, side sell and qty at most the position's open qty, even under a tripped
     kill switch; it writes exactly one `flatten.executed` with `actor = 'user'` and the chat id.
     After 15:30 the confirmation is refused (`market_closed`) and nothing is sold or recorded.
@@ -1672,7 +1672,7 @@ def test_flatten_logged(when: tuple[int, int], parts: int, killed: bool) -> None
             pytest.fail("a flatten in market hours sent no sale")
 
 
-# --- HAT-TG-037: read commands ------------------------------------------------------------------
+# --- read commands ------------------------------------------------------------------
 
 
 @SLOW
@@ -1692,7 +1692,7 @@ def test_flatten_logged(when: tuple[int, int], parts: int, killed: bool) -> None
     st.booleans(),
 )
 def test_read_commands_side_effect_free(command: str, now: datetime, killed: bool) -> None:
-    """HAT-TG-037: `/status`, `/positions`, `/watchlist` and `/login` change no table but the
+    """`/status`, `/positions`, `/watchlist` and `/login` change no table but the
     chat's own log and make no broker call. Harm: a status check changes trading state."""
     rig = TgRig(mode=modes.SHADOW)
     rig.route(0)  # a virtual position to list
@@ -1706,7 +1706,7 @@ def test_read_commands_side_effect_free(command: str, now: datetime, killed: boo
     assert rig.fake.calls[broker:] == []
 
 
-# --- HAT-TG-040: forged tokens ------------------------------------------------------------------
+# --- forged tokens ------------------------------------------------------------------
 
 FORGERIES = st.one_of(
     st.tuples(st.just("flip"), st.integers(min_value=0, max_value=54), st.integers(1, 63)),
@@ -1723,7 +1723,7 @@ _B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
 @given(FORGERIES, st.text(max_size=60))
 @example(forgery=("flip", 0, 1), noise="")  # Take turned into Skip
 def test_token_forgery_rejected(forgery: tuple[str, int, int], noise: str) -> None:
-    """HAT-TG-040: a callback that is not a button the service issued for the card (any
+    """A callback that is not a button the service issued for the card (any
     character changed, the expiry moved, signed under another secret, another signal's id,
     the two cards' buttons swapped, or arbitrary text) is refused with no state change and no
     broker call. Harm: a forged callback approves a real-money entry."""
@@ -1763,7 +1763,7 @@ def test_token_forgery_rejected(forgery: tuple[str, int, int], noise: str) -> No
         assert session.get(HatApproval, other_id).decision is None
 
 
-# --- HAT-TG-042: the 5-minute window ------------------------------------------------------------
+# --- the 5-minute window ------------------------------------------------------------
 
 
 @SLOW
@@ -1771,7 +1771,7 @@ def test_token_forgery_rejected(forgery: tuple[str, int, int], noise: str) -> No
 @example(299)
 @example(300)
 def test_expiry_window(after: int) -> None:
-    """HAT-TG-042: the card expires 5 minutes after it is sent; a Take from then on is refused
+    """The card expires 5 minutes after it is sent; a Take from then on is refused
     and places nothing, the approval ends expired, and a Take before then places one order
     (the price is at the trigger). Harm: the owner approves a setup whose price and context
     are stale."""
@@ -1795,7 +1795,7 @@ def test_expiry_window(after: int) -> None:
         assert len(rig.places()) == 1
 
 
-# --- HAT-TG-043: Take re-checks max-chase -------------------------------------------------------
+# --- Take re-checks max-chase -------------------------------------------------------
 
 
 @SLOW
@@ -1803,7 +1803,7 @@ def test_expiry_window(after: int) -> None:
 @example(chase_bp=0, locked=False)
 @example(chase_bp=1000, locked=False)
 def test_take_chase_recheck(chase_bp: int, locked: bool | None) -> None:
-    """HAT-TG-043: a Take from the chat places the entry iff the live price is within the
+    """A Take from the chat places the entry iff the live price is within the
     trigger's max-chase and the stock is known not to be locked at its upper circuit (unknown
     fails closed); otherwise the Take is recorded with the price at the tap and refused. Harm:
     the owner's tap buys far above the planned entry, at a risk larger than sized."""
@@ -1835,7 +1835,7 @@ def test_take_chase_recheck(chase_bp: int, locked: bool | None) -> None:
         assert rig.places() == []
 
 
-# --- HAT-SCH-056, HAT-TG-044: the raw token is never kept ---------------------------------------
+# --- the raw token is never kept ---------------------------------------
 
 PRESSES = st.lists(st.tuples(st.integers(0, 1), st.sampled_from(("take", "skip"))), max_size=3)
 
@@ -1864,7 +1864,7 @@ def _tokens_after(presses: list[tuple[int, str]]) -> tuple[TgRig, list[str], lis
 @SLOW
 @given(PRESSES)
 def test_token_never_stored(presses: list[tuple[int, str]]) -> None:
-    """HAT-SCH-056: whatever is pressed, no column of any HAT table holds an issued card token
+    """Whatever is pressed, no column of any HAT table holds an issued card token
     or button token; `hat_approval.token_hash` is its sha256. Harm: anyone with database
     access can approve trades."""
     rig, raw, _logs = _tokens_after(presses)
@@ -1876,7 +1876,7 @@ def test_token_never_stored(presses: list[tuple[int, str]]) -> None:
 @SLOW
 @given(PRESSES)
 def test_token_never_persisted(presses: list[tuple[int, str]]) -> None:
-    """HAT-TG-044: the raw tokens exist only in the buttons: no table and no log record written
+    """The raw tokens exist only in the buttons: no table and no log record written
     by HAT holds one, and the stored hash is the hash of the card's token. Harm: anyone with
     database or log access can approve trades."""
     rig, raw, logs = _tokens_after(presses)

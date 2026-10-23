@@ -1,4 +1,4 @@
-"""PBT time.trade_date_ist (HAT-SCH-015): the trade date is the Asia/Kolkata calendar date."""
+"""PBT time.trade_date_ist: the trade date is the Asia/Kolkata calendar date."""
 
 from datetime import UTC, datetime, timedelta, timezone
 

@@ -1,4 +1,4 @@
-"""PBT fyers_ipv4.* (HAT-BRK-093): Fyers HTTP leaves over IPv4 only.
+"""PBT fyers_ipv4.*: Fyers HTTP leaves over IPv4 only.
 
 The live write test of 2026-10-22 found `requests` reaching Fyers over IPv6 by default, and Fyers
 refused every write from it with code -50 ("only whitelisted IP"). These properties drive a real
@@ -192,7 +192,7 @@ ENVS = st.fixed_dictionaries(
 @example(env={"https_proxy": PROXY_URL, "no_proxy": "", "NO_PROXY": "*"})
 @example(env={"https_proxy": PROXY_URL, "no_proxy": "FYERS.IN"})
 def test_no_proxy_carries_fyers(env: dict[str, str]) -> None:
-    """PBT fyers_ipv4.no_proxy_carries_fyers (HAT-BRK-093; PR 73, PR 25 follow-up 6): whenever
+    """PBT fyers_ipv4.no_proxy_carries_fyers: whenever
     `require_direct_fyers` lets HAT start, neither `requests` (the SDK's client) nor urllib's
     reading of the environment uses a proxy for any Fyers host HAT reaches; and when it refuses,
     both the start of the production parts and `sdk` (every Fyers HTTP client) fail with

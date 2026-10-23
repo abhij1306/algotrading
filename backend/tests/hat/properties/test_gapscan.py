@@ -1,4 +1,4 @@
-"""PBT gapscan.* (HAT-DATA-120..122, HAT-BOT-052): the 09:16 gap scan covers the listing, selects
+"""PBT gapscan.*: the 09:16 gap scan covers the listing, selects
 by the spec's rule and records its timing, on the real code with a fake cm-market server."""
 
 from datetime import UTC, date, datetime, timedelta
@@ -45,7 +45,7 @@ def listing_rows(entries: list[tuple[str, str, Decimal, Decimal]]) -> list[dict[
     ]
 
 
-# --- covers the universe (HAT-DATA-120) ---------------------------------------------------------
+# --- covers the universe ---------------------------------------------------------
 
 
 RECORDED = [
@@ -90,7 +90,7 @@ def test_covers_universe_unpriced(bad: object, where: str) -> None:
     assert [(r.symbol, r.gap_pct) for r in rows] == [("AAA", None)]
 
 
-# --- the selection rule (HAT-DATA-121, HAT-BOT-052) --------------------------------------------
+# --- the selection rule --------------------------------------------
 
 BANDS = st.sampled_from([None, 2, 5, 10, 20])
 
@@ -147,12 +147,12 @@ def test_filter(stocks: list[tuple[str, tuple[Decimal, Decimal], bool, object]])
         if gap_ok and universe_ok and band != "missing" and band_ok:
             expected.add(symbol)
     assert set(handed) == expected
-    for symbol, (opened, _prev), _u, _b in stocks:  # the listing's open reaches EP (PR 22)
+    for symbol, (opened, _prev), _u, _b in stocks:  # the listing's open reaches EP
         if symbol in expected:
             assert opens[symbol] == Decimal(str(float(opened)))
 
 
-# --- timing (HAT-DATA-122) ----------------------------------------------------------------------
+# --- timing ----------------------------------------------------------------------
 
 
 @settings(max_examples=60)

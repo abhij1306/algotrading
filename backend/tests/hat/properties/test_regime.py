@@ -1,4 +1,4 @@
-"""PBT regime.* (HAT-PORT-030..034): the 3-day confirmation, the inputs, the classification and
+"""PBT regime.*: the 3-day confirmation, the inputs, the classification and
 the multiplier table, on the real `app.hat.engine.portfolio.regime`."""
 
 import tempfile
@@ -333,7 +333,7 @@ def sma(closes: list[Decimal], n: int, back: int = 0) -> Decimal | None:
 
 @given(CLOSES, st.integers(1, 10), st.integers(1, 5))
 def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None:
-    """HAT-BOT-053: close_above_sma_and_rising is true iff close_t > SMA_t and SMA_t >
+    """Close_above_sma_and_rising is true iff close_t > SMA_t and SMA_t >
     SMA_{t-rising}; sma_fast_above_slow_both_rising is true iff SMA_fast > SMA_slow and both are
     above their value `rising` sessions earlier; a series too short for the lookback is false.
     Through the config, the fast/slow rule without `rising_days` reads 3 sessions (owner default,

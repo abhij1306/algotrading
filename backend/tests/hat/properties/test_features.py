@@ -1,4 +1,4 @@
-"""PBT features.* (HAT-DATA-071..077, HAT-DEC-T11): the polars features on adjusted bars.
+"""PBT features.*: the polars features on adjusted bars.
 
 No look-ahead, the formulas against a direct Fraction evaluation, the RS and momentum percentiles,
 breadth, split invariance, incremental equals full rebuild, the job's idempotence, and the
@@ -207,7 +207,7 @@ def close_to(got: float | None, want: Fraction | None) -> bool:
     return math.isclose(got, float(want), rel_tol=1e-9, abs_tol=1e-12)
 
 
-# --- HAT-DATA-071 no look-ahead --------------------------------------------------------------
+# --- no look-ahead --------------------------------------------------------------
 
 
 @given(
@@ -262,7 +262,7 @@ def test_batching_changes_nothing(world: list[Series], cut: int, batch: int, pic
     assert digest(part_b) == digest(whole_b.filter(keep))
 
 
-# --- HAT-DATA-072 formulas -------------------------------------------------------------------
+# --- formulas -------------------------------------------------------------------
 
 
 def _mean(values: list[Fraction]) -> Fraction:
@@ -362,7 +362,7 @@ def test_turnover_input(rng: Lcg, kind: str) -> None:
         )
 
 
-# --- HAT-DATA-074, 075 percentiles -----------------------------------------------------------
+# --- percentiles -----------------------------------------------------------
 
 
 def _avg_rank_pct(values: dict[str, float]) -> dict[str, float]:
@@ -428,7 +428,7 @@ def test_rs_pct(world: list[Series], pick: int) -> None:
 @given(world=st.one_of(histories(), histories(full=True)), pick=st.integers(0, 3))
 @settings(max_examples=100, deadline=None)
 def test_mom_rank(world: list[Series], pick: int) -> None:
-    """mom_rank is the largest of the day's universe percentiles of ret21, ret63 and ret126,
+    """Mom_rank is the largest of the day's universe percentiles of ret21, ret63 and ret126,
     in [0, 100]; null only when none of the three exists or the instrument is outside."""
     universe = universes(pick, world)
     got = feature_rows(world, universe)
@@ -457,7 +457,7 @@ def test_mom_rank(world: list[Series], pick: int) -> None:
                 assert math.isclose(value, max(want), rel_tol=1e-12, abs_tol=1e-12), (iid, day)
 
 
-# --- HAT-DATA-076 breadth --------------------------------------------------------------------
+# --- breadth --------------------------------------------------------------------
 
 
 @given(world=st.one_of(histories(), histories(full=True)), pick=st.integers(0, 3))
@@ -674,7 +674,7 @@ def test_load_lookback(rng: Lcg, n_days: int, first: int, rows: int, slack: int)
         assert got.height == len(want)
 
 
-# --- HAT-DATA-077 incremental equals full ----------------------------------------------------
+# --- incremental equals full ----------------------------------------------------
 
 
 def _split_actions(world: list[Series], rng: Lcg) -> list[ActionFactor]:
@@ -758,7 +758,7 @@ def test_changed_inputs_rebuild_everything(
             assert digest(sa) == digest(fresh.read_partition(DATASET_BREADTH, day))
 
 
-# --- HAT-DATA-073 split invariance -----------------------------------------------------------
+# --- split invariance -----------------------------------------------------------
 
 
 @given(
@@ -794,7 +794,7 @@ def test_split_invariant(rng: Lcg, factor: str, length: int, ex_at: int) -> None
                     "volume": int(r["volume"] * f),
                 }
             # The ex-date row keeps the unsplit prev_close: NSE publishes it already adjusted
-            # (HAT-DATA-053, audit F14), so the view must not scale it again.
+            # , so the view must not scale it again.
             rows.append(r)
         split.append(Series(s.iid, rows))
     ex_date = base[0].rows[ex_index]["date"]
@@ -813,7 +813,7 @@ def test_split_invariant(rng: Lcg, factor: str, length: int, ex_at: int) -> None
 
 
 def _hashes(root: Path) -> dict[str, str]:
-    """sha256 of every derived file (features, breadth and the job's state), by relative path."""
+    """Sha256 of every derived file (features, breadth and the job's state), by relative path."""
     return {
         str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in sorted(root.rglob("*"))

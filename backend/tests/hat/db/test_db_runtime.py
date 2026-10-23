@@ -1,4 +1,4 @@
-"""DB checks for the runtime tables (HAT-SCH-051 .. HAT-SCH-058, HAT-SCH-073)."""
+"""DB checks for the runtime tables (.. )."""
 
 import hat_db_runtime as rules
 import pytest

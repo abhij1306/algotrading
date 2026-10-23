@@ -1,4 +1,4 @@
-"""Properties of the trade journal (`engine/journal.py`, PR 36; HAT-EXEC-042, HAT-SCH-062).
+"""Properties of the trade journal (`engine/journal.py`, PR 36; ).
 
 The journal is the one writer of a trade's state: it checks each step against the transition
 table before anything is written, refuses an engine decision the table forbids and keeps a broker
@@ -123,7 +123,7 @@ def _events(session: Session) -> int:
 @example([(0, False), (13, False)])  # a decision the table forbids
 @example([(0, False), (1, False), (6, True), (13, True), (9, True)])  # a card, then a fill
 def test_validates_before_writing(steps: list[tuple[int, bool]]) -> None:
-    """HAT-EXEC-042, HAT-SCH-062 (PR 36): for every sequence of lifecycle events, each recorded
+    """: for every sequence of lifecycle events, each recorded
     through the journal as an engine decision or as a broker fact, an allowed step moves the
     signal (and, once it holds a position, the position) and writes one event; a decision the
     table forbids raises before anything is written and leaves the state; a broker fact the table
@@ -206,7 +206,7 @@ def _open(session: Session, signal: HatSignal, position: HatPosition, order: Hat
 
 
 def _veto(session: Session, signal: HatSignal, position: HatPosition, order: HatOrder) -> None:
-    """A skipped card whose veto trade the journal opened (HAT-EXEC-032)."""
+    """A skipped card whose veto trade the journal opened."""
     _record(
         session, signal, "signal.triggered", {}, aggregate_type="signal", aggregate_id=signal.id
     )
@@ -251,7 +251,7 @@ KINDS = st.sampled_from(["signal", "position", "ended", "veto", "unfoldable"])
 @example(trades=[("unfoldable", False, lifecycle.OPEN)])
 @example(trades=[("ended", True, lifecycle.CLOSED), ("ended", False, lifecycle.OPEN)])
 def test_check_names_mismatches(trades: list[tuple[str, bool, str]]) -> None:
-    """HAT-EXEC-042 (PR 36): the nightly `journal.check` (`journal.mismatches`) names exactly the
+    """: the nightly `journal.check` (`journal.mismatches`) names exactly the
     trades not yet ended whose stored state differs from the fold of their events, or whose events
     do not fold (named `unfoldable`, the check going on to the next), each with the trade it is
     (`trade` or `veto`): a signal in an active state, its own position once it holds one, a signal
@@ -328,7 +328,7 @@ SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")  # what an alert detail may hold 
 @given(drifted=st.integers(0, JOURNAL_ALERTS + 3), sound=st.integers(0, 2))
 @example(drifted=JOURNAL_ALERTS + 1, sound=1)
 def test_check_alerts(drifted: int, sound: int) -> None:
-    """HAT-EXEC-042, HAT-SCH-062 (PR 36): the nightly `journal.check` job alerts URGENT
+    """: the nightly `journal.check` job alerts URGENT
     `journal.mismatch` once per drifted trade, at most `JOURNAL_ALERTS` a night, each alert
     naming the signal, its stored and replayed states and the night's count in plain codes, and
     records the count as its rows; sound trades raise nothing and nothing is repaired. Harm: the

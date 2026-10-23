@@ -1,4 +1,4 @@
-"""PBT mpp.* (HAT-EXEC-066, HAT-EXEC-075; PR 48): HAT's sales under SEBI market
+"""PBT mpp.*: HAT's sales under SEBI market
 price protection, which turns a market sale into a protected limit that can rest unfilled. The
 real fill sync and trade manager on SQLite, through the real Fyers adapter over `FakeBroker`; the
 order-book shape of a protected sale is the assumed fixture `fyers_mpp_sale_assumed.json` (the
@@ -125,7 +125,7 @@ def _events(session: Session, rows: list[HatOrder], kind: str) -> int:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-075, step 3: a market sale resting unfilled is sent again fresh
+# step 3: a market sale resting unfilled is sent again fresh
 # ---------------------------------------------------------------------------------------
 
 
@@ -142,7 +142,7 @@ def _events(session: Session, rows: list[HatOrder], kind: str) -> int:
 def test_resting_market_sale_resent(
     shape: str, misses: int, parts: list[int], resend: bool
 ) -> None:
-    """PR 48 (G02): under market price protection a market sale is a limit a band from the
+    """Under market price protection a market sale is a limit a band from the
     price, and rests unfilled once the price falls through it. The fill sync records the price
     the book shows for each sale on its row; with `resend` on, a market sale still resting a
     minute after its send is cancelled (`order.cancelled`, code `sale_resend`, with the book's
@@ -230,8 +230,8 @@ def test_resting_market_sale_resent(
 @example(locks=[True, True, False], shape="market_protected")
 @example(locks=[None], shape="market_plain")
 def test_lower_circuit_lock_holds_the_sale(locks: list[bool | None], shape: str) -> None:
-    """PR 48 (G03 live): while the instrument's last trade is at its lower circuit (the stored
-    band, PR 51) a resting market sale is not cancelled: a re-send would lose its place in the
+    """While the instrument's last trade is at its lower circuit (the stored
+    band) a resting market sale is not cancelled: a re-send would lose its place in the
     sellers' queue, and nothing trades below the band. It is alerted once (`sale.unfilled`, code
     `lower_circuit_locked`) however many syncs it stays locked; at the first sync where the lock
     is gone (or not known) the sale is cancelled to go again. Harm: a locked sale is cancelled and
@@ -269,7 +269,7 @@ def test_lower_circuit_lock_holds_the_sale(locks: list[bool | None], shape: str)
 @example(seconds=59, shape="market_protected")
 @example(seconds=60, shape="market_protected")
 def test_no_cancel_without_a_resend(seconds: int, shape: str) -> None:
-    """PR 48 (CodeAnt): a resting market sale is cancelled only when its re-send, a sync (a
+    """A resting market sale is cancelled only when its re-send, a sync (a
     minute) later, still falls before the 15:30 order cutoff; from then on it is left resting.
     Harm: a sale cancelled at 15:29:30 cannot be sent again, and the exit is lost for the
     session."""
@@ -295,7 +295,7 @@ def test_no_cancel_without_a_resend(seconds: int, shape: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-075 (G22): a sale refused twice goes as a limit at the lower band
+# (G22): a sale refused twice goes as a limit at the lower band
 # ---------------------------------------------------------------------------------------
 
 
@@ -309,7 +309,7 @@ def test_no_cancel_without_a_resend(seconds: int, shape: str) -> None:
 @example(path="after_taking", floor=True, last="accepted")
 @example(path="at_once", floor=False, last="accepted")
 def test_rejected_twice_goes_at_the_band(path: str, floor: bool, last: str) -> None:
-    """PR 48 (G22): a sale refused twice in a session (by the broker at once, or rejected after
+    """A sale refused twice in a session (by the broker at once, or rejected after
     the broker took it) is sent once more as a LIMIT SELL at the day's lower circuit price (the
     lowest price that can trade today, so no price check or protection band refuses it) for what
     is open, and the owner is told (`sale.unfilled`, code `band_limit`). Refused too, it raises
@@ -367,7 +367,7 @@ def test_rejected_twice_goes_at_the_band(path: str, floor: bool, last: str) -> N
 
 
 # ---------------------------------------------------------------------------------------
-# HAT-EXEC-066: a triggered GTT's sale already at the market is asked again
+# a triggered GTT's sale already at the market is asked again
 # ---------------------------------------------------------------------------------------
 
 
@@ -380,7 +380,7 @@ def test_rejected_twice_goes_at_the_band(path: str, floor: bool, last: str) -> N
 @example(syncs=4, locked_from=None, resend=True)
 @example(syncs=3, locked_from=1, resend=True)
 def test_gtt_market_sale_asked_again(syncs: int, locked_from: int | None, resend: bool) -> None:
-    """PR 48 (G02), HAT-EXEC-066: a triggered GTT's sale the book already shows as a market
+    """PR 48 (G02), a triggered GTT's sale the book already shows as a market
     order but still resting (a protected limit the price left) is, with `resend` on, asked to go
     at the market again (exactly `{order_type: MARKET}` on its id) at every sync, so the broker
     sets the protection band at the price then; the owner is paged once at the `page_after`th
@@ -441,7 +441,7 @@ def _opened_overnight(rig: ManageRig) -> HatPosition:
     page=st.none() | st.sampled_from(["1", "2", "5", "0", "-3", "x", ""]),
 )
 def test_resend_flag_parsed(resend: str | None, page: str | None) -> None:
-    """HAT-EXEC-075 (PR 48): `HAT_MPP_RESEND` turns the re-send on exactly for a true value (off
+    """: `HAT_MPP_RESEND` turns the re-send on exactly for a true value (off
     unset or for anything else), and `HAT_MPP_PAGE_AFTER` is a positive whole number, else 3.
     Harm: the re-send of an unconfirmed book shape is on by default, or a typo never pages."""
     env = {}

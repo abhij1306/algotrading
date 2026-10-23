@@ -1,4 +1,4 @@
-"""PBT health.bands (HAT-PORT-040): the health multiplier of a sleeve from its drawdown, on the
+"""PBT health.bands: the health multiplier of a sleeve from its drawdown, on the
 real `app.hat.engine.portfolio.health` and the policy's bands."""
 
 from decimal import Decimal
