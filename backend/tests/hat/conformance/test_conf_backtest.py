@@ -25,10 +25,10 @@ PROPERTIES = Path(__file__).resolve().parents[1] / "properties"
 # directly: scan, scoring, criteria, sizing, caps and the risk decision live behind them.
 SHARED = {
     "app.hat.engine.watchlist.scan_and_publish": "scan",
-    "app.hat.engine.trades.open_entry": "risk decision and sizing",
-    "app.hat.engine.trades.evaluate_position": "exit stack",
-    "app.hat.engine.trades.close_position": "exit fills",
-    "app.hat.engine.trades.expire_watchlist": "watchlist expiry",
+    "app.hat.engine.entries.open_entry": "risk decision and sizing",
+    "app.hat.engine.shadow.evaluate_position": "exit stack",
+    "app.hat.engine.shadow.close_position": "exit fills",
+    "app.hat.engine.shadow.expire_watchlist": "watchlist expiry",
     "app.hat.engine.stops.plan_stop": "initial stop",
     "app.hat.engine.trigger.evaluate_entry_filters": "entry filters",
 }
@@ -40,7 +40,7 @@ PRIVATE = (
     "app.hat.risk.caps",
     "app.hat.risk.service",
 )
-LOGIC_MODULES = ("scan", "exits", "stops", "watchlist", "trades")
+LOGIC_MODULES = ("scan", "exits", "stops", "watchlist", "entries", "shadow")
 
 
 def _public_functions(path: Path) -> set[str]:
@@ -84,7 +84,7 @@ def test_backtest_shares_engine_imports() -> None:
     ]
     assert calls
     assert all("decide" not in {k.arg for k in c.keywords} for c in calls)
-    assert "app.hat.risk.service.evaluate_signal" in imports_of(HAT / "engine" / "trades.py")
+    assert "app.hat.risk.service.evaluate_signal" in imports_of(HAT / "engine" / "entries.py")
     # the cost and fill modules choose prices only: no engine logic behind them either
     for path in sorted((HAT / "backtest").glob("*.py")):
         if path in LOOP or path.name in RUNNERS:

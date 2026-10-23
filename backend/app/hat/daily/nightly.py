@@ -48,8 +48,8 @@ from ..data.reference_jobs import (
 from ..data.renames import renames_from_bars
 from ..data.store import ActionFactor, DataStore
 from ..data.symbols import symbol_master
+from ..engine.close_gap import record_close_gaps
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
-from ..engine.live_trades import record_close_gaps
 from ..engine.portfolio.allocation_service import policy_at
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
 from ..engine.rescale import (

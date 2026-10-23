@@ -32,7 +32,7 @@ from app.hat.risk.modes import Mode
 from app.hat.schema import ensure_hat_schema
 
 if TYPE_CHECKING:
-    from app.hat.engine.trades import EntryRequest
+    from app.hat.engine.entries import EntryRequest
 
 # --- runtime tables (.. ) -------------------------------------------
 
@@ -641,7 +641,7 @@ def _race_entries(
     position, in the order they committed. The caller empties the runtime tables."""
     from sqlalchemy.orm import Session
 
-    from app.hat.engine import trades
+    from app.hat.engine import entries
     from app.hat.risk.decision import SignalContext
     from app.hat.risk.service import evaluate_signal
 
@@ -660,7 +660,7 @@ def _race_entries(
             first_in.wait(5)
         with Session(engine) as session:
             decide = hold_between_decision_and_insert if hold else evaluate_signal
-            outcome = trades.open_entry(session, request, decide=decide)
+            outcome = entries.open_entry(session, request, decide=decide)
             session.commit()
             taken.append(outcome.position_id is not None)
 
@@ -709,7 +709,7 @@ def check_runtime__per_bot_serialised(conn: Connection) -> None:
     must wait for it, then see the first one's position and be rejected for the cap."""
     from hat_risk_support import AT, TRADE_DAY, policy_with, valid_ctx
 
-    from app.hat.engine import trades
+    from app.hat.engine import entries
     from app.hat.risk.policy import PolicyVersion
 
     engine = conn.engine
@@ -718,8 +718,8 @@ def check_runtime__per_bot_serialised(conn: Connection) -> None:
         policy_id, 1, datetime(2026, 1, 1, tzinfo=UTC), None, policy_with(max_open_positions=1)
     )
 
-    def request(instrument: uuid.UUID) -> trades.EntryRequest:
-        return trades.EntryRequest(
+    def request(instrument: uuid.UUID) -> entries.EntryRequest:
+        return entries.EntryRequest(
             bot_id=bot,
             playbook="pb",
             instrument_id=instrument,
@@ -745,7 +745,7 @@ def check_runtime__owner_serialised(conn: Connection) -> None:
     position and be rejected for `global_open_risk`."""
     from hat_risk_support import AT, TRADE_DAY, policy_with, valid_ctx
 
-    from app.hat.engine import trades
+    from app.hat.engine import entries
     from app.hat.risk.policy import PolicyVersion
     from app.hat.risk.service import evaluate_signal
 
@@ -756,8 +756,8 @@ def check_runtime__owner_serialised(conn: Connection) -> None:
     risk = evaluate_signal(valid_ctx(total_equity=Decimal(10**12))).risk_amount
     total_equity = (risk + 1) / Decimal("0.015")  # room for one entry of either bot
 
-    def request(bot_id: uuid.UUID, instrument: uuid.UUID) -> trades.EntryRequest:
-        return trades.EntryRequest(
+    def request(bot_id: uuid.UUID, instrument: uuid.UUID) -> entries.EntryRequest:
+        return entries.EntryRequest(
             bot_id=bot_id,
             playbook="pb",
             instrument_id=instrument,

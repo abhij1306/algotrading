@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.sql.expression import Exists
 
 from ..clock import Clock
-from ..engine import journal, lifecycle, live_trades, trades
+from ..engine import entries, journal, lifecycle, live_trades
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatEvent, HatOrder, HatPosition, HatSignal
@@ -297,7 +297,7 @@ def _end_adopted_entry(
         return
     _event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
     if row.signal_id is not None:
-        trades.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now(clock))
+        entries.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now(clock))
 
 
 def _entry_ended(

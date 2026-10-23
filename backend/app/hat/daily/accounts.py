@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
-from ..engine.trades import TokenIssuer
+from ..engine.entries import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.entry_timeout import EntryWatch
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely

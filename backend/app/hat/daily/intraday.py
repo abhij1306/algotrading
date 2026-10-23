@@ -44,7 +44,7 @@ from ..engine.live_entry import (
     watchlist_candidates,
 )
 from ..engine.portfolio.allocation_service import policy_at
-from ..engine.trades import expire_watchlist
+from ..engine.shadow import expire_watchlist
 from ..engine.trigger import TriggerMonitor
 from ..engine.watchlist import bot_universe_members
 from ..events import record

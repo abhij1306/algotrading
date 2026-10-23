@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from app.hat.data.ticks import reference_close, tick_for_date, tick_size
 from app.hat.engine import stops
+from app.hat.engine.entries import ENTRY_SKIP_REASONS
 from app.hat.engine.stops import StopInputs, plan_stop
 from app.hat.engine.strategy.config import (
     StopAtrMultiple,
@@ -20,7 +21,6 @@ from app.hat.engine.strategy.config import (
     StopPctBelowEntry,
     StopSwingLow,
 )
-from app.hat.engine.trades import ENTRY_SKIP_REASONS
 from app.hat.execution.gtt import GttPriceError, gtt_limit_price
 
 ticks = st.sampled_from(

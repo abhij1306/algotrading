@@ -1,8 +1,6 @@
-"""The trade lifecycle against the database: per-bot serialisation, entries, the approval card,
-the virtual (shadow) order, fill and exit engine and veto trades (HAT-EXEC-040..044,
-HAT-SCH-057, HAT-BOT-083). The reads an entry decision takes are `snapshot`'s; what the shadow
-engine shares with real positions (`live_trades`), the exit stack's inputs, a stop raise and the
-trade result, is `positions`' (PR 75a).
+"""Entries against the database: per-bot serialisation, the entry decision and its signal row,
+routing by mode and the approval card (HAT-EXEC-020..031, HAT-EXEC-040, -043). The reads an
+entry decision takes are `snapshot`'s; a shadow entry's virtual position is `shadow`'s.
 
 Every function works in the caller's open transaction and never commits. A state change and the
 event that explains it are written together, so a replay of the events always reproduces the
@@ -30,15 +28,7 @@ the bot's lock: shadow opens the virtual position at once; confirm stores the si
 AwaitingApproval with its `hat_approval` card (expiring 5 minutes later, HAT-EXEC-030); auto
 leaves the accepted signal in Triggered, holding its slot, for the router to place the real order
 (`execution/router.py`). Nothing in this module reaches a broker, and it imports none (CONF
-`import_graph_boundaries`). Exits here are virtual; real exits are the router's.
-
-**Veto trades (HAT-EXEC-032).** A confirm signal that is skipped or expires continues as a
-virtual trade for the veto score: `open_veto_trade` opens it on the signal's own row, which has
-reached its ending (Cancelled or Expired). Its events carry the signal id as every trade event
-does (HAT-SCH-064) and `veto: true` in their payload; they move only the veto position's state,
-so `journal.replay_state` folds the signal's own events and `journal.replay_veto_state` the veto
-trade's, which starts at EntryPlaced with its virtual order. Every state change goes through the
-journal (`engine/journal.py`, PR 36).
+`import_graph_boundaries`).
 """
 
 from __future__ import annotations
@@ -50,50 +40,38 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Protocol
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..backtest.evidence import signal_confidence
 from ..execution.modes import route_mode
-from ..execution.tags import encode_tag
 from ..ids import uuid7
-from ..models import (
-    HatApproval,
-    HatBot,
-    HatFill,
-    HatOrder,
-    HatPosition,
-    HatSignal,
-    HatWatchlistEntry,
-)
+from ..models import HatApproval, HatBot, HatSignal
 from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
 from ..risk.modes import MODE_VALUES, Mode
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.service import evaluate_signal
 from ..time import as_utc
-from . import exits, journal, lifecycle, rescale
+from . import journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
 from .confidence import LABELS, UNKNOWN_LABEL, Confidence
-from .positions import Trade, TradeError, evaluate_stack, trade_of, write_result
-from .snapshot import day_counts, entry_price_of, last_hard_stop, owner_slots
+from .positions import Trade, TradeError
+from .shadow import SHADOW_FILLS, FillModel, open_virtual
+from .snapshot import day_counts, last_hard_stop, owner_slots
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
 from .watchlist import bot_universe_members
 
 __all__ = [
     "APPROVAL_WINDOW",
-    "SHADOW_FILLS",
+    "DECIDE",
+    "ENTRY_SKIP_REASONS",
     "EntryOutcome",
     "EntryRequest",
-    "FillModel",
-    "close_position",
-    "evaluate_position",
-    "expire_watchlist",
-    "lock_bot",
+    "TokenIssuer",
+    "entry_confidence",
     "open_entry",
-    "open_veto_trade",
     "reject_signal",
     "send_approval",
 ]
@@ -103,7 +81,6 @@ DECIDE = Callable[[SignalContext], RiskDecision]
 APPROVAL_WINDOW = timedelta(minutes=5)
 # Issues an approval card's token from (signal id, expires_at); `telegram.tokens.ApprovalSigner`.
 TokenIssuer = Callable[[uuid.UUID, datetime], str]
-VETO = journal.VETO  # the payload flag of a veto trade's events
 # Why a trigger was skipped before the risk check: the initial stop could not be set, or an entry
 # filter failed (HAT-EXEC-122). They are stored as the signal's REJECT reason, like a risk reason.
 ENTRY_SKIP_REASONS = frozenset(
@@ -121,37 +98,6 @@ ENTRY_SKIP_REASONS = frozenset(
 )
 _ZERO = Decimal(0)
 SIGNAL_TRIGGERED = journal.SIGNAL_TRIGGERED
-
-
-class FillModel(Protocol):
-    """How a virtual fill is priced: (fill price, fees) for `qty` shares at the reference
-    `price` on `side` ("buy" or "sell")."""
-
-    def fill(self, side: str, qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]: ...
-
-
-class _ShadowFills:
-    """Shadow trading's fills: at the reference price, with no fees (PR 11)."""
-
-    def fill(self, _side: str, _qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]:
-        return price, _ZERO
-
-
-# The backtest passes its own model (slippage and charges, `app.hat.backtest.costs`); the shadow
-# engine and the backtest otherwise fill through the same functions (HAT-BT-010).
-SHADOW_FILLS: FillModel = _ShadowFills()
-
-
-def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
-    count = session.scalar(
-        select(func.count())
-        .select_from(HatOrder)
-        .where(HatOrder.signal_id == signal_id, HatOrder.purpose == purpose)
-    )
-    return encode_tag(signal_id, purpose, int(count or 0))
-
-
-# --- entries ----------------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -358,7 +304,7 @@ def _route_accepted(
         # The router places the real order after this transaction commits (HAT-BRK-101).
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     qty, stop = int(decision.quantity or 0), decision.stop or _ZERO
-    position = _virtual_entry(session, trade, qty, stop, fills.fill("buy", qty, entry), now)
+    position = open_virtual(session, trade, qty, stop, fills.fill("buy", qty, entry), now)
     return EntryOutcome(signal.id, signal.state, decision, position.id, mode=mode)
 
 
@@ -443,144 +389,6 @@ def send_approval(
     session.flush()
 
 
-def _virtual_order(
-    session: Session,
-    trade: Trade,
-    *,
-    purpose: str,
-    side: str,
-    qty: int,
-    fill: tuple[Decimal, Decimal],
-    now: datetime,
-) -> tuple[HatOrder, HatFill]:
-    """A virtual order and its fill at `fill` (price, fees): no broker id, no broker trade id."""
-    price, fees = fill
-    signal = trade.signal
-    order = HatOrder(
-        id=uuid7(),
-        signal_id=signal.id,
-        position_id=None if trade.position is None else trade.position.id,
-        broker_account_id=trade.bot.broker_account_id,
-        purpose=purpose,
-        side=side,
-        qty=qty,
-        order_type="market",
-        tag=_next_tag(session, signal.id, purpose),
-        broker_order_id=None,
-        status="filled",
-        is_virtual=True,
-        placed_at=now,
-        currency="INR",
-    )
-    session.add(order)
-    session.flush()
-    fill = HatFill(
-        id=uuid7(),
-        order_id=order.id,
-        qty=qty,
-        price=price,
-        fees=fees,
-        currency="INR",
-        filled_at=now,
-        broker_trade_id=None,
-        is_virtual=True,
-    )
-    session.add(fill)
-    session.flush()
-    return order, fill
-
-
-def _virtual_entry(
-    session: Session,
-    trade: Trade,
-    qty: int,
-    stop: Decimal,
-    fill: tuple[Decimal, Decimal],
-    now: datetime,
-) -> HatPosition:
-    """Open the virtual position of `trade` (it has none yet) with its entry order and fill."""
-    signal, veto = trade.signal, trade.veto
-    entry = fill[0]
-    order, _ = _virtual_order(
-        session, trade, purpose="entry", side="buy", qty=qty, fill=fill, now=now
-    )
-    placed = {"purpose": "entry", "qty": qty, "is_virtual": True, "tag": order.tag}
-    filled = {"qty": qty, "price": str(entry), "is_virtual": True}
-    journal.record(
-        session, signal, journal.on_order(order, "order.placed", placed, now=now, veto=veto)
-    )
-    journal.record(
-        session, signal, journal.on_order(order, "order.filled", filled, now=now, veto=veto)
-    )
-    position = HatPosition(
-        id=uuid7(),
-        bot_id=trade.bot.id,
-        signal_id=signal.id,
-        instrument_id=signal.instrument_id,
-        is_virtual=True,
-        qty_open=qty,
-        avg_entry=entry,
-        initial_stop=stop,
-        current_stop=stop,
-        currency="INR",
-        opened_at=now,
-        state=lifecycle.OPEN,
-        rules_fired=[],
-    )
-    session.add(position)
-    session.flush()  # the position row first: the order's foreign key points at it
-    order.position_id = position.id
-    session.flush()
-    opened = {"qty": qty, "avg_entry": str(entry), "stop": str(stop), "is_virtual": True}
-    journal.record(
-        session,
-        signal,
-        journal.on_position(position, "position.opened", opened, now=now, veto=veto),
-    )
-    return position
-
-
-# --- the router's steps on a confirm or auto signal -------------------------------------------
-
-
-def _veto_position(session: Session, signal_id: uuid.UUID) -> HatPosition | None:
-    return session.scalar(
-        select(HatPosition).where(
-            HatPosition.signal_id == signal_id, HatPosition.is_virtual.is_(True)
-        )
-    )
-
-
-def open_veto_trade(session: Session, signal_id: uuid.UUID, now: datetime) -> HatPosition | None:
-    """Open the virtual trade of a skipped or expired confirm signal for the veto score
-    (HAT-EXEC-032, HAT-TG-045), at the entry price, quantity and stop the card offered, under
-    the bot's lock. At most one per signal: a second call returns the one already open. None
-    when the signal is not a decided-away confirm signal or was never sized."""
-    signal = session.get(HatSignal, signal_id)
-    if signal is None:
-        raise TradeError("unknown_signal")
-    lock_bot(session, signal.bot_id)
-    session.refresh(signal)
-    approval = session.get(HatApproval, signal_id)
-    if (
-        signal.mode != Mode.CONFIRM
-        or approval is None
-        or approval.decision not in ("skip", "expired")
-        or signal.state not in (lifecycle.CANCELLED, lifecycle.EXPIRED)
-        or signal.qty <= 0
-    ):
-        return None
-    existing = _veto_position(session, signal_id)
-    if existing is not None:
-        return existing
-    bot = session.get(HatBot, signal.bot_id)
-    if bot is None:
-        raise TradeError("unknown_bot")
-    fill = SHADOW_FILLS.fill("buy", signal.qty, entry_price_of(session, signal))
-    trade = Trade(signal, bot, None, veto=True)
-    return _virtual_entry(session, trade, signal.qty, Decimal(signal.stop_price), fill, now)
-
-
 def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: datetime) -> bool:
     """End a routed signal whose entry was not placed (a failed Take re-check, a broker
     rejection after the single retry, or a refusal on the order path) as Rejected with a fixed
@@ -595,155 +403,3 @@ def reject_signal(session: Session, signal_id: uuid.UUID, reason: str, now: date
     rejected = {"reason": reason, "stage": "route"}
     journal.record(session, signal, journal.on_signal(signal, "signal.rejected", rejected, now=now))
     return True
-
-
-# --- exits ------------------------------------------------------------------------------------
-
-
-def _locked_virtual_position(session: Session, position_id: uuid.UUID) -> HatPosition:
-    """The position, re-read under its bot's lock; only a virtual one is the engine's."""
-    position = session.get(HatPosition, position_id)
-    if position is None:
-        raise TradeError("unknown_position")
-    lock_bot(session, position.bot_id)
-    session.refresh(position)
-    if not position.is_virtual:
-        raise TradeError("position_not_virtual")  # real exits are the router's (PR 15)
-    return position
-
-
-def evaluate_position(
-    session: Session,
-    position_id: uuid.UUID,
-    view: exits.ExitView,
-    phase: exits.Phase,
-    now: datetime,
-    *,
-    high: Decimal | None = None,
-    low: Decimal | None = None,
-    fills: FillModel = SHADOW_FILLS,
-) -> exits.Evaluation:
-    """Run the pinned exit stack on one virtual position and carry out what it says: raise the
-    stop, sell partials, or close the position and write its trade result (HAT-EXEC-070..073).
-
-    `high` and `low` are the extremes the price made since entry, for the result's MFE and MAE.
-    A sale fills at `view.price` through `fills`, in this transaction, so its rules are marked
-    fired with it."""
-    position = _locked_virtual_position(session, position_id)
-    result = evaluate_stack(session, position, view, phase, now)
-    if result.actions and view.price is not None:
-        trade = trade_of(session, position)
-        position.rules_fired = sorted({*(position.rules_fired or []), *result.fired})
-        marks = _Marks(fills, high, low)
-        for action in result.actions:
-            sale = _Sale(action.kind == "full", action.qty, action.rule_ids[0].split(":", 1)[1])
-            _virtual_exit(session, trade, sale, view.price, now, marks)
-    session.flush()
-    return result
-
-
-def close_position(
-    session: Session,
-    position_id: uuid.UUID,
-    price: Decimal,
-    reason: str,
-    now: datetime,
-    *,
-    high: Decimal | None = None,
-    low: Decimal | None = None,
-    fills: FillModel = SHADOW_FILLS,
-) -> bool:
-    """Sell the whole open quantity of a virtual position at `price` for a `reason` outside the
-    exit stack (the backtest's period end, an instrument's last traded day) and write its trade
-    result. False when the position was already closed."""
-    position = _locked_virtual_position(session, position_id)
-    if position.closed_at is not None or position.qty_open <= 0:
-        return False
-    sale = _Sale(True, position.qty_open, reason)
-    _virtual_exit(session, trade_of(session, position), sale, price, now, _Marks(fills, high, low))
-    session.flush()
-    return True
-
-
-@dataclass(frozen=True)
-class _Sale:
-    full: bool
-    qty: int
-    rule: str
-
-
-@dataclass(frozen=True)
-class _Marks:
-    """How a sale fills, and the extremes since entry for the trade result."""
-
-    fills: FillModel
-    high: Decimal | None
-    low: Decimal | None
-
-
-def _virtual_exit(
-    session: Session, trade: Trade, sale: _Sale, price: Decimal, now: datetime, marks: _Marks
-) -> None:
-    signal, position, veto = trade.signal, trade.position, trade.veto
-    if position is None:
-        raise TradeError("no_open_position")  # an exit sells from the open position
-    full = sale.full
-    purpose = "exit_full" if full else "exit_partial"
-    fill = marks.fills.fill("sell", sale.qty, price)
-    filled = fill[0]
-    order, _ = _virtual_order(
-        session, trade, purpose=purpose, side="sell", qty=sale.qty, fill=fill, now=now
-    )
-    rule = sale.rule
-    placed = {"purpose": purpose, "qty": sale.qty, "is_virtual": True, "rule": rule}
-    journal.record(
-        session,
-        signal,
-        journal.on_order(order, "order.placed", placed, now=now, position=position, veto=veto),
-    )
-    sold = {"qty": sale.qty, "price": str(filled), "is_virtual": True}
-    journal.record(
-        session, signal, journal.on_order(order, "order.filled", sold, now=now, veto=veto)
-    )
-    position.qty_open -= sale.qty
-    if not full:
-        partial = {"qty": sale.qty, "price": str(filled), "rule": rule}
-        journal.record(
-            session,
-            signal,
-            journal.on_position(position, "exit.partial", partial, now=now, veto=veto),
-        )
-        return
-    position.closed_at = now
-    closed = {"price": str(filled), "rule": rule}
-    journal.record(
-        session,
-        signal,
-        journal.on_position(position, "position.closed", closed, now=now, veto=veto),
-    )
-    write_result(session, signal, position, rule, now, high=marks.high, low=marks.low)
-
-
-# --- the end of the session -------------------------------------------------------------------
-
-
-def expire_watchlist(session: Session, trade_date: date) -> int:
-    """At the session end of `trade_date`, a watchlist row that never triggered ends as Expired
-    (HAT-EXEC-041). Rows that triggered keep the status their signal gave them."""
-    triggered = select(HatSignal.bot_id, HatSignal.playbook, HatSignal.instrument_id).where(
-        HatSignal.trade_date == trade_date
-    )
-    keys = {tuple(row) for row in session.execute(triggered)}
-    count = 0
-    for entry in session.scalars(
-        select(HatWatchlistEntry).where(
-            HatWatchlistEntry.trade_date == trade_date,
-            HatWatchlistEntry.status == lifecycle.WATCHLISTED,
-        )
-    ):
-        if (entry.bot_id, entry.playbook, entry.instrument_id) in keys:
-            entry.status = lifecycle.TRIGGERED
-            continue
-        entry.status = lifecycle.next_state(entry.status, "watchlist.expired")
-        count += 1
-    return count

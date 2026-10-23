@@ -22,9 +22,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..engine import positions, trades
+from ..engine import positions, shadow
+from ..engine.close_gap import record_close_evaluation
 from ..engine.exits import ExitView, Phase
-from ..engine.live_trades import record_close_evaluation
 from ..engine.rescale import manage_only
 from ..execution.manage import in_close_window
 from ..execution.series import broker_symbol, series_changed
@@ -124,7 +124,7 @@ class ShadowExits:
                 if view is None or view.price is None:
                     continue
                 try:
-                    result = trades.evaluate_position(session, position.id, view, phase, now)
+                    result = shadow.evaluate_position(session, position.id, view, phase, now)
                     if phase == "close":
                         record_close_evaluation(
                             session, position.id, view, result, trade_date_of(now), now

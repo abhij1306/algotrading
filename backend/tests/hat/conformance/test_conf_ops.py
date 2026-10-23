@@ -103,7 +103,7 @@ ADMIN_IMPORTS = {
     "app.hat.engine.strategy",
     "app.hat.engine.strategy.config",
     "app.hat.engine.strategy.yamlio",
-    "app.hat.engine.trades",
+    "app.hat.engine.shadow",
     "app.hat.errors",
     "app.hat.execution.accounts",
     "app.hat.execution.broker",

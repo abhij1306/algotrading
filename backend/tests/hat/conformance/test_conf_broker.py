@@ -16,7 +16,7 @@ from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 
-from app.hat.engine import trades
+from app.hat.engine import entries
 from app.hat.engine.strategy.config import StrategyConfig
 from app.hat.engine.strategy.versions import VersionError, create_bot
 from app.hat.execution import accounts, modes
@@ -371,7 +371,7 @@ def test_exec__default_mode_confirm() -> None:
                 broker_account_id=account_id,
                 execution_mode=mode,
             )
-    assert inspect.signature(trades.open_entry).parameters["mode"].default == Mode.SHADOW
+    assert inspect.signature(entries.open_entry).parameters["mode"].default == Mode.SHADOW
     ready = modes.Gates(
         "active", {"gtt_delivery": True}, ddpi_confirmed=True, weights_confirmed=True
     )

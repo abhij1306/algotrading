@@ -10,7 +10,7 @@
   candidates (10%/20% band or F&O, gapped at least 10%, in the universe) whose EP setup passes
   on the daily bars up to the previous session;
 - `submit_trigger` turns a fired trigger into a signal through a `Route`: the execution router
-  (`execution/router.py`), or by default `trades.open_entry` under the bot's effective mode, so
+  (`execution/router.py`), or by default `entries.open_entry` under the bot's effective mode, so
   every entry still passes `evaluate_signal` under the bot's and the owner's lock (a skipped
   stop or entry filter is stored as a Rejected signal with its reason);
 - `TriggerService` attaches the monitor to `LiveData` as a bar listener and hands each trigger to
@@ -50,9 +50,10 @@ from ..money import exact
 from ..risk import controls
 from ..risk.decision import SignalContext
 from ..risk.modes import Mode
+from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
 from ..time import IST, utc_now
-from . import lifecycle, positions, trades
+from . import entries, lifecycle, positions
 from .criteria import CriterionResult, EvalContext
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
@@ -284,7 +285,7 @@ def ep_bot_candidates(
 
 def entry_request(
     trigger: Trigger, base: SignalContext, *, feed_stale: bool | None = None
-) -> trades.EntryRequest:
+) -> entries.EntryRequest:
     """The `EntryRequest` of a fired trigger: the market-side context `base` with the trigger's
     prices, stop, level and circuit state, and the skip reason when its stop or a filter failed.
     `feed_stale`, when given, is the live feed state at the trigger and replaces `base`'s."""
@@ -309,7 +310,7 @@ def entry_request(
         )
         for outcome in outcomes
     )
-    return trades.EntryRequest(
+    return entries.EntryRequest(
         bot_id=candidate.bot_id,
         playbook=candidate.playbook.name,
         instrument_id=candidate.instrument_id,
@@ -329,18 +330,18 @@ class Route(Protocol):
     def __call__(
         self,
         session: Session,
-        request: trades.EntryRequest,
+        request: entries.EntryRequest,
         *,
-        decide: trades.DECIDE = trades.evaluate_signal,
-    ) -> trades.EntryOutcome: ...
+        decide: entries.DECIDE = evaluate_signal,
+    ) -> entries.EntryOutcome: ...
 
 
 def route_by_mode(
     session: Session,
-    request: trades.EntryRequest,
+    request: entries.EntryRequest,
     *,
-    decide: trades.DECIDE = trades.evaluate_signal,
-) -> trades.EntryOutcome:
+    decide: entries.DECIDE = evaluate_signal,
+) -> entries.EntryOutcome:
     """The route without a broker: `open_entry` under the bot's effective mode, in the caller's
     transaction (no commit). An auto bot needs the execution router to place its order, and a
     confirm bot needs it to sign its approval card's token (PR 16), so each is refused here
@@ -353,7 +354,7 @@ def route_by_mode(
         raise positions.TradeError("auto_needs_router")
     if mode == Mode.CONFIRM:
         raise positions.TradeError("confirm_needs_router")
-    return trades.open_entry(session, request, decide=decide, mode=mode)
+    return entries.open_entry(session, request, decide=decide, mode=mode)
 
 
 def submit_trigger(
@@ -362,9 +363,9 @@ def submit_trigger(
     base: SignalContext,
     *,
     feed_stale: bool | None = None,
-    decide: trades.DECIDE = trades.evaluate_signal,
+    decide: entries.DECIDE = evaluate_signal,
     route: Route = route_by_mode,
-) -> trades.EntryOutcome:
+) -> entries.EntryOutcome:
     """Write the signal of a fired trigger through `route` (the default writes in the caller's
     transaction and does not commit; the execution router commits its own steps). An instrument
     with an open position awaiting a split or bonus rescale is manage-only: its trigger is stored
@@ -416,7 +417,7 @@ class TriggerService:
         except RuntimeError:  # no loop (a plain thread or a check): write inline
             work()
 
-    def write(self, trigger: Trigger, stale: bool) -> trades.EntryOutcome | None:
+    def write(self, trigger: Trigger, stale: bool) -> entries.EntryOutcome | None:
         """Write one trigger's signal and commit, then tell the monitor: a stored signal (a new
         one or the existing one) closes the key for the day; a failure is logged, leaves
         nothing and releases the key, so the next final bar evaluates it again."""

@@ -7,7 +7,7 @@ value, capped where the file says so, and rounded half up to the paisa; GST is c
 of the components the file marks taxable. All of it is Decimal.
 
 `BacktestFills` is the fill model the shadow engine's virtual fills accept
-(`app.hat.engine.trades.FillModel`), so the backtest fills through the same code as shadow
+(`app.hat.engine.shadow.FillModel`), so the backtest fills through the same code as shadow
 trading, with slippage and charges where shadow has neither.
 """
 

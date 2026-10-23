@@ -77,7 +77,7 @@ ExpiresAt(c) == sent[c] - 1 + Window
 Open(c) == IsSent(c) /\ (decision[c] = "none" \/ (BrokenMode = "decide_twice" /\ decided[c] < 2))
 Live(c) == clock < ExpiresAt(c)
 
-\* code: backend/app/hat/engine/trades.py:send_approval  (the card is written with its signal,
+\* code: backend/app/hat/engine/entries.py:send_approval  (the card is written with its signal,
 \* expiring APPROVAL_WINDOW after it is sent)
 Send(c) ==
     /\ ~IsSent(c)

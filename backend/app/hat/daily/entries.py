@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import Clock
 from ..data.instruments import current_industry
-from ..engine import trades
+from ..engine import entries
 from ..engine.live_entry import route_by_mode
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
@@ -145,7 +145,7 @@ class LiveContexts:
         )
 
 
-def _with_industry(session: Session, request: trades.EntryRequest) -> trades.EntryRequest:
+def _with_industry(session: Session, request: entries.EntryRequest) -> entries.EntryRequest:
     found = current_industry(session, request.instrument_id, request.trade_date)
     industry = found.industry if found is not None else "unknown"
     return copy.replace(request, context=copy.replace(request.context, industry=industry))
@@ -189,10 +189,10 @@ class LiveRoute:
     def __call__(
         self,
         session: Session,
-        request: trades.EntryRequest,
+        request: entries.EntryRequest,
         *,
-        decide: trades.DECIDE = evaluate_signal,
-    ) -> trades.EntryOutcome:
+        decide: entries.DECIDE = evaluate_signal,
+    ) -> entries.EntryOutcome:
         request = _with_industry(session, request)
         bot = session.get(HatBot, request.bot_id)
         router = self._routers(bot.broker_account_id) if bot is not None else None

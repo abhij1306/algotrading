@@ -1,11 +1,12 @@
 """A trade's position as the shadow engine and the real path both read and close it
 (HAT-EXEC-070..074, HAT-SCH-057, HAT-BOT-083).
 
-`trades` (virtual positions) and `live_trades` (real ones) share these and nothing else: the
+`shadow` (virtual positions) and `live_trades` (real ones) share these and nothing else: the
 pinned exit stack and the position as the exit rules read it, one evaluation of that stack
-(`evaluate_stack`), a stop raise that only ever raises, and the one trade result of a closed
-position. Like them, every function works in the caller's open transaction,
-never commits, and records each state change through the journal (`engine/journal.py`).
+(`evaluate_stack`), a stop raise that only ever raises, one recording of a sale fill
+(`record_sale`) and the one trade result of a closed position. Like them, every function works
+in the caller's open transaction, never commits, and records each state change through the
+journal (`engine/journal.py`).
 """
 
 from __future__ import annotations
@@ -34,19 +35,24 @@ from ..risk.modes import Mode
 from ..risk.policy import effective_version
 from ..risk.policy_service import load_versions
 from ..time import trade_date_of
-from . import exits, journal, rescale
+from . import exits, journal, lifecycle, rescale
 from .strategy.config import ExitRule, parse_config
 
 __all__ = [
+    "STOP_PURPOSES",
     "Trade",
     "TradeError",
+    "close_trade",
     "entry_qty",
     "evaluate_stack",
     "exit_rules_of",
+    "fill_payload",
     "is_veto",
     "position_state",
     "raise_stop",
+    "record_sale",
     "signal_and_bot",
+    "sold_qty",
     "trade_of",
     "trade_r",
     "write_result",
@@ -57,6 +63,9 @@ logger = logging.getLogger(__name__)
 _ZERO = Decimal(0)
 
 _RATIO_PLACES = Decimal("0.000001")
+
+STOP_PURPOSES = ("stop_day", "stop_gtt")
+_OPEN_STATES = (lifecycle.OPEN, lifecycle.PARTIALLY_EXITED)
 
 
 class TradeError(HatError):
@@ -177,6 +186,113 @@ def evaluate_stack(
     instant = [rid for rid in result.fired if rid not in selling]
     position.rules_fired = sorted({*(position.rules_fired or []), *instant})
     return result
+
+
+def fill_payload(order: HatOrder, qty: int, price: Decimal) -> dict[str, object]:
+    """The payload of an order's `order.filled`: a real one also names its purpose and tag."""
+    if order.is_virtual:
+        return {"qty": qty, "price": str(price), "is_virtual": True}
+    return {
+        "qty": qty,
+        "price": str(price),
+        "purpose": order.purpose,
+        "tag": order.tag,
+        "is_virtual": False,
+    }
+
+
+def sold_qty(qty_open: int, qty: int) -> int:
+    """The shares still open after a sale of `qty`: a sale larger than the open quantity leaves
+    none, never a negative quantity."""
+    return max(0, qty_open - qty)
+
+
+def record_sale(
+    session: Session,
+    trade: Trade,
+    order: HatOrder,
+    qty: int,
+    price: Decimal,
+    rule: str,
+    *,
+    at: datetime,
+    entry_working: bool = False,
+    high: Decimal | None = None,
+    low: Decimal | None = None,
+) -> bool:
+    """Record one fill of `qty` shares at `price` of a sell order against the trade's open
+    position, virtual or real, once the caller has stored its `hat_fill` row: `order.filled`,
+    the open quantity, then a partial sale (`exit.partial`) or, for the last share, the close
+    (`close_trade`). True when the position closed.
+
+    A sale larger than the open quantity is logged and empties the position (the broker's book is
+    then reconciliation's). While `entry_working` (a real entry the broker may still fill) an
+    emptied position stays open at quantity 0. The first fill of a broker stop, or one that
+    empties a position no full exit order was placed for, stands for the exit order placed
+    (`exit_triggered`). `high` and `low` are a virtual trade's extremes since entry."""
+    signal, position = trade.signal, trade.position
+    if position is None:
+        raise TradeError("no_open_position")  # a sale sells from the open position
+    if qty > position.qty_open:
+        logger.error("sale of %s shares exceeds the open quantity of a position", qty)
+    remaining = sold_qty(position.qty_open, qty)
+    order.position_id = position.id
+    payload = fill_payload(order, qty, price)
+    if _trade_state(trade) in _OPEN_STATES and (order.purpose in STOP_PURPOSES or remaining == 0):
+        payload[lifecycle.EXIT_TRIGGERED] = True
+    journal.record(
+        session,
+        signal,
+        journal.on_order(
+            order, "order.filled", payload, now=at, position=position, veto=trade.veto
+        ),
+    )
+    position.qty_open = remaining
+    if remaining > 0 or entry_working:
+        if order.purpose == "exit_partial" and _trade_state(trade) in _OPEN_STATES:
+            partial = {"qty": qty, "price": str(price), "rule": rule}
+            journal.record(
+                session,
+                signal,
+                journal.on_position(position, "exit.partial", partial, now=at, veto=trade.veto),
+            )
+        session.flush()
+        return False
+    close_trade(session, trade, rule, price, at=at, high=high, low=low)
+    return True
+
+
+def close_trade(
+    session: Session,
+    trade: Trade,
+    rule: str,
+    price: Decimal,
+    *,
+    at: datetime,
+    high: Decimal | None = None,
+    low: Decimal | None = None,
+) -> None:
+    """Close the trade's emptied position at its last sale's `price` and `rule`:
+    `position.closed` and the trade result, in this transaction."""
+    signal, position = trade.signal, trade.position
+    if position is None:
+        raise TradeError("no_open_position")
+    position.closed_at = at
+    closed = {"price": str(price), "rule": rule}
+    journal.record(
+        session,
+        signal,
+        journal.on_position(position, "position.closed", closed, now=at, veto=trade.veto),
+    )
+    write_result(session, signal, position, rule, at, high=high, low=low)
+    session.flush()
+
+
+def _trade_state(trade: Trade) -> str:
+    """Where the trade stands: a veto trade moves only its position (its signal has ended)."""
+    if trade.veto and trade.position is not None:
+        return trade.position.state
+    return trade.signal.state
 
 
 def signal_and_bot(session: Session, position: HatPosition) -> tuple[HatSignal, HatBot]:

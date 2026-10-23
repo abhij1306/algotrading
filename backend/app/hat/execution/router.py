@@ -3,7 +3,7 @@
 
 A trigger reaches the router as an `EntryRequest`. The router works out the bot's effective mode
 for the session (`modes.bot_mode`: the queued mode in force at the session open, gated by the
-account's GTT capability) and hands the request to `trades.open_entry`, which runs
+account's GTT capability) and hands the request to `entries.open_entry`, which runs
 `evaluate_signal` under the bot's lock and the owner's (over every bot's slots, HAT-RISK-030) and
 writes what the mode needs in one transaction:
 
@@ -57,7 +57,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..data.live import PRICE_UNKNOWN
-from ..engine import approvals, lifecycle, positions, snapshot, trades
+from ..engine import approvals, entries, lifecycle, positions, snapshot
 from ..models import (
     HatApproval,
     HatBot,
@@ -214,7 +214,7 @@ class ExecutionRouter:
         guard: ExecutionGuard,
         reconciler: ReconciliationService,
         notifier: Notifier | None = None,
-        issuer: trades.TokenIssuer | None = None,
+        issuer: entries.TokenIssuer | None = None,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
@@ -223,7 +223,7 @@ class ExecutionRouter:
         self._reconciler = reconciler
         self._notifier = notifier or LogNotifier()
         # Signs each approval card's token (the Telegram signer). Without one a confirm card
-        # can never be taken (`trades.send_approval`).
+        # can never be taken (`entries.send_approval`).
         self._issuer = issuer
         # signals whose placement raised after their commit, for the next resume (PR 52)
         self._stranded: set[uuid.UUID] = set()
@@ -238,12 +238,12 @@ class ExecutionRouter:
     def route(
         self,
         session: Session,
-        request: trades.EntryRequest,
+        request: entries.EntryRequest,
         *,
         now: datetime,
         check: PlacementCheck,
-        decide: trades.DECIDE = evaluate_signal,
-    ) -> trades.EntryOutcome:
+        decide: entries.DECIDE = evaluate_signal,
+    ) -> entries.EntryOutcome:
         """Write the trigger's signal under its effective mode and commit; place an accepted auto
         entry under `check`, the live conditions read by the caller at `now` (the placement
         time, not the trigger's snapshot). `open_entry` reads the signal's confidence label (D132)
@@ -255,14 +255,14 @@ class ExecutionRouter:
         if bot is None:
             raise positions.TradeError("unknown_bot")
         mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
-        outcome = trades.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
+        outcome = entries.open_entry(session, request, decide=decide, mode=mode, issue=self._issuer)
         if outcome.mode != Mode.AUTO or outcome.state != lifecycle.TRIGGERED:
             session.commit()
             return outcome
         self._place_committed(session, outcome.signal_id, now, check)
         signal = session.get(HatSignal, outcome.signal_id)
         state = signal.state if signal is not None else outcome.state
-        return trades.EntryOutcome(
+        return entries.EntryOutcome(
             outcome.signal_id,
             state,
             outcome.decision,
@@ -576,7 +576,7 @@ class ExecutionRouter:
 
     def _not_placed(self, session: Session, signal: HatSignal, reason: str, now: datetime) -> None:
         """End the signal Rejected with `reason` and raise one alert (fixed codes only)."""
-        if trades.reject_signal(session, signal.id, reason, now):
+        if entries.reject_signal(session, signal.id, reason, now):
             session.commit()
             self._alert(ALERT_ENTRY_NOT_PLACED, signal, {"reason": reason})
         else:

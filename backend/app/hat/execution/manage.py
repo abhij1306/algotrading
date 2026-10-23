@@ -61,7 +61,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..engine import exits, live_trades, snapshot, trades
+from ..engine import close_gap, entries, exits, live_trades, shadow, snapshot
 from ..engine.botlock import lock_bot
 from ..engine.rescale import unhandled_actions
 from ..events import record
@@ -867,14 +867,14 @@ class TradeManager:
         if view is None or view.price is None:
             return  # no live price: nothing fires (missing data never fires a rule)
         if position.is_virtual:
-            result = trades.evaluate_position(session, position.id, view, "close", now)
+            result = shadow.evaluate_position(session, position.id, view, "close", now)
             session.commit()
         else:
             result = self._evaluate(session, position.id, view, "close", now, sending)
             report.sales += len(result.actions)
         report.evaluated += 1
         day = trade_date_of(now)
-        if live_trades.record_close_evaluation(session, position.id, view, result, day, now):
+        if close_gap.record_close_evaluation(session, position.id, view, result, day, now):
             report.recorded += 1
         session.commit()
 
@@ -1046,7 +1046,7 @@ class TradeManager:
                 session.commit()
                 continue
             row.status = "cancelled" if row.placed_at is None else "expired"
-            if trades.reject_signal(session, row.signal_id, ENTRY_NOT_FOUND, now):
+            if entries.reject_signal(session, row.signal_id, ENTRY_NOT_FOUND, now):
                 ended += 1
             session.commit()
         return ended
