@@ -214,9 +214,11 @@ def _serialised(method: Callable[..., _R]) -> Callable[..., _R]:
     working stop and each place one, or one place a stop while a sale it made room for is sent."""
 
     @functools.wraps(method)
-    def locked(self: StopDesk, session: Session, position_id: uuid.UUID, *args: object) -> _R:
+    def locked(
+        self: StopDesk, session: Session, position_id: uuid.UUID, *args: object, **kwargs: object
+    ) -> _R:
         with self._positions.lock(position_id, method.__name__):
-            return method(self, session, position_id, *args)
+            return method(self, session, position_id, *args, **kwargs)
 
     return locked
 
