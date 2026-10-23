@@ -43,7 +43,7 @@ from ..engine.live_entry import (
     ep_setup_passes,
     watchlist_candidates,
 )
-from ..engine.portfolio.service import policy_at
+from ..engine.portfolio.allocation_service import policy_at
 from ..engine.trades import expire_watchlist
 from ..engine.trigger import TriggerMonitor
 from ..engine.watchlist import bot_universe_members

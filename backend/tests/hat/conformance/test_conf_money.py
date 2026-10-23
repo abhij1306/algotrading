@@ -11,10 +11,9 @@ BOUNDARY = "app/hat/money.py"
 LANE_E = {
     "app/hat/backtest/__main__.py",
     "app/hat/backtest/data.py",
-    "app/hat/backtest/loop.py",
     "app/hat/backtest/runs.py",
     "app/hat/engine/portfolio/jobs.py",
-    "app/hat/engine/portfolio/service.py",
+    "app/hat/engine/portfolio/regime_service.py",
 }
 _TEXT = {"str", "repr", "float"}
 

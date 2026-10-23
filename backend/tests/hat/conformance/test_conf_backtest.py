@@ -30,7 +30,6 @@ SHARED = {
     "app.hat.engine.trades.close_position": "exit fills",
     "app.hat.engine.trades.expire_watchlist": "watchlist expiry",
     "app.hat.engine.stops.plan_stop": "initial stop",
-    "app.hat.engine.stops.check_width": "stop width",
     "app.hat.engine.trigger.evaluate_entry_filters": "entry filters",
 }
 PRIVATE = (

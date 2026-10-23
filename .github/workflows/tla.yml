@@ -19,11 +19,12 @@ on:
       - backend/app/hat/engine/exits.py
       - backend/app/hat/engine/lifecycle.py
       - backend/app/hat/engine/live_trades.py
+      - backend/app/hat/engine/portfolio/allocation_service.py
       - backend/app/hat/engine/portfolio/health.py
       - backend/app/hat/engine/portfolio/jobs.py
       - backend/app/hat/engine/portfolio/lifecycle.py
       - backend/app/hat/engine/portfolio/regime.py
-      - backend/app/hat/engine/portfolio/service.py
+      - backend/app/hat/engine/portfolio/sleeve_service.py
       - backend/app/hat/engine/positions.py
       - backend/app/hat/engine/strategy/versions.py
       - backend/app/hat/engine/trades.py

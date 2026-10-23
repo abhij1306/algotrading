@@ -21,16 +21,16 @@ def _python_files() -> list[Path]:
 
 
 def test_lifecycle_single_writer() -> None:
-    """Only `service.transition` assigns `hat_bot.lifecycle_state`, so no lifecycle change can
-    skip its guard or its `sleeve.lifecycle_changed` event. Column definitions in
-    the models and keyword arguments that build a new bot are not changes of an existing sleeve."""
+    """Only `sleeve_service.transition` assigns `hat_bot.lifecycle_state`, so no lifecycle change
+    can skip its guard or its `sleeve.lifecycle_changed` event. Column definitions in the models
+    and keyword arguments that build a new bot are not changes of an existing sleeve."""
     offenders = []
     for path in _python_files():
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if WRITES.search(line.split("#", 1)[0]):
                 offenders.append((str(path.relative_to(APP_ROOT)), path.name, number))
     assert [(file, name) for file, name, _ in offenders] == [
-        ("hat/engine/portfolio/service.py", "service.py")
+        ("hat/engine/portfolio/sleeve_service.py", "sleeve_service.py")
     ]
 
 
@@ -39,7 +39,8 @@ def test_portfolio_rules_are_pure() -> None:
     broker or file code, so the engine and the backtest apply the same rule."""
     forbidden = re.compile(
         r"^\s*(from|import)\s+(sqlalchemy|app\.brokers|app\.database|app\.hat\.models"
-        r"|app\.hat\.execution|app\.hat\.data|\.service|\.jobs|app\.hat\.engine\.portfolio\.(service|jobs))\b",
+        r"|app\.hat\.execution|app\.hat\.data|\.common|\.\w*service|\.jobs"
+        r"|app\.hat\.engine\.portfolio\.(common|\w*service|jobs))\b",
         re.MULTILINE,
     )
     for name in PURE:

@@ -127,7 +127,7 @@ from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate
 from ..engine.portfolio.health import Health
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.scan import EP_PLAYBOOK, ScanInputs
-from ..engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, StopInputs, check_width, plan_stop
+from ..engine.stops import SKIP_BAD_INPUT, SKIP_TOO_WIDE, StopInputs, plan_stop
 from ..engine.strategy.config import (
     Playbook,
     StopAtrMultiple,
@@ -141,6 +141,7 @@ from ..models import (
     HatTradeResult,
     HatWatchlistEntry,
 )
+from ..money import exact
 from ..risk.decision import SignalContext
 from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
@@ -491,20 +492,16 @@ class _Run:
         tick = self.view.tick(instrument_id, row.trade_date)
         if tick is None:
             return None, SKIP_BAD_INPUT
-        if isinstance(rule, StopBelowFinalContractionLow):
-            # The contraction stop does not move with the entry; only its width is checked again.
-            if row.planned_stop is None:
-                # The scan leaves the plan empty when the stop at the pivot is too wide.
-                return None, SKIP_TOO_WIDE
-            plan = check_width(
-                entry,
-                Decimal(row.planned_stop),
-                Decimal(repr(rule.max_pct)),
-                Decimal(repr(rule.min_pct)),
-            )
-            return plan.stop, plan.skip
         inputs = StopInputs(entry=entry, tick=tick)
-        if isinstance(rule, StopLowOfDay):
+        if isinstance(rule, StopBelowFinalContractionLow):
+            if row.planned_stop is None:
+                # The scan leaves the plan empty when the stop at the pivot is too wide; the
+                # contraction stop does not move with the entry, so it is too wide here too.
+                return None, SKIP_TOO_WIDE
+            levels = (row.criteria_results or {}).get("levels", {})
+            contraction = exact(levels.get("final_contraction_low"), floats=True, positive=True)
+            inputs = StopInputs(entry=entry, tick=tick, final_contraction_low=contraction)
+        elif isinstance(rule, StopLowOfDay):
             inputs = StopInputs(entry=entry, tick=tick, day_lows=[low])
         elif isinstance(rule, StopAtrMultiple):
             inputs = StopInputs(
@@ -772,7 +769,7 @@ class _Run:
             bar.close,
             self.config.exits,
             self.index[day] - self.index[held.entry_day],
-            lambda length: self.view.sma(held.instrument_id, day, length),
+            lambda length: self.view.sma_through(held.instrument_id, day, length),
             lambda lookback: self.view.lowest_low_before(held.instrument_id, day, lookback),
         )
 

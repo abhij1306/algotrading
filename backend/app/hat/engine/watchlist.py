@@ -37,7 +37,7 @@ from ..models import (
 from ..money import require_exact
 from . import lifecycle
 from .botlock import lock_bot
-from .portfolio.service import members_of
+from .portfolio.universe_service import members_of
 from .scan import ScanInputs, ScanResult, scan_bot
 from .strategy.config import parse_config
 

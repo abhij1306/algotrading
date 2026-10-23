@@ -144,6 +144,51 @@ def _nominal(
     return _capped(rows, products, cluster_cap)[index]
 
 
+def _sleeve_row(
+    s: SleeveInput, policy: RiskPolicy, lo: Decimal, hi: Decimal
+) -> tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal]:
+    """(sleeve, base weight, regime multiplier, health multiplier, their product)."""
+    base = policy.base_weight.get(s.sleeve, Decimal(0))
+    regime = clamp(smooth(s.previous_regime_mult, clamp(s.regime_table_value, lo, hi)), lo, hi)
+    if s.lifecycle_state == LIVE and not s.health.probation:
+        # a previous 0 is a sleeve that was out of Live: it restarts at its target
+        previous = s.previous_health_mult if s.previous_health_mult else None
+        health = clamp(smooth(previous, clamp(s.health.multiplier, lo, hi)), lo, hi)
+    else:
+        health = Decimal(0)
+    return (s, base, regime, health, base * regime * health)
+
+
+def _allocation(
+    row: tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal],
+    final: Decimal,
+    paper: Decimal | None,
+    policy: RiskPolicy,
+    total_equity: Decimal,
+) -> Allocation:
+    """One sleeve's allocation from its row, its capped weight and its nominal (paper) weight."""
+    s, base, regime, health, _ = row
+    virtual = s.lifecycle_state in VIRTUAL_STATES
+    paper_capital = (
+        None
+        if paper is None
+        else (paper * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN)
+    )
+    # no nominal capital, no virtual risk: realised paper P&L never funds an entry alone
+    paper_risk = policy.risk_pct * regime if paper_capital else Decimal(0)
+    return Allocation(
+        bot_id=s.bot_id,
+        base_weight=base,
+        regime_mult=regime,
+        health_mult=health,
+        final_weight=final,
+        capital=(final * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN),
+        risk_pct=policy.risk_pct * regime * health,
+        virtual_capital=paper_capital,
+        virtual_risk_pct=paper_risk if virtual else None,
+    )
+
+
 def allocate(
     sleeves: Sequence[SleeveInput], policy: RiskPolicy, total_equity: Decimal
 ) -> list[Allocation]:
@@ -155,49 +200,17 @@ def allocate(
     if not isinstance(total_equity, Decimal) or not total_equity.is_finite() or total_equity < 0:
         raise AllocationError("allocation_bad_equity")
     lo, hi = policy.multiplier_lo, policy.multiplier_hi
-    rows: list[tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal]] = []
     with localcontext() as ctx:
         ctx.prec = _PRECISION
-        for s in sleeves:
-            base = policy.base_weight.get(s.sleeve, Decimal(0))
-            regime = clamp(
-                smooth(s.previous_regime_mult, clamp(s.regime_table_value, lo, hi)), lo, hi
-            )
-            if s.lifecycle_state == LIVE and not s.health.probation:
-                # a previous 0 is a sleeve that was out of Live: it restarts at its target
-                previous = s.previous_health_mult if s.previous_health_mult else None
-                health = clamp(smooth(previous, clamp(s.health.multiplier, lo, hi)), lo, hi)
-            else:
-                health = Decimal(0)
-            rows.append((s, base, regime, health, base * regime * health))
+        rows = [_sleeve_row(s, policy, lo, hi) for s in sleeves]
     weights = _capped(rows, [r[4] for r in rows], policy.cluster_cap)
     nominal = [
         _nominal(rows, i, policy.cluster_cap) if r[0].lifecycle_state in VIRTUAL_STATES else None
         for i, r in enumerate(rows)
     ]
-    out = []
     with localcontext() as ctx:
         ctx.prec = _PRECISION
-        for (s, base, regime, health, _), final, paper in zip(rows, weights, nominal, strict=True):
-            virtual = s.lifecycle_state in VIRTUAL_STATES
-            paper_capital = (
-                None
-                if paper is None
-                else (paper * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN)
-            )
-            # no nominal capital, no virtual risk: realised paper P&L never funds an entry alone
-            paper_risk = policy.risk_pct * regime if paper_capital else Decimal(0)
-            out.append(
-                Allocation(
-                    bot_id=s.bot_id,
-                    base_weight=base,
-                    regime_mult=regime,
-                    health_mult=health,
-                    final_weight=final,
-                    capital=(final * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN),
-                    risk_pct=policy.risk_pct * regime * health,
-                    virtual_capital=paper_capital,
-                    virtual_risk_pct=paper_risk if virtual else None,
-                )
-            )
-    return out
+        return [
+            _allocation(row, final, paper, policy, total_equity)
+            for row, final, paper in zip(rows, weights, nominal, strict=True)
+        ]

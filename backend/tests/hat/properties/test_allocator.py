@@ -1,6 +1,6 @@
-"""PBT allocator.*: the nightly allocation on the real
-`app.hat.engine.portfolio.allocator` and `service.run_allocation` (SQLite), against the formula
-written out independently. Money and weights are Decimal."""
+"""PBT allocator.*: the nightly allocation on the real `app.hat.engine.portfolio.allocator` and
+`allocation_service.run_allocation` (SQLite), against the formula written out independently.
+Money and weights are Decimal."""
 
 import math
 import uuid
