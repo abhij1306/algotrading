@@ -27,7 +27,7 @@ from app.hat.execution.broker import (
     OrderType,
     Side,
 )
-from app.hat.execution.fyers_adapter import FyersHatBroker, parse_funds, parse_positions
+from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     MAX_PAUSE,
@@ -40,8 +40,10 @@ from app.hat.execution.fyers_broker import (
     CircuitBreaker,
     FyersBroker,
     FyersUnavailableError,
+    classify_place_reply,
     limits_from,
 )
+from app.hat.execution.fyers_payloads import parse_funds, parse_positions
 from app.hat.execution.tags import encode_tag
 
 # SDK payloads as the adapter builds them (the transport sends them as they are)
@@ -185,6 +187,29 @@ REFUSED_WITH_ID = next(
     )["calls"]
     if call["method"] == "place_order"
 )
+
+
+@pytest.mark.parametrize(
+    ("reply", "status", "order_id"),
+    [
+        (None, SUBMIT_UNCONFIRMED, ""),  # timed out or raised: no answer
+        ({"s": "ok", "message": "placed"}, SUBMIT_UNCONFIRMED, ""),  # accepted, no id
+        ({"s": "ok", "id": ""}, SUBMIT_UNCONFIRMED, ""),
+        ({"s": "error", "code": -50, "message": "bad price"}, "REJECTED", ""),
+        ({"code": 200, "id": "X1"}, SUBMIT_UNCONFIRMED, ""),  # neither ok nor an error
+        ("ok", SUBMIT_UNCONFIRMED, ""),
+        ({"s": "error", "code": 429, "message": "place_order rate limited"}, "REJECTED", ""),
+        ({"s": "ok", "id": "2410230001"}, "SUBMITTED", "2410230001"),
+    ],
+)
+def test_classify_place_reply(reply: object, status: str, order_id: str) -> None:
+    """A place's reply is SUBMITTED only with an id, REJECTED only on an explicit error (a 429
+    keeps its reply, so the adapter reads it as rate limited, nothing placed), and
+    SUBMIT_UNCONFIRMED for anything else."""
+    got = classify_place_reply(reply)
+    assert (got["status"], got["order_id"]) == (status, order_id)
+    if status == "REJECTED":
+        assert got["details"] == reply
 
 
 @given(

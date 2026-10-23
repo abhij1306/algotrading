@@ -62,6 +62,7 @@ __all__ = [
     "FyersSessionExpiredError",
     "FyersUnavailableError",
     "checked_reply",
+    "classify_place_reply",
     "process_budget",
     "rate_limited",
     "profile_data",
@@ -154,6 +155,33 @@ def _unconfirmed() -> OrderReply:
     return OrderReply(
         order_id="", status=SUBMIT_UNCONFIRMED, message=BROKER_ORDER_UNCONFIRMED, details=None
     )
+
+
+def classify_place_reply(
+    response: object, *, operation: str = "place_order", default_message: str = "Order Placed"
+) -> OrderReply:
+    """The `OrderReply` of a place whose id comes back in `id`: SUBMITTED with an id, REJECTED on
+    an explicit error (a 429 or -360 refusal among them, its reply kept in `details`), and
+    SUBMIT_UNCONFIRMED for anything else (no answer, an ok without an id, a reply of unknown
+    shape): the order may have landed."""
+    if not isinstance(response, dict):
+        return _unconfirmed()  # timed out or raised mid-request: it may still have landed
+    if response.get("s") == "ok":
+        order_id = response.get("id")
+        if not order_id:
+            logger.error("Fyers accepted %s without returning its id", operation)
+            return _unconfirmed()
+        return OrderReply(
+            order_id=str(order_id),
+            status="SUBMITTED",
+            message=response.get("message", default_message),
+            details=response,
+        )
+    if response.get("s") != "error":
+        # Neither ok nor an explicit rejection: the order may have landed.
+        logger.error("Fyers %s reply was neither ok nor an error", operation)
+        return _unconfirmed()
+    return _rejected(response.get("message", "Fyers rejected the order"), response)
 
 
 class CircuitBreaker:
@@ -374,6 +402,12 @@ def _watch_responses(model: Any) -> None:  # noqa: ANN401 - the untyped fyers_ap
 _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fyers-broker")
 
 
+# What `_admit` answers for a call the open circuit holds back, and what `_run` answers for one
+# that timed out or raised (each caller turns it into its own fallback).
+_CIRCUIT_OPEN = object()
+_NO_ANSWER = object()
+
+
 class _Throttled:
     """A call Fyers answered with HTTP 429 (the budget is already paused)."""
 
@@ -424,15 +458,32 @@ class FyersBroker:
         read as a lost answer. A call the budget does not grant in time, or one Fyers answers
         with HTTP 429, is answered as a rate-limit refusal (`_throttled`) and counts neither way
         toward the circuit: the broker is up, it only asks HAT to slow down."""
-        if self.breaker.is_open():
+        refused = self._admit(operation, kind)
+        if refused is _CIRCUIT_OPEN:
             return fallback if not_sent is None else not_sent
+        if refused is not None:
+            return refused
+        result = self._run(operation, fn, timeout_sec)
+        return fallback if result is _NO_ANSWER else result
+
+    def _admit(self, operation: str, kind: str) -> object | None:
+        """None when the call may go out now; else what answers it instead: `_CIRCUIT_OPEN`, or
+        the rate-limit refusal of a call the budget did not grant in time."""
+        if self.breaker.is_open():
+            return _CIRCUIT_OPEN
         budget = self.budget
         if budget is not None and not budget.acquire(
             kind, WRITE_WAIT if kind == WRITE else READ_WAIT
         ):
             return _throttled(operation)
         if self.breaker.is_open():  # opened by another call while this one waited
-            return fallback if not_sent is None else not_sent
+            return _CIRCUIT_OPEN
+        return None
+
+    def _run(self, operation: str, fn: Callable[[], object], timeout_sec: float) -> object:
+        """`fn` on a worker thread: its result (a 429 as the rate-limit refusal), or
+        `_NO_ANSWER` when it timed out or raised, which counts toward opening the circuit."""
+        budget = self.budget
 
         def throttled() -> _Throttled:
             # paused here, not by the caller: a 429 that lands after the caller timed out still
@@ -465,12 +516,12 @@ class FyersBroker:
             future.cancel()
             self.breaker.record_failure()
             logger.warning("Fyers operation %s timed out after %.2fs", operation, timeout_sec)
-            return fallback
+            return _NO_ANSWER
         except Exception as error:
             self.breaker.record_failure()
             future.cancel()
             logger.exception("Fyers operation %s failed", operation, exc_info=error)
-            return fallback
+            return _NO_ANSWER
 
     # --- writes: each takes the SDK payload exactly as it goes out ------------------------
 
@@ -502,13 +553,11 @@ class FyersBroker:
         return self._send(operation, lambda: call(model), default_message)
 
     def _send(self, operation: str, call: Callable[[], object], default_message: str) -> OrderReply:
-        """A place whose id comes back in `id`: SUBMITTED with an id, REJECTED on an explicit
-        error, and SUBMIT_UNCONFIRMED for anything else (the order may have landed)."""
-        no_reply: dict[str, Any] = {}
+        """One guarded place call, its reply classified (`classify_place_reply`)."""
         not_sent: dict[str, Any] = {}
         try:
             response = self._call_with_guard(
-                operation, call, timeout_sec=1.5, fallback=no_reply, not_sent=not_sent, kind=WRITE
+                operation, call, timeout_sec=1.5, fallback=None, not_sent=not_sent, kind=WRITE
             )
         except Exception:
             logger.exception("Fyers %s failed", operation)
@@ -516,24 +565,7 @@ class FyersBroker:
         if response is not_sent:
             # The circuit opened between the caller's check and the call: nothing was sent.
             return _rejected(BROKER_CIRCUIT_OPEN)
-        if response is no_reply or not isinstance(response, dict):
-            return _unconfirmed()  # timed out or raised mid-request: it may still have landed
-        if response.get("s") == "ok":
-            order_id = response.get("id")
-            if not order_id:
-                logger.error("Fyers accepted %s without returning its id", operation)
-                return _unconfirmed()
-            return OrderReply(
-                order_id=str(order_id),
-                status="SUBMITTED",
-                message=response.get("message", default_message),
-                details=response,
-            )
-        if response.get("s") != "error":
-            # Neither ok nor an explicit rejection: the order may have landed.
-            logger.error("Fyers %s reply was neither ok nor an error", operation)
-            return _unconfirmed()
-        return _rejected(response.get("message", "Fyers rejected the order"), response)
+        return classify_place_reply(response, operation=operation, default_message=default_message)
 
     def modify_order(self, order_id: str, fields: dict[str, Any]) -> dict[str, Any]:
         """Modify a pending order: `fields` are the SDK payload's fields besides its `id`."""

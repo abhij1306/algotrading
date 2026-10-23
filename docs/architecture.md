@@ -15,8 +15,8 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | --- | --- |
 | `data` | NSE MCP client, bhavcopy, reference data, the trading universe (`universe.py`), ingest (breadth in `breadth.py`; its outcome events and health kill are written by `daily`), quality gate, corporate actions (one pooled `lookup_actions`), the history build (`history_build.py`, CLI `history_cli.py`, `index_history.py`, `history_validation.py`) and minute history, one call pacer (`pacing.py`), Parquet store (`store.py`, `bars_store.py`; `store.atomic_replace` is the one atomic writer), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, entries (`entries`), the shadow engine (`shadow`), real positions (`live_trades`) and the sale recording both share (`positions.record_sale`), approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle) |
-| `risk` | Risk policy and its versions, sizing, caps, exposure ladder, kill switches, modes, `evaluate_signal` |
-| `execution` | `HatBroker` interface, Fyers adapter/broker/session/auth/tokens, router, order submit and tags, stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`: every sale a `SaleOrder` through one pure `sale_gate`), the fill sync in phases read, settle, commit, market, protect (`fills.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
+| `risk` | Risk policy and its versions, sizing, caps, exposure ladder and pause (`bots.py`), kill switches (`kill.py` rules, `kill_ops.py` rows), drawdown kills and the nightly snapshot (`drawdown.py`), modes and the mode queue (`controls.py`), `evaluate_signal` |
+| `execution` | `HatBroker` interface, Fyers adapter (`fyers_adapter.py` over the pure payloads and parsers in `fyers_payloads.py`)/broker/session/auth/tokens, router, order submit and tags (`submit.py`; the rows against the broker's books in `order_book.py`), stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`: every sale a `SaleOrder` through one pure `sale_gate`), the fill sync in phases read, settle, commit, market, protect (`fills.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
 | `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
 | `ops` | In-process scheduler, job runner, partitions, retention |
 | `daily` | `HatRuntime` lifecycle (`runtime.py`: start, recover, stop), the wiring into one frozen `Assembly` (`assembly.py`) with the daily job table (`daily_jobs`), the periodic loops (`periodic.py`), the live day's prices, gates, entries and exits (`prices.py`, `gates.py`, `entries.py`, `exits.py`), nightly (one declared chain, `nightly.py`) and intraday job bodies, production parts |
@@ -60,8 +60,8 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   and `decide` read no clock, database or file; `backtest/loop.py` calls the same code live runs.
 - **One risk authority:** `risk/service.py:evaluate_signal` calls `decide`, the only caller of
   `size_position`. No override path exists.
-- **One path to the broker:** `execution/submit.py` (`reserve_order`, `send_order`) is the only
-  caller of `HatBroker`; `FyersHatBroker` is its only implementation. `FakeBroker`
+- **One path to the broker:** `execution/submit.py` (`reserve_order`, `send_order(session, sender,
+  tag)`, `sender` binding one account's broker, guard and clock) is the only caller of `HatBroker`; `FyersHatBroker` is its only implementation. `FakeBroker`
   (`tests/hat/fakes/broker.py`) is the only fake.
 - **One position desk per broker account** (`execution/position_desk.py:PositionDesk`, shared by
   `StopDesk` and `TradeManager`): one re-entrant write lock per position, held by every stop write
@@ -73,7 +73,7 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   `risk/modes.py:Mode` is the only spelling of shadow/confirm/auto (the schema CHECKs read it);
   `queued_mode_at` is the queued change in force, `execution/modes.py:capability_gated` the gate.
 - **Gates:** `execution/modes.py:gate_refusal` decides confirm/auto vs shadow; `ExecutionGuard`
-  holds the per-trade-date reconciliation gate; kill switches live in `risk/kill.py`, `controls.py`.
+  holds the per-trade-date reconciliation gate; kill switches live in `risk/kill.py`, `kill_ops.py` (each read is the latest row of each stream).
 - **Configs are data:** strategy versions are immutable JSONB with a canonical hash; the risk policy
   is a versioned account-level record; bots hold no risk numbers.
 - **No private imports:** no HAT module imports another's underscore name (CONF `no_private_imports`).

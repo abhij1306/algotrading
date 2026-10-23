@@ -30,7 +30,7 @@ from ..models import (
     HatStrategyVersion,
     HatTradeResult,
 )
-from ..risk import controls
+from ..risk import bots
 from ..risk.modes import Mode
 from ..risk.policy import effective_version
 from ..risk.policy_service import load_versions
@@ -368,7 +368,7 @@ def write_result(
     )
     policy = effective_version(load_versions(session, _owner_of(session, signal)), now)
     if policy is not None:
-        controls.record_closed_trade(session, signal.bot_id, r, position.is_virtual, policy.policy)
+        bots.record_closed_trade(session, signal.bot_id, r, position.is_virtual, policy.policy)
 
 
 def _excursions(

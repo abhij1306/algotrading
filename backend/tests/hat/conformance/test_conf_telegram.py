@@ -30,6 +30,7 @@ TEXT_PATH = (
 ORDER_MODULES = (
     "app.hat.execution.router",
     "app.hat.execution.submit",
+    "app.hat.execution.order_book",
     "app.hat.execution.manage",
     "app.hat.execution.protect",
     "app.hat.execution.fyers_adapter",

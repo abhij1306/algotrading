@@ -79,6 +79,13 @@ from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, S
 from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
 from .gtt_upkeep import GttUpkeep
 from .guard import ExecutionGuard
+from .order_book import (
+    EXIT_SALES,
+    MAX_SALE_REJECTIONS,
+    adopt_broker_order,
+    end_lost_order,
+    rejected_sales,
+)
 from .position_desk import Verdict
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
@@ -94,15 +101,11 @@ from .reconcile import broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
 from .stop_plans import LIVE, UNSURE
 from .submit import (
-    EXIT_SALES,
-    MAX_SALE_REJECTIONS,
     OrderRefusedError,
     OrderRequest,
+    OrderSender,
     SendOutcome,
     UnresolvedOrderError,
-    adopt_broker_order,
-    end_lost_order,
-    rejected_sales,
     reserve_order,
     send_order,
 )
@@ -317,6 +320,7 @@ class TradeManager:
         # The position locks and the settle wait the stop desk uses; its clock stamps the sends.
         self._positions = desk.positions
         self._clock = desk.positions.clock
+        self._sender = OrderSender(broker, guard, self._clock)
         self._fills = fills
         self._mpp = fills.mpp  # market price protection (PR 48), shared with the fill sync
         self._calendar = calendar
@@ -535,7 +539,6 @@ class TradeManager:
             side=Side.SELL,
             qty=order.qty,
             order_type=OrderType.MARKET,
-            symbol=symbol,
             position_id=position.id,
             rule_ids=order.rule_ids,
         )
@@ -761,16 +764,7 @@ class TradeManager:
         signal, position = sale.signal, sale.order.position
         try:
             tag = reserve_order(session, request)
-            sent = send_order(
-                session,
-                self._broker,
-                self._guard,
-                tag,
-                symbol=request.symbol,
-                bot_id=signal.bot_id,
-                clock=self._clock,
-                rule=sale.order.rule,
-            )
+            sent = send_order(session, self._sender, tag, rule=sale.order.rule)
         except (OrderRefusedError, BrokerUnavailableError) as exc:
             session.rollback()
             code = getattr(exc, "code", "broker_unavailable")

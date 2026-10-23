@@ -63,7 +63,7 @@ from ..money import require_exact
 from ..notify import Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
-from ..risk.controls import ALERT_KILL_DRAWDOWN, evaluate_drawdown_kills, live_equity
+from ..risk.drawdown import ALERT_KILL_DRAWDOWN, evaluate_drawdown_kills, live_equity
 from ..risk.kill import MARK_CLOSE, MARK_STOP
 from ..time import trade_date_of, utc_now
 from .exits import ShadowExits

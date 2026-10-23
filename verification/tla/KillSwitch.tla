@@ -111,7 +111,7 @@ Gated(b) ==
 
 EntryAllowed(b) == Gated(b) = {}
 
-\* code: backend/app/hat/risk/controls.py:evaluate_drawdown_kills  (snapshot.bots, and every
+\* code: backend/app/hat/risk/drawdown.py:evaluate_drawdown_kills  (snapshot.bots, and every
 \* minute of the session Intraday.drawdown, reads the account equity marked to market against
 \* its peak; a breach trips the account kill and ends pending approvals)
 SnapshotAccount ==
@@ -133,7 +133,7 @@ SnapshotAccount ==
                    badEntry>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:evaluate_drawdown_kills  (the same read for one bot's
+\* code: backend/app/hat/risk/drawdown.py:evaluate_drawdown_kills  (the same read for one bot's
 \* equity against its own peak; other bots are untouched)
 SnapshotBot(k) ==
     /\ \E breach \in BOOLEAN :
@@ -150,7 +150,7 @@ SnapshotBot(k) ==
                    badEntry>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:trip_kill  (/kill: the account kill trips and every
+\* code: backend/app/hat/risk/kill_ops.py:trip_kill  (/kill: the account kill trips and every
 \* undecided approval ends in the same transaction)
 ManualKill ==
     /\ acct' = "tripped"
@@ -160,7 +160,7 @@ ManualKill ==
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:sync_health  (environment: a health source (the gate's
+\* code: backend/app/hat/risk/kill_ops.py:sync_health  (environment: a health source (the gate's
 \* result, the feed) starts or stops failing; both act on the account key, so every bot reads it)
 HealthFlip(src) ==
     /\ unhealthy' = [unhealthy EXCEPT ![src] = ~@]
@@ -168,7 +168,7 @@ HealthFlip(src) ==
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:sync_health  (the source's health check: trip its own
+\* code: backend/app/hat/risk/kill_ops.py:sync_health  (the source's health check: trip its own
 \* reason on the account key while failing, clear that reason by itself once healthy; the broken
 \* variant clears every health reason of the key, as one shared channel did)
 HealthEval(src) ==
@@ -185,7 +185,7 @@ HealthEval(src) ==
     /\ UNCHANGED <<acct, bot, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm, askedFlat, badFlat, flatOpen>>
 
-\* code: backend/app/hat/risk/controls.py:pause_bot
+\* code: backend/app/hat/risk/bots.py:pause_bot
 Pause(k) ==
     /\ ~paused[k]
     /\ paused' = [paused EXCEPT ![k] = TRUE]
@@ -193,7 +193,7 @@ Pause(k) ==
                    askedAcct, askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:resume_bot  (lifts the pause only, never a kill)
+\* code: backend/app/hat/risk/bots.py:resume_bot  (lifts the pause only, never a kill)
 Resume(k) ==
     /\ paused[k]
     /\ paused' = [paused EXCEPT ![k] = FALSE]
@@ -226,7 +226,7 @@ Take(k) ==
                    askedAcct, askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:cancel_pending_approvals  (an undecided approval
+\* code: backend/app/hat/risk/kill_ops.py:cancel_pending_approvals  (an undecided approval
 \* ends as expired)
 Expire(k) ==
     /\ appr[k] = "pending"
@@ -267,7 +267,7 @@ ExitSend(k) ==
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:rearm_kill  (the first step: the user asks to re-arm)
+\* code: backend/app/hat/risk/kill_ops.py:rearm_kill  (the first step: the user asks to re-arm)
 RequestRearmAcct ==
     /\ acct = "tripped" /\ ~askedAcct
     /\ askedAcct' = TRUE
@@ -275,7 +275,7 @@ RequestRearmAcct ==
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:rearm_kill  (the second, confirmed step re-arms and
+\* code: backend/app/hat/risk/kill_ops.py:rearm_kill  (the second, confirmed step re-arms and
 \* writes kill.rearmed)
 ConfirmRearmAcct ==
     /\ acct = "tripped" /\ askedAcct
@@ -284,7 +284,7 @@ ConfirmRearmAcct ==
                    badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:rearm_kill  (the first step for a bot kill)
+\* code: backend/app/hat/risk/kill_ops.py:rearm_kill  (the first step for a bot kill)
 RequestRearmBot(k) ==
     /\ bot[k] = "tripped" /\ ~askedBot[k]
     /\ askedBot' = [askedBot EXCEPT ![k] = TRUE]
@@ -292,7 +292,7 @@ RequestRearmBot(k) ==
                    askedAcct, badEntry, badRearm>>
     /\ UNCHANGED flatVars
 
-\* code: backend/app/hat/risk/controls.py:rearm_kill  (the confirmed step for a bot kill)
+\* code: backend/app/hat/risk/kill_ops.py:rearm_kill  (the confirmed step for a bot kill)
 ConfirmRearmBot(k) ==
     /\ bot[k] = "tripped" /\ askedBot[k]
     /\ bot' = [bot EXCEPT ![k] = "armed"]

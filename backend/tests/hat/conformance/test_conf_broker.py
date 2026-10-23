@@ -21,7 +21,8 @@ from app.hat.engine.strategy.config import StrategyConfig
 from app.hat.engine.strategy.versions import VersionError, create_bot
 from app.hat.execution import accounts, modes
 from app.hat.execution.broker import GttRequest, HatBroker
-from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, gtt_payload
+from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
+from app.hat.execution.fyers_payloads import gtt_payload, parse_gtt_row, parse_order_book
 from app.hat.execution.tags import encode_tag
 from app.hat.models import HatBot
 from app.hat.risk.modes import Mode
@@ -436,7 +437,7 @@ def test_brk__recorded_writes() -> None:
     assert shown == {"2:GTTUntagged", "1:GTTHATTEST1"}
     for book in books:
         rows = [{**r, "ordertag": r["ordertag"].replace("HATTEST1", tag)} for r in book]
-        read = adapter._read(lambda rows=rows: rows, lambda rs: list(map(adapter._gtt_row, rs)))
+        read = adapter._read(lambda rows=rows: rows, lambda rs: list(map(parse_gtt_row, rs)))
         for row, gtt in zip(rows, read, strict=True):
             if row["ord_status"] == 1:  # cancelled
                 assert gtt is None
@@ -455,7 +456,7 @@ def test_brk__recorded_writes() -> None:
         assert call["reply"]["id"]
     book = by("orderbook")[-1]["reply"]["orderBook"]
     assert sorted(r["id"] for r in book) == sorted(c["reply"]["id"] for c in (first, second))
-    orders = adapter._order_book(book)
+    orders = parse_order_book(book)
     assert {(o.tag, o.status) for o in orders} == {("HATTEST2", "rejected")}
     assert len(orders) == 2
     assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))

@@ -36,7 +36,7 @@ from ..data.bars import Bar
 from ..engine import lifecycle
 from ..models import HatBot, HatInstrument, HatOrder, HatSignal
 from ..time import as_utc, trade_date_of
-from .submit import ENTRY
+from .order_book import ENTRY
 
 __all__ = [
     "BREAK_FAILED",

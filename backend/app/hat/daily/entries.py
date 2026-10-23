@@ -28,7 +28,7 @@ from ..engine.live_entry import route_by_mode
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..models import HatAllocationDaily, HatBot, HatPosition, HatTradeResult
-from ..risk import controls
+from ..risk import bots, kill_ops
 from ..risk.decision import SignalContext
 from ..risk.modes import Mode
 from ..risk.policy_service import load_versions
@@ -107,8 +107,8 @@ class LiveContexts:
             gate_on=self._gates.gate_on(session, bot_id, at),
             feed_stale=self._feed_stale(),
             quality_failed=self._gates.quality_failed(session, day, calendar),
-            kill=controls.kill_state(session, bot_id),
-            ladder=controls.ladder_state(session, bot_id),
+            kill=kill_ops.kill_state(session, bot_id),
+            ladder=bots.ladder_state(session, bot_id),
             policy_versions=load_versions(session, self._user_id),
         )
         allocation = _allocation(session, bot_id, day, calendar)

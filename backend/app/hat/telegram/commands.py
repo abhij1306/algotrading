@@ -28,7 +28,8 @@ from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal
 from ..models import HatBot, HatBrokerAccount
 from ..read import bots as read_bots
 from ..read import kill as read_kill
-from ..risk import controls, kill
+from ..risk import kill, kill_ops
+from ..risk.bots import pause_bot, resume_bot
 from ..risk.modes import MODE_VALUES, Mode, ModeChangeError, plan_mode_change
 from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
@@ -168,7 +169,7 @@ def _pause(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
     done = [
         read_bots.label_of(session, b)
         for b in bots
-        if controls.pause_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
+        if pause_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
     ]
     if not done:
         return refused("not_active", "Nothing to pause")
@@ -182,7 +183,7 @@ def _resume(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply
     done = [
         read_bots.label_of(session, b)
         for b in bots
-        if controls.resume_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
+        if resume_bot(session, b.id, ctx.now, actor="user", chat_id=ctx.chat_id)
     ]
     if not done:
         return refused("not_paused", "Nothing to resume")
@@ -192,7 +193,7 @@ def _resume(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply
 def _kill(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
     """HAT-TG-034: trip the account kill switch; `trip_kill` ends every pending approval in the
     same transaction. Exits and stops keep running."""
-    row = controls.trip_kill(
+    row = kill_ops.trip_kill(
         session,
         scope="account",
         bot_id=None,
@@ -241,7 +242,7 @@ def rearm_all(session: Session, now: datetime, chat_id: int) -> int:
     """The confirmed `/arm`: re-arm every tripped drawdown or manual kill (HAT-RISK-064)."""
     count = 0
     for scope, bot in _tripped(session):
-        row = controls.rearm_kill(
+        row = kill_ops.rearm_kill(
             session,
             scope=scope,
             bot_id=bot.id if bot is not None else None,

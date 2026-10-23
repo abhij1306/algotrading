@@ -43,7 +43,7 @@ from ..models import (
 )
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, RunStatus, SessionFactory
-from ..risk.controls import sync_health
+from ..risk.kill_ops import sync_health
 from ..time import utc_now
 from .corporate_actions import PRICE_NEUTRAL_TYPES
 from .ingest import JOB_INGEST, has_required_indices, moved_over_limit

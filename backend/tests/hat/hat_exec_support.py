@@ -52,7 +52,6 @@ class ExecEnv:
         purpose: str = "entry",
         *,
         qty: int = 10,
-        symbol: str = "SBIN",
         order_type: OrderType = OrderType.MARKET,
         price: Decimal | None = None,
         trigger_price: Decimal | None = None,
@@ -66,7 +65,6 @@ class ExecEnv:
             side=side,
             qty=qty,
             order_type=order_type,
-            symbol=symbol,
             price=price,
             trigger_price=trigger_price,
         )
