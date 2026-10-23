@@ -187,7 +187,6 @@ def signal(conn: Connection, w: dict[str, uuid.UUID], **overrides: object) -> uu
         "stop_price": Decimal("95"),
         "qty": 10,
         "risk_amount": Decimal("50"),
-        "currency": "INR",
         "mode": "shadow",
         "state": "Triggered",
         "risk_decision": {},
@@ -211,7 +210,6 @@ def order(
         "tag": "HT" + uuid.uuid4().hex[:18],
         "status": "pending",
         "is_virtual": True,
-        "currency": "INR",
     }
     values.update(overrides)
     return add(conn, m.HatOrder, **values)  # type: ignore[return-value]
@@ -223,7 +221,6 @@ def fill(conn: Connection, order_id: uuid.UUID, **overrides: object) -> uuid.UUI
         "qty": 10,
         "price": Decimal("100"),
         "fees": Decimal("1"),
-        "currency": "INR",
         "filled_at": NOW,
         "broker_trade_id": None,
         "is_virtual": True,
@@ -244,7 +241,6 @@ def position(
         "avg_entry": Decimal("100"),
         "initial_stop": Decimal("95"),
         "current_stop": Decimal("95"),
-        "currency": "INR",
         "opened_at": NOW,
         "state": "Open",
         "rules_fired": {},
@@ -258,7 +254,6 @@ def trade_result(conn: Connection, position_id: uuid.UUID, **overrides: object) 
         "position_id": position_id,
         "realized_pnl": Decimal("50"),
         "fees": Decimal("2"),
-        "currency": "INR",
         "r_multiple": Decimal("1"),
         "holding_days": 3,
         "exit_reason": "target",

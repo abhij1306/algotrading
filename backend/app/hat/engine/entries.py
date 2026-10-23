@@ -337,7 +337,6 @@ def _signal_row(
         stop_price=stop,
         qty=qty,
         risk_amount=risk,
-        currency="INR",
         mode=mode,
         state=lifecycle.INITIAL_STATE,
         risk_decision=_decision_row(decision),

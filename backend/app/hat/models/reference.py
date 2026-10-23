@@ -81,7 +81,6 @@ class HatBrokerSymbol(Base):
     instrument_id = fk(INSTRUMENT_ID, primary_key=True)
     broker = Column(Text, primary_key=True)
     broker_symbol = Column(Text, nullable=False)
-    broker_token = Column(Text)
     refreshed_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 

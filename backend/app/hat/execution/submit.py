@@ -190,7 +190,6 @@ def reserve_order(session: Session, request: OrderRequest, *, retries: int = 3) 
                 tag=tag,
                 status="pending",
                 is_virtual=False,
-                currency="INR",
                 rule_ids=list(request.rule_ids) or None,
             )
         )

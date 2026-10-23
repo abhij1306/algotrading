@@ -103,14 +103,11 @@ def test_brk__import_boundary() -> None:
 
 
 def test_brk__fyers_capabilities() -> None:
-    """The adapter reports tag length 20, a static IP requirement and GTT for
-    delivery (verified on the live account on 2026-10-22, `fyers_live_writes.json`)."""
+    """The adapter reports GTT for delivery (verified on the live account on 2026-10-22,
+    `fyers_live_writes.json`)."""
     capabilities = FyersHatBroker(broker=object()).capabilities()  # type: ignore[arg-type]
     assert capabilities == FYERS_CAPABILITIES
-    assert capabilities.tag_max_len == 20
-    assert capabilities.static_ip_required is True
     assert capabilities.gtt_delivery is True
-    assert capabilities.products == ("CNC",)
     assert capabilities.to_json()["gtt_delivery"] is True
 
 
@@ -187,9 +184,8 @@ FYERS_SECRET_WORDS = re.compile(
     r"|client_secret|app_secret|os\.environ|getenv",
     re.IGNORECASE,
 )
-# Secret-shaped column names that are not secrets: the approval token's hash and
-# the exchange's instrument token.
-NOT_SECRETS = {("hat_approval", "token_hash"), ("hat_broker_symbol", "broker_token")}
+# Secret-shaped column names that are not secrets: the approval token's hash.
+NOT_SECRETS = {("hat_approval", "token_hash")}
 
 
 # The only modules that read a Fyers credential, the token file or an environment variable (K2: the
@@ -248,7 +244,6 @@ def test_ops__single_fyers_secret_store() -> None:
         "user_id",
         "broker",
         "account_ref",
-        "openalgo_ref",
         "capabilities",
         "status",
         "ddpi_confirmed",

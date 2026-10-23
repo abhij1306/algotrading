@@ -11,12 +11,10 @@ from __future__ import annotations
 import logging
 from datetime import time
 
-from sqlalchemy import Connection, Engine, inspect, select, text
+from sqlalchemy import Connection, Engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from sqlalchemy.schema import CreateColumn
 
-from ..base import Base
 from .models import HatMarket
 from .ops.partitions import ensure_event_partitions
 from .time import utc_now
@@ -244,11 +242,6 @@ CREATE OR REPLACE TRIGGER hat_position_no_delete_guard
 CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
   ON hat_announcement (instrument_id, published_at DESC)
 """,
-    # HAT-EXEC-011 (PR 45): a database created before PR 45 keeps the old `shadow` default.
-    "ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'confirm'",
-    # A real trade's MFE and MAE are NULL (A4a): a database created before keeps NOT NULL.
-    "ALTER TABLE hat_trade_result ALTER COLUMN mfe_r DROP NOT NULL, "
-    "ALTER COLUMN mae_r DROP NOT NULL",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update
@@ -264,36 +257,6 @@ NSE_MARKET = {
     "session_open": time(9, 15),
     "session_close": time(15, 30),
 }
-
-
-def ensure_hat_columns(bind: Engine) -> None:
-    """Add columns the models gained since a database was created (HAT-SCH-103). No-op on
-    other dialects. Idempotent and loss-free: it only runs `ADD COLUMN IF NOT EXISTS`.
-
-    A new NOT NULL column without a server default is added nullable (existing rows have no
-    value to give it); a later release tightens it once it is filled. Constraints and indexes
-    on new columns are added explicitly in `PG_DDL`.
-    """
-    if bind.dialect.name != "postgresql":
-        return
-    with bind.begin() as connection:
-        connection.execute(text(_LOCK_SQL))
-        inspector = inspect(connection)
-        present = set(inspector.get_table_names())
-        for table in Base.metadata.sorted_tables:
-            if not table.name.startswith("hat_") or table.name not in present:
-                continue
-            have = {column["name"] for column in inspector.get_columns(table.name)}
-            for column in table.columns:
-                if column.name in have:
-                    continue
-                ddl = str(CreateColumn(column).compile(dialect=bind.dialect)).strip()
-                if not column.nullable and column.server_default is None:
-                    ddl = ddl.replace(" NOT NULL", "")
-                connection.execute(
-                    text(f'ALTER TABLE "{table.name}" ADD COLUMN IF NOT EXISTS {ddl}')
-                )
-                logger.warning("Added missing column %s.%s", table.name, column.name)
 
 
 def ensure_hat_schema(bind: Engine | Connection) -> None:

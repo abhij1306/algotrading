@@ -164,8 +164,6 @@ class HatBrokerAccount(Base):
     user_id = Column(Uuid, nullable=False)
     broker = Column(Text, nullable=False)
     account_ref = Column(Text, nullable=False)
-    # Unused in the MVP (no OpenAlgo); kept for a later adapter (plan C5).
-    openalgo_ref = Column(Text)
     capabilities = Column(JsonB, nullable=False)
     status = Column(Text, nullable=False)
     # The owner's word that DDPI (or a POA) is registered on the demat, so a CNC sale goes

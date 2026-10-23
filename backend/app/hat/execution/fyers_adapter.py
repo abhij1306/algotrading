@@ -75,7 +75,6 @@ from .fyers_payloads import (
     place_result,
 )
 from .fyers_session import FyersSession, get_fyers_session
-from .tags import TAG_LENGTH
 
 __all__ = [
     "CODE_INVALID_RESPONSE",
@@ -92,14 +91,7 @@ CODE_INVALID_RESPONSE = "broker_response_invalid"
 # Fyers documents a 1-20 alphanumeric orderTag. GTT for delivery was verified on the live account
 # on 2026-10-22 (HAT-BRK-091): a single-leg CNC sell GTT was placed (with and without a
 # tag), read in the GTT book, modified and cancelled (`tests/hat/fixtures/fyers_live_writes.json`).
-FYERS_CAPABILITIES = Capabilities(
-    gtt_delivery=True,
-    tag_max_len=TAG_LENGTH,
-    tag_alphabet="A-Za-z0-9",
-    order_types=tuple(t.value for t in OrderType),
-    products=("CNC",),
-    static_ip_required=True,
-)
+FYERS_CAPABILITIES = Capabilities(gtt_delivery=True)
 
 TOKEN_CHECK_SECONDS = 30.0  # how long one profile check of a token stands (as the login status)
 

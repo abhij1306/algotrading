@@ -23,7 +23,7 @@ from sqlalchemy import (
 
 from ...base import Base
 from ..risk.modes import Mode
-from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, in_values, uuid_pk
+from ._types import JsonB, Money, Ratio, Timestamptz, fk, in_values, uuid_pk
 
 __all__ = [
     "APPROVAL_DECISIONS",
@@ -128,7 +128,6 @@ class HatSignal(Base):
     stop_price = Column(Money, nullable=False)
     qty = Column(Integer, nullable=False)
     risk_amount = Column(Money, nullable=False)
-    currency = Column(Currency, nullable=False)
     # The mode in force when the signal triggered.
     mode = Column(Text, nullable=False)
     # Trade lifecycle state; `app.hat.engine.lifecycle` moves it with its event.
@@ -199,7 +198,6 @@ class HatOrder(Base):
     status = Column(Text, nullable=False)
     is_virtual = Column(Boolean, nullable=False)
     placed_at = Column(Timestamptz)
-    currency = Column(Currency, nullable=False)
     # A sale's exit rule ids (`exits.rule_id`), fired again when it ends without selling.
     rule_ids = Column(JsonB)
 
@@ -220,7 +218,6 @@ class HatFill(Base):
     qty = Column(Integer, nullable=False)
     price = Column(Money, nullable=False)
     fees = Column(Money, nullable=False)
-    currency = Column(Currency, nullable=False)
     filled_at = Column(Timestamptz, nullable=False)
     # Null for virtual fills.
     broker_trade_id = Column(Text)
@@ -253,7 +250,6 @@ class HatPosition(Base):
     avg_entry = Column(Money, nullable=False)
     initial_stop = Column(Money, nullable=False)
     current_stop = Column(Money, nullable=False)
-    currency = Column(Currency, nullable=False)
     opened_at = Column(Timestamptz, nullable=False)
     closed_at = Column(Timestamptz)
     state = Column(Text, nullable=False)
@@ -269,7 +265,6 @@ class HatTradeResult(Base):
     position_id = fk("hat_position.id", primary_key=True)
     realized_pnl = Column(Money, nullable=False)
     fees = Column(Money, nullable=False)
-    currency = Column(Currency, nullable=False)
     r_multiple = Column(Ratio, nullable=False)
     holding_days = Column(Integer, nullable=False)
     exit_reason = Column(Text, nullable=False)

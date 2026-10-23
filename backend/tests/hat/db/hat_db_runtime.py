@@ -63,9 +63,9 @@ def check_runtime__signal_unique_concurrent(engine: Engine) -> None:
     insert_sql = text(
         "INSERT INTO hat_signal (id, bot_id, strategy_version_id, risk_policy_version_id,"
         " playbook, instrument_id, trade_date, triggered_at, trigger_price, stop_price, qty,"
-        " risk_amount, currency, mode, state, risk_decision, confidence, confidence_basis)"
+        " risk_amount, mode, state, risk_decision, confidence, confidence_basis)"
         " VALUES (:id, :bot, :version, :policy, 'race', :instrument, :day, now(), 100, 95, 1, 5,"
-        " 'INR', 'shadow', 'Triggered', '{}', 'low', '{}')"
+        " 'shadow', 'Triggered', '{}', 'low', '{}')"
     )
     outcomes: list[str] = []
     first_in = threading.Event()

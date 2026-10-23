@@ -110,17 +110,9 @@ class SessionStatus(StrEnum):
 @dataclass(frozen=True)
 class Capabilities:
     gtt_delivery: bool
-    tag_max_len: int
-    tag_alphabet: str  # regex character class body the broker accepts in a tag
-    order_types: tuple[str, ...]
-    products: tuple[str, ...]
-    static_ip_required: bool
 
     def to_json(self) -> dict[str, object]:
-        data = asdict(self)
-        data["order_types"] = list(self.order_types)
-        data["products"] = list(self.products)
-        return data
+        return asdict(self)
 
 
 @dataclass(frozen=True)
