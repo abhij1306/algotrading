@@ -46,6 +46,7 @@ from ..data.reference_jobs import (
 from ..data.renames import renames_from_bars
 from ..data.store import ActionFactor, DataStore
 from ..data.symbols import symbol_master
+from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
 from ..engine.live_trades import record_close_gaps
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
 from ..engine.portfolio.service import policy_at
@@ -77,6 +78,7 @@ __all__ = [
     "EVENTS_PARTITIONS",
     "FEATURES",
     "INGEST_NIGHTLY",
+    "JOURNAL_CHECK",
     "NIGHTLY_CHAIN",
     "NightlyDeps",
     "REFERENCE_WEEKLY",
@@ -102,6 +104,7 @@ REFERENCE_WEEKLY = "reference.weekly"
 BANDS_NIGHTLY = "bands.nightly"
 EVENTS_PARTITIONS = "events.partitions"
 RETENTION_PURGE = "retention.purge"
+JOURNAL_CHECK = "journal.check"
 
 # The pipeline of HAT-OPS-021, in order: each job starts once the one before it succeeded.
 # `ca.adjust` is not in it (PR 33): it runs after the ingest whatever the gate decides, so the
@@ -129,6 +132,8 @@ BANDS_AT = time(7, 45)  # before the pre-open: the bands in force today
 RESCALE_AT = time(8, 40)  # before `live.prepare` and the 09:00 pre-open (HAT-EXEC-141)
 REFERENCE_AT = time(9, 0)
 REFERENCE_WEEKDAY = 5  # Saturday: the market is shut and the instrument master is quiet
+JOURNAL_AT = time(23, 15)  # after the session's last state change and the 23:00 GTT verify
+JOURNAL_ALERTS = 10  # alerts per run at most; the first carries the count
 PARTITIONS_AT = time(0, 30)
 PURGE_AT = time(1, 0)
 INGEST_RETRY = timedelta(minutes=10)
@@ -390,6 +395,31 @@ class Nightly:
             session.commit()
         return JobResult(rows=recorded)
 
+    def journal_check(self, day: date) -> JobResult:
+        """`journal.check` (HAT-EXEC-042, PR 36): every trade not yet ended is folded from its
+        events and each one whose stored state differs (or whose events do not fold) is alerted
+        `journal.mismatch`, at most `JOURNAL_ALERTS` a night, each carrying the count. The check
+        runs twice in fresh transactions and only a mismatch both runs saw counts, so a trade
+        that moved between the reads of one run is not alerted. Nothing is repaired: the owner
+        decides which of the log and the row is right."""
+        with self.deps.session_factory() as session:
+            first = {(m[0], m[1]) for m in mismatches(session)}
+            session.rollback()
+            found = [m for m in mismatches(session) if (m[0], m[1]) in first]
+        for signal_id, kind, stored, replayed in found[:JOURNAL_ALERTS]:
+            self.deps.notifier.alert(
+                ALERT_JOURNAL_MISMATCH,
+                day,
+                {
+                    "signal": str(signal_id),
+                    "kind": kind,
+                    "stored": stored,
+                    "replayed": replayed,
+                    "count": len(found),
+                },
+            )
+        return JobResult(rows=len(found))
+
     # --- housekeeping -----------------------------------------------------------------------
 
     def calendar(self, _day: date) -> JobResult:
@@ -466,6 +496,7 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
         *pipeline,
         ScheduledJob(SNAPSHOT_BOTS, SNAPSHOT_AT, n.snapshot, carry=True),
         ScheduledJob(CLOSE_GAPS, INGEST_AT, n.close_gaps, after=(INGEST_NIGHTLY,)),
+        ScheduledJob(JOURNAL_CHECK, JOURNAL_AT, n.journal_check),
         ScheduledJob(CALENDAR_REFRESH, CALENDAR_AT, n.calendar, days=Days.EVERY),
         ScheduledJob(
             REFERENCE_WEEKLY,

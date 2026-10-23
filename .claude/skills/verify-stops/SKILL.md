@@ -120,7 +120,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `acdfb8b2c43f4e9f7753736c312eec167733c60ac9a01548a33a353b565562aa`
+Covered digest: `17d1b3abdc80c0bee4b8f55846a930e299e8fa94989264f5ce54ca02076f9a47`
 
 ## Scope changes
 
@@ -141,6 +141,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 27 (design review 2026-10-22 item 2) added a GTT that triggers with its sale resting (`gtt.st` resting, then marketed once the sync saw it; seen in the broken variant, where it is left at its limit and expires at the close as `gone`), `GttTriggersResting`, `SeeResting`, `SaleFills` and `RestingSold`. Assumed, not modelled: the broker accepts the market change eventually (a refusal is alerted and asked again each sync, `manage.gtt_resting_marketed`), the sync sees a resting sale and a market sale fills before the close (Clock waits on both), and no exit sale goes over a working sale (`Sell` waits; `StopDesk.triggered_gtts` on the real code). `AlwaysProtected` counts a working sale as protection. Without `WF_vars(SeeResting)` the model also violates `RestingSold`. Nothing was narrowed.
 - PR 49 (HAT-EXEC-046): `StopDesk.cancel_unfilled_entry` cancels a real entry nothing of which filled (refused once a real position exists), through `_cancel_entries`, now shared with `cancel_entry`'s remainder cancel. No stop is placed or moved; `StopPlacement` is unchanged. Its property (`manage.unfilled_entry_cancelled`) and breaks are in `verify-execution`. Nothing was narrowed.
 - PR 47 (research G01, HAT-DATA-052): price-neutral actions (`dividend`, `notice`) are stored for their ex-dates; `rescale.unhandled_actions` excludes them (`PRICE_NEUTRAL_TYPES`). `StopDesk.verify` renews a GTT 300 days old (`_renewed`, `manage.verify_renews_old_gtt`), and `check_gtt` backs the 08:40 ex-date check; their properties are in `verify-execution` (`test_manage.py`). `StopPlacement` is unchanged: a renewal is a cancel and a place of the same stop while the market is shut, and a broker cancel is the model's existing GTT loss. Nothing was narrowed.
+
+- PR 36 (HAT-EXEC-042): `trades._emit` writes through the trade journal (`engine/journal.py`), `replay_state` / `replay_veto_state` moved from `trades.py` to `journal.py` (`test_exits.py` calls them there), and `daily/nightly.py` gains the `journal.check` job. The exit and stop properties are unchanged and pass; the journal's checks live in `verify-execution`. Nothing was narrowed.
 
 ## Scratch breaks
 

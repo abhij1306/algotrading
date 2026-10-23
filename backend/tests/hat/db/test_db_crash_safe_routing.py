@@ -37,7 +37,7 @@ from hypothesis import strategies as st
 from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
-from app.hat.engine import lifecycle
+from app.hat.engine import journal, lifecycle
 from app.hat.execution import modes
 from app.hat.execution.router import MAX_ENTRY_REJECTIONS
 from app.hat.execution.submit import ENTRY
@@ -156,7 +156,6 @@ def test_db_crash_resumes_entry_once(
     two entry orders under distinct tags, at most one the broker took, none left waiting with no
     order, and the signal's stored state is its events' replay. Harm: a restart sends a third
     entry, buys twice, or strands a signal with its slot."""
-    from app.hat.engine import trades
 
     _truncate(clean_db)
     fake = FakeBroker()
@@ -203,7 +202,7 @@ def test_db_crash_resumes_entry_once(
     with Session(clean_db) as fresh:
         assert not _stranded(fresh, signal_id)
         state = fresh.get(HatSignal, signal_id).state  # type: ignore[union-attr]
-        assert trades.replay_state(fresh, signal_id) == state
+        assert journal.replay_state(fresh, signal_id) == state
     desks.release()
     live.release()
 

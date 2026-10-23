@@ -277,7 +277,7 @@ to an artefact that exists.
 | HAT-SCH-059 | [03](03-schema.md) | 11 | DB `runtime.state_domain` |
 | HAT-SCH-060 | [03](03-schema.md) | 3 | CONF `schema.event_columns`, DB `events.partitioned` |
 | HAT-SCH-061 | [03](03-schema.md) | 3 | DB `events.append_only` |
-| HAT-SCH-062 | [03](03-schema.md) | 3 | PBT `events.atomic_with_state` |
+| HAT-SCH-062 | [03](03-schema.md) | 3, 36 | PBT `events.atomic_with_state`, PBT `journal.validates_before_writing` |
 | HAT-SCH-063 | [03](03-schema.md) | 3, 9 | CONF `events.catalogue`, PBT `events.unknown_type_rejected` |
 | HAT-SCH-064 | [03](03-schema.md) | 3, 9 | PBT `events.correlation`, PBT `events.correlation_links_the_signal` |
 | HAT-SCH-065 | [03](03-schema.md) | 3, 16 | PBT `events.user_actor_chat_id` |
@@ -448,7 +448,7 @@ to an artefact that exists.
 | HAT-EXEC-034 | [07](07-execution-and-brokers.md) | 15 | PBT `criteria.catalyst_required_in_confirm` |
 | HAT-EXEC-040 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!TypeOK`, TLA `TradeLifecycle!OnlyAllowedTransitions`, CONF `lifecycle_transitions_match_spec` |
 | HAT-EXEC-041 | [07](07-execution-and-brokers.md) | 11, 15 | TLA `TradeLifecycle!EndingsTerminal`, TLA `TradeLifecycle!EventuallyEnds`, PBT `manage.entry_ended_by_broker` |
-| HAT-EXEC-042 | [07](07-execution-and-brokers.md) | 3, 11 | TLA `TradeLifecycle!StateMatchesLog`, PBT `exits.replay_reproduces_state` |
+| HAT-EXEC-042 | [07](07-execution-and-brokers.md) | 3, 11, 36 | TLA `TradeLifecycle!StateMatchesLog`, PBT `exits.replay_reproduces_state`, CONF `journal_only_writers`, PBT `journal.validates_before_writing`, PBT `journal.check_names_mismatches`, PBT `journal.check_alerts`, PBT `manage.async_sale_rejection_retried` |
 | HAT-EXEC-043 | [07](07-execution-and-brokers.md) | 15, 16 | TLA `ExecutionRouter!RejectNoCard` |
 | HAT-EXEC-044 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!ShadowSameMachine` |
 | HAT-EXEC-045 | [07](07-execution-and-brokers.md) | 11 | TLA `TradeLifecycle!PerBotCapHolds`, DB `runtime.per_bot_serialised`, PBT `trades.shared_bot_cap` |

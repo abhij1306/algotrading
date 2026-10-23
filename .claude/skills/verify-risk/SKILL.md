@@ -96,7 +96,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `2923aaf50255ca31f8645622508c9ad15b595121c5c367f19b5baf85a1ee731e`
+Covered digest: `7aa89c01a890da0d313461218aed75d897bf11d547e583854374ca199748a882`
 
 ## Scope changes
 
@@ -123,6 +123,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33: `snapshot.bots` runs at 23:30 on its own (not after `allocate`) and reads each bot's latest allocation on or before the day; `kill.snapshot_latest_allocation` checks it with no trade results (the realised-P&L part is `reallocation_does_not_hide_a_loss`'s), over nights where `allocate` commits before the snapshot, after it or not at all. An `allocate` that ends after 23:30 is not re-measured until the next night. A snapshot's capital is now its equity less its realised P&L, where it was the allocation row of its date; a snapshot whose bot has no allocation on or before its date still has no known capital, so `drawdown_kills_from_snapshots` (synthetic snapshots, no allocations) is unchanged. Nothing was narrowed.
 - PR 34 (design review item 9, HAT-GOV-091): `policy_service.EvidenceSource` takes the request time; `request_policy_change` passes `requested_at` (the fixed-evidence lambdas of `test_caps` and the Postgres `test_db_risk` take it too), so `runs.gate_evidence` counts only the trades closed since the policy version in force took effect (`dsr.gate_evidence`, in `verify-backtest`). The increase gate itself is unchanged. Nothing was narrowed.
 - PR 46 (D128) re-pinned two safety properties in `test_conf_risk.SAFETY_DIGESTS`: `caps.global_open_risk` (its oracle's cap 3% to 1.5%) and `caps.kill_thresholds` (its oracle's account kill 15% to 10%). Only the numbers changed, to the owner's; each property is as strong as before, and each was seen failing with the old number restored in the seed. `kill.drawdown_kills_from_snapshots`, `trades.global_open_risk_across_bots`, `lifecycle.*` (Probation at 10%) and the DB snapshot and owner-serialised checks took the same numbers. The policy helpers that need no backtest import moved to `risk/policy_upkeep.py`, so `app.database` can run the upkeep at startup without the Telegram text path reaching order code (`policy_service` re-exports `load_versions`). Nothing was narrowed.
+
+- PR 36 (HAT-EXEC-042, architecture audit F1): `controls.cancel_pending_approvals` records `kill.tripped` through the trade journal (`journal.record`) only for a signal still AwaitingApproval; a card whose signal has moved on is closed without an event (it used to record `signal.expired` whatever the state). Checked by `verify-execution`'s `journal_only_writers` and `journal.validates_before_writing`; the kill-switch properties here are unchanged and still pass. Nothing was narrowed.
 
 ## Scratch breaks
 

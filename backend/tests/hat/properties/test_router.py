@@ -48,7 +48,7 @@ from app.hat.daily.live import stale_feed
 from app.hat.daily.production import one_login_each
 from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE
 from app.hat.data.staleness import StalenessMonitor
-from app.hat.engine import exits, lifecycle, trades
+from app.hat.engine import exits, journal, lifecycle, trades
 from app.hat.engine.portfolio import lifecycle as sleeves
 from app.hat.errors import HatConfigError
 from app.hat.execution import mode_changes, modes
@@ -158,7 +158,7 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
         assert outcome.mode == signal.mode == effective
         assert outcome.state == signal.state  # the state after placement, not the trigger's
         assert signal.qty > 0
-        assert trades.replay_state(session, signal.id) == signal.state
+        assert journal.replay_state(session, signal.id) == signal.state
         if effective == modes.SHADOW:
             assert rig.fake.calls == []
             [position] = rig.positions(signal.id)
@@ -266,7 +266,7 @@ def test_take_rechecks_max_chase(
             assert rig.places() == []
             assert signal.state == lifecycle.REJECTED
             assert approval.decision == "take"
-        assert trades.replay_state(session, signal.id) == signal.state
+        assert journal.replay_state(session, signal.id) == signal.state
         again = rig.router.take(
             session,
             signal.id,
@@ -328,15 +328,15 @@ def test_skip_and_expiry_become_one_veto_trade(actions: list[tuple[str, int]]) -
         assert veto.is_virtual
         assert veto.qty_open == signal.qty
         assert D(veto.initial_stop) == D(signal.stop_price)
-        assert trades.replay_state(session, signal_id) == signal.state
-        assert trades.replay_veto_state(session, signal_id) == lifecycle.OPEN
+        assert journal.replay_state(session, signal_id) == signal.state
+        assert journal.replay_veto_state(session, signal_id) == lifecycle.OPEN
         # The veto trade is scored only: it holds none of the bot's slots, and its stop-out is
         # not one of the bot's.
         assert trades.bot_snapshot(session, rig.world.bot_id, TRADE_DAY)[0] == []
         view = exits.ExitView(price=D(1), days_held=0, sma={10: D(100)})
         trades.evaluate_position(session, veto.id, view, "close", AT + timedelta(minutes=20))
         session.commit()
-        assert trades.replay_veto_state(session, signal_id) == lifecycle.CLOSED
+        assert journal.replay_veto_state(session, signal_id) == lifecycle.CLOSED
         assert trades.bot_snapshot(session, rig.world.bot_id, TRADE_DAY) == ([], 0, 0)
         assert rig.places() == []
 
@@ -372,7 +372,7 @@ def test_rejected_entry_is_retried_once(replies: list[bool]) -> None:
         else:
             assert signal.state == lifecycle.ENTRY_PLACED
             assert ALERT_ENTRY_NOT_PLACED not in rig.codes()
-        assert trades.replay_state(session, signal.id) == signal.state
+        assert journal.replay_state(session, signal.id) == signal.state
         rig.router.place_entry(session, signal.id, now=AT, check=LIVE)  # a repeat sends nothing new
         assert len(rig.places()) == len(sent)
 
@@ -1481,7 +1481,7 @@ def test_crash_resumes_entry_once(
         with Session(engine) as fresh:
             assert not _left_stranded(fresh, signal_id)
             state = fresh.get(HatSignal, signal_id).state  # type: ignore[union-attr]
-            assert trades.replay_state(fresh, signal_id) == state
+            assert journal.replay_state(fresh, signal_id) == state
         desks.release()
         live.release()
 

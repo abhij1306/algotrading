@@ -118,7 +118,7 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `3060abe6d0a34bb77a9699725d749b8ab21a92c0149ad49a7c60a56a962fbaa8`
+Covered digest: `27c0be1df9aeeb8ebeca7bddac15a5bffd9acd37f5ffed0a00e0e0fded865e5d`
 
 ## Scope changes
 
@@ -140,6 +140,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `/cmd@other_bot` (found by a CodeAnt nitpick on PR #113): the `@bot` suffix was dropped without checking it, so in a group `/kill@another_bot` ran here. The client now also calls `getMe`; the service asks it once, when the first suffixed command arrives, and keeps the username. `telegram.other_bot_ignored` was added, and the method-allowlist CONF check now lists five methods.
 - Sonar round (PR #113): `COMMANDS` is now `tuple(_ARITY)`, so the command set is written once; the token decoder catches `ValueError` alone (`binascii.Error` is one). Behaviour is unchanged and every check here passed again. The `logging.exception` suggestions were declined: a traceback can carry broker or database text, so failures log only the exception type (HAT-TG-014).
 - PR 47 (HAT-EXEC-146): `render.URGENT_ALERTS` gains `position.series_changed`; its break is recorded under `manage.series_change_remapped` in `verify-execution`. Nothing was narrowed.
+
+- PR 36 (HAT-EXEC-042): `render.URGENT_ALERTS` gains `journal.mismatch`; its break is recorded under `journal.check_alerts` in `verify-execution`. No Telegram check changed.
 
 ## Scratch breaks
 

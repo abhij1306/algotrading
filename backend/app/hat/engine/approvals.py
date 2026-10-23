@@ -32,10 +32,9 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..events import record
 from ..models import HatApproval, HatEvent, HatPosition, HatSignal, HatTradeResult
 from ..time import as_utc
-from . import lifecycle, trades
+from . import journal, lifecycle, trades
 from .criteria.base import CriterionResult
 from .criteria.live import LiveContext, MaxChaseParams, max_chase
 
@@ -134,21 +133,17 @@ def _signal_event(
     *,
     chat_id: int | None = None,
 ) -> None:
-    """Record a decision event and move the signal along it, in the caller's transaction."""
-    step = lifecycle.step_of(event_type, payload)
-    if step is not None:
-        signal.state = lifecycle.next_state(signal.state, step)
-    actor = "user" if chat_id is not None else "engine"
-    record(
+    """Record a decision event and move the signal along it, in the caller's transaction (the
+    journal refuses a step the table forbids)."""
+    journal.record(
         session,
+        signal,
+        event_type,
+        {**payload, "chat_id": chat_id} if chat_id is not None else payload,
         aggregate_type="signal",
         aggregate_id=signal.id,
-        event_type=event_type,
-        actor=actor,
-        payload={**payload, "chat_id": chat_id} if chat_id is not None else payload,
-        correlation_id=signal.id,
-        bot_id=signal.bot_id,
-        occurred_at=now,
+        now=now,
+        actor="user" if chat_id is not None else "engine",
     )
 
 
