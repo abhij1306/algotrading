@@ -147,6 +147,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 47 (HAT-EXEC-146): `render.URGENT_ALERTS` gains `position.series_changed`; its break is recorded under `manage.series_change_remapped` in `verify-execution`. Nothing was narrowed.
 
 - PR 36 (HAT-EXEC-042): `render.URGENT_ALERTS` gains `journal.mismatch`; its break is recorded under `journal.check_alerts` in `verify-execution`. No Telegram check changed.
+- PR 75b (architecture audit A-F3): `/positions`' days held counts the one `SessionCalendar`'s trading days (`reads._days_held`), not `MarketCalendar`'s weekday default, so a day the calendar does not hold is not counted; `calendar.one_answer` (`verify-reference-data`) checks it. No Telegram check changed.
 
 ## Scratch breaks
 

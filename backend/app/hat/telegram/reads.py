@@ -14,7 +14,7 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..data.calendar import MarketCalendar, load_calendar, session_calendar, trading_days
+from ..data.calendar import session_calendar
 from ..execution.modes import mode_view
 from ..models import (
     HatBot,
@@ -203,13 +203,13 @@ def status_view(session: Session, now: datetime, feed: str) -> render.StatusView
 # --- /positions --------------------------------------------------------------------------------
 
 
-def _days_held(calendar: MarketCalendar | None, opened: datetime, now: datetime) -> int | None:
+def _days_held(calendar: SessionCalendar | None, opened: datetime, now: datetime) -> int | None:
+    """Trading days from the open's to now's, the first not counted (a day the calendar does not
+    hold is not one)."""
     if calendar is None:
         return None
     start, end = trade_date_of(opened), trade_date_of(now)
-    if end < start:
-        return 0
-    return max(len(trading_days(calendar, start, end)) - 1, 0)
+    return max(sum(1 for day in calendar.trading_days() if start <= day <= end) - 1, 0)
 
 
 def r_so_far(entry: Decimal, initial_stop: Decimal, price: Decimal | None) -> Decimal | None:
@@ -222,7 +222,7 @@ def r_so_far(entry: Decimal, initial_stop: Decimal, price: Decimal | None) -> De
 
 def position_rows(session: Session, now: datetime, price: PriceSource) -> list[render.PositionView]:
     rows = []
-    calendar = load_calendar(session)  # once per command, not once per position
+    calendar = session_calendar(session)  # once per command, not once per position
     for p in session.scalars(
         select(HatPosition)
         .where(HatPosition.closed_at.is_(None), HatPosition.qty_open > 0)

@@ -183,6 +183,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 47: `trade_jobs` registers `gtt.ex_date` only with `exdate_check` (`HatSettings.exdate_gtt_check`, passed through `daily_jobs` and `account_jobs`); the job table holds the default registration. Nothing was narrowed.
 
 - PR 36 (HAT-EXEC-042): `daily/nightly.py` gains the `journal.check` job (23:15 trading days, after the 23:00 GTT verify). Its body (`Nightly.journal_check`) is checked by `verify-execution`'s `journal.check_alerts`. Nothing was narrowed.
+- PR 75b (architecture audit A-F3): `SleeveLifecycle.tla` comment only (`TickShadow` names `portfolio/service.py:load_evidence`). No scheduler or harness check changed.
 
 ## Scratch breaks
 

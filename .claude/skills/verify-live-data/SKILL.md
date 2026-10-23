@@ -62,7 +62,7 @@ No TLA+ model: `docs/architecture.md` lists none for this area. The ordering pro
 - `PBT feed.monitor_survives_errors` The monitor loop continues after any exception in a check and counts it. Harm: one transient error ends reconnecting for the day.
 - `PBT feed.token_check_off_loop` The Fyers token check of an async connect runs on a worker thread, never the event loop, and an invalid or failing check gives `token_invalid`. Harm: a slow broker call freezes every live quote.
 - `PBT feed.socket_factory` The factory builds the SDK socket with the given token, the SDK auto-reconnect on, no log files and exactly the session's four callbacks, and raises `FyersWebSocketError` without the SDK. Harm: a reconnect storm, files written next to the code, or events that never reach the session.
-- `PBT feed.calendar_closed` With HAT's trading calendar the feed never connects on a day it lists as a holiday and connects on other weekdays only from 09:00 IST to the 15:30 close; with the calendar missing, unreadable or not wired it connects on no day. Harm: the Fyers socket opens on an exchange holiday, or on a day nobody knows is a trading day.
+- `PBT feed.calendar_closed` With HAT's trading calendar the feed never connects on a day it lists as a holiday and connects on its other trading days only from 09:00 IST to the 15:30 close; with the calendar missing, unreadable or not wired it connects on no day. Harm: the Fyers socket opens on an exchange holiday, or on a day nobody knows is a trading day.
 - `PBT feed.token_source` The provider token is `client_id:access_token` exactly when the Fyers session holds a model, a client id and an access token, and None otherwise. Harm: the socket is built with half a token, or an expired token is retried for ever.
 - `PBT feed.traceback_throttle` A failing site writes a full traceback first and then at most once per interval; the other failures are one counted debug line. Harm: a failing tick handler writes a traceback per tick and fills the disk.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
@@ -127,7 +127,6 @@ Code under check:
 - `backend/app/hat/engine/trigger.py`: `TriggerMonitor`, `in_window`, `upper_circuit_price`, `lower_circuit_price`, `locked_upper_circuit`, `locked_lower_circuit`
 - `backend/app/hat/daily/live.py`: `PriceBook`, `band_bounds`, `LivePrices`, the price read of `ExitViews` and `LiveRoute.check` (PR 51; the rest of the file is `verify-execution`'s)
 - `backend/app/hat/engine/live_entry.py`: `TriggerService`, `DataHealthKill`
-- `backend/app/hat/data/sessions.py`: `MarketHoursPolicy`
 - `backend/app/hat/clock.py`: `FixedClock`, `require_aware`
 - `backend/app/hat/data/feed.py`: `LiveFeed`, `connect_status_message`
 - `backend/app/hat/data/provider/data_socket.py`: `DataSocket`, `SocketCallbacks`
@@ -191,6 +190,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 41 narrowed `CONF single_feed_import_rule`: outside the provider package, `hat/data/minute_history.py` may import `provider.fyers_websocket.fyers_history` and nothing else from it (`PROVIDER_IMPORTS`). The download needs the Fyers session's REST history, and HAT-BRK-080 lets the data package reach the session only through that module; no socket or provider session is built, and importing anything else from the provider still fails (break recorded below).
 - PR 15b widened the live trigger path (`engine/live_entry.py`): `watchlist_candidates` and `ep_bot_candidates` take every active bot with a live version and its effective mode (with an optional `calendar`), and `submit_trigger` and `TriggerService` take a `route`. The bar and trigger properties pass unchanged; none was narrowed.
 - PR 49: `bars.trigger_only_on_final_bars`'s oracle needs the bar's close at or above the pivot (`confirm: close`, the default) and asserts `bar_close`; `bars.live_flags_parsed` also reads `HAT_ENTRY_TIMEOUT_MINUTES`. The bar listener `execution.entry_timeout.EntryWatch` reads final bars only (checked in `verify-execution`). Nothing was narrowed.
+- PR 75b (architecture audit A-F3, HAT-OVR-001): the feed reads the one `SessionCalendar` (`LiveFeed(calendar=..., calendar_source=..., clock=...)`, `feed.calendar_source`) instead of `MarketHoursPolicy`, which is deleted with `MarketPhase`. A weekday the calendar does not hold is now closed to the feed (it was open under the policy's weekday default): the safe rule, checked by `calendar.one_answer` (`verify-reference-data`). `make_feed` builds a weekday calendar around its clock (`fakes.data_socket.weekday_calendar`). `bars.feed_connection_window` and `feed.calendar_closed` keep their properties; `feed.calendar_closed`'s known calendar now holds every weekday row, as `with_weekdays` stores them.
 
 ## Scratch breaks
 
@@ -1014,27 +1014,9 @@ FAILED tests/hat/properties/test_feed.py::test_traceback_throttle - assert Tr [c
 
 ### PBT feed.calendar_closed
 
-Break: in `app/hat/data/feed.py`, replaced `policy = calendar.policy(clock)` with `policy = MarketHoursPolicy(clock=clock)`.
+Break: (PR 75b) in `app/hat/data/feed.py`, `connection_allowed` returns True when the calendar is missing (`if calendar is None: return True`, fail open). The PR 17 break (the feed built with a bare weekday `MarketHoursPolicy`) has no target since PR 75b deleted that policy; `calendar.one_answer` covers an unknown day.
 
 ```
-tests/hat/properties/test_feed.py F
-tests/hat/properties/test_feed.py:951: in test_calendar_closed
-tests/hat/properties/test_feed.py:1000: in test_calendar_closed
-E   assert True == ((0 < 5 and datetime.date(2026, 10, 19) not in {datetime.date(2026, 10, 19)}))
-E    +  where 0 = <built-in method weekday of datetime.date object at 0x7ff6ab52abd0>()
-E    +    where <built-in method weekday of datetime.date object at 0x7ff6ab52abd0> = datetime.date(2026, 10, 19).weekday
-E   Failing explicit example: test_calendar_closed(
-E       offset=0,
-E       holidays=set(),
-E       today_is_a_holiday=True,
-```
-
-Second break (fail open): Break: in `app/hat/data/feed.py`, replaced `if calendar is None: return None` with `if calendar is None: return MarketHoursPolicy(clock=clock)`.
-
-```
-tests/hat/properties/test_feed.py F
-tests/hat/properties/test_feed.py:951: in test_calendar_closed
-tests/hat/properties/test_feed.py:1002: in test_calendar_closed
 E   assert True is False
 E   Failing explicit example: test_calendar_closed(
 E       offset=1,

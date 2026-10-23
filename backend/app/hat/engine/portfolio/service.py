@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
+from app.hat.data.calendar import session_calendar
 from app.hat.data.instruments import resolve_symbol
 from app.hat.errors import HatError
 from app.hat.events import record
@@ -34,7 +35,6 @@ from app.hat.models import (
     HatStrategy,
     HatStrategyVersion,
     HatTradeResult,
-    HatTradingCalendar,
     HatUniverse,
     HatUniverseMember,
     HatUniverseVersion,
@@ -388,13 +388,6 @@ def _close_of(day: date) -> datetime:
     return datetime.combine(day, ALLOCATION_AT, tzinfo=IST)
 
 
-def trading_sessions(session: Session, market_id: uuid.UUID | None = None) -> frozenset[date]:
-    query = select(HatTradingCalendar.day).where(HatTradingCalendar.is_trading.is_(True))
-    if market_id is not None:
-        query = query.where(HatTradingCalendar.market_id == market_id)
-    return frozenset(session.scalars(query))
-
-
 def stage_entered_on(session: Session, bot_id: uuid.UUID, stage: str) -> date | None:
     """The trade date the sleeve last entered `stage`, from its lifecycle events."""
     events = session.scalars(
@@ -478,6 +471,7 @@ def load_evidence(
 ) -> lifecycle.Evidence:
     """Everything the guards read for `bot` on `trade_date`."""
     facts = backtest(session, bot)
+    calendar = session_calendar(session)
     entered = stage_entered_on(session, bot.id, lifecycle.PROBATION)
     health_zero = False
     if bot.lifecycle_state == lifecycle.LIVE:
@@ -485,7 +479,7 @@ def load_evidence(
     return lifecycle.Evidence(
         today=trade_date,
         backtest=facts,
-        sessions=trading_sessions(session),
+        sessions=frozenset(calendar.trading_days()) if calendar is not None else frozenset(),
         shadow_started_on=stage_entered_on(session, bot.id, lifecycle.SHADOW),
         health_zero=health_zero,
         live_r=trade_results(session, bot.id, virtual=False, until=_close_of(trade_date)),

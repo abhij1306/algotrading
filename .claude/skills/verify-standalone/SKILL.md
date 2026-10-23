@@ -68,7 +68,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `f825b3823517f80b2a996bcdde2153c8b4ec6284ceb67b0bab7a6cadb6dc630a`
+Covered digest: `8104db21d65a603e63c1e139b8717c1d64dd2bc8900786cad40ac5d8b2212754`
 
 ## Scope changes
 
@@ -87,6 +87,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - K3 removed the four live-feed entries from `PENDING` in `test_conf_decoupling.py` (the data socket, the provider session, the live market service and the subscription registry moved into HAT or no longer touch it); `PENDING` now holds the K6 database modules only. `SHIMS` lists the legacy `live_market_service.py` and `ws_manager.py`, which import HAT.
 - K5b emptied `SHIMS` (it is deleted from `test_conf_decoupling.py`): `utils/clock.py`, `services/fyers/auth_flow.py`, `services/fyers_client.py`, `services/symbol_master.py`, `services/live_market_service.py` and `utils/ws_manager.py` were deleted, and `config.py` no longer imports HAT. `PENDING` (`app.database`, `app.paths`, `app.utils.env_loader`, all K6) is unchanged. No check was narrowed.
 - PR 44 added `test_fixtures_index_history_no_data` to `test_conf_fixtures.py` (a verify-data check of the MCP's no-data answer); the frozen VCP oracle check is unchanged and still passes.
+- PR 75b (architecture audit A-F3): `data/sessions.py` keeps only `IST` and the default session times; `MarketHoursPolicy` and `MarketPhase` are deleted (the session comes only from `SessionCalendar`). No standalone check changed.
 
 ## Scratch breaks
 

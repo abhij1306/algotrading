@@ -964,37 +964,39 @@ def test_calendar_closed(
     offset: int, holidays: set[int], today_is_a_holiday: bool, second: int, calendar: str
 ) -> None:
     """With HAT's trading calendar the feed may connect on a day the calendar lists as a holiday
-    never, and on any other weekday from 09:00 IST to the 15:30 close; while the calendar is
-    missing, unreadable or not wired at all, it may connect on no day. Harm: the Fyers socket
-    opens on an exchange holiday, or on a day nobody knows is a trading day."""
+    never, and on any other weekday of the calendar from 09:00 IST to the 15:30 close; while the
+    calendar is missing, unreadable or not wired at all, it may connect on no day. Harm: the
+    Fyers socket opens on an exchange holiday, or on a day nobody knows is a trading day."""
     from contextlib import nullcontext
     from datetime import date, time, timedelta
     from unittest.mock import patch
 
+    from hat.fakes.data_socket import weekday_calendar
+
     from app.hat.data import feed as feed_module
-    from app.hat.data.calendar import CalendarDay, MarketCalendar
+    from app.hat.risk.sessions import SessionCalendar, SessionDay
 
     day = date(2026, 10, 19) + timedelta(days=offset)  # a Monday and the days after it
     shut = {
         date(2026, 10, 19) + timedelta(days=h)
         for h in holidays | ({offset} if today_is_a_holiday else set())
     }
-    rows = {h: CalendarDay(h, False, None, None, "holiday") for h in shut}
     when = datetime.combine(day, time(), IST) + timedelta(seconds=second)
     clock = FixedClock(when.astimezone(UTC))
+    rows = dict(weekday_calendar(clock).days) | {h: SessionDay(False) for h in shut}
 
-    def load(_session: object) -> MarketCalendar | None:
+    def load(_session: object) -> SessionCalendar | None:
         if calendar == "unreadable":
             raise OSError("calendar table unreadable")
-        return MarketCalendar(time(9, 15), time(15, 30), rows) if calendar == "known" else None
+        return SessionCalendar(rows) if calendar == "known" else None
 
     source = (
         None
         if calendar == "no_source"
-        else feed_module.calendar_policy_source(lambda: nullcontext(object()), clock, ttl_s=0.0)
+        else feed_module.calendar_source(lambda: nullcontext(object()), ttl_s=0.0)
     )
-    with patch.object(feed_module, "load_calendar", load):
-        feed = feed_module.LiveFeed(policy_source=source)
+    with patch.object(feed_module, "session_calendar", load):
+        feed = feed_module.LiveFeed(calendar_source=source, clock=clock)
         allowed = feed.connection_allowed()
     if calendar == "known":
         window = 9 * 3600 <= second <= 15 * 3600 + 1800

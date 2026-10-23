@@ -1,9 +1,10 @@
 """The HAT risk decision: every check of 06 composed into one total function (HAT-RISK-100/101/102).
 
-`decide` is what `app.hat.risk.service.evaluate_signal` calls after it has worked out the
-market-hours and price-band outcomes. It is the only place that calls `size_position`, so no other
-module sizes a HAT order (CONF `risk.single_sizing_path`). It never raises: a missing, non-finite
-or float input, or any arithmetic failure, is a REJECT, never a default (fail closed).
+`decide` is what `app.hat.risk.service.evaluate_signal` calls after it has worked out the price-band
+outcome; the session comes from the context's trading calendar. It is the only place that calls
+`size_position`, so no other module sizes a HAT order (CONF `risk.single_sizing_path`). It never
+raises: a missing, non-finite or float input, or any arithmetic failure, is a REJECT, never a
+default (fail closed).
 
 An exit or a protective-stop move is always accepted: no cap, kill, pause or exposure level can
 trap a position (HAT-RISK-035). Anything that is not exactly one of those actions is an entry
@@ -74,10 +75,9 @@ REASON_CODES = frozenset(reason.value for reason in Reason)
 
 @dataclass(frozen=True)
 class EntryChecks:
-    """The market-hours and price-band outcomes that the HAT decision composes:
-    True passed, False failed, None could not be evaluated (treated as missing input)."""
+    """The price-band outcome that the HAT decision composes: True passed, False failed, None could
+    not be evaluated (treated as missing input)."""
 
-    market_open: bool | None
     price_band_ok: bool | None
 
 
@@ -290,7 +290,7 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
     stopouts_today = _count(ctx.stopouts_today, "stopouts_today")
     if not isinstance(kill, KillState) or not isinstance(calendar, SessionCalendar):
         raise MissingInputError("kill or calendar: wrong type")
-    if checks.market_open is None or checks.price_band_ok is None:
+    if checks.price_band_ok is None:
         raise MissingInputError("an existing check could not be evaluated")
     session = calendar.state(at)
     if session is SessionState.UNKNOWN:
@@ -332,14 +332,14 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
     )
 
 
-def _state_reason(e: _Entry, checks: EntryChecks) -> Reason | None:
+def _state_reason(e: _Entry) -> Reason | None:
     """The first of the kill, pause, market and data checks that fails."""
     checks = (
         (e.kill.account_tripped, Reason.KILL_ACCOUNT),
         (e.kill.bot_tripped, Reason.KILL_BOT),
         (e.kill.health_tripped, Reason.KILL_HEALTH),
         (e.kill.paused, Reason.BOT_PAUSED),
-        (e.session is not SessionState.OPEN or not checks.market_open, Reason.MARKET_CLOSED),
+        (e.session is not SessionState.OPEN, Reason.MARKET_CLOSED),
         (e.stale, Reason.STALE_FEED),
         (e.quality_failed, Reason.QUALITY_FAILED),
         (not caps.regime_gate_open(e.gate_on), Reason.REGIME_GATE),
@@ -390,7 +390,7 @@ def _entry_decision(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
     def reject(reason: Reason) -> RiskDecision:
         return _reject(reason, version=keep)
 
-    reason = _state_reason(e, checks) or _cap_reason(e)
+    reason = _state_reason(e) or _cap_reason(e)
     if reason is not None:
         return reject(reason)
     if e.alloc <= 0:

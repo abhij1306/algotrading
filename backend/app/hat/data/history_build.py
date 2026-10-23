@@ -675,8 +675,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if market_id is None:
             sys.stderr.write("history_no_market\n")
             return 2
-        calendar = hat_calendar.load_calendar(session)
-        holidays = calendar.holidays() if calendar else frozenset()
+        calendar = hat_calendar.session_calendar(session)
+        holidays = frozenset(
+            day for day, row in (calendar.days if calendar else {}).items() if not row.is_trading
+        )
     client = client_from_env(process_env())
 
     def instruments() -> list[tuple[object, str]]:

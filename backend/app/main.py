@@ -122,10 +122,10 @@ def _build_hat_feed() -> Any:  # noqa: ANN401
     """HAT's live feed (the one Fyers data socket of the process, HAT-OVR-006), its login hooks
     hung on the Fyers auth service. The runtime starts it."""
     from .database import SessionLocal
-    from .hat.data.feed import LiveFeed, calendar_policy_source
+    from .hat.data.feed import LiveFeed, calendar_source
     from .hat.execution.fyers_auth import get_fyers_auth
 
-    feed = LiveFeed(policy_source=calendar_policy_source(SessionLocal))
+    feed = LiveFeed(calendar_source=calendar_source(SessionLocal))
     feed.install_auth_hooks(get_fyers_auth())
     return feed
 
