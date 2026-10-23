@@ -7,6 +7,7 @@ import json
 import re
 import uuid
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,8 @@ from app.hat.engine import trades
 from app.hat.engine.strategy.config import StrategyConfig
 from app.hat.engine.strategy.versions import VersionError, create_bot
 from app.hat.execution import accounts, modes
-from app.hat.execution.broker import HatBroker
-from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
+from app.hat.execution.broker import GttRequest, HatBroker
+from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, gtt_payload
 from app.hat.execution.tags import encode_tag
 from app.hat.models import HatBot
 
@@ -391,8 +392,8 @@ def _recorded() -> list[dict]:
 
 def test_brk__recorded_writes() -> None:
     """The Fyers write replies recorded live on 2026-10-22 hold:
-    the GTT place payload the broker builds for the recorded request is the one Fyers accepted
-    (`orderTag` included); the place, modify and cancel replies read as placed and ok; the GTT
+    the GTT place payload the adapter builds for the recorded request is the one Fyers accepted
+    (with HAT's `orderTag`); the place, modify and cancel replies read as placed and ok; the GTT
     book rows (live keys `tran_side`, `product_type`, `ordertag` "1:GTT<tag>" or "2:GTTUntagged")
     read as resting GTTs with their tag, and cancelled ones are left out; two orders under one
     tag were both accepted with ids and both refused by RMS (MX-F6: Fyers does not enforce tag
@@ -406,21 +407,23 @@ def test_brk__recorded_writes() -> None:
     [untagged, tagged] = by("place_gtt_order")
     assert tagged["args"]["orderTag"] == "HATTEST1"
     assert "orderTag" not in untagged["args"]
+    stop_tag = encode_tag(uuid.UUID(int=24), "stop_gtt", 0)
     for call in (untagged, tagged):
         sdk = RecordingSdk(call["reply"])
         leg = call["args"]["orderInfo"]["leg1"]
-        reply = broker_over(sdk).place_gtt(
-            {
-                "symbol": call["args"]["symbol"],
-                "quantity": leg["qty"],
-                "side": "SELL",
-                "product": "CNC",
-                "trigger_price": leg["triggerPrice"],
-                "price": leg["price"],
-                "order_tag": call["args"].get("orderTag"),
-            }
+        request = GttRequest(
+            "SBIN",
+            leg["qty"],
+            Decimal(str(leg["triggerPrice"])),
+            Decimal(str(leg["price"])),
+            tag=stop_tag,
         )
-        assert sdk.calls == [("place_gtt_order", call["args"])]
+        symbol = call["args"]["symbol"]
+        payload = gtt_payload(request, lambda _symbol, symbol=symbol: symbol)
+        # the payload Fyers accepted, with HAT's own tag (the recording used a test tag or none)
+        assert payload == {**call["args"], "orderTag": stop_tag}
+        reply = broker_over(sdk).place_gtt(payload)
+        assert sdk.calls == [("place_gtt_order", payload)]
         assert (reply["status"], reply["order_id"]) == ("SUBMITTED", call["reply"]["id"])
     adapter = FyersHatBroker(broker_over(RecordingSdk()), instruments=lambda: [])
     for name in ("modify_gtt_order", "cancel_gtt_order"):

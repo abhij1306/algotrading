@@ -1,14 +1,20 @@
 """The Fyers adapter behind `HatBroker` (HAT-DEC-BD2, HAT-BRK-081, -090, -091).
 
-It wraps `FyersBroker` (place, modify, cancel, the circuit breaker, the guarded timeout,
-`SUBMIT_UNCONFIRMED`, and the GTT calls it makes through the Fyers SDK), `FyersSession` (is the
-SDK model usable) and `FyersAuthService` (login link and code exchange), all in this package
-(K2). It never touches the SDK, a token file or an environment variable itself (HAT-OPS-051).
-The instrument list comes from `hat_instrument` and `hat_broker_symbol`.
+It wraps `FyersBroker` (the transport: the circuit breaker, the guarded timeout, the call budget
+and `SUBMIT_UNCONFIRMED`), `FyersSession` (is the SDK model usable) and `FyersAuthService`
+(login link and code exchange), all in this package (K2). It never touches the SDK, a token file
+or an environment variable itself (HAT-OPS-051). The instrument list comes from `hat_instrument`
+and `hat_broker_symbol`.
 
-Every intent becomes one exact Fyers payload with product CNC; an invalid intent raises
-`InvalidIntentError` before any broker call. Reads fail closed: when the broker cannot answer they
-raise `BrokerUnavailableError`, never an empty list. Results carry fixed codes, not broker text.
+Everything Fyers-shaped is here (PR 75d, architecture audit F8): every intent becomes one exact
+Fyers payload with product CNC (`order_payload`, `gtt_payload` and the modify fields), the one
+place a Decimal price becomes the float the SDK's JSON carries; an invalid intent raises
+`InvalidIntentError` before any broker call. Every raw reply is parsed once, its amounts through
+`money.require_exact` and its share counts as whole numbers (`parse_positions`, `parse_funds`,
+`parse_holdings`, `parse_trade`, the order and GTT book rows): a field HAT reads that is missing
+or not a number fails the read, never reads as 0. Reads fail closed: when the broker cannot answer
+they raise `BrokerUnavailableError`, never an empty list. Results carry fixed codes, not broker
+text.
 """
 
 from __future__ import annotations
@@ -65,7 +71,6 @@ from .fyers_auth import (
 from .fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     CLIENT_NOT_INITIALIZED,
-    FYERS_ORDER_TYPES,
     PROCESS_BREAKER,
     SUBMIT_UNCONFIRMED,
     FyersBroker,
@@ -79,8 +84,13 @@ from .fyers_session import FyersSession, get_fyers_session
 from .fyers_tokens import TokenStoreError
 from .tags import TAG_LENGTH, is_gtt_tag, is_hat_tag
 
+# Fyers order "type": 1 = LIMIT, 2 = MARKET, 3 = SL-M (stop market), 4 = SL (stop limit)
+FYERS_ORDER_TYPES = {OrderType.LIMIT: 1, OrderType.MARKET: 2, OrderType.SL_M: 3, OrderType.SL: 4}
 # The Fyers order "type" code back to HAT's order type (`FYERS_ORDER_TYPES` reversed).
-_ORDER_TYPE_OF_CODE = {code: OrderType(name) for name, code in FYERS_ORDER_TYPES.items()}
+_ORDER_TYPE_OF_CODE = {code: order_type for order_type, code in FYERS_ORDER_TYPES.items()}
+_LIMIT_PRICED = frozenset({OrderType.LIMIT, OrderType.SL})
+_STOP_PRICED = frozenset({OrderType.SL, OrderType.SL_M})
+_SIDE_CODE = {Side.BUY: 1, Side.SELL: -1}
 
 
 def _order_type(code: object) -> OrderType | None:
@@ -99,10 +109,19 @@ def _book_price(value: object) -> Decimal | None:
 __all__ = [
     "CODE_INVALID_RESPONSE",
     "FYERS_CAPABILITIES",
+    "FYERS_ORDER_TYPES",
     "FyersHatBroker",
     "build_fyers_broker",
+    "gtt_modify_fields",
+    "gtt_payload",
     "map_fyers_status",
     "map_session",
+    "order_modify_fields",
+    "order_payload",
+    "parse_funds",
+    "parse_holdings",
+    "parse_positions",
+    "parse_trade",
 ]
 
 logger = logging.getLogger(__name__)
@@ -192,6 +211,214 @@ def _intent_price(value: object) -> Decimal:
 
 def _is_positive_qty(qty: object) -> bool:
     return isinstance(qty, int) and not isinstance(qty, bool) and qty >= 1
+
+
+def _sdk_price(value: object) -> float:
+    """The one place an order price leaves Decimal: the float the SDK's JSON carries, of an exact
+    positive Decimal (`_intent_price` refuses anything else)."""
+    return float(_intent_price(value))
+
+
+# --- payloads: one intent, one exact SDK dict ---------------------------------------------------
+
+
+def order_payload(intent: OrderIntent, fyers_symbol: Callable[[str], str]) -> dict[str, Any]:
+    """The Fyers `place_order` payload of `intent`, under the Fyers symbol `fyers_symbol` names:
+    product CNC, DAY validity, the HT tag as `orderTag`, a limit price only for LIMIT and SL and a
+    trigger only for SL and SL-M (0 otherwise). Raises InvalidIntentError for anything HAT will
+    not send."""
+    try:
+        if not _is_positive_qty(intent.qty) or intent.product != "CNC":
+            raise InvalidOperation
+        if not is_hat_tag(intent.tag):
+            raise InvalidOperation
+        side, order_type = Side(intent.side), OrderType(intent.order_type)
+        needs_limit, needs_trigger = order_type in _LIMIT_PRICED, order_type in _STOP_PRICED
+        if needs_limit != (intent.price is not None) or needs_trigger != (
+            intent.trigger_price is not None
+        ):
+            raise InvalidOperation
+        return {
+            "symbol": fyers_symbol(intent.symbol),
+            "qty": intent.qty,
+            "type": FYERS_ORDER_TYPES[order_type],
+            "side": _SIDE_CODE[side],
+            "productType": "CNC",
+            "limitPrice": _sdk_price(intent.price) if needs_limit else 0,
+            "stopPrice": _sdk_price(intent.trigger_price) if needs_trigger else 0,
+            "validity": "DAY",
+            "disclosedQty": 0,
+            "offlineOrder": False,
+            "orderTag": intent.tag,
+        }
+    except (InvalidOperation, ValueError, TypeError):
+        raise InvalidIntentError(CODE_INVALID_INTENT) from None
+
+
+def order_modify_fields(
+    order_type: object, qty: object, price: object, trigger_price: object
+) -> dict[str, Any] | None:
+    """The Fyers `modify_order` fields (besides the order id) that describe the order after the
+    change; its type is required, so the Fyers type is never guessed. None when the type needs a
+    price that is not given (refused, nothing is sent). Raises InvalidIntentError for a type,
+    quantity or price HAT will not send."""
+    try:
+        kind = OrderType(order_type)  # type: ignore[arg-type]
+        if qty is not None and not _is_positive_qty(qty):
+            raise InvalidOperation
+        limit = None if price is None else _sdk_price(price)
+        trigger = None if trigger_price is None else _sdk_price(trigger_price)
+    except (InvalidOperation, ValueError, TypeError):
+        raise InvalidIntentError(CODE_INVALID_INTENT) from None
+    if (kind in _LIMIT_PRICED and limit is None) or (kind in _STOP_PRICED and trigger is None):
+        return None
+    fields: dict[str, Any] = {
+        "type": FYERS_ORDER_TYPES[kind],
+        "limitPrice": limit if kind in _LIMIT_PRICED else 0,
+        "stopPrice": trigger if kind in _STOP_PRICED else 0,
+    }
+    if qty is not None:
+        fields["qty"] = qty
+    return fields
+
+
+def _gtt_leg(qty: object, trigger: object, limit: object) -> dict[str, Any]:
+    """The single leg of a sell stop GTT: a positive quantity, and a limit below its trigger."""
+    trigger_price, limit_price = _intent_price(trigger), _intent_price(limit)
+    if not _is_positive_qty(qty) or limit_price >= trigger_price:
+        raise InvalidOperation  # a sell stop's limit sits below its trigger
+    return {"price": float(limit_price), "triggerPrice": float(trigger_price), "qty": qty}
+
+
+def gtt_payload(request: GttRequest, fyers_symbol: Callable[[str], str]) -> dict[str, Any]:
+    """The Fyers GTT place payload of a single-leg CNC sell stop, its stop_gtt tag as
+    `orderTag` (Fyers takes a tag on a GTT, recorded 2026-10-22). Raises InvalidIntentError for
+    anything HAT will not send."""
+    try:
+        if request.product != "CNC" or Side(request.side) is not Side.SELL:
+            raise InvalidOperation
+        if not is_gtt_tag(request.tag):
+            raise InvalidOperation  # every GTT HAT places carries its stop_gtt tag
+        leg = _gtt_leg(request.qty, request.trigger_price, request.limit_price)
+        return {
+            "side": _SIDE_CODE[Side.SELL],
+            "symbol": fyers_symbol(request.symbol),
+            "productType": "CNC",
+            "orderInfo": {"leg1": leg},
+            "orderTag": request.tag,
+        }
+    except (InvalidOperation, ValueError, TypeError):
+        raise InvalidIntentError(CODE_INVALID_INTENT) from None
+
+
+def gtt_modify_fields(request: GttModify) -> dict[str, Any]:
+    """The Fyers GTT modify fields (besides the GTT id): the leg after the change."""
+    try:
+        if not request.gtt_id:
+            raise InvalidOperation
+        leg = _gtt_leg(request.qty, request.trigger_price, request.limit_price)
+    except (InvalidOperation, ValueError, TypeError):
+        raise InvalidIntentError(CODE_INVALID_INTENT) from None
+    return {"orderInfo": {"leg1": leg}}
+
+
+# --- replies: each raw Fyers reply parsed once ---------------------------------------------------
+
+
+def _count(value: object, name: str) -> int:
+    """A share count from a reply: a whole number, never a truncated fraction."""
+    whole = _whole_number(value)
+    if whole is None:
+        raise ValueError(f"{name}: not a whole number")
+    return whole
+
+
+def _text(value: object, name: str) -> str:
+    """A reply's text field, present and not empty (never a default)."""
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{name}: missing")
+    return value
+
+
+def parse_positions(rows: Iterable[dict[str, Any]]) -> list[BrokerPosition]:
+    """The open positions of a `netPositions` list (a net quantity of 0 is none): the signed net
+    quantity, the average of the side held (`buyAvg` long, `sellAvg` short) and the product. A
+    missing or unreadable quantity, average or product raises (never an average of 0, never an
+    INTRADAY product)."""
+    positions = []
+    for row in rows:
+        qty = _count(row["netQty"], "netQty")
+        if qty == 0:
+            continue
+        average = "buyAvg" if qty > 0 else "sellAvg"
+        positions.append(
+            BrokerPosition(
+                symbol=symbol_master.to_db(str(row["symbol"])),
+                qty=qty,
+                avg_price=require_exact(row[average], average, floats=True, positive=True),
+                product=_text(row["productType"], "productType"),
+            )
+        )
+    return positions
+
+
+def parse_holdings(rows: Iterable[dict[str, Any]]) -> list[BrokerHolding]:
+    """The demat holdings of a `holdings` list. A missing or unreadable quantity or `costPrice`
+    raises (a bonus share may cost 0 [A]; a negative cost is not a cost)."""
+    holdings = []
+    for row in rows:
+        cost = require_exact(row["costPrice"], "costPrice", floats=True)
+        if cost < 0:
+            raise ValueError("costPrice: negative")
+        holdings.append(
+            BrokerHolding(
+                symbol=symbol_master.to_db(str(row["symbol"])),
+                qty=_count(row["quantity"], "quantity"),
+                avg_price=cost,
+            )
+        )
+    return holdings
+
+
+# The `fund_limit` rows HAT reads, by title (Fyers documents ten; the rest are never parsed, so
+# an odd collateral amount cannot fail the read).
+_FUND_ROWS = {"Available Balance": "available", "Utilized Amount": "used", "Total Balance": "total"}
+
+
+def parse_funds(reply: dict[str, Any]) -> BrokerFunds:
+    """The funds of an ok `funds` reply, from its `fund_limit` rows: "Available Balance" and
+    "Utilized Amount" must be there with an amount, and a "Total Balance" Fyers leaves out is
+    their exact sum. A reply without them raises: it is not a reply of 0 cash."""
+    rows = reply["fund_limit"]
+    if not isinstance(rows, list):
+        raise TypeError("fund_limit: not a list")
+    amounts: dict[str, Decimal] = {}
+    for row in rows:
+        field = _FUND_ROWS.get(row.get("title")) if isinstance(row, dict) else None
+        if field is not None:
+            amounts[field] = require_exact(row["equityAmount"], row["title"], floats=True)
+    available, used = amounts["available"], amounts["used"]
+    return BrokerFunds(available=available, used=used, total=amounts.get("total", available + used))
+
+
+def parse_trade(row: dict[str, Any]) -> BrokerTrade:
+    """One `tradeBook` row: its traded quantity a whole number, its price exact and positive."""
+    tag, gtt_tag = _row_tags(row.get("orderTag"))
+    return BrokerTrade(
+        trade_id=str(row["tradeNumber"]),
+        order_id=str(row["orderNumber"]),
+        tag=tag,
+        symbol=symbol_master.to_db(str(row["symbol"])),
+        side=_side(row["side"]),
+        qty=_count(row["tradedQty"], "tradedQty"),
+        price=require_exact(row["tradePrice"], "tradePrice", floats=True, positive=True),
+        traded_at=None,
+        gtt_tag=gtt_tag,
+    )
+
+
+def _side(value: object) -> Side:
+    return {1: Side.BUY, -1: Side.SELL}[_count(value, "side")]
 
 
 def _clean_tag(tag: object) -> str | None:
@@ -387,42 +614,8 @@ class FyersHatBroker:
             stored = None
         return stored or symbol_master.to_fyers(symbol)
 
-    def _order_payload(self, intent: OrderIntent) -> dict[str, Any]:
-        """The order dict `FyersBroker.place_order` turns into the SDK payload. Raises
-        InvalidIntentError for anything the adapter will not send."""
-        try:
-            if not _is_positive_qty(intent.qty):
-                raise InvalidOperation
-            side = Side(intent.side)
-            order_type = OrderType(intent.order_type)
-            if intent.product != "CNC":
-                raise InvalidOperation
-            if not is_hat_tag(intent.tag):
-                raise InvalidOperation
-            needs_limit = order_type in {OrderType.LIMIT, OrderType.SL}
-            needs_trigger = order_type in {OrderType.SL, OrderType.SL_M}
-            if needs_limit != (intent.price is not None) or needs_trigger != (
-                intent.trigger_price is not None
-            ):
-                raise InvalidOperation
-            order: dict[str, Any] = {
-                "symbol": self._fyers_symbol(intent.symbol),
-                "quantity": intent.qty,
-                "side": side.value.upper(),
-                "type": order_type.value,
-                "product": "CNC",
-                "order_tag": intent.tag,
-            }
-            if needs_limit:
-                order["price"] = float(_intent_price(intent.price))
-            if needs_trigger:
-                order["trigger_price"] = float(_intent_price(intent.trigger_price))
-        except (InvalidOperation, ValueError, TypeError):
-            raise InvalidIntentError(CODE_INVALID_INTENT) from None
-        return order
-
     def place_order(self, intent: OrderIntent) -> PlaceResult:
-        order = self._order_payload(intent)
+        order = order_payload(intent, self._fyers_symbol)
         try:
             reply = self._broker.place_order(order)
         except Exception:
@@ -441,19 +634,10 @@ class FyersHatBroker:
         price: Decimal | None = None,
         trigger_price: Decimal | None = None,
     ) -> AckResult:
-        try:
-            params: dict[str, Any] = {"order_type": OrderType(order_type).value}
-            if qty is not None:
-                if not _is_positive_qty(qty):
-                    raise InvalidOperation
-                params["quantity"] = qty
-            if price is not None:
-                params["price"] = float(_intent_price(price))
-            if trigger_price is not None:
-                params["trigger_price"] = float(_intent_price(trigger_price))
-        except (InvalidOperation, ValueError, TypeError):
-            raise InvalidIntentError(CODE_INVALID_INTENT) from None
-        return self._write(lambda: self._broker.modify_order(broker_order_id, params))
+        fields = order_modify_fields(order_type, qty, price, trigger_price)
+        if fields is None:
+            return AckResult(ok=False, code=CODE_REJECTED)  # a price the type needs is missing
+        return self._write(lambda: self._broker.modify_order(broker_order_id, fields))
 
     def cancel_order(self, broker_order_id: str) -> AckResult:
         return self._write(lambda: self._broker.cancel_order(broker_order_id))
@@ -466,33 +650,8 @@ class FyersHatBroker:
             logger.exception("Fyers write failed")
             return AckResult(ok=False, code=CODE_UNAVAILABLE)
 
-    @staticmethod
-    def _gtt_prices(trigger: Decimal, limit: Decimal) -> tuple[float, float]:
-        trigger_price, limit_price = _intent_price(trigger), _intent_price(limit)
-        if limit_price >= trigger_price:
-            raise InvalidOperation  # a sell stop's limit sits below its trigger
-        return float(trigger_price), float(limit_price)
-
     def place_gtt_stop(self, request: GttRequest) -> GttResult:
-        try:
-            if request.product != "CNC" or Side(request.side) is not Side.SELL:
-                raise InvalidOperation
-            if not is_gtt_tag(request.tag):
-                raise InvalidOperation  # every GTT HAT places carries its stop_gtt tag
-            if not _is_positive_qty(request.qty):
-                raise InvalidOperation
-            trigger, limit = self._gtt_prices(request.trigger_price, request.limit_price)
-            gtt = {
-                "symbol": self._fyers_symbol(request.symbol),
-                "quantity": request.qty,
-                "side": "SELL",
-                "product": "CNC",
-                "trigger_price": trigger,
-                "price": limit,
-                "order_tag": request.tag,
-            }
-        except (InvalidOperation, ValueError, TypeError):
-            raise InvalidIntentError(CODE_INVALID_INTENT) from None
+        gtt = gtt_payload(request, self._fyers_symbol)
         try:
             reply = self._broker.place_gtt(gtt)
         except Exception:
@@ -502,14 +661,8 @@ class FyersHatBroker:
         return GttResult(status, gtt_id, code)
 
     def modify_gtt(self, request: GttModify) -> AckResult:
-        try:
-            if not _is_positive_qty(request.qty) or not request.gtt_id:
-                raise InvalidOperation
-            trigger, limit = self._gtt_prices(request.trigger_price, request.limit_price)
-        except (InvalidOperation, ValueError, TypeError):
-            raise InvalidIntentError(CODE_INVALID_INTENT) from None
-        params = {"quantity": request.qty, "trigger_price": trigger, "price": limit}
-        return self._write(lambda: self._broker.modify_gtt(request.gtt_id, params))
+        fields = gtt_modify_fields(request)
+        return self._write(lambda: self._broker.modify_gtt(request.gtt_id, fields))
 
     def cancel_gtt(self, gtt_id: str) -> AckResult:
         return self._write(lambda: self._broker.cancel_gtt(gtt_id))
@@ -552,7 +705,7 @@ class FyersHatBroker:
         return BrokerGtt(
             gtt_id=str(row["id"]),
             symbol=symbol_master.to_db(str(row["symbol"])),
-            side=self._side(row["tran_side"] if "tran_side" in row else row["side"]),
+            side=_side(row["tran_side"] if "tran_side" in row else row["side"]),
             qty=whole,
             trigger_price=require_exact(trigger, "trigger", floats=True, positive=True),
             tag=tag,
@@ -596,18 +749,15 @@ class FyersHatBroker:
             raise BrokerUnavailableError(CODE_INVALID_RESPONSE) from None
 
     @staticmethod
-    def _side(value: object) -> Side:
-        return {1: Side.BUY, -1: Side.SELL}[int(value)]  # type: ignore[call-overload]
-
-    def _order_row(self, row: dict[str, Any]) -> BrokerOrder:
-        qty = int(row["qty"])
-        filled = int(row.get("filledQty") or 0)
+    def _order_row(row: dict[str, Any]) -> BrokerOrder:
+        qty = _count(row["qty"], "qty")
+        filled = _count(row.get("filledQty") or 0, "filledQty")
         tag, gtt_tag = _row_tags(row.get("orderTag"))
         return BrokerOrder(
             order_id=str(row["id"]),
             tag=tag,
             symbol=symbol_master.to_db(str(row["symbol"])),
-            side=self._side(row["side"]),
+            side=_side(row["side"]),
             qty=qty,
             filled_qty=filled,
             status=map_fyers_status(row.get("status"), filled, qty),
@@ -638,64 +788,16 @@ class FyersHatBroker:
         return self._read(self._broker.fetch_orderbook, self._order_book)
 
     def trades(self) -> list[BrokerTrade]:
-        def trade(r: dict[str, Any]) -> BrokerTrade:
-            tag, gtt_tag = _row_tags(r.get("orderTag"))
-            return BrokerTrade(
-                trade_id=str(r["tradeNumber"]),
-                order_id=str(r["orderNumber"]),
-                tag=tag,
-                symbol=symbol_master.to_db(str(r["symbol"])),
-                side=self._side(r["side"]),
-                qty=int(r["tradedQty"]),
-                price=require_exact(r["tradePrice"], "tradePrice", floats=True, positive=True),
-                traded_at=None,
-                gtt_tag=gtt_tag,
-            )
-
-        def parse(rows: list[dict[str, Any]]) -> list[BrokerTrade]:
-            return [trade(r) for r in rows]
-
-        return self._read(self._broker.fetch_tradebook, parse)
+        return self._read(self._broker.fetch_tradebook, lambda rows: [parse_trade(r) for r in rows])
 
     def positions(self) -> list[BrokerPosition]:
-        def parse(rows: list[dict[str, Any]]) -> list[BrokerPosition]:
-            result = []
-            for r in rows:
-                qty = int(r["quantity"])
-                result.append(
-                    BrokerPosition(
-                        symbol=symbol_master.to_db(str(r["symbol"])),
-                        qty=qty if r["side"] == "LONG" else -qty,
-                        avg_price=require_exact(r["entry_price"], "entry_price", floats=True),
-                        product=str(r["product_type"]),
-                    )
-                )
-            return result
-
-        return self._read(self._broker.get_positions, parse)
+        return self._read(self._broker.fetch_positions, parse_positions)
 
     def holdings(self) -> list[BrokerHolding]:
-        def parse(rows: list[dict[str, Any]]) -> list[BrokerHolding]:
-            return [
-                BrokerHolding(
-                    symbol=symbol_master.to_db(str(r["symbol"])),
-                    qty=int(r["quantity"]),
-                    avg_price=require_exact(r.get("costPrice", 0), "costPrice", floats=True),
-                )
-                for r in rows
-            ]
-
-        return self._read(self._broker.fetch_holdings, parse)
+        return self._read(self._broker.fetch_holdings, parse_holdings)
 
     def funds(self) -> BrokerFunds:
-        return self._read(
-            self._broker.fetch_funds,
-            lambda f: BrokerFunds(
-                available=require_exact(f["available"], "available", floats=True),
-                used=require_exact(f["used"], "used", floats=True),
-                total=require_exact(f["total"], "total", floats=True),
-            ),
-        )
+        return self._read(self._broker.fetch_funds, parse_funds)
 
     def instruments(self) -> list[Instrument]:
         return self._read(

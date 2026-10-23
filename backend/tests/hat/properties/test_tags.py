@@ -13,7 +13,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
-from hat.fakes.broker import FakeBroker, unconfirmed
+from hat.fakes.broker import FakeBroker, funds_reply, unconfirmed
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_exec_support import SYMBOLS, adapter_over
 from hypothesis import assume, example, given
@@ -31,9 +31,6 @@ from app.hat.execution.broker import (
     Side,
 )
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, map_fyers_status
-from app.hat.execution.fyers_broker import (
-    FYERS_ORDER_TAG_PATTERN,
-)
 from app.hat.execution.reconcile import (
     DUPLICATE_HT_ORDER,
     Mismatch,
@@ -102,7 +99,6 @@ def test_encode_decode_roundtrip(signal: uuid.UUID, purpose: str, sequence: int)
     assert tag.startswith("HT")
     assert not tag.startswith("ST")
     assert FYERS_ALLOWED.fullmatch(tag)
-    assert FYERS_ORDER_TAG_PATTERN.fullmatch(tag)  # the pattern the Fyers client itself enforces
     assert len(tag) <= FYERS_CAPABILITIES.tag_max_len
     assert decode_tag(tag).purpose == purpose
 
@@ -393,7 +389,7 @@ def _failing_fake(kind: str) -> FakeBroker:
         # an untagged order row that cannot be read is skipped (D118); an HT-tagged one fails
         fake.orders = [{**row, "orderTag": encode_tag(uuid.UUID(int=7), "entry", 0)}]
         fake.positions = [{"symbol": SECRET}]
-        fake.available = {"available": SECRET, "used": 0, "total": 0}
+        fake.available = funds_reply(SECRET)
     return fake
 
 

@@ -196,7 +196,7 @@ def test_db_crash_resumes_entry_once(
     desks = restart(clean_db, rig, AT, None if error == "crash" else live)
     sent = rig.places()
     assert len(sent) <= MAX_ENTRY_REJECTIONS
-    assert len({order["order_tag"] for order in sent}) == len(sent)
+    assert len({order["orderTag"] for order in sent}) == len(sent)
     assert len([n for n in range(len(sent)) if n >= len(replies) or replies[n]]) <= 1
     with Session(clean_db) as fresh:
         assert not _stranded(fresh, signal_id)

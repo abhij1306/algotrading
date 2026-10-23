@@ -1,15 +1,18 @@
 """One configurable broker stand-in for every trading test.
 
-`FakeBroker` has the methods HAT's adapter calls on `FyersBroker` (the writes, the GTT calls,
-`get_positions` and the fail-closed `fetch_*` reads) and records each call as `(method, args)`
-in `calls`: the single argument itself, a tuple when there are several, `None` when there are
-none. K4 removed the lenient reads and the tag lookup that only the manual-trading code called.
+`FakeBroker` has the methods HAT's adapter calls on `FyersBroker`, the transport (the writes, the
+GTT calls and the fail-closed `fetch_*` reads), and records each call as `(method, args)` in
+`calls`: the single argument itself, a tuple when there are several, `None` when there are none.
+Like the transport, it takes the SDK payloads the adapter builds (`side` 1 or -1, `type` the Fyers
+code, `qty`, `limitPrice`, `stopPrice`, `orderTag`; a GTT's leg in `orderInfo.leg1`; a modify's
+fields besides the id) and its reads answer raw Fyers rows (PR 75d). K4 removed the lenient reads
+and the tag lookup that only the manual-trading code called.
 
 Configure it in three ways (attributes can also be passed to the constructor):
 
-- State attributes drive the default replies: `available`, `positions`, `tradebook`, `orders`,
-  `holdings`. Set any of them to an exception instance to make
-  that read raise it on every call.
+- State attributes drive the default replies: `available` (the funds reply's available and total
+  balance), `positions` (`netPositions` rows), `tradebook`, `orders`, `holdings` (Fyers rows).
+  Set any of them to an exception instance to make that read raise it on every call.
 - `modify_reply` (default `{"s": "ok", ...}`), `cancel_reply` (default `{"s": "ok"}`) and
   `place_reply` are the replies of the writes; an exception instance is raised instead.
   `place_reply = None` (the default) accepts every order as `B-<n>` (with `place_message`
@@ -40,7 +43,6 @@ from typing import Any
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     BROKER_ORDER_UNCONFIRMED,
-    FYERS_ORDER_TYPES,
     SUBMIT_UNCONFIRMED,
 )
 from app.hat.execution.fyers_broker import (
@@ -61,6 +63,33 @@ def accepted(order_id: str, message: str | None = None) -> dict[str, Any]:
 def rejected(message: str) -> dict[str, Any]:
     """A place_order reply for a definite rejection (nothing was placed)."""
     return {"order_id": "", "status": "REJECTED", "message": message, "details": None}
+
+
+def funds_reply(available: object, used: object = 0.0) -> dict[str, Any]:
+    """An ok Fyers funds reply whose "Available Balance" is `available` and "Utilized Amount"
+    `used` ("Total Balance" their sum, when both are numbers)."""
+    rows = [
+        {"title": "Available Balance", "equityAmount": available},
+        {"title": "Utilized Amount", "equityAmount": used},
+    ]
+    if isinstance(available, int | float) and isinstance(used, int | float):
+        rows.append({"title": "Total Balance", "equityAmount": available + used})
+    return {"s": "ok", "code": 200, "message": "", "fund_limit": rows}
+
+
+def modify_leg(fields: dict[str, Any]) -> dict[str, Any]:
+    """The quantity (None when unchanged) and trigger a modify sends, whichever its shape: an
+    order's fields (`qty`, `stopPrice`) or a GTT's leg (`orderInfo.leg1`)."""
+    leg = fields.get("orderInfo", {}).get("leg1")
+    if leg is not None:
+        return {"qty": leg.get("qty"), "trigger": leg["triggerPrice"]}
+    return {"qty": fields.get("qty"), "trigger": fields.get("stopPrice")}
+
+
+def position_row(symbol: str, qty: int, average: object, product: str = "CNC") -> dict[str, Any]:
+    """A Fyers `netPositions` row: net quantity `qty` (negative short) at `average`."""
+    side_average = "buyAvg" if qty >= 0 else "sellAvg"
+    return {"symbol": symbol, "netQty": qty, side_average: average, "productType": product}
 
 
 class _Landed(dict[str, Any]):
@@ -147,7 +176,7 @@ class FakeBroker:
         landed = isinstance(reply, _Landed) or (
             isinstance(reply, dict) and reply.get("status") == "SUBMITTED" and reply.get("order_id")
         )
-        if landed and order.get("order_tag"):
+        if landed and order.get("orderTag"):
             self.book.append(self._book_row(order, reply))
         return reply
 
@@ -155,29 +184,29 @@ class FakeBroker:
         """The Fyers orderbook row of a placed order (pending, nothing filled)."""
         return {
             "id": reply.get("order_id") or f"L-{len(self.book) + 1}",
-            "orderTag": order["order_tag"],
+            "orderTag": order["orderTag"],
             "symbol": order["symbol"],
-            "side": 1 if order["side"] == "BUY" else -1,
-            "qty": order["quantity"],
+            "side": order["side"],
+            "qty": order["qty"],
             "filledQty": 0,
             "status": 6,
-            "productType": order["product"],
+            "productType": order["productType"],
             "type": order["type"],
         }
 
-    def modify_order(self, order_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
-        queue = self._call("modify_order", (order_id, params))
+    def modify_order(self, order_id: str, fields: dict[str, Any]) -> Any:  # noqa: ANN401
+        queue = self._call("modify_order", (order_id, fields))
         if queue:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers modify timeout/unavailable"}
         reply = _settle(self.modify_reply)
-        if isinstance(reply, dict) and reply.get("s") == "ok" and params.get("order_type"):
+        if isinstance(reply, dict) and reply.get("s") == "ok" and "type" in fields:
             # the broker shows a modified order with its new type
             rows = [*self.book, *(self.orders if isinstance(self.orders, list) else [])]
             for row in rows:
                 if row["id"] == order_id:
-                    row["type"] = FYERS_ORDER_TYPES[str(params["order_type"]).upper()]
+                    row["type"] = fields["type"]
         return reply
 
     def cancel_order(self, order_id: str) -> Any:  # noqa: ANN401
@@ -215,11 +244,14 @@ class FakeBroker:
     def fetch_holdings(self) -> list[dict[str, Any]]:
         return self._read("fetch_holdings", None, self.holdings, fail_closed=True)
 
-    def fetch_funds(self) -> dict[str, float]:
+    def fetch_funds(self) -> dict[str, Any]:
         available = self._read("fetch_funds", None, self.available, fail_closed=True)
         if isinstance(available, dict):  # a scripted funds reply
             return available
-        return {"available": available, "used": 0.0, "total": available}
+        return funds_reply(available)
+
+    def fetch_positions(self) -> list[dict[str, Any]]:
+        return self._read("fetch_positions", None, self.positions, fail_closed=True)
 
     def fetch_gtt_orders(self) -> list[dict[str, Any]]:
         return self._read("fetch_gtt_orders", None, self.gtts, fail_closed=True)
@@ -253,18 +285,19 @@ class FakeBroker:
         row per GTT, its leg flat on the row, `tran_side`, `product_type`, `ordertag`
         ("1:GTT<tag>", or "2:GTTUntagged" for a GTT placed without one), `ord_status` 6
         (pending) and `gtt_oco_ind` 1 (a single GTT)."""
-        tag = gtt.get("order_tag")
+        tag = gtt.get("orderTag")
+        leg = gtt["orderInfo"]["leg1"]
         return {
             "id": gtt_id,
             "symbol": gtt["symbol"],
-            "tran_side": 1 if gtt["side"] == "BUY" else -1,
-            "product_type": gtt["product"],
+            "tran_side": gtt["side"],
+            "product_type": gtt["productType"],
             "ordertag": f"1:GTT{tag}" if tag else "2:GTTUntagged",
             "gtt_oco_ind": 1,
             "ord_status": 6,
-            "price_limit": gtt["price"],
-            "price_trigger": gtt["trigger_price"],
-            "qty": gtt["quantity"],
+            "price_limit": leg["price"],
+            "price_trigger": leg["triggerPrice"],
+            "qty": leg["qty"],
         }
 
     def resting_gtts(self) -> list[dict[str, Any]]:
@@ -272,18 +305,17 @@ class FakeBroker:
         adapter reads them)."""
         return [row for row in self.gtts if row.get("ord_status") in (None, 4, 6)]
 
-    def modify_gtt(self, gtt_id: str, params: dict[str, Any]) -> Any:  # noqa: ANN401
-        queue = self._call("modify_gtt", (gtt_id, params))
+    def modify_gtt(self, gtt_id: str, fields: dict[str, Any]) -> Any:  # noqa: ANN401
+        queue = self._call("modify_gtt", (gtt_id, fields))
         if queue:
             return _settle(queue.popleft())
         if self.circuit_open:
             return {"s": "error", "message": "Fyers modify timeout/unavailable"}
+        leg = fields["orderInfo"]["leg1"]
         for row in self.resting_gtts():
             if row["id"] == gtt_id:
                 row.update(
-                    price_limit=params["price"],
-                    price_trigger=params["trigger_price"],
-                    qty=params["quantity"],
+                    price_limit=leg["price"], price_trigger=leg["triggerPrice"], qty=leg["qty"]
                 )
         return {"s": "ok", "message": "Modified"}
 
@@ -297,6 +329,3 @@ class FakeBroker:
             if row["id"] == gtt_id:
                 row["ord_status"] = 1
         return {"s": "ok"}
-
-    def get_positions(self) -> list[dict[str, Any]]:
-        return self._read("get_positions", None, self.positions, fail_closed=True)
