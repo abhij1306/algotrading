@@ -15,7 +15,7 @@ from app.hat.backtest.costs import (
     load_cost_model,
     parse_cost_model,
 )
-from app.hat.engine.backtest import RunSpec
+from app.hat.engine.backtest import RunConventions, RunSpec
 from app.hat.engine.strategy.config import StrategyConfig, parse_config
 from app.hat.risk.policy import PolicyVersion, seed_policy
 
@@ -133,6 +133,8 @@ def spec(
     start: int = WARM_UP,
     fills: BacktestFills | None = None,
     policy: PolicyVersion | None = None,
+    conventions: RunConventions | None = None,
+    for_promotion: bool = False,
 ) -> RunSpec:
     return RunSpec(
         config=cfg,
@@ -141,4 +143,6 @@ def spec(
         start=days[min(start, len(days) - 1)],
         end=days[-1],
         fills=fills or BacktestFills(load_cost_model(), slippage),
+        for_promotion=for_promotion,
+        conventions=conventions or RunConventions(),
     )

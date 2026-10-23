@@ -25,7 +25,7 @@ from __future__ import annotations
 import io
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -42,15 +42,13 @@ from ..engine.backtest import (
     GAP_PLAYBOOKS,
     KNOWN_GAPS,
     LOWER_CIRCUIT_RULE,
-    REGIME_MULT_ONE,
     REGIME_MULT_POLICY,
     BacktestError,
     BacktestResult,
     MarketData,
+    RunConventions,
     RunSpec,
-    check_conventions,
     run_backtest,
-    sleeve_weight,
     with_cooldown,
 )
 from ..engine.backtest import trades_parquet as encode_trades
@@ -68,7 +66,6 @@ from ..engine.confidence import (
 from ..engine.portfolio.allocator import sleeve_key
 from ..engine.portfolio.lifecycle import DEFAULT_DISCOUNT, BacktestFacts, discounted_benchmark
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
-from ..errors import HatError
 from ..models import (
     HatBacktestBucket,
     HatBacktestRun,
@@ -107,7 +104,6 @@ from .dsr import (
     pbo,
     trial_variance,
 )
-from .fills import AMBIGUOUS_OPTIMISTIC, PENETRATION, SUSPENSION_SESSIONS
 from .market import load_market
 from .slots import SLOT_ORDER_TIME
 
@@ -116,8 +112,7 @@ __all__ = [
     "END_OF_PERIOD",
     "FAILED",
     "RUNNING",
-    "RunConventions",
-    "RunError",
+    "RunRequest",
     "backtest_bot",
     "backtest_evidence",
     "RETURNS_SCHEMA",
@@ -143,14 +138,6 @@ RUNNING = "running"
 COMPLETED = "completed"
 FAILED = "failed"
 _DSR_PLACES = Decimal("0.000001")
-
-
-class RunError(HatError):
-    """A run could not be recorded; `code` is a fixed word and carries no data."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
 
 
 def family_key(strategy_id: uuid.UUID, universe_id: uuid.UUID) -> str:
@@ -258,7 +245,7 @@ def family_sharpes(session: Session, family: str) -> list[float]:
 def _recorded(session: Session, run: HatBacktestRun) -> HatBacktestRun:
     """`run` when it is a recorded `hat_backtest_run` row; refused otherwise (PR 66, G33)."""
     if run.id is None or session.get(HatBacktestRun, run.id) is not run:
-        raise RunError("backtest_run_unrecorded")
+        raise BacktestError("backtest_run_unrecorded")
     return run
 
 
@@ -362,7 +349,7 @@ def start_run(
     """Record a run as `running`: from here it is a trial of its family (HAT-BT-030)."""
     version = session.get(HatStrategyVersion, strategy_version_id)
     if version is None:
-        raise RunError("backtest_unknown_version")
+        raise BacktestError("backtest_unknown_version")
     run = HatBacktestRun(
         strategy_version_id=strategy_version_id,
         risk_policy_version_id=risk_policy_version_id,
@@ -385,7 +372,7 @@ def complete_run(
     at this moment's family trial count and variance, the family's PBO with this run among its
     variants, and the completion time."""
     if _recorded(session, run).status != RUNNING:
-        raise RunError("backtest_run_not_running")
+        raise BacktestError("backtest_run_not_running")
     atomic_replace(
         trades_path(root, run.id), lambda tmp: tmp.write_bytes(encode_trades(result.trades))
     )
@@ -445,9 +432,9 @@ def record_backtest(
     root: Path,
 ) -> HatBacktestRun:
     """Record, run and complete one backtest. A run the engine refuses is stored as `failed`
-    (still a trial) and its code raised as `RunError`; any other error leaves the run `failed`
-    and raises `RunError("backtest_error")` chained to it. A caller that commits after catching
-    `RunError` keeps the trial (the command line does)."""
+    (still a trial) and its `BacktestError` raised; any other error leaves the run `failed`
+    and raises `BacktestError("backtest_error")` chained to it. A caller that commits after
+    catching `BacktestError` keeps the trial (the command line does)."""
     run = start_run(
         session,
         strategy_version_id=spec.strategy_version_id,
@@ -462,121 +449,79 @@ def record_backtest(
         return complete_run(session, run, result, root=root)
     except BacktestError as exc:
         fail_run(session, run, exc.code)
-        raise RunError(exc.code) from None
+        raise
     except Exception as exc:
         # Whatever went wrong, the run stays a trial of its family (HAT-BT-030).
         fail_run(session, run, "backtest_error")
-        raise RunError("backtest_error") from exc
+        raise BacktestError("backtest_error") from exc
 
 
 @dataclass(frozen=True)
-class RunConventions:
-    """The rules a run chooses besides its slippage and cost model (`RunSpec`): the entry fill
-    (PR 62), the slot order (PR 63), the ambiguous-day rule and the bar-less sessions before the
-    suspension markdown (PR 64), the sleeve weight (None: the policy's base weight) and the
-    regime rule the entries are sized under (PR 68)."""
+class RunRequest:
+    """One backtest of a sleeve (`backtest_bot`): its strategy version (the live one unless
+    `version_id` names another of the same strategy), the period, the fills (slippage and cost
+    model), the cooldown replacing the policy's for a sweep (PR 58), whether the run may
+    evidence a version, and its conventions."""
 
-    entry_fill_rule: str = PENETRATION
-    slot_order: str = SLOT_ORDER_TIME
-    ambiguous: str = AMBIGUOUS_OPTIMISTIC
-    suspension_sessions: int = SUSPENSION_SESSIONS
-    sleeve_weight: Decimal | None = None
-    regime_mult: str = REGIME_MULT_ONE
+    bot_id: uuid.UUID
+    start: date
+    end: date
+    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS
+    cost_model: str = DEFAULT_COST_MODEL
+    version_id: uuid.UUID | None = None
+    cooldown_sessions: int | None = None
+    for_promotion: bool = False
+    conventions: RunConventions = field(default_factory=RunConventions)
 
 
 def backtest_bot(
-    session: Session,
-    store: DataStore,
-    bot_id: uuid.UUID,
-    start: date,
-    end: date,
-    *,
-    root: Path,
-    slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS,
-    cost_model: str = DEFAULT_COST_MODEL,
-    version_id: uuid.UUID | None = None,
-    cooldown_sessions: int | None = None,
-    for_promotion: bool = False,
-    conventions: RunConventions | None = None,
+    session: Session, store: DataStore, request: RunRequest, *, root: Path
 ) -> HatBacktestRun:
-    """Backtest a sleeve's strategy version (its live one unless `version_id` names another of
-    the same strategy) on the sleeve's universe under the risk policy in force now, over the
-    Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58), and
-    `conventions` the default entry fill (PR 62), slot order (PR 63), ambiguous-day rule and
-    bar-less sessions before the markdown (PR 64), sleeve weight and regime rule (PR 68); the
-    `policy` regime rule also reads the regime engine's index, VIX and breadth. A run
-    `for_promotion` (one `publish_version` may take) is refused at a slippage of 0, under
-    `touch`, off the `time` slot order or with a markdown later than the default. The command line's
-    body.
-    Refusals before the run is recorded raise `RunError` and record nothing; a refusal of the
-    engine is a failed trial."""
-    bot = session.get(HatBot, bot_id)
+    """Backtest a sleeve's strategy version on the sleeve's universe under the risk policy in
+    force now, over the Parquet store; the `policy` regime rule also reads the regime engine's
+    index, VIX and breadth. The command line's body. Refusals before the run is recorded (an
+    unknown bot or version, conventions a promotion run may not use, ...) raise `BacktestError`
+    and record nothing; a refusal of the engine is a failed trial."""
+    bot = session.get(HatBot, request.bot_id)
     if bot is None:
-        raise RunError("backtest_unknown_bot")
-    version = session.get(HatStrategyVersion, version_id or bot.live_version_id)
+        raise BacktestError("backtest_unknown_bot")
+    version = session.get(HatStrategyVersion, request.version_id or bot.live_version_id)
     if version is None or version.strategy_id != bot.strategy_id:
-        raise RunError("backtest_unknown_version")
+        raise BacktestError("backtest_unknown_version")
     universe_id = universe_of(session, bot)
     if universe_id is None:
-        raise RunError("backtest_no_universe")
+        raise BacktestError("backtest_no_universe")
     policy = effective_version(load_versions(session, bot.user_id), utc_now())
     if policy is None:
-        raise RunError("backtest_no_policy")
-    if cooldown_sessions is not None:
-        try:
-            policy = with_cooldown(policy, cooldown_sessions)
-        except BacktestError as exc:
-            raise RunError(exc.code) from None
+        raise BacktestError("backtest_no_policy")
+    if request.cooldown_sessions is not None:
+        policy = with_cooldown(policy, request.cooldown_sessions)
     config = parse_config(version.config)
-    rules = conventions or RunConventions()
     try:
-        fills = BacktestFills(load_cost_model(cost_model), check_slippage(slippage_bps))
-    except CostError as exc:
-        raise RunError(exc.code) from None
-    try:
-        check_conventions(
-            rules.entry_fill_rule,
-            fills.slippage_bps,
-            for_promotion,
-            rules.slot_order,
-            ambiguous=rules.ambiguous,
-            suspension_sessions=rules.suspension_sessions,
-            sleeve_weight=rules.sleeve_weight,
-            regime_mult=rules.regime_mult,
+        fills = BacktestFills(
+            load_cost_model(request.cost_model), check_slippage(request.slippage_bps)
         )
-    except BacktestError as exc:
-        raise RunError(exc.code) from None
-    spec = RunSpec(
+    except CostError as exc:
+        raise BacktestError(exc.code) from None
+    spec = RunSpec(  # refuses a promotion run's conventions and a missing base weight
         config=config,
         strategy_version_id=version.id,
         policy=policy,
-        start=start,
-        end=end,
+        start=request.start,
+        end=request.end,
         fills=fills,
-        entry_fill_rule=rules.entry_fill_rule,
-        for_promotion=for_promotion,
-        slot_order=rules.slot_order,
-        ambiguous=rules.ambiguous,
-        suspension_sessions=rules.suspension_sessions,
-        sleeve_weight=rules.sleeve_weight,
-        regime_mult=rules.regime_mult,
+        for_promotion=request.for_promotion,
+        conventions=request.conventions,
     )
-    try:
-        sleeve_weight(spec)  # before the store is read
-    except BacktestError as exc:
-        raise RunError(exc.code) from None
-    try:
-        data, snapshot = load_market(
-            store,
-            session,
-            universe_id=universe_id,
-            index=config.regime.index,
-            start=start,
-            end=end,
-            regime_inputs=rules.regime_mult == REGIME_MULT_POLICY,
-        )
-    except BacktestError as exc:
-        raise RunError(exc.code) from None
+    data, snapshot = load_market(
+        store,
+        session,
+        universe_id=universe_id,
+        index=config.regime.index,
+        start=request.start,
+        end=request.end,
+        regime_inputs=request.conventions.regime_mult == REGIME_MULT_POLICY,
+    )
     return record_backtest(
         session, spec, data, universe_id=universe_id, data_snapshot=snapshot, root=root
     )
@@ -636,9 +581,9 @@ def _latest_run(
     suspended positions at their last close, nor one recorded before the sleeve's allocation
     sized it (PR 68), which sized off the whole account, nor one sized under regime rule `1`
     (PR 69): a promotion run is sized at the base weight under the live regime rule `policy`
-    (`check_conventions`). Given `at`, only a run with a readable completion time at or before
-    it is the evidence (PR 71): a signal processed late never reads results that did not exist
-    when it triggered."""
+    (`RunConventions.check_promotion`). Given `at`, only a run with a readable completion time
+    at or before it is the evidence (PR 71): a signal processed late never reads results that
+    did not exist when it triggered."""
     universe_id = universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None

@@ -31,7 +31,7 @@ clear the level by one tick and fills at that price (`penetration_1_tick`; `touc
 run may choose), a stop gapped through fills at min(open, stop), and the slippage defaults to
 20 bps (`DEFAULT_SLIPPAGE_BPS`). A run flagged for promotion (`RunSpec.for_promotion`, the only
 kind `publish_version` accepts and the sleeve's evidence reads) is refused at a slippage of 0,
-under `touch` or under a slot order other than `time` (`check_conventions`). Every run's
+under `touch` or under a slot order other than `time` (`RunConventions`). Every run's
 metrics record the fill path, the entry fill rule, the gap-through rule, the trigger proxy, the
 slippage, the cost model and the slot order, and `config_digest` hashes them, so two runs
 under different conventions never read as comparable.
@@ -127,7 +127,7 @@ from sqlalchemy.pool import StaticPool
 
 from ...base import Base
 from ..backtest import metrics as bt_metrics
-from ..backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills
+from ..backtest.costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS, BacktestFills
 from ..backtest.dsr import ReturnStats, return_stats
 from ..backtest.fills import (
     AMBIGUOUS_OPTIMISTIC,
@@ -213,14 +213,12 @@ __all__ = [
     "BacktestResult",
     "FillRow",
     "MarketData",
+    "RunConventions",
     "RunSpec",
     "SignalRow",
     "TradeRow",
     "WatchRow",
-    "check_conventions",
     "compute_metrics",
-    "config_digest",
-    "conventions",
     "first_trigger",
     "known_gaps",
     "pre_break_low",
@@ -286,7 +284,8 @@ _AT_END = time(15, 29)
 
 
 class BacktestError(HatError):
-    """A run was refused before it started; `code` is a fixed word and carries no data."""
+    """A run was refused, or failed (`backtest_error`); `code` is a fixed word and carries no
+    data."""
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
@@ -331,6 +330,94 @@ class MarketData:
 
 
 @dataclass(frozen=True)
+class RunConventions:
+    """The rules a run chooses besides its slippage and cost model (PR 62, O5): the entry fill
+    rule (HAT-BT-020), the slot order (HAT-BT-026, PR 63), the ambiguous-day rule (HAT-BT-021)
+    and the bar-less sessions before the suspension markdown (PR 64), the sleeve weight (None:
+    the policy's base weight) and the regime rule the entries are sized under (HAT-BT-014,
+    PR 68). Refused at construction (`BacktestError`): an unknown entry fill rule, slot order,
+    ambiguous-day rule or regime rule, a bar-less session count that is not a whole number in
+    0..`MAX_SUSPENSION_SESSIONS`, and a sleeve weight that is not a Decimal in (0, 1]."""
+
+    entry_fill_rule: str = PENETRATION  # `touch` is the variant
+    slot_order: str = SLOT_ORDER_TIME  # `score` and `random:K` are variants
+    ambiguous: str = AMBIGUOUS_OPTIMISTIC  # `pessimistic` fills a raised stop's dip
+    suspension_sessions: int = SUSPENSION_SESSIONS
+    sleeve_weight: Decimal | None = None
+    regime_mult: str = REGIME_MULT_ONE  # `policy` applies the live regime engine
+
+    def __post_init__(self) -> None:
+        if self.entry_fill_rule not in ENTRY_FILL_RULES:
+            raise BacktestError("backtest_bad_fill_rule")
+        if not is_slot_order(self.slot_order):
+            raise BacktestError("backtest_bad_slot_order")
+        if self.ambiguous not in AMBIGUOUS_RULES:
+            raise BacktestError("backtest_bad_ambiguous_rule")
+        after = self.suspension_sessions
+        if (
+            isinstance(after, bool)
+            or not isinstance(after, int)
+            or not 0 <= after <= MAX_SUSPENSION_SESSIONS
+        ):
+            raise BacktestError("backtest_bad_suspension")
+        weight = self.sleeve_weight
+        if weight is not None and not (
+            isinstance(weight, Decimal) and weight.is_finite() and 0 < weight <= 1
+        ):
+            raise BacktestError("backtest_bad_sleeve_weight")
+        if self.regime_mult not in REGIME_MULT_RULES:
+            raise BacktestError("backtest_bad_regime_mult")
+
+    def check_promotion(self, slippage_bps: Decimal) -> None:
+        """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
+        of 0), the optimistic `touch` rule, a slot order other than the estimated trigger time,
+        a suspension markdown later than `SUSPENSION_SESSIONS`, a weight other than the policy's
+        base weight (PR 68) or a regime rule other than `policy` (PR 69)."""
+        if slippage_bps == 0:
+            raise BacktestError("backtest_promotion_without_slippage")
+        if self.entry_fill_rule != PENETRATION:
+            raise BacktestError("backtest_promotion_on_touch")
+        if self.slot_order != SLOT_ORDER_TIME:
+            raise BacktestError("backtest_promotion_off_time_order")
+        if self.suspension_sessions > SUSPENSION_SESSIONS:
+            raise BacktestError("backtest_promotion_late_suspension")
+        if self.sleeve_weight is not None:
+            raise BacktestError("backtest_promotion_off_base_weight")
+        if self.regime_mult != REGIME_MULT_POLICY:  # live sizes under the regime engine (PR 69)
+            raise BacktestError("backtest_promotion_regime_variant")
+
+    def record(self, fills: BacktestFills, weight: Decimal) -> dict[str, Any]:
+        """The conventions a run used, as recorded in its metrics and hashed into its
+        `config_digest`, with the run's fills and its resolved sleeve weight. The keys and their
+        order are the stored format: a change makes new digests differ from every stored run's."""
+        return {
+            "fill_path": FILL_PATH,
+            "entry_fill_rule": self.entry_fill_rule,
+            "gap_through_rule": GAP_THROUGH_RULE,
+            "trigger_proxy": TRIGGER_PROXY,
+            # normalised, so 20 and 20.0 bps record (and hash) alike
+            "slippage_bps": format(abs(fills.slippage_bps).normalize(), "f"),  # -0 is 0
+            "cost_model": fills.model.to_json(),
+            "slot_order": self.slot_order,
+            "ambiguous": self.ambiguous,
+            "lower_circuit": LOWER_CIRCUIT_RULE,
+            "suspension_markdown": {
+                "after_sessions": self.suspension_sessions,
+                "band_pct": str(SUSPENSION_BAND_PCT),
+            },
+            # the sizing; the regime table only when it is applied
+            "sleeve_weight": format(weight.normalize(), "f"),
+            "regime_mult": self.regime_mult,
+            "health_mult": "1",
+            **(
+                {"regime_table": {k: str(v) for k, v in regime_v1.DEFAULT_MULTIPLIERS.items()}}
+                if self.regime_mult == REGIME_MULT_POLICY
+                else {}
+            ),
+        }
+
+
+@dataclass(frozen=True)
 class RunSpec:
     """One run: a strategy version, one risk-policy version, a period and a fill model."""
 
@@ -341,13 +428,19 @@ class RunSpec:
     end: date
     fills: BacktestFills
     initial_equity: Decimal = INITIAL_EQUITY
-    entry_fill_rule: str = PENETRATION  # HAT-BT-020: `touch` is the variant
     for_promotion: bool = False  # the run may evidence a version (`publish_version`)
-    slot_order: str = SLOT_ORDER_TIME  # HAT-BT-026: `score` and `random:K` are variants
-    ambiguous: str = AMBIGUOUS_OPTIMISTIC  # HAT-BT-021: `pessimistic` fills a raised stop's dip
-    suspension_sessions: int = SUSPENSION_SESSIONS  # bar-less sessions before the markdown
-    sleeve_weight: Decimal | None = None  # HAT-BT-014: None is the policy's base weight
-    regime_mult: str = REGIME_MULT_ONE  # HAT-BT-014: `policy` applies the live regime engine
+    conventions: RunConventions = field(default_factory=RunConventions)
+
+    def __post_init__(self) -> None:
+        """Refuse a run flagged for promotion under conventions it may not use, and a sleeve
+        weight the policy cannot give (`sleeve_weight`): a spec that exists is a valid run."""
+        if self.for_promotion:
+            self.conventions.check_promotion(self.fills.slippage_bps)
+        sleeve_weight(self)
+
+    def recorded_conventions(self) -> dict[str, Any]:
+        """The conventions block recorded in the run's metrics, which `config_digest` hashes."""
+        return self.conventions.record(self.fills, sleeve_weight(self))
 
 
 # --- outputs ----------------------------------------------------------------------------------
@@ -755,7 +848,7 @@ class _Run:
         the live allocation then fails. Under `policy` the regime engine first reads every
         earlier session of the run's store (the warm-up of the 3-day rule and the smoothing),
         each allocated over the initial equity."""
-        if self.spec.regime_mult == REGIME_MULT_ONE:
+        if self.spec.conventions.regime_mult == REGIME_MULT_ONE:
             return self._sleeve(Decimal(1), self._equity_now()[0])
         allocation = None
         while self.nights <= self.index[night]:
@@ -990,9 +1083,11 @@ class _Run:
         def rank(row: HatWatchlistEntry) -> tuple[int, Decimal]:
             bar = self.bar.get((str(row.instrument_id), day))
             pivot = None if row.pivot is None else Decimal(row.pivot)
-            return trigger_rank(None if bar is None else bar.open, pivot, self.spec.entry_fill_rule)
+            return trigger_rank(
+                None if bar is None else bar.open, pivot, self.spec.conventions.entry_fill_rule
+            )
 
-        return order_slots(self._watchlist(day), self.spec.slot_order, day, rank)
+        return order_slots(self._watchlist(day), self.spec.conventions.slot_order, day, rank)
 
     def _entries(self, day: date, prev: date) -> None:
         for n, row in enumerate(self._slots(day)):
@@ -1034,7 +1129,7 @@ class _Run:
         if row.pivot is None:
             return SKIP_NO_LEVEL
         level = Decimal(row.pivot)
-        rule = self.spec.entry_fill_rule
+        rule = self.spec.conventions.entry_fill_rule
         # The tick matters only to a penetration from below; read it only then.
         tick = None
         if rule == PENETRATION and bar.open <= level < bar.high:
@@ -1236,7 +1331,7 @@ class _Run:
         if not raised_stop_dip(bar.low, bar.close, raised[1], Decimal(position.current_stop)):
             return False
         self.ambiguous_days.add(day)
-        return self.spec.ambiguous == AMBIGUOUS_PESSIMISTIC
+        return self.spec.conventions.ambiguous == AMBIGUOUS_PESSIMISTIC
 
     def _close(self, position: HatPosition, price: Decimal, reason: str, at: datetime) -> None:
         held = self.held[position.id]
@@ -1317,7 +1412,7 @@ class _Run:
         if last is None or seen is None:
             return fallback
         sessions = self.index[day] - self.index[seen]
-        after = self.spec.suspension_sessions
+        after = self.spec.conventions.suspension_sessions
         if sessions <= after:
             return last
         tick = self._tick(instrument_id, day) or _FINEST_TICK
@@ -1638,7 +1733,7 @@ def compute_metrics(
     mar = None if cagr is None else bt_metrics.mar_ratio(cagr, drawdown)
     share = bt_metrics.cost_share(fees, net + fees)  # realized P&L is net of the charges
     held = [(t.entry_date, t.exit_date) for t in trades_]
-    used = conventions(spec)
+    used = spec.recorded_conventions()
     share_held = bt_metrics.invested_share(invested)
     return {
         "trades": count,
@@ -1687,12 +1782,12 @@ def compute_metrics(
 
 
 def sleeve_weight(spec: RunSpec) -> Decimal:
-    """The run's sleeve weight (HAT-BT-014): `spec.sleeve_weight`, else the policy's base
-    weight of the strategy's sleeve; `backtest_no_base_weight` when the policy has none or
-    gives it 0 (a policy may), and `backtest_weight_above_cluster_cap` above the policy's
-    cluster cap, which the allocator would silently cut it to."""
+    """The run's sleeve weight (HAT-BT-014): its conventions' `sleeve_weight`, else the
+    policy's base weight of the strategy's sleeve; `backtest_no_base_weight` when the policy
+    has none or gives it 0 (a policy may), and `backtest_weight_above_cluster_cap` above the
+    policy's cluster cap, which the allocator would silently cut it to."""
     policy = spec.policy.policy
-    weight = spec.sleeve_weight
+    weight = spec.conventions.sleeve_weight
     if weight is None:
         weight = policy.base_weight.get(sleeve_key(spec.config.bot))
         if weight is None or weight <= 0:
@@ -1704,42 +1799,7 @@ def sleeve_weight(spec: RunSpec) -> Decimal:
 
 def known_gaps(spec: RunSpec) -> list[str]:
     """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, and the touch fill under `touch`."""
-    return [*KNOWN_GAPS, *([TOUCH_GAP] if spec.entry_fill_rule == TOUCH else [])]
-
-
-def conventions(spec: RunSpec) -> dict[str, Any]:
-    """The fill conventions a run used (PR 62, O5): recorded in its metrics."""
-    return {
-        "fill_path": FILL_PATH,
-        "entry_fill_rule": spec.entry_fill_rule,
-        "gap_through_rule": GAP_THROUGH_RULE,
-        "trigger_proxy": TRIGGER_PROXY,
-        # normalised, so 20 and 20.0 bps record (and hash) alike
-        "slippage_bps": format(abs(spec.fills.slippage_bps).normalize(), "f"),  # -0 is 0
-        "cost_model": spec.fills.model.to_json(),
-        "slot_order": spec.slot_order,  # HAT-BT-026
-        "ambiguous": spec.ambiguous,  # HAT-BT-021 (PR 64)
-        "lower_circuit": LOWER_CIRCUIT_RULE,
-        "suspension_markdown": {
-            "after_sessions": spec.suspension_sessions,
-            "band_pct": str(SUSPENSION_BAND_PCT),
-        },
-        # HAT-BT-014 (PR 68): the sizing; the regime table only when it is applied
-        "sleeve_weight": format(sleeve_weight(spec).normalize(), "f"),
-        "regime_mult": spec.regime_mult,
-        "health_mult": "1",
-        **(
-            {"regime_table": {k: str(v) for k, v in regime_v1.DEFAULT_MULTIPLIERS.items()}}
-            if spec.regime_mult == REGIME_MULT_POLICY
-            else {}
-        ),
-    }
-
-
-def config_digest(spec: RunSpec) -> str:
-    """The canonical hash of the run's fill conventions (`conventions`): runs with equal
-    digests were filled, slipped and charged alike."""
-    return config_hash(conventions(spec))
+    return [*KNOWN_GAPS, *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else [])]
 
 
 # --- trades.parquet ---------------------------------------------------------------------------
@@ -1809,89 +1869,7 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
         raise BacktestError("backtest_bad_period")
     if not spec.initial_equity.is_finite() or spec.initial_equity <= 0:
         raise BacktestError("backtest_bad_equity")
-    check_conventions(
-        spec.entry_fill_rule,
-        spec.fills.slippage_bps,
-        spec.for_promotion,
-        spec.slot_order,
-        ambiguous=spec.ambiguous,
-        suspension_sessions=spec.suspension_sessions,
-        sleeve_weight=spec.sleeve_weight,
-        regime_mult=spec.regime_mult,
-    )
-    sleeve_weight(spec)  # a policy without the sleeve's base weight is refused here
     return _Run(spec, data).run()
-
-
-def check_conventions(
-    entry_fill_rule: str,
-    slippage_bps: Decimal,
-    for_promotion: bool,
-    slot_order: str = SLOT_ORDER_TIME,
-    *,
-    ambiguous: str = AMBIGUOUS_OPTIMISTIC,
-    suspension_sessions: int = SUSPENSION_SESSIONS,
-    sleeve_weight: Decimal | None = None,
-    regime_mult: str = REGIME_MULT_ONE,
-) -> None:
-    """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule or slot order
-    (PR 63), an unknown ambiguous-day rule or a bar-less session count that is not a whole
-    number in 0..`MAX_SUSPENSION_SESSIONS` (PR 64), a sleeve weight that is not a Decimal in
-    (0, 1] or an unknown regime rule (PR 68), and for a run flagged for promotion, a weight
-    other than the policy's base weight (PR 68) or a regime rule other than `policy` (PR 69),
-    perfect fills (a slippage of 0), the optimistic `touch` rule, a slot order other than the
-    estimated trigger time or a suspension markdown later than `SUSPENSION_SESSIONS`."""
-    if entry_fill_rule not in ENTRY_FILL_RULES:
-        raise BacktestError("backtest_bad_fill_rule")
-    if not is_slot_order(slot_order):
-        raise BacktestError("backtest_bad_slot_order")
-    if ambiguous not in AMBIGUOUS_RULES:
-        raise BacktestError("backtest_bad_ambiguous_rule")
-    if (
-        isinstance(suspension_sessions, bool)
-        or not isinstance(suspension_sessions, int)
-        or not 0 <= suspension_sessions <= MAX_SUSPENSION_SESSIONS
-    ):
-        raise BacktestError("backtest_bad_suspension")
-    if sleeve_weight is not None and not (
-        isinstance(sleeve_weight, Decimal) and sleeve_weight.is_finite() and 0 < sleeve_weight <= 1
-    ):
-        raise BacktestError("backtest_bad_sleeve_weight")
-    if regime_mult not in REGIME_MULT_RULES:
-        raise BacktestError("backtest_bad_regime_mult")
-    if for_promotion:
-        _check_promotion(
-            entry_fill_rule,
-            slippage_bps,
-            slot_order,
-            suspension_sessions,
-            own_weight=sleeve_weight is not None,
-            regime_mult=regime_mult,
-        )
-
-
-def _check_promotion(
-    entry_fill_rule: str,
-    slippage_bps: Decimal,
-    slot_order: str,
-    suspension_sessions: int,
-    *,
-    own_weight: bool,
-    regime_mult: str,
-) -> None:
-    """The refusals of a run flagged for promotion (`check_conventions`)."""
-    if slippage_bps == 0:
-        raise BacktestError("backtest_promotion_without_slippage")
-    if entry_fill_rule != PENETRATION:
-        raise BacktestError("backtest_promotion_on_touch")
-    if slot_order != SLOT_ORDER_TIME:
-        raise BacktestError("backtest_promotion_off_time_order")
-    if suspension_sessions > SUSPENSION_SESSIONS:
-        raise BacktestError("backtest_promotion_late_suspension")
-    if own_weight:
-        raise BacktestError("backtest_promotion_off_base_weight")
-    if regime_mult != REGIME_MULT_POLICY:  # live sizes under the regime engine (PR 69)
-        raise BacktestError("backtest_promotion_regime_variant")
 
 
 # --- command line -----------------------------------------------------------------------------
@@ -1939,7 +1917,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     from app.database import db_session_scope  # noqa: PLC0415
 
-    from ..backtest.runs import RunConventions, RunError, backtest_bot  # noqa: PLC0415
+    from ..backtest.runs import RunRequest, backtest_bot  # noqa: PLC0415
     from ..data.store import DataStore  # noqa: PLC0415
     from ..settings import operator_settings  # noqa: PLC0415
 
@@ -1949,7 +1927,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
     parser.add_argument("--version", type=uuid.UUID, default=None)
     parser.add_argument("--slippage-bps", type=Decimal, default=DEFAULT_SLIPPAGE_BPS)
-    parser.add_argument("--cost-model", default=None)
+    parser.add_argument("--cost-model", default=DEFAULT_COST_MODEL)
     parser.add_argument("--cooldown-sessions", type=int, default=None)
     parser.add_argument("--entry-fill", choices=ENTRY_FILL_RULES, default=PENETRATION)
     parser.add_argument("--slot-order", type=_slot_order_arg, default=SLOT_ORDER_TIME)
@@ -1960,24 +1938,20 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--for-promotion", action="store_true")
     args = parser.parse_args(argv)
     settings = operator_settings()
-    extra: dict[str, Any] = {} if args.cost_model is None else {"cost_model": args.cost_model}
-    if args.cooldown_sessions is not None:
-        extra["cooldown_sessions"] = args.cooldown_sessions
     refused: str | None = None
     summary: dict[str, Any] = {}
     # A refusal is caught inside the session, so a run the engine refused commits as a failed
     # trial of its family instead of rolling back with the error.
     with db_session_scope() as session:
         try:
-            run = backtest_bot(
-                session,
-                DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
-                args.bot,
-                args.start,
-                args.end,
-                root=settings.data_root,
+            request = RunRequest(
+                bot_id=args.bot,
+                start=args.start,
+                end=args.end,
                 slippage_bps=args.slippage_bps,
+                cost_model=args.cost_model,
                 version_id=args.version,
+                cooldown_sessions=args.cooldown_sessions,
                 for_promotion=args.for_promotion,
                 conventions=RunConventions(
                     entry_fill_rule=args.entry_fill,
@@ -1987,9 +1961,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                     sleeve_weight=args.sleeve_weight,
                     regime_mult=args.regime_mult,
                 ),
-                **extra,
             )
-        except RunError as exc:
+            store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+            run = backtest_bot(session, store, request, root=settings.data_root)
+        except BacktestError as exc:
             refused = exc.code
         else:
             summary = {
