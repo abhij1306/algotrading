@@ -67,6 +67,16 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.evidence_cooldown_in_force` The sleeve's evidence is its newest completed run made under the cooldown in force when it is read (now for the lifecycle, the request's instant for the risk-increase gate): a `--cooldown-sessions` sweep run, or one made before the cooldown changed, is skipped, and a run or a policy without the field counts as 0; with none there is no evidence (HAT-RISK-036, PR 58). Harm: a gate is passed on a run of a rule that is not live.
 - `PBT dsr.evidence_promoted_only` The sleeve's evidence, for the lifecycle and the risk-increase gate, is its newest completed run flagged for promotion (`metrics.for_promotion`) whose `metrics.slot_order` is `time` (PR 63) and whose metrics carry the path rules (`lower_circuit`, PR 64); a sensitivity run or one recorded before the flag, the slot order or the path rules is skipped, and with none there is no evidence (HAT-BT-060, O5, PR 62). Harm: a sleeve is promoted, or its risk raised, on perfect or optimistic fills.
 - `PBT dsr.gate_evidence` The risk-increase evidence is `build_gate_evidence` over the user's trades closed since the policy version in force at the request took effect (every closed trade when none is; a pending version and trades of an earlier version are not read; PR 34) in closing order against the discounted trade-weighted expectancy of each sleeve's newest completed run of its live version; older runs, other versions and other users are not read, and no run is no evidence (HAT-GOV-091). Harm: a risk increase is checked against a stale or foreign benchmark.
+- `PBT dsr.family_floors` A family's DSR is the formula at N' = max(N, `MIN_TRIALS`) and V' = max(V, `VARIANCE_FLOOR`), never above the unfloored DSR, and a first run (N = 1) or identical variants (V = 0) are deflated against a positive SR0 (HAT-BT-042, PR 66, N15). Harm: a new strategy's first lucky run is scored undeflated and promoted.
+- `PBT dsr.pbo_ranked_variants` Variants that differ by a constant shift of the same returns (every block varying) have PBO 0, identical variants PBO 1, and PBO is in [0, 1] over C(S, S/2) splits (HAT-BT-042, PR 66). Harm: a genuinely best variant reads as overfit, or indistinguishable variants read as skill.
+- `PBT dsr.pbo_two_variants` With two variants PBO is the share of splits whose in-sample winner (first on a tie) has an out-of-sample Sharpe ratio no higher than the other's, counted split by split with `statistics` (HAT-BT-042, PR 66). Harm: an in-sample winner that loses out of sample is counted as robust.
+- `PBT dsr.pbo_refused` PBO is None for fewer than 2 variants, an odd block count, unequal series, fewer than 2 sessions per block or a non-finite value (HAT-BT-042, PR 66). Harm: a one-variant family or a short history reports a probability.
+- `PBT dsr.dsr_needs_recorded_run` `run_dsr` and `complete_run` refuse a run that is not a `hat_backtest_run` row (`backtest_run_unrecorded`); a recorded run is scored at its family's trial count and Sharpe variance, its own included, through the floors, and stored so (HAT-BT-030, PR 66, G33). Harm: a variant tried outside the recorded runs is scored as evidence without counting as a trial.
+- `PBT dsr.returns_persisted` A completed run's `returns.parquet` has one row per session close with its equity and its return against the close before (the first against `metrics.initial_equity`), and `read_returns` gives them by date (HAT-BT-030, PR 66). Harm: PBO and later re-deflation cannot be computed because the returns were never kept.
+- `PBT dsr.evidence_latest_by_completion` The sleeve's evidence is the run that completed last, whatever order the runs started in (HAT-BT-060, PR 66). Harm: a long run started first and finished last is shadowed by an older result.
+- `PBT dsr.family_pbo_recorded` Each completed run records its family's PBO (`metrics.pbo`) over the completed runs with a returns file, itself included, on their shared sessions (`dsr.pbo` of their series in run order, a re-run of an equal series counted once), and `pbo_too_few_variants` with one distinct variant (HAT-BT-042, PR 66). Harm: the overfitting check reads one variant or another family's runs, or scores a deterministic re-run as an overfit second variant.
+- `PBT dsr.family_pbo_skips_unreadable` A sibling whose returns file cannot be read as one is left out of the PBO, and the run being completed still completes (HAT-BT-042, PR 66). Harm: one damaged file fails every later backtest of the family.
+- `CONF backtest.dsr_scored_only_by_runs` Under `app/hat` only `backtest/runs.py` (besides `dsr.py`) imports `deflated_sharpe`, `family_deflated_sharpe` or `pbo`, or binds the module `app.hat.backtest.dsr` whole, and `runs.py` imports the last two (HAT-BT-030, PR 66). Harm: a module scores a result that never became a trial.
 
 ## Run
 
@@ -108,8 +118,8 @@ Code under check:
 - `backend/app/hat/backtest/slots.py`: `is_slot_order`, `trigger_rank`, `order_slots`
 - `backend/app/hat/backtest/costs.py`: `parse_cost_model`, `load_cost_model`, `charges`, `check_slippage`, `slipped`, `BacktestFills`
 - `backend/app/hat/backtest/cost_models/cnc-delivery-1.yaml`
-- `backend/app/hat/backtest/dsr.py`: `return_stats`, `trial_variance`, `expected_max_sharpe`, `deflated_sharpe`
-- `backend/app/hat/backtest/runs.py`: `family_key`, `trial_count`, `start_run`, `complete_run`, `fail_run`, `record_backtest`, `backtest_bot`, `backtest_evidence`, `gate_evidence`
+- `backend/app/hat/backtest/dsr.py`: `return_stats`, `trial_variance`, `expected_max_sharpe`, `deflated_sharpe`, `family_deflated_sharpe`, `pbo`
+- `backend/app/hat/backtest/runs.py`: `family_key`, `trial_count`, `run_dsr`, `family_pbo`, `read_returns`, `start_run`, `complete_run`, `fail_run`, `record_backtest`, `backtest_bot`, `backtest_evidence`, `gate_evidence`
 - `backend/app/hat/backtest/market.py`: `load_market`, `_industries`
 - `backend/app/hat/engine/strategy/versions.py`: `publish_version`
 
@@ -127,10 +137,11 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `4d45f515db7f98fc4f876aabe67cbe06e372dcec2a2e8fe05d07134c7a9ae9e1`
+Covered digest: `444c27663110b11bc4b55e8afe42a74a79b3370f4d7802b1f82bee1e0e04a745`
 
 ## Scope changes
 
+- PR 66 (G33, N15): trial accounting. `runs.run_dsr` (replacing `runs.deflate`) scores only a recorded run (`backtest_run_unrecorded` otherwise, `complete_run` too) through `dsr.family_deflated_sharpe` (N >= `MIN_TRIALS` 5, V >= `VARIANCE_FLOOR` 0.25 / 252); `metrics.dsr` gains `trials_floor` and `variance_floor`. `complete_run` writes `returns.parquet` (`RETURNS_SCHEMA`: date, equity, ret; `returns_path`, `read_returns`) and records `metrics.completed_at` and `metrics.pbo` (`family_pbo`: CSCV `dsr.pbo`, `PBO_BLOCKS` 8, over the family's completed runs with a returns file on their shared sessions). `_latest_run` orders by completion (`_completion`: `completed_at`, else the uuid7 start). New PBT `dsr.family_floors`, `dsr.pbo_ranked_variants`, `dsr.pbo_two_variants`, `dsr.pbo_refused`, `dsr.dsr_needs_recorded_run`, `dsr.returns_persisted`, `dsr.evidence_latest_by_completion`, `dsr.family_pbo_recorded` and CONF `dsr_scored_only_by_runs`; `dsr.evidence_current_trials` compares with the floored DSR. `dsr.pbo_ranked_variants` needs every block to vary: a half without volatility scores every variant 0, so the shift no longer orders them (found by the property). Code review of PR 66: `family_pbo` counts a re-run whose series equals an earlier one's once (`runs` vs `variants`; a deterministic re-run scored every split overfit), skips a returns file it cannot read (`read_returns` gives None) and says `pbo_unscorable` for a non-finite series; `complete_run` computes the DSR (`run_dsr(metrics=)`), PBO and completion time before its one status change, so a failure cannot leave a completed run half-written; a close at or below 0 gives a null next return. CodeAnt on PR 66: `run_dsr` takes the trial count and the Sharpe ratios from one read of the family (a sibling completing between two reads made them disagree), and CONF `dsr_scored_only_by_runs` also refuses a whole-module import of `dsr`. The pure formula's properties and the golden replay are unchanged. Nothing was narrowed.
 - PR 65 (G35, N10): run metrics. `compute_metrics` adds `exposure`, `cagr`, `mar`, `longest_drawdown_sessions`, `tail_trimmed_r` (`top_1pct`, `top_5pct`, `top_10pct`; `TAIL_TRIM_PCTS`) and `cost_share` from the new functions of `backtest/metrics.py` (verify-standalone), and `conventions`, the `conventions()` block `config_digest` hashes (the flat keys stay, the evidence filters read them). `TradeRow.score` (last field, default None) is the score of the watchlist row the trade entered from (`_trades` joins on playbook, instrument and trade date), and `TRADE_SCHEMA` gains a nullable float `score` column after the existing ones. `playbook` and the skip counts (`metrics.skips`) predate PR 65 (a deviation note in HAT-BT-032). New PBT `backtest.robustness_metrics`; `backtest.trades_match_metrics` and `backtest.fill_conventions_recorded` gain the score and the block. The golden replay's trades are unchanged; each gains `score`, and both seeds' metrics gain the seven keys; `config_digest` is unchanged. Code review of PR 65: `cagr` (`_cagr`) is null rather than a crash when the final equity is not positive or a short run's extrapolation overflows, and `mar` then too; the score comes from the sorted watchlist rows `_watch_rows` already reads (one read; a repeated key resolves the same each run); `conventions()` is built once per run. Nothing was narrowed.
 - PR 64 (G14, G03, G32): path pessimism (HAT-BT-021). A stop the way up raised (`_up_leg` records the stop before it) whose day's low reaches it while the close stays above is an ambiguous day (`fills.raised_stop_dip`): every run counts them (`metrics.ambiguous_days`), and under `ambiguous` `pessimistic` (`RunSpec.ambiguous`, `--ambiguous`, `RunConventions.ambiguous`) the close phase fills the raised stop at its price; the default `optimistic` holds it. A session pinned at its lower band (`lower_circuit_locked`: open = high = low = close within a tick of a band's lower price under the previous close) skips the position's open, way down, way up and close phase, so its stop fills at the next session not pinned (`metrics.lower_circuit_days`). A bar-less position is marked by `fills.suspended_mark` (its last close for `suspension_sessions` sessions, default 5, `--suspension-sessions`, then 5% lower per session) in the equity curve and its period-end close. `check_conventions` refuses an unknown rule (`backtest_bad_ambiguous_rule`), a count outside 0..250 (`backtest_bad_suspension`) and, for a promotion run, a count above the default 5 (`backtest_promotion_late_suspension`); `runs._latest_run` (the evidence) reads only runs whose metrics carry `lower_circuit`, so a promotion run made before PR 64 stops counting (code review of PR 64; `publish_version` is unchanged, a follow-up). The entry's `last_prices` (caps and exposure) use the same suspension mark as the equity, the mark never rises above the last close, a pinned session the close phase skips counts too, and the raised-stop record lives on `_Held` (code review of PR 64). `backtest_bot` takes the entry fill rule, slot order, ambiguous-day rule and bar-less sessions as one `runs.RunConventions` (Sonar S107: 15 parameters). `conventions()` gains `ambiguous`, `lower_circuit` and `suspension_markdown`, so `config_digest` changes for every run. `lower_circuit_not_modelled` and `suspension_not_marked` left `KNOWN_GAPS` (11 to 9 codes). The golden replay's trades are unchanged (the fixture has no ambiguous, pinned or bar-less day); both seeds gain the three conventions, `ambiguous_days: 0`, `lower_circuit_days: 0` and a new `config_digest`, and lose the two gap codes. `hat_backtest_support` is unchanged.
 - PR 63 (G11): a day's watchlist reaches the triggers in the run's slot order (`backtest/slots.py`, `engine.backtest._slots`): `time` (default; gap overs first, then (level - open) / open ascending, ties by score), `score` (the PR 12 order) or `random:K` (the score order ordered by the SHA-256 of `K:<date>:<place>`). `RunSpec.slot_order`, `--slot-order`, `backtest_bot(slot_order=)`; `check_conventions` refuses an unknown rule (`backtest_bad_slot_order`) and a promotion run off `time` (`backtest_promotion_off_time_order`); the command line validates `--slot-order` itself. Under `touch` an open at the level is a gap over (it fills at the open). `runs._latest_run` (the evidence) reads only promotion runs with `slot_order` `time`, and `publish_version` takes only such a run (CodeAnt on PR 63), so every run before PR 63 (score order) stops counting and a sleeve needs one new `--for-promotion` run (code review of PR 63). `conventions()` gains `slot_order`, so `config_digest` changes for every run. The golden replay's trades and metrics are unchanged (the fixture has no capped day); both seeds gain `slot_order: time` and a new `config_digest`.
@@ -1567,4 +1578,246 @@ Break (PR 34): the newest version is taken even while it is pending.
 
 ```
 E   AssertionError: assert {'live_trades...ecimal('0.5')} == {'live_trades...ecimal('0.5')}
+```
+
+### PBT dsr.family_floors
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: `family_deflated_sharpe` drops the trial-count floor.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:171: in test_family_floors
+    assert (got.prob, got.sr0, got.reason) == (floored.prob, floored.sr0, floored.reason)
+E   assert (0.942261266719699, 0.0, None) == (0.8371427528 [cut]5896005, None)
+E     At index 0 diff: 0.942261266719699 != 0.837142752822158
+E     Full diff:
+E       (
+E     -     0.837142752822158,
+E     -     0.03756318025896005,
+```
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: `family_deflated_sharpe` drops the variance floor.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:171: in test_family_floors
+    assert (got.prob, got.sr0, got.reason) == (floored.prob, floored.sr0, floored.reason)
+E   assert (0.942261266719699, 0.0, None) == (0.8371427528 [cut]5896005, None)
+E     At index 0 diff: 0.942261266719699 != 0.837142752822158
+E     Full diff:
+E       (
+E     -     0.837142752822158,
+E     -     0.03756318025896005,
+```
+
+### PBT dsr.pbo_ranked_variants
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: `pbo` picks the in-sample worst variant instead of the best.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:197: in test_pbo_ranked_variants
+    assert found.prob == 0.0
+E   assert 1.0 == 0.0
+E    +  where 1.0 = Pbo(prob=1.0, splits=2).prob
+E   Failing explicit example: test_pbo_ranked_variants(
+E       noise=[0.01,
+E        -0.01,
+E        0.02,
+```
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: a split counts as overfit only below the median (w < 1/2), so identical variants score 0.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:200: in test_pbo_ranked_variants
+    assert same.prob == 1.0
+E   assert 0.0 == 1.0
+E    +  where 0.0 = Pbo(prob=0.0, splits=2).prob
+E   Failing explicit example: test_pbo_ranked_variants(
+E       noise=[0.01,
+E        -0.01,
+E        0.02,
+```
+
+### PBT dsr.pbo_two_variants
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: `pbo` picks the in-sample worst variant instead of the best.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:228: in test_pbo_two_variants
+    assert math.isclose(found.prob, lost / len(halves), abs_tol=1e-12)
+E   assert False
+E    +  where False = <built-in function isclose>(1.0, (0 / 2), abs_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+E    +    and   1.0 = Pbo(prob=1.0, splits=2).prob
+E    +    and   2 = len([(0,), (1,)])
+E   Failing explicit example: test_pbo_two_variants(
+```
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: a split counts as overfit only below the median (w < 1/2).
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:228: in test_pbo_two_variants
+    assert math.isclose(found.prob, lost / len(halves), abs_tol=1e-12)
+E   assert False
+E    +  where False = <built-in function isclose>(0.0, (2 / 2), abs_tol=1e-12)
+E    +    where <built-in function isclose> = math.isclose
+E    +    and   0.0 = Pbo(prob=0.0, splits=2).prob
+E    +    and   2 = len([(0,), (1,)])
+E   Failing test case: test_pbo_two_variants(
+```
+
+### PBT dsr.pbo_refused
+
+Break: (PR 66) in `backend/app/hat/backtest/dsr.py`: `pbo` needs only one session per block.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:245: in test_pbo_refused
+    assert pbo(matrix, blocks) is None
+E   assert Pbo(prob=1.0, splits=252) is None
+E    +  where Pbo(prob=1.0, splits=252) = pbo([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  [cut]], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0,  [cut]]], 10)
+E   Failing test case: test_pbo_refused(
+E       case='short',
+E       noise=[0.0,
+E        0.0,
+```
+
+### PBT dsr.dsr_needs_recorded_run
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: `_recorded` checks only that the run has an id, so a transient run is scored.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:743: in test_dsr_needs_recorded_run
+    with pytest.raises(runs.RunError, match="backtest_run_unrecorded"):
+E   Failed: DID NOT RAISE RunError
+E   Failing test case: test_dsr_needs_recorded_run(
+E       # The test always failed when commented parts were varied together.
+E       others=[],  # or any other generated value
+E       sr=0.0,  # or any other generated value
+E       recorded=False,
+```
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: `run_dsr` leaves the run's own Sharpe ratio out of the family variance.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:753: in test_dsr_needs_recorded_run
+    assert variance == trial_variance([*others, sr])
+E   assert 0.0 == 5e-07
+E    +  where 5e-07 = trial_variance([0.0, 0.001])
+E   Failing test case: test_dsr_needs_recorded_run(
+E       others=[0.0],
+E       sr=0.001,
+E       recorded=True,
+```
+
+### PBT dsr.returns_persisted
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: the first return ignores the initial equity (null).
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:785: in test_returns_persisted
+    assert table.column("ret").to_pylist() == want
+E   assert [None] == [0.0]
+E     At index 0 diff: None != 0.0
+E     Full diff:
+E       [
+E     -     0.0,
+E     +     None,
+```
+
+### PBT dsr.evidence_latest_by_completion
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: `_latest_run` orders the candidates by id (start) again.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:809: in test_evidence_latest_by_completion
+    assert runs.backtest_evidence(session, bot).trades == order[-1] + 1
+E   AssertionError: assert 4 == (0 + 1)
+E    +  where 4 = BacktestFacts(dsr_prob=Decimal('0.683814'), trades=4, expectancy=Decimal('1'), trials=4).trades
+E    +    where BacktestFacts(dsr_prob=Decimal('0.683814'), trades=4, expectancy=Decimal('1'), trials=4) = <function backtest_evidence>(<sqlalchemy.orm.session.Session object>, <app.hat.models.strateg [cut]
+E    +      where <function backtest_evidence> = runs.backtest_evidence
+E   Failing explicit example: test_evidence_latest_by_completion(
+E       order=[3, 2, 1, 0],
+```
+
+### PBT dsr.family_pbo_recorded
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: `family_pbo` reads only the newest completed run.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:840: in test_family_pbo_recorded
+    assert (got["variants"], got["sessions"]) == (len(series), 24)
+E   assert (1, 24) == (2, 24)
+E     At index 0 diff: 1 != 2
+E     Full diff:
+E       (
+E     -     2,
+E     ?     ^
+```
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: `family_pbo` counts a re-run of an equal series as another variant (code review of PR 66).
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:844: in test_family_pbo_recorded
+    assert (got["runs"], got["variants"], got["sessions"]) == (n + 1, len(series), 24)
+E   assert (2, 2, 24) == (2, 1, 24)
+E     At index 1 diff: 2 != 1
+E     Full diff:
+E       (
+E           2,
+E     -     1,
+```
+
+### PBT dsr.family_pbo_skips_unreadable
+
+Break: (PR 66) in `backend/app/hat/backtest/runs.py`: `read_returns` reads a sibling's file without a guard, so a damaged file fails the run being completed.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:874: in test_family_pbo_skips_unreadable
+    runs.complete_run(
+E   pyarrow.lib.ArrowInvalid: Could not open Parquet input source '/tmp/tmpi697pvfz/backtests/run_id=01a1668c-3f48-75c3-b774-f1a1b5c914ad/returns.parquet': Parquet file size is 0 bytes
+E   Failing explicit example: test_family_pbo_skips_unreadable(
+E       garbage=b'',
+E   )
+```
+
+### CONF backtest.dsr_scored_only_by_runs
+
+Break: (PR 66) in `backend/app/hat/backtest/market.py`: `market.py` imports `pbo` from `backtest/dsr.py`.
+
+```
+tests/hat/conformance/test_conf_backtest.py F
+tests/hat/conformance/test_conf_backtest.py:176: in test_dsr_scored_only_by_runs
+    assert offenders == []
+E   AssertionError: assert ['hat/backtest/market.py'] == []
+E     Left contains one more item: 'hat/backtest/market.py'
+E     Full diff:
+E     - []
+E     + [
+E     +     'hat/backtest/market.py',
+```
+
+Break: (PR 66) in `backend/app/hat/backtest/market.py`: `market.py` imports the module whole (`from . import dsr`), through which it could call `dsr.pbo` (CodeAnt on PR 66).
+
+```
+tests/hat/conformance/test_conf_backtest.py F
+tests/hat/conformance/test_conf_backtest.py:205: in test_dsr_scored_only_by_runs
+    assert whole == []
+E   AssertionError: assert ['hat/backtest/market.py'] == []
+E     Left contains one more item: 'hat/backtest/market.py'
+E     Full diff:
+E     - []
+E     + [
+E     +     'hat/backtest/market.py',
 ```

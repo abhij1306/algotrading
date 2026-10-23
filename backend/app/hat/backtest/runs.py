@@ -10,18 +10,29 @@ The deflated Sharpe probability depends on the family's trial count N and the va
 trial Sharpe ratios, which grow after a run is recorded. A run's stored DSR is the value at its
 completion; the evidence the lifecycle reads is recomputed from the run's return moments at the
 family's current N and V (HAT-BT-060), so an old run never passes the gate on a stale count.
+
+PR 66 (G33, N15): a DSR is computed only for a recorded run (`run_dsr` refuses a run that is
+not a `hat_backtest_run` row, so a result run outside `record_backtest` is never scored as
+evidence), always through the family floors of `dsr.family_deflated_sharpe`. Each completed run
+also writes its daily returns (`returns.parquet`, next to `trades.parquet`) and records when it
+completed (`metrics.completed_at`) and the family's probability of backtest overfitting over the
+variants with a returns file (`metrics.pbo`). The sleeve's evidence is its newest run by
+completion time, not by start.
 """
 
 from __future__ import annotations
 
+import io
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -59,7 +70,16 @@ from .costs import (
     check_slippage,
     load_cost_model,
 )
-from .dsr import Deflated, ReturnStats, deflated_sharpe, trial_variance
+from .dsr import (
+    MIN_TRIALS,
+    PBO_BLOCKS,
+    VARIANCE_FLOOR,
+    Deflated,
+    ReturnStats,
+    family_deflated_sharpe,
+    pbo,
+    trial_variance,
+)
 from .fills import AMBIGUOUS_OPTIMISTIC, PENETRATION, SUSPENSION_SESSIONS
 from .market import load_market
 from .slots import SLOT_ORDER_TIME
@@ -72,13 +92,17 @@ __all__ = [
     "RunError",
     "backtest_bot",
     "backtest_evidence",
+    "RETURNS_SCHEMA",
     "complete_run",
-    "deflate",
     "fail_run",
     "family_key",
+    "family_pbo",
     "family_sharpes",
     "gate_evidence",
+    "read_returns",
     "record_backtest",
+    "returns_path",
+    "run_dsr",
     "start_run",
     "trades_path",
     "trial_count",
@@ -108,6 +132,59 @@ def trades_path(root: Path, run_id: uuid.UUID) -> Path:
     return root / "backtests" / f"run_id={run_id}" / "trades.parquet"
 
 
+def returns_path(root: Path, run_id: uuid.UUID) -> Path:
+    """`backtests/run_id=<id>/returns.parquet`: the run's daily returns (PR 66)."""
+    return root / "backtests" / f"run_id={run_id}" / "returns.parquet"
+
+
+RETURNS_SCHEMA = pa.schema(
+    [("date", pa.date32()), ("equity", pa.decimal128(18, 4)), ("ret", pa.float64())]
+)
+
+
+def _returns_parquet(result: BacktestResult) -> bytes:
+    """The run's session closes and daily returns, each against the close before (the first
+    against `metrics.initial_equity`; null without it, or after a close at or below 0): the
+    series `metrics.returns` describes."""
+    raw = result.metrics.get("initial_equity")
+    previous = None if raw is None else float(Decimal(str(raw)))
+    rows = []
+    for day, equity in result.equity:
+        value = float(equity)
+        rows.append(
+            {
+                "date": day,
+                "equity": equity,
+                "ret": None if previous is None or previous <= 0 else value / previous - 1.0,
+            }
+        )
+        previous = value
+    buffer = io.BytesIO()
+    pq.write_table(pa.Table.from_pylist(rows, schema=RETURNS_SCHEMA), buffer)
+    return buffer.getvalue()
+
+
+def read_returns(root: Path, run_id: uuid.UUID) -> dict[date, float] | None:
+    """A run's daily returns by date; None when it has no returns file (a run before PR 66) or
+    the file cannot be read as one (`RETURNS_SCHEMA`)."""
+    path = returns_path(root, run_id)
+    if not path.is_file():
+        return None
+    try:
+        table = pq.read_table(path)
+        if not table.schema.equals(RETURNS_SCHEMA):
+            return None
+    except (OSError, pa.ArrowException):
+        return None
+    return {
+        d: r
+        for d, r in zip(
+            table.column("date").to_pylist(), table.column("ret").to_pylist(), strict=True
+        )
+        if r is not None
+    }
+
+
 def trial_count(session: Session, family: str) -> int:
     """The family's trials: every run recorded for it, whatever its status (HAT-BT-030)."""
     count = session.scalar(
@@ -131,20 +208,53 @@ def _stats(metrics: Mapping[str, Any] | None) -> ReturnStats | None:
         return None
 
 
+def _completed(session: Session, family: str) -> list[HatBacktestRun]:
+    return list(
+        session.scalars(
+            select(HatBacktestRun)
+            .where(HatBacktestRun.family_key == family, HatBacktestRun.status == COMPLETED)
+            .order_by(HatBacktestRun.id)
+        ).all()
+    )
+
+
 def family_sharpes(session: Session, family: str) -> list[float]:
     """The per-period Sharpe ratios of the family's completed runs, oldest first. A run that
     failed or whose returns had no Sharpe ratio counts as a trial but adds no variance."""
-    runs = session.scalars(
-        select(HatBacktestRun)
-        .where(HatBacktestRun.family_key == family, HatBacktestRun.status == COMPLETED)
-        .order_by(HatBacktestRun.id)
+    return [s.sr for s in (_stats(r.metrics) for r in _completed(session, family)) if s is not None]
+
+
+def _recorded(session: Session, run: HatBacktestRun) -> HatBacktestRun:
+    """`run` when it is a recorded `hat_backtest_run` row; refused otherwise (PR 66, G33)."""
+    if run.id is None or session.get(HatBacktestRun, run.id) is not run:
+        raise RunError("backtest_run_unrecorded")
+    return run
+
+
+def run_dsr(
+    session: Session, run: HatBacktestRun, metrics: Mapping[str, Any] | None = None
+) -> tuple[Deflated, int, float]:
+    """A recorded run's deflated Sharpe probability now, with the family's trial count and the
+    variance of its Sharpe ratios (the run's own included, completed or not), through the
+    family floors (`family_deflated_sharpe`); `metrics` stands for the run's own while it is
+    being completed. A run that is not recorded is refused (`backtest_run_unrecorded`): only a
+    counted trial is scored."""
+    _recorded(session, run)
+    stats = _stats(run.metrics if metrics is None else metrics)
+    # one read of the family, so the trial count and the Sharpe ratios are of the same moment
+    family = session.scalars(
+        select(HatBacktestRun).where(HatBacktestRun.family_key == run.family_key)
     ).all()
-    return [s.sr for s in (_stats(r.metrics) for r in runs) if s is not None]
-
-
-def deflate(stats: ReturnStats | None, trials: int, sharpes: Sequence[float]) -> Deflated:
-    """A run's deflated Sharpe probability against its family's trials and Sharpe ratios."""
-    return deflated_sharpe(stats, max(1, trials), trial_variance(sharpes))
+    sharpes = [
+        s.sr
+        for s in (_stats(r.metrics) for r in family if r.status == COMPLETED and r.id != run.id)
+        if s is not None
+    ]
+    if stats is not None:
+        sharpes.append(stats.sr)
+    trials = len(family)
+    variance = trial_variance(sharpes)
+    return family_deflated_sharpe(stats, trials, variance), trials, variance
 
 
 def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any]:
@@ -154,6 +264,57 @@ def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any
         "reason": deflated.reason,
         "trials": trials,
         "variance": variance,
+        # the floors the probability was read through (PR 66, N15)
+        "trials_floor": MIN_TRIALS,
+        "variance_floor": VARIANCE_FLOOR,
+    }
+
+
+def family_pbo(
+    session: Session,
+    family: str,
+    root: Path,
+    blocks: int = PBO_BLOCKS,
+    *,
+    also: HatBacktestRun | None = None,
+) -> dict[str, Any]:
+    """The probability of backtest overfitting of a family (`dsr.pbo`, CSCV) over its completed
+    runs (and `also`, a run being completed) with a readable returns file, on the sessions
+    every one of them has a return for. A run whose series equals an earlier one's on those
+    sessions (a re-run of the same variant) is that variant, not another. `prob` is null, with
+    a `reason`, with fewer than 2 distinct variants (`pbo_too_few_variants`), fewer than 2
+    common sessions per block (`pbo_too_short`) or a series CSCV cannot score
+    (`pbo_unscorable`, a value that is not finite)."""
+    members = [r for r in _completed(session, family) if also is None or r.id != also.id]
+    if also is not None:
+        members.append(also)
+    series = [found for found in (read_returns(root, r.id) for r in members) if found is not None]
+    common = sorted(set.intersection(*(set(s) for s in series))) if series else []
+    distinct: list[list[float]] = []
+    for s in series:
+        row = [s[d] for d in common]
+        if row not in distinct:
+            distinct.append(row)
+    out: dict[str, Any] = {
+        "prob": None,
+        "runs": len(series),
+        "variants": len(distinct),
+        "sessions": len(common),
+        "blocks": blocks,
+        "splits": None,
+        "reason": None,
+    }
+    if len(distinct) < 2:
+        return {**out, "reason": "pbo_too_few_variants"}
+    if len(common) < 2 * blocks:
+        return {**out, "reason": "pbo_too_short"}
+    found = pbo(distinct, blocks)
+    if found is None:
+        return {**out, "reason": "pbo_unscorable"}
+    return {
+        **out,
+        "prob": str(Decimal(repr(found.prob)).quantize(_DSR_PLACES)),
+        "splits": found.splits,
     }
 
 
@@ -189,20 +350,26 @@ def start_run(
 def complete_run(
     session: Session, run: HatBacktestRun, result: BacktestResult, *, root: Path
 ) -> HatBacktestRun:
-    """Write the run's `trades.parquet` and store its metrics with the DSR at this moment's
-    family trial count and variance."""
-    if run.status != RUNNING:
+    """Write the run's `trades.parquet` and `returns.parquet` and store its metrics with the DSR
+    at this moment's family trial count and variance, the family's PBO with this run among its
+    variants, and the completion time."""
+    if _recorded(session, run).status != RUNNING:
         raise RunError("backtest_run_not_running")
     atomic_replace(
         trades_path(root, run.id), lambda tmp: tmp.write_bytes(encode_trades(result.trades))
     )
-    trials = trial_count(session, run.family_key)
-    stats = _stats(result.metrics)
-    sharpes = family_sharpes(session, run.family_key)
-    if stats is not None:
-        sharpes = [*sharpes, stats.sr]
-    deflated = deflate(stats, trials, sharpes)
-    run.metrics = {**result.metrics, "dsr": _dsr_json(deflated, trials, trial_variance(sharpes))}
+    atomic_replace(
+        returns_path(root, run.id), lambda tmp: tmp.write_bytes(_returns_parquet(result))
+    )
+    # everything is computed before the one change of status, so nothing can fail in between
+    deflated, trials, variance = run_dsr(session, run, result.metrics)
+    metrics = {
+        **result.metrics,
+        "dsr": _dsr_json(deflated, trials, variance),
+        "pbo": family_pbo(session, run.family_key, root, also=run),
+        "completed_at": utc_now().isoformat(),
+    }
+    run.metrics = metrics
     run.status = COMPLETED
     session.flush()
     return run
@@ -359,9 +526,23 @@ def _cooldown_of(policy: PolicyVersion | None) -> int:
     return 0 if policy is None else policy.policy.cooldown_sessions
 
 
+def _completion(run: HatBacktestRun) -> tuple[datetime, uuid.UUID]:
+    """When a run completed (`metrics.completed_at`, PR 66), else when it started (its uuid7
+    id's milliseconds, for a run recorded before PR 66); the id breaks a tie."""
+    raw = (run.metrics or {}).get("completed_at")
+    try:
+        at = as_utc(datetime.fromisoformat(raw)) if isinstance(raw, str) else None
+    except ValueError:
+        at = None
+    if at is None:
+        at = datetime.fromtimestamp((run.id.int >> 80) / 1000, tz=UTC)
+    return at, run.id
+
+
 def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun | None:
-    """The newest completed run of the bot's live version on the bot's universe that ran under
-    `cooldown`, the one in force when the evidence is read (HAT-RISK-036): a
+    """The newest completed run (by completion time, PR 66) of the bot's live version on the
+    bot's universe that ran under `cooldown`, the one in force when the evidence is read
+    (HAT-RISK-036): a
     `--cooldown-sessions` sweep run, or one made before the cooldown changed, traded another rule
     and is not the sleeve's evidence. A run recorded before the field existed ran with none (0).
     Only a run flagged for promotion counts (PR 62, O5): a sensitivity run (`touch`, 0 bps) or
@@ -372,14 +553,16 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
-    candidates = session.scalars(
-        select(HatBacktestRun)
-        .where(
-            HatBacktestRun.strategy_version_id == bot.live_version_id,
-            HatBacktestRun.family_key == family_key(bot.strategy_id, universe_id),
-            HatBacktestRun.status == COMPLETED,
-        )
-        .order_by(HatBacktestRun.id.desc())
+    candidates = sorted(
+        session.scalars(
+            select(HatBacktestRun).where(
+                HatBacktestRun.strategy_version_id == bot.live_version_id,
+                HatBacktestRun.family_key == family_key(bot.strategy_id, universe_id),
+                HatBacktestRun.status == COMPLETED,
+            )
+        ),
+        key=_completion,
+        reverse=True,
     )
     return next(
         (
@@ -408,8 +591,7 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     if run is None:
         return BacktestFacts()
     metrics = run.metrics or {}
-    trials = trial_count(session, run.family_key)
-    deflated = deflate(_stats(metrics), trials, family_sharpes(session, run.family_key))
+    deflated, trials, _ = run_dsr(session, run)
     trades = metrics.get("trades")
     return BacktestFacts(
         dsr_prob=Decimal(repr(deflated.prob)).quantize(_DSR_PLACES),

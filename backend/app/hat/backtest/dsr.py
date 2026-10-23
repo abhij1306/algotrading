@@ -13,6 +13,17 @@ finite) scores 0 with reason
 `dsr_undefined`, never NaN, so a gate reading it fails closed.
 
 The moments are the plain (population) sample moments, as in the paper's worked example.
+
+A family's DSR is read through floors (PR 66, N15, `family_deflated_sharpe`): the trial count is
+at least `MIN_TRIALS` and the variance at least `VARIANCE_FLOOR`, so the first run of a new
+strategy (N = 1) or a family of near-identical variants (V near 0) is still deflated rather than
+scored against a benchmark of zero. Both floors only ever raise SR0, so a floored DSR is never
+above the paper's.
+
+`pbo` is the probability of backtest overfitting by combinatorially symmetric cross-validation
+(CSCV; Bailey, Borwein, López de Prado & Zhu, 2017) over a family's variants: the share of the
+splits of the sessions into halves on which the variant best in sample ranks at or below the
+median out of sample.
 """
 
 from __future__ import annotations
@@ -20,12 +31,19 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import combinations
 from statistics import NormalDist
 
 from .metrics import VOLATILITY_FLOOR
 
 __all__ = [
     "EULER_GAMMA",
+    "MIN_TRIALS",
+    "PBO_BLOCKS",
+    "VARIANCE_FLOOR",
+    "Pbo",
+    "family_deflated_sharpe",
+    "pbo",
     "RADICAND_FLOOR",
     "UNDEFINED",
     "Deflated",
@@ -41,6 +59,13 @@ UNDEFINED = "dsr_undefined"
 # A denominator this close to zero is zero in floating point: 1 - g3 SR rounds to a few ulps
 # where it should vanish, and dividing by it would score a degenerate series 1. It fails closed.
 RADICAND_FLOOR = 1e-12
+# [A] the floors of a family's DSR (PR 66, N15): at least 5 trials ("N of 2-5" is where V is
+# noise), and a trial-Sharpe variance of at least that of an annualised Sharpe spread of 0.5
+# (0.5 / sqrt(252) per session, squared).
+MIN_TRIALS = 5
+VARIANCE_FLOOR = 0.25 / 252
+# [A] CSCV splits the sessions into this many blocks (an even number; 8 gives 70 splits).
+PBO_BLOCKS = 8
 _NORMAL = NormalDist()
 
 
@@ -113,3 +138,60 @@ def deflated_sharpe(stats: ReturnStats | None, trials: int, variance: float) -> 
         return Deflated(0.0, sr0, UNDEFINED)
     prob = _NORMAL.cdf(z)
     return Deflated(min(1.0, max(0.0, prob)), sr0)
+
+
+def family_deflated_sharpe(stats: ReturnStats | None, trials: int, variance: float) -> Deflated:
+    """The DSR of a family's run: `deflated_sharpe` at a trial count of at least `MIN_TRIALS`
+    and a variance of at least `VARIANCE_FLOOR` (a non-finite variance stays and is refused)."""
+    floored = max(variance, VARIANCE_FLOOR) if math.isfinite(variance) else variance
+    return deflated_sharpe(stats, max(trials, MIN_TRIALS), floored)
+
+
+@dataclass(frozen=True)
+class Pbo:
+    prob: float  # in [0, 1]: the share of splits whose in-sample best is overfit out of sample
+    splits: int  # C(blocks, blocks / 2)
+
+
+def _sharpe(values: Sequence[float]) -> float:
+    """Mean over population deviation; 0.0 without volatility."""
+    mean = math.fsum(values) / len(values)
+    std = math.sqrt(math.fsum((v - mean) ** 2 for v in values) / len(values))
+    return mean / std if std > VOLATILITY_FLOOR else 0.0
+
+
+def pbo(returns: Sequence[Sequence[float]], blocks: int = PBO_BLOCKS) -> Pbo | None:
+    """The probability of backtest overfitting of `returns`, one equal-length per-session return
+    series per variant (CSCV). The sessions are cut into `blocks` contiguous blocks of near-equal
+    size; for each choice of half the blocks as in sample, the variant with the highest
+    in-sample Sharpe ratio (the first on a tie) is ranked out of sample (1 the worst, ties
+    averaged), and the split is overfit when its relative rank w = rank / (N + 1) is at most
+    1/2 (logit w <= 0). None with fewer than 2 variants, unequal or non-finite series, an odd
+    or non-positive block count, or fewer than 2 sessions per block."""
+    n = len(returns)
+    if n < 2 or isinstance(blocks, bool) or blocks < 2 or blocks % 2:
+        return None
+    t = len(returns[0])
+    if t < 2 * blocks or any(len(r) != t for r in returns):
+        return None
+    if not all(math.isfinite(v) for r in returns for v in r):
+        return None
+    bounds = [t * k // blocks for k in range(blocks + 1)]
+    overfit = 0
+    splits = 0
+    for chosen in combinations(range(blocks), blocks // 2):
+        inside = set(chosen)
+        is_rows = [i for k in inside for i in range(bounds[k], bounds[k + 1])]
+        oos_rows = [
+            i for k in range(blocks) if k not in inside for i in range(bounds[k], bounds[k + 1])
+        ]
+        is_sr = [_sharpe([r[i] for i in is_rows]) for r in returns]
+        best = is_sr.index(max(is_sr))
+        oos_sr = [_sharpe([r[i] for i in oos_rows]) for r in returns]
+        mine = oos_sr[best]
+        rank = (
+            1 + sum(1 for s in oos_sr if s < mine) + (sum(1 for s in oos_sr if s == mine) - 1) / 2
+        )
+        overfit += rank / (n + 1) <= 0.5
+        splits += 1
+    return Pbo(overfit / splits, splits)

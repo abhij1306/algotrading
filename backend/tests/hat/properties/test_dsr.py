@@ -1,15 +1,21 @@
-"""PBT dsr.* (09 §3, §4, §6; HAT-BT-030, 031, 042, 060; HAT-GOV-091): the deflated Sharpe ratio
-of `app.hat.backtest.dsr` against the formula written out with `math.erf`, and the trial
-counting, family keys, lifecycle evidence and risk-increase gate evidence of
+"""PBT dsr.* (09 §3, §4, §6; HAT-BT-030, 031, 042, 060; HAT-GOV-091; HAT-PORT-061): the deflated
+Sharpe ratio of `app.hat.backtest.dsr` against the formula written out with `math.erf`, its
+family floors and the probability of backtest overfitting (PR 66), and the trial counting,
+family keys, returns files, lifecycle evidence and risk-increase gate evidence of
 `app.hat.backtest.runs` on SQLite."""
 
 import math
+import statistics
 import tempfile
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import combinations, count
 from pathlib import Path
+from unittest import mock
 
+import pyarrow.parquet as pq
+import pytest
 from hat_support import memory_engine
 from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
@@ -18,11 +24,16 @@ from sqlalchemy.orm import Session
 
 from app.hat.backtest import runs
 from app.hat.backtest.dsr import (
+    MIN_TRIALS,
     UNDEFINED,
+    VARIANCE_FLOOR,
     ReturnStats,
     deflated_sharpe,
     expected_max_sharpe,
+    family_deflated_sharpe,
+    pbo,
     return_stats,
+    trial_variance,
 )
 from app.hat.engine.backtest import BacktestResult
 from app.hat.engine.portfolio.lifecycle import DEFAULT_DISCOUNT, discounted_benchmark
@@ -143,6 +154,95 @@ def test_bounds_and_monotonicity_bad_denominator(
     s = ReturnStats(sr, t, 1 / sr + extra / 100, 1.0)
     got = deflated_sharpe(s, trials, v)
     assert (got.prob, got.reason) == (0.0, UNDEFINED)
+
+
+# --- HAT-BT-042 / HAT-PORT-061: the family floors and PBO (PR 66) ------------------------------
+
+
+@given(stats(), N, V)
+@example(ReturnStats(0.1, 250, 0.0, 3.0), 1, 0.0)  # the first run of a new strategy
+def test_family_floors(s: ReturnStats, trials: int, variance: float) -> None:
+    """A family's DSR is the paper's at a trial count of at least `MIN_TRIALS` and a variance of
+    at least `VARIANCE_FLOOR`: never above the unfloored DSR, and the first run of a new
+    strategy (N = 1) or a family of identical variants (V = 0) is deflated against a positive
+    SR0. Harm (N15): a new strategy's first lucky run is scored undeflated and promoted."""
+    got = family_deflated_sharpe(s, trials, variance)
+    floored = deflated_sharpe(s, max(trials, MIN_TRIALS), max(variance, VARIANCE_FLOOR))
+    assert (got.prob, got.sr0, got.reason) == (floored.prob, floored.sr0, floored.reason)
+    assert got.sr0 >= expected_max_sharpe(MIN_TRIALS, VARIANCE_FLOOR) > 0
+    raw = deflated_sharpe(s, trials, variance)
+    assert got.prob <= raw.prob + 1e-12
+
+
+NOISE = st.lists(st.integers(-40, 40).map(lambda n: n / 1000), min_size=16, max_size=48)
+BLOCKS = st.sampled_from([2, 4, 6, 8])
+
+
+@given(NOISE, st.lists(st.integers(-20, 20), min_size=2, max_size=6, unique=True), BLOCKS)
+@example([0.01, -0.01, 0.02, 0.0] * 4, [0, 1], 2)
+def test_pbo_ranked_variants(noise: list[float], shifts: list[int], blocks: int) -> None:
+    """Variants that differ only by a constant shift of the same returns keep their Sharpe order
+    on every half of the sessions, so the in-sample best is the out-of-sample best and PBO is
+    0; identical variants are never distinguishable, so PBO is 1 (no evidence of skill). Every
+    PBO is in [0, 1] over C(S, S/2) splits. Harm: a family whose best variant is genuinely
+    best reads as overfit, or one with nothing to choose between reads as skill."""
+    assume(len(noise) >= 2 * blocks)
+    cut = [len(noise) * k // blocks for k in range(blocks + 1)]
+    # every block varies, so every half has a volatility and the shift orders the Sharpe ratios
+    assume(all(len(set(noise[cut[k] : cut[k + 1]])) > 1 for k in range(blocks)))
+    shifted = [[x + k / 10_000 for x in noise] for k in shifts]
+    found = pbo(shifted, blocks)
+    assert found is not None
+    assert found.splits == math.comb(blocks, blocks // 2)
+    assert found.prob == 0.0
+    same = pbo([noise] * len(shifts), blocks)
+    assert same is not None
+    assert same.prob == 1.0
+
+
+def _sr(values: list[float]) -> float:
+    sd = statistics.pstdev(values)
+    return statistics.fmean(values) / sd if sd > 1e-12 else 0.0
+
+
+@given(NOISE, NOISE, BLOCKS)
+@example([0.01, 0.02, 0.03, 0.04, -0.01, -0.02, -0.03, -0.04] * 2, [0.0, 0.01] * 8, 2)
+def test_pbo_two_variants(a: list[float], b: list[float], blocks: int) -> None:
+    """With two variants, PBO is the share of the splits of the sessions (half the S blocks in
+    sample) on which the in-sample winner (the first on a tie) has an out-of-sample Sharpe
+    ratio no higher than the other's, counted here split by split. Harm: an in-sample
+    winner that loses out of sample is counted as robust."""
+    n = min(len(a), len(b))
+    a, b = a[:n], b[:n]
+    assume(n >= 2 * blocks)
+    cut = [n * k // blocks for k in range(blocks + 1)]
+    lost = 0
+    halves = list(combinations(range(blocks), blocks // 2))
+    for half in halves:
+        ins = [i for k in half for i in range(cut[k], cut[k + 1])]
+        out = [i for i in range(n) if i not in set(ins)]
+        winner, other = (a, b) if _sr([a[i] for i in ins]) >= _sr([b[i] for i in ins]) else (b, a)
+        lost += _sr([winner[i] for i in out]) <= _sr([other[i] for i in out])
+    found = pbo([a, b], blocks)
+    assert found is not None
+    assert math.isclose(found.prob, lost / len(halves), abs_tol=1e-12)
+
+
+@given(st.sampled_from(["one_variant", "odd_blocks", "unequal", "short", "not_finite"]), NOISE)
+def test_pbo_refused(case: str, noise: list[float]) -> None:
+    """PBO is not computed (None) for fewer than 2 variants, an odd block count, series of
+    unequal length, fewer than 2 sessions per block or a value that is not finite. Harm: a
+    one-variant family or a short history reads as a measured overfitting probability."""
+    matrix, blocks = {
+        "one_variant": ([noise], 2),
+        "odd_blocks": ([noise, noise], 3),
+        "unequal": ([noise, noise[:-1]], 2),
+        "short": ([noise, noise], len(noise) // 2 + 2 + len(noise) % 2),
+        "not_finite": ([noise, [*noise[:-1], math.inf]], 2),
+    }[case]
+    if case == "short" and blocks % 2:
+        blocks += 1
+    assert pbo(matrix, blocks) is None
 
 
 # --- HAT-BT-030 / 031 / 060: runs on SQLite ---------------------------------------------------
@@ -422,8 +522,10 @@ def test_evidence_current_trials(later: list[tuple[float, bool]], t: int) -> Non
         facts = runs.backtest_evidence(session, bot)
         family = run.family_key
         assert facts.trials == runs.trial_count(session, family) == 1 + len(later)
-        want = runs.deflate(
-            ReturnStats(0.12, t, 0.0, 3.0), facts.trials, runs.family_sharpes(session, family)
+        want = family_deflated_sharpe(
+            ReturnStats(0.12, t, 0.0, 3.0),
+            facts.trials,
+            trial_variance(runs.family_sharpes(session, family)),
         )
         assert facts.dsr_prob == Decimal(repr(want.prob)).quantize(Decimal("0.000001"))
         assert (facts.trades, facts.expectancy) == (250, Decimal("0.31"))
@@ -591,4 +693,191 @@ def test_gate_evidence(sleeves: list, discount: Decimal, step: int | None) -> No
             outcomes = [TradeOutcome(r, v) for _, _, r, v in counted]
             want = build_gate_evidence(outcomes, discounted_benchmark(weighted / count, discount))
             assert _numbers(got) == _numbers(want)
+        session.rollback()
+
+
+# --- HAT-BT-030 / HAT-BT-060: run-gated DSR, returns files, completion order, PBO (PR 66) ----
+
+
+def _bot_world(
+    session: Session,
+) -> tuple[HatBot, HatStrategyVersion, HatStrategyVersion, HatUniverse]:
+    strategies, universes = _world(session, 1, 1)
+    strategy, (live, other) = strategies[0]
+    universe = universes[0]
+    uv = HatUniverseVersion(
+        universe_id=universe.id, version=1, status="live", definition={}, config_hash="h"
+    )
+    session.add(uv)
+    session.flush()
+    return _sleeve_bot(session, uuid.uuid4(), strategy, live.id, uv), live, other, universe
+
+
+@given(st.lists(SR, max_size=4), SR, st.booleans())
+@settings(max_examples=30, deadline=None)
+def test_dsr_needs_recorded_run(others: list[float], sr: float, recorded: bool) -> None:
+    """A DSR is computed only for a recorded run: `run_dsr` of a run that is not a
+    `hat_backtest_run` row is refused `backtest_run_unrecorded`, and `complete_run` refuses it
+    too, while a recorded run is scored at its family's trial count and Sharpe variance (its
+    own Sharpe ratio included) through the floors. Harm (G33): a variant tried outside the
+    recorded runs is scored as evidence without counting as a trial."""
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _, live, _, universe = _bot_world(session)
+        for other in others:
+            runs.complete_run(
+                session, _start(session, live, universe), _result(other, 60, 1, "0"), root=root
+            )
+        if not recorded:
+            stray = HatBacktestRun(
+                id=uuid.uuid4(),
+                strategy_version_id=live.id,
+                risk_policy_version_id=uuid.uuid4(),
+                family_key="x",
+                period_start=START,
+                period_end=END,
+                data_snapshot={},
+                status=runs.RUNNING,
+                metrics=_result(sr, 60, 1, "0").metrics,
+            )
+            with pytest.raises(runs.RunError, match="backtest_run_unrecorded"):
+                runs.run_dsr(session, stray)
+            result = _result(sr, 60, 1, "0")
+            with pytest.raises(runs.RunError, match="backtest_run_unrecorded"):
+                runs.complete_run(session, stray, result, root=root)
+            session.rollback()
+            return
+        run = _start(session, live, universe)
+        runs.complete_run(session, run, _result(sr, 60, 1, "0"), root=root)
+        got, trials, variance = runs.run_dsr(session, run)
+        assert trials == len(others) + 1
+        assert variance == trial_variance([*others, sr])
+        want = family_deflated_sharpe(ReturnStats(sr, 60, 0.0, 3.0), trials, variance)
+        assert (got.prob, got.sr0) == (want.prob, want.sr0)
+        assert run.metrics["dsr"]["prob"] == str(
+            Decimal(repr(want.prob)).quantize(Decimal("0.000001"))
+        )
+        session.rollback()
+
+
+EQUITY = st.lists(st.integers(1, 3_000_000).map(Decimal), min_size=0, max_size=12)
+
+
+@given(EQUITY, st.integers(1, 3_000_000).map(Decimal))
+@settings(max_examples=30, deadline=None)
+def test_returns_persisted(curve: list[Decimal], initial: Decimal) -> None:
+    """A completed run writes `returns.parquet` next to its trades: one row per session close,
+    its equity, and its return against the close before (the first against the initial
+    equity), the series the run's return moments were computed from. Harm (G33): PBO and any
+    later re-deflation cannot be computed because the returns were never kept."""
+    days = [START + timedelta(days=n) for n in range(len(curve))]
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _, live, _, universe = _bot_world(session)
+        run = _start(session, live, universe)
+        metrics = {**_result(0.1, 60, 1, "0").metrics, "initial_equity": str(initial)}
+        result = BacktestResult((), tuple(zip(days, curve, strict=True)), (), (), (), {}, metrics)
+        runs.complete_run(session, run, result, root=root)
+        table = pq.read_table(runs.returns_path(root, run.id))
+        assert table.column("date").to_pylist() == days
+        assert table.column("equity").to_pylist() == curve
+        points = [float(initial), *(float(v) for v in curve)]
+        want = [points[n + 1] / points[n] - 1.0 for n in range(len(curve))]
+        assert table.column("ret").to_pylist() == want
+        assert runs.read_returns(root, run.id) == dict(zip(days, want, strict=True))
+        session.rollback()
+
+
+@given(st.permutations(range(4)))
+@settings(max_examples=24, deadline=None)
+@example([3, 2, 1, 0])  # completed in the reverse of the order started
+def test_evidence_latest_by_completion(order: list[int]) -> None:
+    """The sleeve's evidence is its run that completed last, whatever order the runs started in
+    (their uuid7 ids). Harm (G33): a long run started first but finished last is shadowed by
+    an older result, or a stale run is read as the newest."""
+    clock = count()
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bot, live, _, universe = _bot_world(session)
+        started = [_start(session, live, universe) for _ in range(4)]
+        with mock.patch.object(
+            runs,
+            "utc_now",
+            side_effect=lambda: datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=next(clock)),
+        ):
+            for n in order:
+                runs.complete_run(session, started[n], _result(0.1, 60, n + 1, "1"), root=root)
+        assert runs.backtest_evidence(session, bot).trades == order[-1] + 1
+        session.rollback()
+
+
+@given(st.lists(st.lists(st.integers(-30, 30), min_size=24, max_size=24), min_size=1, max_size=4))
+@settings(max_examples=20, deadline=None)
+@example([[1, -2, 3, 0] * 6, [1, -2, 3, 0] * 6, [2, 1, -1, -3] * 6])  # a re-run, then a variant
+def test_family_pbo_recorded(variants: list[list[int]]) -> None:
+    """Each completed run records its family's PBO (`metrics.pbo`) over the completed runs with
+    a returns file, itself included, on the sessions they share: `dsr.pbo` of their return
+    series in run order with the default blocks, a re-run of an equal series counted once,
+    and no probability but `pbo_too_few_variants` while the family has one distinct variant.
+    Harm: the overfitting check reads another family's runs, reports a probability from one
+    variant, or scores a deterministic re-run as an overfit second variant."""
+    days = [START + timedelta(days=n) for n in range(24)]
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _, live, other, universe = _bot_world(session)
+        series: list[list[float]] = []
+        for n, steps in enumerate(variants):
+            curve, value = [], Decimal(1_000_000)
+            for step in steps:
+                value += step * 100
+                curve.append(value)
+            metrics = {**_result(0.1, 24, 1, "0").metrics, "initial_equity": "1000000"}
+            result = BacktestResult(
+                (), tuple(zip(days, curve, strict=True)), (), (), (), {}, metrics
+            )
+            run = _start(session, live if n % 2 else other, universe)
+            runs.complete_run(session, run, result, root=root)
+            points = [1_000_000.0, *(float(v) for v in curve)]
+            row = [points[i + 1] / points[i] - 1.0 for i in range(24)]
+            if row not in series:  # a re-run of the same series is the same variant
+                series.append(row)
+            got = run.metrics["pbo"]
+            assert (got["runs"], got["variants"], got["sessions"]) == (n + 1, len(series), 24)
+            if len(series) < 2:
+                assert (got["prob"], got["reason"]) == (None, "pbo_too_few_variants")
+            else:
+                want = pbo(series)
+                assert want is not None
+                assert got["prob"] == str(Decimal(repr(want.prob)).quantize(Decimal("0.000001")))
+                assert got["splits"] == want.splits
+        session.rollback()
+
+
+@given(st.binary(max_size=64))
+@settings(max_examples=20, deadline=None)
+@example(b"")
+def test_family_pbo_skips_unreadable(garbage: bytes) -> None:
+    """A sibling run whose returns file cannot be read as one is left out of the family's PBO;
+    the run being completed still completes with its DSR and PBO. Harm: one damaged file fails
+    every later backtest of the family, so its trials go unscored."""
+    days = [START + timedelta(days=n) for n in range(24)]
+    with Session(ENGINE) as session, tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        _, live, _, universe = _bot_world(session)
+        curve = tuple((d, Decimal(1_000_000 + 100 * (n % 5))) for n, d in enumerate(days))
+        metrics = {**_result(0.1, 24, 1, "0").metrics, "initial_equity": "1000000"}
+        first = _start(session, live, universe)
+        runs.complete_run(
+            session, first, BacktestResult((), curve, (), (), (), {}, metrics), root=root
+        )
+        runs.returns_path(root, first.id).write_bytes(garbage)
+        second = _start(session, live, universe)
+        runs.complete_run(
+            session, second, BacktestResult((), curve, (), (), (), {}, metrics), root=root
+        )
+        assert second.status == runs.COMPLETED
+        assert (second.metrics["pbo"]["runs"], second.metrics["pbo"]["reason"]) == (
+            1,
+            "pbo_too_few_variants",
+        )
         session.rollback()

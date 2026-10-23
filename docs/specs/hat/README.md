@@ -374,7 +374,7 @@ to an artefact that exists.
 | HAT-PORT-055 | [05](05-portfolio-regime-allocation.md) | 9 | PBT `allocator.cash_remainder` |
 | HAT-PORT-056 | [05](05-portfolio-regime-allocation.md) | 2, 9 | DB `portfolio.unique_keys`, TLA `JobScheduler!AtMostOnceSuccess` |
 | HAT-PORT-060 | [05](05-portfolio-regime-allocation.md) | 9, 12, 35 | TLA `SleeveLifecycle!AllowedTransitions`, TLA `SleeveLifecycle!NoLiveWithoutEvidence`, PBT `admin.first_deploy` |
-| HAT-PORT-061 | [05](05-portfolio-regime-allocation.md) | 9, 12 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions` |
+| HAT-PORT-061 | [05](05-portfolio-regime-allocation.md) | 9, 12, 66 | PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions` |
 | HAT-PORT-062 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.shadow_days` |
 | HAT-PORT-063 | [05](05-portfolio-regime-allocation.md) | 9, 18 | PBT `lifecycle.probation_trigger`, TLA `SleeveLifecycle!ProbationOnHealthZero`, PBT `router.non_live_sleeve_routes_as_shadow` |
 | HAT-PORT-064 | [05](05-portfolio-regime-allocation.md) | 9 | TLA `SleeveLifecycle!AllowedTransitions`, PBT `lifecycle.retire_gate` |
@@ -534,15 +534,15 @@ to an artefact that exists.
 | HAT-BT-024 | [09](09-backtest.md) | 12 | PBT `backtest.decimal_money` |
 | HAT-BT-025 | [09](09-backtest.md) | 61 | PBT `backtest.adtr_filter_applied`, PBT `backtest.upper_circuit_inferred`, PBT `backtest.upper_circuit_skip` |
 | HAT-BT-026 | [09](09-backtest.md) | 63 | PBT `backtest.slot_order_rank`, PBT `backtest.slot_order_refused`, PBT `backtest.slot_order_applied`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest` |
-| HAT-BT-030 | [09](09-backtest.md) | 12, 62 | PBT `dsr.trial_counting` |
+| HAT-BT-030 | [09](09-backtest.md) | 12, 62, 66 | PBT `dsr.trial_counting`, PBT `dsr.dsr_needs_recorded_run`, PBT `dsr.returns_persisted`, CONF `dsr_scored_only_by_runs` |
 | HAT-BT-031 | [09](09-backtest.md) | 12 | PBT `dsr.family_key` |
 | HAT-BT-032 | [09](09-backtest.md) | 3, 12, 65 | CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics`, PBT `backtest.fill_conventions_recorded` |
 | HAT-BT-040 | [09](09-backtest.md) | 11, 12, 65 | PBT `backtest.r_and_expectancy`, PBT `backtest.robustness_metrics`, PBT `metrics.tail_trimmed_mean` |
 | HAT-BT-041 | [09](09-backtest.md) | 12, 65 | PBT `backtest.metrics_bounds`, PBT `backtest.robustness_metrics`, PBT `metrics.longest_drawdown`, PBT `metrics.exposure`, PBT `metrics.mar_ratio`, PBT `metrics.cost_share` |
-| HAT-BT-042 | [09](09-backtest.md) | 12 | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example` |
+| HAT-BT-042 | [09](09-backtest.md) | 12, 66 | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example`, PBT `dsr.family_floors`, PBT `dsr.pbo_ranked_variants`, PBT `dsr.pbo_two_variants`, PBT `dsr.pbo_refused`, PBT `dsr.family_pbo_recorded`, PBT `dsr.family_pbo_skips_unreadable` |
 | HAT-BT-050 | [09](09-backtest.md) | 12 | PBT `backtest.deterministic` |
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
-| HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62, 63, 64 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
+| HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62, 63, 64, 66 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, PBT `dsr.evidence_latest_by_completion`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
 | HAT-BT-061 | [09](09-backtest.md) | 2, 12, 62, 63 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
 | HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62, 64 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |

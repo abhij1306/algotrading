@@ -262,11 +262,12 @@ w_s = b_s * m_regime_s * m_health_s,   m in [0.25, 1.0],   cash = 1 - sum_s(w_s)
 #### HAT-PORT-061: Backtested requires DSR probability ≥ 0.95 and ≥ 200 trades
 - **Statement:** A sleeve enters Backtested only when a backtest run of its family has deflated Sharpe probability >= 0.95 and >= 200 trades, with every run of the family counted as a trial.
 - **Source:** BL "Sleeve lifecycle"; SCH `hat_backtest_run.family_key`; PL4.
-- **PR:** 9, 12
+- **PR:** 9, 12, 66
 - **Verification:** PBT `lifecycle.backtest_gate`, TLA `SleeveLifecycle!AllowedTransitions`
 - **Acceptance:**
   - Property: for every evidence record (dsr_prob, trades, trial count), the Research → Backtested guard is true iff dsr_prob >= 0.95 and trades >= 200, where dsr_prob was computed with the family's full trial count (09 §3-§4). Harm: a lucky variant from many tries is promoted.
 - **[A]** DSR >= 0.95, >= 200 trades: defaults; validated by owner review of the first sleeves' evidence.
+- **Design (PR 66, G33, N15):** the DSR the guard reads is `runs.run_dsr` of a recorded run (HAT-BT-030), deflated with the family's full trial count and Sharpe variance through the floors N >= 5 and V >= 0.25 / 252 (HAT-BT-042), so a family's first run is deflated too; the evidence run is the newest by completion time (HAT-BT-060). Each completed run also records its family's probability of backtest overfitting (`metrics.pbo`, CSCV over the variants with a returns file). The guard does not read it yet: requiring PBO < 0.5 changes `engine/portfolio/lifecycle.py` and comes with the other gate conditions (PR 69).
 
 #### HAT-PORT-062: Shadow lasts 20 trading days before Live
 - **Statement:** A sleeve moves Shadow → Live only after at least 20 trading days in Shadow, counted on `hat_trading_calendar`.
