@@ -17,9 +17,9 @@ are sent by `execution/manage.py`.
   the broker shows the entry ended (F2). The first fill of a broker stop is the stop triggering:
   its `order.filled` carries `exit_triggered` and stands for the exit order placed (ExitPending),
   as does any fill that empties a position no full exit order was placed for.
-- `evaluate_real_position` runs the same `exits.evaluate` as the shadow engine (T12). It raises
-  the stop and marks fired the rules that sell nothing; a rule that sells is marked fired by
-  `mark_fired` once its order went out, so a sale the broker refused is evaluated again.
+- `evaluate_real_position` runs the same `positions.evaluate_stack` as the shadow engine (T12).
+  It raises the stop and marks fired the rules that sell nothing; a rule that sells is marked
+  fired by `mark_fired` once its order went out, so a sale the broker refused is evaluated again.
 - `record_close_evaluation` keeps the live price of every 15:20-15:25 `close_below_sma`
   evaluation, and `record_close_gaps` adds the official close once the nightly ingest has it.
 """
@@ -44,10 +44,9 @@ from . import exits, journal, lifecycle
 from .botlock import lock_bot
 from .positions import (
     TradeError,
+    evaluate_stack,
     exit_rules_of,
     is_veto,
-    position_state,
-    raise_stop,
     signal_and_bot,
     write_result,
 )
@@ -193,11 +192,7 @@ def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) ->
     journal.record(
         session,
         signal,
-        "order.filled",
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload=_fill_payload(order, fill),
-        now=fill.at,
+        journal.on_order(order, "order.filled", _fill_payload(order, fill), now=fill.at),
     )
     if position is not None:
         if position.qty_open == 0:
@@ -241,17 +236,12 @@ def apply_entry_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) ->
     journal.record(
         session,
         signal,
-        "position.opened",
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={
-            "qty": fill.qty,
-            "avg_entry": str(fill.price),
-            "stop": str(stop),
-            "is_virtual": False,
-        },
-        now=fill.at,
-        position=position,
+        journal.on_position(
+            position,
+            "position.opened",
+            {"qty": fill.qty, "avg_entry": str(fill.price), "stop": str(stop), "is_virtual": False},
+            now=fill.at,
+        ),
     )
     return position
 
@@ -302,12 +292,7 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
     journal.record(
         session,
         signal,
-        "order.filled",
-        aggregate_type="order",
-        aggregate_id=order.id,
-        payload=payload,
-        now=fill.at,
-        position=position,
+        journal.on_order(order, "order.filled", payload, now=fill.at, position=position),
     )
     position.qty_open = remaining
     rule = _exit_rule_of(session, order)
@@ -316,12 +301,12 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
             journal.record(
                 session,
                 signal,
-                "exit.partial",
-                aggregate_type="position",
-                aggregate_id=position.id,
-                payload={"qty": fill.qty, "price": str(fill.price), "rule": rule},
-                now=fill.at,
-                position=position,
+                journal.on_position(
+                    position,
+                    "exit.partial",
+                    {"qty": fill.qty, "price": str(fill.price), "rule": rule},
+                    now=fill.at,
+                ),
             )
         session.flush()
         return position
@@ -341,14 +326,11 @@ def _close(
     journal.record(
         session,
         signal,
-        "position.closed",
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={"price": str(price), "rule": rule},
-        now=at,
-        position=position,
+        journal.on_position(
+            position, "position.closed", {"price": str(price), "rule": rule}, now=at
+        ),
     )
-    write_result(session, signal, position, rule, at, high=None, low=None)
+    write_result(session, signal, position, rule, at)  # a real trade: MFE and MAE are NULL
     session.flush()
 
 
@@ -431,25 +413,13 @@ def evaluate_real_position(
     phase: exits.Phase,
     now: datetime,
 ) -> exits.Evaluation:
-    """Run the pinned exit stack on one real position, exactly as `trades.evaluate_position` does
-    on a virtual one (T12): raise the stop (`stop.moved`; the broker stop follows it) and mark
-    fired the rules that sell nothing. The sales are returned for the caller to send; their
-    rules are marked by `mark_fired` once the orders went out."""
+    """Run the pinned exit stack on one real position through `positions.evaluate_stack`, the
+    evaluation `trades.evaluate_position` runs on a virtual one (T12): raise the stop
+    (`stop.moved`; the broker stop follows it) and mark fired the rules that sell nothing. The
+    sales are returned for the caller to send; their rules are marked by `mark_fired` once the
+    orders went out."""
     position = _locked_real_position(session, position_id)
-    if position.closed_at is not None or position.qty_open <= 0:
-        return exits.Evaluation()
-    signal, _ = signal_and_bot(session, position)
-    rules, state = position_state(session, position)
-    result = exits.evaluate(rules, state, view, phase)
-    if result.actions and view.price is None:
-        raise TradeError("exit_without_price")
-    if result.new_stop is not None and result.new_stop > state.current_stop:
-        raise_stop(session, signal, position, state.current_stop, result.new_stop, now)
-    for rule_id, reason in result.ignored:
-        logger.info("exit rule %s ignored: %s", rule_id, reason)  # never applied (HAT-RISK-070)
-    selling = {rid for action in result.actions for rid in action.rule_ids}
-    instant = [rid for rid in result.fired if rid not in selling]
-    position.rules_fired = sorted({*(position.rules_fired or []), *instant})
+    result = evaluate_stack(session, position, view, phase, now)
     session.flush()
     return result
 
@@ -503,22 +473,20 @@ def record_close_evaluation(
         for _, rule in close_rules
         if rule.sma in view.sma  # type: ignore[union-attr]
     }
+    payload = {
+        "trade_date": trade_date.isoformat(),
+        "live_price": str(view.price),
+        "rules": ids,
+        "sma": levels,
+        "fired": [rid for rid in result.fired if rid in ids],
+        "is_virtual": bool(position.is_virtual),
+    }
     journal.record(
         session,
         signal,
-        CLOSE_EVALUATED,
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={
-            "trade_date": trade_date.isoformat(),
-            "live_price": str(view.price),
-            "rules": ids,
-            "sma": levels,
-            "fired": [rid for rid in result.fired if rid in ids],
-            "is_virtual": bool(position.is_virtual),
-        },
-        now=now,
-        veto=is_veto(signal, position),
+        journal.on_position(
+            position, CLOSE_EVALUATED, payload, now=now, veto=is_veto(signal, position)
+        ),
     )
     return True
 
@@ -575,23 +543,21 @@ def record_close_gaps(
         sma = {
             int(k): require_exact(v, "sma", floats=True) for k, v in (data.get("sma") or {}).items()
         }
+        payload = {
+            "trade_date": day,
+            "live_price": str(live),
+            "official_close": str(official),
+            "gap": str(gap),
+            "gap_pct": str(_gap_pct(gap, live)),
+            "below_sma_live": sorted(str(n) for n, level in sma.items() if live < level),
+            "below_sma_close": sorted(str(n) for n, level in sma.items() if official < level),
+        }
         journal.record(
             session,
             signal,
-            CLOSE_GAP,
-            aggregate_type="position",
-            aggregate_id=position.id,
-            payload={
-                "trade_date": day,
-                "live_price": str(live),
-                "official_close": str(official),
-                "gap": str(gap),
-                "gap_pct": str(_gap_pct(gap, live)),
-                "below_sma_live": sorted(str(n) for n, level in sma.items() if live < level),
-                "below_sma_close": sorted(str(n) for n, level in sma.items() if official < level),
-            },
-            now=now,
-            veto=is_veto(signal, position),
+            journal.on_position(
+                position, CLOSE_GAP, payload, now=now, veto=is_veto(signal, position)
+            ),
         )
         done.add(aggregate)
         recorded += 1

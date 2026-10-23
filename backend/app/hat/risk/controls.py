@@ -103,11 +103,7 @@ def cancel_pending_approvals(
             journal.record(
                 session,
                 signal,
-                "signal.expired",
-                {"reason": reason},
-                aggregate_type="signal",
-                aggregate_id=signal.id,
-                now=now,
+                journal.on_signal(signal, "signal.expired", {"reason": reason}, now=now),
             )
         else:
             logger.warning("approval of signal %s closed in %s", signal.id, signal.state)

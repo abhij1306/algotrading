@@ -145,15 +145,10 @@ def _signal_event(
 ) -> None:
     """Record a decision event and move the signal along it, in the caller's transaction (the
     journal refuses a step the table forbids)."""
+    data = {**payload, "chat_id": chat_id} if chat_id is not None else payload
+    actor = "user" if chat_id is not None else "engine"
     journal.record(
-        session,
-        signal,
-        event_type,
-        {**payload, "chat_id": chat_id} if chat_id is not None else payload,
-        aggregate_type="signal",
-        aggregate_id=signal.id,
-        now=now,
-        actor="user" if chat_id is not None else "engine",
+        session, signal, journal.on_signal(signal, event_type, data, now=now, actor=actor)
     )
 
 

@@ -273,5 +273,6 @@ class HatTradeResult(Base):
     r_multiple = Column(Ratio, nullable=False)
     holding_days = Column(Integer, nullable=False)
     exit_reason = Column(Text, nullable=False)
-    mfe_r = Column(Ratio, nullable=False)
-    mae_r = Column(Ratio, nullable=False)
+    # In R, from the extremes since entry: NULL on a real trade, which keeps none.
+    mfe_r = Column(Ratio)
+    mae_r = Column(Ratio)

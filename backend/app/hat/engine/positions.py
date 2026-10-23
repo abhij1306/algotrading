@@ -2,14 +2,17 @@
 (HAT-EXEC-070..074, HAT-SCH-057, HAT-BOT-083).
 
 `trades` (virtual positions) and `live_trades` (real ones) share these and nothing else: the
-pinned exit stack and the position as the exit rules read it, a stop raise, and the one trade
-result of a closed position. Like them, every function works in the caller's open transaction,
+pinned exit stack and the position as the exit rules read it, one evaluation of that stack
+(`evaluate_stack`), a stop raise that only ever raises, and the one trade result of a closed
+position. Like them, every function works in the caller's open transaction,
 never commits, and records each state change through the journal (`engine/journal.py`).
 """
 
 from __future__ import annotations
 
+import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
@@ -35,16 +38,21 @@ from . import exits, journal, rescale
 from .strategy.config import ExitRule, parse_config
 
 __all__ = [
+    "Trade",
     "TradeError",
     "entry_qty",
+    "evaluate_stack",
     "exit_rules_of",
     "is_veto",
     "position_state",
     "raise_stop",
     "signal_and_bot",
+    "trade_of",
     "trade_r",
     "write_result",
 ]
+
+logger = logging.getLogger(__name__)
 
 _ZERO = Decimal(0)
 
@@ -99,25 +107,76 @@ def is_veto(signal: HatSignal, position: HatPosition) -> bool:
     return position.is_virtual and signal.mode != Mode.SHADOW
 
 
+@dataclass(frozen=True)
+class Trade:
+    """The rows one trade's writes name: its signal, bot and position (None before the entry
+    opens it), and whether it is the signal's veto trade (its events are flagged `veto`)."""
+
+    signal: HatSignal
+    bot: HatBot
+    position: HatPosition | None
+    veto: bool = False
+
+
+def trade_of(session: Session, position: HatPosition) -> Trade:
+    signal, bot = signal_and_bot(session, position)
+    return Trade(signal, bot, position, is_veto(signal, position))
+
+
 def raise_stop(
-    session: Session,
-    signal: HatSignal,
-    position: HatPosition,
-    old: Decimal,
-    new: Decimal,
-    now: datetime,
+    session: Session, signal: HatSignal, position: HatPosition, new: Decimal, now: datetime
 ) -> None:
+    """Move the position's stop up to `new` (`stop.moved`). A stop never lowers (invariant 1):
+    `new` at or below the current stop raises `TradeError("stop_would_lower")` and writes
+    nothing. This is the one Python check, so the SQLite backtest, which has no Postgres
+    trigger, keeps the rule too; only a corporate-action rescale moves a stop down
+    (`rescale.py`)."""
+    old = Decimal(position.current_stop)
+    if not new > old:
+        raise TradeError("stop_would_lower")
     journal.record(
         session,
         signal,
-        "stop.moved",
-        aggregate_type="position",
-        aggregate_id=position.id,
-        payload={"from": str(old), "to": str(new)},
-        now=now,
-        veto=is_veto(signal, position),
+        journal.on_position(
+            position,
+            "stop.moved",
+            {"from": str(old), "to": str(new)},
+            now=now,
+            veto=is_veto(signal, position),
+        ),
     )
     position.current_stop = new
+
+
+def evaluate_stack(
+    session: Session,
+    position: HatPosition,
+    view: exits.ExitView,
+    phase: exits.Phase,
+    now: datetime,
+) -> exits.Evaluation:
+    """Run the pinned exit stack on one position held under its bot's lock, the same for a
+    virtual and a real one (T12): raise the stop, log the rules ignored, and mark fired the
+    rules that sell nothing. The sales are returned; the caller carries them out (virtual) or
+    sends them (real) and marks their rules. A closed or emptied position evaluates to nothing;
+    a sale with no price raises `TradeError("exit_without_price")` before anything is
+    written."""
+    if position.closed_at is not None or position.qty_open <= 0:
+        return exits.Evaluation()
+    signal, _ = signal_and_bot(session, position)
+    rules, state = position_state(session, position)
+    result = exits.evaluate(rules, state, view, phase)
+    if result.actions and view.price is None:
+        raise TradeError("exit_without_price")
+    if result.new_stop is not None:
+        raise_stop(session, signal, position, result.new_stop, now)
+    for rule_id, reason in result.ignored:
+        # A rule that would not raise the stop is logged, never applied (HAT-RISK-070).
+        logger.info("exit rule %s ignored: %s", rule_id, reason)
+    selling = {rid for action in result.actions for rid in action.rule_ids}
+    instant = [rid for rid in result.fired if rid not in selling]
+    position.rules_fired = sorted({*(position.rules_fired or []), *instant})
+    return result
 
 
 def signal_and_bot(session: Session, position: HatPosition) -> tuple[HatSignal, HatBot]:
@@ -152,11 +211,15 @@ def write_result(
     reason: str,
     now: datetime,
     *,
-    high: Decimal | None,
-    low: Decimal | None,
+    high: Decimal | None = None,
+    low: Decimal | None = None,
 ) -> None:
     """The one `hat_trade_result` of a closed position, in the closing transaction
-    (HAT-SCH-057), and the ladder step for a real trade (a virtual one changes nothing)."""
+    (HAT-SCH-057), and the ladder step for a real trade (a virtual one changes nothing).
+
+    MFE and MAE are measured on a virtual trade from `high` and `low`, the extremes since its
+    entry (none given counts as the entry price). A real trade has no record of its extremes
+    since entry, so its MFE and MAE are stored NULL, never a made-up zero."""
     fills = session.execute(
         select(HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
         .join(HatOrder, HatOrder.id == HatFill.order_id)
@@ -173,8 +236,7 @@ def write_result(
     qty = entry_qty(session, signal, position)
     risk = entry - stop
     r = trade_r(pnl, entry, stop, qty)
-    top = max(entry, high if high is not None else entry)
-    bottom = min(entry, low if low is not None else entry)
+    mfe, mae = _excursions(entry, risk, high, low) if position.is_virtual else (None, None)
     session.add(
         HatTradeResult(
             position_id=position.id,
@@ -184,13 +246,26 @@ def write_result(
             r_multiple=r,
             holding_days=max(0, (trade_date_of(now) - signal.trade_date).days),
             exit_reason=reason,
-            mfe_r=((top - entry) / risk).quantize(_RATIO_PLACES) if risk > 0 else _ZERO,
-            mae_r=((bottom - entry) / risk).quantize(_RATIO_PLACES) if risk > 0 else _ZERO,
+            mfe_r=mfe,
+            mae_r=mae,
         )
     )
     policy = effective_version(load_versions(session, _owner_of(session, signal)), now)
     if policy is not None:
         controls.record_closed_trade(session, signal.bot_id, r, position.is_virtual, policy.policy)
+
+
+def _excursions(
+    entry: Decimal, risk: Decimal, high: Decimal | None, low: Decimal | None
+) -> tuple[Decimal, Decimal]:
+    """(MFE, MAE) in R of a trade whose price ranged over `low`..`high` since entry."""
+    if risk <= 0:
+        return _ZERO, _ZERO
+    top = max(entry, high if high is not None else entry)
+    bottom = min(entry, low if low is not None else entry)
+    return ((top - entry) / risk).quantize(_RATIO_PLACES), ((bottom - entry) / risk).quantize(
+        _RATIO_PLACES
+    )
 
 
 def _owner_of(session: Session, signal: HatSignal) -> uuid.UUID:
