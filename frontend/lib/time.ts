@@ -12,18 +12,14 @@ export const IST_TIME_ZONE = "Asia/Kolkata";
 
 export type DateInput = Date | number | string;
 
-/** 0 = Sunday ... 6 = Saturday, as Date#getDay numbers them. */
-export type DayOfWeek = 0 | 1 | 2 | 3 | 4 | 5 | 6;
-
 /** The IST wall-clock reading of an instant. Month is 1-12. */
-export interface IstParts {
+interface IstParts {
   year: number;
   month: number;
   day: number;
   hour: number;
   minute: number;
   second: number;
-  dayOfWeek: DayOfWeek;
 }
 
 const MONTHS = [
@@ -41,16 +37,6 @@ const MONTHS = [
   "Dec",
 ] as const;
 
-const WEEKDAYS: Readonly<Record<string, DayOfWeek>> = {
-  Sun: 0,
-  Mon: 1,
-  Tue: 2,
-  Wed: 3,
-  Thu: 4,
-  Fri: 5,
-  Sat: 6,
-};
-
 const istFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: IST_TIME_ZONE,
   year: "numeric",
@@ -59,7 +45,6 @@ const istFormatter = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   minute: "numeric",
   second: "numeric",
-  weekday: "short",
   hourCycle: "h23",
 });
 
@@ -95,25 +80,13 @@ function partsOf(date: Date): IstParts {
     hour: number("hour"),
     minute: number("minute"),
     second: number("second"),
-    dayOfWeek: WEEKDAYS[values.get("weekday") ?? ""] ?? 0,
   };
 }
 
-/** The IST calendar date, time and day of week of an instant, or null for an invalid input. */
-export function istParts(input: DateInput): IstParts | null {
+/** The IST calendar date and time of an instant, or null for an invalid input. */
+function istParts(input: DateInput): IstParts | null {
   const date = toDate(input);
   return date === null ? null : partsOf(date);
-}
-
-/** The IST day of week (0 = Sunday), or null for an invalid input. */
-export function istDayOfWeek(input: DateInput): DayOfWeek | null {
-  return istParts(input)?.dayOfWeek ?? null;
-}
-
-/** True on Saturday and Sunday in IST. */
-export function isIstWeekend(input: DateInput): boolean {
-  const day = istDayOfWeek(input);
-  return day === 0 || day === 6;
 }
 
 const pad2 = (value: number): string => String(value).padStart(2, "0");
@@ -142,26 +115,4 @@ export function formatIstTime(input: DateInput): string {
 export function formatIstDateTime(input: DateInput): string {
   const parts = istParts(input);
   return parts === null ? PLACEHOLDER : `${dateText(parts)}, ${timeText(parts)}`;
-}
-
-const RELATIVE_STEPS = [
-  { unit: "d", seconds: 86_400 },
-  { unit: "h", seconds: 3_600 },
-  { unit: "m", seconds: 60 },
-] as const;
-
-/**
- * How long ago (or until) an instant is, relative to `now`: "just now" under a minute, then
- * "5m ago", "3h ago", "2d ago", or "in 5m" for the future. Whole units, rounded down.
- */
-export function formatRelative(input: DateInput, now: DateInput = Date.now()): string {
-  const date = toDate(input);
-  const reference = toDate(now);
-  if (date === null || reference === null) return PLACEHOLDER;
-  const deltaSeconds = Math.trunc((reference.getTime() - date.getTime()) / 1000);
-  const magnitude = Math.abs(deltaSeconds);
-  const step = RELATIVE_STEPS.find((candidate) => magnitude >= candidate.seconds);
-  if (step === undefined) return "just now";
-  const amount = `${Math.floor(magnitude / step.seconds)}${step.unit}`;
-  return deltaSeconds >= 0 ? `${amount} ago` : `in ${amount}`;
 }

@@ -87,9 +87,10 @@ here.
 - **Schema (T1, SCH).** Every owned table carries `user_id` (one fixed UUID, `HAT_USER_ID`); uuid v7
   keys generated in Python; money is `Numeric(18,4)`/Decimal; no migration tool, fresh Postgres.
   Append-only event log by trigger only (no separate app role).
-- **Verification (T16).** HAT code is checked with TLA+ models, Hypothesis properties on pure
-  functions, Postgres checks and conformance checks of structural rules; changes are verified by
-  running them on real data. No new deliberate-break records (CLAUDE.md).
+- **Verification (T16).** A change is verified by running it once on real data (the affected job,
+  CLI or route; `HAT_DATA_ROOT` and the local database read-only), never by a backtest. Tests are
+  small and only for pure functions at their seams; no test runs a backtest, the pipeline or a
+  full database on generated data, and no deliberate-break records or test digests (CLAUDE.md).
 
 ## Planned, not built
 

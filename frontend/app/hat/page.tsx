@@ -1,18 +1,15 @@
 import type { ReactNode } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageContainer } from "@/components/ui/PageContainer";
 import {
-  Badge,
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-  PageContainer,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
-} from "@/components/ui";
+} from "@/components/ui/table";
 import { formatNumber, PLACEHOLDER } from "@/lib/format";
 import {
   useHatAllocations,

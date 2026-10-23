@@ -1,5 +1,4 @@
 import createClient from "openapi-fetch";
-import type { z } from "zod";
 import { ApiError, apiErrorFromResponse, apiErrorFromThrown } from "./errors";
 import type { paths } from "./schema";
 
@@ -56,20 +55,4 @@ export async function unwrap<D, E>(request: Promise<FetchResult<D, E>>): Promise
     });
   }
   return data;
-}
-
-/**
- * Validate a loosely-typed (`unknown`) response against a schema at the
- * boundary. Rows are trusted afterwards.
- */
-export function parseResponse<S extends z.ZodType>(schema: S, data: unknown): z.output<S> {
-  const parsed = schema.safeParse(data);
-  if (!parsed.success) {
-    throw new ApiError({
-      code: "RESPONSE_SHAPE_ERROR",
-      message: "Unexpected response from server",
-      details: parsed.error.issues,
-    });
-  }
-  return parsed.data;
 }

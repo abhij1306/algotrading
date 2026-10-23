@@ -1,5 +1,6 @@
 import { Link } from "react-router";
-import { Button, PageContainer } from "@/components/ui";
+import { Button } from "@/components/ui/button";
+import { PageContainer } from "@/components/ui/PageContainer";
 
 export default function NotFoundPage() {
   return (

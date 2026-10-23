@@ -1,26 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { z } from "zod";
-import { api, parseResponse, unwrap } from "@/lib/api/client";
+import { api, unwrap } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
 import { queryKeys } from "./keys";
 
 /** Re-check the Fyers status at most this often (and on window focus), so an offline badge clears. */
 const FYERS_STATUS_STALE_MS = 30_000;
 
-const fyersStatusSchema = z.object({
-  connected: z.boolean().catch(false),
-  user_id: z.string().nullish().catch(null),
-});
-
-const loginUrlSchema = z.object({
-  url: z.string().nullish().catch(null),
-  detail: z.string().nullish().catch(null),
-  error: z.string().nullish().catch(null),
-});
-
 export type FyersStatus = { connected: boolean; userId: string; offline: boolean };
 
 const DISCONNECTED: FyersStatus = { connected: false, userId: "", offline: false };
+
+/** Reads the status body defensively: anything but `connected: true` is disconnected. */
+function toFyersStatus(body: { connected?: unknown; user_id?: unknown }): FyersStatus {
+  if (body.connected !== true) return DISCONNECTED;
+  return {
+    connected: true,
+    userId: typeof body.user_id === "string" ? body.user_id : "",
+    offline: false,
+  };
+}
 
 /** Any failure to read the status reads as "backend offline" rather than an error. */
 export function useFyersStatus() {
@@ -28,13 +26,7 @@ export function useFyersStatus() {
     queryKey: queryKeys.auth.fyersStatus(),
     queryFn: async (): Promise<FyersStatus> => {
       try {
-        const body = parseResponse(
-          fyersStatusSchema,
-          await unwrap(api.GET("/api/hat/auth/fyers/status")),
-        );
-        return body.connected
-          ? { connected: true, userId: body.user_id ?? "", offline: false }
-          : DISCONNECTED;
+        return toFyersStatus(await unwrap(api.GET("/api/hat/auth/fyers/status")));
       } catch {
         return { connected: false, userId: "", offline: true };
       }
@@ -49,12 +41,9 @@ export function useFyersStatus() {
 export function useFyersLoginUrl() {
   return useMutation({
     mutationFn: async (): Promise<string> => {
-      const body = parseResponse(loginUrlSchema, await unwrap(api.GET("/api/hat/auth/fyers/url")));
-      if (body.url) return body.url;
-      throw new ApiError({
-        code: "LOGIN_URL_MISSING",
-        message: body.detail || body.error || "Failed to get Login URL",
-      });
+      const body = await unwrap(api.GET("/api/hat/auth/fyers/url"));
+      if (typeof body.url === "string" && body.url) return body.url;
+      throw new ApiError({ code: "LOGIN_URL_MISSING", message: "Failed to get Login URL" });
     },
   });
 }

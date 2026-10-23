@@ -1,6 +1,6 @@
 ---
 name: hat-architecture-audit
-description: Audit one area of the algotrading codebase through one lens (architecture depth, money safety, or test strength) and write ranked, evidence-backed findings to a report outside the repo. Read-only and non-interactive, so it can run as a background subagent while builders work. Use when the orchestrator asks for an audit, or before planning a refactor of a HAT subsystem.
+description: Audit one area of the algotrading codebase through one lens (architecture depth, money safety, or test shape) and write ranked, evidence-backed findings to a report outside the repo. Read-only and non-interactive, so it can run as a background subagent while builders work. Use when the orchestrator asks for an audit, or before planning a refactor of a HAT subsystem.
 disable-model-invocation: true
 ---
 
@@ -20,7 +20,7 @@ The caller gives you:
 - **Scope:** a directory or a list of modules. If none is given, rank hot spots with `git log --since=60.days --name-only --format= -- backend/app frontend/src | sort | uniq -c | sort -rn | head -30`, then start from the top.
 - **Report path:** where to write. The default is `/data/workspace/audits/<date>-<lens>-<scope-slug>.md`.
 
-Read first: `CLAUDE.md`, `docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`, and the `.claude/skills/` skill for your area (`trading-safety` for execution and risk, `verify-*` for the rest). Decisions recorded there are settled. Report a conflict with one only when the friction is real, and mark it as a conflict.
+Read first: `CLAUDE.md`, `docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`, and the `.claude/skills/` skill for your area (`trading-safety` for execution and risk). Decisions recorded there are settled. Report a conflict with one only when the friction is real, and mark it as a conflict.
 
 ## Vocabulary
 
@@ -61,13 +61,16 @@ A money-safety finding needs a concrete failure: the state, the input and the wr
 
 ### tests
 
-- Behaviour in scope with no test, especially error paths and money paths.
+Tests are small and only for pure functions at their seams (money maths, parsers, state rules); changes are verified by running them on real data (CLAUDE.md). Flag what departs from that:
+
+- World tests: a test that runs a backtest, the daily pipeline, a scheduler cycle or a full database on generated or fake data. Say what pure function it should test instead, or that it should go.
+- Ceremony: deliberate-break records, broken variants kept only to prove a test fails, test digests, hand-kept lists a conformance check copies from a doc, and test helpers or rigs larger than the code they exercise.
+- A pure money or state function on a live path with no small test of its own.
 - Tests that mock past the interface, or assert on internals, so a refactor breaks them and a real bug doesn't.
 - Fakes that drift from the real adapter: compare `FakeBroker` and the Fyers SDK fake with `fyers_adapter.py`.
-- Properties (`tests/hat/properties/`) and TLA+ specs whose invariant is weaker than the code's real risk.
 - Flaky signals: wall-clock sleeps, real time, test order dependence.
 
-Run the relevant tests if useful, but never the slow CI profiles in the foreground.
+Don't run the test suites; read them. Measure a slow file with one targeted run in the background if the cost matters.
 
 ## Verify before you report
 

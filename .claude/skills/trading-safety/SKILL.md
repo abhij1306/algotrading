@@ -13,7 +13,7 @@ Hire a Trader can place real orders through Fyers. A bug here loses money, so th
 - `backend/app/hat/execution/`: `tags.py` (order tags), `submit.py` (`reserve_order`, `send_order`), `fyers_adapter.py` (`FyersHatBroker`, the only `HatBroker` implementation), `fyers_broker.py` (payloads, circuit breaker), `fyers_session.py`, `fyers_auth.py`, `fyers_tokens.py`, `reconcile.py`, `guard.py`, `session.py`, `gtt.py`, `modes.py` (the confirm and auto gates), `fyers_ipv4.py` (the IPv4 pin and the proxy check), `broker.py` (the contract engine and risk code depend on)
 - `backend/app/hat/risk/`: `service.py` (`evaluate_signal`), `decision.py` (`decide`), `caps.py`, `sizing.py`, `kill.py`, `controls.py` (kill switches, pause), `modes.py` (shadow, confirm, auto), `policy.py`
 - `backend/app/hat/money.py`
-- `backend/tests/hat/fakes/broker.py` (`FakeBroker`), `backend/tests/hat/fakes/fyers_sdk.py`, `backend/tests/hat/properties/`, `backend/tests/hat/conformance/test_conf_risk.py` (the pinned safety properties)
+- `backend/tests/hat/fakes/broker.py` (`FakeBroker`), `backend/tests/hat/fakes/fyers_sdk.py`, `backend/tests/hat/properties/`, `backend/tests/hat/conformance/test_conf_risk.py` (the structural risk rules)
 - `verification/tla/OrderReconciliation.tla` and `verification/tla/KillSwitch.tla`
 
 ## Rules
@@ -37,4 +37,4 @@ Hire a Trader can place real orders through Fyers. A bug here loses money, so th
 
 ## Before you finish
 
-Check the diff against each rule above. List any rule a change could not meet and explain why in the PR description. If you changed a covered file, refresh the digest of the `verify-*` skill that covers it.
+Check the diff against each rule above. List any rule a change could not meet and explain why in the PR description.

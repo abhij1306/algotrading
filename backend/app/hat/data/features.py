@@ -18,7 +18,6 @@ passes `full=True`; the ingest does so).
 
 Full-history rebuild: about 4,150 dates x about 3,000 instruments. The rebuild runs in chunks of
 `CHUNK_DAYS` target dates, so memory stays at about (CHUNK_DAYS + 252) x instruments rows.
-Measured runtime is in the verify-features skill.
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 file="$(hook_file_path)"
-[ -n "$file" ] && [ -f "$file" ] || exit 0
+[[ -n "$file" && -f "$file" ]] || exit 0
 root="$(repo_root)"
 
 backend_rel="$(rel_to "$file" "$root/backend")"
@@ -43,7 +43,7 @@ if [[ "$file" == *.py && ( -n "$backend_rel" || ( -n "$root_rel" && -z "$fronten
     | "$py" -m ruff check --exit-zero --output-format concise --quiet --stdin-filename "$target" - 2>/dev/null)"
   n_now="$(printf '%s' "$now" | grep -c . || true)"
   n_before="$(printf '%s' "$before" | grep -c . || true)"
-  if [ "${n_now:-0}" -gt "${n_before:-0}" ]; then
+  if [[ "${n_now:-0}" -gt "${n_before:-0}" ]]; then
     printf 'ruff: %s now has %s problems; the last commit had %s. Fix the new ones:\n%s\n' \
       "$target" "$n_now" "$n_before" "$now" >&2
     exit 2
@@ -51,10 +51,10 @@ if [[ "$file" == *.py && ( -n "$backend_rel" || ( -n "$root_rel" && -z "$fronten
   exit 0
 fi
 
-if [ -n "$frontend_rel" ] && [[ "$frontend_rel" =~ \.(ts|tsx|js|jsx|mjs|css|json|html|md)$ ]] \
+if [[ -n "$frontend_rel" ]] && [[ "$frontend_rel" =~ \.(ts|tsx|js|jsx|mjs|css|json|html|md)$ ]] \
    && [[ "$frontend_rel" != node_modules/* ]] && [[ "$frontend_rel" != out/* ]]; then
   cd "$root/frontend" || exit 0
-  [ -d node_modules ] || exit 0
+  [[ -d node_modules ]] || exit 0
   if ! out="$(pnpm exec vp check --fix "$frontend_rel" 2>&1)"; then
     printf 'vp check found problems in frontend/%s:\n%s\n' "$frontend_rel" \
       "$(printf '%s\n' "$out" | grep -vE '^\s*$|Lockfile|supply-chain' | tail -40)" >&2
