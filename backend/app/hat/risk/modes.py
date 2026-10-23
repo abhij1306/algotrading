@@ -23,10 +23,10 @@ class Mode(StrEnum):
     SHADOW = "shadow"
     CONFIRM = "confirm"
     AUTO = "auto"
-# Membership of any value, a plain `str` included: `x in Mode` raises TypeError for a str
 
-# Membership of any value, a plain `str` included: `x in MODE_VALUES` raises TypeError for a str
-# before Python 3.12 (the project supports 3.11), a set of the members does not.
+
+# Membership of any value, a plain `str` included: `x in Mode` raises TypeError for a str before
+# Python 3.12 (the project supports 3.11); a set of the members does not.
 MODE_VALUES: frozenset[str] = frozenset(Mode)
 
 # A config field holding a mode: validates and dumps as the plain string (pydantic `Literal`).
