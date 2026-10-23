@@ -5,7 +5,7 @@
    "avg_mae_r": "-1.280487",
    "avg_mfe_r": "0.802551",
    "avg_win_r": null,
-   "config_digest": "0ed073392358683c33bc222ed87a3ce2330809219d446920ac95becb1bd9016b",
+   "config_digest": "c10cee34e8d9da36a80cbb573170c371ff843699699399a3a45753304bede9c7",
    "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
@@ -49,6 +49,7 @@
    "signals": 3,
    "skips": {},
    "slippage_bps": "20",
+   "slot_order": "time",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
    "sum_r": "-2.479219",
    "total_return": -0.003919469000000064,
@@ -101,7 +102,7 @@
    "avg_mae_r": "-0.044215",
    "avg_mfe_r": "9.509382",
    "avg_win_r": "7.588381",
-   "config_digest": "0ed073392358683c33bc222ed87a3ce2330809219d446920ac95becb1bd9016b",
+   "config_digest": "c10cee34e8d9da36a80cbb573170c371ff843699699399a3a45753304bede9c7",
    "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
@@ -145,6 +146,7 @@
    "signals": 2,
    "skips": {},
    "slippage_bps": "20",
+   "slot_order": "time",
    "strategy_version_id": "00000000-0000-7000-8000-0000000000b1",
    "sum_r": "7.588381",
    "total_return": 0.009860767800000003,

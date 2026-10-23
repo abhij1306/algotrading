@@ -181,8 +181,11 @@ def publish_version(
         raise VersionError("run_not_for_version")
     if run.status != "completed":
         raise VersionError("run_not_completed")
-    if (run.metrics or {}).get("for_promotion") is not True:
-        # O5 (PR 62): only a run flagged for promotion, never one at perfect fills, evidences.
+    metrics = run.metrics or {}
+    if metrics.get("for_promotion") is not True or metrics.get("slot_order") != "time":
+        # O5 (PR 62): only a run flagged for promotion, never one at perfect fills, evidences;
+        # PR 63: and only one whose slots went in trigger order (every run before took them
+        # by score).
         raise VersionError("run_not_for_promotion")
     row.status = "backtested"
     row.backtest_run_id = backtest_run_id

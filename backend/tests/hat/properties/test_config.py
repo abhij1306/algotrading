@@ -397,7 +397,7 @@ def add_run(session: Session, version: HatStrategyVersion) -> HatBacktestRun:
         period_end=date(2025, 12, 31),
         data_snapshot={},
         status="completed",
-        metrics={"for_promotion": True},
+        metrics={"for_promotion": True, "slot_order": "time"},
     )
     session.add(run)
     session.flush()

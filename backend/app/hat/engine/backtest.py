@@ -30,11 +30,11 @@ Fill conventions (PR 62, HAT-BT-020..022, O5): pessimistic by default. An entry 
 clear the level by one tick and fills at that price (`penetration_1_tick`; `touch` is a variant a
 run may choose), a stop gapped through fills at min(open, stop), and the slippage defaults to
 20 bps (`DEFAULT_SLIPPAGE_BPS`). A run flagged for promotion (`RunSpec.for_promotion`, the only
-kind `publish_version` accepts and the sleeve's evidence reads) is refused at a slippage of 0 or
-under `touch` (`check_conventions`). Every run's metrics record the
-fill path, the entry fill rule, the gap-through rule, the trigger proxy, the slippage and the
-cost model, and `config_digest` hashes them, so two runs under different conventions never read
-as comparable.
+kind `publish_version` accepts and the sleeve's evidence reads) is refused at a slippage of 0,
+under `touch` or under a slot order other than `time` (`check_conventions`). Every run's
+metrics record the fill path, the entry fill rule, the gap-through rule, the trigger proxy, the
+slippage, the cost model and the slot order, and `config_digest` hashes them, so two runs
+under different conventions never read as comparable.
 
 The exit search along a day's way up (`first_trigger`) assumes a monotone rule stack: above the
 stop, every live rule that acts at a price acts at any higher one. The built-in rules are
@@ -55,6 +55,12 @@ Entry filters (PR 61, HAT-BT-025): at each trigger the playbook's entry filters 
 them (`trigger.evaluate_entry_filters`): `adtr_filter` on the planned stop and ADTR(20) as of the
 session before, and `max_chase` with the upper-circuit state, inferred from a bar pinned at an NSE
 band all day (`upper_circuit_locked`). A failing filter is a Rejected signal, as live writes it.
+
+Slot order (PR 63, HAT-BT-026): live takes a day's triggers in the order they fire, so on a capped
+day the first breaks get the open slots. The loop takes the day's watchlist rows in their
+estimated trigger order (`slot_order` `time`, the default, `app.hat.backtest.slots`): gap overs
+first, then (level - open) / open ascending, ties by score. `score` (the PR 12 order) and
+`random:K` are variants; the rule is part of the run's conventions and `config_digest`.
 
 The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown_sessions`, which
 `evaluate_signal` reads through `trades.open_entry` from the ledger's hard-stop closes, as live
@@ -104,6 +110,7 @@ from ..backtest.fills import (
     entry_fill,
     stop_fill,
 )
+from ..backtest.slots import SLOT_ORDER_TIME, is_slot_order, order_slots, trigger_rank
 from ..confighash import config_hash
 from ..data.sessions import IST
 from ..data.ticks import tick_for_date
@@ -273,6 +280,7 @@ class RunSpec:
     initial_equity: Decimal = INITIAL_EQUITY
     entry_fill_rule: str = PENETRATION  # HAT-BT-020: `touch` is the variant
     for_promotion: bool = False  # the run may evidence a version (`publish_version`)
+    slot_order: str = SLOT_ORDER_TIME  # HAT-BT-026: `score` and `random:K` are variants
 
 
 # --- outputs ----------------------------------------------------------------------------------
@@ -816,8 +824,18 @@ class _Run:
             calendar=self.calendar,
         )
 
+    def _slots(self, day: date) -> list[HatWatchlistEntry]:
+        """The day's watchlist in the order its triggers take the open slots (HAT-BT-026)."""
+
+        def rank(row: HatWatchlistEntry) -> tuple[int, Decimal]:
+            bar = self.bar.get((str(row.instrument_id), day))
+            pivot = None if row.pivot is None else Decimal(row.pivot)
+            return trigger_rank(None if bar is None else bar.open, pivot, self.spec.entry_fill_rule)
+
+        return order_slots(self._watchlist(day), self.spec.slot_order, day, rank)
+
     def _entries(self, day: date, prev: date) -> None:
-        for n, row in enumerate(self._watchlist(day)):
+        for n, row in enumerate(self._slots(day)):
             if row.playbook == EP_PLAYBOOK:
                 continue
             instrument_id = str(row.instrument_id)
@@ -1374,6 +1392,7 @@ def conventions(spec: RunSpec) -> dict[str, Any]:
         # normalised, so 20 and 20.0 bps record (and hash) alike
         "slippage_bps": format(abs(spec.fills.slippage_bps).normalize(), "f"),  # -0 is 0
         "cost_model": spec.fills.model.to_json(),
+        "slot_order": spec.slot_order,  # HAT-BT-026
     }
 
 
@@ -1447,34 +1466,55 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
         raise BacktestError("backtest_bad_period")
     if not spec.initial_equity.is_finite() or spec.initial_equity <= 0:
         raise BacktestError("backtest_bad_equity")
-    check_conventions(spec.entry_fill_rule, spec.fills.slippage_bps, spec.for_promotion)
+    check_conventions(
+        spec.entry_fill_rule, spec.fills.slippage_bps, spec.for_promotion, spec.slot_order
+    )
     return _Run(spec, data).run()
 
 
-def check_conventions(entry_fill_rule: str, slippage_bps: Decimal, for_promotion: bool) -> None:
-    """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule, and for a run
-    flagged for promotion, perfect fills (a slippage of 0) or the optimistic `touch` rule."""
+def check_conventions(
+    entry_fill_rule: str,
+    slippage_bps: Decimal,
+    for_promotion: bool,
+    slot_order: str = SLOT_ORDER_TIME,
+) -> None:
+    """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule or slot order
+    (PR 63), and for a run flagged for promotion, perfect fills (a slippage of 0), the
+    optimistic `touch` rule or a slot order other than the estimated trigger time."""
     if entry_fill_rule not in ENTRY_FILL_RULES:
         raise BacktestError("backtest_bad_fill_rule")
+    if not is_slot_order(slot_order):
+        raise BacktestError("backtest_bad_slot_order")
     if for_promotion and slippage_bps == 0:
         raise BacktestError("backtest_promotion_without_slippage")
     if for_promotion and entry_fill_rule != PENETRATION:
         raise BacktestError("backtest_promotion_on_touch")
+    if for_promotion and slot_order != SLOT_ORDER_TIME:
+        raise BacktestError("backtest_promotion_off_time_order")
 
 
 # --- command line -----------------------------------------------------------------------------
 
 
+def _slot_order_arg(text: str) -> str:  # pragma: no cover - the command line
+    import argparse  # noqa: PLC0415
+
+    if not is_slot_order(text):
+        raise argparse.ArgumentTypeError("time, score or random:K (K a whole number)")
+    return text
+
+
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD
     [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N]
-    [--entry-fill penetration_1_tick|touch] [--for-promotion]
+    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K] [--for-promotion]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe over the
     Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
     `backtests/run_id=<id>/trades.parquet`. Prints the run id, status, trade count and DSR.
     The slippage defaults to 20 bps; `--for-promotion` marks a run `publish_version` may take as
-    a version's evidence, and is refused at a slippage of 0 (PR 62).
+    a version's evidence, and is refused at a slippage of 0 (PR 62). A capped day's slots go in
+    the estimated trigger order (`--slot-order time`, PR 63).
     """
     import argparse  # noqa: PLC0415
     import json  # noqa: PLC0415
@@ -1495,6 +1535,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--cost-model", default=None)
     parser.add_argument("--cooldown-sessions", type=int, default=None)
     parser.add_argument("--entry-fill", choices=ENTRY_FILL_RULES, default=PENETRATION)
+    parser.add_argument("--slot-order", type=_slot_order_arg, default=SLOT_ORDER_TIME)
     parser.add_argument("--for-promotion", action="store_true")
     args = parser.parse_args(argv)
     settings = operator_settings()
@@ -1518,6 +1559,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 version_id=args.version,
                 entry_fill_rule=args.entry_fill,
                 for_promotion=args.for_promotion,
+                slot_order=args.slot_order,
                 **extra,
             )
         except RunError as exc:

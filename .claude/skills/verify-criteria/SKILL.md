@@ -145,12 +145,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `6994ba69c3fbb2acea74fa51bdaf7cdacec6e2bd0c029c4df4b045f63a57b359`
+Covered digest: `1a8cdd8bc7a380a688bf1dc9f814574003c5fc2e6f2d7545ac6adaf4d4db67a2`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 63 (HAT-BT-026, HAT-BT-061): `publish_version` also refuses a promotion run whose metrics do not say `slot_order: time` (`run_not_for_promotion`), so a run recorded before PR 63 (slots by score) never promotes a version; `test_config.add_run` records `slot_order: time`. Property `backtest.version_status_requires_run` in `verify-backtest`.
 - PR 62 (O5, HAT-BT-061): `publish_version` also refuses a run whose metrics do not say `for_promotion: true` (`run_not_for_promotion`), so a version is never promoted on a run at perfect fills; `test_config.add_run` flags its run. The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the release-gate checks here are unchanged.
 - PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
 - PR 12: `publish_version` also refuses a run that is not `completed` (`run_not_completed`, HAT-BT-061). The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the checks here were re-run unchanged and pass.
