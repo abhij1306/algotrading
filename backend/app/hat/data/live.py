@@ -153,17 +153,23 @@ def tick_from_payload(
         return None
     when = _exchange_time(payload) or arrival
     day = trade_date_of(when)
-    cumulative = exact(payload.get("volume"), floats=True)
-    traded = exact(payload.get("last_traded_qty"), floats=True)
-    own = int(traded) if traded is not None and traded > 0 else 0
+    cumulative = _shares(payload.get("volume"))
+    traded = _shares(payload.get("last_traded_qty"))
+    own = traded if traded is not None and traded > 0 else 0
     qty = own
     if cumulative is not None and cumulative >= 0:
-        total = int(cumulative)
+        total = cumulative
         previous = last_volume.get(symbol)
         if previous is not None and previous[0] == day and total >= previous[1]:
             qty = total - previous[1]
         last_volume[symbol] = (day, total)
     return Tick(symbol, when, price, qty)
+
+
+def _shares(raw: object) -> int | None:
+    """A share count from the feed; None when it is not a whole number (never truncated)."""
+    value = exact(raw, floats=True)
+    return int(value) if value is not None and value == value.to_integral_value() else None
 
 
 def run_listener_call(call: Callable[[], None], what: str) -> None:

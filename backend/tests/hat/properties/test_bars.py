@@ -751,10 +751,11 @@ def test_no_store_keeps_no_bars(offsets: list[int]) -> None:
     ltq=st.integers(1, 5000),
     previous=st.integers(0, 10**6),
     rise=st.integers(0, 10**6),
-    bad_volume=st.sampled_from([None, "", "x", -5]),
+    bad_volume=st.sampled_from([None, "", "x", -5, 1.5, "12.5"]),
 )
 def test_tick_volume_fallbacks(ltq: int, previous: int, rise: int, bad_volume: object) -> None:
-    """A tick with no usable cumulative volume contributes its own last traded quantity, and the
+    """A tick with no usable cumulative volume (missing, unreadable, negative or not a whole number,
+    which is never truncated) contributes its own last traded quantity, and the
     first tick of a new trade date contributes its own print instead of its total minus the
     previous day's total. Harm: a print is lost from bar and day volume, or a new session's
     opening bar is charged yesterday's volume."""
@@ -1085,6 +1086,9 @@ QUIET = ["AAA", "BBB", "CCC"]
 @example(  # AAA ticks once and goes quiet; an outage restarts the count; the market closes a while
     closed=(400, 200), ticks=[(20, "AAA")], watches=[], outage=(100, 40), raises=False
 )
+@example(  # the heartbeats at 10 s and 20 s are lost: the feed is silent until the one at 30 s
+    closed=None, ticks=[], watches=[], outage=(1, 20), raises=False
+)
 @example(  # AAA trades every 100 s: asked again after each silence, alerted only once
     closed=None,
     ticks=[(s, "AAA") for s in range(0, 901, 100)],
@@ -1204,11 +1208,10 @@ def test_symbol_silence_resubscribes_and_alerts(
     later = [t for t in sink.stale if first_tick is not None and t > first_tick]
     if outage is None:
         assert later == []  # the heartbeat ticks: no quiet symbol is a stale feed
-    for t in later:  # only the outage silences the feed
+    for t in later:  # only the outage silences the feed, until the first heartbeat after it
         assert outage is not None
-        assert (
-            opens + timedelta(seconds=outage[0]) < t <= opens + timedelta(seconds=sum(outage) + 5)
-        )
+        resumed = -(-sum(outage) // 10) * 10  # a hidden heartbeat leaves the feed silent till then
+        assert opens + timedelta(seconds=outage[0]) < t <= opens + timedelta(seconds=resumed)
     if outage is not None and outage[1] >= 40 and closed is None and 10 <= outage[0] <= 860:
         assert later  # and an outage of 40 s or more does
 

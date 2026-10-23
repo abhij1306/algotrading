@@ -91,7 +91,7 @@ def index_closes(store: DataStore, index: str, through: date) -> list[Decimal]:
     """The closes of `index` dated on or before `through`, oldest first."""
     with store.connect() as con:
         rows = con.execute(_INDEX_SQL, [index, through]).fetchall()
-    return [Decimal(close) for _, close in rows]
+    return [require_exact(close, "close") for _, close in rows]
 
 
 def _features(store: DataStore, day: date) -> pl.DataFrame | None:

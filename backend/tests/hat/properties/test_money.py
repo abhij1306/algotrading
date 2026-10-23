@@ -1,7 +1,6 @@
 """PBT money.exact (HAT-SCH-014; PR 75c, architecture A-F7): the one Decimal boundary."""
 
-import re
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 
 import numpy as np
 import pytest
@@ -10,12 +9,12 @@ from hypothesis import strategies as st
 
 from app.hat.money import NotExactError, exact, require_exact
 
-_ASCII_NUMBER = re.compile(r"[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?", re.ASCII)
 _TEXT = st.one_of(
     st.decimals(allow_nan=True, allow_infinity=True, places=None).map(str),
     st.sampled_from(
         [
             "1e999",
+            "1e99999999999999999999",
             " 1.5 ",
             "1,234.50",
             "1,5",
@@ -54,6 +53,8 @@ VALUES = st.one_of(
 @example(value=0.1, floats=True, positive=False, places=None, grouped=False)
 @example(value=np.float64(0.1), floats=True, positive=False, places=None, grouped=False)
 @example(value="1e999", floats=False, positive=False, places=4, grouped=False)
+@example(value="1e99999999999999999999", floats=False, positive=False, places=None, grouped=False)
+@example(value="0.125", floats=False, positive=False, places=2, grouped=False)  # a tie: 0.12
 @example(value="1,5", floats=False, positive=False, places=None, grouped=False)
 @example(value="1_5", floats=False, positive=False, places=None, grouped=True)
 @example(value=0.00004, floats=True, positive=True, places=4, grouped=False)
@@ -63,7 +64,7 @@ def test_exact(
     """`exact` is the one way HAT reads an untrusted number: the answer is None or a finite
     Decimal; None, a bool, NaN, an infinity and any other object are never a number; a float
     (numpy's too) is refused unless `floats`, and is then read by its shortest text, so 0.1 is
-    exactly 0.1; text is read as written and only as an ASCII decimal number (a comma only with
+    exactly 0.1; text is read as written, in ASCII and without underscores (a comma only with
     `grouped`; never "1_5" or another script's digits); `places` rounds half-even
     to exactly that many places, and `positive` refuses what is (or rounds to) zero or less.
     `require_exact` raises `NotExactError` (an `InvalidOperation` and a `ValueError`) exactly
@@ -95,7 +96,7 @@ def test_exact(
         assert got == read
     else:
         assert got.as_tuple().exponent == -places
-        assert abs(got - read) <= Decimal(1).scaleb(-places) / 2
+        assert got == read.quantize(Decimal(1).scaleb(-places), ROUND_HALF_EVEN)
     if positive:
         assert got > 0
 
@@ -110,7 +111,7 @@ def _read_as(value: object, *, grouped: bool) -> Decimal:
         return Decimal(repr(float(value)))  # the shortest text that round-trips
     assert isinstance(value, str)
     text = (value.replace(",", "") if grouped else value).strip()
-    if not _ASCII_NUMBER.fullmatch(text):  # Decimal alone also reads "1_5" and other digits
+    if not text.isascii() or "_" in text:  # Decimal alone also reads "1_5" and other digits
         raise InvalidOperation(text)
     return Decimal(text)
 

@@ -18,7 +18,7 @@ No TLA+ model: `docs/architecture.md` lists none for this area. The ordering pro
 - `PBT bars.volume_pace` For t in (09:15, 15:30] pace(t) x (elapsed / 375 min) = V exactly, and there is no pace outside that range. Harm: an early trickle projects to a huge pace and fires false breakouts.
 - `PBT bars.volume_pace_builder` The builder gives no pace before a symbol's first tick of the session, and afterwards the pace of the day volume of every in-session tick. Harm: pace is read before any data exists.
 - `PBT bars.tick_volume_delta` A tick's volume is the change in cumulative day volume, never negative; the first tick contributes only its own print. Harm: bar volume and pace count volume traded before HAT subscribed, or go negative.
-- `PBT bars.tick_volume_fallbacks` A tick with no usable cumulative volume contributes its own last traded quantity, and the first tick of a new trade date contributes its own print rather than its total minus the previous day's total. Harm: a print is lost from bar and day volume, or a new session's opening bar is charged yesterday's volume.
+- `PBT bars.tick_volume_fallbacks` A tick with no usable cumulative volume (missing, unreadable, negative, or not a whole number, which is never truncated; PR 75c) contributes its own last traded quantity, and the first tick of a new trade date contributes its own print rather than its total minus the previous day's total. Harm: a print is lost from bar and day volume, or a new session's opening bar is charged yesterday's volume.
 - `PBT bars.feed_connection_window` The live feed may connect on a trading day from 09:00 IST to the 15:30 close and never on a weekend. Harm: the 09:00 to 09:08 gap capture receives no ticks, or the feed stays up all night.
 - `PBT bars.staleness_trip` The feed is stale at t exactly when t is in market hours and no tick arrived in (t - 30 s, t]; each transition into stale reaches the health sink once and each recovery once. Harm: orders are placed on a frozen tape, or a transient gap leaves a bot disabled.
 - `PBT bars.staleness_boundary` Silence of exactly 30 s is stale and 30 s minus one microsecond is not. Harm: the threshold is off by one.
@@ -628,6 +628,13 @@ Break: in `app/hat/data/live.py`, the same-trade-date test was removed from the 
 tests/hat/properties/test_bars.py:374: in test_tick_volume_fallbacks
 E   AssertionError: assert 0 == 1
 E    +  where 0 = Tick(symbol='AAA', ... qty=0)   (second break: line 370, the same assertion)
+```
+
+Third break: (PR 75c, CodeAnt) `live._shares` truncates a fractional volume (`int(value)` without the whole-number test).
+
+```
+E   AssertionError: assert 12 == 1
+E    +  where 12 = Tick(symbol='AAA', ... qty=12).qty
 ```
 
 ### PBT bars.no_store_keeps_no_bars

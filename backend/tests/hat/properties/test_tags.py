@@ -343,8 +343,10 @@ def test_float_intent_price_refused(intent: OrderIntent, field: str, form: type)
     price = getattr(intent, field)
     assume(price is not None)
     sdk = RecordingSdk()
+    adapter = adapter_over(sdk)
+    bad = OrderIntent(**{**intent.__dict__, field: form(price)})
     with pytest.raises(InvalidIntentError):
-        adapter_over(sdk).place_order(OrderIntent(**{**intent.__dict__, field: form(price)}))
+        adapter.place_order(bad)
     assert sdk.calls == []
     assert adapter_over(sdk).place_order(intent).status == "placed"
 
