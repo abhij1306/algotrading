@@ -53,10 +53,10 @@ Implementation and real verification come first; testing is not proof.
 - Run the change for real: the affected job, CLI or route against real data (`HAT_DATA_ROOT`,
   the local database read-only). Paste the commands and the key output in the PR under
   "Verification".
-- Size it to the change, and run it **once**, after the code is final. A refactor needs one base vs
-  head comparison on a narrow window (one bot, at most a year); an engine behaviour change needs
-  the backtest the brief names. Multi-year backtests are the orchestrator's real-data runs, not PR
-  evidence, unless the brief asks. Don't re-run after a review fix that doesn't change behaviour.
+- Size it to the change, and run it **once**, after the code is final. Never run a backtest as PR
+  verification (owner, 2026-10-23: a waste of time). A pure refactor needs no run: CI, ruff and the
+  touched plain tests are enough. A behaviour change runs the affected job, CLI or route once. Don't
+  re-run after a review fix that doesn't change behaviour.
 - Tests only where cheap and meaningful: small pure functions at their seams (money maths,
   parsers, state rules). No new TLA+ models, Hypothesis suites or deliberate-break records
   unless the brief asks. Never a test that runs a backtest, the pipeline or a full database on
