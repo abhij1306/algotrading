@@ -70,6 +70,7 @@ from ..models import (
 )
 from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
+from ..risk.modes import MODE_VALUES, Mode
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.service import evaluate_signal
 from ..time import as_utc
@@ -98,10 +99,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-SHADOW = "shadow"
-CONFIRM = "confirm"
-AUTO = "auto"
-MODES = (SHADOW, CONFIRM, AUTO)
 DECIDE = Callable[[SignalContext], RiskDecision]
 # HAT-EXEC-030: an approval card expires 5 minutes after it is sent.
 APPROVAL_WINDOW = timedelta(minutes=5)
@@ -186,7 +183,7 @@ class EntryOutcome:
     decision: RiskDecision | None
     position_id: uuid.UUID | None
     duplicate: bool = False
-    mode: str = SHADOW
+    mode: str = Mode.SHADOW
 
 
 def _decision_row(decision: RiskDecision) -> dict[str, object]:
@@ -236,7 +233,7 @@ def open_entry(
     *,
     decide: DECIDE = evaluate_signal,
     fills: FillModel = SHADOW_FILLS,
-    mode: str = SHADOW,
+    mode: str = Mode.SHADOW,
     issue: TokenIssuer | None = None,
     confidence: Confidence | None = None,
 ) -> EntryOutcome:
@@ -254,7 +251,7 @@ def open_entry(
     backtest's fixed one), else the one `signal_confidence` reads, after the duplicate check and
     before the owner's lock. An auto signal whose label is not high is routed as confirm, an
     approval card for the owner (`modes.route_mode`, HAT-EXEC-014, D149)."""
-    if mode not in MODES:
+    if mode not in MODE_VALUES:
         raise TradeError("unknown_mode")
     lock_bot(session, request.bot_id)
     bot = session.get(HatBot, request.bot_id)
@@ -285,7 +282,7 @@ def open_entry(
         bot_id=request.bot_id,
         instrument_id=request.instrument_id,
         at=request.triggered_at,
-        is_virtual=mode == SHADOW,
+        is_virtual=mode == Mode.SHADOW,
         open_positions=slots,
         entries_today=entries,
         stopouts_today=stopouts,
@@ -365,10 +362,10 @@ def _route_accepted(
     """An accepted signal by its mode: confirm writes the card, auto waits for the router and
     shadow opens the virtual position."""
     mode = signal.mode
-    if mode == CONFIRM:
+    if mode == Mode.CONFIRM:
         send_approval(session, signal, now, issue)
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
-    if mode == AUTO:
+    if mode == Mode.AUTO:
         # The router places the real order after this transaction commits (HAT-BRK-101).
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     qty, stop = int(decision.quantity or 0), decision.stop or _ZERO
@@ -421,11 +418,11 @@ def _triggered_payload(
         "mode": mode,
         "confidence": confidence,
     }
-    if request.criteria or mode != SHADOW:
+    if request.criteria or mode != Mode.SHADOW:
         payload["entry_price"] = str(entry)
     if request.criteria:
         payload["criteria"] = [dict(item) for item in request.criteria]
-    if mode != SHADOW:
+    if mode != Mode.SHADOW:
         # The percentage the Take re-check applies (HAT-EXEC-031), fixed at the trigger.
         strategy = request.context.strategy_key or ""
         pct = effective_max_chase_pct(request.context.configured_max_chase_pct, strategy)
@@ -596,7 +593,7 @@ def open_veto_trade(session: Session, signal_id: uuid.UUID, now: datetime) -> Ha
     session.refresh(signal)
     approval = session.get(HatApproval, signal_id)
     if (
-        signal.mode != CONFIRM
+        signal.mode != Mode.CONFIRM
         or approval is None
         or approval.decision not in ("skip", "expired")
         or signal.state not in (lifecycle.CANCELLED, lifecycle.EXPIRED)

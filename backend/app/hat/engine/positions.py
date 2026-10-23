@@ -17,7 +17,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
-from ..execution.modes import SHADOW
 from ..models import (
     HatBot,
     HatFill,
@@ -28,6 +27,7 @@ from ..models import (
     HatTradeResult,
 )
 from ..risk import controls
+from ..risk.modes import Mode
 from ..risk.policy import effective_version
 from ..risk.policy_service import load_versions
 from ..time import trade_date_of
@@ -96,7 +96,7 @@ def trade_r(realized_pnl: Decimal, avg_entry: Decimal, initial_stop: Decimal, qt
 
 def is_veto(signal: HatSignal, position: HatPosition) -> bool:
     """A virtual position of a confirm or auto signal is that signal's veto trade."""
-    return position.is_virtual and signal.mode != SHADOW
+    return position.is_virtual and signal.mode != Mode.SHADOW
 
 
 def raise_stop(

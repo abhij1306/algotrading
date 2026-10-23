@@ -45,6 +45,7 @@ from typing import Any
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..time import utc_now
 from . import store
 from .callbacks import ApprovalDesk, ButtonContext, Flattener, run_callback
@@ -120,7 +121,7 @@ class TelegramService:
         links: LoginLinks | None = None,
         price: PriceSource | None = None,
         feed: Callable[[], str] | None = None,
-        clock: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._client = client
         self._factory = session_factory
@@ -167,7 +168,7 @@ class TelegramService:
         written): one `error` row (chat 0, since its chat may be what is malformed) and the
         offset past it, so the next update runs. A failure here raises: the update stays."""
         logger.error("telegram update skipped: %s", type(exc).__name__)
-        now = self._clock()
+        now = utc_now(self._clock)
         with self._factory() as session:
             store.log_command(
                 session,
@@ -196,7 +197,7 @@ class TelegramService:
     # --- one update (HAT-TG-005, HAT-TG-012) ---------------------------------------------------
 
     def handle(self, update: dict[str, Any]) -> Handled:
-        now = self._clock()
+        now = utc_now(self._clock)
         update_id = _int(update.get("update_id"))
         chat_id, text, data, card_message = _chat_of(update)
         callback = update.get("callback_query")
@@ -318,7 +319,7 @@ class TelegramService:
                 kind="reply",
                 ref_id=None,
                 message_id=message_id,
-                sent_at=self._clock(),
+                sent_at=utc_now(self._clock),
             )
             session.commit()
 

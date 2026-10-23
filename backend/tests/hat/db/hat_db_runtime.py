@@ -29,6 +29,7 @@ from app.hat.ops.partitions import (
     partition_bounds,
     partition_name,
 )
+from app.hat.risk.modes import Mode
 from app.hat.schema import ensure_hat_schema
 
 if TYPE_CHECKING:
@@ -191,7 +192,7 @@ def check_runtime__domain_checks(conn: Connection) -> None:
         lambda v: b.add(conn, m.HatApproval, signal_id=new_signal(), decision=v, **approval),
     )
 
-    for mode in ("shadow", "confirm", "auto"):
+    for mode in Mode:
         accepts(conn, f"signal mode {mode}", lambda md=mode: new_signal(mode=md))
     _rejects_each(
         conn, "signal mode", ("", "Shadow", "live", "paper"), lambda v: new_signal(mode=v)

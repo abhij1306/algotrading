@@ -22,6 +22,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from ...risk.modes import Mode, ModeField
 from .base import CriterionResult, ParamModel, dec, no_data, verdict
 
 LEVEL_PIVOT = "pivot"
@@ -57,9 +58,7 @@ class EarlyVolumeParams(ParamModel):
 
 class CatalystAttachedParams(ParamModel):
     within_hours: int = Field(default=24, ge=1, le=168)
-    required_in: list[Literal["shadow", "confirm", "auto"]] = Field(
-        default_factory=lambda: ["confirm"], max_length=3
-    )
+    required_in: list[ModeField] = Field(default_factory=lambda: [Mode.CONFIRM], max_length=3)
 
 
 class PriceBreaksLevelParams(ParamModel):

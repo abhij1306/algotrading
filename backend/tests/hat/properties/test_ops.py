@@ -24,7 +24,7 @@ from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.hat.clock import SYSTEM_CLOCK
+from app.hat.clock import SYSTEM_CLOCK, FixedClock
 from app.hat.daily.intraday import Intraday
 from app.hat.daily.nightly import NightlyDeps
 from app.hat.daily.runtime import ALERT_POOL, HatRuntime, daily_jobs, subscription_alert
@@ -572,7 +572,7 @@ def test_subscription_limit_alerts(sizes: list[int], limit: int, now: datetime, 
         SubscriptionRegistry(str.upper),
         lambda _s: None,
         lambda _s: None,
-        subscription_alert(notifier, lambda: now),
+        subscription_alert(notifier, FixedClock(now)),
         limit=limit,
     )
     for size in sizes:

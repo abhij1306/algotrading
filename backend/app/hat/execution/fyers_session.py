@@ -17,17 +17,17 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from types import ModuleType
 from typing import Any
 
+from ..clock import SYSTEM_CLOCK, Clock
 from .fyers_tokens import TokenStore, TokenStoreError, token_store
 
 __all__ = ["FyersSession", "get_fyers_session", "reset_fyers_session", "sdk_model"]
 
 logger = logging.getLogger(__name__)
 
-Clock = Callable[[], datetime]
 ModelFactory = Callable[..., Any]
 
 
@@ -40,12 +40,8 @@ def sdk_model(**kwargs: str) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 F
     return module.FyersModel(**kwargs)
 
 
-def _utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
 class FyersSession:
-    """One SDK model for the token on disk. `store`, `now` and `model_factory` are injectable so a
+    """One SDK model for the token on disk. `store`, `clock` and `model_factory` are injectable so a
     test runs it on a temporary file, a frozen clock and a recording SDK stand-in; production passes
     none."""
 
@@ -53,12 +49,12 @@ class FyersSession:
         self,
         store: TokenStore | None = None,
         *,
-        now: Clock = _utc_now,
+        clock: Clock = SYSTEM_CLOCK,
         model_factory: ModelFactory = sdk_model,
         load: bool = True,
     ) -> None:
         self._store = store if store is not None else token_store
-        self._now = now
+        self._clock = clock
         self._model_factory = model_factory
         self._fyers: Any = None
         self.client_id: str | None = None
@@ -79,7 +75,7 @@ class FyersSession:
     def fyers(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
         """The SDK model, or None once the loaded token has passed its expiry."""
         if self._fyers is not None and self.token_expires_at is not None:
-            if self._now() > self.token_expires_at:
+            if self._clock.now() > self.token_expires_at:
                 logger.warning("Fyers token expired on %s; dropping it", self.token_expires_at)
                 self._drop_credentials()
         return self._fyers
@@ -110,7 +106,7 @@ class FyersSession:
             self._drop_credentials()  # the store logged why the file is not a usable token
             return
 
-        if not token.is_usable(self._now()):
+        if not token.is_usable(self._clock.now()):
             # An expired token (or one without a client id) is never installed. Warn once per file.
             if self._expired_token_mtime_ns != mtime_ns:
                 if token.client_id:
@@ -186,7 +182,7 @@ class FyersSession:
             self._connecting = False
 
     def is_token_expired(self) -> bool:
-        return self.token_expires_at is not None and self._now() > self.token_expires_at
+        return self.token_expires_at is not None and self._clock.now() > self.token_expires_at
 
     def validate_token(self) -> bool:
         """Whether the token works: a lightweight profile call, after reloading a token that

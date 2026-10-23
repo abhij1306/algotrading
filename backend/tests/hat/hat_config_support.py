@@ -7,6 +7,8 @@ from typing import Any
 
 from hypothesis import strategies as st
 
+from app.hat.risk.modes import Mode
+
 NUM = st.floats(0.5, 90, allow_nan=False, allow_infinity=False)
 POS = st.sampled_from([0.5, 1.0, 2.5, 4.0, 10.0, 30.0, 50.0])
 DAYS = st.integers(2, 60)
@@ -104,9 +106,7 @@ PARAMS: dict[str, st.SearchStrategy[dict[str, Any]]] = {
     "catalyst_attached": st.fixed_dictionaries(
         {
             "within_hours": st.integers(1, 168),
-            "required_in": st.lists(
-                st.sampled_from(["shadow", "confirm", "auto"]), max_size=3, unique=True
-            ),
+            "required_in": st.lists(st.sampled_from(tuple(Mode)), max_size=3, unique=True),
         }
     ),
     "price_breaks_level": st.fixed_dictionaries(
@@ -253,7 +253,7 @@ def raw_configs(draw: st.DrawFn) -> dict[str, Any]:
     if draw(st.booleans()):
         raw["market"] = "NSE"
     if draw(st.booleans()):
-        raw["execution_mode"] = draw(st.sampled_from(["shadow", "confirm", "auto"]))
+        raw["execution_mode"] = draw(st.sampled_from(tuple(Mode)))
     if draw(st.booleans()):
         raw.update(draw(playbook_body()))
     else:

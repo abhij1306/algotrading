@@ -63,6 +63,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .backtest.runs import backtest_evidence
+from .clock import SYSTEM_CLOCK, Clock
 from .data.calendar import session_calendar
 from .data.reference import parse_industry_csv
 from .engine.portfolio import lifecycle
@@ -115,7 +116,7 @@ class AdminDeps:
     broker_for: Callable[[str], HatBroker]
     evidence: BacktestEvidence
     env: Mapping[str, str]
-    clock: Callable[[], datetime]
+    clock: Clock
 
     @staticmethod
     def production() -> AdminDeps:  # pragma: no cover - needs the database and .env
@@ -131,7 +132,7 @@ class AdminDeps:
             broker_for=lambda name: ADAPTER_FACTORIES[name](),
             evidence=backtest_evidence,
             env=process_env(),
-            clock=utc_now,
+            clock=SYSTEM_CLOCK,
         )
 
 
@@ -396,7 +397,7 @@ def _owner(
 
 
 def _run(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[str, Any]:
-    now = deps.clock()
+    now = utc_now(deps.clock)
     result = _setup(session, args, deps, now)
     if result is None:
         result = _release(session, args, deps, now)

@@ -11,7 +11,6 @@ import logging
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -33,22 +32,6 @@ def profile_ok(user_id: str) -> dict[str, Any]:
 def token_reply(token: str) -> dict[str, Any]:
     """A `generate_token` reply as Fyers documents it: no user id in it."""
     return {"s": "ok", "code": 200, "message": "", "access_token": token, "refresh_token": "R"}
-
-
-T0 = datetime(2026, 10, 21, 4, 30, tzinfo=UTC)  # 10:00 IST on a Wednesday
-
-
-class Clock:
-    """A settable UTC clock for `FyersSession(now=...)`."""
-
-    def __init__(self, now: datetime = T0) -> None:
-        self.now = now
-
-    def __call__(self) -> datetime:
-        return self.now
-
-    def advance(self, **delta: float) -> None:
-        self.now += timedelta(**delta)
 
 
 class LogCapture(logging.Handler):

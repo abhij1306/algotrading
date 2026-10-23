@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -39,6 +39,7 @@ from hat_risk_support import CALENDAR
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.hat.clock import FixedClock
 from app.hat.daily.accounts import Desks
 from app.hat.engine import trades
 from app.hat.execution import modes
@@ -206,7 +207,7 @@ def live_check(_s: Session, _bot: uuid.UUID, _iid: uuid.UUID, _at: datetime) -> 
 
 def desks_for(engine: Engine, rig: Rig, day: date = TRADE_DAY) -> Desks:
     """A process's desks over the rig's database and broker (the restart's, or the live one),
-    their guards on trade date `day`."""
+    their clock at 10:00 IST on trade date `day`."""
     return Desks(
         sessionmaker(engine),
         lambda _account: rig.broker,
@@ -214,7 +215,7 @@ def desks_for(engine: Engine, rig: Rig, day: date = TRADE_DAY) -> Desks:
         issuer=None,
         calendar=lambda: CALENDAR,
         tick_for=lambda _s, _p: None,
-        today=lambda: day,
+        clock=FixedClock(datetime.combine(day, time(10), tzinfo=IST)),
     )
 
 

@@ -38,6 +38,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.confidence import stored_basis
 from ..models import (
     HatAnnouncement,
@@ -51,6 +52,7 @@ from ..models import (
     HatTradeResult,
 )
 from ..money import exact
+from ..risk.modes import Mode
 from ..time import as_utc, trade_date_of, utc_now
 from . import reads, render, store
 from .client import BotClient, Button, TelegramError
@@ -133,7 +135,7 @@ def _signal_message(session: Session, event: HatEvent, signer: ApprovalSigner) -
     if signal is None or signal.qty <= 0:
         return None
     approval = session.get(HatApproval, signal.id)
-    if signal.mode == "confirm" and approval is not None and approval.decision is None:
+    if signal.mode == Mode.CONFIRM and approval is not None and approval.decision is None:
         view = card_view(session, signal, approval)
         buttons = (
             (
@@ -142,7 +144,7 @@ def _signal_message(session: Session, event: HatEvent, signer: ApprovalSigner) -
             ),
         )
         return Outbound("card", signal.id, render.card_text(view), buttons)
-    if signal.mode == "shadow":
+    if signal.mode == Mode.SHADOW:
         virtual = session.scalar(
             select(HatPosition.id).where(
                 HatPosition.signal_id == signal.id, HatPosition.is_virtual.is_(True)
@@ -227,7 +229,7 @@ class EventRelay:
         client: BotClient,
         session_factory: sessionmaker[Session] | Callable[[], Session],
         signer: ApprovalSigner,
-        clock: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._client = client
         self._factory = session_factory
@@ -238,7 +240,7 @@ class EventRelay:
 
     def run_once(self) -> int:
         """Relay the settled events after the cursor; return how many messages were sent."""
-        now = self._clock()
+        now = utc_now(self._clock)
         sent = 0
         with self._factory() as session:
             if session.get(HatTelegramCursor, store.EVENTS) is None:

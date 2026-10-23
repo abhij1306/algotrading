@@ -90,6 +90,7 @@ ADMIN_IMPORTS = {
     "sqlalchemy.exc",
     "sqlalchemy.orm",
     "app.database",
+    "app.hat.clock",  # the Clock seam: reads no table (PR 75e)
     "app.hat.backtest.runs",
     "app.hat.data.calendar",
     "app.hat.data.reference",

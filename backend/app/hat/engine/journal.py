@@ -38,8 +38,8 @@ from sqlalchemy.sql.expression import Exists
 
 from ..events import Actor
 from ..events import record as append
-from ..execution.modes import SHADOW
 from ..models import HatApproval, HatEvent, HatPosition, HatSignal
+from ..risk.modes import Mode
 from . import lifecycle
 
 __all__ = [
@@ -189,7 +189,7 @@ def _own_position_open() -> Exists:
     return exists().where(
         HatPosition.signal_id == HatSignal.id,
         HatPosition.state != lifecycle.CLOSED,
-        or_(HatPosition.is_virtual.is_(False), HatSignal.mode == SHADOW),
+        or_(HatPosition.is_virtual.is_(False), HatSignal.mode == Mode.SHADOW),
     )
 
 
@@ -213,7 +213,7 @@ def mismatches(session: Session) -> list[Mismatch]:
         .join(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(
             HatPosition.is_virtual.is_(True),
-            HatSignal.mode != SHADOW,
+            HatSignal.mode != Mode.SHADOW,
             HatPosition.state != lifecycle.CLOSED,
         )
         .order_by(HatPosition.signal_id)
@@ -231,7 +231,7 @@ def _trade_mismatch(session: Session, signal: HatSignal) -> Mismatch | None:
     """The signal's own trade against its fold; its own position must hold the signal's state."""
     stored, disagrees = signal.state, False
     for position in session.scalars(select(HatPosition).where(HatPosition.signal_id == signal.id)):
-        if position.is_virtual and signal.mode != SHADOW:
+        if position.is_virtual and signal.mode != Mode.SHADOW:
             continue  # its veto trade, checked on its own
         held = signal.state in lifecycle.POSITION_STATES or position.state != lifecycle.CLOSED
         if held and position.state != signal.state:

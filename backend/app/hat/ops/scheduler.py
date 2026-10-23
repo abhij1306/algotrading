@@ -35,6 +35,7 @@ from enum import StrEnum
 
 from sqlalchemy import select
 
+from ..clock import SYSTEM_CLOCK, Clock
 from ..models import HatJobRun
 from ..time import IST, trade_date_of, utc_now
 from .jobs import JobResult, OnFinish, RunStatus, SessionFactory, run_job
@@ -147,7 +148,7 @@ class HatScheduler:
         self,
         jobs: Sequence[ScheduledJob],
         session_factory: SessionFactory | None = None,
-        now: Callable[[], datetime] = utc_now,
+        clock: Clock = SYSTEM_CLOCK,
         *,
         trading: TradingDay | None = None,
     ) -> None:
@@ -156,7 +157,7 @@ class HatScheduler:
             raise ValueError("duplicate scheduled job name")
         self._jobs = tuple(jobs)
         self._session_factory = session_factory
-        self._now = now
+        self._clock = clock
         self._trading: TradingDay = trading or (lambda _day: True)
         self._attempted: dict[tuple[str, date], datetime] = {}
         self._running: dict[str, asyncio.Task[None]] = {}
@@ -215,13 +216,13 @@ class HatScheduler:
             logger.exception("scheduled job could not run", extra={"job": job.name})
         finally:
             # the retry waits `retry_after` from the end of a failed run, not from its start
-            ended = started + ONE_DAY if succeeded else self._now()
+            ended = started + ONE_DAY if succeeded else utc_now(self._clock)
             self._attempted[(job.name, trade_date)] = ended
             self._running.pop(job.name, None)
 
     async def tick(self) -> list[asyncio.Task[None]]:
         """Start every due job as its own task; return the tasks started."""
-        now = self._now()
+        now = utc_now(self._clock)
         today = trade_date_of(now)
         days = (today, today - ONE_DAY)
         succeeded = {

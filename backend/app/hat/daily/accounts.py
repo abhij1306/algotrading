@@ -32,7 +32,7 @@ from typing import cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..clock import Clock
+from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.trades import TokenIssuer
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.entry_timeout import EntryWatch
@@ -208,7 +208,7 @@ class Desks:
         issuer: TokenIssuer | None,
         calendar: Callable[[], SessionCalendar | None],
         tick_for: TickFor,
-        today: Callable[[], date] | None = None,
+        clock: Clock = SYSTEM_CLOCK,
         band: SaleBand | None = None,
         resend: bool = False,
         page_after: int = 3,
@@ -218,7 +218,7 @@ class Desks:
         self._band = band
         self._resend = resend
         self._page_after = page_after
-        self._today = today  # the guards' trade date (the wall clock's when None)
+        self._clock = clock  # the guards' trade date and every order stamp
         self._registry = SessionRegistry()
         self.by_account: dict[uuid.UUID, AccountDesk] = {}
         # the entries a crash left unplaced (auto in Triggered, a Take not yet placed) and those
@@ -254,9 +254,14 @@ class Desks:
     ) -> AccountDesk:
         owner = self._registry.acquire(account_id)
         broker = cast(HatBroker, OwnedBroker(owner, broker))
-        guard = ExecutionGuard() if self._today is None else ExecutionGuard(today=self._today)
-        reconciler = ReconciliationService(broker, guard, notifier_sink(notifier), notifier)
-        stops = StopDesk(broker, guard, tick_for=tick_for, calendar=calendar, notifier=notifier)
+        clock = self._clock
+        guard = ExecutionGuard(today=lambda: trade_date_of(clock.now()))
+        reconciler = ReconciliationService(
+            broker, guard, notifier_sink(notifier, clock), notifier, clock=clock
+        )
+        stops = StopDesk(
+            broker, guard, tick_for=tick_for, calendar=calendar, notifier=notifier, clock=clock
+        )
         fills = FillSync(
             broker,
             stops,
@@ -264,6 +269,7 @@ class Desks:
             band=self._band,
             resend=self._resend,
             page_after=self._page_after,
+            clock=clock,
         )
         manager = TradeManager(
             broker,
@@ -274,8 +280,9 @@ class Desks:
             notifier=notifier,
             band=self._band,
             resend=self._resend,
+            clock=clock,
         )
-        router = ExecutionRouter(broker, guard, reconciler, notifier, issuer=issuer)
+        router = ExecutionRouter(broker, guard, reconciler, notifier, issuer=issuer, clock=clock)
         return AccountDesk(
             account_id,
             owner,
@@ -462,7 +469,7 @@ def account_jobs(
     for account_id, manager in desks.managers():
         jobs.extend(
             trade_jobs(
-                manager, session_factory, account_id, views, clock.now, exdate_check=exdate_check
+                manager, session_factory, account_id, views, clock, exdate_check=exdate_check
             )
         )
 

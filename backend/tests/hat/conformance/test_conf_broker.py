@@ -24,6 +24,7 @@ from app.hat.execution.broker import GttRequest, HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker, gtt_payload
 from app.hat.execution.tags import encode_tag
 from app.hat.models import HatBot
+from app.hat.risk.modes import Mode
 
 HAT_ROOT = APP_ROOT / "hat"
 DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
@@ -370,15 +371,15 @@ def test_exec__default_mode_confirm() -> None:
                 broker_account_id=account_id,
                 execution_mode=mode,
             )
-    assert inspect.signature(trades.open_entry).parameters["mode"].default == modes.SHADOW
+    assert inspect.signature(trades.open_entry).parameters["mode"].default == Mode.SHADOW
     ready = modes.Gates(
         "active", {"gtt_delivery": True}, ddpi_confirmed=True, weights_confirmed=True
     )
     for unknown in ("", "live", "AUTO"):
-        assert modes.effective_mode(unknown, ready) == modes.SHADOW
+        assert modes.capability_gated(unknown, ready) == Mode.SHADOW
     for missing in ("ddpi_confirmed", "weights_confirmed"):
         gates = replace(ready, **{missing: False})
-        assert modes.effective_mode(modes.CONFIRM, gates) == modes.SHADOW
+        assert modes.capability_gated(Mode.CONFIRM, gates) == Mode.SHADOW
 
 
 WRITES_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "fyers_live_writes.json"

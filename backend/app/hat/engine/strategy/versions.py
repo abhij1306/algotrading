@@ -38,6 +38,7 @@ from ...models import (
     HatStrategy,
     HatStrategyVersion,
 )
+from ...risk.modes import Mode
 from ...risk.sessions import SessionCalendar, SessionState
 from ...time import as_utc, trade_date_of
 from ..criteria import REGISTRY
@@ -401,14 +402,14 @@ def create_bot(
     runs shadow until its sleeve is Live and the account and policy gates pass
     (`execution.modes`); a mode change goes through the mode-change service, never through
     creation."""
-    if execution_mode not in (None, "confirm"):
+    if execution_mode not in (None, Mode.CONFIRM):
         raise VersionError("new_bot_starts_in_confirm")
     bot = HatBot(
         id=uuid.uuid4(),
         user_id=user_id,
         strategy_id=strategy_id,
         broker_account_id=broker_account_id,
-        execution_mode="confirm",
+        execution_mode=Mode.CONFIRM,
         status="active",
         lifecycle_state="research",
         risk_cluster=risk_cluster,

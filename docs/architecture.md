@@ -64,6 +64,10 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   (`tests/hat/fakes/broker.py`) is the only fake.
 - **One session owner per broker account** (`SessionRegistry.acquire`), one token store
   (`fyers_tokens.token_store`), one live socket (`LiveFeed`, built only in `main.py`).
+- **One clock, one mode:** code that needs "now" takes a `clock.Clock` (`SYSTEM_CLOCK` in
+  production); `send_order`, `adopt_broker_order` and `ReconciliationService` stamp from it.
+  `risk/modes.py:Mode` is the only spelling of shadow/confirm/auto (the schema CHECKs read it);
+  `queued_mode_at` is the queued change in force, `execution/modes.py:capability_gated` the gate.
 - **Gates:** `execution/modes.py:gate_refusal` decides confirm/auto vs shadow; `ExecutionGuard`
   holds the per-trade-date reconciliation gate; kill switches live in `risk/kill.py`, `controls.py`.
 - **Configs are data:** strategy versions are immutable JSONB with a canonical hash; the risk policy

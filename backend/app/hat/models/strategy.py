@@ -24,6 +24,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapper
 
 from ...base import Base
+from ..risk.modes import Mode
 from ..risk.policy import require_cooling_off
 from ._types import VERSION_STATUSES, JsonB, Timestamptz, fk, in_values, now_utc, uuid_pk
 
@@ -182,7 +183,7 @@ class HatBot(Base):
     __tablename__ = "hat_bot"
     __table_args__ = (
         CheckConstraint(
-            in_values("execution_mode", ("shadow", "confirm", "auto")),
+            in_values("execution_mode", Mode),
             name="ck_hat_bot_execution_mode",
         ),
         CheckConstraint(
@@ -204,7 +205,9 @@ class HatBot(Base):
     broker_account_id = fk("hat_broker_account.id")
     # Confirm by default (HAT-DEC-B2, D130/D132): the mode the owner wants. It routes shadow
     # until the sleeve is Live and the account and policy gates pass (`execution.modes`).
-    execution_mode = Column(Text, nullable=False, default="confirm", server_default="confirm")
+    execution_mode = Column(
+        Text, nullable=False, default=Mode.CONFIRM, server_default=Mode.CONFIRM.value
+    )
     status = Column(Text, nullable=False)
     universe_version_id = fk("hat_universe_version.id", nullable=True)
     lifecycle_state = Column(Text, nullable=False)
@@ -214,9 +217,7 @@ class HatBot(Base):
 class HatModeChange(Base):
     __tablename__ = "hat_mode_change"
     __table_args__ = (
-        CheckConstraint(
-            in_values("to_mode", ("shadow", "confirm", "auto")), name="ck_hat_mode_change_to_mode"
-        ),
+        CheckConstraint(in_values("to_mode", Mode), name="ck_hat_mode_change_to_mode"),
     )
 
     id = uuid_pk()
