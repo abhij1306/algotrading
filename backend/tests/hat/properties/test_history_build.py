@@ -3,31 +3,25 @@ generated bhavcopy zips in both formats across the 8 Jul 2024 switch. Completene
 (instrument, date), a missing day reported and left empty, and a repeated or resumed run changing
 nothing."""
 
-import hashlib
-import io
 import itertools
 import tempfile
 from collections.abc import Iterator, Mapping
-from datetime import date, time, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from hat_bhav_support import prices, render_old, render_udiff
-from hat_mcp_support import ScriptedTransport, seed_market
-from hat_support import ROOT_SOURCES, memory_engine, no_network, operator_env
+from hat_mcp_support import ScriptedTransport
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from sqlalchemy.orm import sessionmaker
 
 from app.hat.data import history_build
 from app.hat.data.bhavcopy import (
     BhavRow,
     DayReconciliation,
     DownloadReport,
-    Fetcher,
     FetchResult,
     archive_url,
     weekdays,
@@ -41,25 +35,21 @@ from app.hat.data.history_build import (
     DictCatalog,
     IndexPoint,
     Pacing,
-    Validation,
     archive_fill_source,
     history_build_job,
     index_archive_name,
     load_index_history,
     mcp_close_source,
     mcp_index_source,
-    run_history_build,
 )
 from app.hat.data.mcp_client import CODE_BAD_RESPONSE, CODE_TIMEOUT, McpClient, McpError
 from app.hat.data.store import (
-    DATASET_BARS,
     BarRow,
     DataStore,
     IndexRow,
     PartitionReport,
     index_coverage,
 )
-from app.hat.models import HatMarket, HatTradingCalendar
 from app.hat.ops.jobs import JobError
 
 WINDOW = weekdays(date(2024, 6, 24), date(2024, 7, 19))
@@ -109,100 +99,6 @@ def _fetcher(world: dict[date, list[BhavRow] | None], requests: list[date]):  # 
     return fetch
 
 
-def _files(root: Path) -> dict[str, str]:
-    """Path to content digest: a failing comparison must print short hashes, not Parquet bytes
-    (pytest's diff of large byte strings exhausts memory)."""
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file()
-    }
-
-
-@given(world=eras(), holiday_pick=st.sets(st.sampled_from(WINDOW)))
-@settings(max_examples=40)
-def test_build_offline_end_to_end(
-    world: dict[date, list[BhavRow] | None], holiday_pick: set[date]
-) -> None:
-    """The offline build writes exactly the rows each file holds (same normalised rows on both
-    sides of 8 Jul 2024), one per (instrument, date); a day with no file stays empty and is
-    reported as an explained holiday or a gap; a resumed run requests nothing and a full rerun
-    rewrites identical data."""
-    missing = {d for d, rows in world.items() if rows is None}
-    with tempfile.TemporaryDirectory() as tmp:
-        store = DataStore(Path(tmp))
-        catalog = DictCatalog(auto=True)
-        asked: list[date] = []
-        args = {
-            "store": store,
-            "catalog": catalog,
-            "start": WINDOW[0],
-            "end": WINDOW[-1],
-            "holidays": holiday_pick,
-            "pacing": Pacing(interval=0),
-        }
-        report = run_history_build(fetch=_fetcher(world, asked), resume=True, **args)  # type: ignore[arg-type]
-        assert sorted(asked) == WINDOW
-        assert len(asked) == len(set(asked))
-        assert report.unresolved == set()
-        assert report.problems == {}
-        assert set(report.days.holidays) == missing & holiday_pick
-        assert set(report.days.gaps) == missing - holiday_pick
-        assert report.days.unaccounted == []
-        assert set(report.partitions.missing) == missing - holiday_pick  # only gaps are missing
-        con = store.connect()
-        got = con.execute(
-            "SELECT date, isin, series, symbol, open, high, low, close, prev_close, volume, "
-            "traded_value FROM bars_daily"
-        ).fetchall()
-        keys = con.execute(
-            "SELECT instrument_id, date, count(*) FROM bars_daily_raw GROUP BY ALL"
-        ).fetchall()
-        con.close()
-        assert all(n == 1 for *_, n in keys)
-        expected = [
-            (
-                d,
-                r.isin,
-                r.series,
-                r.symbol,
-                r.open,
-                r.high,
-                r.low,
-                r.close,
-                r.prev_close,
-                r.volume,
-                r.traded_value,
-            )
-            for d, rows in world.items()
-            for r in rows or []
-        ]
-        assert sorted(got) == sorted(expected)
-        for day in missing:
-            assert store.read_bars(day).height == 0  # never filled
-        assert sorted(store.days(DATASET_BARS)) == sorted(set(WINDOW) - missing)
-        snapshot = _files(store.root)
-
-        again: list[date] = []
-        run_history_build(fetch=_fetcher(world, again), resume=True, **args)  # type: ignore[arg-type]
-        assert again == []
-        assert _files(store.root) == snapshot
-
-        full: list[date] = []
-        run_history_build(fetch=_fetcher(world, full), resume=False, **args)  # type: ignore[arg-type]
-        assert sorted(full) == sorted(missing)  # only the days with no file are asked again
-        assert _files(store.root) == snapshot
-
-        body = history_build_job(fetch=_fetcher(world, []), resume=True, **args)
-        if missing - holiday_pick or any(r == [] for r in world.values()):
-            with pytest.raises(JobError):
-                body()  # gaps and empty files are failures (checked in full below)
-        else:
-            first = body()
-            assert body() == first
-        assert _files(store.root) == snapshot
-
-
 @given(
     world=eras(),
     holiday_pick=st.sets(st.sampled_from(WINDOW)),
@@ -239,25 +135,6 @@ def test_job_fails_on_any_gap_or_failed_download(
                 body()
         else:
             assert body().rows >= 0
-
-
-def test_build_offline_unresolved_security_is_reported() -> None:
-    """A security the catalog cannot place is reported and its row is not written."""
-    day = date(2024, 7, 8)
-    row = BhavRow(day, "INE000000001", "EQ", "AAA", *(Decimal("10"),) * 5, 100, Decimal("1000"))
-    with tempfile.TemporaryDirectory() as tmp:
-        store = DataStore(Path(tmp))
-        report = run_history_build(
-            store=store,
-            fetch=lambda url: FetchResult("ok", render_udiff(day, [row])),
-            catalog=DictCatalog(),
-            start=day,
-            end=day,
-            pacing=Pacing(interval=0),
-        )
-        assert report.unresolved == {("INE000000001", "EQ")}
-        assert report.rows_written == 0
-        assert store.read_bars(day).height == 0
 
 
 # --- the MCP history wrappers ---------------------------------------
@@ -482,69 +359,6 @@ def test_archive_fills_before_mcp_depth(
         assert sorted(d for d, _t in asked) == sorted(d for d in bars if d < before and d in failed)
 
 
-ISOLATION_DAYS = weekdays(date(2024, 6, 24), date(2024, 6, 28))
-
-
-@given(
-    failing=st.dictionaries(
-        st.sampled_from(INDEX_NAMES), st.tuples(st.booleans(), st.integers(0, 5))
-    ),
-)
-@settings(max_examples=30, deadline=None)
-def test_index_failure_isolated(failing: dict[str, tuple[bool, int]]) -> None:
-    """An index whose source fails (an MCP error, or anything else) is recorded with a
-    stable code and keeps the rows it gave before failing; every other index loads in full, the
-    validation and the report still run, and the run (exit code and job) needs the operator
-    exactly when an index failed."""
-
-    def source(name: str, start: date, end: date) -> Iterator[IndexPoint]:
-        mcp, after = failing.get(name, (False, len(ISOLATION_DAYS)))
-        for day in weekdays(start, end)[:after]:
-            v = Decimal(day.toordinal())
-            yield IndexPoint(day, IndexRow(name, v, v, v, v))
-        if name in failing:
-            raise McpError(CODE_BAD_RESPONSE) if mcp else RuntimeError("upstream text")
-
-    with tempfile.TemporaryDirectory() as tmp:
-        args: dict[str, Any] = {
-            "store": DataStore(Path(tmp)),
-            "fetch": lambda _url: FetchResult("not_found"),
-            "catalog": DictCatalog(auto=True),
-            "start": ISOLATION_DAYS[0],
-            "end": ISOLATION_DAYS[-1],
-            "holidays": set(ISOLATION_DAYS),  # no gaps: only the index can fail the run
-            "pacing": Pacing(interval=0),
-            "index_source": source,
-            "index_starts": dict.fromkeys(INDEX_NAMES, ISOLATION_DAYS[0]),
-            "validation": Validation(lambda _s, _d: None),
-        }
-        report = run_history_build(**args)
-        assert report.index is not None
-        assert report.validation is not None
-        assert report.index.failed == {
-            n: CODE_BAD_RESPONSE if mcp else "index_source_failed"
-            for n, (mcp, _after) in failing.items()
-        }
-        loaded = load_index_history(args["store"], lambda *_a: iter(()), *ISOLATION_DAYS[::4])
-        assert loaded.failed == {}
-        con = args["store"].connect()
-        rows = con.execute("SELECT index_name, count(*) FROM index_daily GROUP BY 1").fetchall()
-        con.close()
-        want = {
-            n: min(failing.get(n, (False, len(ISOLATION_DAYS)))[1], len(ISOLATION_DAYS))
-            for n in INDEX_NAMES
-        }
-        assert dict(rows) == {n: k for n, k in want.items() if k}
-        assert history_build._exit_code(report) == (1 if failing else 0)
-        assert ("failed {}" in history_build._summary(report)) is not bool(failing)
-        job = history_build_job(**args)
-        if failing:
-            with pytest.raises(JobError, match="history_index_incomplete"):
-                job()
-        else:
-            job()
-
-
 @given(
     close=st.decimals("1", "9999", places=2),
     other=st.sampled_from(["no_row", "other_day", "bad_close", "ok"]),
@@ -582,113 +396,6 @@ def test_mcp_corporate_actions_page(has_warning: bool, error: bool) -> None:
         page = client.corporate_actions("INFY", start, end)
         assert page.actions == []
         assert page.incomplete is has_warning
-
-
-@given(
-    marks=st.dictionaries(st.sampled_from(WINDOW), st.booleans(), max_size=len(WINDOW)),
-    other_market=st.booleans(),
-)
-@settings(max_examples=25, deadline=None)
-def test_cli_passes_calendar_holidays(marks: dict[date, bool], other_market: bool) -> None:
-    """The command line hands the build the NSE calendar's non-trading dates (not the
-    calendar's `holidays` method). Driving `main` over a stored calendar and a window where no
-    day has a file, every NSE holiday is reported as an explained holiday and every other
-    weekday as a gap, and `main` exits 1 exactly when there is a gap; another market's calendar
-    rows never count. Name lookups and sockets are blocked and recorded, so a patch that stops
-    applying fails the property instead of reaching NSE."""
-    with tempfile.TemporaryDirectory() as tmp:
-        code, report, _out, _root = _drive_main(marks, other_market, Path(tmp), "environment")
-    holidays = {d for d, trading in marks.items() if not trading}
-    assert set(report.days.holidays) == holidays
-    assert set(report.days.gaps) == set(WINDOW) - holidays
-    assert code == (1 if report.days.gaps else 0)  # a gap needs the operator; holidays do not
-
-
-@given(
-    marks=st.dictionaries(st.sampled_from(WINDOW), st.booleans(), max_size=len(WINDOW)),
-    source=st.sampled_from(ROOT_SOURCES),
-)
-@settings(max_examples=25, deadline=None)
-def test_cli_root_and_report(marks: dict[date, bool], source: str) -> None:
-    """The command line resolves the data root after `.env` is loaded, so a root set
-    only in `.env` counts, one in the environment wins and a blank one means the default; and
-    the summary it prints is also appended to `history_build/report-YYYY-MM-DD.txt` under that
-    root, the only directory the run writes to."""
-    with tempfile.TemporaryDirectory() as tmp:
-        scratch = Path(tmp)
-        _code, _report, out, root = _drive_main(marks, False, scratch, source)
-        written = sorted(p.relative_to(scratch).as_posix() for p in scratch.rglob("*.*"))
-        assert {p.name for p in scratch.iterdir()} == {".env", root.name}, written
-        assert (root / "build" / "state.json").is_file(), written  # the store got the root too
-        saved = list((root / "history_build").glob("report-*.txt"))
-        assert len(saved) == 1, written
-        assert saved[0].read_text(encoding="utf-8").endswith(out)
-
-
-def _drive_main(
-    marks: dict[date, bool], other_market: bool, scratch: Path, source: str
-) -> tuple[int, BuildReport, str, Path]:
-    """`main` over a stored calendar of `marks` (and BSE rows that close every day of WINDOW
-    when `other_market`), the real build with no file for any day, the data root from `source`
-    in `scratch`: the exit code, the build's report, what was printed and the root it must use."""
-    engine = memory_engine()
-    factory = sessionmaker(bind=engine)
-    with factory() as session:
-        market_id = seed_market(session)
-        rows = [
-            HatTradingCalendar(market_id=market_id, day=d, is_trading=t) for d, t in marks.items()
-        ]
-        if other_market:
-            bse = HatMarket(
-                code="BSE",
-                timezone="Asia/Kolkata",
-                currency="INR",
-                session_open=time(9, 15),
-                session_close=time(15, 30),
-            )
-            session.add(bse)
-            session.flush()
-            rows += [HatTradingCalendar(market_id=bse.id, day=d, is_trading=False) for d in WINDOW]
-        session.add_all(rows)
-        session.commit()
-    reports: list[BuildReport] = []
-    real_build = history_build.run_history_build
-
-    def recording_build(**kwargs: Any) -> BuildReport:  # noqa: ANN401 - main's keyword arguments
-        report = real_build(**kwargs)
-        reports.append(report)
-        return report
-
-    def nothing_fetcher(timeout: float = 30.0) -> Fetcher:
-        return lambda _url: FetchResult("not_found")
-
-    argv = [
-        "--from",
-        WINDOW[0].isoformat(),
-        "--to",
-        WINDOW[-1].isoformat(),
-        "--interval",
-        "0",
-        "--skip-actions",
-        "--skip-index",
-        "--skip-validation",
-    ]
-    with (
-        operator_env(scratch, source) as root,
-        patch("app.database.SessionLocal", factory),
-        patch.object(history_build, "run_history_build", recording_build),
-        patch("app.hat.data.bhavcopy.http_fetcher", nothing_fetcher),
-        patch("app.hat.data.mcp_client.client_from_env", return_value=None),
-        patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
-        patch("sys.stdout", new_callable=io.StringIO) as out,
-        # whatever is patched above, nothing may reach the network
-        no_network() as reached,
-    ):
-        code = history_build.main(argv)
-    engine.dispose()
-    assert reached == []
-    [report] = reports
-    return code, report, out.getvalue(), root
 
 
 @given(

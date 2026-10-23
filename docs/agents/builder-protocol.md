@@ -19,7 +19,8 @@ architecture, invariants, CLAUDE.md, decisions -- and they stay compact.
   credential files.
 - Never ask CodeAnt to re-review, in any form. CodeAnt Nitpicks need no reply, but a real bug is
   fixed in this PR wherever it was spotted (a Nitpick, your own review, a test); never defer one.
-- No example-based unit tests for HAT code (see Verification).
+- No tests that run a backtest, the pipeline or a full database on generated data (see
+  Verification).
 - **Legacy is debt.** Where old code or tests conflict with the invariants and decisions, change
   or delete them; no shims. List it under "Legacy changes" in the PR.
 - If the brief is wrong or blocked, pick the option most faithful to `docs/invariants.md` and
@@ -40,34 +41,27 @@ If you can't get there, end with `BLOCKED #<n>: <reason and what you tried>`.
 
 ## Verification
 
-Prove the invariants on the real code, following
-https://raw.githubusercontent.com/cursor/plugins/main/pstack/skills/create-formal-verification-skill/SKILL.md:
+Implementation and real verification come first; testing is not proof.
 
-- ordering, concurrency and state machines: a TLA+ model in `verification/tla/` with broken `.cfg`
-  variants next to it;
-- every-input promises: Hypothesis properties under `backend/tests/hat/properties/`;
-- database invariants: `@pytest.mark.postgres` checks.
-
-Each check must be seen failing on a deliberately broken variant before you trust it; record the
-breaks in the PR and the area's `.claude/skills/verify-<area>/SKILL.md`. A property the code
-breaks is a finding: fix the code, never weaken the property.
+- Read your diff against the invariants it touches (`trading-safety` for the order path).
+- Run the change for real: the affected job, CLI or route against real data (`HAT_DATA_ROOT`,
+  the local database read-only), and a real backtest on real data for engine changes. Paste the
+  commands and the key output in the PR under "Verification".
+- Tests only where cheap and meaningful: small pure functions at their seams (money maths,
+  parsers, state rules). No new TLA+ models, Hypothesis suites or deliberate-break records
+  unless the brief asks. Never a test that runs a backtest, the pipeline or a full database on
+  generated data. If an existing test fights a correct change, delete or fix the test.
 
 ## How to work fast
 
-- **One push, then one fix round.** Open the PR only when the work is complete and checked
-  locally. Before that first push, run a fresh-context review of the whole diff (`/code-review`)
-  and fix what it finds; that is where CodeAnt's real bugs get caught early. After the push, wait
+- **One push, then one fix round.** Open the PR only when the work is complete and verified.
+  After the push, wait
   until CI, Sonar and CodeAnt have all finished, then fix everything in one commit.
 - **Pre-push check**, from the worktree root: `ruff format --check .`, `ruff check .`, then from
-  `backend/` the test files you touched plus `tests/hat/conformance`, `-m postgres` files if you
-  touched schema, and `pnpm check` if you touched the frontend. CI runs everything else.
-  Last, `python backend/tests/hat/conformance/hat_conf_skills.py --stale` names the `verify-*`
-  skills whose covered files you changed: make sure each one's Properties and Coverage still
-  describe the code, then record it with `--refresh`. Don't rerun its whole Run command; CI does.
+  `backend/` the test files you touched plus `tests/hat/conformance`, and `pnpm check` if you
+  touched the frontend. CI runs everything else.
 - **Never run full suites locally.** No full `pytest`, no `CI=1` property runs, no run of every
-  TLC model, not before the push, not after a rebase. CI runs all of them on every push. Run TLC
-  only for a model you changed, and a break only for a check you added or changed. After a
-  rebase, rerun the pre-push check above and nothing more.
+  TLC model. CI runs them. After a rebase, rerun the pre-push check above and nothing more.
 - **Tests while iterating:** run the one test you are working on, default Hypothesis profile.
 - **Context:** keep `HANDOFF.md` in your worktree current (goal, done, next, open findings) so a
   compaction or a fresh session resumes from it instead of re-reading. Send code
@@ -76,14 +70,13 @@ breaks is a finding: fix the code, never weaken the property.
 - **Waiting:** wait on CI with `gh pr checks <n> --watch` under `run_in_background`; never
   foreground `sleep`, never `pgrep -f` loops (they match themselves and never end).
 - **Rebase** only when the orchestrator says you're next to merge: rebase onto `origin/main`,
-  keep both sides in shared files (`docs/invariants.md`, verify skills), rerun the pre-push
-  check (including the `--stale` step), `git push --force-with-lease`, report READY again.
+  keep both sides in shared files, rerun the pre-push check, `git push --force-with-lease`, report READY again.
 
 ## PR
 
 - Branch `hat/<slug>`. Conventional commits; end each commit message with
   `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
-- Body: summary, verification and breaks, deviations, legacy changes, follow-ups. End
+- Body: summary, verification (real-run evidence), deviations, legacy changes, follow-ups. End
   with `🤖 Generated with [Claude Code](https://claude.com/claude-code)`.
 - Bookkeeping: delete any plan or spec you implemented.
 - Sonar (public, no token): gate
@@ -95,5 +88,5 @@ breaks is a finding: fix the code, never weaken the property.
 
 ## Report
 
-Above the final line: PR URL, what was built, verification and breaks, how each review
+Above the final line: PR URL, what was built, verification, how each review
 finding was handled, deviations, follow-ups. Keep it short.

@@ -18,7 +18,6 @@ from hypothesis import strategies as st
 from app.hat.engine.criteria import CriterionResult, EvalContext, evaluate
 
 EPOCH = date(2024, 1, 1)
-REASON_NO_DATA = "no_data"
 
 
 class Lcg:
@@ -141,13 +140,6 @@ def contract(code: str, params: dict, ctx: EvalContext, rng: Lcg) -> CriterionRe
     assert 0.0 <= first.score <= 1.0
     assert first.passed == (first.reason == "ok")
     return first
-
-
-def fails_closed(code: str, params: dict, ctx: EvalContext) -> bool:
-    """With every bar removed the criterion fails closed with reason `no_data`."""
-    empty = dataclasses.replace(ctx, bars=ctx.bars.head(0))
-    result = evaluate(code, params, empty)
-    return (not result.passed) and result.reason == REASON_NO_DATA
 
 
 def universe_frame(rows: list[tuple[str, dict[str, float | None]]]) -> pl.DataFrame:

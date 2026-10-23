@@ -2,19 +2,16 @@
 text."""
 
 import logging
-from datetime import date
 from pathlib import Path
 from typing import Any
 
-from hat_mcp_support import ScriptedTransport, StreamableServer, fixture_json, reference_engine
+from hat_mcp_support import ScriptedTransport, fixture_json
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
-from sqlalchemy import select
 
 from app.hat.data import mcp_client
 from app.hat.data.mcp_client import (
     MAX_ATTEMPTS,
-    CallLog,
     HttpTransport,
     McpClient,
     McpConfigError,
@@ -23,8 +20,6 @@ from app.hat.data.mcp_client import (
     backoff_delay,
     unwrap_result,
 )
-from app.hat.models import HatJobRun
-from app.hat.ops.jobs import JobResult, run_job, session_factory_for
 
 GOOD = fixture_json("mcp_bulk_quote.json")
 RECORDED = {  # replies of the live servers (the breadth one recorded 2026-10-22)
@@ -92,46 +87,6 @@ def test_retry_bounded(script: list[Any], base: float) -> None:
 @given(retry=st.integers(1, 3), base=st.floats(min_value=0.001, max_value=10))
 def test_retry_bounded_backoff_grows(retry: int, base: float) -> None:
     assert backoff_delay(retry + 1, base) > backoff_delay(retry, base) > 0
-
-
-@given(script=outcomes, symbols=st.integers(0, 50))
-def test_call_logged(script: list[Any], symbols: int) -> None:
-    """Every attempt, successful, retried or failed, writes exactly one record with the tool,
-    the symbol count and the returned date (or the failure code), and `hat_job_run.calls`
-    equals the attempts."""
-    log = CallLog()
-    transport = ScriptedTransport(script)
-    client = McpClient(transport, sleep=lambda _s: None, log=log)
-    engine = reference_engine()
-
-    def body() -> JobResult:
-        try:
-            client.call(
-                "nse-bhavcopy",
-                "get_bulk_quote",
-                {"symbols": []},
-                symbol_count=symbols,
-                date_of=lambda d: date.fromisoformat(d["quotes"][0]["date"]),
-            )
-        except McpError:
-            pass
-        return JobResult(calls=log.calls)
-
-    outcome = run_job(
-        "ingest.nightly", date(2026, 10, 19), body, session_factory=session_factory_for(engine)
-    )
-    assert len(log.records) == len(transport.calls) == outcome.calls
-    with session_factory_for(engine)() as session:
-        assert session.scalar(select(HatJobRun.calls)) == len(transport.calls)
-    for number, record in enumerate(log.records, start=1):
-        assert record.tool == "get_bulk_quote"
-        assert record.symbol_count == symbols
-        assert record.attempt == number
-        if record.failure is None:
-            assert record.returned_date == date(2026, 10, 19)
-        else:
-            assert record.failure in STABLE_TEXT
-            assert record.returned_date is None
 
 
 def leaks(payload: str, *texts: str) -> bool:
@@ -229,52 +184,3 @@ def test_retry_bounded_config_error_not_retried(failures: int) -> None:
     else:
         raise AssertionError("a configuration error must raise")
     assert len(transport.calls) == failures + 1
-
-
-@given(
-    plan=st.lists(
-        st.tuples(st.sampled_from(sorted(RECORDED)), st.booleans(), st.booleans()),
-        min_size=1,
-        max_size=8,
-    ),
-    handshake_losses=st.lists(st.booleans(), max_size=12),
-)
-def test_session_handshake(
-    plan: list[tuple[str, bool, bool]], handshake_losses: list[bool]
-) -> None:
-    """For every sequence of calls and session losses on a live-shaped server, `HttpTransport`
-    opens a session (`initialize`, `notifications/initialized`) before its first call and sends
-    every call on it, so the server never answers 400, and starts a handshake again when another
-    replica answers one of its steps (at most one per handshake); a call whose session was lost
-    (404) is sent once more on a new session and returns the recorded reply, and one lost twice
-    fails with `mcp_transport`; a session is kept until it is lost."""
-    losses = [
-        flag for _tool, first, second in plan for flag in ([first, second] if first else [False])
-    ]
-
-    def lose_handshake() -> bool:  # the server lets at most one step of a handshake be lost
-        return bool(handshake_losses) and handshake_losses.pop(0)
-
-    server = StreamableServer(RECORDED, lambda: losses.pop(0), lose_handshake)
-    transport = HttpTransport({"nse-bhavcopy": "http://fixture.invalid"}, post=server.post)
-    for tool, first, second in plan:
-        sent = len(server.calls)
-        try:
-            result = transport.call("nse-bhavcopy", tool, {})
-        except McpTransportError as exc:
-            assert first
-            assert second
-            assert exc.code == mcp_client.CODE_TRANSPORT
-        else:
-            assert not (first and second)
-            assert result == RECORDED[tool]
-        attempts = server.calls[sent:]
-        assert len(attempts) == (2 if first else 1)
-        if first:  # the resend went out on a session opened after the loss
-            assert attempts[1][0] != attempts[0][0]
-    assert server.bad_requests == 0
-    assert not losses
-    # one session at the start and a new one after every loss (after a call lost twice, the
-    # next call opens it)
-    lost = sum(status == 404 for _s, status in server.calls)
-    assert server.handshakes == 1 + lost - (plan[-1][1] and plan[-1][2]) + server.handshake_404s

@@ -11,20 +11,12 @@ from html import escape
 from typing import Any
 from uuid import UUID
 
-from hat_mcp_support import REFERENCE_TABLES, seed_market
-from hat_support import memory_engine
-from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from app.hat.data.mcp_client import McpTransportError
-from app.hat.models import HatAnnouncement, HatInstrument, HatInstrumentSymbolHistory
+from app.hat.models import HatInstrument, HatInstrumentSymbolHistory
 
-LIVE_TABLES = (*REFERENCE_TABLES, HatAnnouncement)
 EPOCH = date(2000, 1, 1)
-
-
-def live_engine() -> Engine:
-    return memory_engine(*LIVE_TABLES)
 
 
 def add_instrument(
@@ -49,11 +41,6 @@ def add_instrument(
     )
     session.flush()
     return instrument
-
-
-def seeded_session(engine: Engine) -> tuple[Session, UUID]:
-    session = Session(engine)
-    return session, seed_market(session)
 
 
 def rss_item(

@@ -7,34 +7,28 @@ Time is explicit: every property passes the instants it wants, so no test reads 
 import tempfile
 import threading
 from collections.abc import Callable, Iterable
-from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import hat_trigger_support as trigger_support
 import pyarrow.parquet as pq
-from hat_engine_support import open_trade, seed_engine_world
-from hat_risk_support import CALENDAR, TRADE_DAY, valid_ctx, version_of
-from hat_support import event_engine, memory_engine
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
-from app.hat.daily.live import ExitViews, LivePrices, LiveRoute, PriceBook, band_bounds
+from app.hat.daily.live import band_bounds
 from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
 from app.hat.data.bars_store import SCHEMA, BarStore, row_from_bar
 from app.hat.data.live import (
     PRICE_OUT_OF_BAND,
     PRICE_STALE,
     PRICE_UNKNOWN,
-    EventFeedHealth,
     LiveData,
     Quote,
     tick_from_payload,
@@ -59,11 +53,8 @@ from app.hat.data.subscriptions import (
     LiveSubscriptions,
     SubscriptionInputs,
     SubscriptionRegistry,
-    load_inputs,
 )
 from app.hat.engine.exits import ExitView
-from app.hat.engine.live_entry import DataHealthKill, TriggerService
-from app.hat.engine.stops import floor_to_tick
 from app.hat.engine.trigger import (
     DailyInputs,
     TriggerMonitor,
@@ -71,12 +62,6 @@ from app.hat.engine.trigger import (
     lower_circuit_price,
     upper_circuit_price,
 )
-from app.hat.execution.router import placement_refusal
-from app.hat.models import HatEvent, HatInstrument, HatPosition, HatSignal, HatWatchlistEntry
-from app.hat.risk import controls
-from app.hat.risk.policy import seed_policy
-from app.hat.settings import load_settings
-from app.utils.env_loader import TRUE_VALUES
 
 DAY = date(2026, 10, 21)
 MIDNIGHT = datetime(2026, 10, 21, tzinfo=IST)
@@ -354,25 +339,7 @@ def test_restore_matches_live(sequence: list[tuple[str, int, Decimal, int]], cut
 
 # --- complete-session state -------------------
 
-PROBE = [(0, 11_000), (150, 10_100), (160, 10_300), (170, 10_000), (180, 10_400), (600, 10_500)]
 """The audit's probe (F4): a 09:15 spike to 110 HAT never saw, then prints from 09:17:30."""
-
-
-def tape_bars(tape: Iterable[tuple[int, int]], now: datetime) -> list[Bar]:
-    """The final bars at `now` of a tape of (seconds after 09:15, paise) prints for AAA, each
-    arriving at its own instant: the session as it really traded."""
-    opens = at_us(OPEN_SOD * US)
-    ticks = [Tick("AAA", opens + timedelta(seconds=s), Decimal(p).scaleb(-2)) for s, p in tape]
-    return [b for b in expected_bars(enumerate(ticks)).values() if b.final_at <= now]
-
-
-def true_opening(tape: list[tuple[int, int]]) -> tuple[Decimal, Decimal] | None:
-    opens = at_us(OPEN_SOD * US)
-    first = [b for b in tape_bars(tape, at_us(CLOSE_SOD * US + 3600 * US)) if b.start == opens]
-    return (first[0].high, first[0].low) if first else None
-
-
-FIRST_FINAL = 302  # seconds after 09:15 when the first bar is final
 
 
 class Downtime:
@@ -383,247 +350,6 @@ class Downtime:
 
     def hides(self, second: int) -> bool:
         return self.window is not None and self.window[0] <= second < sum(self.window)
-
-
-@example(tape=PROBE, watch=150, dropout=None, restart=None, seeded=False)
-@example(  # a 10:15 bar
-    tape=[(3600, 9_000), (0, 9_001)], watch=0, dropout=None, restart=None, seeded=False
-)
-@example(  # a gap inside the first bar
-    tape=PROBE, watch=-600, dropout=(100, 60), restart=None, seeded=False
-)
-@example(  # silent from 09:19:50 (the first bar's low unseen), restarted at 09:20:05
-    tape=[(0, 10_000), (297, 9_000), (400, 10_500)],
-    watch=-600,
-    dropout=(290, 30),
-    restart=(305, 5),
-    seeded=False,
-)
-@example(  # a gap found after the first bar was stored, then a restart before the next bar
-    tape=[(0, 10_000), (285, 9_000), (400, 10_500)],
-    watch=-600,
-    dropout=(281, 40),
-    restart=(325, 5),
-    seeded=False,
-)
-@example(  # the feed drops at 09:19:55; the low of the first bar prints, unseen, at 09:19:57
-    tape=[(0, 10_000), (297, 9_000), (400, 10_500)],
-    watch=-600,
-    dropout=(295, 60),
-    restart=None,
-    seeded=False,
-)
-@example(  # a restart at 09:21:40; the day's low trades while HAT is down
-    tape=[*PROBE, (410, 9_000)], watch=-600, dropout=None, restart=(400, 30), seeded=False
-)
-@example(tape=PROBE, watch=150, dropout=None, restart=None, seeded=True)  # a 09:17:30 subscriber
-@example(  # seeded after a restart; the day's low traded while HAT was down
-    tape=[*PROBE, (410, 9_000), (700, 10_200)],
-    watch=-600,
-    dropout=None,
-    restart=(400, 30),
-    seeded=True,
-)
-@example(  # seeded at 09:15:10, then the first bar's low trades unseen in a gap
-    tape=[(10, 10_000), (250, 9_000)], watch=-600, dropout=(200, 100), restart=None, seeded=True
-)
-@example(  # seen from 09:17:30; a restart; the next tick (09:22:30) knows a high after 09:20
-    tape=[*PROBE, (350, 11_500), (450, 10_200)],
-    watch=150,
-    dropout=None,
-    restart=(400, 30),
-    seeded=True,
-)
-@example(  # a gap inside the first bar, then a tick seeds again
-    tape=[*PROBE, (250, 9_500)], watch=-600, dropout=(100, 60), restart=None, seeded=True
-)
-@settings(max_examples=120, deadline=None)
-@given(
-    tape=st.lists(
-        st.tuples(st.integers(0, 2 * 3600), st.integers(9_000, 11_000)), min_size=1, max_size=50
-    ),
-    watch=st.integers(-900, 1800),  # seconds after 09:15 when HAT's first tick arrives
-    dropout=st.one_of(st.none(), st.tuples(st.integers(0, 2 * 3600), st.integers(30, 900))),
-    restart=st.one_of(st.none(), st.tuples(st.integers(0, 2 * 3600), st.integers(1, 600))),
-    seeded=st.booleans(),
-)
-def test_session_state_never_partial(
-    tape: list[tuple[int, int]],
-    watch: int,
-    dropout: tuple[int, int] | None,
-    restart: tuple[int, int] | None,
-    seeded: bool,
-) -> None:
-    """Whatever HAT missed of the session (a first tick after the open, a feed
-    silence of 30 s or more, a restart with its downtime), the opening range it publishes is the
-    one the session really had, and the day low it publishes is the real low of the day's final
-    bars; otherwise it publishes none. Watched from the open with no gap it publishes both (the
-    opening range also after a restart once the first bar was stored). with the exchange
-    range on (`seeded`, each tick carrying the session's high and low so far), the same holds,
-    and a symbol first seen late, after a restart or after a feed gap, with no gap after, has
-    both: the opening range when it ticked inside the first bar, the day low once that tick's
-    bar is final. Harm:
-    EP buys under its true opening-range high, with a stop above the day's real low that is too
-    tight and oversizes the position; or, without the seed, EP never fires on a gap-scan name."""
-    ids = {"AAA": uuid4(), "BBB": uuid4()}
-    clock = FixedClock(at_us(8 * 3600 * US))
-    opens = at_us(OPEN_SOD * US)
-    hidden = Downtime(dropout)
-    down = Downtime(restart)
-    truth = true_opening(tape)
-    watched = watch < 0 and dropout is None  # from the open, with no feed gap
-    with tempfile.TemporaryDirectory() as tmp:
-        store = BarStore(Path(tmp))
-
-        def start() -> LiveData:
-            return LiveData(
-                health=QuietHealth(),
-                is_open=is_open,
-                clock=clock,
-                store=store,
-                instrument_ids=lambda: ids,
-                exchange_range=seeded,
-            )
-
-        live = start()
-        # the second of the current process's first AAA tick after any dropout
-        seed_at: list[int] = []
-        healed = 0 if dropout is None else sum(dropout)  # no gap after this second
-
-        def check(now: datetime) -> None:
-            live.step()
-            live.persist()
-            final = tape_bars(tape, now)
-            opening = live.builder.opening_range("AAA", DAY)
-            past = now >= opens + timedelta(seconds=healed)
-            first = seed_at[0] if seeded and seed_at and seed_at[0] >= healed and past else None
-            if opening is not None:
-                assert opening == truth
-            elif watched and (restart is None or restart[0] > FIRST_FINAL):
-                # watched from the open, first bar stored before any restart: it is published
-                assert truth is None or now < opens + timedelta(seconds=FIRST_FINAL)
-            elif first is not None and first < 300:  # seeded inside the first bar, no gap after
-                assert now < opens + timedelta(seconds=FIRST_FINAL)
-            low = live.builder.day_low("AAA", DAY)
-            if low is not None:
-                assert low == min(b.low for b in final)
-            elif watched and restart is None:
-                assert not final
-            elif first is not None:  # seeded, no gap after: published once the seed's bar is
-                assert now < opens + timedelta(seconds=300 * (first // 300 + 1) + 2)
-
-        exchange: dict[tuple[int, int], tuple[int, int]] = {}  # the session's (high, low) so far
-        high, low = 0, 10**9
-        for index, (second, paise) in sorted(enumerate(tape), key=lambda e: (e[1][0], e[0])):
-            high, low = max(high, paise), min(low, paise)
-            exchange[(second, index)] = (high, low)
-
-        tick_at: dict[int, list[tuple[int, int]]] = {}
-        for index, (second, paise) in enumerate(tape):
-            tick_at.setdefault(second, []).append((index, paise))
-        heartbeat = {
-            (s, "BBB") for s in range(-890, 2 * 3600 + 10 * 60, 10)
-        }  # the rest of the feed
-        first = {(watch, "watch")} if watch < 0 else set()  # AAA's pre-open snapshot
-        bar_ends = {(300 * k + 302, "step") for k in range(2 * 12 + 2)}
-        back = restart is None
-        for second, kind in sorted({(s, "AAA") for s in tick_at} | heartbeat | first | bar_ends):
-            now = opens + timedelta(seconds=second)
-            if down.hides(second):
-                continue  # the process is down: what it had not stored is lost
-            if not back and second >= sum(restart or (0, 0)):
-                clock.set(now)
-                live = start()
-                live.restore(DAY)
-                seed_at.clear()
-                back = True
-            clock.set(now)
-            if hidden.hides(second) or (kind == "AAA" and second < watch):
-                check(now)  # the feed is silent; the process steps on
-                continue
-            if kind == "watch":
-                live.on_tick({"symbol": "AAA", "ltp": 100.0})
-            elif kind == "BBB":
-                live.on_tick({"symbol": "BBB", "ltp": 50.0, "exch_feed_time": now.timestamp()})
-            elif kind == "AAA":
-                for index, paise in tick_at[second]:
-                    high, low = exchange[(second, index)]
-                    live.on_tick(
-                        {
-                            "symbol": "AAA",
-                            "ltp": float(Decimal(paise).scaleb(-2)),
-                            "exch_feed_time": now.timestamp(),
-                            "high_price": float(Decimal(high).scaleb(-2)),
-                            "low_price": float(Decimal(low).scaleb(-2)),
-                        }
-                    )
-                    if not seed_at or seed_at[0] < healed <= second:
-                        seed_at[:] = [second]
-            if kind != "BBB":
-                check(now)
-
-
-@example(steps=[(s, p, 1) for s, p in PROBE], watch=150, expr="opening_range_high", seeded=False)
-@example(steps=[(s, p, 1) for s, p in PROBE], watch=150, expr="opening_range_high", seeded=True)
-@given(
-    steps=st.lists(
-        st.tuples(st.integers(0, 2 * 3600), st.integers(9_000, 11_000), st.integers(0, 5)),
-        max_size=40,
-    ),
-    watch=st.integers(-1, 1800),
-    expr=st.sampled_from(["pivot", "opening_range_high"]),
-    seeded=st.booleans(),
-)
-@settings(max_examples=120, deadline=None)
-def test_trigger_never_uses_a_partial_session(
-    steps: list[tuple[int, int, int]], watch: int, expr: str, seeded: bool
-) -> None:
-    """PR 22, through the real bar builder and trigger monitor: for a candidate HAT
-    first saw at `watch` seconds after 09:15, an opening-range trigger fires only at the real
-    opening-range high, and a `low_of_day` stop is planned from the day's real low (less a
-    tick) or not at all (`stop_input_missing`). Watched from before the open, both are exactly
-    the session's; so is the stop of a late candidate whose ticks carry the exchange's high and
-    low. Harm: a breakout bought under its own level, with an oversized
-    position."""
-    book = trigger_support.playbook(
-        trigger=[{"type": "price_breaks_level", "params": {"level": expr}}],
-        stop={"rule": "low_of_day", "buffer_ticks": 1},
-    )
-    builder = BarBuilder()
-    monitor = TriggerMonitor(builder)
-    monitor.add(trigger_support.candidate(book, pivot=trigger_support.paise(10_000)))
-    first_seen = at_us((OPEN_SOD + watch) * US)
-    tape_ticks = trigger_support.session_ticks("AAA", steps)
-    seen = [t for t in tape_ticks if t.at >= first_seen]
-
-    def so_far(tick: Tick) -> tuple[Decimal, Decimal]:
-        prices = [t.price for t in tape_ticks if t.at <= tick.at]
-        return max(prices), min(prices)
-
-    _bars, fired = trigger_support.drive(
-        monitor,
-        builder,
-        seen,
-        at_us(16 * 3600 * US),
-        from_open=watch < 0,
-        seed=so_far if seeded else None,
-    )
-    tape = [(s, p) for s, p, _q in steps]
-    tick = Decimal("0.05")
-    for trigger in fired:
-        if expr == "opening_range_high":
-            truth = true_opening(tape)
-            assert truth is not None
-            assert trigger.evaluation.level == truth[0]
-        real_low = min(b.low for b in tape_bars(tape, trigger.at))
-        expected = floor_to_tick(real_low - tick, tick)
-        stop = trigger.plan.stop
-        if (watch < 0 or seeded) and expected < trigger.plan.entry:
-            assert stop == expected
-        else:
-            assert stop is None or stop == expected
-        if stop is None and watch >= 0:
-            assert trigger.plan.skip == "stop_input_missing"
 
 
 @example(seen=[(0, 540, False), (1, 540, False)])  # a 09:00 snapshot carries yesterday's open
@@ -849,234 +575,6 @@ def test_staleness_boundary(silence: int) -> None:
     assert STALE_AFTER == timedelta(seconds=30)
 
 
-@settings(max_examples=60)
-@given(
-    steps=st.lists(
-        st.tuples(st.sampled_from(["tick", "check"]), st.integers(0, 45 * US)), max_size=25
-    ),
-)
-def test_staleness_events_recorded(steps: list[tuple[str, int]]) -> None:
-    """Each transition into stale records exactly one `feed.stale` event in the event log and
-    calls the health kill once; a recovery clears the kill and records nothing."""
-    engine = event_engine()
-    changes: list[bool] = []
-    health = EventFeedHealth(lambda: Session(engine), changes.append)
-    monitor = StalenessMonitor(health, is_open)
-    now = 9 * 3600 * US + 15 * 60 * US
-    samples: list[bool] = []
-    tick_times: list[int] = []
-    for kind, gap in steps:
-        now += gap
-        if kind == "tick":
-            samples.append(rule(now, tick_times))
-            monitor.on_tick(at_us(now))
-            tick_times.append(now)
-            samples.append(rule(now, tick_times))
-        else:
-            monitor.check(at_us(now))
-            samples.append(rule(now, tick_times))
-    transitions = list(zip([False, *samples], samples, strict=False))
-    trips = sum(1 for a, b in transitions if not a and b)
-    with Session(engine) as session:
-        stored = session.scalar(
-            select(func.count()).select_from(HatEvent).where(HatEvent.event_type == "feed.stale")
-        )
-    assert stored == trips
-    assert changes.count(True) == trips
-    assert changes.count(False) == sum(1 for a, b in transitions if a and not b)
-
-
-class Contexts:
-    """The market-side entry inputs: a context every risk check accepts (the feed state is the
-    trigger service's own)."""
-
-    def __init__(self, policy_version_id: object) -> None:
-        self.stored = replace(version_of(seed_policy()), version_id=policy_version_id)
-
-    def entry_context(self, session: Session, bot_id: object, at: datetime) -> object:
-        return valid_ctx(policy_versions=[self.stored])
-
-
-@settings(max_examples=40, deadline=None)
-@given(
-    steps=st.lists(
-        st.tuples(st.sampled_from(["tick", "check"]), st.integers(0, 45 * US)), max_size=20
-    ),
-)
-def test_stale_feed_trips_health_kill(steps: list[tuple[str, int]]) -> None:
-    """Wired as in production (staleness monitor -> EventFeedHealth
-    -> DataHealthKill), the account's data-health kill is tripped exactly while the feed is
-    stale, so every bot is manage-only, and clears by itself when ticks resume; a trigger fired
-    while the feed is stale is stored Rejected with `stale_feed` and opens nothing, one fired
-    on a live feed opens its virtual position. Harm: entries keep being taken on prices that
-    stopped updating."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        world = seed_engine_world(session, instruments=1)
-        session.commit()
-    now = [(10 * 3600) * US]
-    health = EventFeedHealth(
-        lambda: Session(engine), DataHealthKill(lambda: Session(engine), lambda: at_us(now[0]))
-    )
-    monitor = StalenessMonitor(health, is_open)
-    monitor.on_tick(at_us(now[0]))
-    for kind, gap in steps:
-        now[0] += gap
-        if kind == "tick":
-            monitor.on_tick(at_us(now[0]))
-        else:
-            monitor.check(at_us(now[0]))
-        with Session(engine) as session:
-            assert controls.kill_state(session, world.bot_id).health_tripped == monitor.stale
-    book = trigger_support.playbook(
-        trigger=[{"type": "price_breaks_level", "params": {"level": "pivot"}}]
-    )
-    cand = trigger_support.candidate(
-        book,
-        bot_id=world.bot_id,
-        instrument_id=world.instruments[0],
-        pivot=Decimal(99),
-        daily=DailyInputs(
-            tick=Decimal("0.05"), band_known=True, band_pct=None, adv20=Decimal(1_000_000)
-        ),
-    )
-    trigger_monitor = TriggerMonitor(BarBuilder())
-    trigger_monitor.add(cand)
-    service = TriggerService(
-        trigger_monitor,
-        lambda: Session(engine),
-        Contexts(world.policy_version_id),
-        lambda: monitor.stale,
-    )
-    bar = Bar("AAA", at_us(14 * 3600 * US), Decimal(99), Decimal(101), Decimal(98), Decimal(100), 9)
-    (fired,) = service.on_bar(bar)
-    with Session(engine) as session:
-        signal = session.scalar(select(HatSignal).where(HatSignal.bot_id == world.bot_id))
-        opened = session.scalar(select(func.count()).select_from(HatPosition))
-    assert fired.at == bar.final_at
-    if monitor.stale:
-        assert signal.state == "Rejected"
-        assert signal.risk_decision["reason"] == "stale_feed"
-        assert opened == 0
-    else:
-        assert signal.risk_decision["decision"] == "ACCEPT"
-        assert opened == 1
-
-
-@given(changes=st.lists(st.booleans(), min_size=1, max_size=8), data=st.data())
-@settings(max_examples=60, deadline=None)
-def test_health_kill_writes_out_of_order(changes: list[bool], data: st.DataObject) -> None:
-    """(part of `stale_feed_trips_health_kill`): the kill writes run
-    on worker threads and may run in any order; whatever the order, the account's health kill
-    ends in the state of the latest change. Harm: a trip that reaches the database after its
-    recovery leaves every bot manage-only on a healthy feed, or a recovery written after a
-    newer trip lets entries through on a stale feed."""
-    engine = memory_engine()
-    jobs: list[object] = []
-    clock = [at_us(10 * 3600 * US)]
-    hook = DataHealthKill(lambda: Session(engine), lambda: clock[0], submit=jobs.append)
-    for stale in changes:
-        clock[0] += timedelta(seconds=1)
-        hook(stale)
-    for job in data.draw(st.permutations(jobs)):
-        job()
-    with Session(engine) as session:
-        assert controls.kill_state(session, uuid4()).health_tripped == changes[-1]
-
-
-@example(price=10_000, high=9_999, low=9_000, second=150)  # the price above the high
-@example(price=10_000, high=11_000, low=0, second=150)
-@given(
-    price=st.integers(1, 20_000),
-    high=st.integers(-10, 20_000),
-    low=st.integers(-10, 20_000),
-    second=st.integers(-60, 600),
-)
-def test_seed_needs_ordered_prices(price: int, high: int, low: int, second: int) -> None:
-    """A seed is taken only from a tick inside the session whose day low and high bracket
-    its own price above zero (`0 < low <= price <= high`); any other leaves the opening range
-    and day low as they would be without it. Harm: a garbled or stale high/low field publishes
-    an opening range or a day low the session never had."""
-    opens = at_us(OPEN_SOD * US)
-    at = opens + timedelta(seconds=second)
-    tick = Tick("AAA", at, Decimal(price).scaleb(-2))
-    plain, seeded = BarBuilder(), BarBuilder()
-    for builder in (plain, seeded):
-        builder.on_tick(tick, at)
-    taken = seeded.seed(tick, Decimal(high).scaleb(-2), Decimal(low).scaleb(-2), at)
-    ordered = 0 < low <= price <= high and 0 <= second < CLOSE_SOD - OPEN_SOD
-    assert taken == ordered
-    end = opens + timedelta(seconds=900)
-    for builder in (plain, seeded):
-        builder.on_tick(Tick("BBB", end, Decimal(1)), end)
-        builder.advance(end)
-    if not ordered:
-        assert seeded.opening_range("AAA", DAY) == plain.opening_range("AAA", DAY)
-        assert seeded.day_low("AAA", DAY) == plain.day_low("AAA", DAY)
-
-
-@example(at=100, delay=60, gap=130, first=True)  # traded before the gap, arrived after it
-@example(at=100, delay=60, gap=130, first=False)
-@given(
-    at=st.integers(0, 290), delay=st.integers(0, 120), gap=st.integers(0, 410), first=st.booleans()
-)
-def test_delayed_seed_spoiled_by_gap(at: int, delay: int, gap: int, first: bool) -> None:
-    """A seed covers prints only up to the earlier of its exchange time and its
-    arrival, so a feed gap that began between the two (a delayed tick arriving after the gap)
-    spoils it: neither the opening range nor the day low is published from it. Harm: prints
-    the gap hid, missing from both the seed and the bars, leave a range or a low the session
-    never had."""
-    opens = at_us(OPEN_SOD * US)
-    traded, arrived, since = (opens + timedelta(seconds=x) for x in (at, at + delay, gap))
-    seeded, plain = BarBuilder(), BarBuilder()
-    tick = Tick("AAA", traded, Decimal(100))
-    end = opens + timedelta(seconds=900)
-    for builder in (seeded, plain):
-        if first:  # the gap is found before the delayed tick arrives, else after
-            builder.mark_gap(min(since, arrived))
-        builder.on_tick(tick, arrived)
-        if builder is seeded:
-            builder.seed(tick, Decimal(101), Decimal(99), arrived)
-        if not first:
-            builder.mark_gap(since)
-        builder.on_tick(Tick("BBB", end, Decimal(1)), end)
-        builder.advance(end)
-    # AAA's one tick is in the first bar, so both the range and the low cover up to its end
-    began = min(since, arrived) if first else since
-    if min(traded, arrived) <= began < opens + timedelta(seconds=300):  # spoiled
-        assert seeded.opening_range("AAA", DAY) == plain.opening_range("AAA", DAY)
-        assert seeded.day_low("AAA", DAY) == plain.day_low("AAA", DAY)
-
-
-@example(seed=None, silent=None, timeout=None)
-@example(seed="1", silent="0", timeout="0")
-@given(
-    seed=st.none() | st.sampled_from(["1", "true", " On ", "yes", "0", "off", "", "no", "maybe"]),
-    silent=st.none() | st.sampled_from(["1", "45", "300", "0", "-3", "x", ""]),
-    timeout=st.none() | st.sampled_from(["1", "30", "90", "0", "-5", "60m", ""]),
-)
-def test_live_flags_parsed(seed: str | None, silent: str | None, timeout: str | None) -> None:
-    """PR 39, `HAT_EXCHANGE_DAY_RANGE` turns
-    the exchange-range seed on exactly for a true value (off unset or for anything else),
-    `HAT_SYMBOL_SILENT_SECONDS` is a positive whole number, else 120, and
-    `HAT_ENTRY_TIMEOUT_MINUTES` a positive whole number, else 60. Harm: unverified tick fields
-    seed the opening range and the stop by default, a typo reports every symbol, or a typo
-    cancels every entry at once (or never)."""
-    env = {}
-    if seed is not None:
-        env["HAT_EXCHANGE_DAY_RANGE"] = seed
-    if silent is not None:
-        env["HAT_SYMBOL_SILENT_SECONDS"] = silent
-    if timeout is not None:
-        env["HAT_ENTRY_TIMEOUT_MINUTES"] = timeout
-    loaded = load_settings(env)
-    assert loaded.exchange_day_range == (seed is not None and seed.strip().lower() in TRUE_VALUES)
-    number = int(silent) if silent is not None and silent.lstrip("-").isdigit() else 0
-    assert loaded.symbol_silent_seconds == (number if number > 0 else 120)
-    minutes = int(timeout) if timeout is not None and timeout.lstrip("-").isdigit() else 0
-    assert loaded.entry_timeout_minutes == (minutes if minutes > 0 else 60)
-
-
 # --- one symbol's silence -----------------------------------------------
 
 SILENT_AFTER = 60  # seconds, the watch's threshold in the property
@@ -1298,67 +796,6 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
     assert trigger.context.bar_close == trigger.context.price == expected.close
 
 
-@settings(max_examples=25, deadline=None)
-@given(failures=st.integers(0, 4), bars=st.integers(1, 4))
-def test_failed_signal_write_retries(failures: int, bars: int) -> None:
-    """(part of `trigger_only_on_final_bars`): a breakout holds on `bars`
-    consecutive final bars and the first `failures` signal writes fail. Each failed write
-    releases the key, so the next final bar fires again; the first write that succeeds stores
-    the day's one signal, at its own bar's final instant, and no later bar fires. Harm: a
-    database blip at the breakout loses the day's signal for good."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        world = seed_engine_world(session, instruments=1)
-        session.commit()
-    attempts = [0]
-
-    def sessions() -> Session:
-        attempts[0] += 1
-        if attempts[0] <= failures:
-            raise RuntimeError("database unavailable")
-        return Session(engine)
-
-    book = trigger_support.playbook(
-        trigger=[{"type": "price_breaks_level", "params": {"level": "pivot"}}]
-    )
-    cand = trigger_support.candidate(
-        book,
-        bot_id=world.bot_id,
-        instrument_id=world.instruments[0],
-        pivot=Decimal(99),
-        daily=DailyInputs(
-            tick=Decimal("0.05"), band_known=True, band_pct=None, adv20=Decimal(1_000_000)
-        ),
-    )
-    monitor = TriggerMonitor(BarBuilder())
-    monitor.add(cand)
-    service = TriggerService(monitor, sessions, Contexts(world.policy_version_id), lambda: False)
-    finals = [
-        Bar(
-            "AAA",
-            at_us((11 * 3600 + 300 * n) * US),
-            Decimal(99),
-            Decimal(101),
-            Decimal(98),
-            Decimal(100),
-            9,
-        )
-        for n in range(bars)
-    ]
-    fired = [len(service.on_bar(bar)) for bar in finals]
-    assert fired == [1 if n <= failures else 0 for n in range(bars)]
-    with Session(engine) as session:
-        stored = list(session.scalars(select(HatSignal)))
-    if failures >= bars:
-        assert stored == []
-        return
-    (signal,) = stored
-    # SQLite keeps the instant's IST wall time without its offset
-    assert signal.triggered_at.replace(tzinfo=None) == finals[failures].final_at.replace(
-        tzinfo=None
-    )
-
-
 # --- listener hook --------------------------------------------------------------
 
 
@@ -1555,86 +992,6 @@ def test_subscription_set(ops: list[tuple[Any, ...]]) -> None:
         else:
             assert len(alerts) == alerts_before
     assert wrong == []
-
-
-@settings(max_examples=40)
-@given(
-    watch=st.sets(st.integers(0, 9), max_size=10),
-    held=st.sets(st.integers(0, 9), max_size=10),
-    closed=st.sets(st.integers(0, 9), max_size=10),
-    other_day=st.sets(st.integers(0, 9), max_size=10),
-    candidates=symbol_sets,
-)
-def test_subscription_inputs_from_database(
-    watch: set[int],
-    held: set[int],
-    closed: set[int],
-    other_day: set[int],
-    candidates: frozenset[str],
-) -> None:
-    """The inputs are today's watchlist symbols, every open position's symbol (closed positions
-    and other days' watchlists excluded) and the candidates given, in DB symbol format."""
-    from hat_support import memory_engine
-
-    from app.hat.models import HatPosition as Position
-
-    engine = memory_engine(HatInstrument, HatWatchlistEntry, Position)
-    session = Session(engine)
-    instruments: list[HatInstrument] = []
-    for i in range(10):
-        row = HatInstrument(
-            id=uuid4(),
-            market_id=uuid4(),
-            isin=f"INE{i:09d}",
-            series="EQ",
-            symbol=f"SYM{i}",
-            name="n",
-            face_value=Decimal(10),
-            active=True,
-        )
-        session.add(row)
-        instruments.append(row)
-    session.flush()
-    now = datetime(2026, 10, 21, 4, tzinfo=UTC)
-    for i in watch | other_day:
-        session.add(
-            HatWatchlistEntry(
-                id=uuid4(),
-                bot_id=uuid4(),
-                strategy_version_id=uuid4(),
-                playbook="default",
-                instrument_id=instruments[i].id,
-                trade_date=DAY if i in watch else DAY - timedelta(days=1),
-                score=Decimal("0.5"),
-                criteria_results={},
-                status="listed",
-            )
-        )
-    for i in held | closed:
-        session.add(
-            HatPosition(
-                id=uuid4(),
-                bot_id=uuid4(),
-                signal_id=uuid4(),
-                instrument_id=instruments[i].id,
-                is_virtual=False,
-                qty_open=1,
-                avg_entry=Decimal(1),
-                initial_stop=Decimal(1),
-                current_stop=Decimal(1),
-                currency="INR",
-                opened_at=now,
-                closed_at=None if i in held else now,
-                state="Open",
-                rules_fired={},
-            )
-        )
-    session.flush()
-    loaded = load_inputs(session, DAY, candidates)
-    session.close()
-    assert loaded.watchlist == {f"SYM{i}" for i in watch}
-    assert loaded.positions == {f"SYM{i}" for i in held}
-    assert loaded.candidates == candidates
 
 
 # --- persistence ----------------------------------------------------------------
@@ -2249,27 +1606,6 @@ def _paise(n: int) -> Decimal:
     return Decimal(n) / 100
 
 
-def _instrument_rows(session: Session, ids: list[UUID]) -> dict[UUID, str]:
-    """`HatInstrument` rows for the engine world's instrument ids (it seeds none)."""
-    symbols = {}
-    for n, iid in enumerate(ids):
-        symbols[iid] = f"LIVE{n}"
-        session.add(
-            HatInstrument(
-                id=iid,
-                market_id=uuid4(),
-                isin=f"INE9{n:08d}",
-                series="EQ",
-                symbol=symbols[iid],
-                name="n",
-                face_value=Decimal(10),
-                active=True,
-            )
-        )
-    session.flush()
-    return symbols
-
-
 @settings(max_examples=300)
 @given(
     price=st.integers(1, 10**7),
@@ -2301,51 +1637,6 @@ def test_usable_price(
         assert got == (None, PRICE_OUT_OF_BAND)
     else:
         assert got == (_paise(price), None)
-
-
-@settings(max_examples=100, deadline=None)
-@given(
-    ticks=st.lists(
-        st.tuples(
-            st.integers(0, 2),  # which instrument
-            st.integers(1, 10**6),  # price in paise
-            st.one_of(st.none(), st.integers(-5, 0)),  # exchange time, seconds before arrival
-            st.integers(0, 3),  # seconds since the previous arrival
-        ),
-        max_size=25,
-    )
-)
-@example(ticks=[(0, 100, 0, 1), (0, 200, -5, 1)])  # a late print, 4 s older than the kept one
-def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]]) -> None:
-    """The price book keeps, per instrument, the latest tick's price and its exchange time
-    (`exch_feed_time`), else the time it arrived, so every price HAT acts on carries the time it
-    traded; a print that arrives after a newer one (by exchange time) does not replace it. Harm:
-    a price that has not traded for an hour reads as current, or a late print regresses it."""
-    with Session(memory_engine()) as session:
-        world = seed_engine_world(session, instruments=3)
-        symbols = _instrument_rows(session, world.instruments)
-        book = PriceBook()
-        book.track_session(session, set(world.instruments))
-    clock = FixedClock(LIVE_AT)
-    live = LiveData(health=QuietHealth(), is_open=lambda _t: True, clock=clock)
-    live.add_tick_listener(book.on_tick)
-    expected: dict[UUID, Quote] = {}
-    now = LIVE_AT
-    for index, paise, exch, gap in ticks:
-        now += timedelta(seconds=gap)
-        clock.set(now)
-        iid = world.instruments[index]
-        payload: dict[str, object] = {"symbol": symbols[iid], "ltp": str(_paise(paise))}
-        if exch is not None:
-            payload["exch_feed_time"] = int(now.timestamp()) + exch
-        live.on_tick(payload)
-        at = now if exch is None else datetime.fromtimestamp(int(now.timestamp()) + exch, UTC)
-        kept = expected.get(iid)
-        if kept is None or at >= kept.at:
-            expected[iid] = Quote(_paise(paise), at)
-    for iid in world.instruments:
-        assert book.quote(iid) == expected.get(iid)
-        assert book.price(iid) == (expected[iid].price if iid in expected else None)
 
 
 @settings(max_examples=300)
@@ -2427,58 +1718,3 @@ class _OpenGates:
 
     def gate_on(self, *_args: object) -> bool:
         return True
-
-
-@settings(max_examples=60, deadline=None)
-@given(
-    price=st.one_of(st.none(), st.integers(8_000, 12_500)),  # paise x 100: 80.00 .. 125.00
-    age_s=st.integers(-40, 90),
-)
-@example(price=11_000, age_s=29)  # the upper band price, 29 s old: acted on
-@example(price=11_005, age_s=0)  # the upper band price plus its tick of slack: acted on
-@example(price=8_995, age_s=0)  # the lower band price less its tick of slack: acted on
-@example(price=11_006, age_s=0)  # beyond the band and its tick of slack
-@example(price=10_000, age_s=30)
-def test_exits_and_placement_read_the_checked_price(price: int | None, age_s: int) -> None:
-    """The exits' view and the placement check (used at a Take, an auto
-    entry and a resumed one) carry the live price only when it is fresh and inside the band;
-    otherwise the exits get no view (no rule fires; the broker stop still rests) and the
-    placement check carries no price and the refusal's code, so no entry is placed. Harm: a
-    stale or impossible print sells a whole position or places an entry."""
-    clock = FixedClock(datetime.combine(TRADE_DAY, time(11, 0), tzinfo=IST))
-    now = clock.now()
-    with Session(memory_engine()) as session:
-        world = seed_engine_world(session, instruments=1)
-        trade = open_trade(session, world)
-        position = session.get(HatPosition, trade.outcome.position_id)
-        assert position is not None
-        iid = position.instrument_id
-        symbol = _instrument_rows(session, [iid])[iid]
-        quotes = PriceBook()
-        quotes.track_session(session, {iid})
-        if price is not None:
-            quotes.on_tick(Tick(symbol, now - timedelta(seconds=age_s), _paise(price)))
-        book = _LevelsBook()
-        prices = LivePrices(quotes, book, clock)  # type: ignore[arg-type]
-        # prev 100, a 10% band on a 0.05 tick: 90.00 .. 110.00, a tick wider each way
-        lower, upper = Decimal("89.95"), Decimal("110.05")
-        assert band_bounds(book.DAILY) == (lower, upper)
-        quote = quotes.quote(iid)
-        usable, why = usable_price(quote, now, lower=lower, upper=upper)
-        views = ExitViews(book, prices.price, clock, lambda: CALENDAR)  # type: ignore[arg-type]
-        view = views(session, position)
-        assert (view is None) == (usable is None)
-        if view is not None:
-            assert view.price == usable
-        route = LiveRoute(
-            lambda _a: None,
-            _OpenGates(),  # type: ignore[arg-type]
-            lambda: False,
-            clock,
-            lambda: CALENDAR,
-            prices,
-        )
-        check = route.check(session, world.bot_id, iid, now)
-        assert (check.ltp, check.ltp_refusal) == (usable, why)
-        refusal = placement_refusal(check, now)
-        assert (refusal is None) == (usable is not None)

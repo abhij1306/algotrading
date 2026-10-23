@@ -11,20 +11,14 @@ from decimal import Decimal
 
 import polars as pl
 import yaml
-from hat_engine_support import SEED, TRADE_DAY, seed_engine_world
-from hat_risk_support import AT
-from hat_support import memory_engine
-from hypothesis import given, settings
+from hat_engine_support import SEED
+from hypothesis import given
 from hypothesis import strategies as st
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
 
-from app.hat.engine import lifecycle, scan, watchlist
-from app.hat.engine.portfolio import service
+from app.hat.engine import scan
 from app.hat.engine.scan import ScanInputs
 from app.hat.engine.strategy.config import DEFAULT_PLAYBOOK, StrategyConfig, parse_config
 from app.hat.engine.strategy.versions import seed_text
-from app.hat.models import HatBot, HatEvent, HatStrategyVersion, HatWatchlistEntry
 
 D = Decimal
 AS_OF = date(2026, 10, 20)
@@ -227,70 +221,3 @@ def test_rank_within_members(
     assert (
         scan.scan_bot(RANK_CONFIG, ScanInputs(**{**inputs.__dict__, "features": crowded})) == alone
     )
-
-
-@settings(max_examples=25)
-@given(worlds(), st.data())
-def test_publish_once_per_day(
-    world: tuple[ScanInputs, dict[str, tuple[int, int]]], data: st.DataObject
-) -> None:
-    """`scan_and_publish` writes the scan's rows as Watchlisted
-    entries and one `watchlist.published` event, uses the bot's own universe (the caller's
-    member list is replaced), and a second call for the same bot and day writes nothing."""
-    inputs, quotes = world
-    engine = memory_engine()
-    with Session(engine) as session:
-        w = seed_engine_world(session, instruments=0)
-        ids = [uuid.UUID(i) for i in IDS]
-        members = set(data.draw(st.lists(st.sampled_from(ids), unique=True, max_size=len(ids))))
-        service.apply_membership(session, w.universe_id, members, TRADE_DAY - timedelta(days=30))
-        version = session.get(HatStrategyVersion, w.version_id)
-        version.config = CONFIG.model_dump(mode="json", by_alias=True)
-        session.flush()
-        first = watchlist.scan_and_publish(session, w.bot_id, inputs, TRADE_DAY, AT)
-        entries = session.scalars(select(HatWatchlistEntry)).all()
-        assert first.rows == len(entries)
-        own = ScanInputs(**{**inputs.__dict__, "members": [str(m) for m in members]})
-        assert {str(e.instrument_id) for e in entries} == expected_ids(own, quotes)
-        assert all(e.status == lifecycle.WATCHLISTED for e in entries)
-        assert all(e.trade_date == TRADE_DAY for e in entries)
-        again = watchlist.scan_and_publish(session, w.bot_id, inputs, TRADE_DAY, AT)
-        assert again.skipped == "already_published"
-        assert again.rows == 0
-        assert session.scalar(select(func.count()).select_from(HatWatchlistEntry)) == len(entries)
-        published = session.scalar(
-            select(func.count())
-            .select_from(HatEvent)
-            .where(HatEvent.event_type == watchlist.EVENT_PUBLISHED)
-        )
-        assert published == 1
-
-
-@settings(max_examples=15)
-@given(worlds())
-def test_no_universe_publishes_nothing(
-    world: tuple[ScanInputs, dict[str, tuple[int, int]]],
-) -> None:
-    """(fail closed): a bot with no universe publishes nothing and records nothing,
-    so the same day's run after the universe is assigned still publishes. Harm: an empty
-    "published" watchlist blocks that day's real one."""
-    inputs, _ = world
-    with Session(memory_engine()) as session:
-        w = seed_engine_world(session, instruments=0)
-        bot = session.get(HatBot, w.bot_id)
-        assigned, bot.universe_version_id = bot.universe_version_id, None
-        session.flush()
-        first = watchlist.scan_and_publish(session, w.bot_id, inputs, TRADE_DAY, AT)
-        assert first.skipped == "no_universe"
-        assert (
-            session.scalar(
-                select(func.count())
-                .select_from(HatEvent)
-                .where(HatEvent.event_type == watchlist.EVENT_PUBLISHED)
-            )
-            == 0
-        )
-        bot.universe_version_id = assigned
-        session.flush()
-        later = watchlist.scan_and_publish(session, w.bot_id, inputs, TRADE_DAY, AT)
-        assert later.skipped is None

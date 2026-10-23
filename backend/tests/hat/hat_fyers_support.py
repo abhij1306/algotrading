@@ -51,16 +51,6 @@ class Clock:
         self.now += timedelta(**delta)
 
 
-class Ticker:
-    """A settable monotonic clock for `FyersAuthService(clock=...)`."""
-
-    def __init__(self) -> None:
-        self.now = 1000.0
-
-    def __call__(self) -> float:
-        return self.now
-
-
 class LogCapture(logging.Handler):
     """Every log record of the process, formatted with its traceback."""
 
@@ -96,20 +86,3 @@ def token_store() -> Iterator[TokenStore]:
     """A `TokenStore` on a fresh temporary directory (removed afterwards)."""
     with tempfile.TemporaryDirectory(prefix="hat-fyers-") as directory:
         yield TokenStore(Path(directory) / "config" / "access_token.json")
-
-
-def write_token(
-    store: TokenStore,
-    *,
-    access_token: str = "tok-A",  # noqa: S107
-    client_id: str | None = "CLIENT-100",
-    expires_at: datetime | None = None,
-) -> None:
-    """A token file as the login flow writes it, with the given expiry (default: tomorrow)."""
-    document: dict[str, Any] = {"access_token": access_token, "fy_id": "XA1234"}
-    if client_id is not None:
-        document["client_id"] = client_id
-    if expires_at is not None:
-        document["expires_at"] = expires_at.isoformat()
-    store.path.parent.mkdir(parents=True, exist_ok=True)
-    store.path.write_text(json.dumps(document), encoding="utf-8")

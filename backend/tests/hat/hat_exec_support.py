@@ -13,9 +13,8 @@ from decimal import Decimal
 
 from hat.fakes.broker import FakeBroker
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
-from hat_support import memory_engine
 from sqlalchemy import select
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
 from app.hat.execution.broker import OrderType, Side
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
@@ -24,10 +23,7 @@ from app.hat.execution.submit import OrderRequest
 from app.hat.models import (
     HatBrokerAccount,
     HatBrokerSession,
-    HatEvent,
-    HatOrder,
     HatRiskPolicyVersion,
-    HatSignal,
 )
 from app.hat.models.strategy import HatBrokerAccount as _Account  # noqa: F401
 from app.hat.risk.policy_service import seed_initial_policy
@@ -84,43 +80,6 @@ class ExecEnv:
         )
 
 
-def exec_env(
-    *,
-    account_status: str = "active",
-    reconciled: bool = True,
-    fake: FakeBroker | None = None,
-    stored_gtt: bool = True,
-    live_gtt: bool = True,
-) -> ExecEnv:
-    """An account and the adapter over `fake`. `stored_gtt` is the account's stored GTT for
-    delivery, `live_gtt` the adapter's."""
-    engine = memory_engine(HatEvent, HatOrder, HatBrokerAccount, HatSignal)
-    session = sessionmaker(engine, expire_on_commit=False)()
-    account = HatBrokerAccount(
-        user_id=USER,
-        broker="fyers",
-        account_ref="X0001",
-        capabilities=replace(GTT_READY, gtt_delivery=stored_gtt).to_json(),
-        status=account_status,
-    )
-    session.add(account)
-    session.commit()
-    fake = fake if fake is not None else FakeBroker()
-    guard = guard_on(SESSION_DAY, reconciled=reconciled)
-    return ExecEnv(
-        session=session,
-        account_id=account.id,
-        fake=fake,
-        broker=FyersHatBroker(
-            fake,  # type: ignore[arg-type]
-            instruments=lambda: list(SYMBOLS.items()),
-            capabilities=replace(GTT_READY, gtt_delivery=live_gtt),
-        ),
-        guard=guard,
-        bot_id=uuid.uuid4(),
-    )
-
-
 def live_session(env: ExecEnv) -> None:
     """Make the adapter report a live session without touching a token file."""
 
@@ -144,7 +103,6 @@ __all__ = [
     "ExecEnv",
     "RecordingSdk",
     "adapter_over",
-    "exec_env",
     "live_session",
     "utc_now",
 ]

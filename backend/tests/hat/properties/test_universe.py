@@ -2,17 +2,13 @@
 the interval rules, on the real `app.hat.engine.portfolio.universe` against independent models."""
 
 import uuid
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import date, timedelta
 
-from hat_support import memory_engine
-from hypothesis import example, given, settings
+from hypothesis import example, given
 from hypothesis import strategies as st
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.hat.engine.portfolio import service, universe
+from app.hat.engine.portfolio import universe
 from app.hat.engine.portfolio.universe import Interval, UniverseError
-from app.hat.models import HatMarket, HatUniverseVersion
 
 POOL = tuple(uuid.UUID(int=i + 1) for i in range(5))
 START = date(2026, 1, 1)
@@ -141,61 +137,3 @@ def test_leave_no_force_sell(before: set, after: set, open_positions: set) -> No
     entered = universe.entries_allowed(POOL, after)
     assert not set(entered) & (before - after)
     assert set(entered) == set(POOL) & after
-
-
-@settings(max_examples=25)
-@given(
-    st.sets(INSTRUMENTS),
-    st.sets(INSTRUMENTS),
-    st.sets(INSTRUMENTS),
-    st.sets(INSTRUMENTS),
-    DAYS,
-)
-def test_seeded_version_is_seen_only_once_published(
-    constituents: set, include: set, exclude: set, later: set, as_of: date
-) -> None:
-    """A seeded version is a draft that records its member list and changes nothing the
-    universe's members show; publishing it makes the members of its date the (constituents +
-    includes - excludes) set, retires the version that was live, and leaves exactly one live."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        market = HatMarket(
-            code="NSE",
-            timezone="Asia/Kolkata",
-            currency="INR",
-            session_open=time(9, 15),
-            session_close=time(15, 30),
-        )
-        session.add(market)
-        session.flush()
-        uni = service.create_universe(
-            session, user_id=uuid.uuid4(), market_id=market.id, name="mvp"
-        )
-        first = service.seed_universe_version(
-            session, uni.id, constituents=constituents, as_of=as_of
-        )
-        assert service.members_of(session, uni.id, as_of) == frozenset()
-        service.publish_version(session, first.id, datetime(2026, 1, 1, tzinfo=UTC))
-        assert service.members_of(session, uni.id, as_of) == frozenset(constituents)
-        second = service.seed_universe_version(
-            session,
-            uni.id,
-            constituents=later,
-            include=include,
-            exclude=exclude,
-            as_of=as_of + timedelta(days=3),
-        )
-        target = universe.effective_members(later, include, exclude)
-        probe = as_of + timedelta(days=3)
-        assert service.members_of(session, uni.id, probe) == frozenset(constituents)
-        service.publish_version(session, second.id, datetime(2026, 1, 2, tzinfo=UTC))
-        assert service.members_of(session, uni.id, probe) == target
-        assert service.members_of(session, uni.id, as_of) == frozenset(constituents)  # history
-        statuses = sorted(v.status for v in session.scalars(select(HatUniverseVersion)).all())
-        assert statuses == ["live", "retired"]
-        assert [
-            v.version
-            for v in session.scalars(
-                select(HatUniverseVersion).order_by(HatUniverseVersion.version)
-            )
-        ] == [1, 2]

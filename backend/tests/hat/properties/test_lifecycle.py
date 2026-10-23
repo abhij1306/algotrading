@@ -4,31 +4,18 @@ out independently. The state machine itself is proved in verification/tla/Sleeve
 
 import math
 import statistics
-import uuid
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
-from hat_portfolio_support import TRADE_DAY, USER, put_regime, seed_world
-from hat_support import memory_engine
-from hypothesis import example, given, settings
+from hypothesis import example, given
 from hypothesis import strategies as st
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
 
 from app.hat.engine.backtest import GAP_PLAYBOOKS, KNOWN_GAPS, REGIME_MULT_POLICY
-from app.hat.engine.portfolio import lifecycle, service
+from app.hat.engine.portfolio import lifecycle
 from app.hat.engine.portfolio.lifecycle import BacktestFacts, Evidence, LifecycleError
 from app.hat.engine.scan import EP_PLAYBOOK
-from app.hat.models import (
-    HatAllocationDaily,
-    HatBot,
-    HatDailyBotSnapshot,
-    HatEvent,
-    HatPosition,
-    HatTradeResult,
-)
 
 D = Decimal
 START = date(2026, 3, 2)  # a Monday
@@ -349,107 +336,6 @@ def test_guard_matches_the_rules(current: str, target: str, ev: Evidence, owner:
         assert not verdict.allowed
 
 
-@given(st.sampled_from(lifecycle.STATES))
-def test_only_live_routes_real(state: str) -> None:
-    """Signals route as shadow in every state but Live, whatever the bot's mode."""
-    assert lifecycle.routes_as_shadow(state) == (state != "live")
-
-
-def make_bot(session: Session, state: str) -> uuid.UUID:
-    bot = HatBot(
-        id=uuid.uuid4(),
-        user_id=uuid.uuid4(),
-        strategy_id=uuid.uuid4(),
-        broker_account_id=uuid.uuid4(),
-        execution_mode="shadow",
-        status="active",
-        lifecycle_state=state,
-        risk_cluster="c1",
-    )
-    session.add(bot)
-    session.flush()
-    return bot.id
-
-
-@settings(max_examples=60)
-@given(
-    st.sampled_from(lifecycle.STATES), st.sampled_from(lifecycle.STATES), evidences(), st.booleans()
-)
-def test_transition_records_its_event(current: str, target: str, ev: Evidence, owner: bool) -> None:
-    """A lifecycle change and its `sleeve.lifecycle_changed` event are written together: an
-    allowed move changes the state and adds exactly one event naming from and to; a refused one
-    changes nothing and adds nothing."""
-    engine = memory_engine()
-    with Session(engine) as session:
-        bot_id = make_bot(session, current)
-        allowed = model_allowed(current, target, ev, owner)
-        kwargs = {"actor": "user", "chat_id": 7, "by_owner": True} if owner else {}
-        events = select(func.count()).select_from(HatEvent)
-        try:
-            service.transition(
-                session, bot_id, target, ev, now=datetime(2026, 5, 1, tzinfo=UTC), **kwargs
-            )
-        except LifecycleError:
-            assert not allowed
-            assert session.get(HatBot, bot_id).lifecycle_state == current
-            assert session.scalar(events) == 0
-            return
-        assert allowed
-        assert session.get(HatBot, bot_id).lifecycle_state == target
-        rows = session.scalars(select(HatEvent)).all()
-        assert len(rows) == 1
-        assert rows[0].event_type == "sleeve.lifecycle_changed"
-        assert rows[0].payload["from"] == current
-        assert rows[0].payload["to"] == target
-        assert rows[0].aggregate_id == bot_id
-
-
-@settings(max_examples=40)
-@given(st.integers(1, 10_000_000), st.integers(0, 40))
-@example(peak_cents=10_000_000, drop_pct=10)  # the Probation band's edge (D128)
-@example(peak_cents=10_000_000, drop_pct=9)
-def test_allocation_moves_a_health_zero_sleeve_to_probation(peak_cents: int, drop_pct: int) -> None:
-    """In the nightly allocation a live sleeve whose last snapshot is 10% (D128) or more under
-    its peak moves to Probation before the weights are written, with its event and weight 0; a
-    shallower drawdown leaves it live; a rerun moves nothing again."""
-    peak = D(peak_cents) / 100
-    equity = peak * (100 - drop_pct) / 100
-    engine = memory_engine()
-    with Session(engine) as session:
-        (bot_id,) = seed_world(session, [("momentum-breakout-ep", "live", "c1")])
-        session.add(
-            HatDailyBotSnapshot(
-                bot_id=bot_id,
-                trade_date=TRADE_DAY - timedelta(days=1),
-                equity=equity,
-                equity_peak=peak,
-                open_risk=D(0),
-                realized_r=D(0),
-                exposure_level="L1",
-                currency="INR",
-            )
-        )
-        put_regime(session, "bull_quiet")
-        first = service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=D(100_000))
-        again = service.run_allocation(session, TRADE_DAY, user_id=USER, total_equity=D(100_000))
-        bot = session.get(HatBot, bot_id)
-        row = session.scalars(select(HatAllocationDaily)).one()
-        moves = session.scalars(
-            select(HatEvent).where(HatEvent.event_type == "sleeve.lifecycle_changed")
-        ).all()
-        assert again.moved == ()
-        if (peak - equity) * 100 >= 10 * peak:
-            assert bot.lifecycle_state == "probation"
-            assert first.moved == ((bot_id, "probation"),)
-            assert (D(row.health_mult), D(row.final_weight), D(row.capital)) == (0, 0, 0)
-            assert [(m.payload["from"], m.payload["to"]) for m in moves] == [("live", "probation")]
-        else:
-            assert bot.lifecycle_state == "live"
-            assert first.moved == ()
-            assert moves == []
-            assert D(row.health_mult) > 0
-
-
 @st.composite
 def drifting_results(draw: st.DrawFn) -> list[Decimal]:
     """R multiples around a drawn mean with a small spread, 2 to 90 of them, so that both clear
@@ -491,51 +377,3 @@ def test_probation_promotion_is_owner_only(expectancy: Decimal, extra: list, own
     assert verdict.allowed is owner
     failing = replace(ev, probation_shadow_r=tuple(benchmark - x - D("0.01") for x in extra))
     assert not lifecycle.guard("probation", "live", failing, by_owner=owner).allowed
-
-
-@settings(max_examples=30)
-@given(st.lists(st.tuples(st.integers(0, 40), R), min_size=1, max_size=15), st.integers(0, 40))
-def test_trade_results_ignore_later_trades(trades: list, cutoff: int) -> None:
-    """The results a lifecycle decision reads are those closed up to the trade date's close: a
-    replay of an earlier date never sees a later trade."""
-    engine = memory_engine()
-    base = datetime(2026, 3, 1, 10, tzinfo=UTC)
-    with Session(engine) as session:
-        bot_id = make_bot(session, "live")
-        for offset, r in trades:
-            position = HatPosition(
-                id=uuid.uuid4(),
-                bot_id=bot_id,
-                signal_id=uuid.uuid4(),
-                instrument_id=uuid.uuid4(),
-                is_virtual=False,
-                qty_open=0,
-                avg_entry=D(100),
-                initial_stop=D(95),
-                current_stop=D(95),
-                currency="INR",
-                opened_at=base - timedelta(days=1),
-                closed_at=base + timedelta(days=offset),
-                state="Closed",
-                rules_fired={},
-            )
-            session.add(position)
-            session.flush()
-            session.add(
-                HatTradeResult(
-                    position_id=position.id,
-                    realized_pnl=r,
-                    fees=D(0),
-                    currency="INR",
-                    r_multiple=r,
-                    holding_days=1,
-                    exit_reason="stop",
-                    mfe_r=D(0),
-                    mae_r=D(0),
-                )
-            )
-        session.flush()
-        until = base + timedelta(days=cutoff)
-        got = service.trade_results(session, bot_id, virtual=False, until=until)
-        expected = [r for offset, r in sorted(trades, key=lambda t: t[0]) if offset <= cutoff]
-        assert sorted(got) == sorted(expected)

@@ -2,7 +2,7 @@
 over `FakeBroker`, the real router) and the crash injection of `crash_after` ends the
 "process" right after its k-th step (a commit, or a broker call the broker took) the way a power
 cut would, and `restart` builds a fresh process's desks on the same database and runs its
-recovery. Shared by `properties/test_router.py` and the Postgres check
+recovery. Used by the Postgres check
 `db/test_db_crash_safe_routing.py`. Nothing reaches a real broker."""
 
 from __future__ import annotations

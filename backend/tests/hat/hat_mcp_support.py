@@ -14,8 +14,6 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from hat_support import memory_engine
-from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 
 from app.hat.data.mcp_client import McpTransportError
@@ -113,10 +111,6 @@ class ListingServer:
         return {"segment": "EQUITY", "returned": len(rows[:limit]), "stocks": rows[:limit]}
 
 
-def reference_engine() -> Engine:
-    return memory_engine(*REFERENCE_TABLES)
-
-
 def seed_market(session: Session) -> UUID:
     market = HatMarket(
         code="NSE",
@@ -147,21 +141,6 @@ def security(
         face_value=Decimal(face_value),
         listed_on=listed_on,
     )
-
-
-def equity_list_csv(securities: Sequence[Security]) -> str:
-    header = (
-        "SYMBOL,NAME OF COMPANY, SERIES, DATE OF LISTING, PAID UP VALUE, MARKET LOT,"
-        " ISIN NUMBER, FACE VALUE"
-    )
-    months = "JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split()
-    lines = [header]
-    for s in securities:
-        listed = s.listed_on or date(2000, 1, 1)
-        stamp = f"{listed.day:02d}-{months[listed.month - 1]}-{listed.year}"
-        name = s.name.replace(",", " ")
-        lines.append(f"{s.symbol},{name},{s.series},{stamp},10,1,{s.isin},{s.face_value}")
-    return "\n".join(lines) + "\n"
 
 
 class StreamableServer:

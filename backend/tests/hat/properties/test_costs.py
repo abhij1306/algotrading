@@ -7,7 +7,7 @@ from typing import Any
 
 import hat_backtest_support as s
 import pytest
-from hypothesis import HealthCheck, example, given, settings
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from app.hat.backtest.costs import (
@@ -20,7 +20,6 @@ from app.hat.backtest.costs import (
     parse_cost_model,
     slipped,
 )
-from app.hat.engine.backtest import run_backtest
 
 D = Decimal
 PAISE = D("0.01")
@@ -128,24 +127,6 @@ def test_charges_contract(raw: dict[str, Any], side: str, qty: int, price: D, mo
 
 
 DAYS = s.sessions(34)
-
-
-@given(s.paths(34), st.integers(0, 50).map(D))
-@settings(max_examples=10, deadline=None, suppress_health_check=[HealthCheck.too_slow])
-def test_charges_contract_run(paths: dict, bps: D) -> None:
-    """In a run, every fill's fees are the cost model's charges on its slipped price, the
-    trades' net P&L is their gross P&L minus those charges exactly, and the metrics name the
-    cost model's version and digest."""
-    model = load_cost_model()
-    result = run_backtest(s.spec(s.config(), DAYS, slippage=bps), s.market(paths, DAYS))
-    assert result.metrics["cost_model"] == {"version": "cnc-delivery-1", "digest": model.digest}
-    for fill in result.fills:
-        assert fill.fees == charges(model, fill.side, fill.qty, fill.price).total
-    # every position is closed at the end of the period, so the fills are exactly the trades'
-    gross = sum((f.price * f.qty * (1 if f.side == "sell" else -1) for f in result.fills), D(0))
-    fees = sum((f.fees for f in result.fills), D(0))
-    assert sum((t.fees for t in result.trades), D(0)) == fees
-    assert sum((t.realized_pnl for t in result.trades), D(0)) == gross - fees
 
 
 @given(st.one_of(st.floats(allow_nan=True, allow_infinity=True), st.booleans(), st.none()))

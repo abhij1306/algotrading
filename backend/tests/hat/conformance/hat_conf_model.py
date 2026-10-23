@@ -36,18 +36,3 @@ def logical_type(column: sa.Column) -> str:
     if isinstance(ty, sa.String):
         return "text"
     return repr(ty)
-
-
-def unique_sets(table: sa.Table) -> set[frozenset[str]]:
-    """Column sets that are unique: PK, unique constraints, unique non-partial indexes."""
-    found = {frozenset(c.name for c in table.primary_key.columns)}
-    for constraint in table.constraints:
-        if isinstance(constraint, sa.UniqueConstraint):
-            found.add(frozenset(c.name for c in constraint.columns))
-    for index in table.indexes:
-        if index.unique and index.dialect_options["postgresql"].get("where") is None:
-            found.add(frozenset(c.name for c in index.columns))
-    for column in table.columns:
-        if column.unique:
-            found.add(frozenset({column.name}))
-    return found

@@ -3,7 +3,6 @@ shape (stage and order implied by position, or explicit), and ways to break them
 
 from __future__ import annotations
 
-import copy
 from typing import Any
 
 from hypothesis import strategies as st
@@ -268,44 +267,3 @@ def raw_configs(draw: st.DrawFn) -> dict[str, Any]:
 
 
 # --- breaking a config ------------------------------------------------------------------------
-
-
-def param_leaves(raw: dict[str, Any]) -> list[tuple[Any, ...]]:
-    """Paths to every scalar inside some instance's `params`."""
-    found: list[tuple[Any, ...]] = []
-
-    def walk(value: object, path: tuple[Any, ...]) -> None:
-        if isinstance(value, dict):
-            for key, item in value.items():
-                walk(item, (*path, key))
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                walk(item, (*path, index))
-        elif "params" in path:
-            found.append(path)
-
-    walk(raw, ())
-    return found
-
-
-def set_at(raw: dict[str, Any], path: tuple[Any, ...], value: object) -> dict[str, Any]:
-    out = copy.deepcopy(raw)
-    node: Any = out
-    for key in path[:-1]:
-        node = node[key]
-    node[path[-1]] = value
-    return out
-
-
-def with_unknown_key(raw: dict[str, Any], path: tuple[Any, ...], key: str) -> dict[str, Any]:
-    """`raw` with `key` added to the `params` mapping that holds the leaf at `path`."""
-    out = copy.deepcopy(raw)
-    node: Any = out
-    holder = None
-    for part in path[:-1]:
-        node = node[part]
-        if part == "params":
-            holder = node
-    assert isinstance(holder, dict)
-    holder[key] = 1
-    return out

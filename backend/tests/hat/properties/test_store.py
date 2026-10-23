@@ -7,10 +7,8 @@ import random
 import tempfile
 import uuid
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
-import pyarrow as pa
 import pytest
 from hat_bhav_support import bar
 from hypothesis import given, settings
@@ -37,57 +35,6 @@ def _snapshot(root: Path) -> dict[str, str]:
         for p in sorted(root.rglob("*"))
         if p.is_file()
     }
-
-
-class InterruptError(Exception):
-    """A failure injected during a write."""
-
-
-@given(
-    first=prices,
-    second=prices,
-    cut=st.floats(0, 1),
-    stage=st.sampled_from(["during_write", "before_replace"]),
-    had_previous=st.booleans(),
-)
-def test_atomic_write(
-    first: Decimal, second: Decimal, cut: float, stage: str, had_previous: bool
-) -> None:
-    """A write interrupted at any point (part-way through the file, or just before the rename)
-    leaves the partition exactly as it was: the complete previous file or nothing; a retry then
-    gives the complete new content."""
-    import pyarrow.parquet as pq
-
-    iid, run = uuid.UUID(int=1), uuid.UUID(int=2)
-    with tempfile.TemporaryDirectory() as tmp:
-        root = Path(tmp)
-        good = DataStore(root)
-        if had_previous:
-            good.write_bars(DAYS[0], [bar(iid, run, str(first))])
-        before = _snapshot(root)
-
-        def torn_writer(table: pa.Table, path: Path) -> None:
-            pq.write_table(table, path)
-            if stage == "during_write":
-                data = path.read_bytes()
-                path.write_bytes(data[: int(len(data) * cut)])
-                raise InterruptError
-            # a complete temporary file that never gets renamed
-
-        def failing_replace(src: Path, dst: Path) -> None:
-            raise InterruptError
-
-        broken = DataStore(root, writer=torn_writer, replace=failing_replace)
-        rows = [bar(iid, run, str(second))]
-        with pytest.raises(InterruptError):
-            broken.write_bars(DAYS[0], rows)
-        assert _snapshot(root) == before  # no partial or temporary file is left either
-        frame = good.read_bars(DAYS[0])
-        assert frame.height == (1 if had_previous else 0)
-        if had_previous:
-            assert frame["close"][0] == first
-        good.write_bars(DAYS[0], [bar(iid, run, str(second))])
-        assert good.read_bars(DAYS[0])["close"].to_list() == [second]
 
 
 @given(

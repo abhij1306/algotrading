@@ -4,13 +4,11 @@ in-memory zips and fake fetchers (no network)."""
 
 import dataclasses
 import tempfile
-from collections.abc import Callable
 from datetime import date, timedelta
-from decimal import Decimal
 from pathlib import Path
 
 from hat_bhav_support import bar, bhav_rows, render_old, render_udiff
-from hypothesis import assume, example, given, settings
+from hypothesis import assume, example, given
 from hypothesis import strategies as st
 
 from app.hat.data.bhavcopy import (
@@ -22,11 +20,9 @@ from app.hat.data.bhavcopy import (
     archive_name,
     archive_url,
     parse_bhavcopy,
-    reconcile_days,
     to_bar_rows,
     weekdays,
 )
-from app.hat.data.history_build import validate_build
 from app.hat.data.store import DataStore
 from app.hat.ids import uuid7
 
@@ -77,83 +73,8 @@ def outcomes(draw: st.DrawFn) -> tuple[list[date], dict[date, str], set[date]]:
     return days, status, holidays
 
 
-def _scripted_fetch(status: dict[date, str]) -> Callable[[str], FetchResult]:
-    by_url = {archive_url(d): d for d in status}
-
-    def fetch(url: str) -> FetchResult:
-        s = status[by_url[url]]
-        return FetchResult(s, b"zip-" + url.encode()) if s == "ok" else FetchResult(s)
-
-    return fetch
-
-
-@given(data=outcomes())
-@settings(max_examples=60)
-def test_missing_file_is_holiday_candidate(
-    data: tuple[list[date], dict[date, str], set[date]],
-) -> None:
-    """Whatever NSE answers for each weekday, the weekday is downloaded, a holiday candidate that
-    the holiday list explains, a candidate it does not (reported as a gap), or unaccounted (a
-    transient error); no day is in two buckets and a gap is never a holiday."""
-    days, status, holidays = data
-    with tempfile.TemporaryDirectory() as tmp:
-        store = DataStore(Path(tmp))
-        state = BuildState.load(store.root / "state.json")
-        Downloader(store, _scripted_fetch(status), state, interval=0).run(days)
-        have = {d for d in days if store.raw_exists(archive_name(d))}
-        rec = reconcile_days(days, have, state.candidates, holidays)
-    buckets = [rec.downloaded, rec.holidays, rec.gaps, rec.unaccounted]
-    assert sorted(d for b in buckets for d in b) == sorted(days)
-    assert set(rec.downloaded) == {d for d in days if status[d] == "ok"}
-    assert set(rec.holidays) == {d for d in days if status[d] == "not_found" and d in holidays}
-    assert set(rec.gaps) == {d for d in days if status[d] == "not_found" and d not in holidays}
-    assert set(rec.unaccounted) == {d for d in days if status[d] == "error"}
-
-
 class CrashError(Exception):
     """An interruption injected into a fetch."""
-
-
-@given(data=outcomes(), crash_after=st.integers(0, 30))
-@settings(max_examples=60)
-def test_resume_skips_done(
-    data: tuple[list[date], dict[date, str], set[date]], crash_after: int
-) -> None:
-    """After a run interrupted at any request, `--resume` never requests a day already
-    downloaded (or known to have no file) and requests every other day exactly once."""
-    days, status, _ = data
-    status = {d: s for d, s in status.items() if s != "error"}
-    days = list(status)
-    first: list[date] = []
-    by_url = {archive_url(d): d for d in days}
-    scripted = _scripted_fetch(status)
-
-    def crashing(url: str) -> FetchResult:
-        if len(first) >= crash_after:
-            raise CrashError
-        first.append(by_url[url])
-        return scripted(url)
-
-    second: list[date] = []
-
-    def recording(url: str) -> FetchResult:
-        second.append(by_url[url])
-        return scripted(url)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        store = DataStore(Path(tmp))
-        try:
-            Downloader(store, crashing, BuildState.load(store.root / "state.json"), interval=0).run(
-                days
-            )
-        except CrashError:
-            pass
-        Downloader(store, recording, BuildState.load(store.root / "state.json"), interval=0).run(
-            days, resume=True
-        )
-    assert set(first).isdisjoint(second)
-    assert sorted(second) == sorted(d for d in days if d not in set(first))
-    assert len(second) == len(set(second))
 
 
 @given(
@@ -230,41 +151,3 @@ def test_traded_value_kept(day: date, rows: st.DataObject) -> None:
     assert [b.traded_value for b in bars] == [r.traded_value for r in data]
     assert all(b.source == "bhavcopy" for b in bars)
     assert bar(uuid7(), uuid7(), source="mcp", traded=None).traded_value is None
-
-
-@given(
-    closes=st.lists(st.decimals("1", "999", places=2), min_size=1, max_size=70),
-    wrong=st.sets(st.integers(0, 69), max_size=5),
-    missing=st.sets(st.integers(0, 69), max_size=5),
-    nudge=st.sampled_from([Decimal("0.01"), Decimal("-0.01"), Decimal("100")]),
-    seed=st.integers(0, 3),
-)
-def test_validation_flags_mismatch(
-    closes: list[Decimal], wrong: set[int], missing: set[int], nudge: Decimal, seed: int
-) -> None:
-    """The build fails iff some sampled close differs from the MCP close (exact), lists the row
-    count of every built day, and samples min(50, rows) distinct symbol-days."""
-    base = date(2024, 1, 1)
-    run = uuid7()
-    with tempfile.TemporaryDirectory() as tmp:
-        store = DataStore(Path(tmp))
-        days = weekdays(base, base + timedelta(days=200))[: len(closes)]
-        for day, close in zip(days, closes, strict=True):
-            store.write_bars(day, [bar(uuid7(), run, str(close))])
-        order = {d: i for i, d in enumerate(days)}
-        asked: list[int] = []
-
-        def theirs(symbol: str, day: date) -> Decimal | None:
-            i = order[day]
-            asked.append(i)
-            if i in missing:
-                return None
-            truth = closes[i]
-            return truth + nudge if i in wrong else truth
-
-        report = validate_build(store, theirs, seed=seed)
-    expected = any(i in wrong and i not in missing for i in asked)
-    assert report.failed == expected
-    assert len(asked) == len(set(asked)) == min(50, len(closes)) == len(report.samples)
-    assert sorted(report.row_counts) == days
-    assert all(n == 1 for n in report.row_counts.values())
