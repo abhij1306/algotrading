@@ -69,6 +69,100 @@ def test_import_graph_checker_can_fail() -> None:
     assert _graph_violations(graph, "app.hat.data", BROKER_FORBIDDEN) == {}
 
 
+def _private(name: str) -> bool:
+    return name.startswith("_") and not name.startswith("__")
+
+
+def private_imports(module: str, source: str) -> list[str]:
+    """Every underscore name `module` takes from another HAT module: `from x import _name`, or
+    `x._name` on a HAT module it imported (`from . import x`, `import app.hat.x as x`)."""
+    package = module.rsplit(".", 1)[0]
+    tree = ast.parse(source)
+    modules: dict[str, str] = {}  # local name -> the HAT module it is bound to
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            base = package.split(".")[: len(package.split(".")) - node.level + 1]
+            if node.level:
+                origin = ".".join(base + ([node.module] if node.module else []))
+            else:
+                origin = node.module or ""
+            if not origin.startswith("app.hat"):
+                continue
+            for alias in node.names:
+                if _private(alias.name):
+                    found.append(f"line {node.lineno}: from {origin} import {alias.name}")
+                else:
+                    modules[alias.asname or alias.name] = f"{origin}.{alias.name}"
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("app.hat"):
+                    if alias.asname:
+                        modules[alias.asname] = alias.name
+                    else:
+                        modules["app"] = "app"  # `import app.hat.x` binds `app`
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and _private(node.attr):
+            owner = _dotted(node.value)
+            root, _, rest = (owner or "").partition(".")
+            if root in modules:
+                path = ".".join(filter(None, [modules[root], rest]))
+                if path.startswith("app.hat"):
+                    found.append(f"line {node.lineno}: {path}.{node.attr}")
+    return found
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """`a.b.c` for a chain of attributes on a name, else None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (owner := _dotted(node.value)):
+        return f"{owner}.{node.attr}"
+    return None
+
+
+def test_no_private_imports() -> None:
+    """CONF no_private_imports (07 §4; PR 75a, architecture audit F2): no module under `app/hat`
+    imports an underscore name from another HAT module or reads one off a HAT module it imported.
+    A module's interface is its public names. Harm: `live_trades` imported seven private helpers
+    of the shadow engine, so a refactor of shadow trading could change real-position accounting
+    with nothing at the import level to say so."""
+    found = {}
+    for path in sorted(HAT_ROOT.rglob("*.py")):
+        parts = path.relative_to(APP_ROOT.parent).with_suffix("").parts
+        module = ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
+        if parts[-1] == "__init__":
+            module += ".__init__"  # its relative imports resolve against the package itself
+        if bad := private_imports(module, path.read_text(encoding="utf-8")):
+            found[str(path.relative_to(HAT_ROOT))] = bad
+    assert found == {}
+    # the checker can fail: a relative and an absolute private import, a private attribute of an
+    # imported HAT module (by alias, by `import app.hat.x`, through a package); a module's own
+    # private names and a non-HAT one pass
+    bad = (
+        "from .trades import _emit, open_entry\n"
+        "from app.hat.time import _parse\n"
+        "from ..engine import trades\n"
+        "import app.hat.engine.journal as journal\n"
+        "from collections import _OrderedDictKeysView\n"
+        "import app.hat.engine.snapshot\n"
+        "from app.hat import engine\n"
+        "def f(self):\n"
+        "    _local(self._own)\n"
+        "    app.hat.engine.snapshot._slots()\n"
+        "    engine.trades._emit()\n"
+        "    return trades._day_bounds, journal._move, open_entry\n"
+    )
+    assert private_imports("app.hat.engine.live_trades", bad) == [
+        "line 1: from app.hat.engine.trades import _emit",
+        "line 2: from app.hat.time import _parse",
+        "line 10: app.hat.engine.snapshot._slots",
+        "line 11: app.hat.engine.trades._emit",
+        "line 12: app.hat.engine.trades._day_bounds",
+        "line 12: app.hat.engine.journal._move",
+    ]
+
+
 def test_hat_package_in_backend() -> None:
     """HAT-DEC-T2/BD1: every module imports on this Python; no HAT file lives elsewhere."""
     names = [m.name for m in pkgutil.walk_packages(app.hat.__path__, "app.hat.")]

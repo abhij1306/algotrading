@@ -65,7 +65,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..engine import live_trades
-from ..engine.trades import TradeError
+from ..engine.positions import TradeError
 from ..events import record
 from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier

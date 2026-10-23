@@ -43,6 +43,7 @@ ORDER_MODULES = (
     "app.hat.execution.fyers_adapter",
     "app.hat.execution.broker",
     "app.hat.engine.trades",
+    "app.hat.engine.positions",
     "app.hat.engine.approvals",
     "app.hat.risk.authority",
 )

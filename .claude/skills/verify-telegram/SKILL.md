@@ -118,12 +118,13 @@ Models (their Telegram actions):
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `17be6609c80b16a748f4462b2da81668b6fcb939`
-Covered digest: `0c87bf9696b267169c657d0f4f936534d2a5fa34c60a70b58bb6a9ca76bd8166`
+Covered digest: `afcaed837047b70fb9f99351dd6661b5d00d0425f15d462d494eb6d4d9508bab`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 75a: CONF `telegram.no_order_import_in_text_path` adds `engine/positions.py` to the order modules no text-path module may reach; `telegram/tokens.py`'s docstring names `trades.send_approval` (public now). `commands.addressee` names a bot only for a `/command`: a plain text with `@`, such as `@`, was dropped as `other_bot` instead of answered `not_a_command` (found by PBT `telegram.unknown_command_rejected` on main, now pinned by an `@example`). Nothing was narrowed.
 - PR 52: `ExecutionRouter.tla` splits a Take into the decision (to the new state `taken`) and its placement (`PlaceTaken`, which re-reads the session, hours, feed, gate and GTT; the max-chase re-check stays on the decision), and adds `Crash` (`verify-execution`'s `EntriesSettled`). `NoEntryWithoutSession`, `RejectNoCard` and `UserCannotRaiseRisk` pass unchanged and their broken variants still fail. No Telegram code changed.
 - PR 48: `sale.unfilled` is URGENT (`URGENT_ALERTS`), checked by `verify-execution`'s `mpp.resting_market_sale_resent` (break recorded there). No Telegram check changed.
 - PR 32 (design review item 7) replaced `telegram.offset_at_most_once` with `telegram.offset_commits_with_update`: the offset commits with the update, so the allowed-dropped set of the old property is now empty. The crash is a `BaseException`, so it models the process dying rather than a handler error (which the `failing` updates model, through the error branch); the `commit` crash point fails the commit that carries the command-log row (found by a `before_flush` listener), so a Take's own earlier commits of its decision and order stand. It runs 40 examples (about 0.1 s each) plus three explicit ones. No TLA model cited at-most-once delivery: `ApprovalToken` and `KillSwitch` are unchanged. The review round added `poison` updates (failing before a handler runs, caught by `_give_up`) and `flaky` ones (an `OperationalError` on the first try, retried).
@@ -303,6 +304,12 @@ Break: in `commands.py`, `parse` drops the upper bound on argument count.
     | Failing test case: test_unknown_command_rejected(
     | AssertionError: assert not True
     | Failing test case: test_unknown_command_rejected(
+```
+
+Break: (PR 75a, found by this property on main) `commands.addressee` reads an `@` suffix off any first word, not only a command's, so the text `@` was dropped as `other_bot` with no reply (fixed: only a `/command` names a bot; `@example("@", AT)` pins it).
+
+```
+E   AssertionError: assert 'other_bot' in {'bad_arguments', 'not_a_command', 'unknown_command'}
 ```
 
 ### PBT telegram.other_bot_ignored

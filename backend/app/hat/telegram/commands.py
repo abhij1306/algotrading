@@ -97,9 +97,10 @@ class CommandContext:
 
 
 def addressee(text: str) -> str | None:
-    """The `@bot` suffix of a message's first word (`/kill@hat_bot` -> `hat_bot`), else None."""
+    """The `@bot` suffix of a command, the message's first word (`/kill@hat_bot` -> `hat_bot`),
+    else None: a text that is not a command (`@`, `hi@there`) names no bot."""
     parts = text.strip().split(maxsplit=1)
-    if not parts or "@" not in parts[0]:
+    if not parts or not parts[0].startswith("/") or "@" not in parts[0]:
         return None
     return parts[0].split("@", 1)[1]
 

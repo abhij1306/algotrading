@@ -24,7 +24,7 @@ from hypothesis import strategies as st
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.hat.engine import lifecycle, trades
+from app.hat.engine import lifecycle, snapshot, trades
 from app.hat.models import HatBot, HatPosition, HatSignal, HatUniverseMember, HatWatchlistEntry
 from app.hat.risk.decision import Reason
 from app.hat.risk.exposure import max_positions
@@ -217,4 +217,49 @@ def test_last_hard_stop(events: list[tuple[int, bool, bool, int]], query_days: i
         at = AT + timedelta(days=query_days)
         seen = [c for c in counted if c <= at]
         want = (trade_date_of(max(seen)),) if seen else ()
-        assert trades.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+        assert snapshot.last_hard_stop(session, world.bot_id, world.instruments[0], at) == want
+
+
+@settings(max_examples=30)
+@given(STOP_EVENTS, st.integers(0, 6))
+@example([(0, False, True, 0)], 0)  # a hard stop today
+@example([(0, False, True, 1)], 0)  # a hard stop tomorrow is not today's
+@example([(0, False, False, 0)], 0)  # another exit reason
+@example([(1, True, True, 0)], 0)  # another bot's
+def test_day_counts(events: list[tuple[int, bool, bool, int]], query_days: int) -> None:
+    """PBT trades.day_counts (HAT-RISK-033, HAT-RISK-034; PR 75a): the stop-outs today the
+    per-bot cap reads are the bot's `hard_stop` closes, of any instrument, closed on that trade
+    date; its entries today are its signals of that trade date that entered. Positions are
+    opened through `open_entry` and closed by the exit stack's hard stop or by another reason,
+    on this bot or another bot of the owner, on later days. Harm: the stop-out cap bars a bot for
+    a stop it did not have, another day's or another bot's, or misses the stops that should bar
+    it."""
+    policy = policy_with(max_entries_per_day=20, max_stopouts_per_day=20)
+    with Session(memory_engine()) as session:
+        world = seed_engine_world(session, exits=exit_stack("stop_only"))
+        other = add_bot(session, world)
+        loose = [replace(version_of(policy), version_id=world.policy_version_id)]
+        stopped: list[datetime] = []
+        entered = 0
+        for n, (index, other_bot, hard, days) in enumerate(events):
+            bot = other if other_bot else world
+            trade = open_trade(
+                session, bot, world.instruments[index], f"pb{n}", policy_versions=loose
+            )
+            position_id = trade.outcome.position_id
+            assert position_id is not None
+            closed = trade.opened + timedelta(days=days, minutes=1)
+            if hard:
+                step_trade(session, trade, Decimal(94), days=days, phase="live")
+            else:
+                trades.close_position(session, position_id, Decimal(101), "time_stop", closed)
+            if not other_bot:
+                entered += 1
+                if hard:
+                    stopped.append(closed)
+        day = trade_date_of(AT + timedelta(days=query_days))
+        want = (
+            entered if day == trade_date_of(AT) else 0,
+            sum(1 for c in stopped if trade_date_of(c) == day),
+        )
+        assert snapshot.day_counts(session, world.bot_id, day) == want

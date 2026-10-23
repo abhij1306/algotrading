@@ -39,7 +39,7 @@ from app.hat.data.corporate_actions import (
     stored_factors,
 )
 from app.hat.data.mcp_client import McpClient, McpTransportError
-from app.hat.engine import exits, rescale, trades
+from app.hat.engine import exits, positions, rescale, trades
 from app.hat.engine.criteria.live import LiveContext
 from app.hat.engine.live_entry import submit_trigger
 from app.hat.engine.trigger import DailyInputs, Trigger, TriggerEvaluation, plan_entry
@@ -157,7 +157,7 @@ def test_preserves_position(
         stops = (D(before.initial_stop), D(before.current_stop))
         last = D(before.current_stop) + paise(close)
         level = last + paise(sma)
-        rules, state = trades.position_state(session, before)
+        rules, state = positions.position_state(session, before)
 
         def old_at(price: Decimal) -> tuple[list, list[str]]:
             view = exits.ExitView(price=price, days_held=1, sma={10: level})
