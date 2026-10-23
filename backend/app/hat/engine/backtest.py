@@ -1209,11 +1209,12 @@ class _Run:
     # --- the result --------------------------------------------------------------------------
 
     def _result(self) -> BacktestResult:
-        trade_rows = self._trades()
+        watch_rows = self._watch_rows()
+        trade_rows = self._trades(watch_rows)
         result = BacktestResult(
             trades=trade_rows,
             equity=tuple(self.equity),
-            watchlists=self._watch_rows(),
+            watchlists=watch_rows,
             signals=tuple(self.signal_rows),
             fills=self._fill_rows(),
             skips=dict(sorted(self.skips.items())),
@@ -1228,7 +1229,7 @@ class _Run:
         self.session.close()
         return BacktestResult(**{**result.__dict__, "metrics": metrics})
 
-    def _trades(self) -> tuple[TradeRow, ...]:
+    def _trades(self, watch_rows: Sequence[WatchRow]) -> tuple[TradeRow, ...]:
         rows = []
         query = (
             select(HatPosition, HatTradeResult, HatSignal)
@@ -1236,12 +1237,8 @@ class _Run:
             .join(HatSignal, HatSignal.id == HatPosition.signal_id)
             .where(HatPosition.bot_id == self.bot_id)
         )
-        scores = {
-            (w.playbook, w.instrument_id, w.trade_date): Decimal(w.score)
-            for w in self.session.scalars(
-                select(HatWatchlistEntry).where(HatWatchlistEntry.bot_id == self.bot_id)
-            )
-        }
+        # the watchlist rows in their sorted order, so a repeated key resolves the same each run
+        scores = {(w.playbook, w.instrument_id, w.trade_date): w.score for w in watch_rows}
         for position, result, signal in self.session.execute(query).all():
             qty = self.session.scalar(
                 select(func.sum(HatFill.qty))
@@ -1266,7 +1263,9 @@ class _Run:
                     holding_days=result.holding_days,
                     strategy_version_id=signal.strategy_version_id,
                     risk_policy_version_id=signal.risk_policy_version_id,
-                    score=scores.get((signal.playbook, signal.instrument_id, signal.trade_date)),
+                    score=scores.get(
+                        (signal.playbook, str(signal.instrument_id), signal.trade_date)
+                    ),
                 )
             )
         rows.sort(key=lambda t: (t.exit_date, t.entry_date, t.instrument_id, t.playbook))
@@ -1463,6 +1462,17 @@ def _tail_trimmed(rs: Sequence[Decimal]) -> dict[str, str | None]:
     return out
 
 
+def _cagr(final: Decimal, initial: Decimal, sessions: int) -> float | None:
+    """The CAGR over `sessions` (`annualized_return`); None when it is not a finite real: a
+    final equity at or below 0, or a short run whose extrapolation overflows."""
+    if final <= 0:
+        return None
+    try:
+        return _float(bt_metrics.annualized_return(float(final), float(initial), sessions))
+    except OverflowError:
+        return None
+
+
 def compute_metrics(
     trades_: Sequence[TradeRow],
     equity: Sequence[tuple[date, Decimal]],
@@ -1487,10 +1497,11 @@ def compute_metrics(
     final = curve[-1]
     net = sum((t.realized_pnl for t in trades_), _ZERO)
     fees = sum((t.fees for t in trades_), _ZERO)
-    cagr = bt_metrics.annualized_return(float(final), float(spec.initial_equity), len(equity))
-    mar = bt_metrics.mar_ratio(cagr, drawdown)
+    cagr = _cagr(final, spec.initial_equity, len(equity))
+    mar = None if cagr is None else bt_metrics.mar_ratio(cagr, drawdown)
     share = bt_metrics.cost_share(fees, net + fees)  # realized P&L is net of the charges
     held = [(t.entry_date, t.exit_date) for t in trades_]
+    used = conventions(spec)
     return {
         "trades": count,
         "sum_r": _ratio(total_r),
@@ -1510,7 +1521,7 @@ def compute_metrics(
         "returns": _stats_json(stats),
         "sessions": len(equity),
         "exposure": bt_metrics.exposure([day for day, _ in equity], held),  # HAT-BT-041
-        "cagr": _float(cagr),
+        "cagr": cagr,
         "mar": None if mar is None else _float(mar),
         "longest_drawdown_sessions": bt_metrics.longest_drawdown(floats),
         "tail_trimmed_r": _tail_trimmed(rs),
@@ -1520,10 +1531,10 @@ def compute_metrics(
         "cooldown_sessions": spec.policy.policy.cooldown_sessions,
         "known_gaps": known_gaps(spec),
         "entry_day_low": ENTRY_DAY_LOW,
-        **conventions(spec),
-        "conventions": conventions(spec),  # the block `config_digest` hashes (PR 65)
+        **used,
+        "conventions": used,  # the block `config_digest` hashes (PR 65)
         "for_promotion": spec.for_promotion,
-        "config_digest": config_digest(spec),
+        "config_digest": config_hash(used),
     }
 
 

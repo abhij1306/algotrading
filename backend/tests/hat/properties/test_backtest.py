@@ -800,13 +800,14 @@ def test_metrics_bounds(rows: list[tuple[int, D]], curve: list[D], rnd: object) 
     st.lists(st.integers(1, 3_000_000).map(D), min_size=1, max_size=10),
 )
 @example([(0, 2, D(-1), 5), (5, 6, D(4), 0)], [D(100), D(90), D(95), D(80), D(120)])
+@example([], [D(10) ** 12])  # one session far above the start: the CAGR overflows, so no MAR
 def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D]) -> None:
     """A run's robustness figures (PR 65) restate its trades and equity: `exposure` is the share
     of its sessions inside some trade's entry..exit span, `longest_drawdown_sessions` the
     longest run of sessions below the running peak of the curve (the initial equity first),
-    `mar` the CAGR over the drawdown's depth, `tail_trimmed_r` the mean R without the best
-    ceil(1, 5, 10 % of the trades), and `cost_share` the fees over net P&L + fees. Harm: the
-    tuning report shows a strategy that is idle most of the time, under water for months,
+    `mar` the CAGR over the drawdown's depth (both null when the CAGR overflows, never a crash),
+    `tail_trimmed_r` the mean R without the best ceil(1, 5, 10 % of the trades), and
+    `cost_share` the fees over net P&L + fees. Harm: the tuning report shows a strategy that is idle most of the time, under water for months,
     resting on one outlier trade or eaten by costs as robust."""
     trades = sorted(
         (
@@ -826,10 +827,12 @@ def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D])
     under = "".join("1" if v < p else "0" for v, p in zip(points, peaks, strict=True))
     assert metrics["longest_drawdown_sessions"] == max(len(run) for run in under.split("0"))
     depth = metrics["max_drawdown"]
-    if depth == 0:
+    if depth == 0 or metrics["cagr"] is None:
         assert metrics["mar"] is None
-    elif metrics["mar"] is not None:
+    elif math.isfinite(metrics["cagr"] / depth):
         assert math.isclose(metrics["mar"] * depth, metrics["cagr"], rel_tol=1e-9)
+    else:  # the quotient overflows
+        assert metrics["mar"] is None
     best_first = sorted((t.r_multiple for t in trades), reverse=True)
     for pct in (1, 5, 10):
         rest = best_first[math.ceil(len(best_first) * pct / 100) :]

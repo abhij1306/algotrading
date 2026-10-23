@@ -20,6 +20,7 @@ No I/O and no state beyond the inputs passed in.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -143,8 +144,11 @@ def exposure(sessions: Sequence[date], held: Sequence[tuple[date, date]]) -> flo
     (entry date, exit date) span, both ends included; 0.0 without sessions."""
     if not sessions:
         return 0.0
-    invested = sum(1 for day in sessions if any(a <= day <= b for a, b in held))
-    return invested / len(sessions)
+    days = sorted(sessions)
+    invested: set[int] = set()
+    for a, b in held:
+        invested.update(range(bisect_left(days, a), bisect_right(days, b)))
+    return len(invested) / len(days)
 
 
 def mar_ratio(cagr: float, drawdown: float) -> float | None:

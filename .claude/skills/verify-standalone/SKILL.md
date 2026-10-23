@@ -251,6 +251,20 @@ E       days={0},
 E       held=[(datetime.date(2026, 1, 1), datetime.date(2026, 1, 1))],
 ```
 
+Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: the sweep's span stops before its exit session (code review of PR 65, the span loop replaced a session-by-trade scan).
+
+```
+tests/hat/properties/test_metrics.py F
+tests/hat/properties/test_metrics.py:150: in test_exposure
+    assert value == sum(1 for d in sessions if d in covered) / len(sessions)
+E   assert 0.0 == (1 / 1)
+E    +  where 1 = sum(<generator object test_exposure.<locals>.<genexpr>>)
+E    +  and   1 = len([datetime.date(2026, 1, 1)])
+E   Failing test case: test_exposure(
+E       days={0},
+E       held=[(datetime.date(2026, 1, 1), datetime.date(2026, 1, 1))],
+```
+
 ### PBT metrics.mar_ratio
 
 Break: (PR 65) in `backend/app/hat/backtest/metrics.py`: MAR divides by the (negative) drawdown, not its depth.
