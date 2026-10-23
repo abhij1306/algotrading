@@ -294,11 +294,11 @@ def _setup(
         rows = versions.seed_default_strategies(session, user_id)
         return {"strategies": {s.name: str(s.id) for s in rows}}
     if command == "seed-bots":
-        require_active_account(session, args.account)
+        require_active_account(session, args.account, user_id)
         bots = versions.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
         return {"bots": [str(b.id) for b in bots]}
     if command == "add-sleeve":
-        require_active_account(session, args.account)
+        require_active_account(session, args.account, user_id)
         bot = versions.add_sleeve(
             session, user_id=user_id, strategy_id=args.strategy, broker_account_id=args.account
         )

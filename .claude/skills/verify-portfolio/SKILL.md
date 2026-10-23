@@ -97,7 +97,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `7defea38a0fec3148e9d0708b1ecaa2129af0c05576335bec941b9c47a885461`
+Covered digest: `3f1493525d09de770debee37af05feb187865bfc4239a877b834b04dffa4bf96`
 
 ## Scope changes
 
@@ -808,6 +808,12 @@ Break: (PR 73) `_nominal` leaves out the other strategies' Live products (`else 
 E   AssertionError: assert Decimal('0.0037') == Decimal('0.0036')
 ```
 
+Break: (PR 73) a virtual sleeve with no nominal capital keeps its virtual risk (`paper_risk = policy.risk_pct * regime if paper_capital else Decimal(0)` became `paper_risk = policy.risk_pct * regime`), so its realised paper P&L alone funds an entry.
+
+```
+E   AssertionError: assert Decimal('0.000005') == 0
+```
+
 ### PBT lifecycle.*
 
 Each break below was made in the real code, the matching check run, and the file restored; every one failed as shown.
@@ -1257,6 +1263,13 @@ Break: (PR 73) `confirm_ddpi` records without `user_id` (`admin.ddpi_revoked`).
 
 ```
 E   AssertionError: assert [UUID('000000...00000000001')] == [UUID('000000...00000000073')]
+```
+
+Break: (PR 73) `require_active_account` accepts another user's active account (`account.user_id != user_id or` dropped), so `seed-bots` and `add-sleeve` bind the owner's sleeves to it (`admin.refusal_writes_nothing`, `bots_on_foreign_account`).
+
+```
+E   assert 0 == 2
+E       case='bots_on_foreign_account',
 ```
 
 ### CONF ops.admin_cli_calls_services

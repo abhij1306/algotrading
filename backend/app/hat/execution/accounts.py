@@ -62,11 +62,14 @@ _ONBOARD_LOCK = threading.Lock()
 DDPI_NOTE_MAX = 200
 
 
-def require_active_account(session: Session, account_id: uuid.UUID) -> HatBrokerAccount:
-    """The account, when it passed its capability check (HAT-BRK-092); a missing or failed one
-    raises `OnboardingError`, so no sleeve is bound to an account that never passed."""
+def require_active_account(
+    session: Session, account_id: uuid.UUID, user_id: uuid.UUID
+) -> HatBrokerAccount:
+    """The user's account, when it passed its capability check (HAT-BRK-092); a missing or
+    failed one, or another user's, raises `OnboardingError`, so no sleeve is bound to an account
+    that never passed or that is not its owner's (PR 73)."""
     account = session.get(HatBrokerAccount, account_id)
-    if account is None or account.status != ACCOUNT_ACTIVE:
+    if account is None or account.user_id != user_id or account.status != ACCOUNT_ACTIVE:
         raise OnboardingError("account_not_active")
     return account
 

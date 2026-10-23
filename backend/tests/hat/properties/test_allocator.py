@@ -164,14 +164,16 @@ def test_virtual_allocation(
 ) -> None:
     """Item 8, PR 73: a Shadow or Probation sleeve keeps weight, capital and risk 0 and gets a
     nominal allocation for its virtual entries: `virtual_risk_pct = risk_pct x regime_mult`
-    (health taken as 1) and `virtual_capital` its nominal weight x equity, rounded down. The
+    (health taken as 1; 0 when the nominal capital is 0) and `virtual_capital` its nominal
+    weight x equity, rounded down. The
     nominal weight is `base x regime_mult` held to the cluster cap and the whole book with the
     other strategies' Live weights, as if the sleeve alone were Live in place of its strategy's
     other sleeves: never above `base x regime_mult`, equal to it when no cap binds, the same
     whatever other sleeves are in shadow; every other sleeve has none, and no real weight
     changes. Harm: a sleeve in shadow books no paper trades, so it never earns its way to Live;
     its uncapped paper book outgrows equity; or a new version shadowing its strategy's Live
-    sleeve is sized on the strategy's base weight counted twice, so its P&L cannot be compared."""
+    sleeve is sized on the strategy's base weight counted twice, so its P&L cannot be compared;
+    or a sleeve with no nominal capital trades on its realised paper P&L alone."""
     rows = allocate(sleeves, policy, equity)
     real = [s for s in sleeves if s.lifecycle_state not in ("shadow", "probation")]
     for s, r in zip(sleeves, rows, strict=True):
@@ -180,8 +182,9 @@ def test_virtual_allocation(
             assert r.virtual_risk_pct is None
             continue
         assert (r.final_weight, r.capital, r.risk_pct) == (0, 0, 0)
-        assert r.virtual_risk_pct == policy.risk_pct * r.regime_mult
         assert r.virtual_capital is not None
+        funded = policy.risk_pct * r.regime_mult if r.virtual_capital > 0 else 0
+        assert r.virtual_risk_pct == funded
         mine = r.base_weight * r.regime_mult
         assert 0 <= r.virtual_capital <= (mine * equity).quantize(D("0.0001"), rounding=ROUND_DOWN)
         others = [o for o in real if o.sleeve != s.sleeve]

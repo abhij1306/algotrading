@@ -610,15 +610,14 @@ def test_release_gate(state: str, waited: int, replaces: bool, in_hours: bool) -
         session.add(bot)
         session.flush()
         real_money = state in (lifecycle.LIVE, lifecycle.PROBATION)
+        night = gate_night(start)
         if real_money:
             with pytest.raises(VersionError) as refused:
-                assign_version(
-                    session, bot_id=bot.id, version_id=version.id, chat_id=7, now=gate_night(start)
-                )
+                assign_version(session, bot_id=bot.id, version_id=version.id, chat_id=7, now=night)
             assert refused.value.code == "version_not_live"
         else:
             assigned = assign_version(
-                session, bot_id=bot.id, version_id=version.id, chat_id=7, now=gate_night(start)
+                session, bot_id=bot.id, version_id=version.id, chat_id=7, now=night
             )
             assert assigned is bot
             recorded = session.scalars(

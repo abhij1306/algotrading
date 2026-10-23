@@ -426,7 +426,8 @@ def add_sleeve(
     promotes it to Shadow, so a new version books shadow trades of its own while the strategy's
     Live sleeve trades the live one. Only one sleeve of a strategy holds real money at a time
     (`portfolio.service.owner_transition`, `strategy_has_live_sleeve`). Refused for a strategy
-    that is not the user's (`unknown_strategy`); the caller checks the account is active."""
+    that is not the user's (`unknown_strategy`); the caller checks the account is the user's
+    and active."""
     strategy = session.get(HatStrategy, strategy_id)
     if strategy is None or strategy.user_id != user_id:
         raise VersionError("unknown_strategy")

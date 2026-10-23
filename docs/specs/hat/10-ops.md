@@ -568,7 +568,8 @@ refuse inside a session (`market_hours`).
    cause and run it again.
 4. `$ADMIN seed-strategies`, then `$ADMIN seed-bots --account <broker_account_id>`: the two
    strategies with version 1 as a draft, and one sleeve per strategy in Research, in shadow mode.
-   An account that is not `active` takes no sleeve (`account_not_active`).
+   An account that is not `active`, or is another user's, takes no sleeve (`account_not_active`,
+   PR 73).
 5. `$ADMIN publish-universe --constituents <ind_nifty500list.csv> --as-of <date>` (add
    `--include SYMBOL` or `--exclude SYMBOL` as often as needed): a universe version from NSE's
    index CSV, made live and given to every sleeve (`--bot ID` to name some). Every symbol must
@@ -607,8 +608,12 @@ refuse inside a session (`market_hours`).
     `promote-version` moves the sleeves of the version it replaces onto it (their open trades keep
     their entry version, HAT-BOT-083). To shadow the new version on a sleeve of its own beside
     the Live one: `$ADMIN add-sleeve --strategy <strategy> --account <account>` (a sleeve in
-    Research), then steps 7 and 8 for it. It is refused Live (`strategy_has_live_sleeve`) while
-    another sleeve of the strategy is Live or in Probation: retire that one first.
+    Research), then `$ADMIN assign-version --bot <new sleeve> --version <version>` and step 8's
+    two `promote` commands for it (`backtested`, then `shadow`). The version is published and
+    put in shadow once, as above: `publish-version` and `shadow-version` are not run again for
+    the sleeve (a second `shadow-version` is refused, `not_backtested`). It is refused Live
+    (`strategy_has_live_sleeve`) while another sleeve of the strategy is Live or in Probation:
+    retire that one first.
 11. A sleeve in Probation that has recovered: `$ADMIN promote --bot <bot> --to live` (refused
     with `still_failing` while it is not, HAT-PORT-060).
 11a. A position locked by a corporate action HAT cannot rescale (URGENT `corporate_action.unhandled`,

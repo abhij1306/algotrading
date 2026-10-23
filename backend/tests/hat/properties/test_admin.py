@@ -14,6 +14,7 @@ from hat.hat_admin_support import (
     CHAT,
     START,
     SYMBOLS,
+    World,
     add_run,
     at,
     constituents_csv,
@@ -116,6 +117,7 @@ REFUSALS = {
     "universe_in_hours": "market_hours",
     "isin_mismatch": "unknown_symbols: BBB(INE123456A01)",
     "bots_on_unknown_account": "account_not_active",
+    "bots_on_foreign_account": "account_not_active",
     "draft_in_hours": "market_hours",
     "draft_bad_utf8": "config_unreadable",
     "file_outside_admin": "file_outside_admin",
@@ -130,14 +132,32 @@ REFUSALS = {
     "revoke_unknown_account": "account_unknown",
     "sleeve_unknown_strategy": "unknown_strategy",
     "sleeve_unknown_account": "account_not_active",
+    "sleeve_foreign_account": "account_not_active",
     "resolve_unknown_position": "position_unknown",
     "resolve_in_hours": "market_hours",
     "assign_no_owner_chat": "no_owner_chat",
 }
 
 
-@settings(
-    max_examples=30, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture]
+def _foreign_account(world: World) -> str:
+    """An active account of another user: no sleeve of the owner's may be bound to it."""
+    with world.scope() as session:
+        account = HatBrokerAccount(
+            user_id=uuid.uuid4(),
+            broker="fyers",
+            account_ref="XF0073",
+            capabilities={},
+            status="active",
+        )
+        session.add(account)
+        session.flush()
+        return str(account.id)
+
+
+@settings(  # every case: Hypothesis does not repeat a case, so this enumerates them
+    max_examples=len(REFUSALS),
+    deadline=None,
+    suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(case=st.sampled_from(sorted(REFUSALS)))
 def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
@@ -190,6 +210,8 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
         argv = ("publish-universe", "--constituents", csv.name, "--as-of", START.isoformat())
     elif case == "bots_on_unknown_account":
         argv = ("seed-bots", "--account", str(uuid.uuid4()))
+    elif case == "bots_on_foreign_account":
+        argv = ("seed-bots", "--account", _foreign_account(world))
     elif case in ("draft_in_hours", "draft_bad_utf8"):
         config = world.tmp / f"draft-{uuid.uuid4().hex}.yaml"
         config.write_text(seed_text("stage2-contraction-breakout"), "utf-8")
@@ -230,6 +252,14 @@ def test_refusal_writes_nothing(tmp_path: Path, case: str) -> None:
             account = str(session.get_one(HatBot, uuid.UUID(bot)).broker_account_id)
         if case == "sleeve_unknown_strategy":
             argv = ("add-sleeve", "--strategy", str(uuid.uuid4()), "--account", account)
+        elif case == "sleeve_foreign_account":
+            argv = (
+                "add-sleeve",
+                "--strategy",
+                str(strategy_id),
+                "--account",
+                _foreign_account(world),
+            )
         else:
             argv = ("add-sleeve", "--strategy", str(strategy_id), "--account", str(uuid.uuid4()))
     elif case.startswith("resolve_"):

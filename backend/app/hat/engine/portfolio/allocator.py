@@ -18,7 +18,9 @@ sleeve would hold were it alone Live with health 1 in place of its strategy's ot
 `base x regime_mult` put through the same two caps together with the other strategies' Live
 products, the other Shadow and Probation sleeves counting 0 (PR 73, PR 34 follow-up 1). So its
 paper book stays within equity and its cluster's cap, its P&L compares with a Live sleeve's
-capped weight, and it does not depend on how many other sleeves are in shadow. It never
+capped weight, and it does not depend on how many other sleeves are in shadow. A nominal
+capital of 0 (a base weight or equity of 0) has a `virtual_risk_pct` of 0, so the risk check
+rejects its entries `no_allocation` whatever paper P&L the sleeve has realised. It never
 changes a real weight and never reaches a real entry; every other sleeve has none.
 """
 
@@ -178,6 +180,13 @@ def allocate(
         ctx.prec = _PRECISION
         for (s, base, regime, health, _), final, paper in zip(rows, weights, nominal, strict=True):
             virtual = s.lifecycle_state in VIRTUAL_STATES
+            paper_capital = (
+                None
+                if paper is None
+                else (paper * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN)
+            )
+            # no nominal capital, no virtual risk: realised paper P&L never funds an entry alone
+            paper_risk = policy.risk_pct * regime if paper_capital else Decimal(0)
             out.append(
                 Allocation(
                     bot_id=s.bot_id,
@@ -187,12 +196,8 @@ def allocate(
                     final_weight=final,
                     capital=(final * total_equity).quantize(_MONEY_PLACES, rounding=ROUND_DOWN),
                     risk_pct=policy.risk_pct * regime * health,
-                    virtual_capital=(paper * total_equity).quantize(
-                        _MONEY_PLACES, rounding=ROUND_DOWN
-                    )
-                    if paper is not None
-                    else None,
-                    virtual_risk_pct=policy.risk_pct * regime if virtual else None,
+                    virtual_capital=paper_capital,
+                    virtual_risk_pct=paper_risk if virtual else None,
                 )
             )
     return out
