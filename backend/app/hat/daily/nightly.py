@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 import polars as pl
@@ -66,7 +67,7 @@ from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
 from ..ops.partitions import events_partitions
 from ..ops.retention import purge_job
-from ..ops.scheduler import Days, ScheduledJob
+from ..ops.scheduler import Days, JobBody, ScheduledJob
 from ..risk.controls import (
     ALERT_FALLBACK_MARKS,
     ALERT_KILL_DRAWDOWN,
@@ -113,20 +114,6 @@ BANDS_NIGHTLY = "bands.nightly"
 EVENTS_PARTITIONS = "events.partitions"
 RETENTION_PURGE = "retention.purge"
 JOURNAL_CHECK = "journal.check"
-
-# The pipeline of HAT-OPS-021, in order: each job starts once the one before it succeeded.
-# `ca.adjust` is not in it (PR 33): it runs after the ingest whatever the gate decides, so the
-# next session's corporate actions of held instruments are always looked up, and `features`
-# waits for both it and the gate.
-NIGHTLY_CHAIN = (
-    INGEST_NIGHTLY,
-    JOB_QUALITY,
-    FEATURES,
-    REGIME_JOB,
-    ALLOCATE_JOB,
-    SCAN,
-    WATCHLIST_DIGEST,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -279,16 +266,6 @@ class Nightly:
         return ingest_outcome_recorder(
             self._ingest_reports.setdefault(day, {}), day, self.deps.clock
         )
-
-    def quality_gate(self, day: date) -> JobResult:
-        deps = self.deps
-        return gate_body(
-            session_factory=deps.session_factory,
-            store=deps.store,
-            trade_date=day,
-            notifier=deps.notifier,
-            clock=deps.clock,
-        )()
 
     def ca_adjust(self, day: date) -> JobResult:
         """Corporate actions adjust prices at read time (`bars_daily` over the stored factors).
@@ -482,12 +459,6 @@ class Nightly:
 
     # --- housekeeping -----------------------------------------------------------------------
 
-    def calendar(self, _day: date) -> JobResult:
-        deps = self.deps
-        return calendar_refresh(
-            holiday_list=deps.sources.holidays, session_factory=deps.session_factory
-        )()
-
     def reference(self, day: date) -> JobResult:
         deps = self.deps
         return reference_weekly(
@@ -524,25 +495,54 @@ def _without(inputs: ScanInputs, excluded: set[str]) -> ScanInputs:
     return copy.replace(inputs, bars=inputs.bars.filter(keep))
 
 
+def _built(
+    make: Callable[..., Callable[[], JobResult]],
+    day_arg: str | None,
+    day: date,
+    /,
+    **kwargs: object,
+) -> JobResult:
+    """Run the body `make` builds from `kwargs`, given the run's trade date as `day_arg` (not at
+    all when it is None)."""
+    return make(**kwargs, **({} if day_arg is None else {day_arg: day}))()
+
+
+def _quality_gate(n: Nightly) -> JobBody:
+    deps = n.deps
+    return partial(
+        _built,
+        gate_body,
+        "trade_date",
+        session_factory=deps.session_factory,
+        store=deps.store,
+        notifier=deps.notifier,
+        clock=deps.clock,
+    )
+
+
+# The pipeline of HAT-OPS-021 after `ingest.nightly`, in order, each with how its body is got from
+# the `Nightly`: each job starts once the one before it succeeded. `ca.adjust` is not in it
+# (PR 33): it runs after the ingest whatever the gate decides, so the next session's corporate
+# actions of held instruments are always looked up, and `features` waits for both it and the gate
+# (`_ALSO_AFTER`).
+_CHAIN: tuple[tuple[str, Callable[[Nightly], JobBody]], ...] = (
+    (JOB_QUALITY, _quality_gate),
+    (FEATURES, lambda n: n.features),
+    (REGIME_JOB, lambda n: n.regime),
+    (ALLOCATE_JOB, lambda n: n.allocate),
+    (SCAN, lambda n: n.scan),
+    (WATCHLIST_DIGEST, lambda n: n.watchlist_digest),
+)
+_ALSO_AFTER: Mapping[str, tuple[str, ...]] = {FEATURES: (CA_ADJUST,)}
+NIGHTLY_CHAIN = (INGEST_NIGHTLY, *(name for name, _ in _CHAIN))
+
+
 def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
     """The nightly pipeline and the housekeeping jobs at their times (IST)."""
     n = Nightly(deps)
-    chain = (
-        (JOB_QUALITY, n.quality_gate),
-        (FEATURES, n.features),
-        (REGIME_JOB, n.regime),
-        (ALLOCATE_JOB, n.allocate),
-        (SCAN, n.scan),
-        (WATCHLIST_DIGEST, n.watchlist_digest),
-    )
     pipeline = tuple(
-        ScheduledJob(
-            name,
-            INGEST_AT,
-            body,
-            after=(NIGHTLY_CHAIN[i], CA_ADJUST) if name == FEATURES else (NIGHTLY_CHAIN[i],),
-        )
-        for i, (name, body) in enumerate(chain)
+        ScheduledJob(name, INGEST_AT, body(n), after=(before, *_ALSO_AFTER.get(name, ())))
+        for before, (name, body) in zip(NIGHTLY_CHAIN[:-1], _CHAIN, strict=True)
     )
     return (
         ScheduledJob(
@@ -557,7 +557,18 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
         ScheduledJob(SNAPSHOT_BOTS, SNAPSHOT_AT, n.snapshot, carry=True),
         ScheduledJob(CLOSE_GAPS, INGEST_AT, n.close_gaps, after=(INGEST_NIGHTLY,)),
         ScheduledJob(JOURNAL_CHECK, JOURNAL_AT, n.journal_check),
-        ScheduledJob(CALENDAR_REFRESH, CALENDAR_AT, n.calendar, days=Days.EVERY),
+        ScheduledJob(
+            CALENDAR_REFRESH,
+            CALENDAR_AT,
+            partial(
+                _built,
+                calendar_refresh,
+                None,
+                holiday_list=deps.sources.holidays,
+                session_factory=deps.session_factory,
+            ),
+            days=Days.EVERY,
+        ),
         ScheduledJob(
             REFERENCE_WEEKLY,
             REFERENCE_AT,

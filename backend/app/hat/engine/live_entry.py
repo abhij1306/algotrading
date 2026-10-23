@@ -322,7 +322,7 @@ def entry_request(
 
 
 class Route(Protocol):
-    """Where a trigger's `EntryRequest` goes: `route_by_mode`, or `daily.live.LiveRoute`, which
+    """Where a trigger's `EntryRequest` goes: `route_by_mode`, or `daily.entries.LiveRoute`, which
     reads a fresh `PlacementCheck` and calls `ExecutionRouter.route` (that method is not a `Route`:
     it also takes `now` and `check`)."""
 

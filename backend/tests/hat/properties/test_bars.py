@@ -22,7 +22,7 @@ from hypothesis import strategies as st
 from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
-from app.hat.daily.live import band_bounds
+from app.hat.daily.prices import band_bounds
 from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
 from app.hat.data.bars_basis import DailyRange, RawBasis
 from app.hat.data.bars_store import SCHEMA, BarStore, row_from_bar
