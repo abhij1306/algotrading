@@ -76,10 +76,13 @@ class HatSettings:
     @property
     def history_calls_per_day(self) -> int:
         """The minute-history loader's daily cap: the plan's limit, less the reserve for live
-        trading out of the broker's day cap (one broker app, one daily limit)."""
+        trading out of the broker's day cap (one broker app, one daily limit). 0 when the
+        reserve takes the whole day cap: the loader then stops at its first call
+        (`history_daily_limit`) instead of spending live trading's calls."""
         if self.broker_calls_per_day is None:
             return self.history_daily_limit
-        return min(self.history_daily_limit, self.broker_calls_per_day - self.history_reserve)
+        left = self.broker_calls_per_day - self.history_reserve
+        return max(0, min(self.history_daily_limit, left))
 
 
 def _is_true(raw: str | None) -> bool:

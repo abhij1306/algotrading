@@ -307,7 +307,6 @@ class HistoryLimits:
         values = (
             self.chunk_days,
             self.per_minute,
-            self.per_day,
             self.plan_days,
             self.candle_cap,
             self.max_reject_run,
@@ -316,6 +315,7 @@ class HistoryLimits:
         )
         if (
             min(values) < 1
+            or self.per_day < 0  # 0 is legal: nothing left after the reserve, the run stops
             or self.max_clamps < 0
             or self.failures_in_row < 1
             or self.max_reject_pct < 0
@@ -695,22 +695,18 @@ def load_minute_history(
         first = max(start, progress.available_from or start)
         if resume and _skipped(progress, report, symbol, first, end, retry_failed):
             continue
-        code = (
-            "history_plan_limit"  # the plan serves nothing of the period
-            if first > end
-            else _attempt(
-                history,
-                batch,
-                str(instruments[symbol]),
-                pacer,
-                limits,
-                progress,
-                report,
-                basis,
-                symbol,
-                first,
-                end,
-            )
+        code = _attempt(
+            history,
+            batch,
+            str(instruments[symbol]),
+            pacer,
+            limits,
+            progress,
+            report,
+            basis,
+            symbol,
+            first,
+            end,
         )
         # only refused calls in a row point at a dead session; a symbol's bad data does not
         in_row = in_row + 1 if code == "history_failed" else 0
@@ -784,6 +780,8 @@ def _attempt(
     """Load one symbol into `batch`; None when it loaded, else the code it failed with (a symbol
     failure is recorded, a run stop is left to the caller). Its rejected candles go to the
     ledger either way."""
+    if first > end:
+        return "history_plan_limit"  # the plan serves nothing of the period
     try:
         loaded = _load_symbol(
             history, pacer, limits, progress, report, basis, instrument_id, symbol, first, end
