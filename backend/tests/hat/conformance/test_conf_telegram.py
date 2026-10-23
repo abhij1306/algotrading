@@ -5,21 +5,15 @@ import ast
 import importlib
 import pkgutil
 import re
-import uuid
 from pathlib import Path
 
 import pytest
 from fastapi import APIRouter
 from hat_conf_repo import APP_ROOT, build_graph, reaches
-from hat_risk_support import CALENDAR
-from hat_telegram_support import BOT, CHAT, OWNER, TRADE_DAY, TgRig, button_update, ist, text_update
 from pydantic import BaseModel
-from sqlalchemy import select
 
 import app.hat.api
 from app.hat.engine.strategy.config import StrategyConfig
-from app.hat.models import HatBrokerAccount, HatModeChange
-from app.hat.risk.sessions import SessionState
 from app.hat.telegram import callbacks, commands, tokens
 from app.hat.telegram.client import ALLOWED_METHODS, CODE_METHOD, HttpsTransport, TelegramError
 
@@ -222,51 +216,14 @@ def test_telegram__no_order_import_in_text_path() -> None:
 # --- auto is the owner's switch -----------------------------------------------
 
 
-def test_auto_mode_single_user() -> None:
+def test_no_route_sets_a_mode() -> None:
     """No API route sets a mode (no route module reaches the code that writes one:
     `execution.mode_changes` and the queue in `risk.controls`; the dashboard may read the mode
-    through the read-only `execution.modes`),
-    `/mode auto` for a bot whose account belongs to anyone but `HAT_USER_ID` is refused
-    before and after its second confirmation, and the owner's own account is accepted."""
+    through the read-only `execution.modes`). Who may set auto on Telegram is
+    `commands.auto_refusal` (tested in `properties/test_telegram.py`)."""
     graph = build_graph()
     mode_code = ("app.hat.execution.mode_changes", "app.hat.risk.controls")
     for info in pkgutil.iter_modules(app.hat.api.__path__, "app.hat.api."):
         assert reaches(graph, info.name, mode_code) == [], info.name
     for _path, methods in _routes():
         assert methods <= {"GET", "POST", "HEAD"}
-
-    evening = ist(TRADE_DAY, 20)
-    assert CALENDAR.state(evening) is SessionState.CLOSED
-    stranger = uuid.UUID(int=OWNER.int ^ 1)
-    for handed_over in (False, True):
-        rig = TgRig().at(evening)
-        asked = rig.service.handle(text_update(1, CHAT, f"/mode {BOT} auto"))
-        assert asked.reply is not None
-        assert asked.reply.accepted
-        [[(_label, data)]] = asked.reply.buttons
-        if handed_over:  # the account changes hands while the confirmation is pending
-            _set_owner(rig, stranger)
-        confirmed = rig.service.handle(button_update(2, CHAT, data))
-        assert confirmed.reply is not None
-        modes_queued = _modes(rig)
-        if not handed_over:
-            assert confirmed.reply.accepted
-            assert modes_queued == ["auto"]
-            continue
-        assert confirmed.reply.reason == "auto_not_owner"
-        assert modes_queued == []
-        again = rig.service.handle(text_update(3, CHAT, f"/mode {BOT} auto"))
-        assert again.reply is not None
-        assert again.reply.reason == "auto_not_owner"
-        assert _modes(rig) == []
-
-
-def _set_owner(rig: TgRig, user_id: uuid.UUID) -> None:
-    with rig.factory() as session:
-        session.get_one(HatBrokerAccount, rig.account_id).user_id = user_id
-        session.commit()
-
-
-def _modes(rig: TgRig) -> list[str]:
-    with rig.factory() as session:
-        return [row.to_mode for row in session.scalars(select(HatModeChange))]

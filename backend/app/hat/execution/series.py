@@ -5,10 +5,10 @@ or BZ, the weekly reference refresh keeps the instrument, sets its `series` and 
 (the refresh day) and rewrites its Fyers symbol for the new series (`-BE`; BZ has none). A
 position opened before that day was protected under the old series' symbol (`-EQ`), which takes
 no order, and the broker cancels its GTT. Such a position is found here: open, and its
-instrument's series changed after the day it opened. While it is, the position is manage-only
-(its exits see no view, `daily/live.py:ExitViews`), its broker stops go out under the
-instrument's current symbol (`StopDesk._target`), and the morning GTT check
-(`TradeManager.check_gtts`) alerts it URGENT on each run until the owner resolves it.
+instrument's series changed after the day it opened. Its exits keep running on the continuous
+prices (D210; `daily/live.py:ExitViews`, none for a series with no Fyers symbol), its broker
+stops go out under the instrument's current symbol (`StopDesk._target`), and the morning GTT
+check (`TradeManager.check_gtts`) alerts it URGENT on each run until it is closed.
 
 ASM and GSM are surveillance lists, not series: the instrument master holds no such flag, so
 they are not seen here.

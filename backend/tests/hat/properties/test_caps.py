@@ -117,24 +117,47 @@ def test_kill_threshold_boundary(peak: Decimal) -> None:
 # --- mark-to-market equity (P5, X9) ---
 
 
-def _held(price: str | None, fresh: bool, stop: str = "90") -> kill.Holding:
+def _held(
+    price: str | None, fresh: bool, stop: str = "90", close: str | None = None
+) -> kill.Holding:
     # 10 shares bought at 100 with 5 of fees
-    return kill.Holding(10, D("-1005"), D(stop), None if price is None else D(price), fresh)
+    return kill.Holding(
+        10,
+        D("-1005"),
+        D(stop),
+        None if price is None else D(price),
+        fresh,
+        None if close is None else D(close),
+    )
 
 
 def test_mark_fresh_trade_is_the_mark() -> None:
-    assert kill.mark_of(_held("80", True)) == (D("80"), False)
-    assert kill.open_pnl([_held("110", True)]) == (D("95"), 0)
+    assert kill.mark_of(_held("80", True, close="95")) == (D("80"), kill.MARK_TRADE)
+    assert kill.open_pnl([_held("110", True)]) == (D("95"), {"close": 0, "stop": 0})
+
+
+def test_mark_before_the_first_trade_is_the_previous_close() -> None:
+    """D210: no trade yet this session marks at the previous close, above or below the stop; a
+    trade gone stale keeps the conservative basis even with a close known; no close: the stop."""
+    assert kill.mark_of(_held(None, False, close="104")) == (D("104"), kill.MARK_CLOSE)
+    assert kill.mark_of(_held(None, False, close="85")) == (D("85"), kill.MARK_CLOSE)
+    assert kill.mark_of(_held("120", False, close="104")) == (D("90"), kill.MARK_STOP)
+    assert kill.mark_of(_held(None, False, close="NaN")) == (D("90"), kill.MARK_STOP)
+    held = [_held(None, False, close="104"), _held(None, False), _held("110", True)]
+    assert kill.open_pnl(held)[1] == {"close": 1, "stop": 1}
 
 
 def test_mark_stale_or_missing_never_higher() -> None:
     """A stale trade above the stop marks at the stop; one below it marks at the trade; no trade
     marks at the stop; nothing known marks at zero. Never above what is known."""
-    assert kill.mark_of(_held("120", False)) == (D("90"), True)
-    assert kill.mark_of(_held("70", False)) == (D("70"), True)
-    assert kill.mark_of(_held(None, False)) == (D("90"), True)
-    assert kill.mark_of(_held("NaN", True, stop="0")) == (D("0"), True)
-    assert kill.open_pnl([_held("110", True), _held(None, False)]) == (D("95") + D("-105"), 1)
+    assert kill.mark_of(_held("120", False)) == (D("90"), kill.MARK_STOP)
+    assert kill.mark_of(_held("70", False)) == (D("70"), kill.MARK_STOP)
+    assert kill.mark_of(_held(None, False)) == (D("90"), kill.MARK_STOP)
+    assert kill.mark_of(_held("NaN", True, stop="0")) == (D("0"), kill.MARK_STOP)
+    assert kill.open_pnl([_held("110", True), _held(None, False)]) == (
+        D("95") + D("-105"),
+        {"close": 0, "stop": 1},
+    )
 
 
 def test_live_point_peak() -> None:

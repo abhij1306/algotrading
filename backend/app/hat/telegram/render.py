@@ -51,7 +51,7 @@ __all__ = [
 
 # 15c: a GTT the nightly check could not confirm, or a triggered GTT that left shares unsold,
 # may need the owner before the next open.
-# PR 47: a held instrument that changed series is manage-only until the owner resolves it.
+# PR 47: a held instrument that changed series (its exits keep running, D210).
 # PR 48: a sale resting unfilled, locked at the lower circuit or sent as a band limit.
 # PR 36: a trade whose stored state is not the fold of its events (the nightly journal check).
 # P5: a job that failed, missed its deadline or hangs; a calendar about to run out; a drawdown

@@ -302,7 +302,11 @@ def _confirmed(ctx: ButtonContext, session: Session, data: str) -> tuple[str, st
     bots = list(session.scalars(select(HatBot).where(HatBot.id.in_(ids)).order_by(HatBot.id)))
     if not bots:
         return "confirm", "mode_auto", refused("unknown_bot")
-    return "confirm", "mode_auto", queue_modes(session, bots, Mode.AUTO, ctx.now, ctx.chat_id)
+    return (
+        "confirm",
+        "mode_auto",
+        queue_modes(session, bots, Mode.AUTO, ctx.now, ctx.chat_id, confirmed=True),
+    )
 
 
 def run_callback(ctx: ButtonContext, session: Session, data: str) -> tuple[str, str | None, Reply]:

@@ -366,11 +366,12 @@ rewrites its Fyers symbol (`-EQ` to `-BE`); a position opened before that day is
 
 1. Alert: URGENT `position.series_changed` (symbol, old and new series, Fyers symbol or
    `unmapped`), at the 08:40 `gtt.check` and at every 23:00 `gtt.verify`.
-2. The position is manage-only: no exit rule runs on it, and its broker stops go out under the new
-   series' Fyers symbol (a GTT placed on or before the change day is cancelled and placed again).
-   `unmapped` means no Fyers symbol is stored for the new series (BZ has none): no stop is sent
-   (`stop.not_placed`, code `series_unmapped`) and a GTT under the old symbol is left as it is.
-3. Decide whether to keep it at Fyers yourself or `/flatten` it. The alert repeats until it is
+2. Its exit rules keep running on the continuous prices (D210) and its sales and broker stops go
+   out under the new series' Fyers symbol (a GTT placed on or before the change day is cancelled
+   and placed again). `unmapped` means no Fyers symbol is stored for the new series (BZ has
+   none): no exit rule runs, no stop is sent (`stop.not_placed`, code `series_unmapped`) and a
+   GTT under the old symbol is left as it is.
+3. For `unmapped`, decide whether to sell it at Fyers yourself. The alert repeats until it is
    closed.
 
 ### Sale unfilled
