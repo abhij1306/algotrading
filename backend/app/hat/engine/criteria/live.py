@@ -65,6 +65,9 @@ class CatalystAttachedParams(ParamModel):
 class PriceBreaksLevelParams(ParamModel):
     level: Literal["pivot", "opening_range_high", "max(consolidation_high, opening_range_high)"]
     bar: Literal["5m"] = "5m"
+    # `close`: the bar must also close at or above the level, so a spike that fell back below it
+    # is no break (PR 49, plan audit N1/G20); `high`: a trade above the level is enough
+    confirm: Literal["close", "high"] = "close"
 
 
 class AdtrFilterParams(ParamModel):
@@ -87,6 +90,7 @@ class LiveContext:
     at: datetime
     price: Decimal | None = None
     bar_high: Decimal | None = None
+    bar_close: Decimal | None = None
     levels: Mapping[str, Decimal | None] = field(default_factory=dict)
     cum_volume: int | None = None
     elapsed: Fraction | None = None
@@ -115,6 +119,7 @@ class LiveContext:
             at=self.at,
             price=self.price,
             bar_high=self.bar_high,
+            bar_close=self.bar_close,
             levels=self.levels,
             cum_volume=self.cum_volume,
             elapsed=self.elapsed,
@@ -154,15 +159,18 @@ def resolve_level(expression: str, levels: Mapping[str, Decimal | None]) -> Deci
 
 
 def price_breaks_level(ctx: LiveContext, p: PriceBreaksLevelParams) -> CriterionResult:
-    """HAT-CRIT-119: the final bar traded strictly above the level (its high is above it). The
-    level is reported as the value and in `extras["level"]`, the trigger price of the signal."""
+    """HAT-CRIT-119: the final bar traded strictly above the level (its high is above it) and,
+    with `confirm: close` (the default, PR 49), closed at or above it. The level is reported as
+    the value and in `extras["level"]`, the trigger price of the signal."""
     level = resolve_level(p.level, ctx.levels)
     if level is None:
         return no_data(REASON_LEVEL_UNDEFINED)
     high = _pos(ctx.bar_high)
-    if high is None:
+    close = _pos(ctx.bar_close)
+    if high is None or (p.confirm == "close" and close is None):
         return no_data()
-    result = verdict(high > level, float(level), REASON_BELOW_LEVEL)
+    held = p.confirm == "high" or (close is not None and close >= level)
+    result = verdict(high > level and held, float(level), REASON_BELOW_LEVEL)
     return CriterionResult(
         result.passed, result.score, result.value, result.reason, {"level": level}
     )

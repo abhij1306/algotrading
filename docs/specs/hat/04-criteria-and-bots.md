@@ -141,7 +141,7 @@ setup_score = sum_i(w_i * s_i) / sum_i(w_i),   s_i in [0, 1]
 | `volume_pace` | Trigger | × 50-day avg, projected to full day (1.5) | Live bars | M, Q |
 | `early_volume` | Trigger | cumulative by entry ≥ × 20-day ADV (0.5, *assumption*) | Live bars | Q-EP |
 | `catalyst_attached` | Trigger | announcement within hours (24); required in confirm mode | NSE announcements | Q-EP |
-| `price_breaks_level` | Trigger | level (pivot or opening-range high), bar (5-min) | Live bars | M, Q |
+| `price_breaks_level` | Trigger | level (pivot or opening-range high), bar (5-min), confirm (`close` default, or `high`; PR 49) | Live bars | M, Q |
 | `neglect` | Trigger | 63-day return max % (30, *assumption*) | Daily bars | Q-EP |
 | `adtr_filter` | Entry filter | (entry − stop) ≤ × ADTR (1.0; EP 1.5) | Daily bars | Q |
 | `max_chase` | Entry filter | % above trigger level (M 5, Q 2); also skips a stock locked at upper circuit | Live | Both |
@@ -336,14 +336,14 @@ Common properties for every catalogue type (apply to each requirement below; ver
   - Property: for every mode, the criterion blocks the trigger only when the bot's mode is in `required_in`; otherwise its result is recorded but does not block. Harm: auto mode would skip valid EPs on a feed gap, or confirm mode would show cards with no catalyst.
 
 #### HAT-CRIT-119: `price_breaks_level`
-- **Statement:** `price_breaks_level` fires when live price trades above the configured level (pivot, opening-range high, or the maximum of consolidation high and opening-range high), with the opening range defined by the first 5-minute bar.
-- **Source:** BL "Criteria library"; BL bot configs; MA "Daily cycle" steps 4-5; DS "Live data"; B8, B9.
-- **PR:** 8, 15
+- **Statement:** `price_breaks_level` fires when live price trades above the configured level (pivot, opening-range high, or the maximum of consolidation high and opening-range high), with the opening range defined by the first 5-minute bar. It fires on the first final 5-minute bar whose final instant (bar end + 2 s) lies in 09:20-15:20 IST, whose high is strictly above the level and, with `confirm: close` (the default), whose close is at or above the level; with `confirm: high` the high alone breaks. Triggers evaluate only on final bars (HAT-EXEC-120). The entry is a LIMIT at the larger of the level and the trigger bar's close, rounded up to the instrument's tick, so it never buys below the level it broke (PR 49).
+- **Source:** BL "Criteria library"; BL bot configs; MA "Daily cycle" steps 4-5; DS "Live data"; B8, B9; plan audit 2026-10-22 N1, G20 and §6 item 11 (owner defaults: LIMIT at max(level, close), break needs the close at or above the level).
+- **PR:** 8, 15, 49
 - **Verification:** PBT `criteria.price_breaks_level_contract`
 - **Acceptance:**
-  - Property: for every tick sequence, the criterion fires at most once per (bot, playbook, instrument, trade date), only at a tick with price > level, and never before 09:20 IST when the level uses the opening range (the 09:15-09:20 bar must be final). Harm: entries fire before the opening range is known or fire repeatedly.
-  - Property: the trigger price recorded equals the level. Harm: the max-chase check and sizing use the wrong reference price.
-- **[OWNER-PENDING]** break semantics: default = the first final 5-minute bar whose final instant (bar end + 2 s) lies in 09:20-15:20 IST and whose high is strictly above the level, so a tick traded above the level inside that bar; triggers evaluate only on final bars (HAT-EXEC-120), and the entry price is the bar's close. The docs give only "level" and "bar (5-min)". Owner to confirm. [Reconciled in PR 15a with HAT-EXEC-120, which had evaluation on final bars while this default read "first tick".]
+  - Property: for every tick sequence, the criterion fires at most once per (bot, playbook, instrument, trade date), only on a final bar with high > level and (with `confirm: close`) close >= level, and never before 09:20 IST when the level uses the opening range (the 09:15-09:20 bar must be final). Harm: entries fire before the opening range is known or fire repeatedly; or a spike that closed back under the level is bought as it falls (N1).
+  - Property: the trigger price recorded equals the level, and the entry price is max(level, the bar's close) rounded up to the tick, never below the level. Harm: the max-chase check and sizing use the wrong reference price, or a LIMIT below the level fills only on a failed break.
+- **[A]** `confirm: close` is the owner's default (plan audit §6 item 11); `high` and the timeout variants are measured in shadow (PR 40).
 
 #### HAT-CRIT-120: `neglect`
 - **Statement:** `neglect` passes iff the absolute 63-day move is at most 30%, so a stock that rose or fell that far is not neglected. With `max_range_126d_pct` set (off by default), the high/low range of the 126 sessions before the date must be at most it too. The date's own bar (the gap day) is never read.
@@ -363,9 +363,9 @@ Common properties for every catalogue type (apply to each requirement below; ver
   - Property: for every (entry > stop, adtr20 > 0, m), `passed` iff entry − stop <= m × adtr20. Harm: trades with stops wider than the stock's normal range are taken, so size shrinks and stops get hit by noise.
 
 #### HAT-CRIT-122: `max_chase` always applies
-- **Statement:** `max_chase` skips an entry when price at entry is more than pct% above the trigger level (Minervini 5, Qullamaggie 2) or the stock is locked at its upper circuit, and it applies even when the user deletes or disables it.
+- **Statement:** `max_chase` skips an entry when price at entry is more than pct% above the trigger level (Minervini 5, Qullamaggie 2) or the stock is locked at its upper circuit, and it applies even when the user deletes or disables it. At a trigger the price checked is the entry LIMIT (HAT-CRIT-119, PR 49).
 - **Source:** BL "Criteria library"; BL "Risk management / Invariants" (6); MA "Execution modes"; B25.
-- **PR:** 8, 15
+- **PR:** 8, 15, 49
 - **Verification:** PBT `criteria.max_chase_contract`, TLA `ExecutionRouter!MaxChaseAlwaysApplied`
 - **Acceptance:**
   - Property: for every (price, level > 0, pct), `passed` iff price <= level × (1 + pct/100) and the stock is not locked at upper circuit. Harm: the bot buys far above its planned entry, breaking the planned risk.

@@ -18,9 +18,13 @@ Rules:
   `catalyst_attached` is the one exception: its result is recorded, but it blocks only when the
   bot's mode is in its `required_in` list (HAT-CRIT-118, HAT-EXEC-034). A playbook with no
   enabled trigger criterion never triggers.
-- `price_breaks_level` breaks when the bar's high is strictly above the level; the trigger price
-  is the level. The level of an opening-range expression does not exist before the first bar is
-  final, so nothing fires before 09:20 (HAT-CRIT-119, HAT-BOT-071).
+- `price_breaks_level` breaks when the bar's high is strictly above the level and, with
+  `confirm: close` (the default), its close is at or above it; the trigger price is the level.
+  The level of an opening-range expression does not exist before the first bar is final, so
+  nothing fires before 09:20 (HAT-CRIT-119, HAT-BOT-071).
+- The entry is a LIMIT at the larger of the level and the bar's close, rounded up to the tick, so
+  it never buys below the level it broke (`entry_limit`, PR 49, plan audit N1); `max_chase`
+  checks that price.
 - At the trigger the initial stop is computed with the instrument's real tick (HAT-EXEC-053),
   then the entry filters run in their configured order; `max_chase` always runs, with the
   playbook's last configured percentage, even when the config deleted or disabled it
@@ -67,6 +71,7 @@ __all__ = [
     "daily_trigger_results",
     "elapsed_fraction",
     "entry_filter_context",
+    "entry_limit",
     "entry_filter_instances",
     "evaluate_entry_filters",
     "evaluate_trigger",
@@ -390,20 +395,33 @@ def evaluate_trigger(
     return TriggerEvaluation(fired, tuple(outcomes), level)
 
 
+def entry_limit(level: Decimal, price: Decimal, tick: Decimal | None) -> Decimal:
+    """The entry LIMIT price at a trigger (PR 49, plan audit N1): the larger of the level and the
+    live price (the trigger bar's close), rounded up to the tick when it is known, so the order
+    never buys below the level it broke."""
+    limit = max(level, price)
+    if tick is None or tick <= 0:
+        return limit
+    return (limit / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+
+
 def plan_entry(
     candidate: Candidate,
     ctx: LiveContext,
     level: Decimal | None,
     day_lows: Sequence[Decimal] = (),
 ) -> EntryPlan:
-    """The stop and the entry filters at the trigger. `ctx.price` is the entry price and
-    `day_lows` the lows of the day's final bars up to and including the trigger bar."""
-    entry = ctx.price
-    if entry is None or entry <= 0:
+    """The stop and the entry filters at the trigger. The entry price is `entry_limit` of the
+    level and `ctx.price` (the trigger bar's close), and `day_lows` the lows of the day's final
+    bars up to and including the trigger bar."""
+    price = ctx.price
+    if price is None or price <= 0:
         return EntryPlan(None, level, None, None, SKIP_NO_PRICE, ())
-    locked = locked_upper_circuit(entry, candidate.daily)
     if level is None:
-        return EntryPlan(entry, None, None, locked, SKIP_NO_LEVEL, ())
+        locked = locked_upper_circuit(price, candidate.daily)
+        return EntryPlan(price, None, None, locked, SKIP_NO_LEVEL, ())
+    entry = entry_limit(level, price, candidate.daily.tick)
+    locked = locked_upper_circuit(entry, candidate.daily)
     daily = candidate.daily
     stop = None
     skip = None
@@ -547,6 +565,7 @@ class TriggerMonitor:
             at=bar.final_at,
             price=bar.close,
             bar_high=bar.high,
+            bar_close=bar.close,
             levels=levels,
             cum_volume=self._view.day_volume(candidate.symbol, day),
             elapsed=elapsed_fraction(bar.final_at),  # the instant the day volume is read

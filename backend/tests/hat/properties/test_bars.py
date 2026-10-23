@@ -1229,7 +1229,8 @@ def test_symbol_silence_resubscribes_and_alerts(
 def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: int) -> None:
     """HAT-EXEC-120, HAT-DATA-113: the trigger monitor sees only final bars. With prints
     arriving late or out of order, a pivot breakout fires once, at the final instant (end + 2 s)
-    of the first final bar in [09:20, 15:20] whose high is above the pivot, never on a print
+    of the first final bar in [09:20, 15:20] whose high is above the pivot and whose close is at
+    or above it (`confirm: close`, the default, PR 49), never on a print
     inside a bar that is still open, never from a late print the bar never took, and never at
     an instant before the bar was handed over. Harm: an entry fires on a print the 5-minute bar
     later disowns, or before the bar that justifies it exists."""
@@ -1265,7 +1266,12 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
     level = Decimal(pivot).scaleb(-2)
     last_in_window = datetime.combine(DAY, time(15, 20), tzinfo=IST)
     expected = next(
-        (bar for _, bar in finals if bar.high > level and bar.final_at <= last_in_window), None
+        (
+            bar
+            for _, bar in finals
+            if bar.high > level and bar.close >= level and bar.final_at <= last_in_window
+        ),
+        None,
     )
     if expected is None:
         assert fired == []
@@ -1279,7 +1285,7 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
         (expected.final_at - opens) // micro, session_length // micro
     )
     assert trigger.context.bar_high == expected.high
-    assert trigger.context.price == expected.close
+    assert trigger.context.bar_close == trigger.context.price == expected.close
 
 
 @settings(max_examples=25, deadline=None)
