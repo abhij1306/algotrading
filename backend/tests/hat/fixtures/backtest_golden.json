@@ -7,15 +7,36 @@
    "avg_mae_r": "-1.280487",
    "avg_mfe_r": "0.802551",
    "avg_win_r": null,
+   "cagr": -0.009847660121041546,
    "config_digest": "35313a50103c896052a928fbf5dfc2b22b49fce00c63b8eb703da20af768de29",
+   "conventions": {
+    "ambiguous": "optimistic",
+    "cost_model": {
+     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
+     "version": "cnc-delivery-1"
+    },
+    "entry_fill_rule": "penetration_1_tick",
+    "fill_path": "open_low_high_close",
+    "gap_through_rule": "min_open_stop",
+    "lower_circuit": "carry_to_next_unlocked_open",
+    "slippage_bps": "20",
+    "slot_order": "time",
+    "suspension_markdown": {
+     "after_sessions": 5,
+     "band_pct": "5"
+    },
+    "trigger_proxy": "daily_bar_level_break"
+   },
    "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
    },
+   "cost_share": null,
    "entry_day_low": "bars_5m_else_max_low_min_open_level_less_adr20",
    "entry_fill_rule": "penetration_1_tick",
    "expectancy_r": "-1.239610",
+   "exposure": 0.05,
    "fees": "488.8100",
    "fill_path": "open_low_high_close",
    "final_equity": "996080.5310",
@@ -32,8 +53,10 @@
     "multipliers_fixed_at_one",
     "entry_day_low_estimated"
    ],
+   "longest_drawdown_sessions": 78,
    "lower_circuit": "carry_to_next_unlocked_open",
    "lower_circuit_days": 0,
+   "mar": -2.5124985351437616,
    "max_drawdown": 0.003919469000000064,
    "net_pnl": "-3919.4690",
    "rejections": {
@@ -58,6 +81,11 @@
     "after_sessions": 5,
     "band_pct": "5"
    },
+   "tail_trimmed_r": {
+    "top_10pct": "-2.170326",
+    "top_1pct": "-2.170326",
+    "top_5pct": "-2.170326"
+   },
    "total_return": -0.003919469000000064,
    "trades": 2,
    "trigger_proxy": "daily_bar_level_break",
@@ -80,7 +108,8 @@
     "qty": "223",
     "r_multiple": "-2.1703260000",
     "realized_pnl": "-3520.8286",
-    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
+    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2",
+    "score": "0.9330700045"
    },
    {
     "entry_date": "2025-06-05",
@@ -97,7 +126,8 @@
     "qty": "41",
     "r_multiple": "-0.3088930000",
     "realized_pnl": "-398.6404",
-    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
+    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2",
+    "score": "0.9329855917"
    }
   ],
   "watchlist_rows": 8
@@ -110,15 +140,36 @@
    "avg_mae_r": "-0.044215",
    "avg_mfe_r": "9.509382",
    "avg_win_r": "7.588381",
+   "cagr": 0.02503567675155849,
    "config_digest": "35313a50103c896052a928fbf5dfc2b22b49fce00c63b8eb703da20af768de29",
+   "conventions": {
+    "ambiguous": "optimistic",
+    "cost_model": {
+     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
+     "version": "cnc-delivery-1"
+    },
+    "entry_fill_rule": "penetration_1_tick",
+    "fill_path": "open_low_high_close",
+    "gap_through_rule": "min_open_stop",
+    "lower_circuit": "carry_to_next_unlocked_open",
+    "slippage_bps": "20",
+    "slot_order": "time",
+    "suspension_markdown": {
+     "after_sessions": 5,
+     "band_pct": "5"
+    },
+    "trigger_proxy": "daily_bar_level_break"
+   },
    "cooldown_sessions": 0,
    "cost_model": {
     "digest": "eedd13541995b31654ccc8aa239811794cb2ed08960e3a8cb3457ea46e0d489a",
     "version": "cnc-delivery-1"
    },
+   "cost_share": "0.007477",
    "entry_day_low": "bars_5m_else_max_low_min_open_level_less_adr20",
    "entry_fill_rule": "penetration_1_tick",
    "expectancy_r": "7.588381",
+   "exposure": 0.54,
    "fees": "74.2800",
    "fill_path": "open_low_high_close",
    "final_equity": "1009860.7678",
@@ -135,8 +186,10 @@
     "multipliers_fixed_at_one",
     "entry_day_low_estimated"
    ],
+   "longest_drawdown_sessions": 24,
    "lower_circuit": "carry_to_next_unlocked_open",
    "lower_circuit_days": 0,
+   "mar": 7.470153716126837,
    "max_drawdown": 0.003351427253432626,
    "net_pnl": "9860.7678",
    "rejections": {
@@ -161,6 +214,11 @@
     "after_sessions": 5,
     "band_pct": "5"
    },
+   "tail_trimmed_r": {
+    "top_10pct": null,
+    "top_1pct": null,
+    "top_5pct": null
+   },
    "total_return": 0.009860767800000003,
    "trades": 1,
    "trigger_proxy": "daily_bar_level_break",
@@ -183,7 +241,8 @@
     "qty": "12",
     "r_multiple": "7.5883810000",
     "realized_pnl": "9860.7678",
-    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2"
+    "risk_policy_version_id": "00000000-0000-7000-8000-0000000000b2",
+    "score": "0.6935736302"
    }
   ],
   "watchlist_rows": 8

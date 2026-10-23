@@ -166,28 +166,33 @@ Each simulated day is read as one path: **open, then low, then high, then close*
 - **Statement:** Each run stores `strategy_version_id`, `risk_policy_version_id`, `period_start`, `period_end`, `data_snapshot`, `status`, `metrics` and `family_key`, and writes its trades to `backtests/run_id=<id>/trades.parquet`.
 - **Design (PR 12):** `data_snapshot` records the sessions read, the row counts, the index, the corporate-action digest and `content_digest`, a sha256 of the bars, features, index closes, membership intervals and industry history the run read, so two snapshots with equal counts but different data differ. The trades file is written atomically under `HAT_DATA_ROOT`. On completion `metrics.dsr` stores the deflated Sharpe probability at that moment as `{prob (6 places, text), sr0, reason, trials, variance}`; the lifecycle recomputes it at evaluation time (HAT-BT-060). `metrics.returns` stores the daily-return Sharpe ratio, count, skewness and kurtosis the DSR reads.
 - **Source:** SCH "Backtest and ops tables" (`hat_backtest_run`); SCH "Parquet, backtests, ops, indexes".
-- **PR:** 3, 12
-- **Verification:** CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics`
+- **Design (PR 65, N10):** each trade row and `trades.parquet` carry `score`, the score of the watchlist row the trade entered from (joined on bot, playbook, instrument and trade date; a float column, null without a row), which the D132 confidence buckets group by. `metrics.conventions` holds the run's conventions (`conventions()`: the PR 62 fill rules, the PR 63 slot order, the PR 64 path rules) as one block, the exact input of `config_digest`; the same keys stay flat in `metrics`, which the evidence filters read.
+- **Deviation (PR 65):** the plan also asks for `playbook` and the skip-reason counts in the run's output; `trades.parquet` has had `playbook` and `metrics.skips` the counts by reason since PR 12, so PR 65 adds neither.
+- **PR:** 3, 12, 65
+- **Verification:** CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics`, PBT `backtest.fill_conventions_recorded`
 - **Acceptance:**
-  - Property: for every completed run, the trade count and sum of R in `trades.parquet` equal the values in `metrics`. Harm: reported evidence does not match the trades behind it.
+  - Property: for every completed run, the trade count and sum of R in `trades.parquet` equal the values in `metrics`, and each trade's `score` (in the record and the file) is its watchlist row's. Harm: reported evidence does not match the trades behind it, or trades are bucketed by a score they did not have.
 
 ## §4 Metrics, expectancy and deflated Sharpe
 
 #### HAT-BT-040: Trade R and expectancy
 - **Statement:** A trade's R multiple is realised P&L (after costs) divided by initial risk (entry − initial stop) × entry quantity, and expectancy is the mean R over closed trades.
 - **Source:** BL "Your vetoes are measured" (R); SCH `hat_trade_result.r_multiple`; MA "Reuse vs build" (evaluation frameworks: expectancy, drawdown, adherence).
-- **PR:** 11, 12
-- **Verification:** PBT `backtest.r_and_expectancy`
+- **Design (PR 65, G35):** `metrics.tail_trimmed_r` is the mean R without the best ceil(p % of the trades) for p in 1, 5 and 10 (`top_1pct`, `top_5pct`, `top_10pct`; `metrics.tail_trimmed_mean`, exact in Decimal), null when no trade would be left: an edge that rests on a few outliers shows as a collapse from `expectancy_r`.
+- **PR:** 11, 12, 65
+- **Verification:** PBT `backtest.r_and_expectancy`, PBT `backtest.robustness_metrics`, PBT `metrics.tail_trimmed_mean`
 - **Acceptance:**
   - Property: for every closed trade with entry > initial stop and qty >= 1, r_multiple = realized_pnl / ((entry − initial_stop) × qty), a trade stopped at its initial stop with zero costs has R = −1, and expectancy equals the arithmetic mean of R. Harm: R values are inconsistent between trades, so expectancy, lifecycle gates and veto scores are wrong.
 
 #### HAT-BT-041: Standard metrics reuse the existing module
 - **Statement:** Drawdown, Sharpe and trade statistics come from `app/hat/backtest/metrics.py` (HAT's own copy of the legacy `services/backtest_metrics.py`, K1; on polars since PR 12, HAT-DATA-078), extended with R statistics (expectancy, win rate, average win and loss in R, MFE and MAE in R).
 - **Source:** MA "Reuse vs build" (evaluation frameworks reused); PLAN §4.5, PR 12.
-- **PR:** 12
-- **Verification:** PBT `backtest.metrics_bounds`
+- **Design (PR 65, G35):** the module also gives the tuning report's robustness figures, all in `metrics`: `exposure`, the share of the run's sessions on which a position was held (a session within some trade's entry..exit dates); `cagr` and `mar`, the CAGR over the depth of the maximum drawdown (null without a drawdown); `longest_drawdown_sessions`, the longest run of points below the running peak of the curve that starts at the initial equity; `cost_share`, the fees over the gross P&L (net P&L + fees; null unless the gross is a gain); and `ambiguous_days` (PR 64, HAT-BT-021).
+- **PR:** 12, 65
+- **Verification:** PBT `backtest.metrics_bounds`, PBT `backtest.robustness_metrics`, PBT `metrics.longest_drawdown`, PBT `metrics.exposure`, PBT `metrics.mar_ratio`, PBT `metrics.cost_share`
 - **Acceptance:**
   - Property: for every generated equity curve and trade list, max drawdown is in [0, 1], win rate is in [0, 1], and metrics are invariant to the order in which trades closing on the same day are listed. Harm: impossible metric values reach the lifecycle gate.
+  - Property: for every generated trade list and equity curve, `exposure`, `longest_drawdown_sessions`, `mar`, `tail_trimmed_r` and `cost_share` equal their definitions computed from the trades and the curve, and each of `metrics.longest_drawdown`, `exposure`, `mar_ratio`, `tail_trimmed_mean` and `cost_share` meets its definition (a recovery to the old peak ends a drawdown, both span ends count, MAR has the CAGR's sign, dropping one more best trade never raises the mean, the share is in [0, 1] unless the charges turned a gain into a loss). Harm: the tuning report shows an idle, long-underwater, outlier-driven or cost-eaten strategy as robust.
 
 #### HAT-BT-042: Deflated Sharpe probability
 - **Statement:** The deflated Sharpe probability of a run is computed per Bailey & López de Prado (2014): DSR = Φ((SR − SR0) × sqrt(T − 1) / sqrt(1 − γ3 × SR + ((γ4 − 1)/4) × SR²)), with SR0 = sqrt(V) × ((1 − γ) × Φ⁻¹(1 − 1/N) + γ × Φ⁻¹(1 − 1/(N × e))), N the family trial count, V the variance of the family's trial Sharpe ratios, γ the Euler-Mascheroni constant, T the number of returns, γ3 skewness and γ4 kurtosis of returns.

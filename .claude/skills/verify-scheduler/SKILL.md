@@ -153,6 +153,7 @@ Covered digest: `a6eedc4b6ba907f2bd0708a69b7700f29099ab0068848033eed19b568b4684f
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 65: `MERGED_PRS` gains 65; no scheduler check changed.
 - PR 64: `MERGED_PRS` gains 64; no scheduler check changed.
 - PR 63: `MERGED_PRS` gains 63; no scheduler check changed.
 - PR 62: `MERGED_PRS` gains 62; no scheduler check changed.

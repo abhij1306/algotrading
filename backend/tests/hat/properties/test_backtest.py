@@ -704,12 +704,18 @@ def test_decimal_money(paths: dict, slippage: D) -> None:
 @given(s.paths(SESSIONS))
 @RUNS
 def test_trades_match_metrics(paths: dict) -> None:
-    """The trade count and sum of R in `trades.parquet` equal the run's metrics."""
+    """The trade count and sum of R in `trades.parquet` equal the run's metrics, and each trade
+    carries the score of the watchlist row it entered from (PR 65, N10), in the record and in
+    the file. Harm: the confidence buckets (D132) group trades by a score they did not have."""
     result = _run(s.market(paths, DAYS))
     table = pq.read_table(pa.BufferReader(trades_parquet(result.trades)))
     rs = table.column("r_multiple").to_pylist()
     assert table.num_rows == result.metrics["trades"]
     assert str(sum(rs, D(0)).quantize(D("0.000001"))) == result.metrics["sum_r"]
+    listed = {(w.trade_date, w.playbook, w.instrument_id): w.score for w in result.watchlists}
+    scores = [listed[(t.entry_date, t.playbook, t.instrument_id)] for t in result.trades]
+    assert [t.score for t in result.trades] == scores
+    assert table.column("score").to_pylist() == [float(x) for x in scores]
 
 
 # --- HAT-BT-040 -------------------------------------------------------------------------------
@@ -737,9 +743,12 @@ def test_r_and_expectancy(paths: dict) -> None:
 # --- HAT-BT-041 -------------------------------------------------------------------------------
 
 
-def _trade(day: int, r: D, n: int) -> TradeRow:
+_NO_FEES = D(0)
+
+
+def _trade(day: int, r: D, n: int, entry: int = 0, fees: D = _NO_FEES) -> TradeRow:
     return TradeRow(
-        entry_date=DAYS[0],
+        entry_date=DAYS[entry],
         exit_date=DAYS[day],
         playbook="p",
         instrument_id=s.instrument(n),
@@ -748,7 +757,7 @@ def _trade(day: int, r: D, n: int) -> TradeRow:
         initial_stop=D(90),
         exit_reason="hard_stop",
         realized_pnl=r * 10,
-        fees=D(0),
+        fees=fees,
         r_multiple=r,
         mfe_r=max(r, D(0)),
         mae_r=min(r, D(0)),
@@ -781,6 +790,55 @@ def test_metrics_bounds(rows: list[tuple[int, D]], curve: list[D], rnd: object) 
     rnd.shuffle(shuffled)  # type: ignore[attr-defined]
     shuffled.sort(key=lambda t: t.exit_date)  # stable: same-day trades keep the shuffled order
     assert compute_metrics(shuffled, equity, spec) == metrics
+
+
+@given(
+    st.lists(
+        st.tuples(st.integers(0, 9), st.integers(0, 9), R_VALUES, st.integers(0, 500)),
+        max_size=30,
+    ),
+    st.lists(st.integers(1, 3_000_000).map(D), min_size=1, max_size=10),
+)
+@example([(0, 2, D(-1), 5), (5, 6, D(4), 0)], [D(100), D(90), D(95), D(80), D(120)])
+def test_robustness_metrics(rows: list[tuple[int, int, D, int]], curve: list[D]) -> None:
+    """A run's robustness figures (PR 65) restate its trades and equity: `exposure` is the share
+    of its sessions inside some trade's entry..exit span, `longest_drawdown_sessions` the
+    longest run of sessions below the running peak of the curve (the initial equity first),
+    `mar` the CAGR over the drawdown's depth, `tail_trimmed_r` the mean R without the best
+    ceil(1, 5, 10 % of the trades), and `cost_share` the fees over net P&L + fees. Harm: the
+    tuning report shows a strategy that is idle most of the time, under water for months,
+    resting on one outlier trade or eaten by costs as robust."""
+    trades = sorted(
+        (
+            _trade(max(a, b), r, n, entry=min(a, b), fees=D(fee))
+            for n, (a, b, r, fee) in enumerate(rows)
+        ),
+        key=lambda t: t.exit_date,
+    )
+    equity = [(DAYS[n], v) for n, v in enumerate(curve)]
+    spec = s.spec(s.config(), DAYS)
+    metrics = compute_metrics(trades, equity, spec)
+    days = [d for d, _ in equity]
+    inside = [d for d in days if any(t.entry_date <= d <= t.exit_date for t in trades)]
+    assert metrics["exposure"] == len(inside) / len(days)
+    points = [spec.initial_equity, *curve]
+    peaks = [max(points[: n + 1]) for n in range(len(points))]
+    under = "".join("1" if v < p else "0" for v, p in zip(points, peaks, strict=True))
+    assert metrics["longest_drawdown_sessions"] == max(len(run) for run in under.split("0"))
+    depth = metrics["max_drawdown"]
+    if depth == 0:
+        assert metrics["mar"] is None
+    elif metrics["mar"] is not None:
+        assert math.isclose(metrics["mar"] * depth, metrics["cagr"], rel_tol=1e-9)
+    best_first = sorted((t.r_multiple for t in trades), reverse=True)
+    for pct in (1, 5, 10):
+        rest = best_first[math.ceil(len(best_first) * pct / 100) :]
+        want = str((sum(rest, D(0)) / len(rest)).quantize(D("0.000001"))) if rest else None
+        assert metrics["tail_trimmed_r"][f"top_{pct}pct"] == want
+    fees = sum((t.fees for t in trades), D(0))
+    gross = sum((t.realized_pnl for t in trades), D(0)) + fees
+    share = str((fees / gross).quantize(D("0.000001"))) if gross > 0 else None
+    assert metrics["cost_share"] == share
 
 
 # --- HAT-BT-050 -------------------------------------------------------------------------------
@@ -825,8 +883,9 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
     """Every run's metrics record its fill path (open, low, high, close), entry fill rule,
     gap-through rule (min(open, stop)), trigger proxy, slippage, cost model, slot order
     (`time` by default, PR 63) and path rules (PR 64: the ambiguous-day rule, `optimistic` by
-    default, the lower-circuit carry and the suspension markdown), whether it is
-    flagged for promotion, and `config_digest`, the hash of exactly those conventions; a
+    default, the lower-circuit carry and the suspension markdown), both as flat keys and as one
+    `conventions` block (PR 65), whether it is flagged for promotion, and `config_digest`, the
+    hash of exactly those conventions; a
     `touch` run also reports the touch gap. A run flagged for promotion at a slippage of 0, or
     under `touch`, is refused. Harm: runs under different fill conventions read as comparable
     evidence, or a promotion rides on perfect or optimistic fills."""
@@ -853,6 +912,7 @@ def test_fill_conventions_recorded(paths: dict, rule: str, bps: D, promote: bool
         "suspension_markdown": {"after_sessions": SUSPENSION_SESSIONS, "band_pct": "5"},
     }
     assert {k: metrics[k] for k in recorded} == recorded
+    assert metrics["conventions"] == recorded  # the block of PR 65, exactly what is hashed
     assert metrics["for_promotion"] is promote
     assert metrics["config_digest"] == config_hash(recorded)
     assert metrics["known_gaps"] == [*KNOWN_GAPS, *([TOUCH_GAP] if rule == TOUCH else [])]

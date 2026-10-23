@@ -8,6 +8,12 @@ polars (PR 12 moved the module off pandas, HAT-DATA-078); the arithmetic is unch
 * `sharpe_mean_std`: `mean / std * sqrt(periods)` of per-period returns, risk-free 0.
 * `sharpe_excess_cagr`: `(cagr - rf) / annualised std`.
 
+PR 65 (G35) adds what a tuning run reports besides the return figures: the share of sessions
+with a position held (`exposure`), MAR (`mar_ratio`), the longest stretch under the running peak
+(`longest_drawdown`), the mean after dropping the best trades (`tail_trimmed_mean`) and the
+charges' share of the gross P&L (`cost_share`). The two on R and money take Decimals and stay
+exact.
+
 No I/O and no state beyond the inputs passed in.
 """
 
@@ -16,6 +22,8 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 
 import polars as pl
 
@@ -114,3 +122,45 @@ def trade_stats(values: Sequence[float]) -> TradeStats:
         avg_loss=(sum(losses) / len(losses)) if losses else 0.0,
         profit_factor=float(profit_factor),
     )
+
+
+def longest_drawdown(equity: Sequence[float] | pl.Series) -> int:
+    """The longest run of consecutive points below the running peak of the points before them
+    (the longest time under water, in the curve's periods); 0 for a curve that never falls."""
+    longest = run = 0
+    peak = -math.inf
+    for value in equity:
+        if value < peak:
+            run += 1
+            longest = max(longest, run)
+        else:
+            peak, run = value, 0
+    return longest
+
+
+def exposure(sessions: Sequence[date], held: Sequence[tuple[date, date]]) -> float:
+    """The share of `sessions` on which at least one position was held: a session within some
+    (entry date, exit date) span, both ends included; 0.0 without sessions."""
+    if not sessions:
+        return 0.0
+    invested = sum(1 for day in sessions if any(a <= day <= b for a, b in held))
+    return invested / len(sessions)
+
+
+def mar_ratio(cagr: float, drawdown: float) -> float | None:
+    """MAR: the CAGR over the depth of the maximum drawdown (a non-positive fraction, as
+    `max_drawdown` gives it); None without a drawdown."""
+    return cagr / -drawdown if drawdown < 0 else None
+
+
+def tail_trimmed_mean(values: Sequence[Decimal], drop: int) -> Decimal | None:
+    """The mean of `values` without its `drop` largest; None when nothing would be left."""
+    if drop < 0 or drop >= len(values):
+        return None
+    kept = sorted(values)[: len(values) - drop]
+    return sum(kept, Decimal(0)) / len(kept)
+
+
+def cost_share(charges: Decimal, gross: Decimal) -> Decimal | None:
+    """The charges' share of the gross P&L (before charges); None unless the gross is a gain."""
+    return charges / gross if gross > 0 else None

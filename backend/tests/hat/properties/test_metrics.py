@@ -1,11 +1,15 @@
 """PBT metrics.* (HAT-BT, PR 12 inputs): the drawdown, return, Sharpe and trade statistics that
-the HAT backtest reuses, on the real functions of `app.hat.backtest.metrics`. Series are bounded
+the HAT backtest reuses, and the robustness figures of PR 65 (exposure, MAR, the longest
+drawdown, the tail-trimmed mean and the cost share), on the real functions of
+`app.hat.backtest.metrics`. Series are bounded
 (at most 60 points) and positive, as an equity curve is."""
 
 import math
+from datetime import date, timedelta
+from decimal import Decimal
 
 import polars as pl
-from hypothesis import given
+from hypothesis import example, given
 from hypothesis import strategies as st
 
 from app.hat.backtest import metrics
@@ -104,3 +108,106 @@ def test_returns_guard_bad_capital(final: float, initial: float, periods: int) -
         assert metrics.total_return(initial, initial) == 0.0
         if periods <= 0:
             assert metrics.annualized_return(final, initial, periods) == 0.0
+
+
+@given(equity_curves)
+@example(pl.Series([3.0, 1.0, 2.0, 3.0, 2.0], dtype=pl.Float64))
+def test_longest_drawdown(equity: pl.Series) -> None:
+    """The longest drawdown is the longest run of consecutive points below the curve's running
+    maximum (counted here from polars' `cum_max`), so it is 0 exactly when the curve never
+    falls and it is shorter than the curve. Harm: a run that sat under water for months reports
+    a short recovery, or a recovery to the old peak still counts as under water."""
+    under = (equity < equity.cum_max()).to_list()
+    runs = "".join("1" if u else "0" for u in under).split("0")
+    longest = metrics.longest_drawdown(equity)
+    assert longest == max(len(r) for r in runs)
+    assert (longest == 0) is bool((equity == equity.cum_max()).all())
+    assert 0 <= longest < len(equity)
+
+
+DAY0 = date(2026, 1, 1)
+spans = st.lists(
+    st.tuples(st.integers(0, 40), st.integers(0, 10)).map(
+        lambda p: (DAY0 + timedelta(p[0]), DAY0 + timedelta(p[0] + p[1]))
+    ),
+    max_size=8,
+)
+
+
+@given(st.sets(st.integers(0, 50), max_size=40), spans)
+@example({0, 3, 6}, [(DAY0 + timedelta(1), DAY0 + timedelta(5))])  # a span between sessions
+def test_exposure(days: set[int], held: list[tuple[date, date]]) -> None:
+    """Exposure is the share of the sessions inside some held span, both ends included: the
+    sessions within the union of the spans (counted here day by day) over all sessions, in
+    [0, 1], 0.0 without sessions. Harm: the report counts calendar days or misses the exit day,
+    so a strategy that sits in cash looks fully invested or the other way round."""
+    sessions = sorted(DAY0 + timedelta(n) for n in days)
+    covered = {a + timedelta(n) for a, b in held for n in range((b - a).days + 1)}
+    value = metrics.exposure(sessions, held)
+    if not sessions:
+        assert value == 0.0
+        return
+    assert value == sum(1 for d in sessions if d in covered) / len(sessions)
+    assert 0.0 <= value <= 1.0
+
+
+@given(
+    st.floats(min_value=-0.99, max_value=10.0, allow_nan=False),
+    # a curve's drawdown: none, or at least a millionth (a tick on a large account)
+    st.one_of(st.just(0.0), st.floats(min_value=-0.99, max_value=-1e-6)),
+)
+@example(0.2, 0.0)
+def test_mar_ratio(cagr: float, drawdown: float) -> None:
+    """MAR is the CAGR over the drawdown's depth: it has the CAGR's sign and times the depth
+    gives the CAGR back, and without a drawdown it is None, never a division by zero.
+    Harm: a deeper drawdown raises a strategy's MAR, or a smooth run reports infinity."""
+    mar = metrics.mar_ratio(cagr, drawdown)
+    if drawdown == 0:
+        assert mar is None
+        return
+    assert mar is not None
+    assert math.isclose(mar * -drawdown, cagr, rel_tol=1e-9, abs_tol=1e-12)
+    assert (mar > 0) is (cagr > 0)
+    assert (mar < 0) is (cagr < 0)
+
+
+r_values = st.lists(st.integers(-300, 500).map(lambda n: Decimal(n) / 100), max_size=30)
+
+
+@given(r_values, st.integers(0, 32))
+@example([Decimal(-1), Decimal(5), Decimal(1)], 1)
+def test_tail_trimmed_mean(values: list[Decimal], drop: int) -> None:
+    """The tail-trimmed mean drops the `drop` largest values: it is the exact mean of the rest
+    (so drop 0 is the plain mean), never above the mean with one fewer dropped, and None when
+    nothing is left. Harm: a strategy whose edge is one outlier trade passes the tail test, or
+    dropping the best trades raises the mean."""
+    trimmed = metrics.tail_trimmed_mean(values, drop)
+    if drop >= len(values):
+        assert trimmed is None
+        return
+    rest = sorted(values, reverse=True)[drop:]
+    assert trimmed == sum(rest, Decimal(0)) / len(rest)
+    if drop:
+        fewer = metrics.tail_trimmed_mean(values, drop - 1)
+        assert fewer is not None
+        assert trimmed <= fewer
+
+
+money = st.integers(-(10**8), 10**8).map(lambda n: Decimal(n) / 100)
+
+
+@given(money.map(abs), money)
+@example(Decimal(0), Decimal(0))
+def test_cost_share(charges: Decimal, net: Decimal) -> None:
+    """The cost share is the charges over the gross P&L (net + charges): exact, in [0, 1] when
+    the net is not a loss, above 1 when the charges turned a gross gain into a loss, and None
+    unless the gross is a gain. Harm: costs that ate the whole edge read as a small share, or a
+    losing run divides by zero or a negative."""
+    gross = net + charges
+    share = metrics.cost_share(charges, gross)
+    if gross <= 0:
+        assert share is None
+        return
+    assert share == charges / gross
+    assert (share <= 1) is (net >= 0)
+    assert share >= 0

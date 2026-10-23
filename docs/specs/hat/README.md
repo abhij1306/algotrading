@@ -536,9 +536,9 @@ to an artefact that exists.
 | HAT-BT-026 | [09](09-backtest.md) | 63 | PBT `backtest.slot_order_rank`, PBT `backtest.slot_order_refused`, PBT `backtest.slot_order_applied`, PBT `backtest.fill_conventions_recorded`, PBT `backtest.fill_conventions_recorded_digest` |
 | HAT-BT-030 | [09](09-backtest.md) | 12, 62 | PBT `dsr.trial_counting` |
 | HAT-BT-031 | [09](09-backtest.md) | 12 | PBT `dsr.family_key` |
-| HAT-BT-032 | [09](09-backtest.md) | 3, 12 | CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics` |
-| HAT-BT-040 | [09](09-backtest.md) | 11, 12 | PBT `backtest.r_and_expectancy` |
-| HAT-BT-041 | [09](09-backtest.md) | 12 | PBT `backtest.metrics_bounds` |
+| HAT-BT-032 | [09](09-backtest.md) | 3, 12, 65 | CONF `backtest_run_columns`, PBT `backtest.trades_match_metrics`, PBT `backtest.fill_conventions_recorded` |
+| HAT-BT-040 | [09](09-backtest.md) | 11, 12, 65 | PBT `backtest.r_and_expectancy`, PBT `backtest.robustness_metrics`, PBT `metrics.tail_trimmed_mean` |
+| HAT-BT-041 | [09](09-backtest.md) | 12, 65 | PBT `backtest.metrics_bounds`, PBT `backtest.robustness_metrics`, PBT `metrics.longest_drawdown`, PBT `metrics.exposure`, PBT `metrics.mar_ratio`, PBT `metrics.cost_share` |
 | HAT-BT-042 | [09](09-backtest.md) | 12 | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example` |
 | HAT-BT-050 | [09](09-backtest.md) | 12 | PBT `backtest.deterministic` |
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
