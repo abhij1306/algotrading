@@ -155,6 +155,30 @@ def test_dsr_published_example() -> None:
     assert got.reason is None
 
 
+# --- HAT-BT-030: a DSR or PBO only for a recorded run (PR 66) ---------------------------------
+
+SCORERS = ("deflated_sharpe", "family_deflated_sharpe", "pbo")
+
+
+def test_dsr_scored_only_by_runs() -> None:
+    """Under `app/hat` only `backtest/runs.py` imports the DSR and PBO scorers of
+    `app.hat.backtest.dsr` (`deflated_sharpe`, `family_deflated_sharpe`, `pbo`), and it scores a
+    run only through `run_dsr` and `family_pbo`, which read recorded runs; so no other module
+    can score a result that never became a trial (G33). Harm: a variant tried outside the
+    recorded runs reaches a gate as evidence without counting as a trial."""
+    allowed = {APP_ROOT / "hat" / "backtest" / "runs.py", APP_ROOT / "hat" / "backtest" / "dsr.py"}
+    offenders = sorted(
+        str(path.relative_to(APP_ROOT))
+        for path in (APP_ROOT / "hat").rglob("*.py")
+        if path not in allowed
+        and any(f"app.hat.backtest.dsr.{name}" in imports_of(path) for name in SCORERS)
+    )
+    assert offenders == []
+    assert {f"app.hat.backtest.dsr.{name}" for name in ("family_deflated_sharpe", "pbo")} <= (
+        imports_of(APP_ROOT / "hat" / "backtest" / "runs.py")
+    )
+
+
 # --- HAT-BT-070: known gaps ------------------------------------------------------------------
 
 
