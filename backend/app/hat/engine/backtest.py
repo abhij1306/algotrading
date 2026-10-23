@@ -1666,7 +1666,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     from app.database import db_session_scope  # noqa: PLC0415
 
-    from ..backtest.runs import RunError, backtest_bot  # noqa: PLC0415
+    from ..backtest.runs import RunConventions, RunError, backtest_bot  # noqa: PLC0415
     from ..data.store import DataStore  # noqa: PLC0415
     from ..settings import operator_settings  # noqa: PLC0415
 
@@ -1703,11 +1703,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 root=settings.data_root,
                 slippage_bps=args.slippage_bps,
                 version_id=args.version,
-                entry_fill_rule=args.entry_fill,
                 for_promotion=args.for_promotion,
-                slot_order=args.slot_order,
-                ambiguous=args.ambiguous,
-                suspension_sessions=args.suspension_sessions,
+                conventions=RunConventions(
+                    entry_fill_rule=args.entry_fill,
+                    slot_order=args.slot_order,
+                    ambiguous=args.ambiguous,
+                    suspension_sessions=args.suspension_sessions,
+                ),
                 **extra,
             )
         except RunError as exc:

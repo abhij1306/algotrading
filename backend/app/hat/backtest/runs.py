@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -67,6 +68,7 @@ __all__ = [
     "COMPLETED",
     "FAILED",
     "RUNNING",
+    "RunConventions",
     "RunError",
     "backtest_bot",
     "backtest_evidence",
@@ -248,6 +250,18 @@ def record_backtest(
         raise RunError("backtest_error") from exc
 
 
+@dataclass(frozen=True)
+class RunConventions:
+    """The rules a run chooses besides its slippage and cost model (`RunSpec`): the entry fill
+    (PR 62), the slot order (PR 63), the ambiguous-day rule and the bar-less sessions before the
+    suspension markdown (PR 64)."""
+
+    entry_fill_rule: str = PENETRATION
+    slot_order: str = SLOT_ORDER_TIME
+    ambiguous: str = AMBIGUOUS_OPTIMISTIC
+    suspension_sessions: int = SUSPENSION_SESSIONS
+
+
 def backtest_bot(
     session: Session,
     store: DataStore,
@@ -260,21 +274,16 @@ def backtest_bot(
     cost_model: str = DEFAULT_COST_MODEL,
     version_id: uuid.UUID | None = None,
     cooldown_sessions: int | None = None,
-    entry_fill_rule: str = PENETRATION,
     for_promotion: bool = False,
-    slot_order: str = SLOT_ORDER_TIME,
-    ambiguous: str = AMBIGUOUS_OPTIMISTIC,
-    suspension_sessions: int = SUSPENSION_SESSIONS,
+    conventions: RunConventions | None = None,
 ) -> HatBacktestRun:
     """Backtest a sleeve's strategy version (its live one unless `version_id` names another of
     the same strategy) on the sleeve's universe under the risk policy in force now, over the
     Parquet store; `cooldown_sessions` replaces that policy's cooldown for a sweep (PR 58), and
-    `entry_fill_rule` the default penetration fill (PR 62). A run `for_promotion` (one
-    `publish_version` may take) is refused at a slippage of 0, under `touch` or off the
-    `time` slot order; `slot_order`
-    is the order a capped day's triggers take the slots (PR 63), `ambiguous` the rule for a
-    raised stop the day's low reached and `suspension_sessions` the bar-less sessions before a
-    position is marked down (PR 64). The command line's body.
+    `conventions` the default entry fill (PR 62), slot order (PR 63), ambiguous-day rule and
+    bar-less sessions before the markdown (PR 64). A run `for_promotion` (one `publish_version`
+    may take) is refused at a slippage of 0, under `touch`, off the `time` slot order or with a
+    markdown later than the default. The command line's body.
     Refusals before the run is recorded raise `RunError` and record nothing; a refusal of the
     engine is a failed trial."""
     bot = session.get(HatBot, bot_id)
@@ -295,18 +304,19 @@ def backtest_bot(
         except BacktestError as exc:
             raise RunError(exc.code) from None
     config = parse_config(version.config)
+    rules = conventions or RunConventions()
     try:
         fills = BacktestFills(load_cost_model(cost_model), check_slippage(slippage_bps))
     except CostError as exc:
         raise RunError(exc.code) from None
     try:
         check_conventions(
-            entry_fill_rule,
+            rules.entry_fill_rule,
             fills.slippage_bps,
             for_promotion,
-            slot_order,
-            ambiguous=ambiguous,
-            suspension_sessions=suspension_sessions,
+            rules.slot_order,
+            ambiguous=rules.ambiguous,
+            suspension_sessions=rules.suspension_sessions,
         )
     except BacktestError as exc:
         raise RunError(exc.code) from None
@@ -323,11 +333,11 @@ def backtest_bot(
         start=start,
         end=end,
         fills=fills,
-        entry_fill_rule=entry_fill_rule,
+        entry_fill_rule=rules.entry_fill_rule,
         for_promotion=for_promotion,
-        slot_order=slot_order,
-        ambiguous=ambiguous,
-        suspension_sessions=suspension_sessions,
+        slot_order=rules.slot_order,
+        ambiguous=rules.ambiguous,
+        suspension_sessions=rules.suspension_sessions,
     )
     return record_backtest(
         session, spec, data, universe_id=universe_id, data_snapshot=snapshot, root=root
