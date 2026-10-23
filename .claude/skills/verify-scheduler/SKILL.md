@@ -148,12 +148,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `7fa132ddf74c0f2fb976c4cc2bb7dae11380226be5e6c223f55690f56c2e174f`
+Covered digest: `4ec7c4627fd61a4f091e07edc29acf6ee24fafd2419e48a136c56c7cd4c3e2c9`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, D149, HAT-EXEC-015): confidence labels. `hat_signal` gains `confidence` and `confidence_basis`, fixed at creation (a Postgres trigger refuses a change), and the new table `hat_backtest_bucket` holds a completed run's trades by playbook and setup-score band; `trades.open_entry` stores the label `trades.entry_confidence` reads (`runs.signal_confidence`) or the caller's (the router's; the backtest's fixed `backtest` label). No check of this skill changed. Nothing was narrowed.
 - PR 69: `MERGED_PRS` gains 69 (the Backtested gate, HAT-PORT-061); no scheduler or harness check changed.
 - PR 75a: `MERGED_PRS` gains 75; `engine/live_trades.py` imports its shared helpers from `engine/positions.py` (`verify-execution`). No scheduler check changed.
 - PR 73b (PR 39 follow-up): `daily/runtime.py` builds `LiveSubscriptions` with `subscription_alert(self.notifier, self._now)` (sent off the loop, the clock's trade date), and `daily/production.py` refuses the start while a proxy would carry Fyers traffic (`verify-execution`). `test_ops.py` and `test_conf_ops.py` gain one check each. Not covered by a property: the alert's detail (none: `LiveSubscriptions` passes the code only). Nothing was narrowed.

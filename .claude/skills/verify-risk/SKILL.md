@@ -96,12 +96,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `0cf2eae6ab9307dffb7950ebf7e1462733cc7567`
-Covered digest: `a64cae70cb6b529bb7a2f85c7a8a5dfd1004edf85c03b4be001c282ac20435fb`
+Covered digest: `b7d4a99cd4c9f4862881d54029d98376ef78023ddc28ca580f63d9ee0c637520`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, D149, HAT-EXEC-015): confidence labels. `hat_signal` gains `confidence` and `confidence_basis`, fixed at creation (a Postgres trigger refuses a change), and the new table `hat_backtest_bucket` holds a completed run's trades by playbook and setup-score band; `trades.open_entry` stores the label `trades.entry_confidence` reads (`runs.signal_confidence`) or the caller's (the router's; the backtest's fixed `backtest` label). No check of this skill changed. Nothing was narrowed.
 - PR 73 (PR 46 follow-up 4): `request_policy_change` refuses `actor = user` without a `chat_id` (`PolicyChangeError`) before it writes the version row; `caps.policy_change_inside_session_or_without_evidence_is_refused` covers it. `owner_transition`'s Live guard (`strategy_has_live_sleeve`) is checked in `verify-portfolio`. Nothing was narrowed.
 - PR 58 (HAT-RISK-036, plan audit G29): the policy gains `cooldown_sessions` (seed 0; a stored document without it reads as 0) and the decision the reason `cooldown`, checked last among the per-bot caps, after `stopout_cap`, so an entry refused for a position or a daily cap keeps that reason. The history is `SignalContext.hard_stop_days`, read only while N > 0. Properties `caps.cooldown`, `caps.cooldown_input_fails_closed` and `caps.cooldown_shortening_is_increase` are under `PBT caps.*`; the wiring through `open_entry` is `trades.last_hard_stop` (verify-execution) and the backtest's use is `backtest.cooldown_applied` (verify-backtest). This PR also refreshed `verify-governance` (`risk/policy.py`), `verify-portfolio` (`backtest/runs.py`) and `verify-scheduler` (`MERGED_PRS` gained 58).
 - `KillSwitch` has no `FlattenNeedsConfirm` or `FlattenExitOnly`: the flatten command is PR 16 code and the model's actions must map to existing functions. The kill, pause, health and approval rules of HAT-RISK-062 to 065 and HAT-GOV-081 are modelled.

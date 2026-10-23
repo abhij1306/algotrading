@@ -73,6 +73,8 @@ def _trade(session: Session) -> tuple[HatSignal, HatPosition, HatOrder]:
         mode="confirm",
         state=lifecycle.INITIAL_STATE,
         risk_decision={},
+        confidence="low",
+        confidence_basis={"reason": "no_run"},
     )
     session.add(signal)
     session.flush()

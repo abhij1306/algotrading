@@ -127,6 +127,33 @@ BEGIN
 END $$
 """
 
+# The confidence domain (PR 71) for a `hat_signal` created before the column existed; the text
+# matches the model's CHECK. Rows of that time hold no label (null), which reads as low.
+_SIGNAL_CONFIDENCE_CHECK = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'hat_signal_confidence_check' AND conrelid = to_regclass('hat_signal')
+  ) THEN
+    ALTER TABLE hat_signal ADD CONSTRAINT hat_signal_confidence_check
+      CHECK (confidence IN ('high', 'medium', 'low'));
+  END IF;
+END $$
+"""
+
+# A signal's confidence label and its basis are fixed when it is created (D132, HAT-EXEC-015).
+_SIGNAL_CONFIDENCE_FN = """
+CREATE OR REPLACE FUNCTION hat_signal_confidence_immutable() RETURNS trigger AS $$
+BEGIN
+  IF NEW.confidence IS DISTINCT FROM OLD.confidence
+     OR NEW.confidence_basis IS DISTINCT FROM OLD.confidence_basis THEN
+    RAISE EXCEPTION 'confidence of signal % is immutable', OLD.id;
+  END IF;
+  RETURN NEW;
+END $$ LANGUAGE plpgsql
+"""
+
 # Invariant 1 (HAT-SCH-081, HAT-RISK-070): a long position's stop can only rise. The one exception
 # is a split or bonus rescale (HAT-EXEC-141): the whole position moves to the new price scale, and
 # only when a `position.rescaled` event of that position names exactly the old and new quantity,
@@ -194,6 +221,13 @@ CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
     _COOLING_OFF_CHECK,
     _SIGNAL_STATE_CHECK,
     _POSITION_STATE_CHECK,
+    _SIGNAL_CONFIDENCE_CHECK,
+    _SIGNAL_CONFIDENCE_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_signal_confidence_guard
+  BEFORE UPDATE OF confidence, confidence_basis ON hat_signal
+  FOR EACH ROW EXECUTE FUNCTION hat_signal_confidence_immutable()
+""",
     _STOP_ONLY_TIGHTENS_FN,
     """
 CREATE OR REPLACE TRIGGER hat_position_stop_guard

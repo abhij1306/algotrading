@@ -32,6 +32,7 @@ __all__ = [
     "WatchlistDigest",
     "alert_text",
     "card_text",
+    "confidence_line",
     "confirm_text",
     "daily_report_text",
     "login_text",
@@ -102,6 +103,34 @@ class CardView:
     expires_at: datetime | None = None
     headline: str | None = None
     pdf_url: str | None = None
+    # the signal's confidence label and basis (D132); None on a signal stored before PR 71
+    confidence: str | None = None
+    basis: Mapping[str, object] = field(default_factory=dict)
+
+
+def _basis_decimal(raw: object) -> Decimal | None:
+    if not isinstance(raw, str | int):
+        return None
+    try:
+        value = Decimal(str(raw))
+    except ArithmeticError:
+        return None
+    return value if value.is_finite() else None
+
+
+def confidence_line(label: str | None, basis: Mapping[str, object]) -> str:
+    """The card's confidence line (D132, HAT-TG-023): the label and the backtest bucket it was
+    read from, or why there is none. It describes backtest evidence, not this trade's odds."""
+    name = label.upper() if label in ("high", "medium", "low") else "LOW"
+    trades, mean = basis.get("trades"), _basis_decimal(basis.get("mean_r"))
+    if not isinstance(trades, int) or isinstance(trades, bool) or mean is None:
+        reason = _safe(basis.get("reason", "no_label"))
+        return f"Confidence: {name} - no backtest evidence ({reason})"
+    text = f"Confidence: {name} - backtest {trades} similar trades, {_r(mean)}"
+    low, high = _basis_decimal(basis.get("ci90_low")), _basis_decimal(basis.get("ci90_high"))
+    if low is not None and high is not None:
+        text += f" (90% CI {low:+.2f}..{high:+.2f})"
+    return text
 
 
 def _trade_lines(card: CardView) -> list[str]:
@@ -111,6 +140,7 @@ def _trade_lines(card: CardView) -> list[str]:
         f"Entry {money(card.entry)}  Stop {money(card.stop)}  Qty {card.qty}",
         f"Risk {money(card.risk)}  1R/share {money(per_share)}  "
         f"2R target {money(card.entry + 2 * per_share)}",
+        confidence_line(card.confidence, card.basis),
     ]
 
 

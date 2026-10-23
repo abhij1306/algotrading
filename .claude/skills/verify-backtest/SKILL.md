@@ -84,6 +84,13 @@ Checks that the backtest (`backend/app/hat/engine/backtest.py` and `backend/app/
 - `PBT dsr.family_pbo_recorded` Each completed run records its family's PBO (`metrics.pbo`) over the completed runs with a returns file, itself included, on their shared sessions (`dsr.pbo` of their series in run order, a re-run of an equal series counted once), and `pbo_too_few_variants` with one distinct variant (HAT-BT-042, PR 66). Harm: the overfitting check reads one variant or another family's runs, or scores a deterministic re-run as an overfit second variant.
 - `PBT dsr.family_pbo_skips_unreadable` A sibling whose returns file cannot be read as one is left out of the PBO, and the run being completed still completes (HAT-BT-042, PR 66). Harm: one damaged file fails every later backtest of the family.
 - `CONF backtest.dsr_scored_only_by_runs` Under `app/hat` only `backtest/runs.py` (besides `dsr.py`) imports `deflated_sharpe`, `family_deflated_sharpe` or `pbo`, or binds the module `app.hat.backtest.dsr` whole, and `runs.py` imports the last two (HAT-BT-030, PR 66). Harm: a module scores a result that never became a trial.
+- `PBT confidence.label_rule` No bucket, fewer than 30 trades or a mean at or below 0 R is low; otherwise a positive 90% lower bound is high and the rest medium (D132, HAT-EXEC-015). Harm: thin or losing evidence reads as high and auto places it without the owner.
+- `PBT confidence.label_monotone` More trades, a higher mean or a higher lower bound never gives a lower label (D132). Harm: more winning backtest trades take a setup off auto.
+- `PBT confidence.band_of` The three setup-score bands split [0.60, 1.00] with no gap or overlap; any other score, or a value that is not a number, is in no band (D132). Harm: a signal is compared with trades of another band, or an unscored one gets a bucket.
+- `PBT confidence.bucket_stats` A bucket's count, mean R, 90% interval (`Z_90` standard errors of the mean, none below two trades) and win rate are those of its trades, in any order (D132). Harm: the label reads numbers the trades do not have.
+- `PBT confidence.buckets_match_trades` The `hat_backtest_bucket` rows `complete_run` stores equal the buckets recomputed from the run's `trades.parquet`; an unscored trade, or a score outside the bands, is in none (D132, PR 71). Harm: a label reads a bucket the run's trades do not support.
+- `PBT confidence.signal_label_from_evidence` `open_entry` stores the label of the signal's bucket (playbook, the band of its watchlist score on its own day) in the run `backtest_evidence` reads, that bucket as `confidence_basis` and the label on `signal.triggered`; no run, a playbook the run's known gaps name (EP until PR 70), an unreadable gap list, or no score in a band gives low, and a run completed after the signal triggered, or at no readable time, is never its evidence (HAT-EXEC-015). Harm: a signal without evidence is labelled high and auto places it.
+- `PBT confidence.backtest_label_is_fixed` A backtest's own signals are labelled low with the basis `backtest` (PR 71). Harm: a run is read as its own evidence.
 
 ## Run
 
@@ -92,7 +99,7 @@ cd backend
 # every pytest, Hypothesis or break run goes under the 2 GB memory cap
 CAP="systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet"
 CI=1 $CAP python -m pytest tests/hat/properties/test_backtest.py tests/hat/properties/test_costs.py \
-  tests/hat/properties/test_dsr.py -q --no-cov
+  tests/hat/properties/test_dsr.py tests/hat/properties/test_confidence.py -q --no-cov
 $CAP python -m pytest tests/hat/conformance/test_conf_backtest.py -q --no-cov
 # an intended engine change regenerates the golden file in the same commit
 PYTHONPATH=.:tests/hat python tests/hat/hat_backtest_support.py
@@ -127,7 +134,8 @@ Code under check:
 - `backend/app/hat/backtest/costs.py`: `parse_cost_model`, `load_cost_model`, `charges`, `check_slippage`, `slipped`, `BacktestFills`
 - `backend/app/hat/backtest/cost_models/cnc-delivery-1.yaml`
 - `backend/app/hat/backtest/dsr.py`: `return_stats`, `trial_variance`, `expected_max_sharpe`, `deflated_sharpe`, `family_deflated_sharpe`, `pbo`
-- `backend/app/hat/backtest/runs.py`: `family_key`, `trial_count`, `run_dsr`, `family_pbo`, `read_returns`, `start_run`, `complete_run`, `fail_run`, `record_backtest`, `backtest_bot`, `backtest_evidence`, `gate_evidence`
+- `backend/app/hat/backtest/runs.py`: `family_key`, `trial_count`, `run_dsr`, `family_pbo`, `read_returns`, `start_run`, `complete_run`, `fail_run`, `record_backtest`, `backtest_bot`, `backtest_evidence`, `gate_evidence`, `bucket_rows`, `signal_confidence`
+- `backend/app/hat/engine/confidence.py`: `band_of`, `bucket_stats`, `buckets`, `label_of`, `confidence_of`
 - `backend/app/hat/backtest/market.py`: `load_market`, `_industries`
 - `backend/app/hat/engine/strategy/versions.py`: `publish_version`
 
@@ -136,6 +144,7 @@ Checks:
 - `backend/tests/hat/properties/test_backtest.py`
 - `backend/tests/hat/properties/test_costs.py`
 - `backend/tests/hat/properties/test_dsr.py`
+- `backend/tests/hat/properties/test_confidence.py`
 - `backend/tests/hat/conformance/test_conf_backtest.py`
 - `backend/tests/hat/fixtures/backtest_market.csv`
 - `backend/tests/hat/fixtures/backtest_golden.json`
@@ -145,7 +154,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `a84c37e7cc424e76a2e7c5c9cad28de91a5feec80588d43b781bfdfeecb5b302`
+Covered digest: `a3902295334aedd66f8e17688ea156867424f4cf4908cc4d9b10c7db7eed7f18`
 
 ## Scope changes
 
@@ -170,6 +179,7 @@ Covered digest: `a84c37e7cc424e76a2e7c5c9cad28de91a5feec80588d43b781bfdfeecb5b30
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, D149, HAT-EXEC-015): confidence labels. `engine.confidence` holds the pure rule (bands, `bucket_stats` with the governance gate's `Z_90`, `label_of`); `runs.complete_run` stores the run's buckets in `hat_backtest_bucket` (`bucket_rows`), and `runs.signal_confidence` reads a signal's bucket in the run `backtest_evidence` uses (the same `_latest_run`, at the trigger instant and among the runs completed by then, and `_gapped`, now shared, with an unreadable gap list naming the signal's playbook too). The loop's own signals carry the fixed label low, with basis reason `backtest`. A run completed before PR 71 has no buckets, so its signals read low (`no_bucket`) until a run is recorded again. New PBT `confidence.label_rule`, `label_monotone`, `band_of`, `bucket_stats`, `buckets_match_trades`, `signal_label_from_evidence` and `backtest_label_is_fixed`. Nothing was narrowed.
 - PR 73: `strategy/versions.py` gains the `sleeve.version_assigned` event and `add_sleeve` (checked in `verify-criteria` and `verify-portfolio`); nothing the backtest reads changed. Nothing was narrowed.
 - `dsr.bounds_and_monotonicity_in_sr` holds on the domain where the slope 1 − γ3 (SR + SR0)/2 + ((γ4 − 1)/4) SR × SR0 is non-negative at both ends. Finding: outside it a higher SR with a heavy skew scores lower; that is the paper's formula (recorded in the skill), and the code is not changed.
 - `dsr.bounds_and_monotonicity_bad_denominator` found that a radicand of float noise around 0 gave DSR = 1.0; `RADICAND_FLOOR` (1e-12) now scores it undefined. With real moments the radicand is bounded below by a square (it is never negative), so the property generates moments below that bound (γ4 = 1, γ3 ≥ 1/SR).
@@ -2104,4 +2114,232 @@ E     Full diff:
 E     - []
 E     + [
 E     +     'hat/backtest/market.py',
+```
+
+### PBT confidence.label_rule
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: a bucket of any size can be high (`trades < 1`).
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:78: in test_label_rule
+    assert label == LOW
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   Failing explicit example: test_label_rule(
+E       stats=BucketStats(trades=29,
+E        mean_r=Decimal('1'),
+E        ci90_low=Decimal('0.5'),
+E        ci90_high=Decimal('2'),
+```
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: a mean of exactly 0 R is not low (`mean_r < 0`).
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:78: in test_label_rule
+    assert label == LOW
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   Failing explicit example: test_label_rule(
+E       stats=BucketStats(trades=30,
+E        mean_r=Decimal('0'),
+E        ci90_low=Decimal('0.1'),
+E        ci90_high=Decimal('1'),
+```
+
+### PBT confidence.label_monotone
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: a bucket above 150 trades is low.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:104: in test_label_monotone
+    assert RANK[label_of(better)[0]] >= RANK[label_of(stats)[0]]
+E   assert 0 >= 1
+E   Failing test case: test_label_monotone(
+E       # The test always failed when commented parts were varied together.
+E       stats=BucketStats(
+E           trades=94,
+E           mean_r=Decimal('0.001'),
+E           ci90_low=None,  # or any other generated value
+E           ci90_high=None,  # or any other generated value
+```
+
+### PBT confidence.band_of
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: a band includes its upper edge, so 0.75 falls in 0.60-0.75.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:129: in test_band_of
+    assert [band] == inside
+E   AssertionError: assert ['0.60-0.75'] == ['0.75-0.90']
+E     At index 0 diff: '0.60-0.75' != '0.75-0.90'
+E     Full diff:
+E       [
+E     -     '0.75-0.90',
+E     +     '0.60-0.75',
+E       ]
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+```
+
+### PBT confidence.bucket_stats
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: the interval is half as wide.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:157: in test_bucket_stats
+    assert abs(stats.ci90_low - (mean - half)) <= Decimal("0.000002")
+E   AssertionError: assert Decimal('0.0004114268134757361000000000002') <= Decimal('0.000002')
+E    +  where Decimal('0.0004114268134757361000000000002') = abs((Decimal('0.000089') - (Decimal('0.0005') - Decimal('0.0008224268134757361000000000002'))))
+E    +    where Decimal('0.000089') = BucketStats(trades=2, mean_r=Decimal('0.000500'), ci90_low=Decimal('0.000089'), ci90_high=Decimal('0.000911'), win_rate=Decimal('0.500000')).ci90_low
+E    +  and   Decimal('0.000002') = Decimal('0.000002')
+E   Failing test case: test_bucket_stats(
+E       rs=[Decimal('0.000'), Decimal('0.001')],
+E       rnd=HypothesisRandom(generated data),
+E   )
+```
+
+### PBT confidence.buckets_match_trades
+
+Break: (PR 71) in `backend/app/hat/backtest/runs.py`: `complete_run` stores no buckets.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:234: in test_buckets_match_trades
+    assert stored == reread
+E   AssertionError: assert {} == {('pb', '0.60 [cut]('0.000000'))}
+E     Right contains 1 more item:
+E     {('pb', '0.60-0.75'): BucketStats(trades=1,
+E                                       mean_r=Decimal('0.000000'),
+E                                       ci90_low=None,
+E                                       ci90_high=None,
+E                                       win_rate=Decimal('0.000000'))}
+E     Full diff:
+```
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: a trade without a score in a band goes to the lowest band.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:236: in test_buckets_match_trades
+    assert set(stored) == scored
+E   AssertionError: assert {('pb', '0.60-0.75')} == set()
+E     Extra items in the left set:
+E     ('pb', '0.60-0.75')
+E     Full diff:
+E     - set()
+E     + {
+E     +     (
+E     +         'pb',
+```
+
+### PBT confidence.signal_label_from_evidence
+
+Break: (PR 71) in `backend/app/hat/backtest/runs.py`: the run's known gaps are not read.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:299: in test_signal_label_from_evidence
+    assert signal.confidence == expected
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   (note: 1 other explicit example also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_signal_label_from_evidence(
+E       evidence='high',
+E       playbook='pb',
+E       gaps='unreadable',
+```
+
+Break: (PR 71) in `backend/app/hat/backtest/runs.py`: the watchlist score of any day counts.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:299: in test_signal_label_from_evidence
+    assert signal.confidence == expected
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   Failing explicit example: test_signal_label_from_evidence(
+E       evidence='high',
+E       playbook='pb',
+E       gaps=[],
+E       score=Decimal('0.8'),
+```
+
+Break: (PR 71) in `backend/app/hat/engine/trades.py`: `open_entry` stores `high` whatever the label.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:299: in test_signal_label_from_evidence
+    assert signal.confidence == expected
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   (note: 3 other explicit examples also failed with this error; use Verbosity.verbose to view)
+E   Failing explicit example: test_signal_label_from_evidence(
+E       evidence='high',
+E       playbook='pb',
+E       gaps=[],
+```
+
+Break: (PR 71) in `backend/app/hat/backtest/runs.py`: `_latest_run` reads a run completed after the signal triggered.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:327: in test_signal_label_from_evidence
+    assert signal.confidence == expected
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   Failing explicit example: test_signal_label_from_evidence(
+E       evidence='low',
+E       playbook='pb',
+E       gaps=[],
+E       score=Decimal('0.8'),
+E       same_day=True,
+E       late='after',
+E   )
+```
+
+Break: (PR 71) in `backend/app/hat/backtest/runs.py`: `_latest_run` reads a run whose completion time is unreadable.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:327: in test_signal_label_from_evidence
+    assert signal.confidence == expected
+E   AssertionError: assert 'high' == 'low'
+E     - low
+E     + high
+E   Failing explicit example: test_signal_label_from_evidence(
+E       evidence='low',
+E       playbook='pb',
+E       gaps=[],
+E       score=Decimal('0.8'),
+E       same_day=True,
+E       late='unreadable',
+E   )
+```
+
+### PBT confidence.backtest_label_is_fixed
+
+Break: (PR 71) in `backend/app/hat/engine/confidence.py`: the backtest label reads `no_run`.
+
+```
+tests/hat/properties/test_confidence.py F
+tests/hat/properties/test_confidence.py:314: in test_backtest_label_is_fixed
+    assert confidence.BACKTEST_CONFIDENCE.basis == {"reason": confidence.BACKTEST}
+E   AssertionError: assert {'reason': 'no_run'} == {'reason': 'backtest'}
+E     Differing items:
+E     {'reason': 'no_run'} != {'reason': 'backtest'}
+E     Full diff:
+E       {
+E     -     'reason': 'backtest',
+E     +     'reason': 'no_run',
+E       }
 ```

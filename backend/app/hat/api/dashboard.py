@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from ...database import get_db
 from ..data.calendar import session_calendar
+from ..engine.confidence import stored_basis
 from ..execution import modes
 from ..models import (
     HatAllocationDaily,
@@ -184,6 +185,9 @@ class SignalView(BaseModel):
     currency: str
     mode: str
     state: str
+    # the label and its backtest bucket (D132); null on a signal stored before PR 71
+    confidence: str | None = None
+    confidence_basis: dict[str, Any] = {}
 
 
 class PositionView(BaseModel):
@@ -458,6 +462,8 @@ def _signals(session: Session, limit: int) -> list[SignalView]:
             currency=s.currency,
             mode=s.mode,
             state=s.state,
+            confidence=s.confidence,
+            confidence_basis=stored_basis(s.confidence_basis),
         )
         for s in rows
     ]

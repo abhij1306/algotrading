@@ -18,7 +18,15 @@ from typing import Any
 from unittest import mock
 
 from hat.fakes.broker import FakeBroker
-from hat_engine_support import AT, TRADE_DAY, USER, World, request_for, seed_engine_world
+from hat_engine_support import (
+    AT,
+    TRADE_DAY,
+    USER,
+    World,
+    request_for,
+    seed_engine_world,
+    seed_label,
+)
 from hat_exec_support import (
     GTT_READY,
     SYMBOLS,
@@ -69,10 +77,9 @@ class Rig:
         live_gtt: bool | None = None,  # the adapter's GTT now; `gtt` (the stored one) when None
         ddpi: bool = True,
         weights: bool = True,
-        confidence: str | None = modes.HIGH,  # the label the router routes auto by (D149)
+        confidence: str | None = modes.HIGH,  # the label the evidence gives (D132, D149)
     ) -> None:
         self.session = session
-        self.confidence = confidence
         self.world: World = seed_engine_world(session, mode=mode, instruments=2)
         bot = session.get(HatBot, self.world.bot_id)
         assert bot is not None
@@ -102,6 +109,7 @@ class Rig:
                 )
             )
         seed_live_sessions(session, self.account_id)
+        seed_label(session, self.world, confidence)
         session.flush()
         confirm_gates(session, self.account_id, USER, ddpi=ddpi, weights=weights)
         session.commit()
@@ -131,7 +139,6 @@ class Rig:
             trades.EntryRequest(**{**vars(request), "triggered_at": at}),
             now=at,
             check=check,
-            confidence=self.confidence,
         )
 
     def signal(self, signal_id: uuid.UUID) -> HatSignal:

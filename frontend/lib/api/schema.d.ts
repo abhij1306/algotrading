@@ -508,6 +508,15 @@ export interface components {
        * Format: uuid
        */
       bot_id: string;
+      /** Confidence */
+      confidence?: string | null;
+      /**
+       * Confidence Basis
+       * @default {}
+       */
+      confidence_basis: {
+        [key: string]: unknown;
+      };
       /** Currency */
       currency: string;
       /**

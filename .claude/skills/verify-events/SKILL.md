@@ -11,6 +11,7 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 
 - `DB runtime.*` Postgres rejects a second `hat_signal` for one (bot, playbook, instrument, trade_date) (also when two transactions race), a signal with a null or dangling strategy or risk-policy version, an order purpose, side, status, approval decision, signal mode or quantity outside its domain, a second order with the same tag, a second fill for one (order, broker trade), and a second trade result for one position. Harm: a duplicated trigger opens two positions, an order of unknown purpose escapes the exit-only paths, a re-polled fill doubles a position.
 - `DB ops.snapshot_unique` Postgres rejects a second `hat_daily_bot_snapshot` for one bot and day and an exposure level outside L1 to L3. Harm: the drawdown kill switch reads an ambiguous equity.
+- `DB governance.signal_confidence_immutable` Postgres refuses an UPDATE that changes `hat_signal.confidence` or `confidence_basis` (alone or with the state) and a label other than high, medium, low; other columns move freely and an update writing the same values passes (D132, HAT-EXEC-015). Harm: a signal's label is raised after the fact and auto or the owner acts on evidence it never had.
 - `DB governance.stop_only_rises` For every pair (old, new) of stops, an UPDATE of `hat_position.current_stop` raises when new is below old and succeeds when it is equal or higher, with the row unchanged after a refusal. Harm: a bug widens a stop and a planned small loss becomes a large one (invariant 1).
 - `DB events.append_only` Every UPDATE (any column) and every DELETE on `hat_event`, one row or all rows, in any partition, raises `hat_event is append-only` and leaves the log unchanged. Harm: the audit trail can be rewritten.
 - `DB events.partitioned` `hat_event` is a RANGE (recorded_at) partitioned table with the specified columns, an identity id that strictly increases, primary key (id, recorded_at), and the actor CHECK. Harm: one unbounded table, or a log that cannot hold what replay needs.
@@ -81,12 +82,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `e80b19e6bbf3f9cbeabb446690e4dee9f2e737ce7db48a5afbb835f889d67390`
+Covered digest: `0eef328793504ce5e0e6b23e0a49d6ae583c69fa3b379b06b78a2ce8408b16b2`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, HAT-EXEC-015): `hat_signal` gains `confidence` (CHECK `hat_signal_confidence_check`, added by `PG_DDL` to an older table) and `confidence_basis`, and the trigger `hat_signal_confidence_guard` refuses changing either; an older database gets both columns nullable (a signal stored before PR 71 has no label and reads low). New DB `governance.signal_confidence_immutable` with four broken variants (trigger dropped, firing on the label only, the function checking the label only, the CHECK dropped); `migration.ensure_idempotent` drops and restores them and the columns. `signal.triggered` carries `confidence`. Nothing was narrowed.
 - PR 73: the catalogue gains `corporate_action.resolved` (Positions), `sleeve.version_assigned` (Portfolio) and `broker.ddpi_revoked` (Sessions): 48 types. Nothing was narrowed.
 - PR 32 changed `test_telegram.py` (the HAT-TG-011 offset property, checked by `verify-telegram`); `telegram.retention_purge`, the check covered here, is unchanged and passes.
 - `watchlist.published` carries no correlation id: it belongs to a bot and a day, not to one signal, although the event catalogue groups it with signals. `record()` and `events.correlation` exempt it. Recorded as a finding in the PR.
@@ -126,6 +128,17 @@ Break: `trade_date` removed from the primary key of `HatDailyBotSnapshot`.
 tests/hat/db/hat_db_runtime.py:312: in <lambda>
 E   DETAIL:  Key (bot_id)=(01a15bec-6743-7313-9a5c-8efb1a2dcdc8) already exists.
 E   AssertionError: the database refused: another day
+```
+
+### DB governance.signal_confidence_immutable
+
+Break: (PR 71) in `backend/app/hat/schema.py`: the trigger function compares only the label, so the basis can be rewritten.
+
+```
+tests/hat/db/test_db_runtime.py F
+tests/hat/db/test_db_runtime.py:53: in test_governance__signal_confidence_immutable
+    rules.check_governance__signal_confidence_immutable(conn)
+E   AssertionError: the database accepted: rewriting the basis
 ```
 
 ### DB governance.stop_only_rises

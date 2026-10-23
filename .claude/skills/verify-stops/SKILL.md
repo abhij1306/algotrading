@@ -121,12 +121,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `dbe5e896e1ed926650a1c792464e342c0b15bec59941bc0536da94b5ecd90f23`
+Covered digest: `0e79e7a9d4b874f6a9af1a9bcea90daf84cd6815752668b6a05e1b5e0b033b15`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, D149, HAT-EXEC-015): confidence labels. `hat_signal` gains `confidence` and `confidence_basis`, fixed at creation (a Postgres trigger refuses a change), and the new table `hat_backtest_bucket` holds a completed run's trades by playbook and setup-score band; `trades.open_entry` stores the label `trades.entry_confidence` reads (`runs.signal_confidence`) or the caller's (the router's; the backtest's fixed `backtest` label). No check of this skill changed. Nothing was narrowed.
 - PR 75a: the stop raise (`raise_stop`), the trade result (`write_result`, `trade_r`, `entry_qty`) and `position_state` moved from `trades.py` to `engine/positions.py` unchanged (`verify-execution`); `test_rescale.py` reads `positions.position_state`. The stop and exit properties are unchanged and pass. Nothing was narrowed.
 - PR 73 (PR 31 follow-ups 1, 2, 12; HAT-EXEC-144): `rescale.resolve_action` is the owner's resolution of an unhandled action on a virtual position (admin `resolve-action`, `verify-portfolio`): it records `corporate_action.resolved` and closes the position. A real position is refused (code review: lifting its lock kept the old-scale quantity and stop and lifted `/flatten`'s cap at the broker's holdings); PR 31 follow-up 2 (keep a real position and end its lock) stays open. New PBT `rescale.resolution_ends_lock`. Nothing was narrowed.
 - PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).

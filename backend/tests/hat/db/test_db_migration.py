@@ -33,6 +33,7 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
             "hat_risk_policy_version",
             "hat_position",
             "hat_event",
+            "hat_signal",
         ):
             names = connection.execute(
                 text(
@@ -50,7 +51,11 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
         connection.execute(
             text("DROP FUNCTION IF EXISTS hat_risk_policy_version_immutable CASCADE")
         )
+        connection.execute(text("DROP FUNCTION IF EXISTS hat_signal_confidence_immutable CASCADE"))
         connection.execute(text("ALTER TABLE hat_signal DROP CONSTRAINT hat_signal_state_check"))
+        connection.execute(
+            text("ALTER TABLE hat_signal DROP CONSTRAINT hat_signal_confidence_check")
+        )
         connection.execute(
             text("ALTER TABLE hat_position DROP CONSTRAINT hat_position_state_check")
         )
@@ -77,6 +82,9 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
                 text("ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'shadow'")
             )
             connection.execute(text("ALTER TABLE hat_broker_account DROP COLUMN ddpi_confirmed"))
+            # A database from before PR 71: signals carried no confidence label.
+            connection.execute(text("ALTER TABLE hat_signal DROP COLUMN confidence CASCADE"))
+            connection.execute(text("ALTER TABLE hat_signal DROP COLUMN confidence_basis CASCADE"))
             connection.execute(
                 text(
                     "INSERT INTO hat_job_run (id, job, trade_date, started_at, status, calls)"
@@ -92,7 +100,7 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
                     text(
                         "SELECT column_name FROM information_schema.columns"
                         " WHERE table_name IN ('hat_instrument', 'hat_job_run',"
-                        " 'hat_broker_account')"
+                        " 'hat_broker_account', 'hat_signal')"
                     )
                 )
             }
@@ -104,6 +112,7 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
             ).scalar_one()
             kept = connection.execute(text("SELECT calls FROM hat_job_run WHERE job = 'old'"))
             assert {"delisted_on", "rows", "ddpi_confirmed"} <= columns
+            assert {"confidence", "confidence_basis"} <= columns
             assert default is not None
             assert default.startswith("'confirm'")
             assert kept.scalar_one() == 3

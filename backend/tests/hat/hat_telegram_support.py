@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Any
 
 from hat.fakes.broker import FakeBroker
-from hat_engine_support import AT, TRADE_DAY, World, request_for, seed_engine_world
+from hat_engine_support import AT, TRADE_DAY, World, request_for, seed_engine_world, seed_label
 from hat_exec_support import (
     GTT_READY,
     SYMBOLS,
@@ -31,6 +31,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.hat.engine import trades
+from app.hat.engine.confidence import HIGH
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.manage import FlattenReport
 from app.hat.execution.reconcile import ReconciliationService, notifier_sink
@@ -217,6 +218,8 @@ class TgRig:
                 )
             _seed_calendar(session, market_id)
             seed_live_sessions(session, self.account_id)
+            if mode == "auto":  # an auto bot places its entries (D149)
+                seed_label(session, self.world, HIGH)
             session.get_one(HatStrategy, self.world.strategy_id).name = BOT
             session.flush()
             confirm_gates(session, self.account_id, OWNER)
@@ -255,9 +258,7 @@ class TgRig:
             clock=clock or (lambda: self.now),
         )
 
-    def route(
-        self, instrument: int = 0, at: datetime = AT, confidence: str | None = "high", **ctx: object
-    ) -> trades.EntryOutcome:
+    def route(self, instrument: int = 0, at: datetime = AT, **ctx: object) -> trades.EntryOutcome:
         with self.factory() as session:
             request = request_for(self.world, self.world.instruments[instrument], **ctx)
             outcome = self.router.route(
@@ -265,7 +266,6 @@ class TgRig:
                 trades.EntryRequest(**{**vars(request), "triggered_at": at}),
                 now=at,
                 check=LIVE,
-                confidence=confidence,
             )
             session.commit()
             return outcome

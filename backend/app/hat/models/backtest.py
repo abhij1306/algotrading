@@ -4,12 +4,12 @@ Created in PR 2 rather than PR 3 because strategy and universe versions referenc
 (HAT-SCH-104). Trades go to `backtests/run_id=.../trades.parquet`.
 """
 
-from sqlalchemy import Column, Date, Text
+from sqlalchemy import CheckConstraint, Column, Date, Integer, Text
 
 from ...base import Base
-from ._types import JsonB, fk, uuid_pk
+from ._types import JsonB, Ratio, fk, uuid_pk
 
-__all__ = ["HatBacktestRun"]
+__all__ = ["HatBacktestBucket", "HatBacktestRun"]
 
 
 class HatBacktestRun(Base):
@@ -25,3 +25,21 @@ class HatBacktestRun(Base):
     data_snapshot = Column(JsonB, nullable=False)
     status = Column(Text, nullable=False)
     metrics = Column(JsonB, nullable=False)
+
+
+class HatBacktestBucket(Base):
+    """A run's closed trades in one (playbook, setup-score band): the evidence a signal's
+    confidence label reads (D132, PR 71). Written once, when the run completes."""
+
+    __tablename__ = "hat_backtest_bucket"
+    __table_args__ = (CheckConstraint("trades > 0", name="ck_hat_backtest_bucket_trades"),)
+
+    run_id = fk("hat_backtest_run.id", primary_key=True)
+    playbook = Column(Text, primary_key=True)
+    band = Column(Text, primary_key=True)
+    trades = Column(Integer, nullable=False)
+    mean_r = Column(Ratio, nullable=False)
+    # the 90% interval of the mean R (normal); null below two trades
+    ci90_low = Column(Ratio)
+    ci90_high = Column(Ratio)
+    win_rate = Column(Ratio, nullable=False)

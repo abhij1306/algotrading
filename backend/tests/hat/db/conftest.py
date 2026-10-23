@@ -41,6 +41,7 @@ def drop_hat_objects(engine: Engine) -> None:
         for function in (
             "hat_stop_only_tightens",
             "hat_position_never_deleted",
+            "hat_signal_confidence_immutable",
             "hat_event_is_append_only",
             "hat_strategy_version_immutable",
             "hat_universe_version_immutable",

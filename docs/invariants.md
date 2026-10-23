@@ -396,7 +396,7 @@ every check named must exist, and a new check is added here with its ID.
 - HAT-TG-020: Outbound messages go only to the allowlisted chat | PBT `telegram.send_only_to_allowlist`
 - HAT-TG-021: Login prompts at 08:30 and 09:05 | TLA `JobScheduler!LoginPromptOrder`, PBT `telegram.login_prompt_links`
 - HAT-TG-022: Watchlist digest content | PBT `telegram.watchlist_digest_content`, PBT `telegram.watchlist_digest_once`
-- HAT-TG-023: Shadow trade and approval card content | PBT `telegram.card_matches_signal`
+- HAT-TG-023: Shadow trade and approval card content | PBT `telegram.card_matches_signal`, PBT `confidence.card_shows_label`
 - HAT-TG-024: Event-driven and scheduled reports | TLA `JobScheduler!ReportsAfterClose`, PBT `telegram.report_content`, PBT `telegram.relay_late_commit`, PBT `telegram.veto_digest_on_week_end`
 - HAT-TG-030: Command set is closed | CONF `telegram.command_catalogue`, PBT `telegram.unknown_command_rejected`, PBT `telegram.other_bot_ignored`
 - HAT-TG-031: No order from free text | PBT `telegram.no_free_text_orders`, CONF `telegram.no_order_import_in_text_path`
@@ -531,7 +531,8 @@ every check named must exist, and a new check is added here with its ID.
 
 - HAT-EXEC-010: Shadow never reaches the broker | TLA `ExecutionRouter!ShadowNeverCallsBroker`, PBT `exits.shadow_rows_virtual`
 - HAT-EXEC-011: Default mode is confirm (revised, D130/D132) | CONF `exec.default_mode_confirm`
-- HAT-EXEC-014: Auto places only high-confidence signals | PBT `router.auto_places_only_high_confidence`
+- HAT-EXEC-014: Auto places only high-confidence signals | PBT `router.auto_places_only_high_confidence`, PBT `router.placement_rechecks_confidence`
+- HAT-EXEC-015: Every signal carries an immutable confidence label | PBT `confidence.label_rule`, PBT `confidence.label_monotone`, PBT `confidence.band_of`, PBT `confidence.bucket_stats`, PBT `confidence.buckets_match_trades`, PBT `confidence.signal_label_from_evidence`, PBT `confidence.backtest_label_is_fixed`, DB `governance.signal_confidence_immutable`
 - HAT-EXEC-012: Auto requires a broker with delivery GTT | TLA `ExecutionRouter!AutoNeedsGtt`, PBT `router.routes_by_mode`, PBT `router.a_stored_capability_never_enables_a_real_entry`, PBT `tags.refusals_happen_before_the_broker`
 - HAT-EXEC-013: Delivery only | PBT `tags.intent_product_cnc`
 - HAT-EXEC-020: One risk check, three routes | TLA `ExecutionRouter!RouteByMode`, TLA `ExecutionRouter!RiskBeforeRoute`, PBT `router.routes_by_mode`, PBT `router.refused_entry_is_not_sent`

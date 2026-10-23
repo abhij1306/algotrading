@@ -13,10 +13,16 @@ import yaml
 from hat_risk_support import AT, TRADE_DAY, valid_ctx, version_of
 from sqlalchemy.orm import Session
 
-from app.hat.engine import exits, trades
+from app.hat.backtest.runs import COMPLETED, family_key
+from app.hat.backtest.slots import SLOT_ORDER_TIME
+from app.hat.engine import exits, lifecycle, trades
+from app.hat.engine.backtest import LOWER_CIRCUIT_RULE, REGIME_MULT_POLICY
+from app.hat.engine.confidence import HIGH, LOW, MEDIUM, BucketStats
 from app.hat.engine.strategy.config import parse_config
 from app.hat.engine.strategy.versions import seed_text
 from app.hat.models import (
+    HatBacktestBucket,
+    HatBacktestRun,
     HatBot,
     HatIndustry,
     HatMarket,
@@ -25,6 +31,7 @@ from app.hat.models import (
     HatUniverse,
     HatUniverseMember,
     HatUniverseVersion,
+    HatWatchlistEntry,
 )
 from app.hat.risk.policy import seed_policy
 from app.hat.risk.policy_service import seed_initial_policy
@@ -184,6 +191,89 @@ def add_bot(session: Session, world: World) -> World:
     session.add(bot)
     session.flush()
     return replace(world, bot_id=bot.id)
+
+
+# Bucket statistics that give each label (`engine.confidence.label_of`).
+LABEL_STATS = {
+    HIGH: BucketStats(40, Decimal("0.5"), Decimal("0.2"), Decimal("0.8"), Decimal("0.55")),
+    MEDIUM: BucketStats(40, Decimal("0.1"), Decimal("-0.1"), Decimal("0.3"), Decimal("0.45")),
+    LOW: BucketStats(10, Decimal("0.5"), Decimal("-0.2"), Decimal("1.2"), Decimal("0.5")),
+}
+EVIDENCE_SCORE = Decimal("0.8")  # band 0.75-0.90
+
+
+def seed_evidence(
+    session: Session,
+    world: World,
+    stats: BucketStats | None,
+    *,
+    playbook: str = "pb",
+    score: Decimal = EVIDENCE_SCORE,
+    band: str = "0.75-0.90",
+    known_gaps: object = (),
+    trade_date: date = TRADE_DAY,
+    completed_at: object = datetime(2026, 1, 2, tzinfo=UTC),
+) -> uuid.UUID:
+    """The confidence evidence of `world`'s bot (D132): a completed promotion run of its live
+    version on its universe, the bucket (`playbook`, `band`) with `stats` (none when None) and a
+    watchlist row of each instrument on `trade_date` with `score`, completed at `completed_at`
+    (stored as given when not a datetime).
+    Returns the run id."""
+    run = HatBacktestRun(
+        strategy_version_id=world.version_id,
+        risk_policy_version_id=world.policy_version_id,
+        family_key=family_key(world.strategy_id, world.universe_id),
+        period_start=date(2020, 1, 1),
+        period_end=date(2025, 12, 31),
+        data_snapshot={},
+        status=COMPLETED,
+        metrics={
+            "for_promotion": True,
+            "slot_order": SLOT_ORDER_TIME,
+            "lower_circuit": LOWER_CIRCUIT_RULE,
+            "regime_mult": REGIME_MULT_POLICY,
+            "known_gaps": list(known_gaps) if isinstance(known_gaps, tuple) else known_gaps,
+            "completed_at": (
+                completed_at.isoformat() if isinstance(completed_at, datetime) else completed_at
+            ),
+        },
+    )
+    session.add(run)
+    session.flush()
+    if stats is not None:
+        session.add(
+            HatBacktestBucket(
+                run_id=run.id,
+                playbook=playbook,
+                band=band,
+                trades=stats.trades,
+                mean_r=stats.mean_r,
+                ci90_low=stats.ci90_low,
+                ci90_high=stats.ci90_high,
+                win_rate=stats.win_rate,
+            )
+        )
+    session.add_all(
+        HatWatchlistEntry(
+            bot_id=world.bot_id,
+            strategy_version_id=world.version_id,
+            playbook=playbook,
+            instrument_id=instrument,
+            trade_date=trade_date,
+            score=score,
+            criteria_results={},
+            status=lifecycle.WATCHLISTED,
+        )
+        for instrument in world.instruments
+    )
+    session.flush()
+    return run.id
+
+
+def seed_label(session: Session, world: World, label: str | None) -> None:
+    """Evidence that labels `world`'s signals `label` (none: no backtest run at all)."""
+    if label in LABEL_STATS:
+        seed_evidence(session, world, LABEL_STATS[label])
 
 
 def request_for(

@@ -49,6 +49,11 @@ def test_ops__snapshot_unique(conn: Connection) -> None:
 
 
 @pytest.mark.postgres
+def test_governance__signal_confidence_immutable(conn: Connection) -> None:
+    rules.check_governance__signal_confidence_immutable(conn)
+
+
+@pytest.mark.postgres
 def test_governance__stop_only_rises(conn: Connection) -> None:
     rules.check_governance__stop_only_rises(conn)
 

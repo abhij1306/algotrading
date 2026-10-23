@@ -93,12 +93,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `80a1d16a957c7cbd856320b7cbc87201466e4c0e`
-Covered digest: `5784e4f4f6b6d5204fa23724bc2224b42e189ba0c12dc20393934f0ac2c41b86`
+Covered digest: `5f61326c5aee427d64bd0b06c4a0b0392afa96e3bcec331d7b2e8fc167a72755`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 71 (D132, D149, HAT-EXEC-015): confidence labels. `hat_signal` gains `confidence` and `confidence_basis`, fixed at creation (a Postgres trigger refuses a change), and the new table `hat_backtest_bucket` holds a completed run's trades by playbook and setup-score band; `trades.open_entry` stores the label `trades.entry_confidence` reads (`runs.signal_confidence`), or the fixed one the backtest passes (`BACKTEST_CONFIDENCE`: low, basis reason `backtest`). No check of this skill changed. Nothing was narrowed.
 - PR 75a: `test_conf_boundaries.py` gains CONF `no_private_imports`; `time.day_bounds` is now called directly by `engine/snapshot.py`, `engine/live_trades.py` and `execution/submit.py` (the `trades._day_bounds` alias is gone). Nothing was narrowed.
 - PR 73b: `models/strategy.py` gains the account status and broker constants (`ACCOUNT_PENDING`, `ACCOUNT_ACTIVE`, `ACCOUNT_FAILED`, `BROKER_FYERS`), the one copy every reader imports (CONF `brk__account_constants_one_copy`, `verify-execution`). No table, column or constraint changed. Nothing was narrowed.
 - PR 73: the spec gains three event types and the release and DDPI rules of 04, 05, 06 and 10 their PR 73 lines; `test_config.py` checks the assign event (`verify-criteria`). No schema, foundation helper or boundary changed. Nothing was narrowed.

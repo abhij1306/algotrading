@@ -395,6 +395,32 @@ VARIANTS_RUNTIME: dict[str, list[tuple[str, Break]]] = {
             ),
         ),
     ],
+    "governance.signal_confidence_immutable": [
+        (
+            "trigger dropped",
+            sql("DROP TRIGGER hat_signal_confidence_guard ON hat_signal"),
+        ),
+        (
+            "trigger fires only on the label",
+            sql(
+                "DROP TRIGGER hat_signal_confidence_guard ON hat_signal",
+                "CREATE TRIGGER hat_signal_confidence_guard BEFORE UPDATE OF confidence"
+                " ON hat_signal FOR EACH ROW EXECUTE FUNCTION hat_signal_confidence_immutable()",
+            ),
+        ),
+        (
+            "function checks only the label",
+            sql(
+                "CREATE OR REPLACE FUNCTION hat_signal_confidence_immutable() RETURNS trigger AS $$"
+                " BEGIN IF NEW.confidence IS DISTINCT FROM OLD.confidence THEN"
+                " RAISE EXCEPTION 'immutable'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql"
+            ),
+        ),
+        (
+            "label CHECK dropped",
+            sql(drop_constraint("hat_signal", "hat_signal_confidence_check")),
+        ),
+    ],
     "governance.stop_only_rises": [
         ("trigger dropped", sql("DROP TRIGGER hat_position_stop_guard ON hat_position")),
         (

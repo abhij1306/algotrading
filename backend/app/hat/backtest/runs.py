@@ -52,19 +52,38 @@ from ..engine.backtest import (
     with_cooldown,
 )
 from ..engine.backtest import trades_parquet as encode_trades
+from ..engine.confidence import (
+    NO_POLICY,
+    NO_RUN,
+    NO_SCORE,
+    NOT_BACKTESTED,
+    BucketStats,
+    Confidence,
+    band_of,
+    buckets,
+    confidence_of,
+)
 from ..engine.portfolio.allocator import sleeve_key
 from ..engine.portfolio.lifecycle import DEFAULT_DISCOUNT, BacktestFacts, discounted_benchmark
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
 from ..errors import HatError
 from ..models import (
+    HatBacktestBucket,
     HatBacktestRun,
     HatBot,
     HatPosition,
     HatStrategyVersion,
     HatTradeResult,
     HatUniverseVersion,
+    HatWatchlistEntry,
 )
-from ..risk.policy import PolicyVersion, TradeOutcome, build_gate_evidence, effective_version
+from ..risk.policy import (
+    PolicyError,
+    PolicyVersion,
+    TradeOutcome,
+    build_gate_evidence,
+    effective_version,
+)
 from ..risk.policy_service import load_versions
 from ..time import as_utc, utc_now
 from .costs import (
@@ -108,6 +127,7 @@ __all__ = [
     "record_backtest",
     "returns_path",
     "run_dsr",
+    "signal_confidence",
     "start_run",
     "trades_path",
     "trial_count",
@@ -376,8 +396,29 @@ def complete_run(
     }
     run.metrics = metrics
     run.status = COMPLETED
+    session.add_all(bucket_rows(run.id, result))
     session.flush()
     return run
+
+
+def bucket_rows(run_id: uuid.UUID, result: BacktestResult) -> list[HatBacktestBucket]:
+    """The run's confidence buckets (D132, PR 71): its closed trades by playbook and setup-score
+    band, as `engine.confidence.buckets` counts them."""
+    return [
+        HatBacktestBucket(
+            run_id=run_id,
+            playbook=playbook,
+            band=band,
+            trades=stats.trades,
+            mean_r=stats.mean_r,
+            ci90_low=stats.ci90_low,
+            ci90_high=stats.ci90_high,
+            win_rate=stats.win_rate,
+        )
+        for (playbook, band), stats in buckets(
+            (t.playbook, t.score, t.r_multiple) for t in result.trades
+        ).items()
+    ]
 
 
 def fail_run(session: Session, run: HatBacktestRun, code: str) -> HatBacktestRun:
@@ -550,20 +591,32 @@ def _cooldown_of(policy: PolicyVersion | None) -> int:
     return 0 if policy is None else policy.policy.cooldown_sessions
 
 
+def _metrics(run: HatBacktestRun) -> Mapping[str, Any]:
+    """A run's metrics; anything but an object reads as none, so every fact is absent."""
+    return run.metrics if isinstance(run.metrics, dict) else {}
+
+
 def _completion(run: HatBacktestRun) -> tuple[datetime, uuid.UUID]:
     """When a run completed (`metrics.completed_at`, PR 66), else when it started (its uuid7
     id's milliseconds, for a run recorded before PR 66); the id breaks a tie."""
-    raw = (run.metrics or {}).get("completed_at")
-    try:
-        at = as_utc(datetime.fromisoformat(raw)) if isinstance(raw, str) else None
-    except ValueError:
-        at = None
+    at = _completed_at(run)
     if at is None:
         at = datetime.fromtimestamp((run.id.int >> 80) / 1000, tz=UTC)
     return at, run.id
 
 
-def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun | None:
+def _completed_at(run: HatBacktestRun) -> datetime | None:
+    """`metrics.completed_at` (PR 66), None when missing or unreadable."""
+    raw = _metrics(run).get("completed_at")
+    try:
+        return as_utc(datetime.fromisoformat(raw)) if isinstance(raw, str) else None
+    except ValueError:
+        return None
+
+
+def _latest_run(
+    session: Session, bot: HatBot, cooldown: int, at: datetime | None = None
+) -> HatBacktestRun | None:
     """The newest completed run (by completion time, PR 66) of the bot's live version on the
     bot's universe that ran under `cooldown`, the one in force when the evidence is read
     (HAT-RISK-036): a
@@ -576,10 +629,13 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     suspended positions at their last close, nor one recorded before the sleeve's allocation
     sized it (PR 68), which sized off the whole account, nor one sized under regime rule `1`
     (PR 69): a promotion run is sized at the base weight under the live regime rule `policy`
-    (`check_conventions`)."""
+    (`check_conventions`). Given `at`, only a run with a readable completion time at or before
+    it is the evidence (PR 71): a signal processed late never reads results that did not exist
+    when it triggered."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
+    cutoff = None if at is None else as_utc(at)
     candidates = sorted(
         session.scalars(
             select(HatBacktestRun).where(
@@ -595,11 +651,12 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
         (
             run
             for run in candidates
-            if (run.metrics or {}).get("cooldown_sessions", 0) == cooldown
-            and (run.metrics or {}).get("for_promotion") is True
-            and (run.metrics or {}).get("slot_order") == SLOT_ORDER_TIME
-            and (run.metrics or {}).get("lower_circuit") == LOWER_CIRCUIT_RULE
-            and (run.metrics or {}).get("regime_mult") == REGIME_MULT_POLICY
+            if (cutoff is None or ((done := _completed_at(run)) is not None and done <= cutoff))
+            and _metrics(run).get("cooldown_sessions", 0) == cooldown
+            and _metrics(run).get("for_promotion") is True
+            and _metrics(run).get("slot_order") == SLOT_ORDER_TIME
+            and _metrics(run).get("lower_circuit") == LOWER_CIRCUIT_RULE
+            and _metrics(run).get("regime_mult") == REGIME_MULT_POLICY
         ),
         None,
     )
@@ -641,6 +698,15 @@ def _weight(raw: object) -> Decimal | None:
         return None
 
 
+def _gapped(metrics: Mapping[str, Any], playbooks: frozenset[str]) -> frozenset[str]:
+    """The playbooks the run's known gaps name (`GAP_PLAYBOOKS`); a run without a readable gap
+    list may have any gap, so every one of `playbooks` counts as named."""
+    gaps = metrics.get("known_gaps")
+    if isinstance(gaps, list) and all(isinstance(code, str) for code in gaps):
+        return frozenset(p for code in gaps for p in GAP_PLAYBOOKS.get(code, ()))
+    return playbooks
+
+
 def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     """The sleeve's backtest evidence (HAT-BT-060): the newest completed run of its live version
     on its universe, with the DSR recomputed at the family's current trial count and Sharpe
@@ -654,17 +720,11 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     run = _latest_run(session, bot, _cooldown_of(in_force))
     if run is None:
         return BacktestFacts()
-    metrics = run.metrics or {}
+    metrics = _metrics(run)
     deflated, trials, _ = run_dsr(session, run)
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
     playbooks = frozenset(() if config is None else (p.name for p in config.playbooks))
-    gaps = metrics.get("known_gaps")
-    # a run without a readable gap list may have any gap: every playbook counts as named
-    gapped = (
-        frozenset(p for code in gaps for p in GAP_PLAYBOOKS.get(code, ()))
-        if isinstance(gaps, list) and all(isinstance(code, str) for code in gaps)
-        else playbooks
-    )
+    gapped = _gapped(metrics, playbooks)
     base = (
         None
         if in_force is None or config is None
@@ -687,6 +747,60 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     )
 
 
+def signal_confidence(
+    session: Session,
+    bot: HatBot,
+    playbook: str,
+    instrument_id: uuid.UUID,
+    trade_date: date,
+    at: datetime,
+) -> Confidence:
+    """The confidence label of a signal of `bot` (D132, HAT-EXEC-015): the bucket of its playbook
+    and its watchlist row's setup-score band in the run `backtest_evidence` reads, among those
+    completed by `at`. Low when there is no such run, when the run's known gaps name the
+    playbook (EP until it is backtested on 5-minute bars, PR 70), when the signal has no single
+    score in a band, or when the bucket is empty; otherwise `confidence.label_of` decides. An
+    unreadable policy history gives low too: the run under the cooldown in force cannot be
+    told."""
+    try:
+        in_force = effective_version(load_versions(session, bot.user_id), at)
+    except PolicyError:
+        return Confidence.low(NO_POLICY, playbook=playbook)
+    run = _latest_run(session, bot, _cooldown_of(in_force), at)
+    if run is None:
+        return Confidence.low(NO_RUN, playbook=playbook)
+    run_id = str(run.id)
+    config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
+    playbooks = frozenset(() if config is None else (p.name for p in config.playbooks))
+    # an unreadable gap list names every playbook, the signal's own included
+    if config is None or playbook in _gapped(_metrics(run), playbooks | {playbook}):
+        return Confidence.low(NOT_BACKTESTED, run_id=run_id, playbook=playbook)
+    scores = set(
+        session.scalars(
+            select(HatWatchlistEntry.score).where(
+                HatWatchlistEntry.bot_id == bot.id,
+                HatWatchlistEntry.strategy_version_id == run.strategy_version_id,
+                HatWatchlistEntry.playbook == playbook,
+                HatWatchlistEntry.instrument_id == instrument_id,
+                HatWatchlistEntry.trade_date == trade_date,
+            )
+        )
+    )
+    bands = {band_of(score) for score in scores}
+    band = next(iter(bands)) if len(bands) == 1 else None
+    if band is None:
+        # no watchlist row, a score outside the bands, or two rows in different bands
+        return Confidence.low(NO_SCORE, run_id=run_id, playbook=playbook)
+    row = session.get(HatBacktestBucket, (run.id, playbook, band))
+    stats = (
+        None
+        if row is None
+        else BucketStats(row.trades, row.mean_r, row.ci90_low, row.ci90_high, row.win_rate)
+    )
+    score = min(scores)
+    return confidence_of(stats, run_id=run_id, playbook=playbook, band=band, score=score)
+
+
 def gate_evidence(
     session: Session, user_id: uuid.UUID, at: datetime, discount: Decimal = DEFAULT_DISCOUNT
 ) -> dict[str, Any] | None:
@@ -706,8 +820,8 @@ def gate_evidence(
         run = _latest_run(session, bot, _cooldown_of(in_force))
         if run is None:
             continue
-        expectancy = _expectancy(run.metrics or {})
-        trades = (run.metrics or {}).get("trades")
+        expectancy = _expectancy(_metrics(run))
+        trades = _metrics(run).get("trades")
         if expectancy is None or not isinstance(trades, int) or trades <= 0:
             continue
         weighted += expectancy * trades
