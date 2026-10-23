@@ -1,7 +1,7 @@
 """Confirm-mode approvals: Take, Skip, expiry and the veto score (HAT-EXEC-030..032,
 HAT-EXEC-130, HAT-TG-042, HAT-TG-043, HAT-TG-045).
 
-An approval card is written with its signal (`trades.open_entry` in confirm mode) and expires
+An approval card is written with its signal (`entries.open_entry` in confirm mode) and expires
 `APPROVAL_WINDOW` (5 minutes) after it is sent. A decision is taken once, under the bot's lock:
 
 - **Take** before `expires_at` re-checks the price against the bot's max-chase percentage, the
@@ -13,7 +13,7 @@ An approval card is written with its signal (`trades.open_entry` in confirm mode
 - An approval still undecided at `expires_at` ends Expired (`signal.expired`); a Take or Skip at
   or after `expires_at` is refused and expires it (HAT-EXEC-030).
 
-A skipped or expired signal continues as a virtual veto trade (`trades.open_veto_trade`,
+A skipped or expired signal continues as a virtual veto trade (`shadow.open_veto_trade`,
 HAT-EXEC-032); `veto_score` sums the R those trades avoided and missed (HAT-EXEC-130), and
 after `VERDICT_DECISIONS` decisions `veto_verdict` says whether the skips beat the takes
 (HAT-EXEC-131).
@@ -37,7 +37,7 @@ from ..models import HatApproval, HatEvent, HatPosition, HatSignal, HatTradeResu
 from ..money import exact
 from ..risk.modes import Mode
 from ..time import as_utc
-from . import journal, lifecycle, trades
+from . import botlock, journal, lifecycle, shadow
 from .criteria.base import CriterionResult
 from .criteria.live import LiveContext, MaxChaseParams, max_chase
 
@@ -125,7 +125,7 @@ def _locked(session: Session, signal_id: uuid.UUID) -> tuple[HatSignal, HatAppro
     signal = session.get(HatSignal, signal_id)
     if signal is None:
         return None
-    trades.lock_bot(session, signal.bot_id)
+    botlock.lock_bot(session, signal.bot_id)
     session.refresh(signal)
     approval = session.get(HatApproval, signal_id)
     if approval is None:
@@ -173,7 +173,7 @@ def _open_decision(
         return ApprovalDecision(signal_id, "not_awaiting")
     if as_utc(now) >= as_utc(approval.expires_at):
         _expire(session, signal, approval, now)
-        trades.open_veto_trade(session, signal.id, now)
+        shadow.open_veto_trade(session, signal.id, now)
         return ApprovalDecision(signal_id, EXPIRED)
     return signal, approval
 
@@ -242,7 +242,7 @@ def skip(
     approval.decision = SKIP
     approval.decided_at = as_utc(now)
     _signal_event(session, signal, "signal.skipped", {"reason": "skipped"}, now, chat_id=chat_id)
-    trades.open_veto_trade(session, signal.id, now)
+    shadow.open_veto_trade(session, signal.id, now)
     return ApprovalDecision(signal_id, "skipped")
 
 
@@ -283,7 +283,7 @@ def open_missing_veto_trades(session: Session, now: datetime) -> int:
     ).all()
     opened = 0
     for signal_id in pending:
-        if trades.open_veto_trade(session, signal_id, now) is not None:
+        if shadow.open_veto_trade(session, signal_id, now) is not None:
             opened += 1
     return opened
 

@@ -270,7 +270,7 @@ PlaceTaken(s) ==
     /\ UNCHANGED tgVars
 
 \* The signal's state once its card is skipped or expired: the veto trade, opened in the same
-\* transaction (trades.open_veto_trade).
+\* transaction (shadow.open_veto_trade).
 DecidedAway == IF BrokenMode = "skip_drops_trade" THEN "ended" ELSE "veto"
 
 \* code: backend/app/hat/execution/router.py:skip
@@ -301,7 +301,7 @@ Expire(s) ==
                    badEntry, badOrder, exitAsked, midChange>>
     /\ UNCHANGED tgVars
 
-\* code: backend/app/hat/engine/trades.py:evaluate_position  (an exit rule fires)
+\* code: backend/app/hat/engine/shadow.py:evaluate_position  (an exit rule fires)
 ExitDue(s) ==
     /\ sig[s] \in {"placed", "virtual", "veto"} /\ ~exitDue[s]
     /\ exitDue' = [exitDue EXCEPT ![s] = TRUE]
@@ -309,7 +309,7 @@ ExitDue(s) ==
                    stop, badEntry, badOrder, exitAsked, midChange>>
     /\ UNCHANGED tgVars
 
-\* code: backend/app/hat/engine/trades.py:evaluate_position  (the exit goes out by itself in
+\* code: backend/app/hat/engine/shadow.py:evaluate_position  (the exit goes out by itself in
 \* every mode; no card is written)
 ExitSend(s) ==
     /\ exitDue[s]

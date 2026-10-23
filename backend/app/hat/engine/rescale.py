@@ -396,7 +396,7 @@ def resolve_action(
     `corporate_action.unhandled` names it) of an open virtual position (PR 73; PR 31 follow-ups
     1, 12): records `corporate_action.resolved` as the owner's (`actor = user`, the allowlisted
     chat, `via = cli`) at `price` (the ex-date's adjusted price the owner reads), and the caller
-    closes the position at it in the same transaction (`trades.close_position` with
+    closes the position at it in the same transaction (`shadow.close_position` with
     `CLOSE_REASON`: it sells it virtually and writes its trade result). Outside market hours,
     under the bot's lock. Refused, writing nothing: inside a
     session (`market_hours`), an unknown or closed position (`position_unknown`), a real one

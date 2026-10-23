@@ -128,7 +128,7 @@ Evaluate(t) ==
     /\ \E v \in BOOLEAN : virt' = [virt EXCEPT ![t] = v]
     /\ UNCHANGED <<st, log, exitDue, partials, result, pinned, liveVer, rulesRead>>
 
-\* code: backend/app/hat/engine/trades.py:open_entry  (insert the signal, the virtual order and
+\* code: backend/app/hat/engine/entries.py:open_entry  (insert the signal, the virtual order and
 \* fill and the position with their events in one commit; the commit releases the lock)
 Commit(t) ==
     /\ phase[t] = "decided"
@@ -141,7 +141,7 @@ Commit(t) ==
     /\ lock' = IF BrokenMode = "no_lock" THEN lock ELSE 0
     /\ UNCHANGED <<virt, snap, exitDue, partials, result, liveVer, rulesRead>>
 
-\* code: backend/app/hat/engine/trades.py:expire_watchlist  (the session ends, the `watchlist.expire`
+\* code: backend/app/hat/engine/shadow.py:expire_watchlist  (the session ends, the `watchlist.expire`
 \* job at 15:30. A trade that never triggered has no signal and so no hat_event: its record is the
 \* hat_watchlist_entry row, and this step is that row's status change, which the code writes
 \* through lifecycle.next_state; no `watchlist.expired` event row exists. The broken variant
@@ -164,7 +164,7 @@ FireExit(t) ==
     /\ UNCHANGED <<st, log, virt, phase, snap, lock, partials, result, pinned, liveVer,
                    rulesRead>>
 
-\* code: backend/app/hat/engine/trades.py:evaluate_position  (a partial exit rule fires and
+\* code: backend/app/hat/engine/shadow.py:evaluate_position  (a partial exit rule fires and
 \* fills; a full exit that has fired beats it, so none is taken while exitDue)
 PartialExit(t) ==
     /\ st[t] \in Held
@@ -176,7 +176,7 @@ PartialExit(t) ==
                                              THEN liveVer ELSE pinned[t]]
     /\ UNCHANGED <<virt, phase, snap, lock, exitDue, result, pinned, liveVer>>
 
-\* code: backend/app/hat/engine/trades.py:evaluate_position  (the full exit order is placed; a
+\* code: backend/app/hat/engine/shadow.py:evaluate_position  (the full exit order is placed; a
 \* virtual trade is placed the same way, the broken variants skip ExitPending)
 PlaceExit(t) ==
     /\ st[t] \in Held
@@ -190,7 +190,7 @@ PlaceExit(t) ==
                                              THEN liveVer ELSE pinned[t]]
     /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, pinned, liveVer>>
 
-\* code: backend/app/hat/engine/trades.py:_virtual_exit  (the exit fills: the position closes and
+\* code: backend/app/hat/engine/positions.py:record_sale  (the exit fills: the position closes and
 \* its one trade result is written in the same transaction)
 FillExit(t) ==
     /\ st[t] = "ExitPending"

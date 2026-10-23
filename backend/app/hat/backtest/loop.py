@@ -6,12 +6,12 @@ code live trading runs, in the same order:
 1. the nightly scan of d's previous session, published as d's watchlist
    (`watchlist.scan_and_publish`, which calls `scan.scan_bot`);
 2. open positions: the nightly exit rules at d's open, then the live rules along the day's path
-   (`trades.evaluate_position`, which calls `exits.evaluate`);
+   (`shadow.evaluate_position`, which calls `exits.evaluate`);
 3. entries: each watchlist row whose level the day breaks becomes a trigger, the stop comes from
-   `stops.plan_stop`, and `trades.open_entry` decides it with `evaluate_signal` (caps, max chase,
+   `stops.plan_stop`, and `entries.open_entry` decides it with `evaluate_signal` (caps, max chase,
    sizing) and fills it with the shadow engine's virtual fills;
 4. the 15:25 close rules at the official close, then the session-end expiry of the watchlist
-   (`trades.expire_watchlist`).
+   (`shadow.expire_watchlist`).
 
 Those functions work on a database session, so the loop keeps a private ledger (`ledger`): an
 in-memory SQLite database holding the run's one bot, its pinned strategy version, its universe
@@ -78,7 +78,7 @@ first session, whenever the stored version took effect: a backtest of years befo
 existed sizes under it as if it had always been the policy.
 
 The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown_sessions`, which
-`evaluate_signal` reads through `trades.open_entry` from the ledger's hard-stop closes, as live
+`evaluate_signal` reads through `entries.open_entry` from the ledger's hard-stop closes, as live
 does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records the value used.
 
 Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-070) and
@@ -120,7 +120,7 @@ from decimal import Decimal
 from sqlalchemy import select
 
 from ..data.identity import series_as_of
-from ..engine import exits, lifecycle, positions, trades, trigger, watchlist
+from ..engine import entries, exits, lifecycle, positions, shadow, trigger, watchlist
 from ..engine.confidence import BACKTEST_CONFIDENCE
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
@@ -361,7 +361,7 @@ class _Run:
             self._close_phase(day)
             self._delistings(day)
             self._sync_ladder()
-            trades.expire_watchlist(self.session, day)
+            shadow.expire_watchlist(self.session, day)
             self._mark(day)
         self._finish(self.period[-1])
         return self._result()
@@ -396,7 +396,7 @@ class _Run:
         self, position: HatPosition, view: exits.ExitView, phase: exits.Phase, at: datetime
     ) -> None:
         held = self.held[position.id]
-        trades.evaluate_position(
+        shadow.evaluate_position(
             self.session,
             position.id,
             view,
@@ -710,7 +710,7 @@ class _Run:
             for h in self.held.values()
             if h.instrument_id in self.last_close
         }
-        request = trades.EntryRequest(
+        request = entries.EntryRequest(
             bot_id=self.bot_id,
             playbook=row.playbook,
             instrument_id=row.instrument_id,
@@ -722,7 +722,7 @@ class _Run:
             criteria=plan.filters,
         )
         # a backtest signal has no evidence of its own: its label is low, `backtest`
-        outcome = trades.open_entry(
+        outcome = entries.open_entry(
             self.session,
             request,
             fills=self.spec.fills.within(self._cash()),
@@ -809,7 +809,7 @@ class _Run:
 
     def _close(self, position: HatPosition, price: Decimal, reason: str, at: datetime) -> None:
         held = self.held[position.id]
-        trades.close_position(
+        shadow.close_position(
             self.session,
             position.id,
             price,

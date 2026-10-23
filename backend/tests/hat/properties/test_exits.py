@@ -1,6 +1,6 @@
 """PBT exits.*: the exit stack of
 `app.hat.engine.exits` against rules written out independently, and the shadow engine of
-`app.hat.engine.trades` driven end to end on SQLite with a broker that records every call."""
+`app.hat.engine.shadow` driven end to end on SQLite with a broker that records every call."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from hypothesis import strategies as st
 from app.hat.engine import exits
 from app.hat.engine.approvals import veto_score, veto_verdict
 from app.hat.engine.exits import ExitView, PositionState, evaluate
-from app.hat.engine.positions import TradeError, raise_stop
+from app.hat.engine.positions import TradeError, raise_stop, sold_qty
 from app.hat.engine.strategy.config import (
     ExitBreakeven,
     ExitCloseBelowSma,
@@ -465,3 +465,13 @@ def test_raise_stop_refuses_a_stop_that_does_not_rise(new: Decimal) -> None:
         raise_stop(None, HatSignal(mode="shadow"), position, new, None)  # type: ignore[arg-type]
     assert refused.value.code == "stop_would_lower"
     assert position.current_stop == D("100.00")
+
+
+@pytest.mark.parametrize(
+    ("qty_open", "qty", "left"),
+    [(10, 3, 7), (10, 10, 0), (10, 12, 0), (1, 1, 0), (0, 5, 0)],
+)
+def test_sold_qty_never_goes_below_zero(qty_open: int, qty: int, left: int) -> None:
+    """`positions.record_sale`'s quantity: a sale leaves the open shares less the sold ones, and
+    a sale larger than the open quantity (logged, then reconciliation's) leaves none."""
+    assert sold_qty(qty_open, qty) == left

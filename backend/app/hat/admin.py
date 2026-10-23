@@ -69,10 +69,10 @@ from .engine.owner import OwnerCommand
 from .engine.portfolio import lifecycle, sleeve_service, universe_service
 from .engine.portfolio.common import market_id_of
 from .engine.rescale import CLOSE_REASON, resolve_action
+from .engine.shadow import close_position
 from .engine.strategy import versions
 from .engine.strategy.config import ConfigError
 from .engine.strategy.yamlio import import_yaml
-from .engine.trades import close_position
 from .errors import HatConfigError, HatError
 from .execution.accounts import (
     ADAPTER_FACTORIES,
