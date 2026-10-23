@@ -240,7 +240,15 @@ def load_market(
         "features": features.height,
         "index": index,
         "index_points": len(closes),
-        **({"breadth_points": len(breadth)} if regime_inputs else {}),
+        **(
+            {
+                "breadth_points": len(breadth),
+                "regime_index_points": len(index_closes[regime.INDEX_NAME]),
+                "vix_points": len(index_closes[regime.VIX_NAME]),
+            }
+            if regime_inputs
+            else {}
+        ),
         "members": len(members),
         "actions_digest": expected,
         "content_digest": _content_digest(market),

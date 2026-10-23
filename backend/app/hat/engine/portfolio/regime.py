@@ -26,6 +26,7 @@ STATES = (BULL_QUIET, BULL_VOLATILE, CORRECTION, BEAR)
 # The series the inputs read (HAT-PORT-031): the regime job and the backtest read these names.
 INDEX_NAME = "NIFTY 500"
 VIX_NAME = "INDIA VIX"
+HISTORY_DAYS = 300  # index days read: enough for the 252-value VIX window and the 200-day SMA
 SMA_SLOW = 200
 SMA_FAST = 50
 VIX_WINDOW = 252

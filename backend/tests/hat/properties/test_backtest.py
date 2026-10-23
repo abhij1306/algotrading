@@ -1768,7 +1768,7 @@ def _expected_allocations(
     for night, day in zip(data.days, data.days[1:], strict=False):
         if day > period[-1]:
             break
-        mult: D | None = D(1)
+        mult: D | None = min(max(D(1), lo), hi)  # the table value 1, in the policy's bounds
         if rule == REGIME_MULT_POLICY:
             try:
                 inputs = regime.compute_inputs(night, closes, vix, data.breadth.get(night))
@@ -1869,34 +1869,62 @@ def test_invested_share(paths: dict) -> None:
     ),
     st.sampled_from([*REGIME_MULT_RULES, "Policy", "0.5", ""]),
     st.booleans(),
+    st.sampled_from([D(1), D("0.4")]),
+    st.booleans(),
 )
-@example(D(0), REGIME_MULT_ONE, True)
-@example(D("1.0001"), REGIME_MULT_ONE, True)
-@example(D(1), REGIME_MULT_POLICY, True)
-@example(None, REGIME_MULT_ONE, False)  # no base weight for the sleeve
-def test_sizing_conventions_refused(weight: object, rule: str, has_base: bool) -> None:
+@example(D(0), REGIME_MULT_ONE, True, D(1), False)
+@example(D("1.0001"), REGIME_MULT_ONE, True, D(1), False)
+@example(D(1), REGIME_MULT_POLICY, True, D(1), False)
+@example(None, REGIME_MULT_ONE, False, D(1), False)  # no base weight for the sleeve
+@example(D("0.5"), REGIME_MULT_ONE, True, D("0.4"), False)  # above the cluster cap
+@example(None, REGIME_MULT_ONE, True, D("0.4"), False)  # the base weight above it too
+@example(D("0.5"), REGIME_MULT_ONE, True, D(1), True)  # promotion off the base weight
+@example(None, REGIME_MULT_POLICY, True, D(1), True)  # promotion on the regime variant
+@example(None, REGIME_MULT_ONE, True, D(1), True)  # promotion as live sizes it
+def test_sizing_conventions_refused(
+    weight: object, rule: str, has_base: bool, cap: D, promote: bool
+) -> None:
     """A sleeve weight that is not a Decimal in (0, 1] is refused (`backtest_bad_sleeve_weight`),
-    as is a regime rule other than `1` and `policy` (`backtest_bad_regime_mult`); with no weight
-    given, a policy without the sleeve's base weight is refused (`backtest_no_base_weight`);
-    otherwise the run records the weight used, normalised (HAT-BT-014). Harm: a run sized
-    on a weight of 0, above the whole account or on a guess passes for evidence."""
+    as is a regime rule other than `1` and `policy` (`backtest_bad_regime_mult`); a run for
+    promotion is refused with a weight of its own (`backtest_promotion_off_base_weight`) or
+    the `policy` variant (`backtest_promotion_regime_variant`); with no weight given, a policy
+    without the sleeve's base weight is refused (`backtest_no_base_weight`), and a weight
+    above the policy's cluster cap, which the allocator would cut, is refused
+    (`backtest_weight_above_cluster_cap`); otherwise the run records the weight used,
+    normalised (HAT-BT-014). Harm: a run sized on a weight of 0, above the whole account, above
+    what the allocator gives or on a guess passes for evidence, or a promotion rides on a
+    sizing live never uses."""
     policy = s.policy_version()
-    if not has_base:
-        policy = dataclasses.replace(
-            policy, policy=dataclasses.replace(policy.policy, base_weight={})
-        )
+    policy = dataclasses.replace(
+        policy,
+        policy=dataclasses.replace(
+            policy.policy,
+            base_weight=dict(policy.policy.base_weight) if has_base else {},
+            cluster_cap=cap,
+        ),
+    )
     spec = dataclasses.replace(
-        s.spec(s.config(), DAYS, policy=policy), sleeve_weight=weight, regime_mult=rule
+        s.spec(s.config(), DAYS, policy=policy, slippage=DEFAULT_SLIPPAGE_BPS),
+        sleeve_weight=weight,
+        regime_mult=rule,
+        for_promotion=promote,
     )
     good_weight = weight is None or (
         isinstance(weight, D) and weight.is_finite() and 0 < weight <= 1
     )
+    used = D("0.50") if weight is None else weight
     if not good_weight:
         code = "backtest_bad_sleeve_weight"
     elif rule not in REGIME_MULT_RULES:
         code = "backtest_bad_regime_mult"
+    elif promote and weight is not None:
+        code = "backtest_promotion_off_base_weight"
+    elif promote and rule != REGIME_MULT_ONE:
+        code = "backtest_promotion_regime_variant"
     elif weight is None and not has_base:
         code = "backtest_no_base_weight"
+    elif used > cap:  # type: ignore[operator]
+        code = "backtest_weight_above_cluster_cap"
     else:
         code = None
     if code is not None:
@@ -1904,7 +1932,6 @@ def test_sizing_conventions_refused(weight: object, rule: str, has_base: bool) -
             run_backtest(spec, s.market(FLAT, DAYS))
         assert refused.value.code == code
         return
-    used = D("0.50") if weight is None else weight
     assert conventions(spec)["sleeve_weight"] == format(used.normalize(), "f")  # type: ignore[union-attr]
     assert conventions(spec)["regime_mult"] == rule
     assert ("regime_table" in conventions(spec)) is (rule == REGIME_MULT_POLICY)

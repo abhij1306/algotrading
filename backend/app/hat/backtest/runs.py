@@ -497,18 +497,6 @@ def backtest_bot(
         )
     except BacktestError as exc:
         raise RunError(exc.code) from None
-    try:
-        data, snapshot = load_market(
-            store,
-            session,
-            universe_id=universe_id,
-            index=config.regime.index,
-            start=start,
-            end=end,
-            regime_inputs=rules.regime_mult == REGIME_MULT_POLICY,
-        )
-    except BacktestError as exc:
-        raise RunError(exc.code) from None
     spec = RunSpec(
         config=config,
         strategy_version_id=version.id,
@@ -525,7 +513,19 @@ def backtest_bot(
         regime_mult=rules.regime_mult,
     )
     try:
-        sleeve_weight(spec)
+        sleeve_weight(spec)  # before the store is read
+    except BacktestError as exc:
+        raise RunError(exc.code) from None
+    try:
+        data, snapshot = load_market(
+            store,
+            session,
+            universe_id=universe_id,
+            index=config.regime.index,
+            start=start,
+            end=end,
+            regime_inputs=rules.regime_mult == REGIME_MULT_POLICY,
+        )
     except BacktestError as exc:
         raise RunError(exc.code) from None
     return record_backtest(
@@ -571,7 +571,9 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
     one recorded before the flag existed is never the evidence; nor is one whose slots went in
     another order than the estimated trigger time (PR 63), as every run before PR 63 did, nor
     one recorded before the path rules (PR 64), which sold at locked lower bands and carried
-    suspended positions at their last close."""
+    suspended positions at their last close, nor one recorded before the sleeve's allocation
+    sized it (PR 68), which sized off the whole account; a promotion run is sized at the base
+    weight and regime rule `1` (`check_conventions`)."""
     universe_id = _universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
@@ -594,6 +596,7 @@ def _latest_run(session: Session, bot: HatBot, cooldown: int) -> HatBacktestRun 
             and (run.metrics or {}).get("for_promotion") is True
             and (run.metrics or {}).get("slot_order") == SLOT_ORDER_TIME
             and (run.metrics or {}).get("lower_circuit") == LOWER_CIRCUIT_RULE
+            and (run.metrics or {}).get("regime_mult") == REGIME_MULT_ONE
         ),
         None,
     )

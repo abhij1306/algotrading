@@ -543,7 +543,7 @@ to an artefact that exists.
 | HAT-BT-042 | [09](09-backtest.md) | 12, 66 | PBT `dsr.bounds_and_monotonicity`, PBT `dsr.bounds_and_monotonicity_in_sr`, PBT `dsr.bounds_and_monotonicity_first_trial`, PBT `dsr.bounds_and_monotonicity_undefined`, PBT `dsr.bounds_and_monotonicity_bad_denominator`, CONF `dsr_published_example`, PBT `dsr.family_floors`, PBT `dsr.pbo_ranked_variants`, PBT `dsr.pbo_two_variants`, PBT `dsr.pbo_refused`, PBT `dsr.family_pbo_recorded`, PBT `dsr.family_pbo_skips_unreadable` |
 | HAT-BT-050 | [09](09-backtest.md) | 12 | PBT `backtest.deterministic` |
 | HAT-BT-051 | [09](09-backtest.md) | 12 | CONF `backtest_golden_replay` |
-| HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62, 63, 64, 66 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, PBT `dsr.evidence_latest_by_completion`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
+| HAT-BT-060 | [09](09-backtest.md) | 9, 12, 62, 63, 64, 66, 68 | PBT `lifecycle.backtest_gate`, PBT `dsr.evidence_current_trials`, PBT `dsr.evidence_promoted_only`, PBT `dsr.evidence_latest_by_completion`, TLA `SleeveLifecycle!NoLiveWithoutEvidence` |
 | HAT-BT-061 | [09](09-backtest.md) | 2, 12, 62, 63 | DB `governance.live_requires_evidence`, PBT `backtest.version_status_requires_run` |
 | HAT-BT-070 | [09](09-backtest.md) | 12, 61, 62, 64, 68 | CONF `known_gaps_listed`, PBT `backtest.deterministic`, PBT `backtest.fill_conventions_recorded` |
 | HAT-OPS-001 | [10](10-ops.md) | 2 (setting), 17 (lifespan wiring) | PBT `ops.disabled_starts_nothing` |

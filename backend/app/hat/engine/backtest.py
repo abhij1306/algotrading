@@ -618,10 +618,13 @@ class _Run:
         self.signal_rows: list[SignalRow] = []
         self.invested: list[Decimal] = []
         # The sleeve's nightly allocation (HAT-BT-014), by the trade date it sizes.
-        self.weight = sleeve_weight(spec)
+        self.sleeve = sleeve_key(self.config.bot)
+        self.sleeve_policy = replace(self.policy, base_weight={self.sleeve: sleeve_weight(spec)})
         self.allocations: dict[date, Allocation | None] = {}
         self.regime_closes = dict(data.index_closes.get(regime_v1.INDEX_NAME, ()))
         self.vix = dict(data.index_closes.get(regime_v1.VIX_NAME, ()))
+        # the index days, as the regime job reads the last `HISTORY_DAYS` of them
+        self.index_days = sorted({*self.regime_closes, *self.vix})
         self.confirmation: regime_v1.Confirmation | None = None
         self.regime_mult: Decimal | None = None  # the last allocation's, which smoothing reads
         self.nights = 0  # the sessions the regime has been read for
@@ -753,10 +756,12 @@ class _Run:
 
     def _regime_night(self, day: date, equity: Decimal) -> Allocation | None:
         """Read `day`'s regime and allocate at its confirmed state's multiplier, or None."""
+        end = bisect_right(self.index_days, day)
+        window = self.index_days[max(0, end - regime_v1.HISTORY_DAYS) : end]
+        closes = {d: self.regime_closes[d] for d in window if d in self.regime_closes}
+        vix = {d: self.vix[d] for d in window if d in self.vix}
         try:
-            inputs = regime_v1.compute_inputs(
-                day, self.regime_closes, self.vix, self.data.breadth.get(day)
-            )
+            inputs = regime_v1.compute_inputs(day, closes, vix, self.data.breadth.get(day))
         except regime_v1.RegimeError:
             return None  # live's regime job fails: the night has no allocation
         self.confirmation = regime_v1.confirm_step(
@@ -767,21 +772,19 @@ class _Run:
     def _sleeve(self, table_value: Decimal, equity: Decimal) -> Allocation:
         """The run's one sleeve allocated by `allocator.allocate`: Live, health 1, base weight
         the run's weight, its last regime multiplier carried for the smoothing."""
-        sleeve = sleeve_key(self.config.bot)
-        policy = replace(self.policy, base_weight={sleeve: self.weight})
         (allocation,) = allocate(
             [
                 SleeveInput(
                     bot_id=_SANDBOX_SLEEVE,
-                    sleeve=sleeve,
-                    cluster=sleeve,
+                    sleeve=self.sleeve,
+                    cluster=self.sleeve,
                     lifecycle_state=LIVE,
                     regime_table_value=table_value,
                     health=Health(Decimal(1), probation=False),
                     previous_regime_mult=self.regime_mult,
                 )
             ],
-            policy,
+            self.sleeve_policy,
             equity,
         )
         self.regime_mult = allocation.regime_mult
@@ -1661,12 +1664,17 @@ def compute_metrics(
 
 def sleeve_weight(spec: RunSpec) -> Decimal:
     """The run's sleeve weight (HAT-BT-014): `spec.sleeve_weight`, else the policy's base
-    weight of the strategy's sleeve; `backtest_no_base_weight` when the policy has none."""
-    if spec.sleeve_weight is not None:
-        return spec.sleeve_weight
-    weight = spec.policy.policy.base_weight.get(sleeve_key(spec.config.bot))
+    weight of the strategy's sleeve; `backtest_no_base_weight` when the policy has none, and
+    `backtest_weight_above_cluster_cap` above the policy's cluster cap, which the allocator
+    would silently cut it to."""
+    policy = spec.policy.policy
+    weight = spec.sleeve_weight
     if weight is None:
-        raise BacktestError("backtest_no_base_weight")
+        weight = policy.base_weight.get(sleeve_key(spec.config.bot))
+        if weight is None:
+            raise BacktestError("backtest_no_base_weight")
+    if weight > policy.cluster_cap:
+        raise BacktestError("backtest_weight_above_cluster_cap")
     return weight
 
 
@@ -1805,7 +1813,8 @@ def check_conventions(
     """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule or slot order
     (PR 63), an unknown ambiguous-day rule or a bar-less session count that is not a whole
     number in 0..`MAX_SUSPENSION_SESSIONS` (PR 64), a sleeve weight that is not a Decimal in
-    (0, 1] or an unknown regime rule (PR 68), and for a run flagged for promotion,
+    (0, 1] or an unknown regime rule (PR 68), and for a run flagged for promotion, a weight
+    other than the policy's base weight or the `policy` regime variant (PR 68),
     perfect fills (a slippage of 0), the optimistic `touch` rule, a slot order other than the
     estimated trigger time or a suspension markdown later than `SUSPENSION_SESSIONS`."""
     if entry_fill_rule not in ENTRY_FILL_RULES:
@@ -1834,6 +1843,10 @@ def check_conventions(
         raise BacktestError("backtest_promotion_off_time_order")
     if for_promotion and suspension_sessions > SUSPENSION_SESSIONS:
         raise BacktestError("backtest_promotion_late_suspension")
+    if for_promotion and sleeve_weight is not None:
+        raise BacktestError("backtest_promotion_off_base_weight")
+    if for_promotion and regime_mult != REGIME_MULT_ONE:
+        raise BacktestError("backtest_promotion_regime_variant")
 
 
 # --- command line -----------------------------------------------------------------------------
@@ -1845,6 +1858,16 @@ def _slot_order_arg(text: str) -> str:  # pragma: no cover - the command line
     if not is_slot_order(text):
         raise argparse.ArgumentTypeError("time, score or random:K (K a whole number)")
     return text
+
+
+def _sleeve_weight_arg(text: str) -> Decimal:  # pragma: no cover - the command line
+    import argparse  # noqa: PLC0415
+    from decimal import InvalidOperation  # noqa: PLC0415
+
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        raise argparse.ArgumentTypeError("a decimal in (0, 1], e.g. 0.5") from None
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
@@ -1887,7 +1910,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--slot-order", type=_slot_order_arg, default=SLOT_ORDER_TIME)
     parser.add_argument("--ambiguous", choices=AMBIGUOUS_RULES, default=AMBIGUOUS_OPTIMISTIC)
     parser.add_argument("--suspension-sessions", type=int, default=SUSPENSION_SESSIONS)
-    parser.add_argument("--sleeve-weight", type=Decimal, default=None)
+    parser.add_argument("--sleeve-weight", type=_sleeve_weight_arg, default=None)
     parser.add_argument("--regime-mult", choices=REGIME_MULT_RULES, default=REGIME_MULT_ONE)
     parser.add_argument("--for-promotion", action="store_true")
     args = parser.parse_args(argv)

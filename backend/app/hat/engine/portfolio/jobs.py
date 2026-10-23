@@ -33,7 +33,7 @@ REGIME_JOB = "regime"
 ALLOCATE_JOB = "allocate"
 INDEX_NAME = regime.INDEX_NAME
 VIX_NAME = regime.VIX_NAME
-HISTORY_DAYS = 300  # index days read: enough for the 252-value VIX window and the 200-day SMA
+HISTORY_DAYS = regime.HISTORY_DAYS
 
 
 def read_series(store: DataStore, day: date) -> tuple[dict[date, Decimal], dict[date, Decimal]]:
