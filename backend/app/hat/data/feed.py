@@ -100,9 +100,9 @@ def calendar_source(
     monotonic: Callable[[], float] = time.monotonic,
 ) -> CalendarSource:
     """A source that reads HAT's trading calendar (`session_calendar`) through `session_factory`,
-    at most once per `ttl_s`. It returns None when the market has no calendar yet (kept for
-    `retry_s`, so a read made off the event loop serves the connect that follows it) or the read
-    fails (read again next time), so the feed stays closed."""
+    at most once per `ttl_s`. It returns None when the market has no calendar yet and raises when
+    the read fails, so the feed stays closed; either outcome is kept for `retry_s`, so a read made
+    off the event loop serves the connect that follows it."""
     cached: list[tuple[float, SessionCalendar | None]] = []
 
     def source() -> SessionCalendar | None:
@@ -111,8 +111,12 @@ def calendar_source(
             at, calendar = cached[0]
             if now - at < (ttl_s if calendar is not None else min(ttl_s, retry_s)):
                 return calendar
-        with session_factory() as session:
-            calendar = session_calendar(session)
+        try:
+            with session_factory() as session:
+                calendar = session_calendar(session)
+        except Exception:
+            cached[:] = [(now, None)]  # unknown until `retry_s` passes
+            raise
         cached[:] = [(now, calendar)]
         return calendar
 

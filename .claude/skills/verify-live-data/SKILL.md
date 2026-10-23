@@ -63,7 +63,7 @@ No TLA+ model: `docs/architecture.md` lists none for this area. The ordering pro
 - `PBT feed.token_check_off_loop` The Fyers token check of an async connect runs on a worker thread, never the event loop, and an invalid or failing check gives `token_invalid`. Harm: a slow broker call freezes every live quote.
 - `PBT feed.socket_factory` The factory builds the SDK socket with the given token, the SDK auto-reconnect on, no log files and exactly the session's four callbacks, and raises `FyersWebSocketError` without the SDK. Harm: a reconnect storm, files written next to the code, or events that never reach the session.
 - `PBT feed.calendar_closed` With HAT's trading calendar the feed never connects on a day it lists as a holiday and connects on its other trading days only from 09:00 IST to the 15:30 close; with the calendar missing, unreadable or not wired it connects on no day. Harm: the Fyers socket opens on an exchange holiday, or on a day nobody knows is a trading day.
-- `PBT feed.calendar_read_off_loop` (PR 75b, CodeAnt) `LiveFeed.start` and the connect it begins (`connect_async`) read the trading calendar only off the event loop, a calendar found missing is not read again by the connect that follows (`calendar_source` keeps it for `retry_s`), and a stop before that connect finishes leaves no session running. Harm: a slow calendar query stalls every task on the loop, or a shutdown races a start-up connect that opens a socket afterwards.
+- `PBT feed.calendar_read_off_loop` (PR 75b, CodeAnt) `LiveFeed.start` and the connect it begins (`connect_async`) read the trading calendar only off the event loop, a calendar found missing or unreadable is not read again by the connect that follows (`calendar_source` keeps the outcome for `retry_s`), and a stop before that connect finishes leaves no session running. Harm: a slow calendar query stalls every task on the loop, or a shutdown races a start-up connect that opens a socket afterwards.
 - `PBT feed.token_source` The provider token is `client_id:access_token` exactly when the Fyers session holds a model, a client id and an access token, and None otherwise. Harm: the socket is built with half a token, or an expired token is retried for ever.
 - `PBT feed.traceback_throttle` A failing site writes a full traceback first and then at most once per interval; the other failures are one counted debug line. Harm: a failing tick handler writes a traceback per tick and fills the disk.
 - `PBT announcements.text_never_gates` Items identical except title, category text and URL give the same `catalyst_attached` outcome. Harm: a text heuristic becomes an unreviewed trading rule.
@@ -158,7 +158,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `2be9d9f4fd992c29508834214633913e36cc801f1b2dce3bf8bcfe864a883b65`
+Covered digest: `d999b139a6aaa2c3f61e736871678acf87e9994b322d082faea73bb2b72da58c`
 
 ## Scope changes
 
@@ -1057,6 +1057,15 @@ E   assert not True
 E   Failing test case: test_calendar_read_off_loop(
 E       known=True,
 E       stop_at_once=True,
+```
+
+Fourth break: (PR 75b, CodeAnt PR Risk) `calendar_source` does not keep a failed read (`cached[:] = [(now, None)]` in the `except` replaced by `pass`), so the connect reads the unreadable calendar again on the loop.
+
+```
+E   assert True not in [False, True]
+E   Failing test case: test_calendar_read_off_loop(
+E       calendar='unreadable',
+E       stop_at_once=False,
 ```
 
 ### PBT bars.trigger_only_on_final_bars

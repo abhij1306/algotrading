@@ -1013,13 +1013,13 @@ def test_calendar_closed(
 
 
 @settings(max_examples=12, deadline=None)
-@given(known=st.booleans(), stop_at_once=st.booleans())
-def test_calendar_read_off_loop(known: bool, stop_at_once: bool) -> None:
+@given(calendar=st.sampled_from(["known", "missing", "unreadable"]), stop_at_once=st.booleans())
+def test_calendar_read_off_loop(calendar: str, stop_at_once: bool) -> None:
     """PBT feed.calendar_read_off_loop (HAT-OVR-001; PR 75b, CodeAnt): starting the feed and the
     connect it begins read the trading calendar only off the event loop, a calendar found missing
-    is not read again by the connect that follows, and a stop before that connect finishes leaves
-    no socket. Harm: a slow calendar query stalls every task on the loop (ticks, the monitor), or
-    a shutdown races a start-up connect that opens a socket afterwards."""
+    or unreadable is not read again by the connect that follows, and a stop before that connect
+    finishes leaves no socket. Harm: a slow calendar query stalls every task on the loop (ticks,
+    the monitor), or a shutdown races a start-up connect that opens a socket afterwards."""
     from contextlib import nullcontext
     from unittest.mock import patch
 
@@ -1036,7 +1036,9 @@ def test_calendar_read_off_loop(known: bool, stop_at_once: bool) -> None:
             reads.append(True)
         except RuntimeError:
             reads.append(False)
-        return weekday_calendar(clock) if known else None
+        if calendar == "unreadable":
+            raise OSError("calendar table unreadable")
+        return weekday_calendar(clock) if calendar == "known" else None
 
     async def run() -> bool:
         factory = FakeSocketFactory()
