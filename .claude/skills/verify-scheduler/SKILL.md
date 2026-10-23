@@ -147,7 +147,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `69e4cb7ad604719d4a38b2a99349ce110e2151d6ebf4c7ea85379a21517e6393`
+Covered digest: `77e6e9abede27cc66d06e4f8e441f4438035b716fd60ce90f9e23c8d74581020`
 
 ## Scope changes
 
@@ -191,6 +191,8 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 33 updated `test_conf_verification.py`: `MERGED_PRS` now includes 33; `KNOWN_GAPS` unchanged.
 - PR 44 updated `test_conf_verification.py`: `MERGED_PRS` now includes 44; `KNOWN_GAPS` unchanged.
 - PR 47: `trade_jobs` registers `gtt.ex_date` only with `exdate_check` (`HatSettings.exdate_gtt_check`, passed through `daily_jobs` and `account_jobs`); 10-ops' job table holds the default registration, so the job is a note below it (CONF `ops.job_registry` unchanged). Nothing was narrowed.
+
+- PR 36 (HAT-EXEC-042): `daily/nightly.py` gains the `journal.check` job (23:15 trading days, after the 23:00 GTT verify), a row in 10 §3 that `ops.job_registry` compares (break recorded there). Its body (`Nightly.journal_check`) is checked by `verify-execution`'s `journal.check_alerts`. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -413,6 +415,12 @@ Break: `GTT_SWAP_AT = time(15, 26)` in `ops/trade_jobs.py`.
 E   AssertionError: {'not_in_table': {('gtt.swap:<account>', 'trading', datetime.time(15, 26), None, ())}, 'not_registered': {('gtt.swap:<account>', 'trading', datetime.time(15, 25), None, ())}}
 ```
 
+
+Break: (PR 36) `journal.check` is not registered in `daily/nightly.py`'s `nightly_jobs` (its 10 §3 row stays).
+
+```
+E   AssertionError: {'not_in_table': set(), 'not_registered': {('journal.check', 'trading', datetime.time(23, 15), None, ())}}
+```
 ### CONF existing_suite_green
 
 Break: `continue-on-error: true` on the `frontend` job of `.github/workflows/ci.yml`.

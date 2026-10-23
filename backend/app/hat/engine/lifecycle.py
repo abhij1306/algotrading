@@ -10,7 +10,8 @@ is an entry or an exit order by its `purpose`, `order.rejected` is a step only w
 (the rejection after the single retry, HAT-EXEC-023), `order.cancelled` only for an entry order,
 an `order.filled` marked `exit_triggered` stands for the exit order the broker placed when a
 resting stop triggered (PR 15c), and the events that carry no transition (other fills,
-`signal.approved`, `stop.moved`, `gtt.*` and so on) have no step. CONF
+`signal.approved`, `stop.moved`, `gtt.*` and so on) have no step, nor has an event the journal
+kept as a broker fact the table had no row for (`no_step`, PR 36). CONF
 `lifecycle_transitions_match_spec` compares this table with the spec's.
 """
 
@@ -27,6 +28,7 @@ __all__ = [
     "EXIT_TRIGGERED",
     "HOLDING_STATES",
     "INITIAL_STATE",
+    "NO_STEP",
     "POSITION_STATES",
     "STATES",
     "STEP_ENTRY_PLACED",
@@ -100,6 +102,10 @@ _EXIT_PURPOSES = frozenset({"exit_partial", "exit_full", "flatten"})
 # HAT exit order was placed: the first fill of a broker stop (the stop triggered), or a fill
 # that empties a position some other way (07 §4, "full exit rule fires or stop triggers").
 EXIT_TRIGGERED = "exit_triggered"
+# The payload flag of a broker fact the table had no row for when it was recorded (a retried
+# sale's `order.placed` while the trade is already ExitPending): kept in the log, never a step
+# (`journal.record`, PR 36).
+NO_STEP = "no_step"
 # Events that drive a step by their type alone.
 _PLAIN_STEPS = frozenset(
     key[1]
@@ -125,6 +131,8 @@ def step_of(event_type: str, payload: Mapping[str, Any] | None = None) -> str | 
     `order.cancelled` is a step for an entry order (or one with no purpose), never for a stop or
     exit order; an `order.filled` is the exit step only when marked `exit_triggered`."""
     data = payload or {}
+    if data.get(NO_STEP) is True:
+        return None
     if event_type == "order.rejected":
         return event_type if data.get("final") is True else None
     if event_type == ORDER_CANCELLED:

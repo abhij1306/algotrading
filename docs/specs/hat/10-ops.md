@@ -144,6 +144,7 @@ table.
 | `scan` | trading | 18:00 | | `allocate` | 9 |
 | `watchlist.digest` | trading | 18:00 | | `scan` | 16 |
 | `gtt.verify:<account>` | trading | 23:00 | | | 15c |
+| `journal.check` (every trade not yet ended folded from its events; a mismatch alerted `journal.mismatch`, HAT-EXEC-042) | trading | 23:15 | | | 36 |
 
 `gtt.ex_date:<account>` (08:40, trading days, retried every minute; PR 47, HAT-EXEC-145) is not in
 the table: it is registered only when `HAT_EXDATE_GTT_CHECK` is on (default off), until the O2(b)

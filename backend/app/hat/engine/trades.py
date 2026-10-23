@@ -3,7 +3,7 @@ fill engine, exits and the trade result (07 §4, HAT-EXEC-040..044, HAT-SCH-057,
 
 Every function works in the caller's open transaction and never commits. A state change and the
 event that explains it are written together, so a replay of the events always reproduces the
-stored state (`replay_state`).
+stored state (`journal.replay_state`).
 
 **One locked transaction per bot.** `evaluate_signal` is pure over the snapshot it is given, so
 two evaluations that read the same snapshot could both take the last position slot. `open_entry`
@@ -33,8 +33,9 @@ leaves the accepted signal in Triggered, holding its slot, for the router to pla
 virtual trade for the veto score: `open_veto_trade` opens it on the signal's own row, which has
 reached its ending (Cancelled or Expired). Its events carry the signal id as every trade event
 does (HAT-SCH-064) and `veto: true` in their payload; they move only the veto position's state,
-so `replay_state` folds the signal's own events and `replay_veto_state` the veto trade's, which
-starts at EntryPlaced with its virtual order.
+so `journal.replay_state` folds the signal's own events and `journal.replay_veto_state` the veto
+trade's, which starts at EntryPlaced with its virtual order. Every state change goes through the
+journal (`engine/journal.py`, PR 36).
 """
 
 from __future__ import annotations
@@ -53,7 +54,6 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
-from ..events import record
 from ..execution.tags import encode_tag
 from ..ids import uuid7
 from ..models import (
@@ -76,7 +76,7 @@ from ..risk.policy import PolicyVersion, effective_version
 from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..time import as_utc, day_bounds, trade_date_of
-from . import exits, lifecycle, rescale
+from . import exits, journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
 from .strategy.config import ExitRule, parse_config
@@ -100,8 +100,6 @@ __all__ = [
     "open_veto_trade",
     "position_state",
     "reject_signal",
-    "replay_state",
-    "replay_veto_state",
     "risk_inputs",
     "trade_r",
 ]
@@ -116,19 +114,13 @@ DECIDE = Callable[[SignalContext], RiskDecision]
 APPROVAL_WINDOW = timedelta(minutes=5)
 # Issues an approval card's token from (signal id, expires_at); `telegram.tokens.ApprovalSigner`.
 TokenIssuer = Callable[[uuid.UUID, datetime], str]
-VETO = "veto"  # the payload flag of a veto trade's events
+VETO = journal.VETO  # the payload flag of a veto trade's events
 # An accepted auto signal rests in Triggered until the router places its order: it holds a slot.
 _SLOT_PENDING_STATES = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL, lifecycle.ENTRY_PLACED)
 _ENTERED_STATES = (
     lifecycle.TRIGGERED,
     lifecycle.AWAITING_APPROVAL,
     lifecycle.ENTRY_PLACED,
-    lifecycle.OPEN,
-    lifecycle.PARTIALLY_EXITED,
-    lifecycle.EXIT_PENDING,
-    lifecycle.CLOSED,
-)
-_POSITION_STATES = (
     lifecycle.OPEN,
     lifecycle.PARTIALLY_EXITED,
     lifecycle.EXIT_PENDING,
@@ -151,7 +143,7 @@ ENTRY_SKIP_REASONS = frozenset(
     }
 )
 _ZERO = Decimal(0)
-SIGNAL_TRIGGERED = "signal.triggered"
+SIGNAL_TRIGGERED = journal.SIGNAL_TRIGGERED
 _RATIO_PLACES = Decimal("0.000001")
 
 
@@ -363,65 +355,20 @@ def _emit(
     position: HatPosition | None = None,
     veto: bool = False,
 ) -> None:
-    """Record `event_type` and, when it drives a lifecycle step, move the signal (and its
-    position) to the next state in the same transaction (HAT-EXEC-042). A veto trade's event is
-    flagged `veto` and moves only its position: the signal has already ended."""
-    step = lifecycle.step_of(event_type, payload)
-    if veto:
-        payload = {**payload, VETO: True}
-        if step is not None and position is not None:
-            # The veto position is stored once it opens; before that its trade is EntryPlaced.
-            before = lifecycle.ENTRY_PLACED if event_type == "position.opened" else position.state
-            position.state = lifecycle.next_state(before, step)
-    elif step is not None:
-        after = lifecycle.next_state(signal.state, step)
-        signal.state = after
-        if position is not None and after in _POSITION_STATES:
-            position.state = after
-    record(
+    """Record `event_type` through the journal, which moves the signal (and its position) along
+    the step it drives in the same transaction and refuses a step the table forbids
+    (HAT-EXEC-042). A veto trade's event moves only its position."""
+    journal.record(
         session,
+        signal,
+        event_type,
+        payload,
         aggregate_type=aggregate_type,
         aggregate_id=aggregate_id,
-        event_type=event_type,
-        actor="engine",
-        payload=payload,
-        correlation_id=signal.id,
-        bot_id=signal.bot_id,
-        occurred_at=now,
+        now=now,
+        position=position,
+        veto=veto,
     )
-
-
-def _trade_steps(session: Session, signal_id: uuid.UUID, *, veto: bool) -> list[str]:
-    rows = session.execute(
-        select(HatEvent.event_type, HatEvent.payload)
-        .where(HatEvent.correlation_id == signal_id)
-        .order_by(HatEvent.id)
-    ).all()
-    steps = []
-    for event_type, payload in rows:
-        if bool((payload or {}).get(VETO)) != veto:
-            continue
-        step = lifecycle.step_of(event_type, payload)
-        if step is not None:
-            steps.append(step)
-    return steps
-
-
-def replay_state(session: Session, signal_id: uuid.UUID) -> str:
-    """The state the signal's events give when folded over the transition table. The approval
-    card has no event of its own: its `hat_approval` row, written in the transaction that moved
-    the signal to AwaitingApproval, stands for the step right after `signal.triggered`."""
-    steps = _trade_steps(session, signal_id, veto=False)
-    if session.get(HatApproval, signal_id) is not None and steps[:1] == [SIGNAL_TRIGGERED]:
-        steps.insert(1, "approval.sent")
-    return lifecycle.fold(steps)
-
-
-def replay_veto_state(session: Session, signal_id: uuid.UUID) -> str | None:
-    """The state of the signal's veto trade folded from its events (it starts at Triggered, so
-    its virtual order moves it to EntryPlaced), or None when it has none."""
-    steps = _trade_steps(session, signal_id, veto=True)
-    return lifecycle.fold(steps, start=lifecycle.TRIGGERED) if steps else None
 
 
 def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
@@ -701,7 +648,7 @@ def _send_approval(
             token_hash=hashlib.sha256(token.encode()).hexdigest(),
         )
     )
-    signal.state = lifecycle.next_state(signal.state, "approval.sent")
+    journal.approval_sent(signal)
     session.flush()
 
 

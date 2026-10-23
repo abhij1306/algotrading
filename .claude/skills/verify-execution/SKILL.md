@@ -99,6 +99,10 @@ Checks that an order reaches the broker at most once per tag and only after its 
 - `TLA TradeLifecycle!PerBotCapHolds` With the bot's lock held between the risk decision and the insert, a bot never holds more position slots than its cap. Harm: two entries of one bot evaluated at once both take the last slot.
 - `CONF lifecycle_transitions_match_spec` The states, endings and (from, to) pairs of `lifecycle.TRANSITIONS` equal the table in 07 §4, row for row, and `TRADE_STATES` equals the 11 states. Harm: the machine that runs is not the machine the owner approved.
 - `PBT exits.replay_reproduces_state` After every step of a shadow trade the state stored on the signal and position equals the fold of its events over the table. Harm: a state that cannot be rebuilt from the log hides a missed event.
+- `CONF journal_only_writers` No module of `app/hat` other than `engine/journal.py` assigns `.state` on a signal or a position (an attribute, `setattr(x, "state", ...)` or an UPDATE's `.values(state=...)` on HatSignal or HatPosition), and the scan sees the journal's own writes (PR 36, HAT-EXEC-042). Harm: a writer that skips the table check leaves the stored state off the fold of the log.
+- `PBT journal.validates_before_writing` For every sequence of lifecycle events recorded through `journal.record` (or `approval_sent`) as engine decisions or broker facts, an allowed step moves the signal (and its position) and writes one event, a forbidden decision raises before writing and leaves the state, a forbidden broker fact writes one event marked `no_step` and leaves the state, and after every step the stored state is the fold of the log (PR 36, HAT-EXEC-042, HAT-SCH-062). Harm: a refused step leaves an event the state never took and the log no longer folds.
+- `PBT journal.check_names_mismatches` `journal.mismatches` names exactly the trades not yet ended, each as `trade` or `veto`, whose stored state differs from the fold of their events (an active signal, its own position, a signal stored as ended over its own position not yet Closed, an open veto trade) or whose events do not fold (`unfoldable`, the check going on) (PR 36). Harm: a drifted trade is acted on all night with nobody told, or one bad log stops the check.
+- `PBT journal.check_alerts` The nightly `journal.check` alerts URGENT `journal.mismatch` once per drifted trade, at most `JOURNAL_ALERTS` (10) a night, each naming the signal, which of its trades (`trade` or `veto`), the stored and replayed states and the night's count in plain codes, records the count as its rows and repairs nothing (PR 36). Harm: the owner never hears of a drift, or one bad night floods the chat.
 - `PBT exits.shadow_rows_virtual` A shadow trade driven from signal to close writes only virtual orders, fills and positions with no broker ids and no fees, the broker records zero calls, the quantities add up and a closed position has one result whose R is its P&L over the initial risk. Harm: a shadow row that looks real can be reconciled against, and sold at, the broker.
 - `PBT trades.retry_returns_existing_signal` A repeated trigger for the same (bot, playbook, instrument, day) returns the signal it already made and writes nothing, even after the bot left shadow mode or the instrument left the universe. Harm: a retried job crashes instead of finding the trade it already took.
 - `PBT trades.shared_bot_cap` However entries are spread over a bot's playbooks the accepted ones never exceed the bot's position cap, and one is rejected exactly when the cap is full (the cap is the bot's, not the playbook's). Harm: each playbook gets its own cap and the bot holds a multiple of what the policy allows.
@@ -230,6 +234,7 @@ python -m pytest tests/hat/conformance/test_conf_broker.py -q --no-cov
 CI=1 python -m pytest tests/hat/properties/test_exits.py tests/hat/properties/test_trades.py -q --no-cov
 CI=1 python -m pytest tests/hat/properties/test_config.py -k trade_keeps_entry_version -q --no-cov
 python -m pytest tests/hat/conformance/test_conf_lifecycle.py -q --no-cov
+CI=1 python -m pytest tests/hat/properties/test_journal.py -q --no-cov   # the trade journal and its nightly check (PR 36)
 CI=1 python -m pytest tests/hat/properties/test_router.py -q --no-cov   # the router on FakeBroker
 CI=1 python -m pytest tests/hat/properties/test_manage.py -q --no-cov   # fills, broker stops, exits
 CI=1 python -m pytest tests/hat/properties/test_mpp.py -q --no-cov      # sales under market price protection (PR 48)
@@ -347,13 +352,15 @@ Live trade management (PR 15c):
 - `backend/tests/hat/fixtures/fyers_gtt_ex_date_assumed.json`
 - `backend/tests/hat/properties/test_mpp.py`
 - `backend/tests/hat/fixtures/fyers_mpp_sale_assumed.json`
+- `backend/app/hat/engine/journal.py`
+- `backend/tests/hat/properties/test_journal.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `c32d4c0c4ad564989f068d99aff76f0e2f2b5062687f936b811d75b09d234df2`
+Covered digest: `b4068a9dbbeca8601682d787adb4683daa1914749bad9e51f88e4aa3f1ac953c`
 
 ## Scope changes
 
@@ -412,6 +419,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 45 (HAT-GOV-085, HAT-EXEC-014): the DDPI and base-weights gates and the high-confidence rule are proved on the real code (`router.mode_gates_hold_bots_in_shadow`, `router.open_settles_mode_changes`, `router.auto_places_only_high_confidence`); `ExecutionRouter.tla` models only the GTT gate and was not extended. No live caller passes a confidence label yet (PR 71), so every auto signal goes to approval. Nothing was narrowed.
 - PR 47 (research G01, G17, G24; HAT-EXEC-063, -145, -146): `TradeManager.check_ex_date_gtts` (job `gtt.ex_date`, behind `HAT_EXDATE_GTT_CHECK`, default off) and `StopDesk.check_gtt`; `StopDesk._renewed` (300-day renewal in `verify`); `execution/series.py` (successor by market and ISIN). The broker-cancelled GTT's book shape is ASSUMED (`fyers_gtt_ex_date_assumed.json`, three shapes) until the O2(b) live check; the property draws all three. ASM and GSM are not detectable (no source) and are not checked. A BZ successor has no Fyers symbol (`fyers_symbol` maps only BE) and is alerted `unmapped`; its re-place is refused by the adapter, which the property does not draw separately. `manage.verify_covers` passes unchanged. CodeAnt round: a GTT placed on or before the old row's `delisted_on` went out under the old symbol (`StopDesk._old_series`): the check and the verify cancel it and place it again (the weekly refresh runs on Saturday, so the boundary day has no GTT; one placed that day is counted old and re-placed once at worst). An unmapped successor (`_Target.unmapped`) gets no stop: the adapter would fall back to the old `-EQ` symbol. `StopDesk.protect`, `swap`, `check_gtt` and `verify` hold a per-position re-entrant lock (`_serialised`), since the fill sync and the trade jobs share one desk on separate threads; `manage.ex_date_check_serialised` interleaves deterministically (the second path starts at the check's tick read, between ending the old GTT and reserving the new), with a second session on the same in-memory engine. Moves (`make_room`, `follow`, `rescaled`) are not locked: they modify existing stops and place none. Nothing was narrowed.
 - PR 50 (HAT-BRK-082, HAT-EXEC-060; research O3, D154): one process-wide `CallBudget` in `fyers_broker.py` (limits from `HAT_BROKER_CALLS_PER_*` in `settings.py`, wired by `fyers_adapter.py` as `process_budget()`), writes ahead of reads (`READ_SHARE`, waiting writers gate reads), HTTP 429 caught through a `requests` response hook on the SDK's session (`_watch_responses`; it relies on `fyers_apiv3`'s `model.service.session`, which `Http429Sdk` imitates) and mapped to `broker_rate_limited` like -360. `writes_go_ahead_of_reads` reads `CallBudget._writers` and `_cond` to interleave deterministically. The budget's day count is per process and restarts at zero on a restart; `minute_history`'s SDK calls do not go through the budget (left for a later PR). `router.fill_sync_cadence` scripts the throttled read as `FyersRateLimitedError` on odd `down` passes: a `BrokerUnavailableError` from the inner broker is re-coded `broker_unavailable` by the adapter. The window property found a pause shortened by the per-second wait (fixed). Nothing was narrowed. CodeAnt round: a read's day share has no minimum of one (a day cap of 1 is a write's); the breaker is checked again after the budget wait; the 429 pause moved into the worker, so a 429 landing after its caller timed out still pauses; the response hook is installed in `FyersBroker.client`, so every model a call resolves is hooked; and the window property found a float-rounding edge (a wait that lands a hair inside the minute), fixed with `_WAIT_SLACK` (1 µs).
+- PR 36 (architecture audit 2026-10-22 F1, HAT-EXEC-042, HAT-SCH-062): `engine/journal.py` is the only writer of a trade's state; `trades._emit`, the approval card (`journal.approval_sent`), `approvals._signal_event`, `submit._event` (whose `_advance` caught `LifecycleStateError` and kept the event, so a retried exchange-rejected sale left a log that no longer folded) and `controls.cancel_pending_approvals` go through it, and `replay_state` / `replay_veto_state` moved there from `trades.py`. Two rules: an engine decision the table forbids is refused before writing; a broker fact (`submit._event`, `broker_fact=True`) is kept as a `no_step` event that `lifecycle.step_of` ignores. An order row whose signal row is missing (the in-memory rigs of `tags.refusals_before_the_broker`) keeps its event as `no_step` and moves nothing, as before. A kill trip closes an approval card whose signal is no longer AwaitingApproval without an event (it used to record `signal.expired` regardless). The nightly `journal.check` (23:15, `daily/nightly.py`) folds every trade not yet ended (a signal stored as ended over its own live position included) and alerts `journal.mismatch` with the trade's kind; it runs the check twice in fresh transactions and alerts only what both saw, so a trade committed between one run's reads is not a false alert (no property draws that race). A broker fact kept `no_step` is logged at ERROR. `submit._event` looks up the signal only for an event that drives a step. Narrowed: the TLA `TradeLifecycle` model does not model `no_step` events (unchanged); `live_trades` fills still go through `trades`/`journal` as engine decisions, so a fill the table forbids raises rather than being kept (follow-up). `manage.async_sale_rejection_retried` now also asserts after each step that the replay equals the stored signal and position state.
 
 ## Scratch breaks
 
@@ -857,6 +865,13 @@ E       'reconciled': False,
 E       'purpose': 'stop_day',
 ```
 
+
+Break: (PR 36) `submit._event` raises when the order's signal row is missing (the journal has no trade to move), so the order's bookkeeping fails after the broker call.
+
+```
+E   app.hat.execution.submit.UnresolvedOrderError: HTD0EBZBMSR85D7H981R
+E   Failing test case: test_refusals_happen_before_the_broker(
+```
 ### PBT stops.gtt_limit_offset
 
 Break: `gtt_limit_price` rounds up (`ROUND_CEILING`) instead of down.
@@ -2752,6 +2767,30 @@ E   Failing explicit example: test_async_sale_rejection_retried(
 E       ending='cancelled',
 ```
 
+
+Break: (PR 36) in `backend/app/hat/engine/journal.py`, a forbidden broker fact is kept as a step (`data[lifecycle.NO_STEP] = True` became `pass`), so the retried sale's second exit `order.placed` drives a step on replay.
+
+```
+    assert journal.replay_state(session, signal.id) == signal.state
+E   app.hat.engine.lifecycle.LifecycleStateError: no transition from ExitPending on order.placed.exit
+E   Failing explicit example: test_async_sale_rejection_retried(
+E       ending='rejected',
+E       part=0,
+E       again=True,
+E   )
+```
+
+Break: (PR 36) in `backend/app/hat/engine/lifecycle.py`, `step_of` ignores the `no_step` flag.
+
+```
+    assert journal.replay_state(session, signal.id) == signal.state
+E   app.hat.engine.lifecycle.LifecycleStateError: no transition from ExitPending on order.placed.exit
+E   Failing explicit example: test_async_sale_rejection_retried(
+E       ending='rejected',
+E       part=0,
+E       again=True,
+E   )
+```
 ### PBT fyers_broker.an_ok_reply_without_its_list_is_unreadable
 
 Break: in `backend/app/hat/execution/fyers_broker.py`, `_read_list` turns a missing or non-list key into `[]`.
@@ -4028,4 +4067,167 @@ E   AssertionError: assert ['B-3'] == []
 E   Failing explicit example: test_no_cancel_without_a_resend(
 E       seconds=60,
 E       shape='market_protected',
+```
+
+### CONF journal_only_writers
+
+Break: (PR 36) main's `backend/app/hat/execution/submit.py` (`_advance` assigns `signal.state` and `position.state`), restored into the branch.
+
+```
+E   AssertionError: assert ['execution/submit.py:532', 'execution/submit.py:538'] == []
+```
+
+Break: (PR 36) `submit._event` assigns `signal.state = lifecycle.next_state(...)` itself.
+
+```
+    assert found == []
+E   AssertionError: assert ['execution/submit.py:521'] == []
+```
+
+Break: (PR 36) `risk/controls.py` writes the state with `setattr(signal, "state", ...)`.
+
+```
+    assert found == []
+E   AssertionError: assert ['risk/controls.py:106'] == []
+```
+
+Break: (PR 36) `risk/controls.py` writes the state with `update(HatSignal).values(state=...)`.
+
+```
+    assert found == []
+E   AssertionError: assert ['risk/controls.py:106'] == []
+```
+
+
+Break: (PR 36, review) `risk/controls.py` writes the state with `update(models.HatSignal).values(state=...)` (the table named through a module).
+
+```
+    assert found == []
+E   AssertionError: assert ['risk/controls.py:48'] == []
+```
+
+Break: (PR 36, review) `HatSignal` gains a method that assigns `self.state`.
+
+```
+    assert found == []
+E   AssertionError: assert ['models/runtime.py:106'] == []
+```
+### PBT journal.validates_before_writing
+
+Break: (PR 36) in `backend/app/hat/engine/journal.py`, `record` never refuses (`if not broker_fact: raise` became `if False: raise`), so a forbidden decision is written as a `no_step` event.
+
+```
+    with pytest.raises(lifecycle.LifecycleStateError):
+E   Failed: DID NOT RAISE LifecycleStateError
+E   Failing explicit example: test_validates_before_writing(
+E       steps=[(0, False), (13, False)],
+E   )
+```
+
+Break: (PR 36) `approval_sent` assigns AwaitingApproval without checking the table.
+
+```
+    with pytest.raises(lifecycle.LifecycleStateError):
+E   Failed: DID NOT RAISE LifecycleStateError
+E   Failing test case: test_validates_before_writing(
+E       steps=[(1, False)],
+E   )
+```
+
+Break: (PR 36) `_move` does not move the position with the signal.
+
+```
+    assert position.state == signal.state
+E   AssertionError: assert 'Open' == 'ExitPending'
+E   Failing explicit example: test_validates_before_writing(
+E       steps=[(0, False), (6, False), (13, False), (7, False), (7, True)],
+E   )
+```
+
+### PBT journal.check_names_mismatches
+
+Break: (PR 36) in `backend/app/hat/engine/journal.py`, `mismatches` does not compare the signal's own position.
+
+```
+    assert {signal_id for signal_id, _, _ in found} == want
+E   AssertionError: assert set() == {UUID('adc01e9f-9183-4af4-b3ca-063102378f54')}
+E   Failing explicit example: test_check_names_mismatches(
+E       trades=[('position', True, 'ExitPending'), ('veto', False, 'Open')],
+E   )
+```
+
+Break: (PR 36) the veto-trade loop selects nothing (`False` added to its `where`).
+
+```
+    assert {signal_id for signal_id, _, _ in found} == want
+E   AssertionError: assert set() == {UUID('763aa874-9f5e-4fc9-bb1d-b5d27209ed09')}
+E   Failing explicit example: test_check_names_mismatches(
+E       trades=[('veto', True, 'ExitPending'), ('position', False, 'Open')],
+E   )
+```
+
+Break: (PR 36) `_compare` does not catch `LifecycleStateError` (catches `KeyError`), so one unfoldable log stops the check.
+
+```
+E   app.hat.engine.lifecycle.LifecycleStateError: no transition from Open on position.closed
+E   Failing explicit example: test_check_names_mismatches(
+E       trades=[('unfoldable', False, 'Open')],
+E   )
+```
+
+
+Break: (PR 36, review) `mismatches` reads only signals stored in an active state, so one stored as ended over a live position is never read.
+
+```
+    assert {(signal_id, kind) for signal_id, kind, _, _ in found} == want
+E   AssertionError: assert set() == {(UUID('4a9ff309-dad5-4e9f-aa9e-196eb8c82711'), 'trade')}
+E   Failing explicit example: test_check_names_mismatches(
+E       trades=[('ended', True, 'Closed'), ('ended', False, 'Open')],
+E   )
+```
+
+Break: (PR 36, review) a veto trade's mismatch is named `trade`.
+
+```
+E   AssertionError: assert {(UUID('0b20e...2'), 'trade')} == {(UUID('0b20e...d2'), 'veto')}
+E   Failing explicit example: test_check_names_mismatches(
+E       trades=[('veto', True, 'ExitPending'), ('position', False, 'Open')],
+E   )
+```
+### PBT journal.check_alerts
+
+Break: (PR 36) in `backend/app/hat/daily/nightly.py`, `journal_check` alerts every mismatch (no `JOURNAL_ALERTS` cap).
+
+```
+    assert len(notifier.alerts) == min(drifted, JOURNAL_ALERTS)
+E   AssertionError: assert 11 == 10
+E   Failing explicit example: test_check_alerts(
+E       drifted=11,
+E       sound=1,
+E   )
+```
+
+Break: (PR 36) the alert's `count` is 1, not the night's count.
+
+```
+    assert detail["count"] == drifted
+E   assert 1 == 11
+E   Failing explicit example: test_check_alerts(
+E       drifted=11,
+E       sound=1,
+E   )
+```
+
+Break: (PR 36) `render.URGENT_ALERTS` without `journal.mismatch`.
+
+```
+    assert journal.ALERT_JOURNAL_MISMATCH in URGENT_ALERTS
+E   AssertionError: assert 'journal.mismatch' in frozenset({'corporate_action.unhandled', 'fill.excess', 'gtt.unfilled', 'gtt.unverified', 'position.series_changed', 'sale.unfilled'})
+```
+
+Break: (PR 36, review) the alert carries no `kind`.
+
+```
+    assert detail["kind"] == journal.TRADE
+E   KeyError: 'kind'
 ```

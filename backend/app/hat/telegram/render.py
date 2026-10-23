@@ -51,8 +51,10 @@ __all__ = [
 # may need the owner before the next open.
 # PR 47: a held instrument that changed series is manage-only until the owner resolves it.
 # PR 48: a sale resting unfilled, locked at the lower circuit or sent as a band limit.
+# PR 36: a trade whose stored state is not the fold of its events (the nightly journal check).
 URGENT_ALERTS = frozenset(
     {
+        "journal.mismatch",
         "gtt.unverified",
         "gtt.unfilled",
         "fill.excess",

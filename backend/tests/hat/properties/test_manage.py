@@ -30,7 +30,7 @@ from app.hat.daily.live import ExitViews
 from app.hat.data.bars import Bar
 from app.hat.data.corporate_actions import TYPE_DIVIDEND, TYPE_NOTICE, TYPE_SPLIT
 from app.hat.data.instruments import fyers_instruments
-from app.hat.engine import exits, lifecycle, trades
+from app.hat.engine import exits, journal, lifecycle
 from app.hat.execution.broker import BrokerUnavailableError, InvalidIntentError
 from app.hat.execution.entry_timeout import EntryWatch
 from app.hat.execution.fills import ALERT_FILL_EXCESS, NOT_MARKETED, RESTING
@@ -634,7 +634,7 @@ def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
         assert signal is not None
         session.refresh(signal)
         assert signal.state == state
-        assert trades.replay_state(session, signal.id) == state
+        assert journal.replay_state(session, signal.id) == state
         assert rig.position(outcome.signal_id) is None
         assert _writes_since(rig, start) == []
 
@@ -1179,14 +1179,26 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
     open: the full exit stays a full exit, never lost to a later partial. A second such ending
     raises `exit.not_placed` and nothing more is sent that session; the position is protected
     again each time. Harm: a sale the broker drops leaves the position unsold with its rule
-    spent, silently. (Orders are stamped on the rig's trade day, so the session's rejections
-    are counted on it.)"""
+    spent, silently. After every step the signal's stored state is the fold of its events
+    (HAT-EXEC-042, PR 36): the retry's `order.placed` while the trade is already ExitPending is
+    kept as a non-step. Harm: the log and the trade table disagree once a sale is retried.
+    (Orders are stamped on the rig's trade day, so the session's rejections are counted on
+    it.)"""
     with (
         Session(memory_engine()) as session,
         patch("app.hat.execution.submit.utc_now", return_value=at(11, 0)),
     ):
         rig = ManageRig(session, exits=exit_stack("partials"))
         position = _opened(rig, at(10, 40))
+        signal = session.get(HatSignal, position.signal_id)
+        assert signal is not None
+
+        def replays() -> None:
+            session.refresh(signal)
+            session.refresh(position)
+            assert journal.replay_state(session, signal.id) == signal.state
+            assert position.state == signal.state
+
         view = exits.ExitView(price=D(position.avg_entry) * D("1.4"), days_held=1)
 
         def end_sales(minute: int) -> list[HatOrder]:
@@ -1210,7 +1222,9 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
         rig.manager.on_price(session, position.id, view, at(11, 0))
         first = _sold(rig, start)
         assert [o["quantity"] for o in first] == [500]
+        replays()
         [row] = end_sales(1)
+        replays()
         session.refresh(position)
         assert _event_count(session, row, "order.rejected") == 1
         assert _resting(rig, position)
@@ -1219,14 +1233,17 @@ def test_async_sale_rejection_retried(ending: str, part: int, again: bool) -> No
         retry = _sold(rig, start)
         assert [o["quantity"] for o in retry] == [position.qty_open]
         assert retry[0]["order_tag"] != first[0]["order_tag"]
+        replays()
         if again:
             end_sales(3)
+            replays()
             assert ALERT_EXIT_NOT_PLACED in rig.codes()
             start = len(rig.fake.calls)
             rig.manager.on_price(session, position.id, view, at(11, 4))
             assert _sold(rig, start) == []
             session.refresh(position)
             assert _resting(rig, position)
+            replays()
 
 
 @settings(max_examples=20, deadline=None)

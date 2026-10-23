@@ -49,7 +49,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.expression import Exists
 
-from ..engine import lifecycle, live_trades, trades
+from ..engine import journal, lifecycle, live_trades, trades
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatEvent, HatOrder, HatPosition, HatSignal
@@ -503,39 +503,38 @@ def _event(
         payload["final"] = True  # no retry follows: the lifecycle step to Rejected (07 §4)
     if rule is not None:
         payload["rule"] = rule  # the exit rule a sale is for (its trade result's exit reason)
-    record(
-        session,
-        aggregate_type="order",
-        aggregate_id=row.id,
-        event_type=event_type,
-        actor="engine",
-        payload=payload,
-        correlation_id=row.signal_id,
-        bot_id=bot_id,
-    )
-    _advance(session, row, event_type, payload)
-
-
-def _advance(session: Session, row: HatOrder, event_type: str, payload: dict[str, object]) -> None:
-    """Move the order's signal along the lifecycle step its event drives, in the same commit
-    (HAT-EXEC-042): an entry `order.placed` takes a Triggered or AwaitingApproval signal to
-    EntryPlaced, and a full exit order's takes an open trade (signal and position) to
-    ExitPending. An order event the table does not allow from the signal's state is logged and
-    leaves the state: the order's own bookkeeping must never fail after a broker call."""
     step = lifecycle.step_of(event_type, payload)
-    if step is None:
-        return
-    signal = session.get(HatSignal, row.signal_id)
-    if signal is None:
-        return
-    try:
-        signal.state = lifecycle.next_state(signal.state, step)
-    except lifecycle.LifecycleStateError:
-        logger.error("order event %s does not move a signal in %s", event_type, signal.state)
+    signal = session.get(HatSignal, row.signal_id) if step is not None else None
+    if signal is None:  # no step, or no trade to move: the event is kept, never refused
+        if step is not None:
+            logger.error("order %s has no signal; %s kept without a step", row.tag, event_type)
+            payload[lifecycle.NO_STEP] = True
+        record(
+            session,
+            aggregate_type="order",
+            aggregate_id=row.id,
+            event_type=event_type,
+            actor="engine",
+            payload=payload,
+            correlation_id=row.signal_id,
+            bot_id=bot_id,
+        )
         return
     position = session.get(HatPosition, row.position_id) if row.position_id else None
-    if position is not None and signal.state in lifecycle.POSITION_STATES:
-        position.state = signal.state
+    # An order event is a broker fact: the journal moves the signal (an entry `order.placed` to
+    # EntryPlaced, a full exit order's trade to ExitPending) and keeps an event the table has no
+    # row for as a non-step, so the order's bookkeeping never fails after a broker call.
+    journal.record(
+        session,
+        signal,
+        event_type,
+        payload,
+        aggregate_type="order",
+        aggregate_id=row.id,
+        position=position,
+        broker_fact=True,
+        bot_id=bot_id,
+    )
 
 
 def _check_allowed(

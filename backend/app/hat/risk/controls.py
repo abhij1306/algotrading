@@ -8,6 +8,7 @@ the pure ones in `kill.py`, `exposure.py` and `modes.py`.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from datetime import date, datetime, time
@@ -16,7 +17,8 @@ from decimal import ROUND_CEILING, Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..engine.lifecycle import AWAITING_APPROVAL, next_state
+from ..engine import journal
+from ..engine.lifecycle import AWAITING_APPROVAL
 from ..errors import HatError
 from ..events import record
 from ..models import (
@@ -41,6 +43,8 @@ from .policy import RiskPolicy
 from .sessions import SessionCalendar
 
 SNAPSHOT_AT = time(15, 30)  # the close: a snapshot is read as taken at the session close (IST)
+
+logger = logging.getLogger(__name__)
 
 
 class ControlError(HatError):
@@ -77,7 +81,9 @@ def cancel_pending_approvals(
     session: Session, bot_id: uuid.UUID | None, now: datetime, reason: str
 ) -> int:
     """End every approval that is still undecided (all bots, or one bot's) as `expired` and
-    record `signal.expired`, so it can no longer be taken. Returns how many."""
+    record `signal.expired` through the journal, so it can no longer be taken. A card whose
+    signal has already left AwaitingApproval has no step to take (HAT-EXEC-042): it is closed
+    without an event, so the log never holds a step the state did not take. Returns how many."""
     query = select(HatApproval, HatSignal).join(HatSignal, HatSignal.id == HatApproval.signal_id)
     query = query.where(HatApproval.decision.is_(None))
     if bot_id is not None:
@@ -86,19 +92,18 @@ def cancel_pending_approvals(
     for approval, signal in session.execute(query).all():
         approval.decision = "expired"
         approval.decided_at = now
-        if signal.state == AWAITING_APPROVAL:  # the state follows its event (HAT-EXEC-042)
-            signal.state = next_state(signal.state, "signal.expired")
-        record(
-            session,
-            aggregate_type="signal",
-            aggregate_id=signal.id,
-            correlation_id=signal.id,
-            event_type="signal.expired",
-            actor="engine",
-            payload={"reason": reason},
-            bot_id=signal.bot_id,
-            occurred_at=now,
-        )
+        if signal.state == AWAITING_APPROVAL:
+            journal.record(
+                session,
+                signal,
+                "signal.expired",
+                {"reason": reason},
+                aggregate_type="signal",
+                aggregate_id=signal.id,
+                now=now,
+            )
+        else:
+            logger.warning("approval of signal %s closed in %s", signal.id, signal.state)
         count += 1
     return count
 

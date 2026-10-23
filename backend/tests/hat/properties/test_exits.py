@@ -22,7 +22,7 @@ from hypothesis import strategies as st
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.hat.engine import exits, lifecycle, trades
+from app.hat.engine import exits, journal, lifecycle
 from app.hat.engine.approvals import veto_score, veto_verdict
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.strategy.config import (
@@ -480,7 +480,7 @@ def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None
         signal = session.get(HatSignal, trade.outcome.signal_id)
         position = session.get(HatPosition, trade.outcome.position_id)
         assert (
-            trades.replay_state(session, signal.id)
+            journal.replay_state(session, signal.id)
             == signal.state
             == position.state
             == lifecycle.OPEN
@@ -489,7 +489,7 @@ def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None
             step_trade(session, trade, D(price), days=days, minutes=step)
             session.refresh(signal)
             session.refresh(position)
-            assert trades.replay_state(session, signal.id) == signal.state
+            assert journal.replay_state(session, signal.id) == signal.state
             if position.state in lifecycle.HOLDING_STATES or position.state == lifecycle.CLOSED:
                 assert position.state == signal.state
             if position.closed_at is not None:
@@ -499,7 +499,7 @@ def test_replay_reproduces_state(kind: str, path: list[tuple[int, int]]) -> None
         # state still equals the fold of the log.
         with pytest.raises(lifecycle.LifecycleStateError):
             lifecycle.next_state(signal.state, "signal.triggered")
-        assert trades.replay_state(session, signal.id) == signal.state
+        assert journal.replay_state(session, signal.id) == signal.state
 
 
 R_MULTIPLES = st.decimals(
