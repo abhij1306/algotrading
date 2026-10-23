@@ -677,19 +677,24 @@ def rekey(root: Path, into: Path, mapping: Mapping[str, str]) -> RekeyReport:
         raise MergeError("isin_merge_into_not_empty")
     report = RekeyReport()
     for source in sorted(p for p in root.rglob("*") if p.is_file()):
-        rel = source.relative_to(root)
-        target = into / rel
-        dataset = rel.parts[0] if len(rel.parts) > 1 else ""
-        if source.name.endswith((".tmp", ".lock")):
-            continue
-        if dataset in REKEYED and source.suffix == ".parquet":
-            _rekey_parquet(source, target, dataset, mapping, report)
-        elif dataset == DATASET_5M and source.name == COVERAGE_NAME:
-            _rekey_coverage(source, target, mapping)
-        else:
-            immutable = dataset == RAW_DIR or source.suffix == ".parquet"
-            _link_or_copy(source, target, immutable, report)
+        if not source.name.endswith((".tmp", ".lock")):
+            _rekey_file(source, source.relative_to(root), into, mapping, report)
     return report
+
+
+def _rekey_file(
+    source: Path, rel: Path, into: Path, mapping: Mapping[str, str], report: RekeyReport
+) -> None:
+    """One file of the old root into the new one: re-keyed, linked or copied."""
+    target = into / rel
+    dataset = rel.parts[0] if len(rel.parts) > 1 else ""
+    if dataset in REKEYED and source.suffix == ".parquet":
+        _rekey_parquet(source, target, dataset, mapping, report)
+    elif dataset == DATASET_5M and source.name == COVERAGE_NAME:
+        _rekey_coverage(source, target, mapping)
+    else:
+        immutable = dataset == RAW_DIR or source.suffix == ".parquet"
+        _link_or_copy(source, target, immutable, report)
 
 
 # --- the command line ---------------------------------------------------------------------------
