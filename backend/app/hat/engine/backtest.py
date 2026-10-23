@@ -62,6 +62,18 @@ estimated trigger order (`slot_order` `time`, the default, `app.hat.backtest.slo
 first, then (level - open) / open ascending, ties by score. `score` (the PR 12 order) and
 `random:K` are variants; the rule is part of the run's conventions and `config_digest`.
 
+Path pessimism (PR 64, HAT-BT-021): a stop the way up raised was placed after the
+low on the assumed path, though the low may have come after the high. A day whose low reaches
+the raised stop while its close stays above it is ambiguous: every run counts these days
+(`ambiguous_days`), and under `ambiguous` `pessimistic` the raised stop fills at its price that
+day; the default, `optimistic`, holds it (the run's `ambiguous` convention says which). A session
+pinned at its lower band all day (open = high = low = close within a tick of an NSE band's lower
+price, `lower_circuit_locked`) sells nothing: its stop and exits wait for the next session that
+is not pinned, which fills the stop at min(open, stop) (`lower_circuit_days` counts them). A
+position whose instrument has no bar (suspended, not delisted) is carried at its last close for
+`suspension_sessions` sessions, then marked 5% lower per further session, in the equity curve
+and at the period end. All three rules are in the run's conventions.
+
 The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown_sessions`, which
 `evaluate_signal` reads through `trades.open_entry` from the ledger's hard-stop closes, as live
 does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records the value used.
@@ -101,14 +113,21 @@ from ..backtest import metrics as bt_metrics
 from ..backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills
 from ..backtest.dsr import ReturnStats, return_stats
 from ..backtest.fills import (
+    AMBIGUOUS_OPTIMISTIC,
+    AMBIGUOUS_PESSIMISTIC,
+    AMBIGUOUS_RULES,
     ENTRY_FILL_RULES,
     FILL_PATH,
     GAP_THROUGH_RULE,
     PENETRATION,
+    SUSPENSION_BAND_PCT,
+    SUSPENSION_SESSIONS,
     TOUCH,
     TRIGGER_PROXY,
     entry_fill,
+    raised_stop_dip,
     stop_fill,
+    suspended_mark,
 )
 from ..backtest.slots import SLOT_ORDER_TIME, is_slot_order, order_slots, trigger_rank
 from ..confighash import config_hash
@@ -162,6 +181,7 @@ __all__ = [
     "INITIAL_EQUITY",
     "KNOWN_GAPS",
     "LOOKBACK_SESSIONS",
+    "LOWER_CIRCUIT_RULE",
     "TOUCH_GAP",
     "TRADE_SCHEMA",
     "BacktestError",
@@ -179,6 +199,7 @@ __all__ = [
     "first_trigger",
     "known_gaps",
     "pre_break_low",
+    "lower_circuit_locked",
     "upper_circuit_locked",
     "run_backtest",
     "trades_parquet",
@@ -195,14 +216,15 @@ KNOWN_GAPS = (
     "close_exits_at_official_close",
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",  # live fills at the first tick after the open
-    "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band; no band table in the run
-    "lower_circuit_not_modelled",  # a stop at a locked lower band fills at min(open, stop)
+    "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)
     "multipliers_fixed_at_one",  # regime and health multipliers are 1
-    "suspension_not_marked",  # a bar-less, not delisted, position is carried at its last close
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
 )
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
+# A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
+LOWER_CIRCUIT_RULE = "carry_to_next_unlocked_open"
+MAX_SUSPENSION_SESSIONS = 250  # about a year of sessions
 # The NSE price bands an upper circuit is inferred at when the run has no band table (PR 61).
 NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
 END_OF_PERIOD = "end_of_period"
@@ -281,6 +303,8 @@ class RunSpec:
     entry_fill_rule: str = PENETRATION  # HAT-BT-020: `touch` is the variant
     for_promotion: bool = False  # the run may evidence a version (`publish_version`)
     slot_order: str = SLOT_ORDER_TIME  # HAT-BT-026: `score` and `random:K` are variants
+    ambiguous: str = AMBIGUOUS_OPTIMISTIC  # HAT-BT-021: `pessimistic` fills a raised stop's dip
+    suspension_sessions: int = SUSPENSION_SESSIONS  # bar-less sessions before the markdown
 
 
 # --- outputs ----------------------------------------------------------------------------------
@@ -400,12 +424,15 @@ class _EntryPlan:
 @dataclass
 class _Held:
     """What the loop tracks of an open position beyond the ledger: its instrument, entry day and
-    the extremes the price made since entry (for the result's MFE and MAE)."""
+    the extremes the price made since entry (for the result's MFE and MAE), and the stop's last
+    raise on a way up (for an ambiguous day)."""
 
     instrument_id: str
     entry_day: date
     high: Decimal
     low: Decimal
+    # The day the way up last raised the stop, and the stop before it (PR 64).
+    raised: tuple[date, Decimal] | None = None
 
 
 # --- the ledger -------------------------------------------------------------------------------
@@ -544,6 +571,9 @@ class _Run:
         self.held: dict[uuid.UUID, _Held] = {}
         self.seen_results: set[uuid.UUID] = set()
         self.last_close: dict[str, Decimal] = {}
+        self.last_bar: dict[str, date] = {}  # each instrument's last session with a bar
+        self.ambiguous_days: set[date] = set()
+        self.lower_circuit_days: set[date] = set()
         self.equity: list[tuple[date, Decimal]] = []
         self.skips: dict[str, int] = {}
         self.gate: dict[date, bool] = {}
@@ -703,6 +733,7 @@ class _Run:
         `exits.evaluate` acts, as many times as the stack keeps acting. A position closed on
         the way up never saw the rest of the rise, so its excursion stops at the fill."""
         held = self.held[position.id]
+        before = Decimal(position.current_stop)
         # A held instrument always has the closes before its entry; the finest NSE tick stands
         # in only if it did not, which keeps the search exact on a finer grid.
         tick = self._tick(held.instrument_id, day) or _FINEST_TICK
@@ -718,6 +749,8 @@ class _Run:
             low = price
         if position.closed_at is None:
             held.high = max(held.high, high)
+            if Decimal(position.current_stop) > before:
+                held.raised = (day, before)
 
     def _morning(self, day: date, prev: date | None) -> None:
         regime_off = prev is not None and not regime_allows_longs(
@@ -729,6 +762,11 @@ class _Run:
             if bar is None:
                 continue  # no session for this instrument today: nothing can fill
             held.high, held.low = max(held.high, bar.open), min(held.low, bar.open)
+            if self._lower_locked(held.instrument_id, day, bar):
+                # Pinned at the lower band all day: no buyer, so nothing sells; a stop waits for
+                # the next open that is not pinned and fills there at min(open, stop).
+                self.lower_circuit_days.add(day)
+                continue
             nightly = exits.ExitView(bar.open, regime_off=regime_off)
             self._evaluate(position, nightly, "nightly", _at(day, _AT_OPEN))
             if position.closed_at is None:
@@ -883,12 +921,24 @@ class _Run:
                 return SKIP_BAD_INPUT  # no tick to penetrate by (nor to plan a stop on)
         return entry_fill(bar.open, bar.high, level, tick, rule)
 
-    def _locked(self, instrument_id: str, price: Decimal, high: Decimal, day: date) -> bool | None:
-        """Whether the entry at `price` is at the upper circuit (`upper_circuit_locked`)."""
+    def _prev_close(self, instrument_id: str, day: date) -> Decimal | None:
         dates, bars = self.history.get(instrument_id, ([], []))
         at = bisect_left(dates, day)
-        prev_close = bars[at - 1].close if at > 0 else None
+        return bars[at - 1].close if at > 0 else None
+
+    def _locked(self, instrument_id: str, price: Decimal, high: Decimal, day: date) -> bool | None:
+        """Whether the entry at `price` is at the upper circuit (`upper_circuit_locked`)."""
+        prev_close = self._prev_close(instrument_id, day)
         return upper_circuit_locked(price, high, prev_close, self._tick(instrument_id, day))
+
+    def _lower_locked(self, instrument_id: str, day: date, bar: _Bar) -> bool:
+        """Whether the instrument sat at its lower circuit all of `day` (`lower_circuit_locked`);
+        an unknown state (no previous close or tick) is not locked."""
+        if not bar.open == bar.high == bar.low == bar.close:
+            return False  # the common case, without reading the tick
+        ohlc = (bar.open, bar.high, bar.low, bar.close)
+        prev_close = self._prev_close(instrument_id, day)
+        return lower_circuit_locked(ohlc, prev_close, self._tick(instrument_id, day)) is True
 
     def _entry_filters(
         self,
@@ -962,7 +1012,10 @@ class _Run:
         instrument_id = str(row.instrument_id)
         price, dip = plan.price, plan.dip
         held_prices = {
-            uuid.UUID(h.instrument_id): self.last_close[h.instrument_id]
+            # marked down as the equity is, after sessions without a bar (PR 64)
+            uuid.UUID(h.instrument_id): self._mark_price(
+                h.instrument_id, row.trade_date, self.last_close[h.instrument_id]
+            )
             for h in self.held.values()
             if h.instrument_id in self.last_close
         }
@@ -1026,16 +1079,35 @@ class _Run:
             if bar is None:
                 continue
             held.low = min(held.low, bar.close)
-            if bar.close <= Decimal(position.current_stop):
-                # Falling from the high to the close through a stop raised during the day.
-                stop = exits.ExitView(Decimal(position.current_stop))
-                self._evaluate(position, stop, "live", _at(day, _AT_FALL))
+            if self._lower_locked(held.instrument_id, day, bar):
+                # Nothing sells at a locked lower band, a close rule's sale included; a position
+                # entered today (a gap over at the band) counts the day here.
+                self.lower_circuit_days.add(day)
+                continue
+            stop = Decimal(position.current_stop)
+            if bar.close <= stop or self._ambiguous_dip(position, bar, day):
+                # Falling from the high to the close (or, on an ambiguous day under
+                # `pessimistic`, to the low) through a stop raised during the day.
+                self._evaluate(position, exits.ExitView(stop), "live", _at(day, _AT_FALL))
             if position.closed_at is None:
                 self._evaluate(
                     position, self._close_view(position, bar, day), "close", _at(day, _AT_CLOSE)
                 )
         for instrument_id, bar in self.by_day.get(day, ()):
             self.last_close[instrument_id] = bar.close
+            self.last_bar[instrument_id] = day
+
+    def _ambiguous_dip(self, position: HatPosition, bar: _Bar, day: date) -> bool:
+        """Whether the position's day is ambiguous (`raised_stop_dip`: the way up raised its
+        stop, the low reaches the raised stop, the close is above it), counting the day; True
+        when the run's rule is `pessimistic`, so the raised stop fills at its price."""
+        raised = self.held[position.id].raised
+        if raised is None or raised[0] != day:
+            return False
+        if not raised_stop_dip(bar.low, bar.close, raised[1], Decimal(position.current_stop)):
+            return False
+        self.ambiguous_days.add(day)
+        return self.spec.ambiguous == AMBIGUOUS_PESSIMISTIC
 
     def _close(self, position: HatPosition, price: Decimal, reason: str, at: datetime) -> None:
         held = self.held[position.id]
@@ -1065,11 +1137,12 @@ class _Run:
     def _finish(self, last: date) -> None:
         for position in self._open_positions():
             held = self.held[position.id]
-            price = self.last_close.get(held.instrument_id, Decimal(position.avg_entry))
+            price = self._mark_price(held.instrument_id, last, Decimal(position.avg_entry))
+            held.low = min(held.low, price)  # a suspension mark below the traded lows is the MAE
             self._close(position, price, END_OF_PERIOD, _at(last, _AT_END, 30))
         self.session.flush()
         if self.equity:
-            self.equity[-1] = (last, self._marked())
+            self.equity[-1] = (last, self._marked(last))
 
     def _sync_ladder(self) -> None:
         """Step the exposure ladder for each trade closed since the last step, in close order:
@@ -1106,16 +1179,31 @@ class _Run:
             totals[side] = (value + qty * Decimal(price), fee + Decimal(fees))
         return [(side, value, fee) for side, (value, fee) in sorted(totals.items())]
 
-    def _marked(self) -> Decimal:
+    def _mark_price(self, instrument_id: str, day: date, fallback: Decimal) -> Decimal:
+        """The instrument's mark on `day`: its last close, marked down one band per session
+        after `suspension_sessions` sessions without a bar (`suspended_mark`, PR 64); `fallback`
+        before its first close."""
+        last = self.last_close.get(instrument_id)
+        seen = self.last_bar.get(instrument_id)
+        if last is None or seen is None:
+            return fallback
+        sessions = self.index[day] - self.index[seen]
+        after = self.spec.suspension_sessions
+        if sessions <= after:
+            return last
+        tick = self._tick(instrument_id, day) or _FINEST_TICK
+        return suspended_mark(last, sessions, after, SUSPENSION_BAND_PCT, tick)
+
+    def _marked(self, day: date) -> Decimal:
         equity = self._cash()
         for position in self._open_positions():
             held = self.held[position.id]
-            price = self.last_close.get(held.instrument_id, Decimal(position.avg_entry))
+            price = self._mark_price(held.instrument_id, day, Decimal(position.avg_entry))
             equity += position.qty_open * price
         return equity
 
     def _mark(self, day: date) -> None:
-        self.equity.append((day, self._marked()))
+        self.equity.append((day, self._marked(day)))
 
     # --- the result --------------------------------------------------------------------------
 
@@ -1134,6 +1222,8 @@ class _Run:
         metrics["skips"] = dict(result.skips)
         metrics["signals"] = len(self.signal_rows)
         metrics["rejections"] = _count_by(r.reason or "" for r in self.signal_rows if r.qty == 0)
+        metrics["ambiguous_days"] = len(self.ambiguous_days)  # HAT-BT-021 (PR 64)
+        metrics["lower_circuit_days"] = len(self.lower_circuit_days)
         self.session.close()
         return BacktestResult(**{**result.__dict__, "metrics": metrics})
 
@@ -1280,6 +1370,32 @@ def upper_circuit_locked(
     return False
 
 
+def lower_circuit_locked(
+    ohlc: tuple[Decimal, Decimal, Decimal, Decimal],
+    prev_close: Decimal | None,
+    tick: Decimal | None,
+) -> bool | None:
+    """Whether a session sat at its lower circuit all day (HAT-BT-021, PR 64), read from its
+    daily bar as `upper_circuit_locked` reads the upper one: one price all day (open = high =
+    low = close), below the previous close and within one tick of an NSE band's lower price
+    (`trigger.lower_circuit_price` at 2, 5, 10 or 20%) under the previous close. Nothing traded
+    above the band, so a seller found no buyer: a stop that day carries to the next session not
+    pinned. None without a previous close or a tick."""
+    if prev_close is None or prev_close <= 0 or tick is None or tick <= 0:
+        return None
+    open_, high, low, close = ohlc
+    if not open_ == high == low == close or close >= prev_close:
+        return False
+    for band in NSE_BANDS:
+        daily = trigger.DailyInputs(
+            prev_close=prev_close, tick=tick, band_known=True, band_pct=band
+        )
+        lower = trigger.lower_circuit_price(daily)
+        if lower is not None and lower < prev_close and abs(close - lower) <= tick:
+            return True
+    return False
+
+
 def first_trigger(
     rules: Sequence[Any],
     state: exits.PositionState,
@@ -1393,6 +1509,12 @@ def conventions(spec: RunSpec) -> dict[str, Any]:
         "slippage_bps": format(abs(spec.fills.slippage_bps).normalize(), "f"),  # -0 is 0
         "cost_model": spec.fills.model.to_json(),
         "slot_order": spec.slot_order,  # HAT-BT-026
+        "ambiguous": spec.ambiguous,  # HAT-BT-021 (PR 64)
+        "lower_circuit": LOWER_CIRCUIT_RULE,
+        "suspension_markdown": {
+            "after_sessions": spec.suspension_sessions,
+            "band_pct": str(SUSPENSION_BAND_PCT),
+        },
     }
 
 
@@ -1467,7 +1589,12 @@ def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
     if not spec.initial_equity.is_finite() or spec.initial_equity <= 0:
         raise BacktestError("backtest_bad_equity")
     check_conventions(
-        spec.entry_fill_rule, spec.fills.slippage_bps, spec.for_promotion, spec.slot_order
+        spec.entry_fill_rule,
+        spec.fills.slippage_bps,
+        spec.for_promotion,
+        spec.slot_order,
+        ambiguous=spec.ambiguous,
+        suspension_sessions=spec.suspension_sessions,
     )
     return _Run(spec, data).run()
 
@@ -1477,20 +1604,35 @@ def check_conventions(
     slippage_bps: Decimal,
     for_promotion: bool,
     slot_order: str = SLOT_ORDER_TIME,
+    *,
+    ambiguous: str = AMBIGUOUS_OPTIMISTIC,
+    suspension_sessions: int = SUSPENSION_SESSIONS,
 ) -> None:
     """Refuse a run's fill conventions (PR 62, O5): an unknown entry fill rule or slot order
-    (PR 63), and for a run flagged for promotion, perfect fills (a slippage of 0), the
-    optimistic `touch` rule or a slot order other than the estimated trigger time."""
+    (PR 63), an unknown ambiguous-day rule or a bar-less session count that is not a whole
+    number in 0..`MAX_SUSPENSION_SESSIONS` (PR 64), and for a run flagged for promotion,
+    perfect fills (a slippage of 0), the optimistic `touch` rule, a slot order other than the
+    estimated trigger time or a suspension markdown later than `SUSPENSION_SESSIONS`."""
     if entry_fill_rule not in ENTRY_FILL_RULES:
         raise BacktestError("backtest_bad_fill_rule")
     if not is_slot_order(slot_order):
         raise BacktestError("backtest_bad_slot_order")
+    if ambiguous not in AMBIGUOUS_RULES:
+        raise BacktestError("backtest_bad_ambiguous_rule")
+    if (
+        isinstance(suspension_sessions, bool)
+        or not isinstance(suspension_sessions, int)
+        or not 0 <= suspension_sessions <= MAX_SUSPENSION_SESSIONS
+    ):
+        raise BacktestError("backtest_bad_suspension")
     if for_promotion and slippage_bps == 0:
         raise BacktestError("backtest_promotion_without_slippage")
     if for_promotion and entry_fill_rule != PENETRATION:
         raise BacktestError("backtest_promotion_on_touch")
     if for_promotion and slot_order != SLOT_ORDER_TIME:
         raise BacktestError("backtest_promotion_off_time_order")
+    if for_promotion and suspension_sessions > SUSPENSION_SESSIONS:
+        raise BacktestError("backtest_promotion_late_suspension")
 
 
 # --- command line -----------------------------------------------------------------------------
@@ -1507,14 +1649,17 @@ def _slot_order_arg(text: str) -> str:  # pragma: no cover - the command line
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.engine.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD
     [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N]
-    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K] [--for-promotion]
+    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
+    [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--for-promotion]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe over the
     Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
     `backtests/run_id=<id>/trades.parquet`. Prints the run id, status, trade count and DSR.
     The slippage defaults to 20 bps; `--for-promotion` marks a run `publish_version` may take as
     a version's evidence, and is refused at a slippage of 0 (PR 62). A capped day's slots go in
-    the estimated trigger order (`--slot-order time`, PR 63).
+    the estimated trigger order (`--slot-order time`, PR 63). `--ambiguous pessimistic` fills
+    a raised stop the day's low reached; a bar-less position is marked down after
+    `--suspension-sessions` sessions (PR 64).
     """
     import argparse  # noqa: PLC0415
     import json  # noqa: PLC0415
@@ -1522,7 +1667,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     from app.database import db_session_scope  # noqa: PLC0415
 
-    from ..backtest.runs import RunError, backtest_bot  # noqa: PLC0415
+    from ..backtest.runs import RunConventions, RunError, backtest_bot  # noqa: PLC0415
     from ..data.store import DataStore  # noqa: PLC0415
     from ..settings import operator_settings  # noqa: PLC0415
 
@@ -1536,6 +1681,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--cooldown-sessions", type=int, default=None)
     parser.add_argument("--entry-fill", choices=ENTRY_FILL_RULES, default=PENETRATION)
     parser.add_argument("--slot-order", type=_slot_order_arg, default=SLOT_ORDER_TIME)
+    parser.add_argument("--ambiguous", choices=AMBIGUOUS_RULES, default=AMBIGUOUS_OPTIMISTIC)
+    parser.add_argument("--suspension-sessions", type=int, default=SUSPENSION_SESSIONS)
     parser.add_argument("--for-promotion", action="store_true")
     args = parser.parse_args(argv)
     settings = operator_settings()
@@ -1557,9 +1704,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 root=settings.data_root,
                 slippage_bps=args.slippage_bps,
                 version_id=args.version,
-                entry_fill_rule=args.entry_fill,
                 for_promotion=args.for_promotion,
-                slot_order=args.slot_order,
+                conventions=RunConventions(
+                    entry_fill_rule=args.entry_fill,
+                    slot_order=args.slot_order,
+                    ambiguous=args.ambiguous,
+                    suspension_sessions=args.suspension_sessions,
+                ),
                 **extra,
             )
         except RunError as exc:
