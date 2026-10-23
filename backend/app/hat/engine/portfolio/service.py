@@ -408,14 +408,15 @@ def trade_results(
     virtual: bool,
     since: datetime | None = None,
     until: datetime | None = None,
+    exclude: Collection[str] = (),
 ) -> tuple[Decimal, ...]:
     """The R multiples of the sleeve's closed real (or shadow) trades closed from `since` to
     `until` (both inclusive, either open), oldest first. A replay of an earlier trade date passes
     its own close as `until`, so later trades never change an earlier decision. The veto trades
     of skipped confirm signals (virtual, but not shadow trades) are in neither: they feed the
-    veto score only (HAT-EXEC-130)."""
+    veto score only (HAT-EXEC-130). A trade of a playbook in `exclude` is in neither (PR 40)."""
     query = (
-        select(HatTradeResult.r_multiple, HatPosition.closed_at)
+        select(HatTradeResult.r_multiple, HatPosition.closed_at, HatSignal.playbook)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(virtual))
@@ -425,8 +426,9 @@ def trade_results(
     rows = session.execute(query).all()
     return tuple(
         Decimal(r)
-        for r, closed in rows
-        if (since is None or (closed is not None and as_utc(closed) >= as_utc(since)))
+        for r, closed, playbook in rows
+        if playbook not in exclude
+        and (since is None or (closed is not None and as_utc(closed) >= as_utc(since)))
         and (until is None or (closed is not None and as_utc(closed) <= as_utc(until)))
     )
 
@@ -482,7 +484,14 @@ def load_evidence(
         sessions=frozenset(calendar.trading_days()) if calendar is not None else frozenset(),
         shadow_started_on=stage_entered_on(session, bot.id, lifecycle.SHADOW),
         health_zero=health_zero,
-        live_r=trade_results(session, bot.id, virtual=False, until=_close_of(trade_date)),
+        # a playbook the run cannot have is not compared with it (PR 40)
+        live_r=trade_results(
+            session,
+            bot.id,
+            virtual=False,
+            until=_close_of(trade_date),
+            exclude=facts.unbacktested,
+        ),
         probation_entered_on=entered,
         probation_shadow_r=trade_results(
             session,
@@ -490,6 +499,7 @@ def load_evidence(
             virtual=True,
             since=None if entered is None else _close_of(entered),
             until=_close_of(trade_date),
+            exclude=facts.unbacktested,
         ),
     )
 

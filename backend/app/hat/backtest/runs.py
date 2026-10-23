@@ -38,7 +38,9 @@ from sqlalchemy.orm import Session
 
 from ..data.store import DataStore, atomic_replace
 from ..engine.backtest import (
+    END_OF_PERIOD,
     GAP_PLAYBOOKS,
+    KNOWN_GAPS,
     LOWER_CIRCUIT_RULE,
     REGIME_MULT_ONE,
     REGIME_MULT_POLICY,
@@ -72,6 +74,7 @@ from ..models import (
     HatBacktestRun,
     HatBot,
     HatPosition,
+    HatSignal,
     HatStrategyVersion,
     HatTradeResult,
     HatUniverseVersion,
@@ -110,6 +113,7 @@ from .slots import SLOT_ORDER_TIME
 
 __all__ = [
     "COMPLETED",
+    "END_OF_PERIOD",
     "FAILED",
     "RUNNING",
     "RunConventions",
@@ -131,6 +135,8 @@ __all__ = [
     "start_run",
     "trades_path",
     "trial_count",
+    "unbacktested",
+    "universe_of",
 ]
 
 RUNNING = "running"
@@ -510,7 +516,7 @@ def backtest_bot(
     version = session.get(HatStrategyVersion, version_id or bot.live_version_id)
     if version is None or version.strategy_id != bot.strategy_id:
         raise RunError("backtest_unknown_version")
-    universe_id = _universe_of(session, bot)
+    universe_id = universe_of(session, bot)
     if universe_id is None:
         raise RunError("backtest_no_universe")
     policy = effective_version(load_versions(session, bot.user_id), utc_now())
@@ -579,7 +585,8 @@ def backtest_bot(
 # --- evidence ---------------------------------------------------------------------------------
 
 
-def _universe_of(session: Session, bot: HatBot) -> uuid.UUID | None:
+def universe_of(session: Session, bot: HatBot) -> uuid.UUID | None:
+    """The universe of the bot's pinned universe version (None without one)."""
     if bot.universe_version_id is None:
         return None
     version = session.get(HatUniverseVersion, bot.universe_version_id)
@@ -632,7 +639,7 @@ def _latest_run(
     (`check_conventions`). Given `at`, only a run with a readable completion time at or before
     it is the evidence (PR 71): a signal processed late never reads results that did not exist
     when it triggered."""
-    universe_id = _universe_of(session, bot)
+    universe_id = universe_of(session, bot)
     if bot.live_version_id is None or universe_id is None:
         return None
     cutoff = None if at is None else as_utc(at)
@@ -707,6 +714,18 @@ def _gapped(metrics: Mapping[str, Any], playbooks: frozenset[str]) -> frozenset[
     return playbooks
 
 
+# The playbooks every daily-bar run's known gaps name (EP until PR 70).
+DAILY_BAR_GAPPED = frozenset(p for code in KNOWN_GAPS for p in GAP_PLAYBOOKS.get(code, ()))
+
+
+def unbacktested(metrics: Mapping[str, Any] | None) -> frozenset[str]:
+    """The playbooks whose live and shadow trades are left out when they are compared with a run
+    (PR 40): those its known gaps name, as a run cannot have their trades; with no run or no
+    readable gap list, those every daily-bar run's gaps name (`DAILY_BAR_GAPPED`). EP drops out
+    once a run no longer names it (PR 70)."""
+    return DAILY_BAR_GAPPED if metrics is None else _gapped(metrics, DAILY_BAR_GAPPED)
+
+
 def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     """The sleeve's backtest evidence (HAT-BT-060): the newest completed run of its live version
     on its universe, with the DSR recomputed at the family's current trial count and Sharpe
@@ -715,11 +734,11 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     (`GAP_PLAYBOOKS`) and those the version enables, and its sleeve weight and regime rule
     beside the base weight of the sleeve in the policy in force. A fact the run did not record
     is absent, and fails its condition. No run gives no evidence, so Research -> Backtested
-    stays closed."""
+    stays closed. The playbooks `unbacktested` names are not compared with it (PR 40)."""
     in_force = effective_version(load_versions(session, bot.user_id), utc_now())
     run = _latest_run(session, bot, _cooldown_of(in_force))
     if run is None:
-        return BacktestFacts()
+        return BacktestFacts(unbacktested=unbacktested(None))
     metrics = _metrics(run)
     deflated, trials, _ = run_dsr(session, run)
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
@@ -744,6 +763,7 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
         sleeve_weight=_weight(metrics.get("sleeve_weight")),
         base_weight=base,
         regime_mult=metrics.get("regime_mult"),
+        unbacktested=unbacktested(metrics),
     )
 
 
@@ -809,19 +829,23 @@ def gate_evidence(
     (every closed trade when none is in force; shadow ones are ignored by
     `build_gate_evidence`), so each step up needs its own evidence, against the discounted
     backtest expectancy, the trade-weighted mean over the sleeves' newest completed runs. None
-    when no sleeve has a completed run: the increase gate then refuses."""
+    when no sleeve has a completed run: the increase gate then refuses. A sleeve's trades of a
+    playbook its run cannot have (`unbacktested`: EP until PR 70) are not counted (PR 40)."""
     bots = session.scalars(
         select(HatBot).where(HatBot.user_id == user_id).order_by(HatBot.id)
     ).all()
     in_force = effective_version(load_versions(session, user_id), at)
     weighted = Decimal(0)
     count = 0
+    excluded: dict[uuid.UUID, frozenset[str]] = {}
     for bot in bots:
         run = _latest_run(session, bot, _cooldown_of(in_force))
-        if run is None:
+        metrics = None if run is None else _metrics(run)
+        excluded[bot.id] = unbacktested(metrics)
+        if metrics is None:
             continue
-        expectancy = _expectancy(_metrics(run))
-        trades = _metrics(run).get("trades")
+        expectancy = _expectancy(metrics)
+        trades = metrics.get("trades")
         if expectancy is None or not isinstance(trades, int) or trades <= 0:
             continue
         weighted += expectancy * trades
@@ -829,14 +853,24 @@ def gate_evidence(
     if count == 0:
         return None
     query = (
-        select(HatTradeResult.r_multiple, HatPosition.is_virtual)
+        select(
+            HatTradeResult.r_multiple,
+            HatPosition.is_virtual,
+            HatPosition.bot_id,
+            HatSignal.playbook,
+        )
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .join(HatBot, HatBot.id == HatPosition.bot_id)
+        .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(HatBot.user_id == user_id)
         .order_by(HatPosition.closed_at, HatPosition.id)
     )
     if in_force is not None:
         query = query.where(HatPosition.closed_at >= as_utc(in_force.effective_from))
     rows = session.execute(query).all()
-    outcomes = [TradeOutcome(Decimal(r), bool(virtual)) for r, virtual in rows]
+    outcomes = [
+        TradeOutcome(Decimal(r), bool(virtual))
+        for r, virtual, bot_id, playbook in rows
+        if playbook not in excluded.get(bot_id, frozenset())
+    ]
     return build_gate_evidence(outcomes, discounted_benchmark(weighted / count, discount))
