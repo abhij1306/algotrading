@@ -178,8 +178,9 @@ def transition(
     """Move a sleeve along one allowed edge and append `sleeve.lifecycle_changed` in the same
     transaction. Raises `LifecycleError` (changing nothing) when the edge or its guard is not
     met. This is the only code that writes `hat_bot.lifecycle_state` (CONF
-    `lifecycle_single_writer`)."""
-    bot = session.get(HatBot, bot_id)
+    `lifecycle_single_writer`). The guard reads the state under the row's lock, re-read, so an
+    owner move and the engine's own never both leave the same state."""
+    bot = session.get(HatBot, bot_id, with_for_update=True, populate_existing=True)
     if bot is None:
         raise PortfolioError("bot_unknown")
     verdict = lifecycle.guard(bot.lifecycle_state, target, evidence, by_owner=actor.by_owner)
