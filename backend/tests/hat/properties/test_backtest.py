@@ -470,7 +470,8 @@ def test_promotion_conventions_refused(fields: dict, slippage: D, code: str) -> 
     not trade by; the same conventions make a sensitivity run."""
     conventions = dataclasses.replace(PROMOTED, **fields)
     fills = BacktestFills(load_cost_model(), slippage)
+    config = s.config()
     with pytest.raises(BacktestError, match=code):
-        s.spec(s.config(), DAYS, fills=fills, conventions=conventions, for_promotion=True)
-    s.spec(s.config(), DAYS, fills=fills, conventions=conventions)
+        s.spec(config, DAYS, fills=fills, conventions=conventions, for_promotion=True)
+    s.spec(config, DAYS, fills=fills, conventions=conventions)
     PROMOTED.check_promotion(DEFAULT_SLIPPAGE_BPS)
