@@ -54,4 +54,6 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
 - **Events.** Every state change and its event commit in one transaction; `hat_event` is
   append-only (trigger); trade state replays from events.
 - **Data.** Scans never run on data that failed the gate; features use bars up to the scan date
-  only; raw bars are immutable; adjusted prices are raw times cumulative factors.
+  only; raw bars are immutable; adjusted prices are raw times cumulative factors. `bars_5m` is
+  raw too: broker history is converted with the stored factors as of its fetch day, and a day
+  that does not fit the raw daily bar is ledgered (`bars_5m_rejects`), never written.

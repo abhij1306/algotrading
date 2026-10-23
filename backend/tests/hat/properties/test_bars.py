@@ -6,7 +6,7 @@ Time is explicit: every property passes the instants it wants, so no test reads 
 
 import tempfile
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 from app.hat.clock import FixedClock
 from app.hat.daily.live import band_bounds
 from app.hat.data.bars import Bar, BarBuilder, Tick, TickOutcome, volume_pace
+from app.hat.data.bars_basis import DailyRange, RawBasis
 from app.hat.data.bars_store import SCHEMA, BarStore, row_from_bar
 from app.hat.data.live import (
     PRICE_OUT_OF_BAND,
@@ -1180,7 +1181,7 @@ def test_history_matches_builder(raw: list[list[Any]]) -> None:
     """Aggregating a minute series to 5-minute bars gives the bars the live builder makes of
     the same prints: same windows, open, high, low, close and volume; nothing outside the
     session."""
-    candles = parse_candles(raw)
+    candles = parse_candles(raw).candles
     assert aggregate("AAA", candles) == _builder_bars("AAA", candles)
 
 
@@ -1249,8 +1250,27 @@ def _stored(store: BarStore, start: date, end: date) -> list[Any]:
     return rows
 
 
+def _basis(raw: list[list[Any]]) -> RawBasis:
+    """No corporate action, and raw daily bars that are exactly the day ranges of `raw`'s bars
+    for every instrument, so the envelope check passes every day the candles hold."""
+    ranges: dict[date, list[Bar]] = {}
+    for bar in _builder_bars("X", parse_candles(raw).candles):
+        ranges.setdefault(bar.start.astimezone(IST).date(), []).append(bar)
+    days = {
+        day: DailyRange(
+            bars[0].open, max(b.high for b in bars), min(b.low for b in bars), bars[-1].close
+        )
+        for day, bars in ranges.items()
+    }
+
+    def daily(ids: Sequence[str], first: date, last: date) -> dict[tuple[str, date], DailyRange]:
+        return {(i, d): r for i in ids for d, r in days.items() if first <= d <= last}
+
+    return RawBasis([], daily, Decimal(0))
+
+
 def _want(symbol: str, raw: list[list[Any]], instrument: str, start: date, end: date) -> list[Any]:
-    inside = [c for c in parse_candles(raw) if start <= c.at.astimezone(IST).date() <= end]
+    inside = [c for c in parse_candles(raw).candles if start <= c.at.astimezone(IST).date() <= end]
     return [row_from_bar(b, instrument) for b in _builder_bars(symbol, inside)]
 
 
@@ -1291,7 +1311,8 @@ def test_minute_history_aggregates_to_5m(
     whose call fails, or whose answer holds more candles than the cap, is reported with a fixed
     code (no broker text) and has nothing written, while every other symbol, before or after it,
     is stored. A garbage candle row (not a list, too short, an impossible epoch) fails its symbol
-    (a price too large for a decimal included) with `history_bad_candle`, and an answer that is
+    (a price too large for a decimal included) is rejected, and a symbol whose candles are all
+    rejected fails with `history_too_many_rejects`, and an answer that is
     not a mapping, or an "ok" without candles, fails its symbol with `history_bad_answer`, never
     the run, however many in a row."""
     start = DAY + timedelta(days=first)
@@ -1309,7 +1330,9 @@ def test_minute_history_aggregates_to_5m(
     limits = HistoryLimits(chunk_days=chunk, max_candles=cap, per_minute=10**6)
     with tempfile.TemporaryDirectory() as root:
         store = BarStore(Path(root))
-        report = load_minute_history(history, store, symbols, start, end, limits=limits)
+        report = load_minute_history(
+            history, store, symbols, start, end, limits=limits, basis=_basis(raw)
+        )
         assert report.stopped is None
         for symbol in symbols:
             spans = [
@@ -1339,7 +1362,7 @@ def test_minute_history_aggregates_to_5m(
         if too_many:
             expected_failed |= {s: "history_too_many_candles" for s in symbols if s != failing}
         if garbage is not None and failing != "NSE:MMM-EQ":
-            expected_failed["NSE:MMM-EQ"] = "history_bad_candle"
+            expected_failed["NSE:MMM-EQ"] = "history_too_many_rejects"
         assert report.failed == expected_failed
         assert all("XY1234" not in code for code in report.failed.values())
         want = sorted(
@@ -1357,7 +1380,7 @@ def test_minute_history_aggregates_to_5m(
         # not a dead session: every symbol is tried
         bare = BarStore(Path(root) / "bare")
         enveloped = load_minute_history(
-            lambda _request: envelope, bare, symbols, start, end, limits=limits
+            lambda _request: envelope, bare, symbols, start, end, limits=limits, basis=_basis(raw)
         )
         assert enveloped.stopped is None
         assert enveloped.failed == dict.fromkeys(symbols, "history_bad_answer")
@@ -1411,6 +1434,7 @@ def test_minute_history_budget(
                     limits=limits,
                     progress=progress,
                     pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
+                    basis=_basis(raw),
                 )
             )
         for i, at in enumerate(instants):
@@ -1458,7 +1482,14 @@ def test_minute_history_rate_limit_stops_run(raw: list[list[Any]], limit: int) -
         path = Path(root) / "progress.json"
         progress = Progress.load(path)
         report = load_minute_history(
-            history, BarStore(Path(root)), symbols, start, end, limits=limits, progress=progress
+            history,
+            BarStore(Path(root)),
+            symbols,
+            start,
+            end,
+            limits=limits,
+            progress=progress,
+            basis=_basis(raw),
         )
         loaded = list(symbols)[: limit // 3]
         assert report.calls == min(limit + 1, 3 * len(symbols))
@@ -1486,7 +1517,12 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
     with tempfile.TemporaryDirectory() as root:
         once = BarStore(Path(root) / "once")
         report = load_minute_history(
-            _fake_history(dict.fromkeys(symbols, raw), []), once, symbols, start, end
+            _fake_history(dict.fromkeys(symbols, raw), []),
+            once,
+            symbols,
+            start,
+            end,
+            basis=_basis(raw),
         )
         assert report.stopped is None
         assert not report.failed
@@ -1507,6 +1543,7 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
             ),
             progress=progress,
             pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
+            basis=_basis(raw),
         )
         done = set(Progress.load(path).done)
         assert done == set(stopped.days)
@@ -1528,6 +1565,7 @@ def test_minute_history_resume(raw: list[list[Any]], budget: int, failing: set[s
                 sleep=clock.sleep,
             ),
             resume=True,
+            basis=_basis(raw),
         )
         assert resumed.stopped is None
         assert not resumed.failed
@@ -1575,6 +1613,7 @@ def test_minute_history_plan_clamp(raw: list[list[Any]], late: int, back: int, o
             limits=limits,
             progress=progress,
             pacer=CallPacer(limits, progress, clock=clock, sleep=clock.sleep),
+            basis=_basis(raw),
         )
         if other and back:
             assert report.available_from is None

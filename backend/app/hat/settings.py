@@ -15,6 +15,15 @@ from the day high and low its tick carries only once a recorded tick confirms th
 reported and subscribed again (default 120; HAT-DATA-116).
 `HAT_DUCKDB_MEMORY` caps every DuckDB connection of the data store (default 1GB, for an 8 GB
 machine shared with the app; a larger query spills to disk).
+The minute-history loader (audit D3, D1, D2, D7) reads `HAT_HISTORY_DAILY_LIMIT` (the broker plan's
+daily requests, default 5,000), `HAT_HISTORY_RESERVE` (requests left to live trading, default
+500; the loader's day cap is the smaller of the limit and the broker's day cap less the reserve),
+`HAT_HISTORY_PER_MINUTE` (50), `HAT_HISTORY_PLAN_DAYS` (how far back the plan serves 1-minute
+candles, 365), `HAT_HISTORY_CHUNK_DAYS` (100), `HAT_HISTORY_ENVELOPE_TOL` (the 5-minute day's
+tolerance against the raw daily bar, a fraction, 0.005), `HAT_HISTORY_MAX_REJECT_PCT` (the share
+of a symbol's candles that may be rejected, in percent, 0.5), `HAT_HISTORY_MAX_REJECT_RUN`
+(consecutive rejected candles that fail a symbol, 12) and `HAT_HISTORY_WRITE_BATCH` (symbols
+written together, 25).
 """
 
 from __future__ import annotations
@@ -24,12 +33,15 @@ import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from app.paths import ENV_FILE, HAT_DATA_ROOT
 from app.utils.env_loader import TRUE_VALUES, load_dotenv
 
+from .broker_limits import PLAN_CALLS_PER_DAY
 from .errors import HatConfigError
+from .money import exact
 
 # MVP is single user (decision T1): one fixed tenant id unless HAT_USER_ID overrides it.
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
@@ -43,7 +55,7 @@ class HatSettings:
     data_root: Path
     broker_calls_per_second: int = 8
     broker_calls_per_minute: int = 180
-    broker_calls_per_day: int | None = 5000
+    broker_calls_per_day: int | None = PLAN_CALLS_PER_DAY
     mpp_resend: bool = False
     mpp_page_after: int = 3
     exchange_day_range: bool = False
@@ -51,6 +63,26 @@ class HatSettings:
     entry_timeout_minutes: int = 60
     duckdb_memory: str = DEFAULT_DUCKDB_MEMORY
     gtt_check_minutes: int = 5
+    history_daily_limit: int = PLAN_CALLS_PER_DAY
+    history_reserve: int = 500
+    history_per_minute: int = 50
+    history_plan_days: int = 365
+    history_chunk_days: int = 100
+    history_envelope_tol: Decimal = Decimal("0.005")
+    history_max_reject_pct: Decimal = Decimal("0.5")
+    history_max_reject_run: int = 12
+    history_write_batch: int = 25
+
+    @property
+    def history_calls_per_day(self) -> int:
+        """The minute-history loader's daily cap: the plan's limit, less the reserve for live
+        trading out of the broker's day cap (one broker app, one daily limit). 0 when the
+        reserve takes the whole day cap: the loader then stops at its first call
+        (`history_daily_limit`) instead of spending live trading's calls."""
+        if self.broker_calls_per_day is None:
+            return self.history_daily_limit
+        left = self.broker_calls_per_day - self.history_reserve
+        return max(0, min(self.history_daily_limit, left))
 
 
 def _is_true(raw: str | None) -> bool:
@@ -68,6 +100,17 @@ def _calls(raw: str | None, default: int | None, *, allow_off: bool = False) -> 
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _fraction(raw: str | None, default: Decimal) -> Decimal:
+    """A finite positive decimal; anything else is the default."""
+    value = exact((raw or "").strip(), positive=True)
+    return default if value is None else value
+
+
+def _count(raw: str | None, default: int) -> int:
+    """`_calls` where no cap is not allowed: always a positive whole number."""
+    return _calls(raw, default) or default
 
 
 _MEMORY_RE = re.compile(r"\d+(\.\d+)?\s*(KB|MB|GB|TB|KIB|MIB|GIB|TIB)", re.IGNORECASE)
@@ -93,16 +136,25 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         enabled=_is_true(source.get("HAT_ENABLED")),
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
-        broker_calls_per_second=_calls(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8) or 8,
-        broker_calls_per_minute=_calls(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180) or 180,
+        broker_calls_per_second=_count(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8),
+        broker_calls_per_minute=_count(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180),
         broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
         mpp_resend=_is_true(source.get("HAT_MPP_RESEND")),
-        mpp_page_after=_calls(source.get("HAT_MPP_PAGE_AFTER"), 3) or 3,
+        mpp_page_after=_count(source.get("HAT_MPP_PAGE_AFTER"), 3),
         exchange_day_range=_is_true(source.get("HAT_EXCHANGE_DAY_RANGE")),
-        symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
-        entry_timeout_minutes=_calls(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60) or 60,
+        symbol_silent_seconds=_count(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120),
+        entry_timeout_minutes=_count(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60),
         duckdb_memory=_memory(source.get("HAT_DUCKDB_MEMORY")),
-        gtt_check_minutes=_calls(source.get("HAT_GTT_CHECK_MINUTES"), 5) or 5,
+        gtt_check_minutes=_count(source.get("HAT_GTT_CHECK_MINUTES"), 5),
+        history_daily_limit=_count(source.get("HAT_HISTORY_DAILY_LIMIT"), PLAN_CALLS_PER_DAY),
+        history_reserve=_count(source.get("HAT_HISTORY_RESERVE"), 500),
+        history_per_minute=_count(source.get("HAT_HISTORY_PER_MINUTE"), 50),
+        history_plan_days=_count(source.get("HAT_HISTORY_PLAN_DAYS"), 365),
+        history_chunk_days=_count(source.get("HAT_HISTORY_CHUNK_DAYS"), 100),
+        history_envelope_tol=_fraction(source.get("HAT_HISTORY_ENVELOPE_TOL"), Decimal("0.005")),
+        history_max_reject_pct=_fraction(source.get("HAT_HISTORY_MAX_REJECT_PCT"), Decimal("0.5")),
+        history_max_reject_run=_count(source.get("HAT_HISTORY_MAX_REJECT_RUN"), 12),
+        history_write_batch=_count(source.get("HAT_HISTORY_WRITE_BATCH"), 25),
     )
 
 

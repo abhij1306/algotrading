@@ -41,6 +41,7 @@ from datetime import date
 from threading import Lock
 from typing import Any, TypedDict
 
+from ..broker_limits import FYERS_CODE_RATE_LIMITED
 from ..settings import load_settings
 from ..time import trade_date_of, utc_now
 from .fyers_session import get_fyers_session
@@ -96,12 +97,6 @@ FYERS_CODE_TOKEN_REJECTED = -16
 class FyersSessionExpiredError(FyersUnavailableError):
     """Fyers refused the token (code -16): the session expired or was revoked, so only a new
     login brings it back. Still a failed read (an unreadable book, never an empty one)."""
-
-
-# Fyers answers every call with code -360 ("Standard plan limit of 5,000 requests/day") once the
-# app has spent its plan's daily requests, as a normal error reply: nothing succeeds until the
-# next day.
-FYERS_CODE_RATE_LIMITED = -360
 
 
 class FyersRateLimitedError(FyersUnavailableError):
