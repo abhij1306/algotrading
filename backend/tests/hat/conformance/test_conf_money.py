@@ -1,4 +1,4 @@
-"""CONF money.one_decimal_boundary (HAT-SCH-014; PR 75c, architecture A-F7): `app/hat/money.py`
+"""CONF money.one_decimal_boundary (PR 75c, architecture A-F7): `app/hat/money.py`
 is the one place HAT turns an untrusted number into a Decimal (`exact`, `require_exact`)."""
 
 import ast

@@ -371,7 +371,7 @@ Live trade management:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `538c50dba16756fe9455cb8108ea0bb7f7a1292600c785fcefffbdb000b40d3c`
+Covered digest: `090c860adb1e4069791e4de6ad7f65370e8f90049db3bb88c551dad39eeaf3af`
 
 ## Scratch breaks
 
@@ -2691,3 +2691,46 @@ Break: `execution/submit.py` defines its own `ACCOUNT_ACTIVE = "active"` again.
 E   AssertionError: assert {'execution/s...OUNT_ACTIVE']} == {}
 ```
 
+
+### PBT fyers_broker.reply_amounts_exact
+
+Break: (PR 75c) the funds total Fyers leaves out is a float sum again (`float(available) + float(used)`).
+
+```
+E   AssertionError: assert Decimal('0.30000000000000004') == (Decimal('0.1') + Decimal('0.2'))
+```
+
+Second break: (PR 75c) `_amount` fails open (`exact(value, floats=True) or Decimal(0)`).
+
+```
+E   Failed: DID NOT RAISE BrokerUnavailableError
+```
+
+Third break: (PR 75c) the position's `ltp` read as `Decimal(float(...))`, the float's binary expansion.
+
+```
+E     At index 0 diff: Decimal('536870912.86328125') != Decimal('536870912.8632812')
+```
+
+Fourth break: (PR 75c, code review) every `fund_limit` row's amount is read, not only the three HAT uses.
+
+```
+E   app.hat.execution.broker.BrokerUnavailableError: broker_unavailable
+E   Failing explicit example: test_reply_amounts_exact(
+```
+
+### PBT tags.float_intent_price_refused
+
+Break: (PR 75c) `_intent_price` passes `floats=True`.
+
+```
+E   Failed: DID NOT RAISE InvalidIntentError
+E   Failing test case: test_float_intent_price_refused(
+```
+
+Second break: (PR 75c, code review) `_intent_price` drops its Decimal-only check, so text such as "100" is read.
+
+```
+E   Failed: DID NOT RAISE InvalidIntentError
+E   Failing test case: test_float_intent_price_refused(
+```

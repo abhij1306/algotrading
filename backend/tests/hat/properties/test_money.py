@@ -1,4 +1,4 @@
-"""PBT money.exact (HAT-SCH-014; PR 75c, architecture A-F7): the one Decimal boundary."""
+"""PBT money.exact (PR 75c, architecture A-F7): the one Decimal boundary."""
 
 from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 

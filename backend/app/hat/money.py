@@ -1,4 +1,4 @@
-"""Money and the one Decimal boundary: Decimal only, never float (HAT-SCH-014).
+"""Money and the one Decimal boundary: Decimal only, never float.
 
 Every number HAT reads from outside (a feed tick, a broker reply, a Parquet column, a CSV cell,
 a config value, a command argument) becomes exact here, by one rule (`exact`):

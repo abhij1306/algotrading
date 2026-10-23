@@ -754,7 +754,7 @@ NOT_AMOUNTS = st.sampled_from([math.nan, math.inf, -math.inf, "1,5", "abc", True
 def test_reply_amounts_exact(
     buy: float, ltp: float, pnl: float, available: float, used: float, bad: object, where: str
 ) -> None:
-    """PBT fyers_broker.reply_amounts_exact (HAT-SCH-014, trading-safety rules 7 and 8; PR 75c): the
+    """PBT fyers_broker.reply_amounts_exact (trading-safety rules 7 and 8; PR 75c): the
     amounts of a positions or funds reply (JSON floats) are read exactly by `money.exact`, as
     the Decimal each float's shortest text names, and a total Fyers leaves out is the exact sum
     of the available and used amounts; an amount that is not a finite number fails the read
