@@ -546,20 +546,20 @@ class HatRuntime:
                 ),
             ]
             if self.is_open(now):
-                steps.append(("exits", timedelta(0), lambda: self._live_exits(now)))
-                steps.append(
-                    (
-                        "drawdown",
-                        DRAWDOWN_EVERY,
-                        lambda: self.intraday.drawdown(now, self.settings.user_id),
-                    )
-                )
-                steps.append(
-                    (
-                        "entries",
-                        timedelta(0),
-                        lambda: self.desks.cancel_stale_entries(now, self.entries),
-                    )
+                steps.extend(
+                    [
+                        ("exits", timedelta(0), lambda: self._live_exits(now)),
+                        (
+                            "drawdown",
+                            DRAWDOWN_EVERY,
+                            lambda: self.intraday.drawdown(now, self.settings.user_id),
+                        ),
+                        (
+                            "entries",
+                            timedelta(0),
+                            lambda: self.desks.cancel_stale_entries(now, self.entries),
+                        ),
+                    ]
                 )
         if self.parts.announcements is not None:
             steps.append(("announcements", poll_interval(now), lambda: self._poll(now)))

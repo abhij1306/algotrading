@@ -330,37 +330,52 @@ def evaluate_drawdown_kills(
     snaps = session.scalars(select(HatDailyBotSnapshot)).all()
     capital = _capital_by_snapshot(session, snaps)
     tripped: list[str] = []
-    by_bot: dict[uuid.UUID, list[kill.EquityPoint]] = {}
-    last: dict[uuid.UUID, HatDailyBotSnapshot] = {}
-    for s in sorted(snaps, key=lambda row: row.trade_date):
-        last[s.bot_id] = s
-        if capital.get((s.bot_id, s.trade_date)) == 0:
-            continue
-        by_bot.setdefault(s.bot_id, []).append(
-            kill.EquityPoint(
-                _snapshot_instant(s.trade_date), Decimal(s.equity), Decimal(s.equity_peak)
-            )
-        )
-    for bot_id, (equity, cap) in (live or {}).items():
-        if cap == 0:
-            continue
-        before = last.get(bot_id)
-        previous = (
-            None
-            if before is None
-            else kill.EquityPoint(
-                _snapshot_instant(before.trade_date),
-                Decimal(before.equity),
-                Decimal(before.equity_peak),
-            )
-        )
-        known = None if before is None else capital.get((bot_id, before.trade_date))
-        by_bot.setdefault(bot_id, []).append(kill.live_point(previous, known, now, equity, cap))
-    for bot_id, series in by_bot.items():
+    for bot_id, series in _bot_series(snaps, capital, now, live or {}).items():
         if kill.tripped_since(
             series, policy.bot_drawdown_pct, _last_rearm(session, "bot", bot_id)
         ) and trip_kill(session, scope="bot", bot_id=bot_id, reason="drawdown_bot", now=now):
             tripped.append(str(bot_id))
+    account = _account_series(snaps, capital, now, live or {})
+    if kill.tripped_since(
+        account, policy.account_drawdown_pct, _last_rearm(session, "account", None)
+    ) and trip_kill(session, scope="account", bot_id=None, reason="drawdown_account", now=now):
+        tripped.append("account")
+    return tripped
+
+
+def _bot_series(
+    snaps: Sequence[HatDailyBotSnapshot],
+    capital: Mapping[tuple[uuid.UUID, date], Decimal],
+    now: datetime,
+    live: Mapping[uuid.UUID, tuple[Decimal, Decimal]],
+) -> dict[uuid.UUID, list[kill.EquityPoint]]:
+    """Each bot's snapshot points with their stored peaks, then its point marked at `now`."""
+    by_bot: dict[uuid.UUID, list[kill.EquityPoint]] = {}
+    last: dict[uuid.UUID, kill.EquityPoint] = {}
+    last_capital: dict[uuid.UUID, Decimal | None] = {}
+    for s in sorted(snaps, key=lambda row: row.trade_date):
+        point = kill.EquityPoint(
+            _snapshot_instant(s.trade_date), Decimal(s.equity), Decimal(s.equity_peak)
+        )
+        last[s.bot_id] = point
+        last_capital[s.bot_id] = capital.get((s.bot_id, s.trade_date))
+        if last_capital[s.bot_id] != 0:
+            by_bot.setdefault(s.bot_id, []).append(point)
+    for bot_id, (equity, cap) in live.items():
+        if cap != 0:
+            point = kill.live_point(last.get(bot_id), last_capital.get(bot_id), now, equity, cap)
+            by_bot.setdefault(bot_id, []).append(point)
+    return by_bot
+
+
+def _account_series(
+    snaps: Sequence[HatDailyBotSnapshot],
+    capital: Mapping[tuple[uuid.UUID, date], Decimal],
+    now: datetime,
+    live: Mapping[uuid.UUID, tuple[Decimal, Decimal]],
+) -> list[kill.EquityPoint]:
+    """The account's points: the bots' snapshots summed per date with peaks restated for
+    reallocation (`kill.adjusted_series`), then the sum of the bots marked at `now`."""
     totals: dict[date, tuple[Decimal, Decimal | None]] = {}
     for s in snaps:
         equity, cap = totals.get(s.trade_date, (Decimal(0), Decimal(0)))
@@ -373,17 +388,13 @@ def evaluate_drawdown_kills(
         kill.SnapshotPoint(_snapshot_instant(day), equity, cap)
         for day, (equity, cap) in totals.items()
     )
-    live_capital = sum((cap for _, cap in (live or {}).values()), Decimal(0))
+    live_capital = sum((cap for _, cap in live.values()), Decimal(0))
     if live_capital != 0:
         previous = account[-1] if account else None
         known = None if previous is None else totals[previous.at.date()][1]
-        equity = sum((equity for equity, _ in (live or {}).values()), Decimal(0))
+        equity = sum((equity for equity, _ in live.values()), Decimal(0))
         account.append(kill.live_point(previous, known, now, equity, live_capital))
-    if kill.tripped_since(
-        account, policy.account_drawdown_pct, _last_rearm(session, "account", None)
-    ) and trip_kill(session, scope="account", bot_id=None, reason="drawdown_account", now=now):
-        tripped.append("account")
-    return tripped
+    return account
 
 
 # --- Pause and resume -------------------------------------------------------------------------
