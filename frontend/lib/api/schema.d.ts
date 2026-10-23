@@ -462,8 +462,6 @@ export interface components {
        * Format: uuid
        */
       bot_id: string;
-      /** Currency */
-      currency: string;
       /** Current Stop */
       current_stop: string;
       /**
@@ -517,8 +515,6 @@ export interface components {
       confidence_basis: {
         [key: string]: unknown;
       };
-      /** Currency */
-      currency: string;
       /**
        * Id
        * Format: uuid

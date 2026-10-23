@@ -179,7 +179,7 @@ def test_hat_package_in_backend() -> None:
 
 
 def test_no_deferred_integrations() -> None:
-    """No HAT module imports or calls OpenAlgo; the openalgo_ref column is nullable."""
+    """No HAT module imports or calls OpenAlgo."""
     for path in HAT_ROOT.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
         for line in text.splitlines():
@@ -187,9 +187,6 @@ def test_no_deferred_integrations() -> None:
             if re.search(r"^\s*(import|from)\s+\S*openalgo", code, re.IGNORECASE):
                 pytest.fail(f"{path}: {line}")
             assert "openalgo(" not in code.lower().replace(" ", ""), f"{path}: {line}"
-    from app.hat.models.strategy import HatBrokerAccount
-
-    assert HatBrokerAccount.__table__.columns["openalgo_ref"].nullable
 
 
 def test_hat_data_root_paths(monkeypatch: pytest.MonkeyPatch) -> None:

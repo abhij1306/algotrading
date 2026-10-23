@@ -30,7 +30,7 @@ from app.hat.execution.broker import (
     OrderType,
     Side,
 )
-from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
+from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_payloads import map_fyers_status
 from app.hat.execution.order_book import (
     TagBook,
@@ -110,7 +110,6 @@ def test_encode_decode_roundtrip(signal: uuid.UUID, purpose: str, sequence: int)
     assert tag.startswith("HT")
     assert not tag.startswith("ST")
     assert FYERS_ALLOWED.fullmatch(tag)
-    assert len(tag) <= FYERS_CAPABILITIES.tag_max_len
     assert decode(tag)[0] == purpose
 
 

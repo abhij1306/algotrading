@@ -18,7 +18,7 @@ from sqlalchemy.pool import QueuePool
 from .base import Base
 from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables on Base)
 from .hat.risk.policy_upkeep import ensure_hat_policies
-from .hat.schema import ensure_hat_columns, ensure_hat_schema, seed_hat_reference
+from .hat.schema import ensure_hat_schema, seed_hat_reference
 from .hat.settings import is_enabled as hat_is_enabled
 from .paths import ENV_FILE
 from .utils.env_loader import load_dotenv
@@ -94,7 +94,6 @@ def ensure_hat_database(*, bind: Engine | None = None) -> None:
     """
     db_engine = bind or engine
     try:
-        ensure_hat_columns(db_engine)
         ensure_hat_schema(db_engine)
         seed_hat_reference(db_engine)
         ensure_hat_policies(db_engine)

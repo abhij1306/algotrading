@@ -18,7 +18,6 @@ from .ops import (
 )
 from .portfolio import (
     HatAllocationDaily,
-    HatFundamental,
     HatRegimeModelVersion,
     HatRegimeState,
     HatUniverse,
@@ -83,7 +82,6 @@ __all__ = [
     "HatCorporateAction",
     "HatCriterionType",
     "HatExposureState",
-    "HatFundamental",
     "HatIndustry",
     "HatInstrument",
     "HatInstrumentSymbolHistory",

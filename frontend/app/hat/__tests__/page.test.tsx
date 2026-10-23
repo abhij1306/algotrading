@@ -85,7 +85,6 @@ const POSITIONS = [
     avg_entry: "4012.5000",
     initial_stop: "3890.0000",
     current_stop: "3950.2500",
-    currency: "INR",
     opened_at: "2026-10-19T04:00:00Z",
     state: "Open",
     is_virtual: true,

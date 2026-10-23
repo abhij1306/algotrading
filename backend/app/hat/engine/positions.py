@@ -358,7 +358,6 @@ def write_result(
             position_id=position.id,
             realized_pnl=pnl,
             fees=fees,
-            currency="INR",
             r_multiple=r,
             holding_days=max(0, (trade_date_of(now) - signal.trade_date).days),
             exit_reason=reason,

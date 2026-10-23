@@ -31,7 +31,6 @@ class PositionRow:
     avg_entry: Decimal
     initial_stop: Decimal
     current_stop: Decimal
-    currency: str
     opened_at: datetime
     state: str
     is_virtual: bool
@@ -73,7 +72,6 @@ def open_positions(session: Session) -> list[PositionRow]:
             avg_entry=Decimal(p.avg_entry),
             initial_stop=Decimal(p.initial_stop),
             current_stop=Decimal(p.current_stop),
-            currency=p.currency,
             opened_at=as_utc(p.opened_at),
             state=p.state,
             is_virtual=bool(p.is_virtual),

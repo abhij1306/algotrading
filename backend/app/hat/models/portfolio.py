@@ -5,7 +5,6 @@ from sqlalchemy import (
     CheckConstraint,
     Column,
     Date,
-    ForeignKey,
     Index,
     Integer,
     Text,
@@ -31,7 +30,6 @@ MARKET_ID = "hat_market.id"
 
 __all__ = [
     "HatAllocationDaily",
-    "HatFundamental",
     "HatRegimeModelVersion",
     "HatRegimeState",
     "HatUniverse",
@@ -87,7 +85,6 @@ class HatUniverseMember(Base):
     effective_from = Column(Date, primary_key=True)
     effective_to = Column(Date)
     reason = Column(Text, nullable=False)
-    criteria_snapshot = Column(JsonB)
 
 
 class HatRegimeModelVersion(Base):
@@ -104,8 +101,6 @@ class HatRegimeModelVersion(Base):
     version = Column(Integer, nullable=False)
     status = Column(Text, nullable=False)
     config = Column(JsonB, nullable=False)
-    fitted_at = Column(Timestamptz)
-    artifact_path = Column(Text)
 
 
 class HatRegimeState(Base):
@@ -141,16 +136,3 @@ class HatAllocationDaily(Base):
     # the nominal allocation of a Shadow or Probation sleeve's virtual entries (HAT-PORT-050)
     virtual_capital = Column(Money)
     virtual_risk_pct = Column(Ratio)
-
-
-class HatFundamental(Base):
-    """Created empty in the MVP (P2); reads only rows with `filed_at` <= the evaluation date."""
-
-    __tablename__ = "hat_fundamental"
-
-    instrument_id = Column(Uuid, ForeignKey("hat_instrument.id"), primary_key=True)
-    metric = Column(Text, primary_key=True)
-    period_end = Column(Date, primary_key=True)
-    filed_at = Column(Timestamptz, primary_key=True)
-    value = Column(Ratio, nullable=False)
-    source = Column(Text, nullable=False)

@@ -81,7 +81,6 @@ _REFERENCE = {
     "hat_trading_calendar",
     "hat_announcement",
     "hat_criterion_type",
-    "hat_fundamental",
     "hat_regime_model_version",
     "hat_regime_state",
     "hat_job_run",
@@ -139,16 +138,14 @@ def test_schema__market_id_columns() -> None:
         assert {f.column.table.name for f in col.foreign_keys} == {"hat_market"}, name
 
 
-MONEY_CURRENCY_ROWS = {
-    "hat_signal",
-    "hat_order",
-    "hat_fill",
-    "hat_position",
-    "hat_trade_result",
-    "hat_allocation_daily",
-    "hat_daily_bot_snapshot",
-}
-MARKET_CURRENCY = {"hat_instrument", "hat_watchlist_entry", "hat_corporate_action"}
+def _reaches_currency(name: str, seen: frozenset[str] = frozenset()) -> bool:
+    """The table has a `currency` column or a not-null FK chain to one (`hat_market` owns the
+    market's currency)."""
+    table = MODEL[name]
+    if "currency" in table.columns:
+        return True
+    targets = {f.column.table.name for c in table.columns if not c.nullable for f in c.foreign_keys}
+    return any(_reaches_currency(t, seen | {name}) for t in targets - seen - {name})
 
 
 def test_schema__money_types() -> None:
@@ -159,10 +156,7 @@ def test_schema__money_types() -> None:
         model_money = {c.name for c in table.columns if logical_type(c) == "numeric(18,4)"}
         if not model_money:
             continue
-        if name in MONEY_CURRENCY_ROWS:
-            assert "currency" in table.columns, name
-        elif name in MARKET_CURRENCY:
-            assert "market_id" in table.columns or "instrument_id" in table.columns, name
+        assert _reaches_currency(name), name
 
 
 def test_schema__time_types() -> None:
@@ -237,7 +231,7 @@ def test_schema__sqlite_create_all() -> None:
     Base.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
     assert set(MODEL) <= names
-    assert len(MODEL) == 44
+    assert len(MODEL) == 43
     inspector = sa.inspect(engine)
     for name, table in MODEL.items():
         declared = {(f.parent.name, f.column.table.name) for f in table.foreign_keys}

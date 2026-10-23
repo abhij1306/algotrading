@@ -178,7 +178,6 @@ class SignalView(BaseModel):
     stop_price: str
     qty: int
     risk_amount: str
-    currency: str
     mode: str
     state: str
     # the label and its backtest bucket (D132); null on a signal stored before PR 71
@@ -195,7 +194,6 @@ class PositionView(BaseModel):
     avg_entry: str
     initial_stop: str
     current_stop: str
-    currency: str
     opened_at: datetime
     state: str
     is_virtual: bool
@@ -389,7 +387,6 @@ def _signals(session: Session, limit: int) -> list[SignalView]:
             stop_price=_money(s.stop_price),
             qty=s.qty,
             risk_amount=_money(s.risk_amount),
-            currency=s.currency,
             mode=s.mode,
             state=s.state,
             confidence=s.confidence,
@@ -410,7 +407,6 @@ def _positions(session: Session) -> list[PositionView]:
             avg_entry=_money(p.avg_entry),
             initial_stop=_money(p.initial_stop),
             current_stop=_money(p.current_stop),
-            currency=p.currency,
             opened_at=p.opened_at,
             state=p.state,
             is_virtual=p.is_virtual,

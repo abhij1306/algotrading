@@ -111,7 +111,6 @@ def _virtual_order(
         status="filled",
         is_virtual=True,
         placed_at=now,
-        currency="INR",
     )
     session.add(order)
     session.flush()
@@ -121,7 +120,6 @@ def _virtual_order(
         qty=qty,
         price=price,
         fees=fees,
-        currency="INR",
         filled_at=now,
         broker_trade_id=None,
         is_virtual=True,
@@ -163,7 +161,6 @@ def open_virtual(
         avg_entry=entry,
         initial_stop=stop,
         current_stop=stop,
-        currency="INR",
         opened_at=now,
         state=lifecycle.OPEN,
         rules_fired=[],

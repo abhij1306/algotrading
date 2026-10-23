@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import hat_db_rules as rules
 import pytest
-from sqlalchemy import Engine, create_engine, select, text
+from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
-from app.database import init_db, postgres_url_from_env
+from app.database import init_db
 from app.hat.models import HatRiskPolicyVersion
 from app.hat.risk.policy import OLD_SEED_POLICY, SEED_POLICY
 from app.hat.schema import ensure_hat_schema
@@ -70,56 +70,6 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
     with pg_engine.connect() as connection:
         count = connection.execute(text("SELECT count(*) FROM hat_market WHERE code = 'NSE'"))
         assert count.scalar_one() == 1
-
-    # An older database: columns the models have since gained are added back, rows kept.
-    engine = create_engine(postgres_url_from_env())
-    try:
-        with engine.begin() as connection:
-            connection.execute(text("ALTER TABLE hat_instrument DROP COLUMN delisted_on"))
-            connection.execute(text("ALTER TABLE hat_job_run DROP COLUMN rows"))
-            # A database from before bots defaulted to shadow and no DDPI columns.
-            connection.execute(
-                text("ALTER TABLE hat_bot ALTER COLUMN execution_mode SET DEFAULT 'shadow'")
-            )
-            connection.execute(text("ALTER TABLE hat_broker_account DROP COLUMN ddpi_confirmed"))
-            # A database from before signals carried no confidence label.
-            connection.execute(text("ALTER TABLE hat_signal DROP COLUMN confidence CASCADE"))
-            connection.execute(text("ALTER TABLE hat_signal DROP COLUMN confidence_basis CASCADE"))
-            connection.execute(
-                text(
-                    "INSERT INTO hat_job_run (id, job, trade_date, started_at, status, calls)"
-                    " VALUES (gen_random_uuid(), 'old', current_date, now(), 'failed', 3)"
-                )
-            )
-        init_db()
-        init_db()
-        with engine.connect() as connection:
-            columns = {
-                row[0]
-                for row in connection.execute(
-                    text(
-                        "SELECT column_name FROM information_schema.columns"
-                        " WHERE table_name IN ('hat_instrument', 'hat_job_run',"
-                        " 'hat_broker_account', 'hat_signal')"
-                    )
-                )
-            }
-            default = connection.execute(
-                text(
-                    "SELECT column_default FROM information_schema.columns"
-                    " WHERE table_name = 'hat_bot' AND column_name = 'execution_mode'"
-                )
-            ).scalar_one()
-            kept = connection.execute(text("SELECT calls FROM hat_job_run WHERE job = 'old'"))
-            assert {"delisted_on", "rows", "ddpi_confirmed"} <= columns
-            assert {"confidence", "confidence_basis"} <= columns
-            assert default is not None
-            assert default.startswith("'confirm'")
-            assert kept.scalar_one() == 3
-    finally:
-        with engine.begin() as connection:
-            connection.execute(text("DELETE FROM hat_job_run WHERE job = 'old'"))
-        engine.dispose()
 
     # An older policy: a user still on the PR 10 seed is moved to the current seed.
     _old_seed_superseded(pg_engine)
