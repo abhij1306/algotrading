@@ -1014,6 +1014,39 @@ def test_seed_needs_ordered_prices(price: int, high: int, low: int, second: int)
         assert seeded.day_low("AAA", DAY) == plain.day_low("AAA", DAY)
 
 
+@example(at=100, delay=60, gap=130, first=True)  # traded before the gap, arrived after it
+@example(at=100, delay=60, gap=130, first=False)
+@given(
+    at=st.integers(0, 290), delay=st.integers(0, 120), gap=st.integers(0, 410), first=st.booleans()
+)
+def test_delayed_seed_spoiled_by_gap(at: int, delay: int, gap: int, first: bool) -> None:
+    """PR 39 (CodeAnt): a seed covers prints only up to the earlier of its exchange time and its
+    arrival, so a feed gap that began between the two (a delayed tick arriving after the gap)
+    spoils it: neither the opening range nor the day low is published from it. Harm: prints
+    the gap hid, missing from both the seed and the bars, leave a range or a low the session
+    never had."""
+    opens = at_us(OPEN_SOD * US)
+    traded, arrived, since = (opens + timedelta(seconds=x) for x in (at, at + delay, gap))
+    seeded, plain = BarBuilder(), BarBuilder()
+    tick = Tick("AAA", traded, Decimal(100))
+    end = opens + timedelta(seconds=900)
+    for builder in (seeded, plain):
+        if first:  # the gap is found before the delayed tick arrives, else after
+            builder.mark_gap(min(since, arrived))
+        builder.on_tick(tick, arrived)
+        if builder is seeded:
+            builder.seed(tick, Decimal(101), Decimal(99), arrived)
+        if not first:
+            builder.mark_gap(since)
+        builder.on_tick(Tick("BBB", end, Decimal(1)), end)
+        builder.advance(end)
+    # AAA's one tick is in the first bar, so both the range and the low cover up to its end
+    began = min(since, arrived) if first else since
+    if min(traded, arrived) <= began < opens + timedelta(seconds=300):  # spoiled
+        assert seeded.opening_range("AAA", DAY) == plain.opening_range("AAA", DAY)
+        assert seeded.day_low("AAA", DAY) == plain.day_low("AAA", DAY)
+
+
 @example(seed=None, silent=None)
 @example(seed="1", silent="0")
 @given(
@@ -1110,6 +1143,7 @@ def test_symbol_silence_resubscribes_and_alerts(
         at_second.setdefault(second, []).append(symbol)
     checks: list[tuple[datetime, frozenset[str], bool, bool]] = []  # (t, watched, open, stale)
     arrivals: dict[str, list[datetime]] = {s: [] for s in QUIET}
+    first_tick: datetime | None = None
     for second in range(901):
         now = at_us((start + second) * US)
         clock.set(now)
@@ -1118,6 +1152,7 @@ def test_symbol_silence_resubscribes_and_alerts(
         if not hidden.hides(second):
             names = at_second.get(second, []) + ([HEARTBEAT_SYMBOL] if second % 10 == 0 else [])
             for symbol in names:
+                first_tick = first_tick or now
                 live.on_tick({"symbol": symbol, "ltp": 100.0, "exch_feed_time": now.timestamp()})
                 if symbol in arrivals:
                     arrivals[symbol].append(now)
@@ -1150,12 +1185,16 @@ def test_symbol_silence_resubscribes_and_alerts(
             expected = open_ and not stale and t - quiet_from >= limit
             assert ((symbol, t) in found) == expected, (symbol, t)
             opened = max([c for c, _, o, _ in checks[: i + 1] if not o], default=None)
-            told_before = any(
-                (symbol, c) in found for c, *_ in checks[:i] if opened is None or c > opened
+            told_before = (
+                not raises
+                and any(  # a failed alert is sent again
+                    (symbol, c) in found for c, *_ in checks[:i] if opened is None or c > opened
+                )
             )
             assert ((symbol, t) in alerted) == (expected and not told_before), (symbol, t)
     opens = at_us(start * US)
-    later = [t for t in sink.stale if t != opens]  # the first tick ends the silence before it
+    # until the first tick the feed has never ticked: stale by definition, not a symbol's doing
+    later = [t for t in sink.stale if first_tick is not None and t > first_tick]
     if outage is None:
         assert later == []  # the heartbeat ticks: no quiet symbol is a stale feed
     for t in later:  # only the outage silences the feed
@@ -1163,6 +1202,8 @@ def test_symbol_silence_resubscribes_and_alerts(
         assert (
             opens + timedelta(seconds=outage[0]) < t <= opens + timedelta(seconds=sum(outage) + 5)
         )
+    if outage is not None and outage[1] >= 40 and closed is None and 10 <= outage[0] <= 860:
+        assert later  # and an outage of 40 s or more does
 
 
 # --- triggers on final bars (HAT-EXEC-120) -----------------------------------------------------

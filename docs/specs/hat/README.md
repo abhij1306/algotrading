@@ -230,7 +230,7 @@ to an artefact that exists.
 | HAT-DATA-111 | [02](02-data.md) | 14 | PBT `bars.listener_isolation` |
 | HAT-DATA-112 | [02](02-data.md) | 14, 39 | PBT `bars.subscription_set` |
 | HAT-DATA-113 | [02](02-data.md) | 14 | PBT `bars.alignment` |
-| HAT-DATA-114 | [02](02-data.md) | 14, 22, 39 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`, PBT `bars.session_state_never_partial`, PBT `bars.trigger_never_uses_a_partial_session`, PBT `bars.seed_needs_ordered_prices`, PBT `bars.live_flags_parsed` |
+| HAT-DATA-114 | [02](02-data.md) | 14, 22, 39 | PBT `bars.opening_range_fixed`, PBT `bars.restore_matches_live`, PBT `bars.session_state_never_partial`, PBT `bars.trigger_never_uses_a_partial_session`, PBT `bars.seed_needs_ordered_prices`, PBT `bars.delayed_seed_spoiled_by_gap`, PBT `bars.live_flags_parsed` |
 | HAT-DATA-115 | [02](02-data.md) | 14 | PBT `bars.volume_pace` |
 | HAT-DATA-116 | [02](02-data.md) | 14, 15, 51, 39 | PBT `bars.staleness_trip`, PBT `bars.stale_feed_trips_health_kill`, TLA `ExecutionRouter!NoOrderWhenStale`, PBT `bars.usable_price`, PBT `bars.price_book_dates_each_tick`, PBT `bars.exits_and_placement_read_the_checked_price`, PBT `bars.symbol_silence_resubscribes_and_alerts` |
 | HAT-DATA-117 | [02](02-data.md) | 14 | PBT `bars.persisted_equals_live` |

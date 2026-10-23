@@ -109,7 +109,8 @@ class SilenceWatch:
     found silent in one call, and counts each one again from then, so a symbol that stays
     silent is asked again every `silent_after`. The owner is told by one `alert` per check
     listing the symbols not yet alerted since the market last opened (one message, not one per
-    symbol, and not again for a symbol that resumes and falls silent again that day). It holds
+    symbol, and not again for a symbol that resumes and falls silent again that day; an alert
+    that fails is sent again at the symbol's next report). It holds
     no reference to the feed's health, so it can never trip a kill."""
 
     def __init__(
@@ -162,19 +163,19 @@ class SilenceWatch:
         )
         if found:
             fresh = [symbol for symbol in found if symbol not in self._alerted]
-            self._alerted.update(fresh)
             for symbol in found:
                 self._since[symbol] = now
             _isolated(lambda: self._resubscribe(found), "symbol resubscribe")
-            if fresh:
-                _isolated(lambda: self._alert(fresh, now), "symbol silence alert")
+            if fresh and _isolated(lambda: self._alert(fresh, now), "symbol silence alert"):
+                self._alerted.update(fresh)  # a failed alert is sent again at the next report
         return found
 
 
-def _isolated(call: Callable[[], None], what: str) -> None:
-    """Run a sink; its failure is logged and never reaches the feed (the caller keeps its
-    state)."""
+def _isolated(call: Callable[[], None], what: str) -> bool:
+    """Run a sink; its failure is logged and never reaches the feed. Returns whether it ran."""
     try:
         call()
     except Exception:
         logger.exception("%s failed", what)
+        return False
+    return True

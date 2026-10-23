@@ -274,7 +274,7 @@ One stop rule per playbook; the initial stop is computed before entry (BL "Stops
   - Property: the stop planned overnight at the pivot (which leaves `min_pct` to the entry) and re-checked at a fill at or above the pivot equals the live plan at that fill. Harm: the backtest skips trades live would take, so its results are not the live strategy's.
 
 #### HAT-EXEC-051: low_of_day
-- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid. The day's low exists only for a session watched from the open with no feed gap, or one seeded from the exchange's day low with no gap after the seed (HAT-DATA-114, PR 39); without it the entry skips with `stop_input_missing`. The seed is behind `HAT_EXCHANGE_DAY_RANGE`, off until the tick's field names are checked, so until then a symbol first seen after the open (every 09:17 EP name) has no day low.
+- **Statement:** Stop = day's low at entry minus 1 tick (buffer ticks default 1), rounded down to the tick grid. The day's low exists only for a session watched from the open with no feed gap, or one seeded from the exchange's day low with no gap after the seed (HAT-DATA-114, PR 39); without it the entry skips with `stop_input_missing`. The seed is behind `HAT_EXCHANGE_DAY_RANGE`, off until the tick's field names are checked, so until then an EP candidate first seen after the open (a scan name not already watched or held) has no day low.
 - **Source:** BL "Stop rules"; BL "Qullamaggie-style bot" (`stop: {rule: low_of_day}`).
 - **PR:** 11, 22, 39
 - **Verification:** PBT `stops.low_of_day`, PBT `bars.trigger_never_uses_a_partial_session`

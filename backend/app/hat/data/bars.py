@@ -139,6 +139,13 @@ class _Seed:
     high: Decimal
     low: Decimal
 
+    @property
+    def covered_until(self) -> datetime:
+        """Prints up to here are in the seed or reach the builder as ticks: a gap that began at
+        or after it spoils the seed. A delayed tick's exchange time is before its arrival, and a
+        gap between the two hides prints the seed does not hold."""
+        return min(self.at, self.arrival)
+
 
 @dataclass
 class _DayState:
@@ -252,14 +259,14 @@ class BarBuilder:
         """Seed the symbol's day from `tick`, which arrived at `now` and carries the exchange's
         day `high` and `low` as of its exchange time. Refused (False) outside the session, when
         the three prices are not ordered `0 < low <= price <= high`, or while the day's last
-        seed is still good (no feed gap began at or after it arrived)."""
+        seed is still good (no feed gap began at or after its cover end)."""
         require_aware(now)
         start = self.bar_start(tick.at)
         if start is None or not Decimal(0) < low <= tick.price <= high:
             return False
         day = start.date()
         seeds = self._seeds.setdefault((tick.symbol, day), [])
-        if seeds and not self._gap_after(day, seeds[-1].arrival, None):
+        if seeds and not self._gap_after(day, seeds[-1].covered_until, None):
             return False
         seeds.append(_Seed(now, tick.at, high, low))
         return True
@@ -271,11 +278,12 @@ class BarBuilder:
     def _seed_for(
         self, symbol: str, day: date, by: datetime, until: datetime | None
     ) -> _Seed | None:
-        """The latest seed taken before exchange time `by`, if no gap began in `[its arrival,
-        until)` (an earlier seed arrived earlier, so the same gap spoils it too)."""
+        """The latest seed taken before exchange time `by`, if no gap began in `[its cover end,
+        until)` (an earlier seed is spoiled by the same gap: seeds are kept in arrival order and
+        a new one is taken only after a gap)."""
         for seed in reversed(self._seeds.get((symbol, day), ())):
             if seed.at < by:
-                return None if self._gap_after(day, seed.arrival, until) else seed
+                return None if self._gap_after(day, seed.covered_until, until) else seed
         return None
 
     def from_open(self, symbol: str, day: date) -> bool:
