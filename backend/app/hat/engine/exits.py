@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Literal
 
+from ..money import require_exact
 from .strategy.config import (
     ExitBreakeven,
     ExitCloseBelowSma,
@@ -142,13 +143,13 @@ def rule_id(index: int, rule: ExitRule) -> str:
     return f"{index}:{rule.rule}"
 
 
-def _dec(value: float) -> Decimal:
-    return Decimal(repr(value))
-
-
 def fraction_qty(fraction: float, qty_original: int, qty_open: int) -> int:
     """max(1, floor(fraction x original quantity)), never more than the open quantity."""
-    sold = int((_dec(fraction) * qty_original).to_integral_value(rounding=ROUND_FLOOR))
+    sold = int(
+        (require_exact(fraction, "fraction", floats=True) * qty_original).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+    )
     return min(max(1, sold), qty_open)
 
 
@@ -174,7 +175,11 @@ def is_partial_rule(rule: ExitRule) -> bool:
 def _reached_r(view: ExitView, pos: PositionState, at_r: float) -> bool:
     """R >= at_r, compared without dividing: price - entry >= at_r x (entry - initial stop)."""
     risk = pos.avg_entry - pos.initial_stop
-    return view.price is not None and risk > 0 and view.price - pos.avg_entry >= _dec(at_r) * risk
+    return (
+        view.price is not None
+        and risk > 0
+        and view.price - pos.avg_entry >= require_exact(at_r, "at_r", floats=True) * risk
+    )
 
 
 def _price_at_or_below_stop(rule: ExitHardStop, pos: PositionState, view: ExitView) -> bool:
@@ -187,7 +192,11 @@ def _partial_r(rule: ExitPartialAtR, pos: PositionState, view: ExitView) -> bool
 
 def _gain_target(rule: ExitPctGainTarget, pos: PositionState, view: ExitView) -> bool:
     price = view.price
-    return price is not None and (price - pos.avg_entry) * 100 >= _dec(rule.pct) * pos.avg_entry
+    return (
+        price is not None
+        and (price - pos.avg_entry) * 100
+        >= require_exact(rule.pct, "pct", floats=True) * pos.avg_entry
+    )
 
 
 def _after_days(rule: ExitPartialAfterDays, pos: PositionState, view: ExitView) -> bool:
@@ -212,7 +221,10 @@ def _time_stop(rule: ExitTimeStop, pos: PositionState, view: ExitView) -> bool:
     if price is None or view.days_held < rule.days:
         return False
     risk = pos.avg_entry - pos.initial_stop
-    return risk > 0 and (price - pos.avg_entry) < _dec(rule.min_r) * risk
+    return (
+        risk > 0
+        and (price - pos.avg_entry) < require_exact(rule.min_r, "min_r", floats=True) * risk
+    )
 
 
 def _regime_off(rule: ExitRegime, pos: PositionState, view: ExitView) -> bool:

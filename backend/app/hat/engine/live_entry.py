@@ -34,7 +34,7 @@ import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Protocol
 
 import polars as pl
@@ -45,6 +45,7 @@ from ..data.bars import Bar
 from ..data.gapscan import Gapper, is_candidate
 from ..execution.modes import AUTO, CONFIRM, bot_mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
+from ..money import exact
 from ..risk import controls
 from ..risk.decision import SignalContext
 from ..risk.sessions import SessionCalendar
@@ -95,16 +96,6 @@ def _daily_results(
     if bars is None:
         return {}
     return daily_trigger_results(playbook, bars(instrument_id), trade_date)
-
-
-def _decimal(raw: object) -> Decimal | None:
-    if raw is None or isinstance(raw, bool):
-        return None
-    try:
-        value = Decimal(str(raw))
-    except InvalidOperation:
-        return None
-    return value if value.is_finite() and value > 0 else None
 
 
 def _active_bots(session: Session) -> list[HatBot]:
@@ -180,7 +171,7 @@ def watchlist_candidates(
             if playbook is None:
                 continue
             levels = (row.criteria_results or {}).get("levels", {})
-            pivot = _decimal(row.pivot)
+            pivot = exact(row.pivot, floats=True, positive=True)
             out.append(
                 Candidate(
                     bot_id=bot.id,
@@ -193,9 +184,13 @@ def watchlist_candidates(
                     daily=daily(row.instrument_id),
                     levels={
                         LEVEL_PIVOT: pivot,
-                        CONSOLIDATION_HIGH: _decimal(levels.get(CONSOLIDATION_HIGH)),
+                        CONSOLIDATION_HIGH: exact(
+                            levels.get(CONSOLIDATION_HIGH), floats=True, positive=True
+                        ),
                     },
-                    final_contraction_low=_decimal(levels.get("final_contraction_low")),
+                    final_contraction_low=exact(
+                        levels.get("final_contraction_low"), floats=True, positive=True
+                    ),
                     configured_max_chase_pct=last_configured_chase(configs, playbook.name),
                     daily_results=_daily_results(playbook, bars, row.instrument_id, trade_date),
                 )

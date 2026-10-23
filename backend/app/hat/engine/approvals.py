@@ -27,12 +27,13 @@ import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import HatApproval, HatEvent, HatPosition, HatSignal, HatTradeResult
+from ..money import exact
 from ..time import as_utc
 from . import journal, lifecycle, trades
 from .criteria.base import CriterionResult
@@ -103,12 +104,7 @@ def _triggered_pct(session: Session, signal_id: uuid.UUID) -> Decimal | None:
         )
     )
     raw = (payload or {}).get("max_chase_pct")
-    if raw is None:
-        return None
-    try:
-        return Decimal(str(raw))
-    except InvalidOperation:
-        return None
+    return exact(raw, floats=True)
 
 
 def _locked(session: Session, signal_id: uuid.UUID) -> tuple[HatSignal, HatApproval] | None:

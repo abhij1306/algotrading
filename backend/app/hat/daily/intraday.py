@@ -58,6 +58,7 @@ from ..models import (
     HatSignal,
     HatWatchlistEntry,
 )
+from ..money import require_exact
 from ..notify import Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
@@ -317,7 +318,9 @@ def _recorded_gappers(session: Session, day: date) -> Gappers | None:
         return None
     rows = payload["gappers"]
     found = {row["symbol"]: uuid.UUID(row["instrument_id"]) for row in rows}
-    opens = {row["symbol"]: Decimal(row["open"]) for row in rows if row["open"] is not None}
+    opens = {
+        row["symbol"]: require_exact(row["open"], "open") for row in rows if row["open"] is not None
+    }
     return found, opens
 
 

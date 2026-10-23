@@ -38,6 +38,7 @@ from ..engine.strategy.config import (
 )
 from ..engine.trigger import DailyInputs, daily_inputs
 from ..models import HatInstrument
+from ..money import exact, require_exact
 
 __all__ = [
     "DailyBook",
@@ -86,18 +87,11 @@ def sessions_before(store: DataStore, day: date, count: int, *, inclusive: bool 
     return days[-count:]
 
 
-def _dec(value: object) -> Decimal | None:
-    if value is None or isinstance(value, bool):
-        return None
-    number = Decimal(str(value))
-    return number if number.is_finite() else None
-
-
 def index_closes(store: DataStore, index: str, through: date) -> list[Decimal]:
     """The closes of `index` dated on or before `through`, oldest first."""
     with store.connect() as con:
         rows = con.execute(_INDEX_SQL, [index, through]).fetchall()
-    return [Decimal(close) for _, close in rows]
+    return [require_exact(close, "close") for _, close in rows]
 
 
 def _features(store: DataStore, day: date) -> pl.DataFrame | None:
@@ -139,7 +133,7 @@ def official_closes(store: DataStore, day: date) -> dict[uuid.UUID, Decimal]:
     latest = frame.sort("ingest_run_id").unique(subset=["instrument_id"], keep="last")
     out: dict[uuid.UUID, Decimal] = {}
     for instrument_id, close in zip(latest["instrument_id"], latest["close"], strict=True):
-        value = _dec(close)
+        value = exact(close, floats=True)
         if instrument_id and value is not None:
             out[uuid.UUID(instrument_id)] = value
     return out
@@ -192,7 +186,7 @@ class DailyData:
         self._raw: dict[str, tuple[list[date], list[Decimal | None]]] = {}
         for instrument_id, *picks in raw:
             pairs = [
-                (day, _dec(close))
+                (day, exact(close, floats=True))
                 for day, close in zip(picks[::2], picks[1::2], strict=True)
                 if day
             ]
@@ -213,11 +207,15 @@ class DailyData:
         return tick_for_date(dates, closes, self.trade_date)
 
     def feature(self, instrument_id: uuid.UUID, name: str) -> Decimal | None:
-        return _dec(self._features.get(str(instrument_id), {}).get(name))
+        return exact(self._features.get(str(instrument_id), {}).get(name), floats=True)
 
     def _closes(self, instrument_id: uuid.UUID) -> list[Decimal]:
         frame = self.bars(instrument_id)
-        return [Decimal(repr(v)) for v in frame["close"].to_list()] if frame.height else []
+        return (
+            [require_exact(v, "close", floats=True) for v in frame["close"].to_list()]
+            if frame.height
+            else []
+        )
 
     def _atr(self, instrument_id: uuid.UUID) -> Decimal | None:
         if self._atr_days is None:
@@ -226,7 +224,8 @@ class DailyData:
         if frame.height == 0:
             return None
         highs, lows, closes = (
-            [Decimal(repr(v)) for v in frame[name].to_list()] for name in ("high", "low", "close")
+            [require_exact(v, name, floats=True) for v in frame[name].to_list()]
+            for name in ("high", "low", "close")
         )
         return mean_true_range(highs, lows, closes, self._atr_days)
 
@@ -261,7 +260,9 @@ class DailyData:
         frame = self.bars(instrument_id)
         if frame.height < lookback:
             return None
-        return min(Decimal(repr(v)) for v in frame.tail(lookback)["low"].to_list())
+        return min(
+            require_exact(v, "low", floats=True) for v in frame.tail(lookback)["low"].to_list()
+        )
 
     def exit_view(
         self,

@@ -30,7 +30,7 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Protocol
 
@@ -38,6 +38,7 @@ from sqlalchemy import select
 
 from ..errors import HatError
 from ..ids import uuid7
+from ..money import exact
 from ..ops.jobs import JobError, JobResult
 from ..settings import operator_settings, process_env
 from .bhavcopy import (
@@ -168,18 +169,12 @@ class IndexPoint:
 IndexSource = Callable[[str, date, date], Iterable[IndexPoint]]
 
 
-def _dec(raw: object) -> Decimal | None:
-    try:
-        value = Decimal(str(raw).strip().replace(",", ""))
-    except InvalidOperation:
-        return None
-    return value if value.is_finite() else None
-
-
 def index_point_from_mcp(name: str, row: dict) -> IndexPoint | None:
     """One `get_index_history` row; None when a value or the date is missing."""
     day = parse_data_date(row.get("date"))
-    values = [_dec(row.get(k)) for k in ("open", "high", "low", "close")]
+    values = [
+        exact(row.get(k), floats=True, grouped=True) for k in ("open", "high", "low", "close")
+    ]
     if day is None or any(v is None for v in values):
         return None
     o, h, low, c = values
@@ -233,7 +228,7 @@ def parse_index_archive_csv(
         if name not in wanted:
             continue
         values = [
-            _dec(row.get(k))
+            exact(row.get(k), floats=True, grouped=True)
             for k in (
                 "open index value",
                 "high index value",
@@ -405,7 +400,7 @@ def mcp_close_source(client: McpClient) -> CloseSource:
             return None
         for row in rows:
             if parse_data_date(row.get("date")) == day:
-                return _dec(row.get("close"))
+                return exact(row.get("close"), floats=True, grouped=True)
         return None
 
     return close

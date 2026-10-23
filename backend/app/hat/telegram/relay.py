@@ -33,7 +33,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -50,6 +50,7 @@ from ..models import (
     HatTelegramCursor,
     HatTradeResult,
 )
+from ..money import exact
 from ..time import as_utc, trade_date_of, utc_now
 from . import reads, render, store
 from .client import BotClient, Button, TelegramError
@@ -94,14 +95,6 @@ class Outbound:
     buttons: tuple[tuple[Button, ...], ...] = ()
 
 
-def _decimal(raw: object) -> Decimal | None:
-    try:
-        value = Decimal(str(raw))
-    except (InvalidOperation, ValueError):
-        return None
-    return value if value.is_finite() else None
-
-
 def card_view(session: Session, signal: HatSignal, approval: HatApproval | None) -> render.CardView:
     """The card of a signal exactly as the engine fixed it (HAT-TG-023)."""
     payload = session.scalar(
@@ -109,7 +102,7 @@ def card_view(session: Session, signal: HatSignal, approval: HatApproval | None)
             HatEvent.correlation_id == signal.id, HatEvent.event_type == TRIGGERED
         )
     )
-    pct = _decimal((payload or {}).get("max_chase_pct"))
+    pct = exact((payload or {}).get("max_chase_pct"), floats=True)
     trigger = Decimal(signal.trigger_price)
     news = session.execute(
         select(HatAnnouncement.title, HatAnnouncement.url)
@@ -182,8 +175,8 @@ def _position_message(session: Session, event: HatEvent) -> Outbound | None:
     if position is None or position.is_virtual:
         return None
     payload = event.payload or {}
-    price = _decimal(
-        payload.get("price") if event.event_type != "stop.moved" else payload.get("to")
+    price = exact(
+        payload.get("price") if event.event_type != "stop.moved" else payload.get("to"), floats=True
     )
     qty = payload.get("qty")
     if event.event_type == "position.closed":

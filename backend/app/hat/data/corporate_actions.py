@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
 
 from ..models import HatCorporateAction
+from ..money import exact
 from .store import ActionFactor
 
 SOURCE_MCP = "mcp"
@@ -113,11 +114,8 @@ def from_mcp(instrument_id: object, rows: Iterable[dict]) -> Normalised:
         raw_factor = row.get("adjustmentFactor")
         text = str(row.get("purpose") or "")
         kind = _MCP_TYPES.get(str(row.get("actionType") or "").upper(), TYPE_OTHER)
-        try:
-            factor = Decimal(str(raw_factor))
-        except Exception:
-            factor = None
-        if ex is None or factor is None or not factor.is_finite() or factor <= 0:
+        factor = exact(raw_factor, floats=True, positive=True)
+        if ex is None or factor is None:
             out.unparsed.append(text)
             continue
         if factor == 1:

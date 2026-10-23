@@ -22,7 +22,7 @@ from decimal import Decimal, localcontext
 from uuid import UUID
 
 from ..time import as_utc
-from .sizing import MissingInputError, exact
+from .sizing import MissingInputError, exact_input
 
 TRIPPED = "tripped"
 ARMED = "armed"
@@ -148,9 +148,9 @@ def drawdown_breached(equity: Decimal, peak: Decimal, threshold: Decimal) -> boo
     A non-positive or non-finite peak, or a negative or non-finite equity, is a breach: an
     unreadable equity fails closed instead of reading as no drawdown."""
     try:
-        eq = exact(equity, "equity")
-        top = exact(peak, "peak")
-        limit = exact(threshold, "threshold")
+        eq = exact_input(equity, "equity")
+        top = exact_input(peak, "peak")
+        limit = exact_input(threshold, "threshold")
     except MissingInputError:
         return True
     if top <= 0 or eq < 0:
@@ -189,10 +189,10 @@ def rebase_peak(
     next equity becomes the peak.
     """
     try:
-        equity = exact(prev_equity, "equity")
-        peak = exact(prev_peak, "peak")
-        old = None if prev_capital is None else exact(prev_capital, "capital")
-        new = None if capital is None else exact(capital, "capital")
+        equity = exact_input(prev_equity, "equity")
+        peak = exact_input(prev_peak, "peak")
+        old = None if prev_capital is None else exact_input(prev_capital, "capital")
+        new = None if capital is None else exact_input(capital, "capital")
     except MissingInputError:
         return prev_peak
     if old is None or new is None or old == new:

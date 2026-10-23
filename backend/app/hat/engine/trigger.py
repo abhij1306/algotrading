@@ -51,6 +51,7 @@ import polars as pl
 
 from ..data.bars import Bar
 from ..data.sessions import IST, SESSION_CLOSE, SESSION_OPEN
+from ..money import exact, require_exact
 from ..risk.caps import effective_max_chase_pct
 from .criteria import CriterionResult, EvalContext, evaluate, evaluate_live, get_type
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE, LEVEL_PIVOT, LiveContext
@@ -122,13 +123,6 @@ class DailyInputs:
     swing_lows: tuple[Decimal, ...] = ()
 
 
-def _dec(value: object) -> Decimal | None:
-    if value is None or isinstance(value, bool):
-        return None
-    number = value if isinstance(value, Decimal) else Decimal(repr(value))
-    return number if number.is_finite() else None
-
-
 def daily_inputs(
     bars: pl.DataFrame,
     trade_date: date,
@@ -147,9 +141,9 @@ def daily_inputs(
     fewer than 50), and the swing lows the last `swing_lookback` lows (none with fewer).
     `tick` comes from `data.ticks` on the unadjusted closes."""
     prior = bars.filter(pl.col("date") < trade_date).sort("date")
-    closes = [_dec(v) for v in prior["close"].to_list()] if prior.height else []
-    volumes = [_dec(v) for v in prior["volume"].to_list()] if prior.height else []
-    lows = [_dec(v) for v in prior["low"].to_list()] if prior.height else []
+    closes = [exact(v, floats=True) for v in prior["close"].to_list()] if prior.height else []
+    volumes = [exact(v, floats=True) for v in prior["volume"].to_list()] if prior.height else []
+    lows = [exact(v, floats=True) for v in prior["low"].to_list()] if prior.height else []
     recent = volumes[-AVG_VOLUME_DAYS:]
     avg50 = (
         sum((v for v in recent if v is not None), Decimal(0)) / AVG_VOLUME_DAYS
@@ -316,7 +310,7 @@ def last_configured_chase(configs: Sequence[StrategyConfig], playbook: str) -> D
                 continue
             for instance in book.entry_filters:
                 if instance.type == MAX_CHASE:
-                    return Decimal(repr(instance.params["pct"]))
+                    return require_exact(instance.params["pct"], "pct", floats=True)
     return None
 
 

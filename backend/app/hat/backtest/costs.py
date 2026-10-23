@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from importlib import resources
 from typing import Any, Literal
 
@@ -23,6 +23,7 @@ import yaml
 
 from ..confighash import config_hash
 from ..errors import HatError
+from ..money import exact, to_money
 
 __all__ = [
     "DEFAULT_COST_MODEL",
@@ -45,7 +46,6 @@ DEFAULT_COST_MODEL = "cnc-delivery-1"
 MAX_SLIPPAGE_BPS = Decimal(10_000)  # a slippage must be below 100%
 # The slippage a run uses unless it names one (O5, PR 62): pessimistic, never perfect fills.
 DEFAULT_SLIPPAGE_BPS = Decimal(20)
-PAISE = Decimal("0.01")
 PRICE_PLACES = Decimal("0.0001")  # hat_fill.price is numeric(18, 4)
 _BPS = Decimal(10_000)
 _ZERO = Decimal(0)
@@ -93,13 +93,9 @@ class Charges:
 
 
 def _rate(value: object, name: str) -> Decimal:
-    if isinstance(value, bool) or not isinstance(value, str | int):
-        raise CostError(f"cost_bad_{name}")  # a float would carry binary rounding into money
-    try:
-        number = Decimal(str(value))
-    except InvalidOperation:
-        raise CostError(f"cost_bad_{name}") from None
-    if not number.is_finite() or number < 0:
+    # a float would carry binary rounding into money, so only text or an int is a rate
+    number = exact(value) if isinstance(value, str | int) else None
+    if number is None or number < 0:
         raise CostError(f"cost_bad_{name}")
     return number
 
@@ -160,10 +156,6 @@ def load_cost_model(version: str = DEFAULT_COST_MODEL) -> CostModel:
     return model
 
 
-def _money(value: Decimal) -> Decimal:
-    return value.quantize(PAISE, rounding=ROUND_HALF_UP)
-
-
 def charges(model: CostModel, side: str, qty: int, price: Decimal) -> Charges:
     """The charges of one fill of `qty` shares at `price` on `side` (HAT-BT-023)."""
     if side not in SIDES or isinstance(qty, bool) or not isinstance(qty, int) or qty < 1:
@@ -179,10 +171,10 @@ def charges(model: CostModel, side: str, qty: int, price: Decimal) -> Charges:
         amount = component.rate * value + component.per_order
         if component.cap is not None:
             amount = min(amount, component.cap)
-        found[component.name] = _money(amount)
+        found[component.name] = to_money(amount)
         if component.taxable:
             taxable += found[component.name]
-    gst = _money(taxable * model.gst_rate)
+    gst = to_money(taxable * model.gst_rate)
     return Charges(found, gst, sum(found.values(), _ZERO) + gst)
 
 

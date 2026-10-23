@@ -15,12 +15,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
 
 from app.hat.clock import require_aware
 from app.hat.data.sessions import IST, SESSION_OPEN
+from app.hat.money import exact
 
 __all__ = [
     "INDICATIVE_OPEN_FIELDS",
@@ -75,14 +76,8 @@ class GapRecord:
 
 def _price(payload: Mapping[str, object], names: tuple[str, ...]) -> Decimal | None:
     for name in names:
-        raw = payload.get(name)
-        if raw is None or isinstance(raw, bool):
-            continue
-        try:
-            value = Decimal(str(raw))
-        except InvalidOperation:
-            continue
-        if value.is_finite() and value > 0:
+        value = exact(payload.get(name), floats=True, positive=True)
+        if value is not None:
             return value
     return None
 

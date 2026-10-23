@@ -30,7 +30,7 @@ from .exposure import LadderState, risk_multiplier
 from .kill import KillState
 from .policy import PolicyError, PolicyVersion, RiskPolicy, effective_version
 from .sessions import SessionCalendar, SessionState
-from .sizing import MissingInputError, SizingInputError, SizingInputs, exact, size_position
+from .sizing import MissingInputError, SizingInputError, SizingInputs, exact_input, size_position
 
 logger = logging.getLogger(__name__)
 
@@ -260,15 +260,15 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
     version = effective_version(_require(ctx.policy_versions, "policy_versions"), at)
     if version is None:
         raise MissingInputError("policy: no version in force")
-    entry = exact(ctx.entry_price, "entry_price")
-    stop = exact(ctx.stop_price, "stop_price")
-    trigger = exact(ctx.trigger_level, "trigger_level")
-    exact(ctx.ltp, "ltp")
-    equity = exact(ctx.equity, "equity")
-    total_equity = exact(ctx.total_equity, "total_equity")
-    alloc = exact(ctx.allocation_risk_pct, "allocation_risk_pct")
-    cash = exact(ctx.free_cash, "free_cash", cash=False)
-    adv20 = exact(ctx.adv20, "adv20")
+    entry = exact_input(ctx.entry_price, "entry_price")
+    stop = exact_input(ctx.stop_price, "stop_price")
+    trigger = exact_input(ctx.trigger_level, "trigger_level")
+    exact_input(ctx.ltp, "ltp")
+    equity = exact_input(ctx.equity, "equity")
+    total_equity = exact_input(ctx.total_equity, "total_equity")
+    alloc = exact_input(ctx.allocation_risk_pct, "allocation_risk_pct")
+    cash = exact_input(ctx.free_cash, "free_cash", cash=False)
+    adv20 = exact_input(ctx.adv20, "adv20")
     kill = _require(ctx.kill, "kill")
     ladder = _require(ctx.ladder, "ladder")
     positions = _require(ctx.open_positions, "open_positions")
@@ -327,7 +327,7 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
         last_hard_stop=_last_hard_stop(ctx, version, at),
         calendar=calendar,
         session=session,
-        configured_chase=None if chase is None else exact(chase, "configured_max_chase_pct"),
+        configured_chase=None if chase is None else exact_input(chase, "configured_max_chase_pct"),
         p_max=p_max,
     )
 

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
+from ..money import exact
 from ..risk.policy import Z_90
 
 HIGH = "high"
@@ -54,8 +55,8 @@ def band_of(score: object) -> str | None:
     """The band of a setup score in [0.60, 1.00]; None for any other value (no bucket)."""
     if isinstance(score, bool) or not isinstance(score, (Decimal, int, float)):
         return None
-    value = Decimal(str(score))
-    if not value.is_finite():
+    value = exact(score, floats=True)
+    if value is None:
         return None
     for name, low, high in BANDS:
         if low <= value < high or (high == BANDS[-1][2] and value == high):

@@ -103,6 +103,7 @@ ADMIN_IMPORTS = {
     "app.hat.errors",
     "app.hat.execution.accounts",
     "app.hat.execution.broker",
+    "app.hat.money",  # the Decimal boundary: reads no table (PR 75c)
     "app.hat.risk.policy",
     "app.hat.risk.policy_service",
     "app.hat.risk.sessions",

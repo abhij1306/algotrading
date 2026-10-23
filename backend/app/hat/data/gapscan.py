@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from app.hat.data.sessions import IST
 
 from ..models import HatInstrument, HatJobRun, HatMarket
+from ..money import exact
 from ..ops.jobs import JobError, JobOutcome, JobResult, SessionFactory, run_job
 from ..time import as_utc
 from .instruments import current_band
@@ -83,16 +84,6 @@ class Gapper:
     band_pct: Decimal | None  # None with band_known means "no band": an F&O name
 
 
-def _decimal(raw: object) -> Decimal | None:
-    if raw is None or isinstance(raw, bool):
-        return None
-    try:
-        value = Decimal(str(raw))
-    except InvalidOperation:
-        return None
-    return value if value.is_finite() else None
-
-
 def scan_rows(client: McpClient) -> list[GapRow]:
     """Every EQ symbol of the listing exactly once, with its gap (HAT-DATA-120)."""
     rows = page_equity_rows(client)
@@ -100,8 +91,8 @@ def scan_rows(client: McpClient) -> list[GapRow]:
     for (symbol, series), raw in sorted(rows.items()):
         if series != EQUITY_SERIES:
             continue
-        opened = _decimal(raw.get("openPrice"))
-        prev = _decimal(raw.get("preClosePrice"))
+        opened = exact(raw.get("openPrice"), floats=True)
+        prev = exact(raw.get("preClosePrice"), floats=True)
         pct = gap_pct(opened, prev) if opened is not None and prev is not None else None
         out.append(GapRow(symbol, opened, prev, pct))
     return out

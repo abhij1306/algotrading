@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, Decimal
 
+from ..money import require_exact
 from .strategy.config import (
     StopAtrMultiple,
     StopBelowFinalContractionLow,
@@ -174,10 +175,6 @@ class StopInputs:
     swing_lows: Sequence[Decimal] = ()
 
 
-def _dec(value: float) -> Decimal:
-    return Decimal(repr(value))
-
-
 def plan_stop_at_pivot(rule: StopRule, inputs: StopInputs) -> StopPlan:
     """The stop planned overnight with the pivot as the entry (`inputs.entry`). The contraction
     rule's `min_pct` is left to the entry: a contraction stop does not move with the entry, so
@@ -197,19 +194,21 @@ def plan_stop(rule: StopRule, inputs: StopInputs) -> StopPlan:
         return final_contraction_low(
             entry,
             inputs.final_contraction_low,
-            _dec(rule.buffer_pct),
-            _dec(rule.max_pct),
+            require_exact(rule.buffer_pct, "buffer_pct", floats=True),
+            require_exact(rule.max_pct, "max_pct", floats=True),
             tick,
-            _dec(rule.min_pct),
+            require_exact(rule.min_pct, "min_pct", floats=True),
         )
     if isinstance(rule, StopLowOfDay):
         return low_of_day(entry, inputs.day_lows, rule.buffer_ticks, tick)
     if isinstance(rule, StopPctBelowEntry):
-        return pct_below_entry(entry, _dec(rule.pct), tick)
+        return pct_below_entry(entry, require_exact(rule.pct, "pct", floats=True), tick)
     if isinstance(rule, StopAtrMultiple):
         if inputs.atr is None:
             return _skip(SKIP_BAD_INPUT)
-        return atr_multiple(entry, inputs.atr, _dec(rule.multiple), tick)
+        return atr_multiple(
+            entry, inputs.atr, require_exact(rule.multiple, "multiple", floats=True), tick
+        )
     if isinstance(rule, StopSwingLow):
         return swing_low(entry, inputs.swing_lows, tick)
     return _skip(SKIP_BAD_INPUT)

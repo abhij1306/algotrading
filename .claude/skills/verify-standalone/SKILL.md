@@ -23,6 +23,9 @@ Checks that HAT does not import or boot the app wiring or any module outside the
 - `CONF imports.hat_suites_boot_no_legacy_app` Collecting `tests/hat` in a fresh interpreter loads neither `app.main` nor `app.routers` (the manual-trading singletons they once also listed were deleted in K4; `risk.no_manual_trading_path` keeps them deleted). Harm: HAT suites depend on booting the whole legacy app.
 - `CONF imports.legacy_does_not_import_hat` Only `app/database.py` (the table registry and schema upkeep) and `app/main.py` (the wiring) import `app.hat`; no other `app` module does. Harm: deleting or moving HAT code breaks the other side.
 - `CONF fixtures.vcp_oracle_frozen` The frozen legacy VCP outputs in `tests/hat/fixtures/vcp_oracle.json` match their recorded hash, case list and internal consistency. Harm: PR 6's characterization test compares against a drifting oracle.
+- `PBT money.exact` (PR 75c) `exact` answers None or a finite Decimal; None, a bool, NaN, an infinity and any other object are never a number; a float (numpy's too) is refused unless `floats`, then read by its shortest text; text is read as written, in ASCII and without underscores (commas only with `grouped`; never "1_5" or another script's digits, which `Decimal` alone reads), and an exponent Decimal cannot hold is not a number; `places` rounds half-even to exactly that many places and `positive` refuses what is or rounds to 0 or less; `require_exact` raises `NotExactError` (an `InvalidOperation` and a `ValueError`) exactly when `exact` is None. Harm: two readers of one tick disagree, a float's binary expansion or a NaN reaches money, or "1,5" reads as 15.
+- `PBT money.float_text` (PR 75c) A Python float and a numpy float of one value read as the Decimal the float's shortest text names. Harm: `Decimal(repr(x))` of a numpy float raises where `str` reads it.
+- `CONF money.one_decimal_boundary` (PR 75c) No `app/hat` module but `money.py` reads a number into a Decimal by hand (`Decimal(str|repr|float(x))`, `Decimal(x.method())`, `Decimal(row["k"])`, or any `Decimal(...)` in a `try`); lane E's files are listed, and an entry with nothing left to move fails. Harm: the next author copies the nearest private `_dec` with its own rule.
 
 ## Run
 
@@ -30,8 +33,9 @@ Checks that HAT does not import or boot the app wiring or any module outside the
 cd backend
 # every pytest, Hypothesis or break run goes under the 2 GB memory cap
 CAP="systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=512M --quiet"
-CI=1 $CAP python -m pytest tests/hat/properties/test_metrics.py -q --no-cov
-$CAP python -m pytest tests/hat/conformance/test_conf_decoupling.py tests/hat/conformance/test_conf_fixtures.py -q --no-cov
+CI=1 $CAP python -m pytest tests/hat/properties/test_metrics.py tests/hat/properties/test_money.py -q --no-cov
+$CAP python -m pytest tests/hat/conformance/test_conf_decoupling.py tests/hat/conformance/test_conf_fixtures.py \
+  tests/hat/conformance/test_conf_money.py -q --no-cov
 ```
 
 No check touches the network or a database. The decoupling checks read source files, plus one subprocess that collects `tests/hat` and lists loaded modules.
@@ -60,15 +64,17 @@ Code under check:
 
 Checks:
 - `backend/tests/hat/properties/test_metrics.py`
+- `backend/tests/hat/properties/test_money.py`
 - `backend/tests/hat/conformance/test_conf_decoupling.py`
 - `backend/tests/hat/conformance/test_conf_fixtures.py`
+- `backend/tests/hat/conformance/test_conf_money.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `76e9fbf4ff3489c910e5eb149b3ecafee0c714a6a4e0c176a742ddb87f5f4909`
+Covered digest: `cb7aeed731968b5924c51d8fd614a5749986ef30d9914514b4b6a345749ff2b7`
 
 ## Scratch breaks
 
@@ -352,4 +358,96 @@ tests/hat/conformance/test_conf_fixtures.py F
 tests/hat/conformance/test_conf_fixtures.py:137: in test_fixtures_vcp_oracle_frozen
 E   AssertionError: assert 'cf5b2990d397...a16aef92de15b' == '95e991f5a33b...549a2dabf3f4b'
 E     - 95e991f5a33b950f443db7ccc9a14caff24969832c9ecd10c6e549a2dabf3f4b
+```
+
+### PBT money.exact
+
+Break: (PR 75c) a float is read without `floats` (the refusal in `_read` removed).
+
+```
+    assert floats
+E   assert False
+E   Failing test case: test_exact(
+E       value=0.0,
+```
+
+Break: (PR 75c) `positive` checked before `places` rounds.
+
+```
+E   AssertionError: assert Decimal('0.0000') > 0
+E   Failing explicit example: test_exact(
+E       value=4e-05,
+```
+
+Break: (PR 75c) commas dropped from every text, not only with `grouped`.
+
+```
+E   decimal.InvalidOperation: [<class 'decimal.ConversionSyntax'>]
+E   Failing explicit example: test_exact(
+E       value='1,5',
+E       floats=False,
+```
+
+Break: (PR 75c, code review) text with an underscore passes the text check (`Decimal` reads "1_5" as 15).
+
+```
+E   decimal.InvalidOperation: 1_5
+E   Failing explicit example: test_exact(
+E       value='1_5',
+```
+
+Break: (PR 75c, CodeAnt) an exponent `Decimal` cannot hold raises out of `exact` instead of reading as not a number.
+
+```
+E   decimal.InvalidOperation: [<class 'decimal.InvalidOperation'>]
+E   Failing explicit example: test_exact(
+E       value='1e99999999999999999999',
+```
+
+Break: (PR 75c, CodeAnt) `places` rounds half up.
+
+```
+E   AssertionError: assert Decimal('0.13') == Decimal('0.12')
+```
+
+### PBT money.float_text
+
+Break: (PR 75c) `_read` reads a float by `repr` (the old copies' rule).
+
+```
+E   AssertionError: assert None == Decimal('0.0')
+E    +  where None = exact(np.float64(0.0), floats=True)
+```
+
+### CONF money.one_decimal_boundary
+
+Break: (PR 75c) a `_decimal` copy (`Decimal(str(raw))`) put back in `data/gapscan.py`.
+
+```
+E   AssertionError: assert {'app/hat/dat...can.py': [88]} == {}
+```
+
+Second break: (PR 75c) `admin._price` reads with `Decimal(raw)` in a `try` catching `InvalidOperation`.
+
+```
+E   AssertionError: assert {'app/hat/admin.py': [190]} == {}
+```
+
+Fourth break: (PR 75c, code review) `daily/intraday` reads a gapper's open with `Decimal(row["open"])` again.
+
+```
+E   AssertionError: assert {'app/hat/dai...ay.py': [322]} == {}
+```
+
+Fifth break: (PR 75c, code review) `admin._price` reads with `Decimal(raw)` in a `try` catching `Exception`.
+
+```
+E   AssertionError: assert {'app/hat/admin.py': [190]} == {}
+```
+
+Third break: (PR 75c) `app/hat/data/live.py` (no hand read left) added to `LANE_E`.
+
+```
+E   AssertionError: app/hat/data/live.py
+E   assert []
 ```

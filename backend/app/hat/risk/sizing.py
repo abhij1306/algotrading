@@ -15,6 +15,7 @@ from decimal import ROUND_FLOOR, Decimal, localcontext
 from typing import Final
 
 from ..errors import HatError
+from ..money import exact
 
 # The terms in tie-break order: when two floors are equal the first one named binds.
 TERMS: Final = ("risk", "position", "liquidity", "cash")
@@ -52,16 +53,15 @@ class SizingResult:
     reason: str | None  # None when quantity >= 1, else why the trade is skipped
 
 
-def exact(value: object, name: str, *, cash: bool = False) -> Decimal:
-    """`value` as a finite Decimal; a float, bool, None or NaN raises `MissingInputError`.
-    Only the free-cash input may be +Infinity (unbounded)."""
-    if isinstance(value, bool) or not isinstance(value, Decimal | int):
+def exact_input(value: object, name: str, *, cash: bool = False) -> Decimal:
+    """A risk input as a finite Decimal (`money.exact`, held to a Decimal or an int: text, a
+    float, a bool, None or NaN raises `MissingInputError`). Only the free-cash input may be
+    +Infinity (unbounded)."""
+    if cash and isinstance(value, Decimal) and value == UNBOUNDED_CASH:
+        return value
+    result = exact(value) if isinstance(value, Decimal | int) else None
+    if result is None:
         raise MissingInputError(f"{name}: not an exact number")
-    result = Decimal(value)
-    if cash and result == UNBOUNDED_CASH:
-        return result
-    if not result.is_finite():
-        raise MissingInputError(f"{name}: not finite")
     return result
 
 
@@ -75,15 +75,15 @@ def size_position(inputs: SizingInputs) -> SizingResult:
     Raises `SizingInputError` for a missing, float, non-finite or out-of-domain number. A stop at
     or above the entry (or not above zero) is a skip, `stop_not_below_entry`, with quantity 0.
     """
-    equity = exact(inputs.equity, "equity")
-    alloc = exact(inputs.allocation_risk_pct, "allocation_risk_pct")
-    level = exact(inputs.level_risk_mult, "level_risk_mult")
-    entry = exact(inputs.entry_price, "entry_price")
-    stop = exact(inputs.stop_price, "stop_price")
-    p_max = exact(inputs.p_max, "p_max")
-    adv20 = exact(inputs.adv20, "adv20")
-    adv_cap = exact(inputs.adv_cap_pct, "adv_cap_pct")
-    cash = exact(inputs.free_cash, "free_cash", cash=True)
+    equity = exact_input(inputs.equity, "equity")
+    alloc = exact_input(inputs.allocation_risk_pct, "allocation_risk_pct")
+    level = exact_input(inputs.level_risk_mult, "level_risk_mult")
+    entry = exact_input(inputs.entry_price, "entry_price")
+    stop = exact_input(inputs.stop_price, "stop_price")
+    p_max = exact_input(inputs.p_max, "p_max")
+    adv20 = exact_input(inputs.adv20, "adv20")
+    adv_cap = exact_input(inputs.adv_cap_pct, "adv_cap_pct")
+    cash = exact_input(inputs.free_cash, "free_cash", cash=True)
     one = Decimal(1)
     if equity <= 0 or entry <= 0 or adv20 < 0 or cash < 0:
         raise SizingInputError("equity and entry must be positive, volume and cash not negative")

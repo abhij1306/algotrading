@@ -55,7 +55,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,7 @@ from .execution.accounts import (
     revoke_ddpi,
 )
 from .execution.broker import HatBroker
+from .money import exact
 from .risk.policy import RiskPolicy, effective_version
 from .risk.policy_service import load_versions, seed_initial_policy
 from .risk.sessions import SessionCalendar
@@ -185,11 +186,8 @@ def _parser() -> argparse.ArgumentParser:
 
 def _price(raw: str) -> Decimal:
     """A `--close-at` price: a finite decimal, never a float."""
-    try:
-        value = Decimal(raw)
-    except InvalidOperation:
-        raise argparse.ArgumentTypeError("not a price") from None
-    if not value.is_finite():
+    value = exact(raw)
+    if value is None:
         raise argparse.ArgumentTypeError("not a price")
     return value
 

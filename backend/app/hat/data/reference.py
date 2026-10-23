@@ -15,8 +15,9 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
+from ..money import exact
 from .mcp_client import McpClient, McpError
 
 EQUITY_SERIES = frozenset({"EQ", "BE", "BZ", "BL", "BT", "IL", "IQ"})
@@ -124,9 +125,8 @@ def parse_equity_list_csv(text: str) -> list[Security]:
         isin = row.get("ISIN NUMBER", row.get("ISIN", "")).upper()
         if not symbol or series not in EQUITY_SERIES or not ISIN_RE.match(isin):
             continue
-        try:
-            face_value = Decimal(row.get("FACE VALUE", "") or "0")
-        except InvalidOperation:
+        face_value = exact(row.get("FACE VALUE", "") or "0")
+        if face_value is None:
             face_value = Decimal(0)
         security = Security(
             isin=isin,
@@ -176,9 +176,8 @@ def parse_band_value(raw: str) -> tuple[bool, Decimal | None]:
     value = raw.strip().upper().rstrip("%").strip()
     if value in {"NO BAND", "NONE", "NIL", "NA", "-", ""}:
         return True, None
-    try:
-        pct = Decimal(value)
-    except InvalidOperation:
+    pct = exact(value)
+    if pct is None:
         return False, None
     return (True, pct) if pct in {Decimal(b) for b in BAND_VALUES} else (False, None)
 
