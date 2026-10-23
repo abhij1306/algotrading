@@ -20,6 +20,7 @@ machine shared with the app; a larger query spills to disk).
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -69,6 +70,16 @@ def _calls(raw: str | None, default: int | None, *, allow_off: bool = False) -> 
     return value if value > 0 else default
 
 
+_MEMORY_RE = re.compile(r"\d+(\.\d+)?\s*(KB|MB|GB|TB|KIB|MIB|GIB|TIB)", re.IGNORECASE)
+
+
+def _memory(raw: str | None) -> str:
+    """A DuckDB memory limit such as `1GB` or `768MB`; anything unreadable is the default, so a
+    typo never fails every store connection."""
+    text = (raw or "").strip()
+    return text if _MEMORY_RE.fullmatch(text) else DEFAULT_DUCKDB_MEMORY
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
     """Read the HAT settings; `env` defaults to `os.environ`. A bad `HAT_USER_ID` raises."""
     source = os.environ if env is None else env
@@ -91,7 +102,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         exchange_day_range=_is_true(source.get("HAT_EXCHANGE_DAY_RANGE")),
         symbol_silent_seconds=_calls(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120) or 120,
         entry_timeout_minutes=_calls(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60) or 60,
-        duckdb_memory=(source.get("HAT_DUCKDB_MEMORY") or "").strip() or DEFAULT_DUCKDB_MEMORY,
+        duckdb_memory=_memory(source.get("HAT_DUCKDB_MEMORY")),
     )
 
 

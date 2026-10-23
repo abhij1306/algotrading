@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+# `bars_daily_raw` prices are decimal(18, 4): a larger value or a finer one cannot be stored
+MAX_PRICE = Decimal(10) ** 14
+PRICE_STEP = Decimal("0.0001")
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -23,7 +27,8 @@ class Candidate:
 
 def row_ok(c: Candidate, trade_date: date) -> bool:
     """HAT-DATA-042: the row's date is the trade date, low <= open, close <= high, every price is
-    above zero, `prev_close` is null or above zero, and volume is not negative."""
+    above zero, `prev_close` is null or above zero, and volume is not negative. Every price also
+    fits the stored decimal(18, 4), so one bad value cannot abort a day's write."""
     if (
         c.day != trade_date
         or c.open is None
@@ -35,9 +40,13 @@ def row_ok(c: Candidate, trade_date: date) -> bool:
         return False
     prices = (c.open, c.high, c.low, c.close)
     return (
-        all(p > 0 for p in prices)
+        all(p > 0 and _fits(p) for p in prices)
         and c.low <= c.open <= c.high
         and c.low <= c.close <= c.high
-        and (c.prev_close is None or c.prev_close > 0)
+        and (c.prev_close is None or (c.prev_close > 0 and _fits(c.prev_close)))
         and c.volume >= 0
     )
+
+
+def _fits(price: Decimal) -> bool:
+    return price.is_finite() and price < MAX_PRICE and price == price.quantize(PRICE_STEP)
