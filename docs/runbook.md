@@ -139,6 +139,10 @@ refuse inside a session (`market_hours`).
     one, outside market hours: `$ADMIN resolve-action --position <position> --action
     <ex-date>:<type> --close-at <price>` closes it at the ex-date's adjusted price (a real one is
     refused, `real_position_flatten`).
+11b. `corporate_action.conflict` (instrument, ex-date, type): a nightly lookup found a factor
+    other than the stored one. The stored factor stays and the ingest counts it in
+    `lookups_failed`. Compare both with NSE's corporate-action announcement. HAT has no command to
+    replace a stored factor yet; if the stored one is wrong, raise it with the orchestrator.
 12. Record each step in the check log.
 
 ### Deploy and planned restart: `ops.deploy_window`

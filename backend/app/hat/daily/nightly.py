@@ -301,9 +301,12 @@ class Nightly:
         if target is None or not instruments:
             return
         found = lookup_actions(_mcp(self.deps), instruments, target, target)
-        created = store_actions(self.deps.session_factory, found.records)
+        stored = store_actions(self.deps.session_factory, found.records, (self.deps.notifier, day))
         logger.info(
-            "next-session actions: %d stored, %d lookups failed", created, len(found.failed)
+            "next-session actions: %d stored, %d lookups failed, %d conflicts",
+            stored.created,
+            len(found.failed),
+            len(stored.conflicts),
         )
         for symbol in found.failed:
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
@@ -317,11 +320,15 @@ class Nightly:
         for since in sorted({r.since for r in rows}):
             instruments = {r.symbol: r.instrument_id for r in rows if r.since == since}
             found = lookup_actions(client, instruments, since, since)
+            stored = store_actions(
+                self.deps.session_factory, found.records, (self.deps.notifier, since)
+            )
             logger.info(
-                "quarantine actions of %s: %d stored, %d lookups failed",
+                "quarantine actions of %s: %d stored, %d lookups failed, %d conflicts",
                 since,
-                store_actions(self.deps.session_factory, found.records),
+                stored.created,
                 len(found.failed),
+                len(stored.conflicts),
             )
 
     def rescale(self, day: date) -> JobResult:

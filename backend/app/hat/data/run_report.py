@@ -2,7 +2,8 @@
 
 The data commands print their report to stdout; each also appends it to
 `<root>/<command>/report-YYYY-MM-DD.txt` (the IST date the run finished), so a run's coverage
-survives without `tee`, and a day's runs all stay in that day's file.
+survives without `tee`, and a day's runs all stay in that day's file. A run stopped by Ctrl-C or
+an error saves what it had done, with the reason (`stop_reason`).
 """
 
 from __future__ import annotations
@@ -32,3 +33,12 @@ def save_report(directory: Path, text: str, now: datetime) -> Path | None:
         logger.warning("report_not_saved: %s", path)
         return None
     return path
+
+
+def stop_reason(exc: BaseException) -> str:
+    """Why a run stopped before it finished, for its partial report: `interrupted` for Ctrl-C,
+    else the error's stable code (never its text), else `failed`."""
+    if isinstance(exc, KeyboardInterrupt):
+        return "interrupted"
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, str) and code else "failed"

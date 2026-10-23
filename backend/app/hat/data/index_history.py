@@ -10,18 +10,20 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path
 
 from ..errors import HatError
 from ..money import exact
 from .bhavcopy import Fetcher
 from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .pacing import Pacer
-from .store import DATASET_BARS, DataStore, IndexRow
+from .store import DATASET_BARS, DataStore, IndexRow, atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +33,14 @@ INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
 MCP_HISTORY_MONTHS = 12
 # [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
 INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
+# [A] Each index's first day in the archive (the first row of the first file holding it, read
+# from the stored archive on 2026-10-23): no source reaches further back, so coverage starts here.
+INDEX_STARTS = {
+    NIFTY_50: date(2012, 2, 21),
+    NIFTY_500: date(2012, 2, 21),
+    "NIFTY SMALLCAP 250": date(2019, 1, 14),
+    "INDIA VIX": date(2014, 5, 14),
+}
 # [A] Names the archive used before NSE's 2015 renaming; read as today's names.
 INDEX_ALIASES = {
     "CNX NIFTY": NIFTY_50,
@@ -143,26 +153,56 @@ def index_archive_name(day: date) -> str:
     return f"ind_close_all_{day:%d%m%Y}.csv"
 
 
+@dataclass
+class NotFoundMemo:
+    """The days NSE's index archive answered 404 for, kept beside the build state so a resume
+    does not ask again (like the bhavcopy candidates in `BuildState`)."""
+
+    path: Path
+    days: set[date] = field(default_factory=set)
+
+    @classmethod
+    def load(cls, path: Path) -> NotFoundMemo:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return cls(path, {date.fromisoformat(d) for d in raw.get("not_found", [])})
+        except (OSError, ValueError, AttributeError):
+            return cls(path)
+
+    def add(self, day: date) -> None:
+        self.days.add(day)
+        payload = json.dumps({"not_found": sorted(d.isoformat() for d in self.days)})
+        atomic_replace(self.path, lambda tmp: tmp.write_text(payload, encoding="utf-8"))
+
+
 class ArchiveIndexSource:
     """Index rows from NSE's daily `ind_close_all_DDMMYYYY.csv`, for the days that have bars.
     One file serves every index: it is fetched at most once per run, on the bhavcopy
     downloader's pacer (the same host), and kept untouched under `raw/` so a later run reads it
-    from disk. A day NSE has no file for stays missing (reported by the coverage); a failed
-    fetch, or an answer with no index row (never kept, so the next run asks again), fails the
-    indices that needed it."""
+    from disk. A day NSE has no file for stays missing, and is remembered in `memo` so a resume
+    does not ask again; it and a file without the index's row are that index's `absent` days
+    (the coverage reports them apart). A failed fetch, or an answer with no index row (never
+    kept, so the next run asks again), fails the indices that needed it."""
 
     def __init__(
-        self, store: DataStore, fetch: Fetcher, pacer: Pacer, names: Collection[str] = INDEX_NAMES
+        self,
+        store: DataStore,
+        fetch: Fetcher,
+        pacer: Pacer,
+        names: Collection[str] = INDEX_NAMES,
+        memo: NotFoundMemo | None = None,
     ) -> None:
         self._store = store
         self._fetch = fetch
         self._pacer = pacer
         self._names = names
+        self._memo = memo
         self._points: dict[date, list[IndexPoint]] = {}
         self._bar_days: list[date] | None = None
         self.requested: list[date] = []
         self.not_found: list[date] = []
         self.errors: list[date] = []
+        self.absent: dict[str, set[date]] = defaultdict(set)
 
     def __call__(self, name: str, start: date, end: date) -> Iterable[IndexPoint]:
         wanted = name.upper()
@@ -170,7 +210,10 @@ class ArchiveIndexSource:
             self._bar_days = self._store.days(DATASET_BARS)
         days = [d for d in self._bar_days if start <= d <= end]
         for day in days:
-            yield from (p for p in self._day(day) if p.row.index_name == wanted)
+            points = [p for p in self._day(day) if p.row.index_name == wanted]
+            if not points and day not in self.errors:
+                self.absent[wanted].add(day)
+            yield from points
         if any(day in self.errors for day in days):
             raise IndexArchiveError(CODE_INDEX_ARCHIVE)
 
@@ -183,11 +226,16 @@ class ArchiveIndexSource:
         name = index_archive_name(day)
         if self._store.raw_exists(name):
             return self._parse(self._store.read_raw(name), day)
+        if self._memo is not None and day in self._memo.days:
+            self.not_found.append(day)
+            return []
         self._pacer.wait()
         self.requested.append(day)
         result = self._fetch(INDEX_ARCHIVE_URL + name)
         if result.status == "not_found":
             self.not_found.append(day)
+            if self._memo is not None:
+                self._memo.add(day)
             return []
         points = self._parse(result.data, day) if result.status == "ok" else []
         if not points:  # an error, or an answer that is no index file (a block page, a cut body)
@@ -238,15 +286,19 @@ def load_index_history(
     start: date,
     end: date,
     names: Sequence[str] = INDEX_NAMES,
+    starts: Mapping[str, date] | None = None,
 ) -> IndexLoadReport:
-    """Pull every index, then write each day once with all its indices (idempotent). An index
-    whose source fails is recorded with a stable code and keeps the rows it already gave; the
-    other indices still load."""
+    """Pull every index from its own start (`starts`, never before `start`), then write each day
+    once with all its indices (idempotent). An index whose source fails is recorded with a
+    stable code and keeps the rows it already gave; the other indices still load."""
     by_day: dict[date, dict[str, IndexRow]] = defaultdict(dict)
     report = IndexLoadReport()
     for name in names:
+        first = max(start, (starts or {}).get(name, start))
+        if first > end:
+            continue
         try:
-            for point in source(name, start, end):
+            for point in source(name, first, end):
                 by_day[point.day][point.row.index_name] = point.row
         except Exception as exc:  # one index never stops the others, validation or the report
             code = getattr(exc, "code", None)

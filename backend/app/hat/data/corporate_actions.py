@@ -34,6 +34,7 @@ from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
 
 from ..models import HatCorporateAction
 from ..money import exact
+from ..notify import Notifier
 from .mcp_client import McpClient, McpError
 from .store import ActionFactor
 
@@ -267,12 +268,22 @@ def lookup_actions(
     )
 
 
-def store_actions(session_factory: Callable[[], Session], records: Sequence[ActionRecord]) -> int:
-    """Store `records` in one transaction (`load_actions`); the number created. A conflict (a
-    factor other than the stored one, or a non-positive one) leaves the stored row as it is and
-    is logged with its key, never passed over in silence."""
+# A nightly lookup found a factor other than the stored one (D220): the stored factor stays, and
+# the owner is told, since one of the two is wrong.
+ALERT_ACTION_CONFLICT = "corporate_action.conflict"
+
+
+def store_actions(
+    session_factory: Callable[[], Session],
+    records: Sequence[ActionRecord],
+    conflicts_to: tuple[Notifier, date] | None = None,
+) -> LoadReport:
+    """Store `records` in one transaction (`load_actions`). A conflict (a factor other than the
+    stored one, or a non-positive one) leaves the stored row as it is, is logged with its key
+    and, given `conflicts_to` (the notifier and the trade date), alerted once per key with its
+    ex-date and type; never passed over in silence."""
     if not records:
-        return 0
+        return LoadReport()
     with session_factory() as session:
         report = load_actions(session, records)
         session.commit()
@@ -283,7 +294,18 @@ def store_actions(session_factory: Callable[[], Session], records: Sequence[Acti
             ex_date.isoformat(),
             action_type,
         )
-    return report.created
+        if conflicts_to is not None:
+            notifier, trade_date = conflicts_to
+            notifier.alert(
+                ALERT_ACTION_CONFLICT,
+                trade_date,
+                {
+                    "instrument": str(instrument_id),
+                    "ex_date": ex_date.isoformat(),
+                    "type": action_type,
+                },
+            )
+    return report
 
 
 def stored_factors(session: Session) -> list[ActionFactor]:

@@ -11,7 +11,9 @@ Environment: `HAT_DATA_ROOT` (data directory); the NSE bhavcopy MCP endpoint var
 spec (corporate actions, recent index history and validation; without it those steps are
 skipped and the index comes from NSE's daily index archive alone); a PostgreSQL database as for
 the rest of HAT (`DB_*`). Add `--skip-actions`, `--skip-index` or
-`--skip-validation` to leave a step out.
+`--skip-validation` to leave a step out. The recorded past holiday lists are stored first
+(`calendar.store_recorded_history`), so a past holiday reads as a holiday and a weekend session is
+fetched. A run stopped by Ctrl-C or an error still prints and saves its report, with the reason.
 """
 
 from __future__ import annotations
@@ -39,15 +41,22 @@ from .history_build import (
     run_history_build,
 )
 from .history_validation import Validation, mcp_close_source
-from .index_history import ArchiveIndexSource, IndexSource, archive_fill_source, mcp_index_source
+from .index_history import (
+    ArchiveIndexSource,
+    IndexSource,
+    NotFoundMemo,
+    archive_fill_source,
+    mcp_index_source,
+)
 from .mcp_client import McpClient
 from .pacing import Pacer
-from .run_report import save_report
+from .run_report import save_report, stop_reason
 from .store import DataStore
 
 logger = logging.getLogger(__name__)
 
 REPORT_DIR = Path("history_build")  # under the HAT data root: report-YYYY-MM-DD.txt per run day
+INDEX_MEMO = Path("build") / "index_not_found.json"  # archive days NSE answered 404 for
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -81,12 +90,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO)
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     with SessionLocal() as session:
-        market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
-        if market_id is None:
+        market = session.scalar(select(HatMarket).where(HatMarket.code == "NSE"))
+        if market is None:
             sys.stderr.write("history_no_market\n")
             return 2
+        market_id = market.id
+        hat_calendar.store_recorded_history(session, market)
+        session.commit()
         calendar = hat_calendar.session_calendar(session)
-        holidays = calendar.holidays() if calendar else frozenset()
+        holidays = calendar.holidays if calendar else frozenset()
+        sessions = [d for d in calendar.trading_days() if d.weekday() >= 5] if calendar else []
     client = client_from_env(process_env())
 
     def instruments() -> dict[str, object]:
@@ -119,47 +132,65 @@ def main(argv: Sequence[str] | None = None) -> int:
         min_interval=args.interval
     )  # one pacer: the bhavcopy and index files share a host
     index_source: IndexSource | None = None
+    archive: ArchiveIndexSource | None = None
     if not args.skip_index:
-        index_source = ArchiveIndexSource(store, fetch, pacer)
+        memo_path = settings.data_root / INDEX_MEMO
+        memo = NotFoundMemo.load(memo_path) if args.resume else NotFoundMemo(memo_path)
+        index_source = archive = ArchiveIndexSource(store, fetch, pacer, memo=memo)
         if client is not None:
             index_source = archive_fill_source(mcp_index_source(client), index_source)
     hooks = None
     if not args.skip_actions and (client is not None or args.actions_archive):
         sources = ActionSources(client, instruments, resolve, args.actions_archive)
         hooks = _action_hooks(sources, args.start, end, sink)
-    report = run_history_build(
-        BuildPlan(
-            store=store,
-            fetch=fetch,
-            catalog=DbCatalog(SessionLocal, market_id),
-            start=args.start,
-            end=end,
-            holidays=holidays,
-            resume=args.resume,
-        ),
-        BuildSteps(
-            pacer=pacer,
-            actions=hooks,
-            index_source=index_source,
-            validation=Validation(mcp_close_source(client), seed=args.seed)
-            if client is not None and not args.skip_validation
-            else None,
-        ),
-    )
-    summary = _summary(report)
-    sys.stdout.write(summary)
-    save_report(settings.data_root / REPORT_DIR, summary, datetime.now(IST))
+    holder: dict[str, BuildReport] = {}
+    try:
+        report = run_history_build(
+            BuildPlan(
+                store=store,
+                fetch=fetch,
+                catalog=DbCatalog(SessionLocal, market_id),
+                start=args.start,
+                end=end,
+                holidays=holidays,
+                resume=args.resume,
+                weekend_sessions=sessions,
+            ),
+            BuildSteps(
+                pacer=pacer,
+                actions=hooks,
+                index_source=index_source,
+                index_absent=(lambda name: archive.absent[name.upper()]) if archive else None,
+                validation=Validation(mcp_close_source(client), seed=args.seed)
+                if client is not None and not args.skip_validation
+                else None,
+            ),
+            holder,
+        )
+    except BaseException as exc:  # save what was done, then stop as before
+        _save(settings.data_root, holder.get("report", BuildReport()), stop_reason(exc))
+        raise
+    _save(settings.data_root, report)
     return _exit_code(report)
+
+
+def _save(root: Path, report: BuildReport, stopped: str | None = None) -> None:
+    summary = _summary(report, stopped)
+    sys.stdout.write(summary)
+    save_report(root / REPORT_DIR, summary, datetime.now(IST))
 
 
 def _exit_code(report: BuildReport) -> int:
     """Non-zero when anything needs the operator: a mismatch, an unplaced security, an unusable
-    file, a day with no file that is not a holiday, an action lookup or an index that failed, or
-    an action whose factor conflicts with the stored one (the stored factor stays: a conflict is
-    never a success)."""
+    file, a day with no file that is not a holiday, an action lookup or an index that failed, an
+    index day after the index's start with no row that its source does not explain, or an action
+    whose factor conflicts with the stored one (the stored factor stays: a conflict is never a
+    success)."""
     failed = report.validation is not None and report.validation.failed
     incomplete = report.unresolved or report.problems or report.days.gaps or report.days.unaccounted
-    index_failed = report.index is not None and report.index.failed
+    index_failed = (report.index is not None and report.index.failed) or any(
+        report.index_missing.values()
+    )
     actions = report.action_symbols_failed or (
         report.actions is not None and report.actions.conflicts
     )
@@ -209,7 +240,7 @@ def _action_hooks(
     return ActionHooks(loader, sink)
 
 
-def _summary(report: BuildReport) -> str:
+def _summary(report: BuildReport, stopped: str | None = None) -> str:
     lines = [
         f"downloaded {len(report.download.downloaded)}, already had "
         f"{len(report.download.already_have)}, no file {len(report.download.candidates)}, "
@@ -230,9 +261,11 @@ def _summary(report: BuildReport) -> str:
         )
     if report.index is not None:
         missing = {name: len(days) for name, days in report.index_missing.items() if days}
+        absent = {name: len(days) for name, days in report.index_absent.items() if days}
         lines.append(
             f"index: {report.index.days_written} days, {report.index.points} rows, "
-            f"failed {report.index.failed}, missing days {missing}"
+            f"failed {report.index.failed}, missing days {missing}, "
+            f"not in the archive {absent}"
         )
     if report.validation is not None:
         lines.append(
@@ -241,6 +274,8 @@ def _summary(report: BuildReport) -> str:
             f"{len(report.validation.unchecked)} unchecked, row counts for "
             f"{len(report.validation.row_counts)} days"
         )
+    if stopped is not None:
+        lines.append(f"stopped: {stopped} before the run finished (run again with --resume)")
     return "\n".join(lines) + "\n"
 
 
