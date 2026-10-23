@@ -1,4 +1,4 @@
-"""Live trade management of real positions (07 §6, §7; HAT-EXEC-060..064, -073, -074,
+"""Live trade management of real positions (HAT-EXEC-060..064, -073, -074,
 HAT-OPS-023, -024, -032, -034; HAT-DEC-B17, B18; PR 15c).
 
 `TradeManager` serves one broker account's session, beside the `ExecutionRouter` that places its
@@ -7,7 +7,7 @@ entries. It runs the exit stack on real positions and the jobs around the close:
 - **Live price events** (`on_price`): the same `exits.evaluate` as shadow positions (T12) via
   `live_trades.evaluate_real_position`; a raised stop is followed at the broker
   (`StopDesk.follow`), and a sale is sent at once as a MARKET SELL CNC. Exits never wait for the
-  user and never check a kill switch or pause (06 §6). `hard_stop` is the broker's: while a stop
+  user and never check a kill switch or pause. `hard_stop` is the broker's: while a stop
   rests at the broker the engine sends no sale of its own for it (two sales would oversell); a
   position without a working broker stop is sold by the engine.
 - **`exits.close`** (`close_exits`, 15:20-15:25 IST, HAT-EXEC-074): every open position of the

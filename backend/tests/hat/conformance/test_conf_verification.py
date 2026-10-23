@@ -1,5 +1,5 @@
 """CONF checks of the verification harness itself (HAT-VER-010, 011, 030..034, 040, 050, 060,
-070..072; HAT-SCH-102; HAT-OVR-050)."""
+070..072; HAT-SCH-102). The requirement index is docs/invariants.md."""
 
 import ast
 import os
@@ -21,74 +21,12 @@ from hat_conf_skills import (
     property_ids,
     skill_files,
 )
-from hat_conf_spec import REPO_ROOT, SPEC_DIR, requirements
+from hat_conf_spec import REPO_ROOT, requirements
 
 TLA_DIR = REPO_ROOT / "verification" / "tla"
 HAT_TESTS = REPO_ROOT / "backend" / "tests" / "hat"
 METHODS = {"TLA", "PBT", "DB", "CONF", "OPS"}
-# Pull requests merged so far; a later PR raises this when it merges.
-MERGED_PRS = {
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    11,
-    12,
-    13,
-    14,
-    15,
-    16,
-    17,
-    18,
-    19,
-    20,
-    21,
-    22,
-    23,
-    24,
-    25,
-    26,
-    27,
-    28,
-    29,
-    30,
-    31,
-    32,
-    33,
-    34,
-    35,
-    36,
-    38,
-    39,
-    41,
-    42,
-    43,
-    44,
-    45,
-    46,
-    49,
-    54,
-    55,
-    56,
-    57,
-    58,
-    60,
-    61,
-    62,
-    63,
-    64,
-    65,
-    66,
-    67,
-    68,
-    73,
-}
+METHOD = re.compile(r"\b(TLA|PBT|DB|CONF|OPS) `[^`]+`")
 
 
 def _models() -> list[Path]:
@@ -375,16 +313,17 @@ def test_ci_property_shards_cover_every_file(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_ci_runs_models_for_merged_targets() -> None:
-    """HAT-VER-020: every model a README row names once all its PRs have merged is run by CI:
-    the `verification-tla` job runs `run.sh` and `run.sh --broken` unfiltered and unconditionally,
-    `run.sh` with no model argument checks every `*.tla` beside it, and the model has its cfg and
-    a broken variant expecting each of its properties."""
-    readme = (SPEC_DIR / "README.md").read_text(encoding="utf-8")
-    models = set()
-    for _, pr_text, methods in README_ROW.findall(readme):
-        prs = _requirement_prs(pr_text)
-        if prs and set(prs) <= MERGED_PRS:
-            models.update(re.findall(r"\bTLA `(\w+)!\w+`", methods))
+    """HAT-VER-020: every model the index names is run by CI: the `verification-tla` job runs
+    `run.sh` and `run.sh --broken` unfiltered and unconditionally, `run.sh` with no model
+    argument checks every `*.tla` beside it, and the model has its cfg and a broken variant
+    expecting each of its properties."""
+    models = {
+        name.partition("!")[0]
+        for req in requirements()
+        if not req.planned
+        for method, name in req.methods
+        if method == "TLA"
+    }
     assert models
     tla = _ci_jobs()["verification-tla"]
     assert "if" not in tla
@@ -410,17 +349,15 @@ def test_ci_runs_models_for_merged_targets() -> None:
 # --- database check coverage ----------------------------------------------------------------
 
 
-def _requirement_prs(pr_text: str) -> list[int]:
-    return [int(n) for n in re.findall(r"\b(\d+)\b", re.sub(r"\([^)]*\)", "", pr_text))]
-
-
-def _db_names() -> dict[str, list[int]]:
-    """DB check name -> PR numbers of the requirements that name it."""
-    names: dict[str, list[int]] = {}
-    for req in requirements():
-        for name in re.findall(r"DB `([\w.]+)`", req.verification):
-            names.setdefault(name, []).extend(_requirement_prs(req.pr))
-    return names
+def _db_names() -> set[str]:
+    """DB check names the index names for a built requirement."""
+    return {
+        name
+        for req in requirements()
+        if not req.planned
+        for method, name in req.methods
+        if method == "DB"
+    }
 
 
 def _db_tests() -> dict[str, list[tuple[str, bool]]]:
@@ -439,16 +376,13 @@ def _db_tests() -> dict[str, list[tuple[str, bool]]]:
 
 
 def test_db_checks_match_governance_table() -> None:
-    """HAT-VER-050: each DB name is in 03-schema.md; once its PR has merged, exactly one
-    postgres-marked check carries it."""
-    schema = (SPEC_DIR / "03-schema.md").read_text(encoding="utf-8")
+    """HAT-VER-050: each DB name the index names has exactly one postgres-marked check."""
     tests = _db_tests()
-    for name, prs in _db_names().items():
-        assert name in schema, name
-        if min(prs) in MERGED_PRS:
-            function = "test_" + name.replace(".", "__")
-            assert len(tests.get(function, [])) == 1, name
-            assert tests[function][0][1], f"{function} is not marked postgres"
+    assert _db_names()
+    for name in _db_names():
+        function = "test_" + name.replace(".", "__")
+        assert len(tests.get(function, [])) == 1, name
+        assert tests[function][0][1], f"{function} is not marked postgres"
 
 
 ENSURE_STEP_CHECKS = {"migration.ensure_idempotent", "events.partitions_ahead"}
@@ -458,66 +392,37 @@ JOB_CHECKS = {"events.partitions_job"}
 
 
 def test_verification_db_rules_covered() -> None:
-    """HAT-SCH-102: every DB check of a merged PR is in the postgres suite and has a broken
+    """HAT-SCH-102: every DB check is in the postgres suite and has a broken
     variant that the check must fail (test_db_broken_variants.py, run by backend-postgres)."""
     broken = (HAT_TESTS / "db" / "test_db_broken_variants.py").read_text(encoding="utf-8")
     variants = set(re.findall(r'^    "([\w.]+)": \[', broken, re.MULTILINE))
-    for name, prs in _db_names().items():
-        if min(prs) in MERGED_PRS:
-            # The two ensure-step checks take the step as an argument; their broken variants
-            # are separate tests (a faulty ensure step substituted for the real one).
-            assert name in variants or name in ENSURE_STEP_CHECKS | JOB_CHECKS, name
+    for name in _db_names():
+        # The two ensure-step checks take the step as an argument; their broken variants
+        # are separate tests (a faulty ensure step substituted for the real one).
+        assert name in variants or name in ENSURE_STEP_CHECKS | JOB_CHECKS, name
     assert "test_migration_check_fails_when_ensure_is_not_idempotent" in broken
     assert "test_partitions_check_fails_when_ensure_is_broken" in broken
     assert "test_concurrent_signal_check_fails_without_the_unique_key" in broken
 
 
-# --- the spec's own rules -------------------------------------------------------------------
+# --- the index's own rules ------------------------------------------------------------------
 
 
 def test_spec_requirements_well_formed() -> None:
-    """HAT-VER-010."""
+    """HAT-VER-010: every index entry has a unique ID and a title, and names at least one check
+    of a known method (a planned entry may name none yet)."""
     reqs = requirements()
     assert len(reqs) > 100
+    ids = [req.id for req in reqs]
+    assert len(ids) == len(set(ids))
     for req in reqs:
-        methods = set(re.findall(r"\b(TLA|PBT|DB|CONF|OPS)\b", req.verification))
-        assert req.verification, req.id
-        assert methods, req.id
-        assert methods <= METHODS, req.id
-        bullets = re.findall(r"^\s+- Property: .*$", req.block, re.MULTILINE)
-        assert bullets, req.id
-        assert any("Harm:" in b for b in bullets), req.id
-
-
-# Finding: no requirement in 01-10 cites `PLAN C6` (the VCP module stays intact in the MVP;
-# its row in 00 §5 and in HAT-OVR-050 carries no PR). The list only shrinks.
-UNTRACED_RESOLUTIONS = {6}
-
-
-def test_conflict_resolutions_traced() -> None:
-    """HAT-OVR-050: every PLAN C1..C12 is cited in a Source line of a requirement in 01-10."""
-    cited = set()
-    for req in requirements():
-        if not req.file.startswith(("01", "02", "03", "04", "05", "06", "07", "08", "09", "10")):
+        assert req.title.strip(), req.id
+        if req.planned:
             continue
-        source = re.search(r"^- \*\*Source:\*\* (.*)$", req.block, re.MULTILINE)
-        if source:
-            cited.update(int(n) for n in re.findall(r"PLAN C(\d+)", source.group(1)))
-    assert set(range(1, 13)) - cited == UNTRACED_RESOLUTIONS, sorted(set(range(1, 13)) - cited)
-
-
-README_ROW = re.compile(
-    r"^\| (HAT-[\w-]+) \| \[[^\]]*\]\([^)]*\) \| ([^|]*) \| ([^|]*) \|$", re.MULTILINE
-)
-
-# Names a README row whose PRs have all merged gives that no check implements. Each is a
-# finding reported in the PR description, not a pass. The test fails when an entry starts to
-# exist, so the list only shrinks. (Rows that also list a later PR, such as "2, 8", are not
-# due yet.)
-KNOWN_GAPS = {
-    "PBT criteria.fundamentals_point_in_time",  # HAT-DEC-I5: needs the criteria engine (PR 8)
-    "CONF old_docs_removed",  # HAT-DEC-BD4: a PR 1 documentation check nobody built
-}
+        assert req.methods, req.id
+        assert {method for method, _ in req.methods} <= METHODS, req.id
+        stray = METHOD.sub("", req.verification).replace(",", "").replace(";", "").strip()
+        assert not stray, (req.id, stray)
 
 
 def _conf_exists(name: str) -> bool:
@@ -553,15 +458,13 @@ def _tla_exists(ref: str) -> bool:
 
 
 def test_traceability_points_to_methods() -> None:
-    """HAT-VER-011: every method named by a README row whose PRs have all merged exists."""
-    readme = (SPEC_DIR / "README.md").read_text(encoding="utf-8")
+    """HAT-VER-011: every check a built entry of the index names exists."""
     db_functions = _db_tests()
     missing = set()
-    for _, pr_text, methods in README_ROW.findall(readme):
-        prs = _requirement_prs(pr_text)
-        if not prs or not set(prs) <= MERGED_PRS:
+    for req in requirements():
+        if req.planned:
             continue
-        for kind, name in re.findall(r"\b(TLA|PBT|DB|CONF|OPS) `([^`]+)`", methods):
+        for kind, name in req.methods:
             if kind == "OPS":
                 continue  # host checks (file modes) run outside the repo
             if kind == "CONF":
@@ -573,11 +476,8 @@ def test_traceability_points_to_methods() -> None:
             else:
                 ok = _tla_exists(name)
             if not ok:
-                missing.add(f"{kind} {name}")
-    assert missing == KNOWN_GAPS, {
-        "missing_unlisted": missing - KNOWN_GAPS,
-        "now_exist": KNOWN_GAPS - missing,
-    }
+                missing.add(f"{req.id} {kind} {name}")
+    assert missing == set()
 
 
 # --- verify skills --------------------------------------------------------------------------

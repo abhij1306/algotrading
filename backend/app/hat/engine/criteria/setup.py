@@ -1,4 +1,4 @@
-"""Setup criteria (04 §4, HAT-CRIT-105..114, -123): trend, relative strength and base quality."""
+"""Setup criteria (HAT-CRIT-105..114, -123): trend, relative strength and base quality."""
 
 from __future__ import annotations
 
@@ -149,7 +149,7 @@ def rs_score(rs_pct: float, score_from: float, score_full: float) -> float:
 
 
 def rs_rank(ctx: EvalContext, params: RsRankParams) -> CriterionResult:
-    """HAT-CRIT-109: `rs_pct` (02 §7) at least `min_percentile`; score from the linear curve."""
+    """HAT-CRIT-109: `rs_pct` at least `min_percentile`; score from the linear curve."""
     rs = _universe_value(ctx, "rs_pct")
     if rs is None:
         return no_data()

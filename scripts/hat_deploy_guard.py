@@ -1,6 +1,6 @@
 """Deploy-window guard: refuse a deploy or planned restart during market hours (HAT-OPS-042).
 
-Usage (from the repo root), as the first step of every deploy (runbook, 10-ops.md §9):
+Usage (from the repo root), as the first step of every deploy (`docs/runbook.md`):
     python scripts/hat_deploy_guard.py && docker compose ... up -d --build
     python scripts/hat_deploy_guard.py --force --reason "hotfix: GTT swap crash"
 

@@ -9,8 +9,8 @@ Usage (from the repo root, with the .env variables in the environment):
     hat_data.tar   every file under HAT_DATA_ROOT (Parquet store, raw bhavcopy zips, backtests)
     manifest.json  size and sha256 of both files and of every file inside the tar
 into the local target, copies it to the remote target, then re-reads both copies against the
-manifest (HAT-OPS-060, docs/specs/hat/10-ops.md §7). Any missing, resized or changed file fails
-the run with exit code 1; the host timer that runs it alerts on that exit code (runbook §9).
+manifest (HAT-OPS-060, docs/runbook.md). Any missing, resized or changed file fails
+the run with exit code 1; the host timer that runs it alerts on that exit code (runbook).
 Older sets beyond --keep are pruned only after a run verified.
 
 The targets are plain directories: the local one is the external disk, the remote one a mounted

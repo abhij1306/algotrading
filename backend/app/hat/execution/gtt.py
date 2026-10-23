@@ -1,4 +1,4 @@
-"""GTT stop pricing (HAT-EXEC-062; 07 §6 step 3).
+"""GTT stop pricing (HAT-EXEC-062).
 
 The limit price of a protective GTT stop sits 1% [A] below its trigger, rounded down to the tick,
 so a moderate gap-down still fills. The offset reduces the chance of an unfilled stop but cannot

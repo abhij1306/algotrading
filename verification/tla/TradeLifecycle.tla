@@ -1,7 +1,7 @@
 ------------------------------ MODULE TradeLifecycle ------------------------------
 (***************************************************************************)
-(* The trade lifecycle, its event log and the per-bot lock (07 §4,         *)
-(* HAT-EXEC-040..045; SCH-057, SCH-081, BOT-083).                          *)
+(* The trade lifecycle, its event log and the per-bot lock           *)
+(* (HAT-EXEC-040..045; SCH-057, SCH-081, BOT-083).                          *)
 (*                                                                         *)
 (* NTrades signals of one bot, each moving through the 11 states only     *)
 (* along the transition table. Every step is appended to the trade's log   *)
@@ -45,7 +45,7 @@ Endings == {"Closed", "Rejected", "Expired", "Cancelled"}
 Holding == {"EntryPlaced", "Open", "PartiallyExited", "ExitPending"}
 Held == {"Open", "PartiallyExited"}
 
-\* The table of 07 §4, as (from, step, to); lifecycle.TRANSITIONS is checked equal to it.
+\* The table as (from, step, to); lifecycle.TRANSITIONS is checked equal to it.
 Trans == {
     <<"Watchlisted", "signal.triggered", "Triggered">>,
     <<"Watchlisted", "watchlist.expired", "Expired">>,

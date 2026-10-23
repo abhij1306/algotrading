@@ -7,8 +7,8 @@ disable-model-invocation: true
 # HAT orchestrator
 
 1. Read `docs/agents/orchestrator.md` in full and follow it. It overrides your defaults.
-2. Read `docs/agents/plan.md` (roadmap and status) and `docs/agents/builder-protocol.md`
-   (what builders are told, so your briefs never contradict it).
+2. Read `docs/agents/builder-protocol.md` (what builders are told, so your briefs never
+   contradict it) and the owner's handoff file for the queue.
 3. Check you are inside herdr: `test "${HERDR_ENV:-}" = 1`. If not, tell the owner to start
    `herdr` and run `claude --permission-mode auto` inside it, then stop.
 4. Rebuild state from GitHub and herdr ("Start or resume"), report it to the owner

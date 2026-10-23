@@ -1,4 +1,4 @@
-"""The HAT runtime the lifespan starts when `HAT_ENABLED` is true (10-ops §1-§3, PR 17).
+"""The HAT runtime the lifespan starts when `HAT_ENABLED` is true (PR 17).
 
 With HAT disabled `HatRuntime.start` starts nothing (HAT-OPS-001). Enabled, it refuses a database
 that is not PostgreSQL (HAT-OPS-002) and a bad Telegram configuration (HAT-TG-040) before any
@@ -187,7 +187,7 @@ def daily_jobs(
     *,
     exdate_check: bool = False,
 ) -> tuple[ScheduledJob, ...]:
-    """Every job of the daily cycle (the 10-ops §3 job table, `CONF ops.job_registry`); the
+    """Every job of the daily cycle (the job table, `CONF ops.job_registry`); the
     flagged `gtt.ex_date` only with `exdate_check` (`HAT_EXDATE_GTT_CHECK`, PR 47)."""
     return (
         *nightly_jobs(nightly),

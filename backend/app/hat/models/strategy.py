@@ -1,4 +1,4 @@
-"""Strategy, risk policy and bot tables (03-schema §3).
+"""Strategy, risk policy and bot tables.
 
 A strategy holds versions; a bot deploys one live version to one broker account; the risk
 policy is a separate versioned record that holds every risk number. A bot has no risk columns.

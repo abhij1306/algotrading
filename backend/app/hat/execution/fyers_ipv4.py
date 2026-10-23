@@ -1,4 +1,4 @@
-"""Fyers HTTP over IPv4 only (07 §9, HAT-BRK-093).
+"""Fyers HTTP over IPv4 only (HAT-BRK-093).
 
 Fyers accepts orders only from the account's whitelisted static IP, which is an IPv4 address. A
 machine with IPv6 reaches `api-t1.fyers.in` over IPv6 by default, and Fyers then refuses every

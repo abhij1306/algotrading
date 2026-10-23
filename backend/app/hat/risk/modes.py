@@ -1,5 +1,5 @@
 """Execution-mode changes: queued outside market hours, effective at the next session open
-(06 §8, HAT-GOV-084, HAT-SCH-086, HAT-TG-032). Pure; the queue's rows are `hat_mode_change`."""
+(HAT-GOV-084, HAT-SCH-086, HAT-TG-032). Pure; the queue's rows are `hat_mode_change`."""
 
 from __future__ import annotations
 

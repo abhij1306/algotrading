@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's refer
 
 # verify-reference-data
 
-Checks that the instrument master keeps one stable identity per stock through renames and delistings, that old symbols resolve to the right company, that Fyers symbols never point at another stock, that a calendar holiday is closed in every order path, and that the NSE MCP client retries, limits, logs and reports errors the way the specs promise. Specs: `docs/specs/hat/02-data.md` §2 and §3 (HAT-DATA-010, 020..027, 030..036), `01-decisions.md` (I1, I16), `00-overview.md` (HAT-OVR-001, C7).
+Checks that the instrument master keeps one stable identity per stock through renames and delistings, that old symbols resolve to the right company, that Fyers symbols never point at another stock, that a calendar holiday is closed in every order path, and that the NSE MCP client retries, limits, logs and reports errors the way the specs promise. Requirement IDs (index: `docs/invariants.md`): (HAT-DATA-010, 020..027, 030..036), (I1, I16), (HAT-OVR-001, C7).
 
 ## Properties
 - `PBT mcp.retry_bounded` On the real `McpClient.call`, any sequence of transport failures makes at most 4 attempts (1 + 3 retries), waits strictly longer before each retry, and ends in a typed `McpError` rather than an empty result; a configuration error is never retried and keeps its `mcp_config` code. Harm: unbounded retries stall the nightly window, or an empty result passes as a holiday.
@@ -29,7 +29,7 @@ Checks that the instrument master keeps one stable identity per stock through re
 - `DB reference.refresh_on_postgres` On real Postgres a refresh with renames, delisting and a broker symbol moving between instruments never trips the unique keys. Harm: the weekly refresh fails half-way and leaves the master stale.
 - `CONF imports.engine_data_sources` The only MCP server names in HAT code are `nse-bhavcopy` and `cm-market`, and engine, risk and execution modules reach no research or chat MCP client. Harm: an unvetted source changes which stocks are scanned.
 - `CONF imports.mcp_transport_only` `McpClient` takes an `McpTransport`; only `HttpTransport` in `mcp_client.py` opens a connection, and no other HAT module addresses an MCP endpoint. Harm: a hidden network path calls real NSE from tests.
-- `CONF mcp_endpoints_allowlist` The client can be configured only with the two vetted servers; the env variables are exactly the two the ops spec lists. Harm: unverified third-party data reaches a scan.
+- `CONF mcp_endpoints_allowlist` The client can be configured only with the two vetted servers; the env variables are exactly the two in `.env.example`. Harm: unverified third-party data reaches a scan.
 - `PBT symbols.total_and_valid` For any text `to_db` never raises and is idempotent, and `to_fyers` raises `ValueError` or returns a well-formed Fyers symbol that converts back to the same ticker (hyphenated tickers like BAJAJ-AUTO included). Harm: a malformed symbol reaches an order.
 - `PBT symbols.equity_roundtrip` A database ticker in any accepted format converts to the same `NSE:<ticker>-EQ` and back, and a -BE symbol names the same stock. Harm: an order is sent for another stock.
 - `PBT symbols.index_series` An index ticker is always an `-INDEX` symbol (BSE for SENSEX), with the Fyers name from the table, never `-EQ`. Harm: an index is traded as a stock or the wrong index is read.
@@ -92,7 +92,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `e71a5f2025df0cbf158d242b71f28e4e4e74e4e3`
-Covered digest: `df06b066022e66d6afce1b106f13abd6efd7b52b15099289a3bad90d0342bbe1`
+Covered digest: `70d1838c48cae39efdf9615d60303fa371c1c62a5085495f2d19609d3f6a5172`
 
 ## Scope changes
 

@@ -1,4 +1,4 @@
-"""Signed, single-use approval tokens (08 §4; HAT-TG-040, HAT-TG-041, HAT-TG-044, HAT-SCH-056).
+"""Signed, single-use approval tokens (HAT-TG-040, HAT-TG-041, HAT-TG-044, HAT-SCH-056).
 
 A confirm-mode card carries two buttons. Each button's callback data is
 

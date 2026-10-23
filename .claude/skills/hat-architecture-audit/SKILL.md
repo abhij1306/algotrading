@@ -20,7 +20,7 @@ The caller gives you:
 - **Scope:** a directory or a list of modules. If none is given, rank hot spots with `git log --since=60.days --name-only --format= -- backend/app frontend/src | sort | uniq -c | sort -rn | head -30`, then start from the top.
 - **Report path:** where to write. The default is `/data/workspace/audits/<date>-<lens>-<scope-slug>.md`.
 
-Read first: `CLAUDE.md`, `docs/agents/plan.md` (the section for your scope), the spec sections in `docs/specs/` it points to, and the `.claude/skills/` skill for your area (`trading-safety` for execution and risk, `verify-*` for the rest). Decisions recorded there are settled. Report a conflict with one only when the friction is real, and mark it as a conflict.
+Read first: `CLAUDE.md`, `docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`, and the `.claude/skills/` skill for your area (`trading-safety` for execution and risk, `verify-*` for the rest). Decisions recorded there are settled. Report a conflict with one only when the friction is real, and mark it as a conflict.
 
 ## Vocabulary
 

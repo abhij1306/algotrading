@@ -1,4 +1,4 @@
-"""The deflated Sharpe ratio (09 §4, HAT-BT-042; Bailey & López de Prado, 2014).
+"""The deflated Sharpe ratio (HAT-BT-042; Bailey & López de Prado, 2014).
 
     DSR = Φ( (SR − SR0) · sqrt(T − 1) / sqrt(1 − γ3·SR + ((γ4 − 1) / 4)·SR²) )
     SR0 = sqrt(V) · ( (1 − γ)·Φ⁻¹(1 − 1/N) + γ·Φ⁻¹(1 − 1/(N·e)) )

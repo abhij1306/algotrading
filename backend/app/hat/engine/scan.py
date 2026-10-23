@@ -1,4 +1,4 @@
-"""The nightly scan (04 §1, HAT-CRIT-010, HAT-DEC-T12): per bot, universe -> regime gate -> setup.
+"""The nightly scan (HAT-CRIT-010, HAT-DEC-T12): per bot, universe -> regime gate -> setup.
 
 `scan_bot` is a pure function of its inputs: the instruments in the universe on the scan date,
 their adjusted daily bars up to that date, the date's features, the index closes for the regime
@@ -39,7 +39,7 @@ __all__ = [
 ]
 
 EP_PLAYBOOK = "episodic_pivot"
-# The setup levels stored with a watchlist row for the live trigger and stop (07 §12).
+# The setup levels stored with a watchlist row for the live trigger and stop.
 LEVEL_KEYS = ("pivot", "consolidation_high", "final_contraction_low")
 
 

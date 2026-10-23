@@ -1,5 +1,5 @@
 """The trade lifecycle against the database: per-bot serialisation, entries, the virtual (shadow)
-fill engine, exits and the trade result (07 §4, HAT-EXEC-040..044, HAT-SCH-057, HAT-BOT-083).
+fill engine, exits and the trade result (HAT-EXEC-040..044, HAT-SCH-057, HAT-BOT-083).
 
 Every function works in the caller's open transaction and never commits. A state change and the
 event that explains it are written together, so a replay of the events always reproduces the

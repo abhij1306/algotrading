@@ -104,7 +104,7 @@ def candidate(
 
 
 def live_contract(code: str, params: dict[str, Any], ctx: LiveContext) -> CriterionResult:
-    """The common contract of 04 §4 for a live criterion: repeated calls agree, the score is in
+    """The common contract for a live criterion: repeated calls agree, the score is in
     [0, 1] and `passed` is exactly reason `ok`."""
     first = evaluate_live(code, params, ctx)
     assert evaluate_live(code, params, ctx) == first

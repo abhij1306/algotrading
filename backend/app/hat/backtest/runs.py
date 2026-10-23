@@ -1,4 +1,4 @@
-"""Backtest runs, trial counting and the evidence they give (09 §3, §4, §6).
+"""Backtest runs, trial counting and the evidence they give.
 
 A run is recorded before it starts (status `running`), so it counts as a trial of its family
 whatever happens next (HAT-BT-030); it ends `completed`, with its metrics and `trades.parquet`, or

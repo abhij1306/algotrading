@@ -1,4 +1,4 @@
-"""Stage evaluation and the setup score (04 §1-§3).
+"""Stage evaluation and the setup score.
 
 `evaluate_stage` runs the enabled criteria of one stage in ascending `order`: a failing hard
 criterion stops the stage at once and is stored with its reason and value (HAT-CRIT-032); score

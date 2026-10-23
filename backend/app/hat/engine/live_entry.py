@@ -1,4 +1,4 @@
-"""The live trigger service: candidates from the database in, signals out (07 §12, HAT-BOT-052).
+"""The live trigger service: candidates from the database in, signals out (HAT-BOT-052).
 
 `TriggerMonitor` (`trigger.py`) is pure; this module is what it needs around it:
 

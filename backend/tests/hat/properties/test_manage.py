@@ -1,4 +1,4 @@
-"""PBT manage.* (HAT-EXEC-060..064, HAT-DEC-B17, HAT-RISK-070, 06 §6): broker stops and exits of
+"""PBT manage.* (HAT-EXEC-060..064, HAT-DEC-B17, HAT-RISK-070): broker stops and exits of
 real positions (`app.hat.execution.protect`, `fills`, `manage`) on SQLite, through the real Fyers
 adapter over `FakeBroker`. Nothing reaches a real broker."""
 
@@ -481,7 +481,7 @@ def _event_count(session: Session, row: HatOrder, kind: str) -> int:
 
 
 # ---------------------------------------------------------------------------------------
-# 06 §6, HAT-EXEC-070: real exits run the shared stack, and no kill switch blocks them
+# HAT-EXEC-070: real exits run the shared stack, and no kill switch blocks them
 # ---------------------------------------------------------------------------------------
 
 KILLS = st.sampled_from(["none", "account", "bot", "pause"])
@@ -515,7 +515,7 @@ def _reconciled_as(rig: ManageRig, session: Session, state: str) -> None:
 @example(kill="none", reconciled="never", path=[D(139)])
 @example(kill="none", reconciled="yesterday", path=[D(95)])
 def test_real_exits_never_blocked(kill: str, reconciled: str, path: list[Decimal]) -> None:
-    """06 §6, HAT-EXEC-070, HAT-DEC-B17, D118: a real position's live exits come from the same
+    """HAT-EXEC-070, HAT-DEC-B17, D118: a real position's live exits come from the same
     exit stack as a shadow position's, and are sent as MARKET SELL CNC orders whatever kill
     switch or pause is on and whatever the reconciliation state (none today, only yesterday's, a
     failed run, a mismatch): the broker sees the same stop and sales as with today's success
@@ -604,7 +604,7 @@ def test_no_sale_after_close(start: int, took: int) -> None:
 
 
 # ---------------------------------------------------------------------------------------
-# 07 §4: an entry the broker ends unfilled ends its signal; nothing is protected
+#: an entry the broker ends unfilled ends its signal; nothing is protected
 # ---------------------------------------------------------------------------------------
 
 ENDINGS = {"cancelled": (1, lifecycle.CANCELLED), "expired": (7, lifecycle.CANCELLED)}
@@ -614,7 +614,7 @@ ENDINGS["rejected"] = (5, lifecycle.REJECTED)
 @settings(max_examples=15, deadline=None)
 @given(ending=st.sampled_from(sorted(ENDINGS)), lost=st.booleans())
 def test_entry_ended_by_broker(ending: str, lost: bool) -> None:
-    """07 §4, HAT-EXEC-041: an entry the broker ends with nothing filled ends its signal:
+    """HAT-EXEC-041: an entry the broker ends with nothing filled ends its signal:
     Cancelled when it was cancelled or expired at the close, Rejected when the exchange rejected
     it after the broker took it; one whose send answer was lost and that is first found already
     ended ends Rejected when it is adopted. No position opens and no stop is placed. Harm: a

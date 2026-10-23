@@ -1,4 +1,4 @@
-"""HAT order tags (HAT-BRK-100, HAT-DEC-I10, HAT-SCH-053; PLAN C12; 07 §10).
+"""HAT order tags (HAT-BRK-100, HAT-DEC-I10, HAT-SCH-053).
 
 A tag is 20 alphanumeric characters, the Fyers `orderTag` limit:
 
@@ -12,8 +12,7 @@ The sequence character is `0`-`9` then `A`-`Z` (36 values): the number of earlie
 same signal and purpose. A retry of one logical order reuses its tag; a new logical order never
 does. A 37th order for one (signal, purpose) is refused (fail closed).
 
-The purpose letters, the sequence character and the bit selection are an [OWNER-PENDING] choice
-(07 §10).
+The purpose letters, the sequence character and the bit selection are an [OWNER-PENDING] choice.
 """
 
 from __future__ import annotations

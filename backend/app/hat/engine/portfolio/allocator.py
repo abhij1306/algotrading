@@ -1,4 +1,4 @@
-"""The nightly allocator (05 §5, HAT-PORT-050..056) as a pure function.
+"""The nightly allocator (HAT-PORT-050..056) as a pure function.
 
     w_s = b_s x m_regime_s x m_health_s,   m in [lo, hi] from the risk policy
 
@@ -42,7 +42,7 @@ VIRTUAL_STATES = frozenset({"shadow", "probation"})  # sized nominally for virtu
 _PRECISION = 120  # wide enough that no product of stored amounts is rounded
 _WEIGHT_PLACES = Decimal("1E-12")
 _MONEY_PLACES = Decimal("0.0001")
-# Sleeve keys of the two MVP strategies in the policy's `base_weight` (06 §1). A strategy not
+# Sleeve keys of the two MVP strategies in the policy's `base_weight`. A strategy not
 # listed is its own key, so a new sleeve needs a policy entry and no code (HAT-PORT-010).
 SLEEVE_OF_STRATEGY: Mapping[str, str] = {
     "stage2-contraction-breakout": "S1",

@@ -1,4 +1,4 @@
-"""Regime engine v1 (05 §3, HAT-PORT-030..034): rules only, as pure functions.
+"""Regime engine v1 (HAT-PORT-030..034): rules only, as pure functions.
 
 Three inputs (trend, volatility, breadth) classify the market into four states each night; a
 state is confirmed only on the third consecutive day it is read; each sleeve has a multiplier per
@@ -34,7 +34,7 @@ CONFIRM_DAYS = 3  # [A] HAT-PORT-030
 VIX_VOLATILE_PCT = Decimal(67)  # [A] HAT-PORT-032
 BREADTH_QUIET_PCT = Decimal(50)
 BREADTH_CORRECTION_PCT = Decimal(40)
-# Momentum-sleeve multiplier per confirmed state: placeholders (05 §3, HAT-PORT-033).
+# Momentum-sleeve multiplier per confirmed state: placeholders (HAT-PORT-033).
 DEFAULT_MULTIPLIERS: Mapping[str, Decimal] = {
     BULL_QUIET: Decimal("1.0"),
     BULL_VOLATILE: Decimal("0.75"),

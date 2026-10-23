@@ -1,4 +1,4 @@
-"""The market a stored backtest reads (09 §1, HAT-BT-011, HAT-BT-012), loaded point in time.
+"""The market a stored backtest reads (HAT-BT-011, HAT-BT-012), loaded point in time.
 
 Bars come from the adjusted view of the Parquet store (`bars_daily`: raw bars times the stored
 corporate-action factors), features from the `features_daily` partitions the nightly job wrote,

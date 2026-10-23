@@ -1,5 +1,5 @@
 """Persist before call, idempotent on tag, unconfirmed resolved by tag (HAT-BRK-101, -102,
-HAT-SCH-058, HAT-DEC-B24, HAT-BRK-092, -110, -111; 07 §10-§11).
+HAT-SCH-058, HAT-DEC-B24, HAT-BRK-092, -110, -111).
 
 An order is two steps with the database in between:
 
@@ -254,7 +254,7 @@ def adopt_broker_order(
     session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
 ) -> None:
     """Record a broker order found by tag on its row (no commit). An entry first found already
-    ended with nothing filled ends its signal at once (07 §4)."""
+    ended with nothing filled ends its signal at once."""
     first_knowledge = row.status in ("pending", "unconfirmed")
     row.broker_order_id = found.order_id
     row.status = found.status
@@ -499,7 +499,7 @@ def _event(
         "code": code,
     }
     if final:
-        payload["final"] = True  # no retry follows: the lifecycle step to Rejected (07 §4)
+        payload["final"] = True  # no retry follows: the lifecycle step to Rejected
     if rule is not None:
         payload["rule"] = rule  # the exit rule a sale is for (its trade result's exit reason)
     step = lifecycle.step_of(event_type, payload)

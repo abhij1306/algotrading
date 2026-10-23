@@ -1,4 +1,4 @@
-"""The sleeve lifecycle (05 §6, HAT-PORT-060..065) as pure rules.
+"""The sleeve lifecycle (HAT-PORT-060..065) as pure rules.
 
 Research -> Backtested -> Shadow -> Live; Live -> Probation; Probation -> Live (an owner promotion
 only) or Retired; Retired -> Research. Every edge has a guard over an `Evidence` record, and
@@ -59,7 +59,7 @@ class LifecycleError(HatError):
 
 def backtest_gate(dsr_prob: Decimal | None, trades: int) -> bool:
     """Research -> Backtested: deflated Sharpe probability at least 0.95 and at least 200
-    trades (HAT-PORT-061). The probability must come from the family's full trial count (09 §3);
+    trades (HAT-PORT-061). The probability must come from the family's full trial count;
     an absent value fails."""
     if dsr_prob is None or isinstance(trades, bool) or not isinstance(trades, int):
         return False
@@ -162,7 +162,7 @@ def retire_gate(entered_on: date | None, today: date, shadow_trades: int, failin
 
 @dataclass(frozen=True)
 class BacktestFacts:
-    """What a sleeve's backtest gives the lifecycle (09 §6, HAT-BT-060): the deflated Sharpe
+    """What a sleeve's backtest gives the lifecycle (HAT-BT-060): the deflated Sharpe
     probability at the family's current trial count, the run's trade count and expectancy in R,
     and that trial count. The default is no evidence."""
 

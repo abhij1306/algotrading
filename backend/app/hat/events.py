@@ -1,4 +1,4 @@
-"""The event store: `record()` appends to `hat_event` in the caller's transaction (03-schema §6).
+"""The event store: `record()` appends to `hat_event` in the caller's transaction.
 
 `record` never commits and never opens a session of its own: the event is written by the same
 database transaction as the state change it describes, so the two commit or roll back together
@@ -43,7 +43,7 @@ __all__ = [
     "record",
 ]
 
-# Spec 03 §6 "Event types (MVP)", verbatim (the Portfolio group is PR 9's).
+# Spec verbatim (the Portfolio group is PR 9's).
 # `CONF events.catalogue` compares this with the spec.
 EVENT_GROUPS: dict[str, tuple[str, ...]] = {
     "Data": ("ingest.completed", "ingest.failed", "quality.failed", "gapscan.completed"),

@@ -1,4 +1,4 @@
-"""Kill switches and manage-only, as pure rules (06 §6, HAT-RISK-060..065, HAT-SCH-033).
+"""Kill switches and manage-only, as pure rules (HAT-RISK-060..065, HAT-SCH-033).
 
 Manage-only means no new entries; stops and exits keep running. A bot is manage-only when the
 account kill is tripped, its own kill is tripped, its health kill is tripped or it is paused.
@@ -179,7 +179,7 @@ def rebase_peak(
 ) -> Decimal:
     """The previous peak restated at a new allocation, so a planned reallocation is not a loss.
 
-    Snapshot equity is allocation capital plus realised P&L (06 §2), so cutting a sleeve's
+    Snapshot equity is allocation capital plus realised P&L, so cutting a sleeve's
     capital (a regime or health change, HAT-PORT-050) lowers equity without any trade losing
     money. The previous equity moves to `prev_equity + (capital - prev_capital)` and the peak
     scales by the same ratio, which keeps (peak - equity) / peak exactly as it was before the

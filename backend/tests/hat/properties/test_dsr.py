@@ -1,4 +1,4 @@
-"""PBT dsr.* (09 §3, §4, §6; HAT-BT-030, 031, 042, 060; HAT-GOV-091; HAT-PORT-061): the deflated
+"""PBT dsr.* (HAT-BT-030, 031, 042, 060; HAT-GOV-091; HAT-PORT-061): the deflated
 Sharpe ratio of `app.hat.backtest.dsr` against the formula written out with `math.erf`, its
 family floors and the probability of backtest overfitting (PR 66), and the trial counting,
 family keys, returns files, lifecycle evidence and risk-increase gate evidence of
@@ -77,7 +77,7 @@ def stats(draw: st.DrawFn, sr: st.SearchStrategy[float] = SR) -> ReturnStats:
 
 
 def _slope(s: ReturnStats, sr0: float) -> float:
-    """The sign of d DSR / d SR at s.sr (09 §4): 1 - g3 (SR + SR0) / 2 + (g4 - 1) / 4 SR SR0."""
+    """The sign of d DSR / d SR at s.sr: 1 - g3 (SR + SR0) / 2 + (g4 - 1) / 4 SR SR0."""
     return 1 - s.skew * (s.sr + sr0) / 2 + (s.kurtosis - 1) / 4 * s.sr * sr0
 
 
@@ -99,7 +99,7 @@ def test_bounds_and_monotonicity_in_sr(s: ReturnStats, other: float, trials: int
     """With everything else fixed, DSR does not fall as SR rises wherever the formula's slope in
     SR is non-negative: 1 - g3 (SR + SR0) / 2 + (g4 - 1) / 4 SR SR0 >= 0 at both ends (the slope
     is linear in SR, so then on the whole interval). Outside that region a higher SR with a
-    heavy skew can score lower; that is the formula, not the code (recorded in 09 §4)."""
+    heavy skew can score lower; that is the formula, not the code (recorded)."""
     low, high = sorted((s.sr, other))
     a, b = ReturnStats(low, s.t, s.skew, s.kurtosis), ReturnStats(high, s.t, s.skew, s.kurtosis)
     sr0 = expected_max_sharpe(trials, v)

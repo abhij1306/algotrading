@@ -1,4 +1,4 @@
-"""Reference tables (03-schema §2): the instrument row anchors everything else."""
+"""Reference tables: the instrument row anchors everything else."""
 
 from sqlalchemy import (
     Boolean,
@@ -137,7 +137,7 @@ class HatAnnouncement(Base):
     raw = Column(JsonB, nullable=False)
 
 
-# Announcements of one instrument, newest first (03-schema §9). An existing database that predates
+# Announcements of one instrument, newest first. An existing database that predates
 # this index gets it from `PG_DDL` (`create_all` does not add indexes to existing tables).
 Index(
     "hat_announcement_instrument_published",

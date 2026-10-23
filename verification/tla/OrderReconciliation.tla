@@ -2,7 +2,7 @@
 (***************************************************************************)
 (* Persist before call, tag idempotency, unconfirmed submits, reconcile    *)
 (* before the first order, mismatches, account onboarding and session      *)
-(* ownership (07 §9-§11, 01 T8 B24, 10 §OPS-032).                          *)
+(* ownership (HAT-DEC-T8, HAT-DEC-B24, HAT-OPS-032).                          *)
 (*                                                                         *)
 (* One signal with one entry purpose is modelled. Its logical orders are   *)
 (* tags 0..MaxTags-1 (the sequence character): tag 0 is the order, tag     *)

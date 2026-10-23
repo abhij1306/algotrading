@@ -1,4 +1,4 @@
-"""Properties of the owner's admin command line (10 §9 "First deploy", HAT-OPS-091, PR 35, 73).
+"""Properties of the owner's admin command line (HAT-OPS-091, PR 35, 73).
 
 The commands run through `main` against an in-memory database (the rig is `hat_admin_support`);
 no network is touched.

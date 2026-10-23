@@ -1,4 +1,4 @@
-"""DB `ops.simulated_day`: the PR 17 acceptance check (10-ops §1-§3).
+"""DB `ops.simulated_day`: the PR 17 acceptance check.
 
 `HatRuntime` starts with HAT enabled on PostgreSQL, over the fixture market (`hat_day_support`),
 `FakeBroker` under the Fyers adapter, a recording Telegram transport and a faked feed, at 17:55
@@ -336,7 +336,7 @@ def _check_night(rig: Rig, day: date, source: str) -> None:
 
 
 def _check_trading_day_jobs(rig: Rig) -> None:
-    """Every job of a trading day ran once for TRADE and succeeded (the 10-ops §3 table)."""
+    """Every job of a trading day ran once for TRADE and succeeded (the table)."""
     runs = _runs(rig, TRADE)
     failed = {(r.job, r.error) for r in runs if r.status != SUCCEEDED}
     assert failed == set()
@@ -490,7 +490,7 @@ def _rig(engine: Engine, tmp_path: Path) -> Rig:
 
 
 def test_ops__simulated_day(clean_db: Engine, tmp_path: Path) -> None:
-    """DB ops.simulated_day (10-ops §1-§3; HAT-OPS-003, 012, 021, 022, 023): a shadow trading
+    """DB ops.simulated_day (HAT-OPS-003, 012, 021, 022, 023): a shadow trading
     day through `HatRuntime` with HAT enabled, on fixtures and fakes only."""
     rig = _rig(clean_db, tmp_path)
     asyncio.run(_simulate(rig))

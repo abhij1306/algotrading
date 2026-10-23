@@ -350,7 +350,7 @@ def _assigned(
 
 
 def seed_text(name: str) -> str:
-    """The shipped YAML of a seed (verbatim from 04 §6 and §7)."""
+    """The shipped YAML of a seed (verbatim)."""
     if name not in SEED_NAMES:
         raise VersionError("unknown_seed")
     return resources.files(__package__).joinpath("seeds", f"{name}.yaml").read_text("utf-8")

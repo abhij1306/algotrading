@@ -1,5 +1,5 @@
-"""The trigger monitor: live trigger and entry-filter evaluation on final 5-minute bars (07 §12,
-HAT-EXEC-120..122, HAT-CRIT-115..122, HAT-BOT-052, HAT-BOT-071).
+"""The trigger monitor: live trigger and entry-filter evaluation on final 5-minute bars
+(HAT-EXEC-120..122, HAT-CRIT-115..122, HAT-BOT-052, HAT-BOT-071).
 
 Pure and synchronous, like the bar builder it listens to: `TriggerMonitor.on_bar` takes one final
 bar and returns the triggers it fired, and reads only the candidates it was given and the bar

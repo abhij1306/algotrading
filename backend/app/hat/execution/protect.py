@@ -1,4 +1,4 @@
-"""Protective stops at the broker for real positions (07 §6; HAT-EXEC-060..064, HAT-DEC-B17,
+"""Protective stops at the broker for real positions (HAT-EXEC-060..064, HAT-DEC-B17,
 HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 
 `StopDesk` keeps one resting broker stop under every open real position:
@@ -16,8 +16,7 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   entry's cancel is sent once per desk, again only after the broker could not be reached.
 - **An entry nothing of which filled** (`cancel_unfilled_entry`, PR 49): cancelled at the
   broker the same way when its break failed or it waited too long (`entry_timeout.EntryWatch`
-  decides). One that filled in part keeps its remainder working (the partial-entry policy, 07
-  §4).
+  decides). One that filled in part keeps its remainder working (the partial-entry policy).
 - **When the stop rises** (`follow`): the working stop is modified up to the new price (day:
   `modify_order`; GTT: `modify_gtt`, event `gtt.refreshed`), never down (nor by the verify).
   The broker trigger is the stop rounded down to the instrument's tick, so it is never above
@@ -49,7 +48,7 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 
 Every order goes through `submit.reserve_order` and `submit.send_order` (trading-safety rule 1);
 modifies and cancels go straight to the `HatBroker` contract with the broker id `send_order`
-stored. Nothing here checks a kill switch: stops are never blocked (06 §6). Alerts carry fixed
+stored. Nothing here checks a kill switch: stops are never blocked. Alerts carry fixed
 codes only, never broker text.
 """
 
@@ -689,7 +688,7 @@ class StopDesk:
         """Cancel the signal's real entry while nothing of it has filled (PR 49): its break
         failed or it waited too long. An entry with a fill (a real position, or a part fill the
         broker reported) is left working: the partial-entry policy keeps the remainder until the
-        close (07 §4). The cancel is the one `cancel_entry` sends; the signal ends Cancelled when
+        close. The cancel is the one `cancel_entry` sends; the signal ends Cancelled when
         the fill sync sees the order end with nothing filled, and a fill that lands first opens
         the position as any fill does. True when the broker took a cancel."""
         filled = session.scalar(

@@ -1,4 +1,4 @@
-"""Unfilled entries that should not rest any longer (07 §4, HAT-EXEC-046; PR 49, plan audit N1,
+"""Unfilled entries that should not rest any longer (HAT-EXEC-046; PR 49, plan audit N1,
 G19).
 
 A real entry is a DAY LIMIT at the larger of the level and the trigger bar's close (HAT-CRIT-119).

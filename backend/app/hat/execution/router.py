@@ -1,4 +1,4 @@
-"""The execution router: one risk check, three routes (07 §1-§3, §11; HAT-EXEC-010, -012, -020,
+"""The execution router: one risk check, three routes (HAT-EXEC-010, -012, -020,
 -022, -023, -030..032, HAT-BRK-110; the model is `verification/tla/ExecutionRouter.tla`).
 
 A trigger reaches the router as an `EntryRequest`. The router works out the bot's effective mode
@@ -168,7 +168,7 @@ def unplaced_entry() -> ColumnElement[bool]:
 
 def _kill_refusal(session: Session, bot_id: uuid.UUID) -> str | None:
     """A kill switch or a pause that came on after the risk check (the bot's lock is released
-    when the signal commits) stops the entry: the bot is manage-only (06 §6)."""
+    when the signal commits) stops the entry: the bot is manage-only."""
     kill = controls.kill_state(session, bot_id)
     for tripped, reason in (
         (kill.account_tripped, Reason.KILL_ACCOUNT),

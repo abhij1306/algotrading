@@ -1,6 +1,6 @@
 ----------------------------- MODULE ApprovalToken -----------------------------
 (***************************************************************************)
-(* Approval cards of confirm mode (07 §3; 08 §4).                          *)
+(* Approval cards of confirm mode.                          *)
 (*                                                                         *)
 (* NCards approval cards on one clock. A card is sent with its signal and  *)
 (* expires Window ticks later. It is decided once, under the bot's lock:   *)
@@ -11,7 +11,7 @@
 (* signature is checked by PBT telegram.token_forgery_rejected; single use *)
 (* is SingleDecision.                                                      *)
 (*                                                                         *)
-(* Second confirmations (08 §3, PR 16): /mode … auto, /arm and /flatten    *)
+(* Second confirmations (PR 16): /mode … auto, /arm and /flatten    *)
 (* only ask; the lever acts when the Confirm button of that ask is pressed *)
 (* in the allowlisted chat before the ask expires (Window, the same 5      *)
 (* minutes), and an ask is consumed by its first press.                    *)

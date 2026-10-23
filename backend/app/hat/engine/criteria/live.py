@@ -1,4 +1,4 @@
-"""The live trigger and entry-filter criteria (04 §4, HAT-CRIT-115..119, 121, 122; 07 §12).
+"""The live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122).
 
 They read a `LiveContext`: what the trigger monitor knows at the instant a 5-minute bar is final
 (the bar's high, the live price, the cumulative day volume, the opening range, the pre-open gap,

@@ -1,7 +1,7 @@
 """Parquet datasets under `HAT_DATA_ROOT` and the DuckDB views over them (HAT-DATA-080..085,
 HAT-DEC-T6, HAT-DEC-B27).
 
-Layout (02 §8): `bars_daily_raw/date=YYYY-MM-DD/part-<ingest_run_id>.parquet`,
+Layout: `bars_daily_raw/date=YYYY-MM-DD/part-<ingest_run_id>.parquet`,
 `index_daily/date=YYYY-MM-DD/part.parquet` and `raw/<file>` (bhavcopy zips, immutable). A
 partition file is written to a temporary name and renamed over the final name, so a reader sees
 the whole old file or the whole new one (HAT-DATA-082). Raw prices are stored as decimal(18,4)
@@ -76,7 +76,7 @@ INDEX_SCHEMA = pa.schema(
         ("close", PRICE_TYPE),
     ]
 )
-# The §7 columns, in the spec's order: the instrument, then one float64 per feature.
+# The feature columns, in order: the instrument, then one float64 per feature.
 FEATURE_NAMES = (
     "sma10",
     "sma20",

@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# curl for the healthcheck. (Backups run on the host: scripts/hat_backup.py, runbook §9.)
+# curl for the healthcheck. (Backups run on the host: scripts/hat_backup.py, runbook.)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

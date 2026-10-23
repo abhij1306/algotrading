@@ -1,4 +1,4 @@
-"""The Telegram service: long polling, the allowlist and the command log (08 §1; HAT-TG-005,
+"""The Telegram service: long polling, the allowlist and the command log (HAT-TG-005,
 HAT-TG-010..014, HAT-DEC-I13).
 
 `poll_once` reads the updates after the stored offset (`hat_telegram_cursor` `updates`) and

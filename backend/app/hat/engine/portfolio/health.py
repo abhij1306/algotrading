@@ -1,4 +1,4 @@
-"""The health multiplier of a sleeve from its drawdown (05 §4, HAT-PORT-040), as pure functions.
+"""The health multiplier of a sleeve from its drawdown (HAT-PORT-040), as pure functions.
 
 dd = 1 - equity / equity_peak. Under the first band the multiplier is the policy's full value
 (1.0), from the first band up to the second it is the half value (0.5), and at the second band

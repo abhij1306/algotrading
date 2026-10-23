@@ -1,4 +1,4 @@
-"""Message text (08 §2, §3). Pure functions from plain views to plain text, no Markdown, so no
+"""Message text. Pure functions from plain views to plain text, no Markdown, so no
 value can change how a message is read. Numbers are the engine's own Decimals, printed exactly
 to two places; nothing here computes a size, a stop or a price (HAT-TG-023).
 

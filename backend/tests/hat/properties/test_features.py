@@ -89,7 +89,7 @@ LONG = 253  # the shortest history with every window full
 
 
 class Series:
-    """One instrument's rows, oldest first: Decimal bars with the §7 inputs."""
+    """One instrument's rows, oldest first: Decimal bars with the feature inputs."""
 
     def __init__(self, iid: str, rows: list[dict]) -> None:
         self.iid = iid
@@ -270,7 +270,7 @@ def _mean(values: list[Fraction]) -> Fraction:
 
 
 def naive(s: Series) -> dict[date, dict[str, Fraction | None]]:
-    """The §7 definitions evaluated directly, in exact arithmetic, row by row."""
+    """The feature definitions evaluated directly, in exact arithmetic, row by row."""
     rows = s.rows
     out: dict[date, dict[str, Fraction | None]] = {}
     for i, row in enumerate(rows):

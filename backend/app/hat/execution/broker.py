@@ -1,4 +1,4 @@
-"""HAT's own broker contract (HAT-BRK-080, HAT-DEC-I7, HAT-BRK-081; 07 §8).
+"""HAT's own broker contract (HAT-BRK-080, HAT-DEC-I7, HAT-BRK-081).
 
 Engine, risk and router code depend only on this module: never on `FyersBroker`, the fyers SDK
 or any OpenAlgo client. No adapter-specific type crosses it, and no result carries raw broker
@@ -283,7 +283,7 @@ class OrderUpdate:
 
 @runtime_checkable
 class HatBroker(Protocol):
-    """The methods of 07 §8, exactly."""
+    """The methods of exactly."""
 
     def capabilities(self) -> Capabilities: ...
 

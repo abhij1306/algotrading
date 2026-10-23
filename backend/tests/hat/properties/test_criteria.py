@@ -1,7 +1,7 @@
 """PBT criteria.* (HAT-CRIT-040, 100..114, 120, 123): the library's pure criteria against exact
 oracles.
 
-Every test checks the common contract of 04 §4 (repeated calls agree, a row dated after the
+Every test checks the common contract (repeated calls agree, a row dated after the
 evaluation date changes nothing, the score is in [0, 1], missing data fails closed) and then the
 criterion's own rule against an independent computation in `Fraction`s over integer paise. The
 live trigger and entry-filter types (`gap_up` .. `max_chase`, HAT-CRIT-115..119, 121, 122) read a
@@ -1147,7 +1147,7 @@ def test_inclusive_edges_contract(k: int, pct: int) -> None:
     assert not passes("ma_surf", "max_distance_pct", pct - 0.01, rows)
 
 
-# --- live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122; 07 §12) -------------
+# --- live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122) -------------
 
 PAISE = st.integers(1, 5_000_000)  # ₹0.01 .. ₹50,000.00
 MAYBE_PAISE = st.one_of(st.none(), st.integers(-100, 0), PAISE)

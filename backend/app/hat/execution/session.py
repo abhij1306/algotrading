@@ -1,5 +1,4 @@
-"""Broker session ownership and the morning login record (HAT-DEC-T8, HAT-BRK-082, HAT-OPS-031;
-07 §8; 10 §4).
+"""Broker session ownership and the morning login record (HAT-DEC-T8, HAT-BRK-082, HAT-OPS-031).
 
 One service owns each broker account's session and serialises its broker calls
 (`SessionRegistry.acquire`); a second owner for a live account is refused. `record_session` keeps

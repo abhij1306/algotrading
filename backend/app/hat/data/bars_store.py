@@ -3,7 +3,7 @@
 One file per trade date, rewritten whole through a temporary file and an atomic replace, so a
 reader sees the old or the new content, never a partial file (the same rule as HAT-DATA-082).
 Rows are keyed by (instrument_id, bar_start): writing the same bar again changes nothing, which
-makes the writer safe to re-run after a crash. Only the layout of 02-data §8 is written:
+makes the writer safe to re-run after a crash. Only the layout is written:
 `instrument_id, bar_start, open, high, low, close, volume`.
 
 Beside it, `coverage.json` records the session coverage a restart needs (PR 22): the instruments

@@ -1,4 +1,4 @@
-"""The intraday jobs of the daily cycle (10-ops §3 steps 1-6, HAT-OPS-023, PR 17).
+"""The intraday jobs of the daily cycle (HAT-OPS-023, PR 17).
 
 - `live.prepare` (08:45): load the day's daily view, subscribe the watchlist and the open
   positions, and hand the trigger monitor the watchlist candidates; a key that already has its

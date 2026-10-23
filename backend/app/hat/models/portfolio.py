@@ -1,4 +1,4 @@
-"""Portfolio tables (03-schema §4): sleeves, universes, regime and daily weights."""
+"""Portfolio tables: sleeves, universes, regime and daily weights."""
 
 from sqlalchemy import (
     Boolean,

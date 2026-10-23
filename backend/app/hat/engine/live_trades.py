@@ -1,5 +1,5 @@
 """Real positions against the database: broker fills, the exit stack on a real position and the
-15:25 close-gap record (07 §4, §6, §7; HAT-EXEC-060, -073, -074, HAT-OPS-034; PR 15c).
+15:25 close-gap record (HAT-EXEC-060, -073, -074, HAT-OPS-034; PR 15c).
 
 Like `trades`, every function works in the caller's open transaction and never commits, takes the
 bot's lock first, and writes a state change together with the event that explains it, so a replay
@@ -300,7 +300,7 @@ def apply_exit_fill(session: Session, order_id: uuid.UUID, fill: BrokerFill) -> 
     payload = _fill_payload(order, fill)
     if signal.state in _OPEN_STATES and (order.purpose in STOP_PURPOSES or remaining == 0):
         # The stop triggered (or the position emptied without a full exit order): that is the
-        # exit order placed of 07 §4.
+        # exit order placed.
         payload[lifecycle.EXIT_TRIGGERED] = True
     _emit(
         session,

@@ -1,4 +1,4 @@
-"""Position size (06 §2, HAT-RISK-020/021/022), in Decimal, with an exact floor.
+"""Position size (HAT-RISK-020/021/022), in Decimal, with an exact floor.
 
     q = floor( min( E*r/(P_entry - P_stop),  E*p_max/P_entry,  adv_cap_pct*ADV20,  C/P_entry ) )
 

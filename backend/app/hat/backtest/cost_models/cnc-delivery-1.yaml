@@ -1,4 +1,4 @@
-# NSE delivery (CNC) charges for the backtest cost model (09 §2, HAT-BT-023).
+# NSE delivery (CNC) charges for the backtest cost model (HAT-BT-023).
 # [OWNER-PENDING] every rate below: the owner confirms them against the current statutory and
 # exchange schedules and the broker's tariff. A change of any rate is a new file with a new
 # version; a run records the version and the hash of the file it used.

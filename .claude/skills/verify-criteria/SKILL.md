@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's crite
 
 # verify-criteria
 
-Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Specs: `docs/specs/hat/04-criteria-and-bots.md` §1-§8 (HAT-CRIT-010..040, 100..123; HAT-BOT-050, 052, 060, 061, 070..072, 080..084), `07-execution-and-brokers.md` §12 (HAT-EXEC-120..122), `01-decisions.md` (HAT-DEC-B2..B7, B22, T10), `00-overview.md` (HAT-OVR-002, 003), `03-schema.md` (HAT-SCH-016, 032).
+Checks that every daily criterion answers exactly as its contract says (exact arithmetic, point in time, fail closed on missing data), that criteria combine into a stage result by the stated formula, that an invalid or risk-bearing strategy config can never be saved, that every save is a new version, and that the two seeded bots equal the configs in the spec and start in shadow. Requirement IDs (index: `docs/invariants.md`): (HAT-CRIT-010..040, 100..123; HAT-BOT-050, 052, 060, 061, 070..072, 080..084), (HAT-EXEC-120..122), (HAT-DEC-B2..B7, B22, T10), (HAT-OVR-002, 003), (HAT-SCH-016, 032).
 
 ## Properties
 
@@ -47,12 +47,9 @@ Checks that every daily criterion answers exactly as its contract says (exact ar
 - `PBT config.yaml_round_trip` Export then import gives the same config and hash, the text is stable under a second export, and both seeds round-trip. Harm: an exported strategy cannot be re-imported unchanged.
 - `PBT config.save_creates_version` Each save adds one draft with the next number (no gaps) whose config and hash are the validated ones, publishing freezes a draft, and a save inside the market session writes nothing. Harm: history has holes or a live strategy changes mid-session.
 - `PBT config.new_bot_mode_confirm` A bot created through the service asks for confirm whatever its config names; any other requested mode is refused. It still runs shadow while its sleeve is in research and its gates are closed (PR 45, HAT-BOT-061, HAT-DEC-B2). Harm: a new bot places real orders before it has a shadow record, or the owner must remember to switch every bot out of shadow.
-- `CONF criterion_instance_schema` An instance has exactly the seven fields of the 04 §2 table. Harm: a field the spec never approved changes what a criterion means.
+- `CONF criterion_instance_schema` An instance has exactly the seven documented fields. Harm: a field the spec never approved changes what a criterion means.
 - `CONF criterion_type_registry` The stored `param_schema` of every type equals the schema generated from its parameter model, and the registry holds exactly the catalogue. Harm: app and catalogue validation disagree.
-- `CONF criterion_catalogue_complete` The registered types and their stages equal the 25 types of the 04 §4 table. Harm: a config refers to a type with no schema, or a type exists nobody specified.
-- `CONF bot_seed_s1_matches_spec` The S1 seed file equals the YAML block of 04 §6 as data, `earnings_growth` off. Harm: the bot that runs is not the bot the owner approved.
-- `CONF bot_seed_s2_matches_spec` The S2 seed file equals the YAML block of 04 §7 as data. Harm: the bot that runs is not the bot the owner approved.
-- `CONF seed_bots_match_spec_yaml` Both seed files equal their spec YAML (every key, value, list order and `enabled` flag) and validate. Harm: the seeded bots drift from the approved design.
+- `CONF criterion_catalogue_complete` The registered types and their stages are 25 types, each in a known stage. Harm: a config refers to a type with no schema, or a type exists nobody specified.
 - `CONF bot_seed_default_mode` Both seeds declare `execution_mode: shadow`. Harm: a bot could start live.
 - `CONF seed_bots_confirm` Every seeded bot row asks for confirm and starts in research, one per seeded strategy (PR 45). Harm: a seeded bot trades real money before shadow evidence exists, or never leaves shadow.
 - `CONF risk_policy_seed_bot_limits` The seed risk policy holds p_max 0.20 for S1, 0.25 for S2 and 6 open positions. Harm: the bots size against limits that differ from the approved design.
@@ -92,18 +89,18 @@ Every check runs on synthetic bars and in-memory SQLite. None calls Fyers, NSE o
 
 When a check fails, decide which side is wrong before touching anything.
 
-- A property failure prints a falsifying example. Re-run it by hand against the criterion function (`app.hat.engine.criteria.evaluate`). If the criterion breaks its contract in `04 §4`, fix the code. If the contract in the spec is ambiguous, the expected value in the test is a model error: record the reading under "Scope changes" and in `docs/specs/hat/open_questions.md`.
+- A property failure prints a falsifying example. Re-run it by hand against the criterion function (`app.hat.engine.criteria.evaluate`). If the criterion breaks its contract in `docs/invariants.md`, fix the code. If the contract in the spec is ambiguous, the expected value in the test is a model error: record the reading under "Scope changes".
 - The contract tests restate each rule with `Fraction` or `Decimal` arithmetic that does not share code with the criterion, so a float rounding difference is a bug in the criterion, not in the test.
 - `criteria.vcp_parity` compares with a transcription of the legacy detector (`services/vcp/pattern.py` at commit `56b9a08`) and a frozen oracle. A parity failure is either a bug in the port or an intended scope change: an intended change is listed below with its reason, and the oracle case is updated with it.
 - Never weaken a property or shrink a strategy. Narrowing needs a reason under "Scope changes".
-- A CONF seed check fails when the seed file and the spec YAML differ: the spec is authoritative, so change the file, unless the owner changed the design (then the spec changes first).
+- A CONF seed check fails when a seed file no longer parses or hashes stably: fix the file, unless the owner changed the design (then `docs/decisions.md` changes with it).
 - Defaults marked `[OWNER-PENDING]` in the code (empty score 1.0, `sma_rising` as a point-to-point comparison, consolidation and `ma_surf` score curves, `prior_move` measurement, the VCP score curves) are tested as written. A new owner answer changes the code, the test and `open_questions.md` together.
 
 ## Updating
 
-- A new criterion type: add its parameter model and evaluator under `engine/criteria`, register it in `engine/criteria/__init__.py` in the order of the 04 §4 table, add its row to the spec table first (`criterion_catalogue_complete` reads it), add its `<code>_contract` property to `test_criteria.py` and a bullet and scratch break here.
+- A new criterion type: add its parameter model and evaluator under `engine/criteria`, register it in `engine/criteria/__init__.py` in order, add its line to `docs/invariants.md` first (`criterion_catalogue_complete` reads it), add its `<code>_contract` property to `test_criteria.py` and a bullet and scratch break here.
 - A new config field or rule: the models are in `engine/strategy/config.py`; extend `hat_config_support.py` so the generators produce it, and keep `test_no_risk_keys` generating every key of the risk policy.
-- A seed change: edit the spec YAML first, then the file under `engine/strategy/seeds/`; `seed_bots_match_spec_yaml` compares them.
+- A seed change: edit the file under `engine/strategy/seeds/`; `bot_seed_s1_parses` and `bot_seed_s2_parses` check it parses and hashes stably.
 - Live criteria (`gap_up`, `volume_pace`, `early_volume`, `catalyst_attached`, `price_breaks_level`, `adtr_filter`, `max_chase`) read a `LiveContext` (`engine/criteria/live.py`); the trigger stage and entry filters are combined in `engine/trigger.py` and turned into signals in `engine/live_entry.py`. A new live type adds its evaluator, a `<code>_contract` property built from `hat_trigger_support.py`, and a bullet and break here.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-criteria` prints the digest.
 
@@ -145,7 +142,7 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `db39ea11a2be2d498155a9165ea2551b46269876eda196a194198543055e538b`
+Covered digest: `42efa1aba90ab2dbb4c3dac80ed9b5c04926975ed5c5431184f433852b5efaa4`
 
 ## Scope changes
 
@@ -156,7 +153,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 62 (O5, HAT-BT-061): `publish_version` also refuses a run whose metrics do not say `for_promotion: true` (`run_not_for_promotion`), so a version is never promoted on a run at perfect fills; `test_config.add_run` flags its run. The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the release-gate checks here are unchanged.
 - PR 61 (HAT-BT-025): the entry-filter loop moved out of `engine/trigger.py:plan_entry` into `trigger.evaluate_entry_filters`, with `trigger.entry_filter_context` building the filters' `LiveContext`, so the backtest runs the same filters live runs. `plan_entry` returns the same skip or failing filter as before; no live behaviour changes and the trigger properties are unchanged.
 - PR 12: `publish_version` also refuses a run that is not `completed` (`run_not_completed`, HAT-BT-061). The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the checks here were re-run unchanged and pass.
-- `rs_rank` has no `weights` parameter: the 3/6/9/12-month blend is fixed by the `rs_pct` feature column (02 §7), so a per-instance blend would not reach the data. `momentum_rank.windows` is a subset of the feature windows 21, 63, 126, 252.
+- `rs_rank` has no `weights` parameter: the 3/6/9/12-month blend is fixed by the `rs_pct` feature column , so a per-instance blend would not reach the data. `momentum_rank.windows` is a subset of the feature windows 21, 63, 126, 252.
 - `vcp` is a port of the legacy detector, not a copy. Dropped (other criteria or outside the spec): the Stage 2 gate, the RS gate, overhead resistance, the volume slope, the grade and the breakout test. A contraction's depth uses the highest high and lowest low of its own bars. The final contraction low is the segment minimum, which can be lower than the legacy pivot low; `vcp_parity` records this. The pivot is the highest high of the final contraction. `MIN_BASE_BARS` stays 15. The score is the mean of four linear sub-scores (an `[OWNER-PENDING]` default).
 - PR 15a evaluates the seven live criteria. `catalyst_attached` blocks only in the modes its `required_in` lists, whatever its `mode` field (HAT-CRIT-118 as revised), and `price_breaks_level` breaks on the final bar's high (HAT-CRIT-119 `[OWNER-PENDING]`). Only shadow bots get live candidates until the router (PR 15b); `open_entry` refuses confirm and auto.
 - `neglect` is a trigger type that the Q-EP setup also holds, so it is evaluated here and allowed in a setup list (`extra_stages`).
@@ -164,18 +161,18 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - `PBT regime.strategy_rules` (HAT-BOT-053) and the shared per-bot cap property of HAT-BOT-050 were built in PR 11 (`verify-portfolio`, `verify-execution`); the config model only stores the regime rule.
 - The config does not store `version`; the version number lives on the row. The YAML shape of the seeds (implicit stage and order, one inline playbook named `default`) is accepted and stored in the canonical form (explicit stage and order, `playbooks` list).
 - `create_bot` always starts shadow. A config's own `execution_mode` is accepted (the seeds declare shadow) but a mode change goes through the mode-change service of a later PR.
-- `docs/specs/hat/04-criteria-and-bots.md` quotes `level: "max(consolidation_high, opening_range_high)"` in the S2 YAML: unquoted, the comma ends the flow mapping and the block does not parse.
+- A `level` expression with a comma must be quoted in YAML (`"max(consolidation_high, opening_range_high)"`): unquoted, the comma ends the flow mapping and the block does not parse.
 - PR 11 built `PBT regime.strategy_rules` (recorded in `verify-portfolio`) and the shared per-bot cap property of HAT-BOT-050 (`PBT trades.shared_bot_cap`, recorded in `verify-execution`). The scan is one pure function of its inputs; its scheduling through `run_job` and the real inputs (bars, features, index closes) are PR 17.
 - PR 15b widened the live trigger path (`engine/live_entry.py`) from shadow bots to every active bot with a live version: candidates carry the bot's effective mode for the session, and `route_by_mode` refuses an auto trigger until the router is wired (PR 17). No criteria property was narrowed; `test_criteria.py` and `test_bars.py` pass unchanged.
 - PR 16: `route_by_mode` also refuses a confirm bot (`confirm_needs_router`): its approval card needs the router's token signer, so until PR 17 routes live triggers through the router only shadow triggers are written. `test_criteria.py` and `test_bars.py` pass unchanged.
-- PR 55: `FastAboveSlow.rising_days` defaults to 3 (owner default, plan audit N7); its property is `regime.strategy_rules` in `verify-portfolio`. The S2 seed and its spec YAML state `rising_days: 3` explicitly, so `seed_bots_match_spec_yaml` still compares them field for field and is unchanged.
+- PR 55: `FastAboveSlow.rising_days` defaults to 3 (owner default, plan audit N7); its property is `regime.strategy_rules` in `verify-portfolio`. The S2 seed and its spec YAML state `rising_days: 3` explicitly, so the seed checks are unchanged.
 - PR 56 (research G07, plan audit "PR 56"): `neglect` passes on the absolute 63-session move, so a fall beyond the limit now fails `already_fell`; the optional `max_range_126d_pct` (off by default) adds a 126-session range check on the bars before the date (`range_too_wide`). A negative `max_return_63d_pct` stays valid (stored configs keep loading) but never passes. With the range on, fewer than 126 sessions is `no_data`, checked after the return. `make_rows` gained a `trend` style so large moves of either sign occur. Nothing was narrowed; `criteria.neglect_contract` now covers both signs and the range.
 - PR 54 (plan audit N2): a criterion reads the numeric `extras` of the criteria before it in its stage (`EvalContext.levels`, set by `evaluate_stage` on a copy of the context), which `close_vs_pivot` needs for `vcp`'s pivot. `close_vs_pivot` is a hard S1 setup criterion after `vcp`; a symbol whose `vcp` finds no base now stops at `close_vs_pivot` (`no_pivot`) instead of `below_threshold`. The scan publishes the setup stage's `levels` (`StageOutcome.levels`), so the gate and the watchlist row use one pivot; `ep_setup_passes` evaluates the EP setup through `evaluate_stage` (threshold 0, so only hard criteria decide) to pass levels too. `EvalContext` keeps its read bars in a dict its `with_levels` copies share. No property was narrowed; `hat_config_support` generates the new stop `min_pct` but not `close_vs_pivot` (valid only after a `vcp`; `config.close_vs_pivot_needs_vcp` covers it).
 - PR 57 (research G25-G27, plan audit "PR 57"): `vcp`'s dry-up baseline is the 50 sessions before the base starts (a base starting fewer than 50 sessions into the history is `no_data`), so `vcp_contract` now checks that baseline and the exact `dryup_ratio`. New params, off by default: `max_high_spread_pct`, `min_first_depth_pct`, `min_contraction_bars` (reasons `highs_not_level`, `first_depth_too_shallow`, `contraction_too_short`, checked after the final depth and before the dry-up) and `pivot_source: vcp|base_high` (the `pattern` extra appears only under `base_high`; a flat base fails `flat_base`). The zero-volume baseline check runs only when the pattern holds, as before, so it never hides a pattern reason. `scan.py` is unchanged: it already publishes the setup stage's `pivot` level. The golden replay and `vcp_parity` pass unchanged. Nothing was narrowed; `vcp_contract` draws the structural rules, and `hat_config_support` draws all four new params.
 - PR 22: the opening range and the day low exist only for a symbol the bar builder watched from the open (HAT-DATA-114), so `hat_trigger_support.drive` first sends each symbol a pre-open tick (`from_open=True`, the default); `price_breaks_level_contract` is unchanged otherwise. The trigger monitor reads the day low from the bar view (`BarView.day_low`) instead of keeping its own; a late-seen candidate is checked by `bars.trigger_never_uses_a_partial_session` in `verify-live-data`.
 
 - PR 35 (HAT-BOT-084, HAT-GOV-083): `versions.py` gains the release gate (`start_shadow`, `promote_version`, `assign_version`) and `release_overview`, which the admin command line calls (`verify-portfolio`, `admin.*`). The 20 sessions are counted with `lifecycle.shadow_gate` on the calendar's trading days, so `lifecycle.shadow_days` proves the count and `config.release_gate` its use. Nothing was narrowed.
-- PR 49 (plan audit N1, G20; HAT-CRIT-119, -122): `price_breaks_level` gains `confirm: close|high` (default `close`: the final bar must also close at or above the level), reading the new `LiveContext.bar_close`; the trigger monitor fills it with the bar's close. The entry is `trigger.entry_limit` (max(level, close) rounded up to the tick), and the entry filters read that price (`plan_entry` passes `replace(ctx, price=entry).for_entry(...)`: `max_chase` reads `price`, `adtr_filter` reads `entry`, and the trigger context's other inputs are kept). `criteria.price_breaks_level_contract` draws `confirm` (unset, `close`, `high`) and asserts the entry; `criteria.entry_filters_skip`'s oracle reads the entry LIMIT; `level_expression` and `catalyst_required_in_confirm` give their contexts a bar close. The seed YAMLs are unchanged (the default applies). The backtest is untouched (it does not evaluate `price_breaks_level`; its fill proxies are 09 §2). Nothing was narrowed.
+- PR 49 (plan audit N1, G20; HAT-CRIT-119, -122): `price_breaks_level` gains `confirm: close|high` (default `close`: the final bar must also close at or above the level), reading the new `LiveContext.bar_close`; the trigger monitor fills it with the bar's close. The entry is `trigger.entry_limit` (max(level, close) rounded up to the tick), and the entry filters read that price (`plan_entry` passes `replace(ctx, price=entry).for_entry(...)`: `max_chase` reads `price`, `adtr_filter` reads `entry`, and the trigger context's other inputs are kept). `criteria.price_breaks_level_contract` draws `confirm` (unset, `close`, `high`) and asserts the entry; `criteria.entry_filters_skip`'s oracle reads the entry LIMIT; `level_expression` and `catalyst_required_in_confirm` give their contexts a bar close. The seed YAMLs are unchanged (the default applies). The backtest is untouched (it does not evaluate `price_breaks_level`; its fill proxies are in `backtest/fills.py`). Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -1188,51 +1185,12 @@ E     {'max_chase': 'entry_filter'}
 E     Use -v to get more diff
 ```
 
-Break: (PR 54) the `close_vs_pivot` row is left out of the 04 §4 table.
+Break: (PR 54) the `close_vs_pivot` row is left out of the registry.
 
 ```
 E   AssertionError: assert 24 == 25
 E    +  where 24 = len({'series_in': 'universe', 'min_turnover': 'universe', 'min_price': 'universe', 'price_band_allowed': 'universe', ...})
 FAILED tests/hat/conformance/test_conf_criteria.py::test_criterion_catalogue_complete
-```
-
-### CONF bot_seed_s1_matches_spec
-
-Break: The S1 seed allows a stop 9% below entry (the spec says 8%).
-
-```
-E   AssertionError: assert {'bot': 'stag...'shadow', ...} == {'bot': 'stag...'shadow', ...}
-E
-E     Omitting 10 identical items, use -vv to show
-E     Differing items:
-E     {'stop': {'rule': 'below_final_contraction_low', 'buffer_pct': 0.5, 'max_pct': 9}} != {'stop': {'rule': 'below_final_contraction_low', 'buffer_pct': 0.5, 'max_pct': 8}}
-E     Use -v to get more diff
-```
-
-### CONF bot_seed_s2_matches_spec
-
-Break: The S2 seed's gap threshold is 12% (the spec says 10%).
-
-```
-E   AssertionError: assert {'bot': 'mome...'shadow', ...} == {'bot': 'mome...'shadow', ...}
-E
-E     Omitting 7 identical items, use -vv to show
-E     Differing items:
-E     {'playbooks': [{'name': 'breakout', 'setup': {'threshold': 0.6, 'criteria': [{'type': 'momentum_rank', 'mode': 'hard',...lters': [{'type': 'adtr_filter', 'params': {'max_multiple': 1.5}}, {'type': 'max_chase', 'params': {'pct': 2}}],
-E     Use -v to get more diff
-```
-
-### CONF seed_bots_match_spec_yaml
-
-Break: The S1 seed enables `earnings_growth` (the spec has it off).
-
-```
-E   AssertionError: assert {'bot': 'stag...'shadow', ...} == {'bot': 'stag...'shadow', ...}
-E
-E     Omitting 10 identical items, use -vv to show
-E     Differing items:
-E     {'setup': {'threshold': 0.6, 'criteria': [{'type': 'sma_above', 'mode': 'hard', 'params': {'a': 'close', 'b': 150}}, {...': 'hard', 'params': {'a': 50, 'b': 150}}, {'type': 'sma_above', 'mode': 'hard', 'params': {'a': 50, 'b': 200}},
-E     Use -v to get more diff
 ```
 
 ### CONF bot_seed_default_mode

@@ -1,5 +1,5 @@
 """The control plane's database operations: kill switches, pause, mode changes, the exposure
-ladder and the nightly bot snapshot (06 §4, §6, §8; HAT-RISK-040/060..065, HAT-GOV-081/084).
+ladder and the nightly bot snapshot (HAT-RISK-040/060..065, HAT-GOV-081/084).
 
 Every function changes state and appends its event in the caller's open transaction through
 `events.record`, so the two commit or roll back together. None commits. The rules they apply are
@@ -533,7 +533,7 @@ def snapshot_bots(session: Session, trade_date: date) -> JobResult:
     """`snapshot.bots` (HAT-OPS): write one `hat_daily_bot_snapshot` per bot for `trade_date`.
 
     Equity = the sleeve's allocation capital + its cumulative realised P&L
-    (06 §2: "allocation + realised P&L"); the peak is the largest equity seen so far, restated
+    ("allocation + realised P&L"); the peak is the largest equity seen so far, restated
     for any change of allocation capital so a planned reallocation never reads as a loss
     (HAT-RISK-066, `_snapshot_peak`); open risk
     is the sum of (entry - stop) x qty over its open real positions. Idempotent: a rerun for the

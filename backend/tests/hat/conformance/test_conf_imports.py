@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 from hat_conf_repo import APP_ROOT, build_graph, reaches
-from hat_conf_spec import SPEC_DIR
 
 from app.hat.data import mcp_client
 from app.hat.data.mcp_client import (
@@ -100,10 +99,9 @@ def test_imports__mcp_transport_only() -> None:
 
 def test_mcp_endpoints_allowlist() -> None:
     """HAT-DEC-I16: the client can be configured only with nse-bhavcopy and cm-market; the
-    environment variables are exactly the two the ops spec lists."""
+    environment variables are exactly the two documented in .env.example."""
     assert set(ENDPOINT_ENV) == set(ALLOWED_SERVERS)
-    ops = (SPEC_DIR / "10-ops.md").read_text(encoding="utf-8")
-    assert set(re.findall(r"`(HAT_MCP_\w+)`", ops)) == set(ENDPOINT_ENV.values())
+    assert set(ENDPOINT_ENV.values()) == {"HAT_MCP_BHAVCOPY_URL", "HAT_MCP_CMMARKET_URL"}
     env = {"HAT_MCP_BHAVCOPY_URL": "http://a.invalid", "HAT_MCP_TAPETIDE_URL": "http://b.invalid"}
     assert endpoints_from_env(env) == {"nse-bhavcopy": "http://a.invalid"}
     with pytest.raises(McpConfigError):

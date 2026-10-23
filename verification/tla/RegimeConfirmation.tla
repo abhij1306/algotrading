@@ -1,6 +1,6 @@
 ------------------------------ MODULE RegimeConfirmation ------------------------------
 (***************************************************************************)
-(* The 3-day confirmation of the regime state (05 §3, HAT-PORT-030).       *)
+(* The 3-day confirmation of the regime state (HAT-PORT-030).       *)
 (*                                                                         *)
 (* Each trading day the regime job reads one raw state (the classifier's   *)
 (* output) and updates the confirmed state: the confirmed state becomes    *)

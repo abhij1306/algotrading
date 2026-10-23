@@ -198,7 +198,7 @@ def seed_pending_approval(session: Session, bot_id: uuid.UUID) -> uuid.UUID:
         risk_amount=D(50),
         currency="INR",
         mode="confirm",
-        state="AwaitingApproval",  # the card is out (07 §4): a kill moves it to Expired
+        state="AwaitingApproval",  # the card is out: a kill moves it to Expired
         risk_decision={},
     )
     session.add(signal)

@@ -1,4 +1,4 @@
-"""Confirm-mode approvals: Take, Skip, expiry and the veto score (07 §3, §13; HAT-EXEC-030..032,
+"""Confirm-mode approvals: Take, Skip, expiry and the veto score (HAT-EXEC-030..032,
 HAT-EXEC-130, HAT-TG-042, HAT-TG-043, HAT-TG-045).
 
 An approval card is written with its signal (`trades.open_entry` in confirm mode) and expires

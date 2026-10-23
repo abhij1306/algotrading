@@ -1,5 +1,5 @@
 """Broker account onboarding and the capability gate (HAT-BRK-092, HAT-DEC-I8, HAT-DEC-I9,
-HAT-EXEC-012; 07 §8-§9).
+HAT-EXEC-012).
 
 A broker account becomes usable only after the capability check (funds, positions and holdings
 fetched without error) and is recorded in `hat_broker_account` with the adapter's capabilities.

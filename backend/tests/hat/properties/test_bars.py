@@ -2357,7 +2357,7 @@ def test_price_book_dates_each_tick(ticks: list[tuple[int, int, int | None, int]
 def test_circuit_locks_read_the_band(
     prev: int, band: Decimal | None, tick: Decimal | None, known: bool, offset: int
 ) -> None:
-    """PR 51 (MX-F11, 02 §2): the lower and upper circuit locks read the stored band of the
+    """PR 51 (MX-F11): the lower and upper circuit locks read the stored band of the
     day: the lower band price is the previous close less the band, up to the tick grid; a price
     at or below it is locked at the lower circuit; no band row tells nothing (None) and an F&O
     name (no band) is never locked. The prices a live price may take are the band's, one tick

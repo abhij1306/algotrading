@@ -1,4 +1,4 @@
-"""Button presses: approval cards and second confirmations (08 §3, §4; HAT-TG-033, HAT-TG-035,
+"""Button presses: approval cards and second confirmations (HAT-TG-033, HAT-TG-035,
 HAT-TG-040..044, HAT-GOV-082).
 
 **Take and Skip.** A button is checked at this edge before anything else runs: its MAC must
@@ -9,7 +9,7 @@ and again under the bot's lock by `approvals.take` / `skip`, so a token is used 
 is decided once (HAT-TG-041). A bad, used or forged token is refused without touching the signal.
 Only then does the `ApprovalDesk` (the execution router of the bot's account) take or skip:
 the Take reads the live price, `locked_upper_circuit` and the placement conditions at the tap
-and fails closed when any is unknown (HAT-TG-043, 07 §3).
+and fails closed when any is unknown (HAT-TG-043).
 
 **Confirmations.** A confirmed `/flatten` sells every open real position through the exit path
 (`TradeManager.flatten`: purpose flatten, side sell, qty_open) and records one

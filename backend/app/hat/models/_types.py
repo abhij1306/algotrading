@@ -1,4 +1,4 @@
-"""Portable column types and helpers shared by the HAT models (03-schema §10)."""
+"""Portable column types and helpers shared by the HAT models."""
 
 from __future__ import annotations
 

@@ -76,7 +76,7 @@ def supersede_old_seed(
     session: Session, user_id: uuid.UUID, now: datetime
 ) -> HatRiskPolicyVersion | None:
     """PR 46 (D128, HAT-RISK-011): when the user's policy in force at `now` is the withdrawn PR 10
-    seed (`OLD_SEED_POLICY`) and nothing is pending, write the §1 seed as the next version,
+    seed (`OLD_SEED_POLICY`) and nothing is pending, write the current seed as the next version,
     `direction = initial` and effective at once (the owner's decision, not a requested change,
     so no cooling-off), mark the old one superseded and write both governance events. Every
     number in it is equal to or stricter than the old seed. Returns the new row, or None and

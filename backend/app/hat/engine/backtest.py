@@ -1,4 +1,4 @@
-"""The backtest day loop (09 §1-§2, HAT-BT-010..024, HAT-DEC-T12): one engine for backtest and live.
+"""The backtest day loop (HAT-BT-010..024, HAT-DEC-T12): one engine for backtest and live.
 
 The loop has no strategy, risk or exit logic of its own. Each simulated trade date d runs the
 code live trading runs, in the same order:
@@ -78,8 +78,8 @@ The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown
 `evaluate_signal` reads through `trades.open_entry` from the ledger's hard-stop closes, as live
 does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records the value used.
 
-Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, 09 §7 HAT-BT-070) and
-measured in shadow (PLAN Q4): among them, the trigger is the break of the level alone
+Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-070) and
+measured in shadow: among them, the trigger is the break of the level alone
 (`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the episodic-pivot playbook
 is not backtested, close-based exits fill at the official close, kill switches are not simulated
 (the exposure ladder is), and a sleeve's health multiplier is 1 (its regime multiplier too, unless
@@ -230,7 +230,7 @@ INITIAL_EQUITY = Decimal(1_000_000)
 # The scan reads at most 652 sessions back (a 400-session SMA compared 252 sessions earlier);
 # the window it is given holds more, so its watchlist equals a scan of the full history.
 LOOKBACK_SESSIONS = 700
-# What the daily-bar loop does not model, by fixed code (09 §7, HAT-BT-070); measured in shadow.
+# What the daily-bar loop does not model, by fixed code (HAT-BT-070); measured in shadow.
 KNOWN_GAPS = (
     "trigger_is_level_break_only",  # volume_pace and the opening range need intraday bars
     "episodic_pivot_not_backtested",
@@ -293,7 +293,7 @@ class MarketData:
 
     `days`: every session of the store, sorted. `bars`: adjusted daily bars (`instrument_id`
     text, `date`, `open`, `high`, `low`, `close`, `volume`, `traded_value`, as doubles).
-    `features`: the daily features (`date`, `instrument_id`, the 02 §7 columns). `index_closes`:
+    `features`: the daily features (`date`, `instrument_id`, columns). `index_closes`:
     per index name, (date, close) oldest first. `members`: the universe's membership intervals,
     delisted instruments included. `industries`: each instrument's industry, either one name
     or its classifications as (effective_from, industry), read point in time. `last_traded`: the

@@ -112,13 +112,13 @@ def test_migration__ensure_idempotent(pg_engine: Engine) -> None:
             connection.execute(text("DELETE FROM hat_job_run WHERE job = 'old'"))
         engine.dispose()
 
-    # An older policy: a user still on the PR 10 seed is moved to the §1 seed.
+    # An older policy: a user still on the PR 10 seed is moved to the current seed.
     _old_seed_superseded(pg_engine)
 
 
 def _old_seed_superseded(pg_engine: Engine) -> None:
-    """HAT-RISK-011 (PR 46): `init_db()` moves a user still on the PR 10 seed to the §1 seed as an
-    `initial` version: the immutability trigger lets the old row be superseded, the cooling-off
+    """HAT-RISK-011 (PR 46): `init_db()` moves a user still on the PR 10 seed to the current seed as
+    an `initial` version: the immutability trigger lets the old row be superseded, the cooling-off
     CHECK accepts the new one, and a second run writes nothing."""
     user = uuid.uuid4()
     past = datetime.now(UTC) - timedelta(days=30)

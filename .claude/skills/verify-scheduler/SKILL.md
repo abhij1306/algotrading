@@ -5,7 +5,7 @@ description: How to run, read and update the checks behind Hire a Trader's job s
 
 # verify-scheduler
 
-Checks that a scheduled job runs to success at most once per (job, trade_date), that a failed or interrupted run can be retried, that nothing starts while HAT is disabled, that the windowed `exits.close` job runs only inside 15:20-15:25 IST and sends nothing from 15:30 on, that the 15:25 live price of each MA exit is kept next to the official close, that the deployment (Compose file, deploy-window guard, backup manifest) and the runbook hold their rules, and that the verification machinery (TLC runner, Hypothesis profile, CI job, skills) is itself intact. Specs: `docs/specs/hat/10-ops.md` §2, §3 (HAT-OPS-034), §5, §7, §9 (HAT-OPS-040, 042, 060, 090), `07-execution-and-brokers.md` §7 (HAT-EXEC-074, HAT-DEC-B18), `03-schema.md` §7 (HAT-SCH-072), `11-verification.md` (HAT-VER-030..034, 040, 050, 060, 070..072).
+Checks that a scheduled job runs to success at most once per (job, trade_date), that a failed or interrupted run can be retried, that nothing starts while HAT is disabled, that the windowed `exits.close` job runs only inside 15:20-15:25 IST and sends nothing from 15:30 on, that the 15:25 live price of each MA exit is kept next to the official close, that the deployment (Compose file, deploy-window guard, backup manifest) and the runbook hold their rules, and that the verification machinery (TLC runner, Hypothesis profile, CI job, skills) is itself intact. Requirement IDs (index: `docs/invariants.md`): (HAT-OPS-034), (HAT-OPS-040, 042, 060, 090), (HAT-EXEC-074, HAT-DEC-B18), (HAT-SCH-072), (HAT-VER-030..034, 040, 050, 060, 070..072).
 
 ## Properties
 
@@ -20,9 +20,9 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `TLA NightlyPipeline!ExitsIndependentOfPipeline` Exits and stops are sent whatever state the nightly pipeline is in. Harm: a data outage leaves positions without protection.
 - `TLA NightlyPipeline!NightlyPipelineOrder` The steps run in order ingest, gate, then the later steps, each only after the steps it waits for succeeded (the adjustment after the ingest, features after the gate and the adjustment, PR 33). Harm: a scan reads a day not yet ingested or gated.
 - `TLA NightlyPipeline!AdjustIndependentOfGate` An ingested day's corporate-action adjustment eventually succeeds, whatever the gate decides (PR 33). Harm: a failed gate hides the next session's split of a held stock.
-- `TLA NightlyPipeline!SnapshotEveryNight` The bot snapshot (drawdown kills) runs every trading night, waiting on no step (PR 33); the model has no 23:30 (its clock ends at 22:00), so the time itself is `ops.job_registry`'s. Harm: a failed gate or allocation leaves a drawdown kill unmeasured.
+- `TLA NightlyPipeline!SnapshotEveryNight` The bot snapshot (drawdown kills) runs every trading night, waiting on no step (PR 33); the model has no 23:30 (its clock ends at 22:00), so the time itself is in the job table (`daily/runtime.py`). Harm: a failed gate or allocation leaves a drawdown kill unmeasured.
 - `TLA NightlyPipeline!IngestDecides` By 22:00 the ingest has either its data or a failure, never neither (a lost fallback leaves the pipeline waiting forever). Harm: the nightly job hangs and nobody is told.
-- `TLA DailyCycle!IntradayOrder` The intraday jobs first start in the order of 10 §3 (login prompt 08:30, live preparation 08:45, pre-open gaps 09:00-09:08, gap scan 09:16, the regime-gate refresh 09:20, `exits.close` 15:20-15:25, `gtt.swap` 15:25, session end 15:30, reports 15:40); no `exits.close` run starts once `gtt.swap` has; every entry order is placed inside 09:20-15:20, after today's gate refresh and with a live broker session. Harm: entries fire on an unformed opening range, yesterday's gate or without a session, or a GTT is placed for a position that is still being exited.
+- `TLA DailyCycle!IntradayOrder` The intraday jobs first start in the order of the daily job table (login prompt 08:30, live preparation 08:45, pre-open gaps 09:00-09:08, gap scan 09:16, the regime-gate refresh 09:20, `exits.close` 15:20-15:25, `gtt.swap` 15:25, session end 15:30, reports 15:40); no `exits.close` run starts once `gtt.swap` has; every entry order is placed inside 09:20-15:20, after today's gate refresh and with a live broker session. Harm: entries fire on an unformed opening range, yesterday's gate or without a session, or a GTT is placed for a position that is still being exited.
 - `TLA DailyCycle!AllocateAfterRegime` `allocate` starts for a trade date only after `regime` succeeded for it, and an allocation never changes an open position's quantity or stop. Harm: weights use yesterday's regime, or a weight cut forces sales the strategy did not call for.
 - `CONF ci_runs_models_for_merged_targets` Every model a README row names once all its PRs have merged is checked by CI: `verification-tla` runs `run.sh` and `run.sh --broken` unfiltered and unconditionally, `run.sh` with no argument checks every `*.tla`, and the model has its cfg and a broken variant expecting each property. Harm: a merged high-harm promise ships with its model never run.
 - `PBT ops.job_run_recording` On the real `run_job`, random calls, body failures, simulated crashes and restarts always leave one row per key, with a stable error code (never raw exception text), correct timestamps, and at most one successful body per key. Harm: an audit row lies about what ran, or an error message leaks a secret.
@@ -30,14 +30,13 @@ Checks that a scheduled job runs to success at most once per (job, trade_date), 
 - `PBT ops.refuses_non_postgres` With HAT enabled on any dialect but `postgresql`, `HatRuntime.start` raises `HatConfigError` before a task, a log handler, its parts or the database exist. Harm: HAT runs without the database triggers that protect it.
 - `CONF hat_runtime_requires_postgres` The same refusal for the named non-Postgres dialects, and `app/main.py` hands `HatRuntime` the engine's own dialect. Harm: the guard checks a constant instead of the real database.
 - `PBT ops.calendar_skip` For every calendar of holidays and every instant, a trade-date job is never due on a non-trading day or a day the calendar does not know, an every-day job is not held back, and `HatScheduler.due_jobs` starts exactly the due jobs. Harm: bots act on a holiday or alert about data that never existed.
-- `CONF ops.job_registry` The jobs `daily_jobs` registers (one broker account) equal the 10-ops §3 job table row for row: name, days, IST time, window end and `after` jobs. Harm: a missing or mistimed job (for example `gtt.swap`) leaves positions unprotected overnight.
 - `CONF existing_suite_green` CI runs on every pull request with the backend, Postgres, verification, frontend and API-schema jobs, none skippable by `if:` or allowed to fail. Harm: a red suite merges.
 - `PBT ops.close_gap_recorded` Every `close_below_sma` evaluation of the close window records the live price it used, fired or not; once the nightly ingest has the official close, exactly one `exit.close_gap` per position records that close and its gap, against the same position; a close still missing is recorded by a later run and a repeated run changes nothing. Harm: the backtest/live gap of MA exits cannot be measured.
 - `PBT ops.log_records_structured` Every record under `app.hat` renders as one JSON line with `ts`, `level`, `msg` and each context key given. Harm: logs cannot be parsed during an incident.
 - `PBT ops.backup_manifest` For every generated file set, `scripts/hat_backup.py`'s manifest lists each file with its size and sha256, survives a JSON round trip, equals the listing of the tar of the set, and verifies clean at both targets; one flipped byte, missing file or size change at either target is reported for that file at that target only. Harm: a damaged or partial backup passes as good and the event log or raw files cannot be restored.
 - `PBT ops.deploy_window_guard` For every instant in any time zone and every calendar flag, `scripts/hat_deploy_guard.py` refuses exactly when the IST time is in 08:30-15:35 on a trading day and the run is not forced; an unlisted day trades iff it is a weekday (fail closed); the script exits non-zero exactly when refused and a forced run inside the window appends one log line with its reason. Harm: a restart mid-session misses triggers, stop moves or the GTT swap.
 - `CONF ops.compose_services` `deploy/hat/docker-compose.yml` has exactly `postgres` and `backend` (the `frontend` only under a profile), Postgres 18, every published port on 127.0.0.1, every secret-like variable interpolated rather than written, the backend reading the repo `.env`, running with HAT enabled, its data root on a volume, after a healthy database. Harm: an open port exposes the trading box, or a stray service holds broker credentials.
-- `CONF ops.runbook_complete` `10-ops.md` §9 has a `###` procedure with steps whose heading names every `OPS` check used anywhere in the specs, and one for every failure bullet of §4. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
+- `CONF ops.runbook_complete` `docs/runbook.md` has a `###` procedure with steps whose heading names every `OPS` check of `docs/invariants.md`. Harm: at 09:20 on a bad day the operator has no tested procedure to follow.
 - `PBT ops.status_matches_db` For every database state of bots, kill-switch rows, job runs, regime rows, broker accounts and sessions and `feed.stale` events, `GET /api/hat/status` reports each bot's mode, status and manage-only reasons, the state of every (scope, bot, channel) kill key and the account kill, the latest regime, today's session of every active account, today's job runs and the latest `feed.stale` of today, exactly as the rows hold them. Harm: the user believes the bot is protected or halted when it is not.
 - `PBT dashboard_routes.positions_are_the_open_rows_as_decimal_strings` `/api/hat/positions` lists exactly the positions with no close time and a quantity left, oldest first, each price a decimal string equal to the stored one. Harm: the dashboard hides an open position, shows a closed one, or rounds a stop.
 - `PBT dashboard_routes.allocations_are_the_latest_day_exactly` `/api/hat/allocations` shows only the latest allocation day, each weight and the capital a decimal string equal to the stored value. Harm: the user reads yesterday's sleeve sizes or a weight rounded through a float.
@@ -93,7 +92,7 @@ When a check fails, decide which side is wrong before touching anything.
 
 - A new or changed job rule: edit `verification/tla/JobScheduler.tla`, keep a `\* code: backend/app/hat/...py:function` comment on every action, add or adjust a broken variant under `verification/tla/broken/` (file `JobScheduler__<mode>.cfg` with an `EXPECT: <Property>` line and the mode listed in the model's `ASSUME`), run both `run.sh` commands, then the property and database checks.
 - A new bound or constant: list it under `Bounds:` in the model header, or `tla_bounds_declared` fails.
-- A new model: needs a cfg, header, code comments and broken variants, and a row in `11-verification.md` §3.
+- A new model: needs a cfg, header, code comments and broken variants, and a line in `docs/invariants.md` and `docs/architecture.md`.
 - After re-confirming everything, update the sync commit and digest below: `python backend/tests/hat/conformance/hat_conf_skills.py verify-scheduler` prints the digest.
 
 ## Coverage
@@ -131,7 +130,7 @@ Checks:
 - `backend/tests/hat/properties/test_dashboard_routes.py`
 - `backend/tests/hat/hat_dashboard_support.py`
 - `backend/tests/hat/conformance/test_conf_api.py`: `test_hat_routes_read_only`, `test_hat_writes_guarded`, `test_api_loopback_no_auth_wiring`, `test_frontend_sends_write_header`
-- `backend/tests/hat/conformance/test_conf_runtime.py`: `test_job_registry`, `test_existing_suite_green`, `test_route_matches_protocol`
+- `backend/tests/hat/conformance/test_conf_runtime.py`: `test_existing_suite_green`, `test_route_matches_protocol`
 - `backend/tests/hat/conformance/test_conf_boundaries.py`: `test_hat_runtime_requires_postgres`
 - `backend/tests/hat/db/test_db_portfolio_ops.py`: `test_ops__job_run_unique`
 - `backend/tests/hat/db/test_db_daily_cycle.py`: `test_ops__simulated_day`
@@ -149,21 +148,14 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `e640cd4b48fd0e97f202917c65e93b7eb30053d26eb9fb1384561188d387ada9`
+Covered digest: `9208a85664fd28fab409e61ee2e4007c853813ad37e52e40ddb38c0cb1b06fe9`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 73b (PR 39 follow-up): `daily/runtime.py` builds `LiveSubscriptions` with `subscription_alert(self.notifier, self._now)` (sent off the loop, the clock's trade date), and `daily/production.py` refuses the start while a proxy would carry Fyers traffic (`verify-execution`). `test_ops.py` and `test_conf_ops.py` gain one check each. Not covered by a property: the alert's detail (none: `LiveSubscriptions` passes the code only). Nothing was narrowed.
-- PR 68: `MERGED_PRS` gains 68; no scheduler check changed.
 - PR 73: `test_conf_verification.py` lists PR 73 as merged, `test_conf_ops.py` allows the admin command line `decimal`, `engine.rescale` and `engine.trades`, and `execution/accounts.py` gains `revoke_ddpi` (`verify-portfolio`). No job, job-run or harness rule changed. Nothing was narrowed.
-- PR 67: `MERGED_PRS` gains 67; no scheduler check changed.
-- PR 66: `MERGED_PRS` gains 66; no scheduler check changed.
-- PR 65: `MERGED_PRS` gains 65; no scheduler check changed.
-- PR 64: `MERGED_PRS` gains 64; no scheduler check changed.
-- PR 63: `MERGED_PRS` gains 63; no scheduler check changed.
-- PR 62: `MERGED_PRS` gains 62; no scheduler check changed.
 - PR 52: `daily/accounts.py:Desks.recover` remembers a Take left unplaced as well as an auto entry in Triggered (`_left_unplaced`), and `resume_entries` also takes the signals whose placement raised in this process (`ExecutionRouter.take_stranded`); checked by `verify-execution`'s `router.crash_resumes_entry_once` (breaks recorded there). The `expire` job is unchanged (every minute); its sweep now also ends an earlier trade date's stranded entry. No job or schedule changed.
 - PR 49: `HatRuntime.periodic` gains the `entries` step (every pass while the market is open: `Desks.cancel_stale_entries` with the runtime's `EntryWatch`, a `LiveData` bar listener); checked by `verify-execution`'s `manage.unfilled_entry_cancelled` (breaks recorded there). No scheduled job changed.
 - PR 48: `daily/accounts.py:Desks` and `daily/runtime.py` pass the sale band and the `HAT_MPP_RESEND`/`HAT_MPP_PAGE_AFTER` settings to the fill sync and the trade manager (`verify-execution`'s `mpp.*`). No job or schedule changed.
@@ -172,11 +164,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - The model counts recorded successes, not body executions: a crash between the body and its recording is the `Restart` action and re-runs the body (see "Bug or model error", known window).
 - `TypeOK` has no broken variant: it is a type-correctness invariant, not a promise.
 - PR 3 updated the harness files this skill covers, without narrowing any check: `MERGED_PRS` now includes 3; `KNOWN_GAPS` gained two TLA names that belong to PR 13 and PR 15 (see `verify-events`); the DB-check coverage test accepts `events.partitions_ahead` through its own broken-ensure variants; the catalog comparison orders by name and definition.
-- PR 25 updated `test_conf_verification.py`: `MERGED_PRS` now includes 25; `KNOWN_GAPS` unchanged. Nothing was narrowed.
 - PR 13 updated the harness files this skill covers, without narrowing any check: `MERGED_PRS` includes 13; `KNOWN_GAPS` lost `TLA OrderReconciliation!AtMostOneEntryPerSignal` and gained `TLA ExecutionRouter!AutoNeedsGtt` (see `verify-execution`); `test_ops.py` gained `test_session_backoff_alert` and `test_backoff_delay_is_monotone_and_capped`.
-- PR 6 updated `test_conf_verification.py`: `MERGED_PRS` now includes 6; `KNOWN_GAPS` unchanged.
-- PR 10 updated `test_conf_verification.py` without narrowing any check: `MERGED_PRS` now includes 10, and `KNOWN_GAPS` gained two ExecutionRouter TLA names that belong to PR 15 (see `verify-risk`).
-- PR 8 updated `test_conf_verification.py`: `MERGED_PRS` now includes 8; `KNOWN_GAPS` unchanged.
 
 - PR 15c added the `exits.close` part to `JobScheduler` as an independent sub-model (the clock in four spans, one trade date; bounded by `MaxCalls` starts) rather than a model of its own: it shares the scheduler's start gate. It checks the window and the 15:30 sending cut-off, not the minute-level retry interval (`retry_after` is one minute, inside the five-minute window). `MERGED_PRS` now includes 15 and `KNOWN_GAPS` lost `TLA StopPlacement!StopOnlyTightens` (the model is in `verify-stops`). `ops.close_gap_recorded` drives virtual positions (the evaluation record is the same for real ones) with at most three positions per example.
 
@@ -186,19 +174,12 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 17 put `AllocateAfterRegime` and `IntradayOrder` (named `JobScheduler!...` until then and never built) in a new model `DailyCycle` rather than in `JobScheduler`, whose state space is already about a million states; the README rows were renamed to match. `DailyCycle` checks the order of first starts on one trade date with the scheduler running all day: a job's retry after a failure is modelled only for the gate refresh, `exits.close`, `regime` and `allocate` (the jobs whose outcome something waits on), a restart late in the day (which starts every due job at once) is outside it, and each job run is one step (an `exits.close` run still running at 15:25 is handled by `gtt.swap` leaving a position whose exit sale is working). No entry before 09:20 is guarded twice (the trigger window and the 09:20 gate refresh), so removing either guard alone cannot show it; the breaks remove the gate refresh and the 15:20 end of the window instead. `NightlyPipeline`'s `LaterStep` now points at `scheduler.py:due` (ordering by `after`) instead of `run_job`.
 - PR 17 added the read-only dashboard routes. `ops.status_matches_db` compares against an oracle that takes the latest row of each kill key by time; the generated rows have distinct times, so the tie rule of `kill._latest` (a tripped row wins) is covered by the risk checks, not here. The status report shows `feed.stale` as the latest such event of the day: recovery writes no event, so the feed's current health shows through the health kill. The Telegram CONF checks `gov__lever_catalogue` and `no_override_command` (in `verify-telegram`) now judge only writing (non-GET) routes, because reads are held to `hat_routes_read_only`; they still fail on a `POST /api/hat/regime`. Their route list reads `route.path`, which already carries the router prefix (it was prefixed twice).
 - PR 19 fixed a flaky `ops.stop_names_abandoned_jobs` (CI: `OSError(39, 'Directory not empty')`): its held body returned `release.wait`'s `True`, so the released run's `_finish` raised in the scheduler's thread, left the row `running`, and raced the temporary directory's removal. The body now returns None and the property waits until every run row has its finish before the directory goes (`_await_runs_finished`). The property is unchanged otherwise; with the old body the new wait fails `an abandoned job never recorded its finish`.
-- PR 41 updated `test_conf_verification.py`: `MERGED_PRS` now includes 41; `KNOWN_GAPS` unchanged.
-- PR 42 updated `test_conf_verification.py`: `MERGED_PRS` now includes 42; `KNOWN_GAPS` unchanged.
-- PR 43 updated `test_conf_verification.py`: `MERGED_PRS` now includes 43; `KNOWN_GAPS` unchanged.
-- PR 32 updated `test_conf_verification.py`: `MERGED_PRS` now includes 32; `KNOWN_GAPS` unchanged.
 - PR 38 added `CONF hat_writes_guarded`, `CONF api_loopback_no_auth_wiring` and `CONF frontend_sends_write_header` to `test_conf_api.py` (HAT-DEC-BD5); `hat_routes_read_only` is unchanged, and its `WRITE_ROUTES` comment names the guard.
-- PR 38 updated `test_conf_verification.py`: `MERGED_PRS` now includes 38; `KNOWN_GAPS` unchanged.
-- PR 33 changed `NightlyPipeline`: step 2 (`ca.adjust`) waits only for the ingested day and step 3 (`features`) for the gate and the adjustment (`Ready(k)`); `LaterStep(k)` became `\E r : Step(k, r)` so that the adjustment's success alone can carry weak fairness (its lookups are retried until they succeed); a `Snapshot` action and variable `snapDone` model `snapshot.bots`, which waits on no step, also under weak fairness. `NightlyPipelineOrder` was restated for the new waits, not weakened: steps 4 to 7 still need the one before, and features both. The fairness on the adjustment and the snapshot is an assumption that each eventually runs to success, not a check that it does. The traces above that showed `<LaterStep ...>` now show `<Step ...>`. The DB acceptance run `daily_cycle` still runs `NIGHTLY_CHAIN`, which no longer lists `ca.adjust` (it runs on its own `after`). `job_registry` reads the new rows of the 10 §3 table.
+- PR 33 changed `NightlyPipeline`: step 2 (`ca.adjust`) waits only for the ingested day and step 3 (`features`) for the gate and the adjustment (`Ready(k)`); `LaterStep(k)` became `\E r : Step(k, r)` so that the adjustment's success alone can carry weak fairness (its lookups are retried until they succeed); a `Snapshot` action and variable `snapDone` model `snapshot.bots`, which waits on no step, also under weak fairness. `NightlyPipelineOrder` was restated for the new waits, not weakened: steps 4 to 7 still need the one before, and features both. The fairness on the adjustment and the snapshot is an assumption that each eventually runs to success, not a check that it does. The traces above that showed `<LaterStep ...>` now show `<Step ...>`. The DB acceptance run `daily_cycle` still runs `NIGHTLY_CHAIN`, which no longer lists `ca.adjust` (it runs on its own `after`). 
 - PR 33 (review) added `ScheduledJob.carry`: a job with no `after` and no window marked `carry` (`snapshot.bots`) carries past midnight as a chained one does. `ops.chain_carries_past_midnight` draws the kind (chained, carry, plain) and checks that a plain unchained job does not carry. This makes the `WF_vars(Snapshot)` of `NightlyPipeline` hold for a restart before 08:30; a process down until after 08:30 still misses the night.
-- PR 33 updated `test_conf_verification.py`: `MERGED_PRS` now includes 33; `KNOWN_GAPS` unchanged.
-- PR 44 updated `test_conf_verification.py`: `MERGED_PRS` now includes 44; `KNOWN_GAPS` unchanged.
-- PR 47: `trade_jobs` registers `gtt.ex_date` only with `exdate_check` (`HatSettings.exdate_gtt_check`, passed through `daily_jobs` and `account_jobs`); 10-ops' job table holds the default registration, so the job is a note below it (CONF `ops.job_registry` unchanged). Nothing was narrowed.
+- PR 47: `trade_jobs` registers `gtt.ex_date` only with `exdate_check` (`HatSettings.exdate_gtt_check`, passed through `daily_jobs` and `account_jobs`); the job table holds the default registration. Nothing was narrowed.
 
-- PR 36 (HAT-EXEC-042): `daily/nightly.py` gains the `journal.check` job (23:15 trading days, after the 23:00 GTT verify), a row in 10 §3 that `ops.job_registry` compares (break recorded there). Its body (`Nightly.journal_check`) is checked by `verify-execution`'s `journal.check_alerts`. Nothing was narrowed.
+- PR 36 (HAT-EXEC-042): `daily/nightly.py` gains the `journal.check` job (23:15 trading days, after the 23:00 GTT verify). Its body (`Nightly.journal_check`) is checked by `verify-execution`'s `journal.check_alerts`. Nothing was narrowed.
 
 ## Scratch breaks
 
@@ -413,20 +394,6 @@ FAILED tests/hat/conformance/test_conf_runtime.py::test_route_matches_protocol
 E   assert [('session', ...), ('request', ...), ('now', <_ParameterKind.KEYWORD_ONLY: 3>, ...), ('decide', ...)] == [('session', ...), ('request', ...), ('decide', ...)]
 ```
 
-### CONF ops.job_registry
-
-Break: `GTT_SWAP_AT = time(15, 26)` in `ops/trade_jobs.py`.
-
-```
-E   AssertionError: {'not_in_table': {('gtt.swap:<account>', 'trading', datetime.time(15, 26), None, ())}, 'not_registered': {('gtt.swap:<account>', 'trading', datetime.time(15, 25), None, ())}}
-```
-
-
-Break: (PR 36) `journal.check` is not registered in `daily/nightly.py`'s `nightly_jobs` (its 10 §3 row stays).
-
-```
-E   AssertionError: {'not_in_table': set(), 'not_registered': {('journal.check', 'trading', datetime.time(23, 15), None, ())}}
-```
 ### CONF existing_suite_green
 
 Break: `continue-on-error: true` on the `frontend` job of `.github/workflows/ci.yml`.
@@ -492,14 +459,14 @@ E   assert None
 
 ### CONF ops.runbook_complete
 
-Break: in `docs/specs/hat/10-ops.md` §9, the failover drill's heading lost its check name (shortened to `### Failover drill`).
+Break: in `docs/runbook.md`, the failover drill's heading lost its check name (shortened to `### Failover drill`).
 
 ```
 E   AssertionError: assert ['ops.failover_drill'] == []
 E     Left contains one more item: 'ops.failover_drill'
 ```
 
-Another break: `### Failure: Machine down` renamed `### Failure: host outage` (a §4 bullet without its procedure).
+Another break: `### Failure: Machine down` renamed `### Failure: host outage` (a failure case without its procedure).
 
 ```
 E   AssertionError: assert ['Machine down'] == []

@@ -249,8 +249,8 @@ class DailyData:
         )
 
     def sma(self, instrument_id: uuid.UUID, length: int, live: Decimal) -> Decimal | None:
-        """The `length`-session SMA with the live price standing in for today's close (07 §6:
-        the close-phase rules read the live price as the close proxy)."""
+        """The `length`-session SMA with the live price standing in for today's close (the
+        close-phase rules read the live price as the close proxy)."""
         closes = self._closes(instrument_id)[-(length - 1) :] if length > 1 else []
         if len(closes) < length - 1:
             return None

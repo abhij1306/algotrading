@@ -1,11 +1,11 @@
 ---
 name: verify-events
-description: How to run, read and update the checks behind Hire a Trader's runtime tables, the append-only event log and its monthly partitions, the invariant-1 stop trigger, the event catalogue and `record()`, the virtual-flag rule, and the Telegram/command-log retention purge. Use before and after any change to backend/app/hat/events.py, runtime.py, ops/partitions.py, ops/retention.py, models/events.py, models/runtime.py, the hat_position or hat_event triggers in schema.py, or the event catalogue in docs/specs/hat/03-schema.md.
+description: How to run, read and update the checks behind Hire a Trader's runtime tables, the append-only event log and its monthly partitions, the invariant-1 stop trigger, the event catalogue and `record()`, the virtual-flag rule, and the Telegram/command-log retention purge. Use before and after any change to backend/app/hat/events.py, runtime.py, ops/partitions.py, ops/retention.py, models/events.py, models/runtime.py, the hat_position or hat_event triggers in schema.py, or the event catalogue in events.py.
 ---
 
 # verify-events
 
-Checks that the database refuses what the runtime tables must never hold (a second signal per day, a duplicate order tag or fill, a lowered stop, an edited or deleted event), that `events.record` writes in the caller's transaction and only the catalogued types, that monthly event partitions always exist ahead of time, and that the purge touches only the chat logs. Specs: `docs/specs/hat/03-schema.md` §5, §6, §8 (HAT-SCH-050..058, 060..068, 073, 081, 090, 091), `01-decisions.md` (I15), `06-risk-and-governance.md` (HAT-RISK-070), `08-telegram.md` (HAT-TG-050), `10-ops.md` §2 (job `events.partitions`).
+Checks that the database refuses what the runtime tables must never hold (a second signal per day, a duplicate order tag or fill, a lowered stop, an edited or deleted event), that `events.record` writes in the caller's transaction and only the catalogued types, that monthly event partitions always exist ahead of time, and that the purge touches only the chat logs. Requirement IDs (index: `docs/invariants.md`): (HAT-SCH-051..058, 061..068, 073, 081, 091), (I15), (HAT-RISK-070), (HAT-TG-050), (job `events.partitions`).
 
 ## Properties
 
@@ -26,8 +26,6 @@ Checks that the database refuses what the runtime tables must never hold (a seco
 - `PBT telegram.retention_purge` Through the real `run_job`, the `retention.purge` job leaves exactly the last year of both chat tables, records one success, and a repeat is a no-op. Harm: as above, with a job that runs twice.
 - `PBT events.user_actor_chat_id` `record()` refuses an event with `actor = 'user'` whose payload has no integer `chat_id` (a bool is not one), takes one that has it, and takes any other actor without it; `actor` is typed as the four actors. Harm: a user action in the log cannot be traced to the chat that sent it (HAT-SCH-065).
 - `PBT ingest.event_and_state_atomic` An ingest outcome row and its `ingest.*` / `quality.failed` event are both stored or both absent for every failure point before commit. Harm: the night's ingest status and the audit log disagree.
-- `CONF events.catalogue` The event types in `app/hat/events.py`, group by group, equal the catalogue table in the spec, and the actors and aggregate types equal the DDL. Harm: code and audits disagree on what can happen.
-- `CONF schema.runtime_columns, event_columns, indexes` The eight runtime tables, the seven ops tables and `hat_event` equal the spec columns, types, nullability, keys and uniques, and every §9 index exists with its columns, uniqueness, order and partial predicate. Harm: a trade cannot be replayed, or reconciliation by tag degrades to a full scan.
 - `PBT events.correlation_links_the_signal` `record()` refuses an Orders or Positions event whose correlation id is not the signal id of the `hat_order` or `hat_position` row it is about, or that names no such row, and writes nothing; an event that names its own signal is stored. Harm: an order's events are filed under another trade and its history cannot be replayed.
 
 ## Run
@@ -46,15 +44,15 @@ DB_HOST=localhost DB_PORT=5432 DB_USER=postgres DB_NAME=smarttrader_test SMARTTR
 ## Bug or model error
 
 - A failing `DB` check names what the database accepted or refused (`the database accepted: a second order with the same tag`, `the database refused: keeping or raising the stop from 95 to 95`). First check the rule is still in `PG_DDL` in `backend/app/hat/schema.py` or on the model. A refactor that removed or weakened it is a bug in the code: restore it. If the spec changed the rule, change the check and its broken variant together.
-- A failing `events.partitions_ahead` names the month with no partition or the partition an event landed in. The check reads "two months ahead" from the spec, not from the code constant: if it fails after `MONTHS_AHEAD` changed, the constant is wrong, not the check.
+- A failing `events.partitions_ahead` names the month with no partition or the partition an event landed in. The check states "two months ahead" itself, not from the code constant: if it fails after `MONTHS_AHEAD` changed, the constant is wrong, not the check.
 - A failing property prints the falsifying example and a `reproduce_failure` blob. Reproduce it with the real `record()`; never narrow a strategy to avoid the example.
-- A `CONF schema.*` failure names the table and column. The spec is the source of truth: fix the model, or fix the spec in a separate, called-out change.
+- A `CONF schema.*` failure names the table and column. The models are the source of truth.
 - The SQLite id emulation (`_next_sqlite_id`) is test-only; a failure of `ids_increasing` there says nothing about Postgres identity ids.
 
 ## Updating
 
-- A new event type: change the catalogue table in `03-schema.md` (a spec change) and `EVENT_GROUPS` in `events.py` together; `CONF events.catalogue` fails until both agree.
-- A new runtime table or column: change the model and `03-schema.md` together; add a `check_` in `tests/hat/db/hat_db_runtime.py` for any database rule, a `test_` in `test_db_runtime.py` or `test_db_events.py`, and an entry in `VARIANTS_RUNTIME` in `test_db_broken_variants.py`.
+- A new event type: change `EVENT_GROUPS` in `events.py`; `PBT events.unknown_type_rejected` covers the catalogue.
+- A new runtime table or column: change the model; add a `check_` in `tests/hat/db/hat_db_runtime.py` for any database rule, a `test_` in `test_db_runtime.py` or `test_db_events.py`, and an entry in `VARIANTS_RUNTIME` in `test_db_broken_variants.py`.
 - After re-confirming everything, update the sync commit and digest: `python backend/tests/hat/conformance/hat_conf_skills.py verify-events` prints the digest.
 
 ## Coverage
@@ -77,14 +75,13 @@ Checks:
 - `backend/tests/hat/properties/test_retention.py`
 - `backend/tests/hat/properties/test_telegram.py`
 - `backend/tests/hat/properties/test_ingest.py`
-- `backend/tests/hat/conformance/test_conf_events.py`
 
 ## Sync commit
 
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `2903568dc25db25804a563ec9fa6d615d6a6274731c2b9c6e72bf81a38545729`
+Covered digest: `f5026e28c1a6c9645ecf98d951137652f7a757489b3dc4dc603316f2e999a0c7`
 
 ## Scope changes
 
@@ -92,11 +89,11 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 73: the catalogue gains `corporate_action.resolved` (Positions), `sleeve.version_assigned` (Portfolio) and `broker.ddpi_revoked` (Sessions): 48 types. Nothing was narrowed.
 - PR 32 changed `test_telegram.py` (the HAT-TG-011 offset property, checked by `verify-telegram`); `telegram.retention_purge`, the check covered here, is unchanged and passes.
-- `watchlist.published` carries no correlation id: it belongs to a bot and a day, not to one signal, although 03 §6 puts it in the Signals group. `record()` and `events.correlation` exempt it. Recorded as a finding in the PR.
+- `watchlist.published` carries no correlation id: it belongs to a bot and a day, not to one signal, although the event catalogue groups it with signals. `record()` and `events.correlation` exempt it. Recorded as a finding in the PR.
 - `record()` requires `payload.chat_id` for `actor = user` but does not decide which event types are user-initiated: that is the Telegram layer's call (PR 16, HAT-SCH-065).
 - `PBT events.ids_increasing` runs on SQLite only (the properties job has no Postgres); the Postgres identity is checked by `DB events.partitioned`.
 - The order status set is the owner-pending default of HAT-SCH-058; the check mirrors it and changes with the owner's answer.
-- `TLA OrderReconciliation!AtMostOneEntryPerSignal` and `TLA StopPlacement!StopOnlyTightens` (named on HAT-SCH-051 and HAT-SCH-081) are not built here: 11 §3 assigns both models to PR 13 and PR 15, whose code their actions map to. They are in `KNOWN_GAPS` in `test_conf_verification.py`; the database checks `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises at the database.
+- `TLA OrderReconciliation!AtMostOneEntryPerSignal` and `TLA StopPlacement!StopOnlyTightens` (named on HAT-SCH-051 and HAT-SCH-081) are not built here: the models are assigned to the router and stop-placement code, which their actions map to. They are in `KNOWN_GAPS` in `test_conf_verification.py`; the database checks `runtime.signal_unique_per_day` and `governance.stop_only_rises` cover the same promises at the database.
 - `hat_telegram_message` and `hat_command_log` have no foreign key, so they are exempt from the `user_id` chain check (`CHAIN_EXEMPT` in `test_conf_schema.py`), like `hat_kill_switch`: a finding on HAT-SCH-012.
 - Sleeve lifecycle, regime and allocation events are not in the catalogue, so they are not recorded; PR 9 adds them with a spec change.
 
@@ -104,7 +101,7 @@ Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 - PR 15b: `record()` checks that an order or position event's correlation id is its row's signal id (`_check_linked_signal`, HAT-SCH-064). `test_events.py`'s other properties now seed the order or position row their events name; none of them was narrowed.
 - PR 16 added `events.user_actor_chat_id` and typed `record(actor=...)` as `Actor` (engine, user, broker, scheduler); the catalogue and the other properties are unchanged.
 - PR 27 added `gtt.triggered` to the Orders group (HAT-EXEC-066: a GTT triggered with its sale resting below the limit; the payload names the broker order it became). The catalogue now holds 40 types; the text above no longer gives a count. The properties are unchanged.
-- PR 29 added `broker.capabilities_changed` to the Sessions group (HAT-BRK-092: a live session check rewrote the account's capabilities from the adapter; the payload has `gtt_delivery` and `was_gtt_delivery`). The catalogue holds 41 types (`events.catalogue`). The properties are unchanged.
+- PR 29 added `broker.capabilities_changed` to the Sessions group (HAT-BRK-092: a live session check rewrote the account's capabilities from the adapter; the payload has `gtt_delivery` and `was_gtt_delivery`). The catalogue holds 41 types. The properties are unchanged.
 - PR 31 added `corporate_action.unhandled` to the Positions group (HAT-EXEC-144: a position spans an action the rescale cannot handle; the payload has `action`, `factor`, `symbol` and `virtual`). The catalogue holds 42 types. The properties are unchanged.
 
 ## Scratch breaks
@@ -259,33 +256,6 @@ Break: `record()` commits the session after the insert.
 ```
 tests/hat/properties/test_ingest.py:79: in test_event_and_state_atomic
 E   assert (1, 1) == (0, 0)
-```
-
-### CONF events.catalogue
-
-Break: `"order.amended"` added to the Orders group in `events.py`.
-
-```
-tests/hat/conformance/test_conf_events.py:14: in test_events__catalogue
-E   AssertionError: assert {'Data': ('in...closed'), ...} == {'Data': ('in...closed'), ...}
-E     Differing items:
-E     {'Orders': ('order.placed', ..., 'gtt.refreshed', ...)} != {'Orders': ('order.placed', ..., 'gtt.refreshed')}
-```
-
-Break: (PR 73) `broker.ddpi_revoked` dropped from `EVENT_GROUPS`. Check run: `test_conf_events.py::test_events__catalogue`.
-
-```
-    assert EVENT_GROUPS == spec
-E   AssertionError: assert {'Data': ('in...p', ...), ...} == {'Data': ('in...p', ...), ...}
-```
-
-### CONF schema.runtime_columns, event_columns, indexes
-
-Break: two separate breaks, each reverted after its check failed: `HatSignal.trigger_price` changed from `Money` to `Ratio`; the `hat_event` correlation index moved to `causation_id`.
-
-```
-test_schema__columns_match_spec[runtime_columns]: AssertionError: ('hat_signal', 'trigger_price')   assert 'numeric' == 'numeric(18,4)'
-test_schema__indexes: AssertionError: SpecIndex(table='hat_event', columns=('correlation_id',), unique=False, partial=None)
 ```
 
 ### PBT events.correlation_links_the_signal

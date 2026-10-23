@@ -1,4 +1,4 @@
-"""Postgres-only DDL for HAT and the reference seed (03-schema §8, §10).
+"""Postgres-only DDL for HAT and the reference seed.
 
 `ensure_hat_schema(bind)` runs from `init_db()` after `create_all`. It is idempotent
 (`CREATE OR REPLACE`, `IF NOT EXISTS`, guarded constraints) and issues nothing on SQLite, where

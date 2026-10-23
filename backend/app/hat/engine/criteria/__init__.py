@@ -1,4 +1,4 @@
-"""The criteria library: a registry of the 25 catalogue types (04 §4).
+"""The criteria library: a registry of the 25 catalogue types.
 
 Pure by construction: nothing here imports the database, a router, a broker or the network
 (CONF `import_graph_boundaries`). Parameter models validate a config on save; `evaluate`
@@ -55,7 +55,7 @@ def _live(
     return _t(code, stage, params, needs, live_fn=fn)
 
 
-# Library-table order of 04 §4.
+# Library-table order.
 _TYPES = (
     _t(
         "series_in", "universe", universe.SeriesInParams, ("instrument_master",), universe.series_in

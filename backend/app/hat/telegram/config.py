@@ -1,4 +1,4 @@
-"""The Telegram service's settings, read from the environment (08 §1, §4; HAT-TG-040).
+"""The Telegram service's settings, read from the environment (HAT-TG-040).
 
 Three variables, all required to start the service: `HAT_TELEGRAM_TOKEN` (the Bot API token),
 `HAT_TELEGRAM_CHAT_ID` (the one allowlisted chat) and `HAT_APPROVAL_SECRET` (the HMAC key of the
@@ -19,7 +19,7 @@ __all__ = ["MIN_SECRET_BYTES", "TelegramSettings", "owner_chat_id", "telegram_se
 TOKEN_VAR = "HAT_TELEGRAM_TOKEN"  # noqa: S105 (a variable name)
 CHAT_VAR = "HAT_TELEGRAM_CHAT_ID"
 SECRET_VAR = "HAT_APPROVAL_SECRET"  # noqa: S105 (a variable name)
-# PLAN §7: the approval secret is 32 or more random bytes, so the HMAC cannot be brute-forced.
+# the approval secret is 32 or more random bytes, so the HMAC cannot be brute-forced.
 MIN_SECRET_BYTES = 32
 
 
@@ -38,7 +38,7 @@ def _required(source: Mapping[str, str], name: str) -> str:
 
 
 def owner_chat_id(env: Mapping[str, str] | None = None) -> int:
-    """The allowlisted chat alone, for the owner's admin command line (10 §9): its events are the
+    """The allowlisted chat alone, for the owner's admin command line: its events are the
     owner's, so they carry this chat id (HAT-SCH-065). The token and secret are not read."""
     source = process_env() if env is None else env
     try:

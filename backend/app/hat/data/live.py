@@ -1,4 +1,4 @@
-"""The live-data engine: ticks in, 5-minute bars, staleness and gap capture out (02-data §11).
+"""The live-data engine: ticks in, 5-minute bars, staleness and gap capture out.
 
 HAT reads ticks from its own live feed (`feed.py`) and never opens a socket of its own
 (HAT-DATA-110, HAT-OVR-006): `LiveData.attach` registers `on_tick` with the feed's
