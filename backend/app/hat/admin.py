@@ -62,13 +62,11 @@ from typing import Any
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from .backtest.runs import backtest_evidence
 from .clock import SYSTEM_CLOCK, Clock
 from .data.calendar import session_calendar
 from .data.reference import parse_industry_csv
 from .engine.portfolio import lifecycle
 from .engine.portfolio import service as portfolio
-from .engine.portfolio.service import BacktestEvidence
 from .engine.rescale import CLOSE_REASON, resolve_action
 from .engine.strategy import versions
 from .engine.strategy.config import ConfigError
@@ -107,14 +105,13 @@ class AdminError(HatError):
 @dataclass(frozen=True)
 class AdminDeps:
     """What a command needs from outside: the owner's user id, the folder its input files are
-    read from, the transaction, the broker of an onboarding, the backtest evidence, the
+    read from, the transaction, the broker of an onboarding, the
     environment and the clock. `production()` builds the real ones."""
 
     user_id: uuid.UUID
     files: Path
     scope: Callable[[], AbstractContextManager[Session]]
     broker_for: Callable[[str], HatBroker]
-    evidence: BacktestEvidence
     env: Mapping[str, str]
     clock: Clock
 
@@ -130,7 +127,6 @@ class AdminDeps:
             files=settings.data_root / "admin",
             scope=db_session_scope,
             broker_for=lambda name: ADAPTER_FACTORIES[name](),
-            evidence=backtest_evidence,
             env=process_env(),
             clock=SYSTEM_CLOCK,
         )
@@ -388,7 +384,6 @@ def _owner(
         args.to,
         trade_date=trade_date,
         policy=_policy(session, deps.user_id, now),
-        backtest=deps.evidence,
         calendar=calendar,
         chat_id=chat_id,
         now=now,

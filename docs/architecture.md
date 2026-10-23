@@ -20,7 +20,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
 | `ops` | In-process scheduler, job runner, partitions, retention |
 | `daily` | `HatRuntime` wiring, the daily job table (`daily_jobs`), nightly and intraday job bodies, production parts |
-| `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` never imports the loop |
+| `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), the evidence the gates read (`evidence`, through the typed `RunMetrics`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` and `risk` import only `spec` and `evidence`, never the loop |
 | `models` | SQLAlchemy models on the shared `Base`; every table is `hat_*` |
 | `api` | Read-only dashboard routes and the Fyers login routes behind the write guard |
 

@@ -32,7 +32,6 @@ __all__ = [
     "TradeRow",
     "WatchRow",
     "compute_metrics",
-    "count_by",
     "trades_parquet",
 ]
 
@@ -114,7 +113,7 @@ class BacktestResult:
     allocations: Mapping[date, Allocation | None] = field(default_factory=dict)
 
 
-def count_by(values: Iterable[str]) -> dict[str, int]:
+def _count_by(values: Iterable[str]) -> dict[str, int]:
     found: dict[str, int] = {}
     for value in values:
         found[value] = found.get(value, 0) + 1
@@ -163,16 +162,24 @@ def compute_metrics(
     trades_: Sequence[TradeRow],
     equity: Sequence[tuple[date, Decimal]],
     spec: RunSpec,
-    invested: Sequence[Decimal] = (),
+    invested: Sequence[Decimal],
+    *,
+    signals: Sequence[SignalRow],
+    skips: Mapping[str, int],
+    ambiguous_days: int,
+    lower_circuit_days: int,
 ) -> dict[str, Any]:
     """The run's metrics (HAT-BT-040, HAT-BT-041, HAT-BT-042): R statistics in Decimal, the
-    standard drawdown, return and Sharpe figures from `app.hat.backtest.metrics`, the return
-    moments the deflated Sharpe ratio reads, and the robustness figures of PR 65 (exposure, MAR,
-    the longest drawdown, the tail-trimmed mean R and the cost share). The DSR itself depends
-    on the family's trials and is added when the run is recorded. The percentage figures are of
-    the whole account: `pct_basis` names the sleeve weight and regime rule they were sized
-    under, and `invested_share` is the mean of `invested`, the positions' share of each
-    session's mark (PR 68, HAT-BT-014)."""
+        standard drawdown, return and Sharpe figures from `app.hat.backtest.metrics`, the return
+        moments the deflated Sharpe ratio reads, and the robustness figures of PR 65 (exposure, MAR,
+        the longest drawdown, the tail-trimmed mean R and the cost share). The DSR itself depends
+        on the family's trials and is added when the run is recorded. The percentage figures are of
+        the whole account: `pct_basis` names the sleeve weight and regime rule they were sized
+        under, and `invested_share` is the mean of `invested`, the positions' share of each
+        session's mark (PR 68, HAT-BT-014). Besides: the triggers that never became a signal
+    (`skips`), the signals and their rejections by reason, and the ambiguous and lower-circuit days
+    the path rules counted (HAT-BT-021, PR 64). The one writer of a run's metrics but for what
+    `runs.complete_run` adds; `evidence.RunMetrics` reads the facts a gate needs."""
     rs = [t.r_multiple for t in trades_]
     count = len(rs)
     wins = [r for r in rs if r > 0]
@@ -236,6 +243,11 @@ def compute_metrics(
         "conventions": used,  # the block `config_digest` hashes (PR 65)
         "for_promotion": spec.for_promotion,
         "config_digest": config_hash(used),
+        "skips": dict(skips),
+        "signals": len(signals),
+        "rejections": _count_by(r.reason or "" for r in signals if r.qty == 0),
+        "ambiguous_days": ambiguous_days,
+        "lower_circuit_days": lower_circuit_days,
     }
 
 

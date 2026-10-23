@@ -167,7 +167,6 @@ from .report import (
     BacktestResult,
     SignalRow,
     compute_metrics,
-    count_by,
 )
 from .slots import order_slots, trigger_rank
 from .spec import REGIME_MULT_ONE, BacktestError, RunSpec, sleeve_weight
@@ -905,25 +904,32 @@ class _Run:
     def _result(self) -> BacktestResult:
         watch_rows = ledger_watch_rows(self.session, self.bot_id)
         trade_rows = ledger_trade_rows(self.session, self.bot_id, watch_rows)
+        equity = tuple(self.equity)
+        skips = dict(sorted(self.skips.items()))
+        invested = tuple(self.invested)
+        metrics = compute_metrics(
+            trade_rows,
+            equity,
+            self.spec,
+            invested,
+            signals=self.signal_rows,
+            skips=skips,
+            ambiguous_days=len(self.ambiguous_days),
+            lower_circuit_days=len(self.lower_circuit_days),
+        )
         result = BacktestResult(
             trades=trade_rows,
-            equity=tuple(self.equity),
+            equity=equity,
             watchlists=watch_rows,
             signals=tuple(self.signal_rows),
             fills=fill_rows(self.session),
-            skips=dict(sorted(self.skips.items())),
-            metrics={},
-            invested=tuple(self.invested),
+            skips=skips,
+            metrics=metrics,
+            invested=invested,
             allocations=dict(self.allocations),
         )
-        metrics = compute_metrics(trade_rows, result.equity, self.spec, result.invested)
-        metrics["skips"] = dict(result.skips)
-        metrics["signals"] = len(self.signal_rows)
-        metrics["rejections"] = count_by(r.reason or "" for r in self.signal_rows if r.qty == 0)
-        metrics["ambiguous_days"] = len(self.ambiguous_days)  # HAT-BT-021 (PR 64)
-        metrics["lower_circuit_days"] = len(self.lower_circuit_days)
         self.session.close()
-        return replace(result, metrics=metrics)
+        return result
 
 
 def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:

@@ -28,6 +28,7 @@ import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...backtest.evidence import RunMetrics
 from ...errors import HatError
 from ...events import record
 from ...models import (
@@ -185,11 +186,9 @@ def publish_version(
         raise VersionError("run_not_for_version")
     if run.status != "completed":
         raise VersionError("run_not_completed")
-    metrics = run.metrics or {}
-    if metrics.get("for_promotion") is not True or metrics.get("slot_order") != "time":
-        # O5 (PR 62): only a run flagged for promotion, never one at perfect fills, evidences;
-        # PR 63: and only one whose slots went in trigger order (every run before took them
-        # by score).
+    if not RunMetrics.from_json(run.metrics).for_promotion:
+        # O5 (PR 62): only a run flagged for promotion evidences; `RunSpec` records one only
+        # under the conventions live trades by (never at perfect fills, slots in trigger order)
         raise VersionError("run_not_for_promotion")
     row.status = "backtested"
     row.backtest_run_id = backtest_run_id

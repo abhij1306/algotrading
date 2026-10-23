@@ -1,4 +1,4 @@
-"""The pure parts of the shadow-vs-proxy gap (G15, G36 part, PR 40): `runs.unbacktested`,
+"""The pure parts of the shadow-vs-proxy gap (G15, G36 part, PR 40):
 `proxy_gap.compare` and its summary, and the window, leave-out and column rules `shadow_gap`
 applies. No database, run or market is built."""
 
@@ -9,7 +9,6 @@ from decimal import Decimal
 
 import pytest
 
-from app.hat.backtest import runs
 from app.hat.backtest.proxy_gap import GapError, Leg, columns_to_read, comparable, compare, window
 from app.hat.backtest.report import END_OF_PERIOD
 from app.hat.engine.scan import EP_PLAYBOOK
@@ -31,15 +30,6 @@ def _leg(
     return Leg(
         playbook, instrument, DAY, D(price), D(r), reason, None if score is None else D(score)
     )
-
-
-def test_unbacktested() -> None:
-    ep = frozenset({EP_PLAYBOOK})
-    assert runs.unbacktested(None) == ep
-    assert runs.unbacktested({}) == ep  # no gap list
-    assert runs.unbacktested({"known_gaps": "garbled"}) == ep
-    assert runs.unbacktested({"known_gaps": ["episodic_pivot_not_backtested"]}) == ep
-    assert runs.unbacktested({"known_gaps": []}) == frozenset()  # PR 70: EP backtested
 
 
 def test_compare_pairs_by_key() -> None:

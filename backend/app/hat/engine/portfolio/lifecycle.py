@@ -206,7 +206,7 @@ class BacktestFacts:
     sleeve_weight: Decimal | None = None
     base_weight: Decimal | None = None
     regime_mult: str | None = None
-    # the playbooks whose trades are not compared with the run (`runs.unbacktested`, PR 40)
+    # the playbooks whose trades are not compared with the run (`evidence.unbacktested`, PR 40)
     unbacktested: frozenset[str] = frozenset()
 
 
