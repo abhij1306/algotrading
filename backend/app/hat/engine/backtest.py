@@ -170,7 +170,7 @@ from ..risk.kill import KillState
 from ..risk.policy import PolicyError, PolicyVersion, parse_policy
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import as_utc, trade_date_of
-from . import exits, lifecycle, trades, trigger, watchlist
+from . import exits, lifecycle, positions, trades, trigger, watchlist
 from .portfolio import regime as regime_v1
 from .portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
 from .portfolio.health import Health
@@ -847,7 +847,7 @@ class _Run:
         for step in range(len(self.config.exits) + 2):
             if position.closed_at is not None:
                 return
-            rules, state = trades.position_state(self.session, position)
+            rules, state = positions.position_state(self.session, position)
             price = first_trigger(rules, state, low, high, tick)
             if price is None:
                 break

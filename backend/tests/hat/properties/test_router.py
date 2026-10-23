@@ -48,7 +48,7 @@ from app.hat.daily.live import stale_feed
 from app.hat.daily.production import one_login_each
 from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE
 from app.hat.data.staleness import StalenessMonitor
-from app.hat.engine import exits, journal, lifecycle, trades
+from app.hat.engine import exits, journal, lifecycle, snapshot, trades
 from app.hat.engine.portfolio import lifecycle as sleeves
 from app.hat.errors import HatConfigError
 from app.hat.execution import mode_changes, modes
@@ -175,8 +175,8 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
                 tzinfo=UTC
             ) == timedelta(minutes=5)
             assert rig.positions(signal.id) == []
-            [slot] = trades.bot_snapshot(session, rig.world.bot_id, TRADE_DAY)[0]
-            assert slot.avg_entry == trades.entry_price_of(session, signal)
+            [slot] = snapshot.bot_snapshot(session, rig.world.bot_id, TRADE_DAY)[0]
+            assert slot.avg_entry == snapshot.entry_price_of(session, signal)
             assert slot.avg_entry == D(100)
         elif reason != "live":
             assert rig.places() == []
@@ -195,7 +195,7 @@ def test_routes_by_mode(mode: str, gtt: bool, conditions: tuple[str, PlacementCh
             assert order["type"] == OrderType.LIMIT.value
             assert order["product"] == "CNC"
             assert order["quantity"] == signal.qty
-            assert D(str(order["price"])) == trades.entry_price_of(session, signal)
+            assert D(str(order["price"])) == snapshot.entry_price_of(session, signal)
             assert is_hat_tag(order["order_tag"])
             assert signal.state == lifecycle.ENTRY_PLACED
             assert rig.positions(signal.id) == []
@@ -332,12 +332,12 @@ def test_skip_and_expiry_become_one_veto_trade(actions: list[tuple[str, int]]) -
         assert journal.replay_veto_state(session, signal_id) == lifecycle.OPEN
         # The veto trade is scored only: it holds none of the bot's slots, and its stop-out is
         # not one of the bot's.
-        assert trades.bot_snapshot(session, rig.world.bot_id, TRADE_DAY)[0] == []
+        assert snapshot.bot_snapshot(session, rig.world.bot_id, TRADE_DAY)[0] == []
         view = exits.ExitView(price=D(1), days_held=0, sma={10: D(100)})
         trades.evaluate_position(session, veto.id, view, "close", AT + timedelta(minutes=20))
         session.commit()
         assert journal.replay_veto_state(session, signal_id) == lifecycle.CLOSED
-        assert trades.bot_snapshot(session, rig.world.bot_id, TRADE_DAY) == ([], 0, 0)
+        assert snapshot.bot_snapshot(session, rig.world.bot_id, TRADE_DAY) == ([], 0, 0)
         assert rig.places() == []
 
 
@@ -1153,7 +1153,7 @@ def test_refused_entry_is_not_sent(kill: str, reserved: str) -> None:
                 qty=signal.qty,
                 order_type=OrderType.LIMIT,
                 symbol=TICKERS[0],
-                price=trades.entry_price_of(session, signal),
+                price=snapshot.entry_price_of(session, signal),
             )
             tag = reserve_order(session, entry)
             if reserved == UNCONFIRMED:

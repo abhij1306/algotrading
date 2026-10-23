@@ -142,12 +142,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `97b165cd1d03f7aadf0abdc11ec1b93baacb245ace70ce6fdcd8cf9d8cf58a94`
+Covered digest: `bb83207b16f64ca4ea20f2aefc51914c8a69025b8f76e124d3c6e01c53d70b3f`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 75a: `engine/trades.py` split into `trades`, `snapshot` and `positions` (`verify-execution`); `test_config.py` reads `positions.exit_rules_of`, and `test_conf_boundaries.py` gains CONF `no_private_imports` (`verify-governance`). No criteria check changed.
 - PR 73 (PR 35 follow-ups 1, 3): `assign_version` takes the owner's `chat_id` and `now` and records `sleeve.version_assigned` (`_assigned`, also used by `promote_version` for the sleeves it moves); `add_sleeve` adds a further sleeve of a strategy (`unknown_strategy` otherwise). `config.release_gate` checks the event. Nothing was narrowed.
 - PR 63 (HAT-BT-026, HAT-BT-061): `publish_version` also refuses a promotion run whose metrics do not say `slot_order: time` (`run_not_for_promotion`), so a run recorded before PR 63 (slots by score) never promotes a version; `test_config.add_run` records `slot_order: time`. Property `backtest.version_status_requires_run` in `verify-backtest`.
 - PR 62 (O5, HAT-BT-061): `publish_version` also refuses a run whose metrics do not say `for_promotion: true` (`run_not_for_promotion`), so a version is never promoted on a run at perfect fills; `test_config.add_run` flags its run. The rule is proved by `backtest.version_status_requires_run` in `verify-backtest`; the release-gate checks here are unchanged.

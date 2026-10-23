@@ -54,7 +54,7 @@ from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount, HatEvent, HatOrder, HatPosition, HatSignal
 from ..models.strategy import ACCOUNT_ACTIVE
-from ..time import trade_date_of, utc_now
+from ..time import day_bounds, trade_date_of, utc_now
 from .broker import (
     CODE_INVALID_INTENT,
     CODE_OK,
@@ -403,7 +403,7 @@ def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: da
     """Sales of `purpose` for the signal the broker rejected today, at once or after taking them
     (ended short with its order id). A lost sale that never landed is not a rejection, nor is one
     HAT cancelled to send it again (`mark_resend`, PR 48)."""
-    start, end = trades._day_bounds(trade_date_of(now))
+    start, end = day_bounds(trade_date_of(now))
     count = session.scalar(
         select(func.count())
         .select_from(HatOrder)
@@ -428,7 +428,7 @@ def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: da
 def resends(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
     """Sales of `purpose` for the signal sent today that HAT cancelled to send again fresh
     (PR 48): each is one miss of a market sale that rested unfilled."""
-    start, end = trades._day_bounds(trade_date_of(now))
+    start, end = day_bounds(trade_date_of(now))
     count = session.scalar(
         select(func.count())
         .select_from(HatOrder)

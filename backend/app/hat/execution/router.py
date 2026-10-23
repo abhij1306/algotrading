@@ -56,7 +56,7 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from ..data.live import PRICE_UNKNOWN
-from ..engine import approvals, lifecycle, trades
+from ..engine import approvals, lifecycle, positions, snapshot, trades
 from ..models import (
     HatApproval,
     HatBot,
@@ -219,7 +219,7 @@ class ExecutionRouter:
         self._reconciler = reconciler
         self._notifier = notifier or LogNotifier()
         # Signs each approval card's token (the Telegram signer). Without one a confirm card
-        # can never be taken (`trades._send_approval`).
+        # can never be taken (`trades.send_approval`).
         self._issuer = issuer
         # signals whose placement raised after their commit, for the next resume (PR 52)
         self._stranded: set[uuid.UUID] = set()
@@ -250,7 +250,7 @@ class ExecutionRouter:
         entry that a crash left unplaced)."""
         bot = session.get(HatBot, request.bot_id)
         if bot is None:
-            raise trades.TradeError("unknown_bot")
+            raise positions.TradeError("unknown_bot")
         mode = route_mode(
             bot_mode(session, bot, request.triggered_at, request.context.calendar), confidence
         )
@@ -394,7 +394,7 @@ class ExecutionRouter:
     ) -> SendOutcome | None:
         signal = session.get(HatSignal, signal_id)
         if signal is None:
-            raise trades.TradeError("unknown_signal")
+            raise positions.TradeError("unknown_signal")
         session.refresh(signal)
         if signal.state not in _ROUTABLE or signal.mode == trades.SHADOW or signal.qty <= 0:
             return None
@@ -402,7 +402,7 @@ class ExecutionRouter:
             return None  # a card is placed only after its Take passed (PR 52)
         bot = session.get(HatBot, signal.bot_id)
         if bot is None:
-            raise trades.TradeError("unknown_bot")
+            raise positions.TradeError("unknown_bot")
         account_id = bot.broker_account_id
         symbol = session.scalar(
             select(HatInstrument.symbol).where(HatInstrument.id == signal.instrument_id)
@@ -512,7 +512,7 @@ class ExecutionRouter:
     def _entry_request(
         self, session: Session, signal: HatSignal, account_id: uuid.UUID, symbol: str
     ) -> OrderRequest:
-        price = trades.entry_price_of(session, signal)
+        price = snapshot.entry_price_of(session, signal)
         return OrderRequest(
             bot_id=signal.bot_id,
             signal_id=signal.id,

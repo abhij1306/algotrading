@@ -102,7 +102,7 @@ def _state_writes(tree: ast.AST) -> list[int]:
 
 
 def test_journal_only_writers() -> None:
-    """HAT-EXEC-042 (PR 36, architecture audit F1): no module of `app/hat` but the trade journal
+    """HAT-EXEC-042 (PR 36): no module of `app/hat` but the trade journal
     (`engine/journal.py`) writes `.state`, so every state change passes the journal's check of
     the step against the table before its event is written. A row is created at its first
     state; `self.state` is a class's own field (`LifecycleStateError`)."""

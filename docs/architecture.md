@@ -68,6 +68,7 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   holds the per-trade-date reconciliation gate; kill switches live in `risk/kill.py`, `controls.py`.
 - **Configs are data:** strategy versions are immutable JSONB with a canonical hash; the risk policy
   is a versioned account-level record; bots hold no risk numbers.
+- **No private imports:** no HAT module imports another's underscore name (CONF `no_private_imports`).
 - **Scheduler:** in-process asyncio, jobs recorded in `hat_job_run`, restart-safe (reconcile before
   acting, an overdue job runs late the same day unless it has a window).
 

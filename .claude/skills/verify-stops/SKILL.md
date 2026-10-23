@@ -121,12 +121,13 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `2f23b2f377fa3db89906eb01cf61eb230b822b73`
-Covered digest: `ef3039ca2657aa244affb208d8b733fa7520ff049ee4620bbf035656733a8ec5`
+Covered digest: `dbe5e896e1ed926650a1c792464e342c0b15bec59941bc0536da94b5ecd90f23`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
+- PR 75a: the stop raise (`raise_stop`), the trade result (`write_result`, `trade_r`, `entry_qty`) and `position_state` moved from `trades.py` to `engine/positions.py` unchanged (`verify-execution`); `test_rescale.py` reads `positions.position_state`. The stop and exit properties are unchanged and pass. Nothing was narrowed.
 - PR 73 (PR 31 follow-ups 1, 2, 12; HAT-EXEC-144): `rescale.resolve_action` is the owner's resolution of an unhandled action on a virtual position (admin `resolve-action`, `verify-portfolio`): it records `corporate_action.resolved` and closes the position. A real position is refused (code review: lifting its lock kept the old-scale quantity and stop and lifted `/flatten`'s cap at the broker's holdings); PR 31 follow-up 2 (keep a real position and end its lock) stays open. New PBT `rescale.resolution_ends_lock`. Nothing was narrowed.
 - PR 15a replaced `DEFAULT_TICK = 0.05` with the NSE slab tick of the instrument (`data/ticks.py`); the stop properties still run on 0.01, 0.05, 0.1, 1 and 5, and the slabs are checked by `stops.tick_size_slabs`. A new listing's tick is read from its latest close (`[OWNER-PENDING]`: NSE uses the issue price, which HAT does not hold).
 - PR 15c built `StopPlacement` and removed `TLA StopPlacement!StopOnlyTightens` from `KNOWN_GAPS`. The model has one real position, at most two entry fills and three stop levels; it does not model the quantity a stop covers (resizing is checked by `manage.real_fill_protected` on the real code) nor the GTT's limit price (`stops.gtt_limit_offset`). `AlwaysProtected` allows the window between a fill and its stop work, a failure that was alerted, and an unseen unfilled GTT (then `GttUnfilledAlerted` holds). `NightlyVerifyCovers` accepts an alert in place of a GTT (the broker could not be reached, or the new GTT failed). `TypeOK` has no broken variant.

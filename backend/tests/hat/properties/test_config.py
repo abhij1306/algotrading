@@ -508,7 +508,7 @@ def test_trade_keeps_entry_version(price: int) -> None:
 
     from hat.hat_engine_support import exit_stack, open_trade, seed_engine_world, step_trade
 
-    from app.hat.engine import trades
+    from app.hat.engine import positions
     from app.hat.models import HatPosition, HatSignal
 
     with Session(memory_engine()) as session:
@@ -535,7 +535,7 @@ def test_trade_keeps_entry_version(price: int) -> None:
             (new, ["hard_stop"]),
         ):
             signal = session.get(HatSignal, trade.outcome.signal_id)
-            assert [r.rule for r in trades.exit_rules_of(session, signal)] == rules
+            assert [r.rule for r in positions.exit_rules_of(session, signal)] == rules
         step_trade(session, old, Decimal(price))
         step_trade(session, new, Decimal(price))
         old_pos = session.get(HatPosition, old.outcome.position_id)

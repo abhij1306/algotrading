@@ -451,8 +451,8 @@ every check named must exist, and a new check is added here with its ID.
 - HAT-RISK-030: Global open-risk cap | PBT `caps.global_open_risk`, PBT `trades.global_open_risk_across_bots`, DB `runtime.owner_serialised`
 - HAT-RISK-031: Max open positions per bot | PBT `caps.max_positions`
 - HAT-RISK-032: Per-industry cap | PBT `caps.industry`
-- HAT-RISK-033: Daily entry cap | PBT `caps.daily_entries`
-- HAT-RISK-034: Daily stop-out cap | PBT `caps.daily_stopouts`
+- HAT-RISK-033: Daily entry cap | PBT `caps.daily_entries`, PBT `trades.day_counts`
+- HAT-RISK-034: Daily stop-out cap | PBT `caps.daily_stopouts`, PBT `trades.day_counts`
 - HAT-RISK-035: Caps never block exits | PBT `caps.exits_never_blocked`
 - HAT-RISK-036: Per-instrument cooldown after a hard stop | PBT `caps.cooldown`, PBT `caps.cooldown_input_fails_closed`, PBT `caps.cooldown_shortening_is_increase`, PBT `trades.last_hard_stop`, PBT `backtest.cooldown_applied`, PBT `dsr.evidence_cooldown_in_force`
 - HAT-RISK-040: Ladder transitions | PBT `exposure.ladder_transitions`

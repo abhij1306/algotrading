@@ -148,13 +148,14 @@ Checks:
 The verification above was last confirmed against the covered files at this commit (a squash merge discards a branch commit, so the digest below, a sha256 over the covered files, is what CI compares):
 
 Sync commit: `d0ba323bb8d38329ecc3e61d5208a2ec0db15943`
-Covered digest: `9208a85664fd28fab409e61ee2e4007c853813ad37e52e40ddb38c0cb1b06fe9`
+Covered digest: `7fa132ddf74c0f2fb976c4cc2bb7dae11380226be5e6c223f55690f56c2e174f`
 
 ## Scope changes
 
 Every narrowing of a property or strategy, with its reason (HAT-VER-034):
 
 - PR 69: `MERGED_PRS` gains 69 (the Backtested gate, HAT-PORT-061); no scheduler or harness check changed.
+- PR 75a: `MERGED_PRS` gains 75; `engine/live_trades.py` imports its shared helpers from `engine/positions.py` (`verify-execution`). No scheduler check changed.
 - PR 73b (PR 39 follow-up): `daily/runtime.py` builds `LiveSubscriptions` with `subscription_alert(self.notifier, self._now)` (sent off the loop, the clock's trade date), and `daily/production.py` refuses the start while a proxy would carry Fyers traffic (`verify-execution`). `test_ops.py` and `test_conf_ops.py` gain one check each. Not covered by a property: the alert's detail (none: `LiveSubscriptions` passes the code only). Nothing was narrowed.
 - PR 73: `test_conf_verification.py` lists PR 73 as merged, `test_conf_ops.py` allows the admin command line `decimal`, `engine.rescale` and `engine.trades`, and `execution/accounts.py` gains `revoke_ddpi` (`verify-portfolio`). No job, job-run or harness rule changed. Nothing was narrowed.
 - PR 52: `daily/accounts.py:Desks.recover` remembers a Take left unplaced as well as an auto entry in Triggered (`_left_unplaced`), and `resume_entries` also takes the signals whose placement raised in this process (`ExecutionRouter.take_stranded`); checked by `verify-execution`'s `router.crash_resumes_entry_once` (breaks recorded there). The `expire` job is unchanged (every minute); its sweep now also ends an earlier trade date's stranded entry. No job or schedule changed.

@@ -1,5 +1,5 @@
 """The trade journal: the one writer of a trade's lifecycle state (HAT-EXEC-042, HAT-SCH-062;
-PR 36, architecture audit F1).
+PR 36).
 
 `hat_signal.state` and `hat_position.state` are always the fold of the trade's events over the
 transition table (`lifecycle.TRANSITIONS`). Every event that may drive a step goes through

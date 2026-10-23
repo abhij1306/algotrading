@@ -199,7 +199,7 @@ FillExit(t) ==
     /\ result' = [result EXCEPT ![t] = BrokenMode # "result_late"]
     /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, pinned, liveVer, rulesRead>>
 
-\* code: backend/app/hat/engine/trades.py:_write_result  (broken variant "result_late" only: the
+\* code: backend/app/hat/engine/positions.py:write_result  (broken variant "result_late" only: the
 \* result is written after the close, in a later transaction)
 WriteResultLate(t) ==
     /\ BrokenMode = "result_late"
