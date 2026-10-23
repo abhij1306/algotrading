@@ -35,8 +35,7 @@ no legacy data. HAT's scheduler and live feed start only when `HAT_ENABLED=true`
 - `docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`: module map and data flow,
   the money-safety rules, the decisions in force
 - `docs/runbook.md`: operator procedures
-- `.claude/skills/`: how to run and read each area's verification (`verify-*`) and the trading
-  safety rules
+- `.claude/skills/`: the trading safety rules, the architecture audit and the orchestrator
 
 ---
 

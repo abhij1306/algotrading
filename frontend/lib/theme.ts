@@ -4,14 +4,15 @@
  * - The user's explicit choice is persisted in localStorage; with no choice the theme follows
  *   the system preference (and keeps following it while it changes).
  * - `index.html` runs an inline copy of the initial read before first paint so the page never
- *   flashes the wrong theme; keep `THEME_STORAGE_KEY` and the values in sync with it.
+ *   flashes the wrong theme; keep `THEME_STORAGE_KEY` and the values in sync with it. That copy
+ *   also moves a choice saved under the old `smarttrader-theme` key, once.
  * - React reads the store through `useSyncExternalStore`; there are no effects.
  */
 import { useSyncExternalStore } from "react";
 
 export type Theme = "light" | "dark";
 
-export const THEME_STORAGE_KEY = "smarttrader-theme";
+export const THEME_STORAGE_KEY = "hat-theme";
 const DARK_SCHEME_QUERY = "(prefers-color-scheme: dark)";
 
 function isTheme(value: unknown): value is Theme {

@@ -17,6 +17,7 @@ sys.stdout.write(path.replace("\\", "/"))
 
 repo_root() {
   git -C "${CLAUDE_PROJECT_DIR:-.}" rev-parse --show-toplevel
+  return 0
 }
 
 # Path of $1 relative to $2, or empty if $1 is not under $2. Case-insensitive for Windows drives.
@@ -27,4 +28,5 @@ rel_to() {
     "$lb"/*) printf '%s' "${file:${#base}+1}" ;;
     *) printf '' ;;
   esac
+  return 0
 }

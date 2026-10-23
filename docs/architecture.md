@@ -126,11 +126,10 @@ KillSwitch, ApprovalToken, TradeLifecycle, JobScheduler, NightlyPipeline, DailyC
 RegimeConfirmation, SleeveLifecycle; each with `broken/` variants), Hypothesis properties in
 `backend/tests/hat/properties/`, Postgres checks in `tests/hat/db/` (only what a real server
 enforces: triggers, partial unique indexes, CHECK constraints, row and advisory locks), conformance checks in
-`tests/hat/conformance/`. The `verify-*` skills in `.claude/skills/` say
-how to run and update each area and record a digest of the files they cover.
+`tests/hat/conformance/`. A change is verified by running it on real data, never by a backtest.
 
 CI (`.github/workflows/ci.yml`, every PR and push to main): `backend`, `backend-postgres`,
-`verification-conformance`, `verification-properties` (four shards), `frontend`, `api-schema`.
+`verification-conformance`, `verification-properties` (sharded, each file once), `frontend`, `api-schema`.
 `.github/workflows/tla.yml` runs the TLC models and their broken variants only when
 `verification/**` or a Python file named in a model's `code:` comments changes, weekly, and on
 demand.

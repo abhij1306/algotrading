@@ -128,8 +128,7 @@ pnpm gen:api    # regenerate lib/api/schema.d.ts from the backend OpenAPI schema
 
 `pnpm gen:api` needs the backend venv active (it runs `python ../scripts/export_openapi.py`; no
 server or database needed). Run it after any backend route or response-model change and commit the
-result: CI job `api-schema` fails when the committed `lib/api/schema.d.ts` is stale. The
-`sync-api-types` skill does the same and reports contract changes.
+result: CI job `api-schema` fails when the committed `lib/api/schema.d.ts` is stale.
 
 ### Backend
 ```bash
@@ -151,8 +150,8 @@ Run only the tests your change touches plus `tests/hat/conformance`; CI runs eve
 
 ### CI
 `.github/workflows/ci.yml` runs on every pull request and on pushes to main: `backend` (ruff and
-the app tests), `backend-postgres`, `verification-conformance`, `verification-properties` (four
-shards, each property file once), `frontend` and `api-schema`. `.github/workflows/tla.yml` runs
+the app tests), `backend-postgres`, `verification-conformance`, `verification-properties` (sharded,
+each property file once), `frontend` and `api-schema`. `.github/workflows/tla.yml` runs
 the TLC models only when `verification/**` or a Python file a model's actions map to (its `code:`
 comments) changes, plus weekly and on `workflow_dispatch`; add a newly mapped file to its paths.
 Ruff, `vp check` and the tests stay at zero errors and zero warnings. CI installs the hash-pinned

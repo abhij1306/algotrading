@@ -8,18 +8,6 @@ import {
 } from "@/lib/queries/auth";
 import { focusOnMount } from "@/lib/focus";
 
-type ElectronBridge = { openExternal: (url: string) => void };
-
-/** The desktop shell's bridge, when the app runs inside Electron. */
-function isElectronBridge(value: unknown): value is ElectronBridge {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "openExternal" in value &&
-    typeof value.openExternal === "function"
-  );
-}
-
 export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?: boolean }>) {
   const statusQuery = useFyersStatus();
   const loginUrl = useFyersLoginUrl();
@@ -58,12 +46,6 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
   };
 
   const openLoginPage = (url: string) => {
-    const electron: unknown = Reflect.get(globalThis, "electron");
-    if (isElectronBridge(electron)) {
-      electron.openExternal(url);
-      setShowModal(true);
-      return;
-    }
     if (typeof globalThis.window?.open !== "function") {
       fail("Login URL generated but no browser window is available to open it.");
       return;

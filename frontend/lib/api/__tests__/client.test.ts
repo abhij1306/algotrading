@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import { WRITE_HEADER, createApiClient, parseResponse, unwrap } from "../client";
+import { WRITE_HEADER, createApiClient, unwrap } from "../client";
 import { ApiError } from "../errors";
-import { z } from "zod";
 
 function clientReturning(respond: () => Response | Promise<Response>) {
   return createApiClient({ baseUrl: "http://api.test", fetch: () => Promise.resolve(respond()) });
@@ -116,20 +115,6 @@ describe("unwrap", () => {
       message: "Failed to fetch",
       status: null,
     });
-  });
-});
-
-describe("parseResponse", () => {
-  const schema = z.object({ total: z.number() });
-
-  it("returns parsed data", () => {
-    expect(parseResponse(schema, { total: 3 })).toEqual({ total: 3 });
-  });
-
-  it("throws RESPONSE_SHAPE_ERROR on a mismatch", () => {
-    expect(() => parseResponse(schema, { total: "3" })).toThrowError(
-      expect.objectContaining({ code: "RESPONSE_SHAPE_ERROR" }),
-    );
   });
 });
 

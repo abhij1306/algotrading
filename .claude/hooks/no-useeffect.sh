@@ -5,7 +5,7 @@ set -uo pipefail
 source "$(dirname "$0")/lib.sh"
 
 file="$(hook_file_path)"
-[ -n "$file" ] && [ -f "$file" ] || exit 0
+[[ -n "$file" && -f "$file" ]] || exit 0
 root="$(repo_root)"
 rel="$(rel_to "$file" "$root")"
 [[ "$rel" == frontend/* && "$rel" =~ \.(ts|tsx)$ && "$rel" != frontend/node_modules/* ]] || exit 0
@@ -15,7 +15,7 @@ now="$(grep -cE "$pattern" "$file" || true)"
 before="$(git -C "$root" show "HEAD:$rel" 2>/dev/null | grep -cE "$pattern" || true)"
 now="${now:-0}"; before="${before:-0}"
 
-if [ "$now" -gt "$before" ]; then
+if [[ "$now" -gt "$before" ]]; then
   cat >&2 <<EOF
 $rel now has $now useEffect/useLayoutEffect calls; the last commit had $before. This project does not use effects. Replace the new effect:
 - derived value: compute it during render, or with useMemo if it is expensive

@@ -16,9 +16,4 @@ Active helpers only (run from repo root):
   otherwise; a forced run is logged to `<HAT_DATA_ROOT>/ops/deploy_guard.jsonl` (HAT-OPS-042).
   Run it before every deploy or planned restart
 
-Backend one-off CLIs live in `backend/scripts/` (run from repo root):
-`python backend/scripts/export_symbol_history.py --name symbol_history.csv` exports the legacy
-`symbol_history` table to CSV (the only legacy table the owner chose to keep, D68). It reads an
-old database; HAT itself starts from a fresh one.
-
 Lint and format are `ruff` (backend) and `pnpm check` (frontend).
