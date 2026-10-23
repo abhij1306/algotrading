@@ -1838,6 +1838,19 @@ E       flags=[(True, 'time', True, '1'), (True, 'time', True, None)],
 E   )
 ```
 
+Break: (PR 69) in `backend/app/hat/backtest/runs.py`: `_latest_run` accepts either regime rule, so a promotion run under `1` is the evidence.
+
+```
+tests/hat/properties/test_dsr.py F
+tests/hat/properties/test_dsr.py:494: in test_evidence_promoted_only
+    assert facts.trades == (want[-1] if want else 0)
+E   AssertionError: assert 2 == 1
+E    +  where 2 = BacktestFacts(dsr_prob=Decimal('0.683814'), trades=2, expectancy=Decimal('2'), trials=2, first_session=None, last_sess [cut]sessions=0, gapped_playbooks=frozenset(), playbooks=frozen [cut]
+E   Failing explicit example: test_evidence_promoted_only(
+E       flags=[(True, 'time', True, 'policy'), (True, 'time', True, '1')],
+E   )
+```
+
 ### PBT dsr.gate_evidence
 
 Break: in `backend/app/hat/backtest/runs.py`: the benchmark is the plain mean of the sleeves' expectancies, not weighted by their trades.
@@ -2014,19 +2027,6 @@ E     Full diff:
 E       [
 E     -     0.0,
 E     +     None,
-```
-
-Break: (PR 69) in `backend/app/hat/backtest/runs.py`: `_latest_run` accepts either regime rule, so a promotion run under `1` is the evidence.
-
-```
-tests/hat/properties/test_dsr.py F
-tests/hat/properties/test_dsr.py:494: in test_evidence_promoted_only
-    assert facts.trades == (want[-1] if want else 0)
-E   AssertionError: assert 2 == 1
-E    +  where 2 = BacktestFacts(dsr_prob=Decimal('0.683814'), trades=2, expectancy=Decimal('2'), trials=2, first_session=None, last_sess [cut]sessions=0, gapped_playbooks=frozenset(), playbooks=frozen [cut]
-E   Failing explicit example: test_evidence_promoted_only(
-E       flags=[(True, 'time', True, 'policy'), (True, 'time', True, '1')],
-E   )
 ```
 
 ### PBT dsr.evidence_latest_by_completion
