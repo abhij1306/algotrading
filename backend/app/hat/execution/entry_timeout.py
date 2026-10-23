@@ -10,7 +10,7 @@ which has filled is cancelled:
 - **It waited too long:** `HAT_ENTRY_TIMEOUT_MINUTES` (default 60) have passed since it was
   placed.
 
-The cancel is `StopDesk.cancel_unfilled_entry`, the path that cancels an entry remainder, so it
+The cancel is `EntryCancel.cancel_unfilled`, the path that cancels an entry remainder, so it
 is sent once per entry and the signal ends Cancelled when the fill sync sees the order end
 unfilled. An entry with any fill keeps its remainder working (the partial-entry policy). Shadow
 entries fill at once, so only real ones are watched.

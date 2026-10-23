@@ -39,13 +39,9 @@ found, it is adopted; absent after a good read, it ends `expired` and its rules 
 never blocks the position's later sales. No sale, stop or fill sync waits for a reconciliation: a
 failed one blocks new entries only (D118).
 
-Market price protection (PR 48, behind `HAT_MPP_RESEND`): the broker turns a market sale into a
-limit a band from the price, which rests unfilled once the price falls through it. A market sale
-the fill sync finds resting a minute after its send is cancelled (`order.cancelled`, code
-`sale_resend`: not a rejection) and, once the book shows it ended, the shares it left are sent
-again as a fresh market sale (at the protection band of the price then), at every sync until it
-fills; the owner is paged at the `page_after`th miss. While the instrument's last trade is at its
-lower circuit the sale is left in the queue (a re-send would lose its place) and alerted once.
+Market price protection (PR 48, behind `HAT_MPP_RESEND`) is `mpp.MarketProtection`: after each
+fill sync it cancels a market sale resting unfilled and sends the shares it left again through
+`sell_again`, the exit path.
 """
 
 from __future__ import annotations
@@ -68,7 +64,6 @@ from ..engine.rescale import unhandled_actions
 from ..events import record
 from ..models import (
     HatBot,
-    HatFill,
     HatInstrument,
     HatOrder,
     HatPosition,
@@ -78,23 +73,23 @@ from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import IST, trade_date_of
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
-from .fills import ALERT_SALE_UNFILLED, RESTING_AFTER, FillSync, SaleBand, SyncReport
+from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
+from .gtt_upkeep import GttUpkeep
 from .guard import ExecutionGuard
 from .position_desk import Verdict
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     CLOSED,
     FAILED,
-    LIVE,
     REPLACED,
     SWAPPED,
-    UNSURE,
     UNVERIFIED,
     VERIFIED,
     StopDesk,
 )
 from .reconcile import broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
+from .stop_plans import LIVE, UNSURE
 from .submit import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
@@ -104,9 +99,7 @@ from .submit import (
     UnresolvedOrderError,
     adopt_broker_order,
     end_lost_order,
-    mark_resend,
     rejected_sales,
-    resends,
     reserve_order,
     send_order,
 )
@@ -228,17 +221,17 @@ class TradeManager:
         sending: Clock | None = None,
         ticker: Callable[[], float] = monotonic,
         band: SaleBand | None = None,
-        resend: bool = False,
     ) -> None:
         self._broker = broker
         self._band = band  # the day's lower band, for a sale refused twice (PR 48)
-        self._resend = resend  # HAT_MPP_RESEND: resting market sales are sent again (PR 48)
         self._guard = guard
         self._desk = desk
+        self._upkeep = GttUpkeep(desk)  # the swap, nightly verify and GTT-book check
         # The position locks and the settle wait the stop desk uses; its clock stamps the sends.
         self._positions = desk.positions
         self._clock = desk.positions.clock
         self._fills = fills
+        self._mpp = fills.mpp  # market price protection (PR 48), shared with the fill sync
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
         # The time a sale is sent at: `sending` when given, else the caller's `now` plus the
@@ -315,8 +308,8 @@ class TradeManager:
 
     def cancel_unfilled_entry(self, session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
         """Cancel the signal's real entry while nothing of it filled (PR 49, HAT-EXEC-046):
-        `StopDesk.cancel_unfilled_entry`. A cancel is never an entry, so no gate holds it."""
-        return self._desk.cancel_unfilled_entry(session, signal_id, now)
+        `EntryCancel.cancel_unfilled`. A cancel is never an entry, so no gate holds it."""
+        return self._desk.entries.cancel_unfilled(session, signal_id, now)
 
     # --- flatten (HAT-TG-035, HAT-GOV-082) ----------------------------------------------------
 
@@ -595,12 +588,13 @@ class TradeManager:
         self, session: Session, row: HatOrder, found: BrokerOrder | None, bot_id: uuid.UUID
     ) -> Verdict:
         """One lost sale against today's book (`settle_verdict`): adopted, ended, or left
-        (WAIT: sent too recently; STALE: of an earlier session). One found with shares sold
-        waits for the fill sync, which adopts it with its fills."""
-        if found is not None and found.filled_qty > 0:
-            return Verdict.WAIT
-        verdict = self._positions.verdict(row.placed_at, found is not None, sale=True)
-        if found is not None:
+        (WAIT: sent too recently, or found with shares sold, for the fill sync to adopt with its
+        fills; STALE: of an earlier session)."""
+        filled = 0 if found is None else found.filled_qty
+        verdict = self._positions.verdict(
+            row.placed_at, found is not None, filled_qty=filled, sale=True
+        )
+        if found is not None and verdict is Verdict.ADOPT:
             adopt_broker_order(session, row, found, bot_id, clock=self._clock)
         elif verdict is Verdict.EXPIRE:
             end_lost_order(session, row)
@@ -833,7 +827,7 @@ class TradeManager:
         """The `gtt.swap` job body: every open real position's intraday stop becomes a GTT."""
         report = StopsReport()
         for position in self.open_positions(session, account_id):
-            outcome = self._desk.swap(session, position.id, now)
+            outcome = self._upkeep.swap(session, position.id, now)
             if outcome == SWAPPED:
                 report.done += 1
             elif outcome != CLOSED:
@@ -852,79 +846,21 @@ class TradeManager:
             report = self._fills.run(session, account_id, now, check_gtts=check_gtts)
         except BrokerUnavailableError:
             return None
-        self._resend_sales(session, report, now)
+        self._mpp.after_sync(session, report, now, self)
         return report
 
     # --- market price protection (PR 48) ------------------------------------------------------
 
-    def _resend_sales(self, session: Session, report: SyncReport, now: datetime) -> None:
-        """Send again the shares of each sale HAT cancelled that has now ended; then, with
-        `resend` on, cancel each market sale resting unfilled so the next sync sends it fresh.
-        One sale's failure leaves the others."""
-        for row_id in report.resend:
-            try:
-                self._send_again(session, row_id, now)
-            except Exception:
-                session.rollback()
-                logger.exception("re-send of sale %s failed", row_id)
-        if not self._resend:
-            return
-        for row_id, found in report.resting:
-            try:
-                self._cancel_resting(session, row_id, found, now)
-            except Exception:
-                session.rollback()
-                logger.exception("cancel of resting sale %s failed", row_id)
-
-    def _send_again(self, session: Session, row_id: uuid.UUID, now: datetime) -> None:
-        """A fresh market sale of what the cancelled sale `row_id` left, under its purpose and
-        rules, through the exit path (the same session, lock and stop checks)."""
-        row = session.get(HatOrder, row_id)
-        if row is None or row.position_id is None:
-            return
-        position = session.get(HatPosition, row.position_id)
-        if position is None or position.closed_at is not None:
-            return
-        sold = sum(session.scalars(select(HatFill.qty).where(HatFill.order_id == row.id)).all())
-        qty = position.qty_open if row.purpose != EXIT_PARTIAL else row.qty - sold
+    def sell_again(
+        self, session: Session, position: HatPosition, row: HatOrder, qty: int, now: datetime
+    ) -> None:
+        """A fresh market sale of `qty` shares under the purpose and rules of the sale `row`
+        that HAT cancelled to send again (`mpp.MarketProtection`), through the exit path (the
+        same session, lock and stop checks)."""
         rule_ids = tuple(row.rule_ids or ())
         rule = next((rid.partition(":")[2] for rid in rule_ids), "") or row.purpose
         sending = self._sending_clock(now)
         self._sell_qty(session, position, row.purpose, qty, rule, rule_ids, now, sending)
-
-    def _cancel_resting(
-        self, session: Session, row_id: uuid.UUID, found: BrokerOrder, now: datetime
-    ) -> None:
-        """Cancel a market sale resting unfilled (market price protection) so it is sent again
-        fresh, unless its instrument is locked at the lower circuit (alerted once, left in the
-        queue) or the re-send, a sync later, would fall after the order cutoff (left resting);
-        the owner is paged at the `page_after`th miss."""
-        row = session.get(HatOrder, row_id)
-        if row is None or row.position_id is None or row.broker_order_id is None:
-            return
-        position = session.get(HatPosition, row.position_id)
-        signal = session.get(HatSignal, row.signal_id)
-        if position is None or signal is None:
-            return
-        detail = {
-            "bot_id": str(signal.bot_id),
-            "signal_id": str(signal.id),
-            "position_id": str(position.id),
-        }
-        with self._positions.lock(position.id, "sale_resend_cancel"):
-            session.refresh(row)
-            if row.status not in LIVE:
-                return
-            if not self._orders_allowed(now + RESTING_AFTER):
-                return  # no re-send could follow before the cutoff: the sale keeps resting
-            if self._fills.locked(session, position.instrument_id, now):
-                self._fills.alert_locked(row.tag, detail, now)
-                return
-            if not self._broker.cancel_order(row.broker_order_id).ok:
-                return  # still resting: asked again at the next sync
-            mark_resend(session, row, found, signal.bot_id)
-            session.commit()
-        self._fills.page_missed(resends(session, signal.id, row.purpose, now), detail, now)
 
     def _follow_rescales(self, session: Session, account_id: uuid.UUID, now: datetime) -> None:
         """`StopDesk.rescaled` for every open real position (HAT-EXEC-143); one position's
@@ -949,9 +885,9 @@ class TradeManager:
         for position in self.open_positions(session, account_id):
             self._alert_series_change(session, position, now)
             outcome = (
-                self._desk.verify(session, position.id, now)
+                self._upkeep.verify(session, position.id, now)
                 if fresh
-                else self._desk.unverified(session, position.id, now, "fills_unread")
+                else self._upkeep.unverified(session, position.id, now, "fills_unread")
             )
             if outcome == FAILED:
                 report.failed.append(position.id)
@@ -985,7 +921,7 @@ class TradeManager:
         """The `gtt.check` job body (HAT-EXEC-145, HAT-EXEC-146): a fill sync that reads the
         broker's GTT book whatever its cadence (`FillSync` step 6c ends and replaces each GTT the
         broker dropped), then each open real position whose instrument changed series is alerted
-        and its GTT checked against the same book (`StopDesk.check_gtt` replaces one under the old
+        and its GTT checked against the same book (`GttUpkeep.check_gtt` replaces one under the old
         series' symbol). The run fails, so the scheduler tries again, while the fills or the GTT
         book cannot be read (nothing is placed or ended then) or a position is left unprotected;
         a GTT the broker refuses is alerted (`stop.not_placed`) and the fill sync tries again."""
@@ -1003,7 +939,7 @@ class TradeManager:
         report.failed.extend(synced.gtt_unprotected)
         report.done += len(synced.protected)
         for position in moved:
-            outcome = self._desk.check_gtt(
+            outcome = self._upkeep.check_gtt(
                 session, position.id, now, synced.gtt_book, synced.gtt_read_at
             )
             if outcome in (UNVERIFIED, FAILED):

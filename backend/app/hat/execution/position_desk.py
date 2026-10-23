@@ -12,23 +12,34 @@
   it (no stop path ever calls a sale). Nothing may enter it with an uncommitted write: another
   thread holding it could wait on that row.
 - **One settle rule** (`settle_verdict`): an order whose answer was lost, against a good read of
-  the broker's book.
+  the broker's book. One the book shows with shares already sold waits for the fill sync
+  (`found_verdict`), which adopts it with its fills: adopted bare, a stop or sale would leave
+  shares HAT still counts with no stop over them, and a new stop would go over shares sold.
 """
 
 from __future__ import annotations
 
+import functools
 import logging
 import threading
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Protocol, TypeVar
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..time import as_utc, trade_date_of
 
-__all__ = ["LOST_ANSWER_SETTLE", "PositionDesk", "Verdict", "settle_verdict"]
+__all__ = [
+    "LOST_ANSWER_SETTLE",
+    "PositionDesk",
+    "Verdict",
+    "found_verdict",
+    "serialised",
+    "settle_verdict",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -49,20 +60,27 @@ def young(placed_at: datetime | None, now: datetime, settle_after: timedelta) ->
     return placed_at is not None and now - as_utc(placed_at) < settle_after
 
 
+def found_verdict(filled_qty: int) -> Verdict:
+    """A stop or sale whose answer was lost, found in the broker's book with `filled_qty` shares
+    sold: adopted when none sold; else WAIT, for the fill sync to adopt it with its fills."""
+    return Verdict.WAIT if filled_qty > 0 else Verdict.ADOPT
+
+
 def settle_verdict(
     placed_at: datetime | None,
     found: bool,
     now: datetime,
     settle_after: timedelta,
     *,
+    filled_qty: int = 0,
     sale: bool = False,
 ) -> Verdict:
-    """What a good read of the broker's book (`found`: it holds the order) says about an order
-    whose answer was lost, sent at `placed_at` (None: never sent). A sale (`sale`) of an earlier
-    trade date is STALE, settled from the holdings, since a DAY market sale cannot still rest
-    and the order book is today's."""
+    """What a good read of the broker's book (`found`: it holds the order, with `filled_qty`
+    shares sold) says about a stop or sale whose answer was lost, sent at `placed_at` (None:
+    never sent). A sale (`sale`) of an earlier trade date is STALE, settled from the holdings,
+    since a DAY market sale cannot still rest and the order book is today's."""
     if found:
-        return Verdict.ADOPT
+        return found_verdict(filled_qty)
     if young(placed_at, now, settle_after):
         return Verdict.WAIT
     if sale and placed_at is not None and trade_date_of(as_utc(placed_at)) < trade_date_of(now):
@@ -101,6 +119,35 @@ class PositionDesk:
         """Sent less than `settle_after` ago: its answer may still be on its way."""
         return young(placed_at, self.clock.now(), self.settle_after)
 
-    def verdict(self, placed_at: datetime | None, found: bool, *, sale: bool = False) -> Verdict:
+    def verdict(
+        self, placed_at: datetime | None, found: bool, *, filled_qty: int = 0, sale: bool = False
+    ) -> Verdict:
         """`settle_verdict` now."""
-        return settle_verdict(placed_at, found, self.clock.now(), self.settle_after, sale=sale)
+        return settle_verdict(
+            placed_at, found, self.clock.now(), self.settle_after, filled_qty=filled_qty, sale=sale
+        )
+
+
+class _Positioned(Protocol):
+    @property
+    def positions(self) -> PositionDesk: ...
+
+
+_R = TypeVar("_R")
+
+
+def serialised(method: Callable[..., _R]) -> Callable[..., _R]:
+    """Hold the position's write lock (`PositionDesk.lock`) for a method called as
+    `(self, session, position_id, ...)` on an object with the account's `positions`. The fill
+    sync, the sales and the jobs run on their own threads over one desk: without it, two could
+    see no working stop and each place one, or one place a stop while a sale it made room for is
+    sent."""
+
+    @functools.wraps(method)
+    def locked(
+        self: _Positioned, session: object, position_id: uuid.UUID, *args: object, **kwargs: object
+    ) -> _R:
+        with self.positions.lock(position_id, method.__name__):
+            return method(self, session, position_id, *args, **kwargs)
+
+    return locked

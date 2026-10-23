@@ -30,19 +30,16 @@ book raises and nothing is written) and then, for one broker account:
 6. protects again every open real position of the account that has no stop the broker
    confirmed (a stop the broker refused twice was alerted; a stop whose answer was lost is
    settled by `StopDesk.protect`; each sync tries again);
-6b. (PR 48) records on each of HAT's sales the price the broker's book shows for it (under
-   market price protection a market sale shows the protected limit), and reports each market
-   sale still working short of its quantity a minute after it was sent (`SyncReport.resting`)
-   and each that HAT cancelled to send again and that has now ended (`SyncReport.resend`): the
-   `TradeManager` sends it again fresh. With `resend` on, a triggered GTT's sale the book already
-   shows at the market but still resting is asked to go at the market again at each sync; a
-   sale of an instrument locked at its lower circuit is left in the queue and alerted once, and
-   the owner is paged URGENT once a sale has missed `page_after` times (`sale.unfilled`);
+6b. (PR 48) has market price protection (`mpp.MarketProtection`) read HAT's sales in the book:
+   the price each shows, each market sale resting unfilled (`SyncReport.resting`) and each HAT
+   cancelled to send again that has now ended (`SyncReport.resend`), for the `TradeManager` to
+   send again; a triggered GTT's sale already at the market but still resting is its to ask
+   again;
 6c. (P1, HAT-EXEC-145) every `gtt_check_every` (`HAT_GTT_CHECK_MINUTES`, default 5), and on
    every run the 08:40 `gtt.check` asks for, reads the broker's GTT book before the order book
-   and compares it with the GTTs HAT believes rest (`protect.stop_confirmed`). A GTT a good read
+   and compares it with the GTTs HAT believes rest (`stop_plans.stop_confirmed`). A GTT a good read
    no longer holds, with no sale of it in the order book (one that triggered is the fill sync's
-   to attribute), was cancelled or expired by the broker: `StopDesk.check_gtt` ends it, alerts it
+   to attribute), was cancelled or expired by the broker: `GttUpkeep.check_gtt` ends it, alerts it
    once (`gtt.missing`) and protects the position again at once, so the engine's own hard stop
    is no longer held back for it. A GTT book that cannot be read changes nothing and is alerted
    once (`gtt.unverified`, code `gtt_book_unread`) until a read succeeds;
@@ -67,7 +64,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -78,7 +75,7 @@ from ..engine.positions import TradeError
 from ..events import record
 from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
-from ..time import as_utc, trade_date_of
+from ..time import trade_date_of
 from .broker import (
     BrokerOrder,
     BrokerTrade,
@@ -87,6 +84,7 @@ from .broker import (
     OrderType,
     Side,
 )
+from .gtt_upkeep import GttUpkeep
 from .protect import (
     ALERT_EXIT_NOT_PLACED,
     ALERT_GTT_UNFILLED,
@@ -94,15 +92,10 @@ from .protect import (
     EVENT_GTT_TRIGGERED,
     EXIT_WORKING,
     FAILED,
-    LIVE,
-    STOP_DAY,
-    STOP_GTT,
-    UNSURE,
     UNVERIFIED,
-    WORKING,
     StopDesk,
-    stop_confirmed,
 )
+from .stop_plans import LIVE, STOP_DAY, STOP_GTT, UNSURE, WORKING, stop_confirmed
 from .submit import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
@@ -110,15 +103,16 @@ from .submit import (
     adopt_broker_order,
     record_broker_status,
     rejected_sales,
-    resend_requested,
 )
+
+if TYPE_CHECKING:
+    from .mpp import MarketProtection
 
 __all__ = [
     "ALERT_FILL_EXCESS",
     "ALERT_FILL_REFUSED",
     "ALERT_SALE_UNFILLED",
-    "LOWER_CIRCUIT_LOCKED",
-    "SALE_RESTING",
+    "RESTING_AFTER",
     "FillSync",
     "SaleBand",
     "SyncReport",
@@ -139,13 +133,10 @@ STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
 RESTING = "gtt_triggered_resting"  # alert code: the GTT's sale rests below its limit
 NOT_MARKETED = "gtt_sale_not_marketed"  # alert code: the broker refused the market conversion
-# A GTT's sale working this long is resting, not on its way to a fill (HAT-EXEC-066).
+# A sale working this long is resting, not on its way to a fill (HAT-EXEC-066, PR 48).
 RESTING_AFTER = timedelta(seconds=60)
-# PR 48: a market sale that keeps resting unfilled (market price protection made it a limit the
-# price left behind) pages the owner; one at the lower circuit cannot be sold and is alerted.
+# PR 48: a sale the price left unfilled (market price protection, the band-limit sale).
 ALERT_SALE_UNFILLED = "sale.unfilled"
-SALE_RESTING = "sale_resting"  # alert code: the sale missed `page_after` times
-LOWER_CIRCUIT_LOCKED = "lower_circuit_locked"  # alert code: no re-send while locked
 
 
 class SaleBand(Protocol):
@@ -230,28 +221,6 @@ class SyncReport:
     gtt_unprotected: list[uuid.UUID] = field(default_factory=list)
 
 
-def _resend_due(session: Session, row: HatOrder) -> bool:
-    """A sale HAT cancelled to send it again (PR 48) that the book now shows ended."""
-    return (
-        row.purpose in EXIT_SALES and row.status == "cancelled" and resend_requested(session, row)
-    )
-
-
-def _record_book_price(session: Session, row: HatOrder, found: BrokerOrder) -> None:
-    """Record on the sale's row the price the book shows for it (PR 48: a market sale under
-    market price protection shows its protected limit)."""
-    if found.price is None or (row.price is not None and Decimal(row.price) == found.price):
-        return
-    row.price = found.price
-    session.commit()
-    logger.info(
-        "sale %s shows %s at %s in the book",
-        row.tag,
-        found.order_type.value if found.order_type else "unknown",
-        found.price,
-    )
-
-
 class FillSync:
     """Fills for one broker account's session; `desk` places and moves its stops."""
 
@@ -261,21 +230,16 @@ class FillSync:
         desk: StopDesk,
         notifier: Notifier | None = None,
         *,
-        band: SaleBand | None = None,
-        resend: bool = False,
-        page_after: int = 3,
+        mpp: MarketProtection,
         gtt_check_every: timedelta = GTT_CHECK_EVERY,
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self._broker = broker
         self._desk = desk
+        self._upkeep = GttUpkeep(desk)  # the swap, nightly verify and GTT-book check
         self._clock = clock  # stamps the orders it adopts
         self._notifier = notifier or LogNotifier()
-        self._band = band
-        self._resend = resend  # HAT_MPP_RESEND (PR 48)
-        self._page_after = page_after
-        self._gtt_misses: dict[str, int] = {}  # a triggered GTT's market sale asked again
-        self._locked_alerted: set[str] = set()  # sales alerted at the lower circuit
+        self.mpp = mpp  # market price protection (PR 48), shared with the `TradeManager`
         self._refused_trades: set[str] = set()
         self._unmarketed: set[str] = set()  # resting GTT sales whose conversion was alerted
         self._working_since: dict[str, datetime] = {}  # a GTT's sale first seen working
@@ -308,7 +272,7 @@ class FillSync:
         self._adopt(session, rows, book, now, report)
         self._trades(session, account_id, rows, trades, now, report)
         self._statuses(session, rows, book, now, report)
-        self._sales(session, rows, book, now, report)
+        self.mpp.note_sales(session, rows.values(), book, now, report)
         self._gtt_sales(session, account_id, orders, now, report)
         if report.gtt_book is not None and report.gtt_read_at is not None:
             self._check_gtts(
@@ -603,7 +567,7 @@ class FillSync:
             and stop_confirmed(row, book, read_at, self._desk.positions.settle_after) is False
         }
         for position_id in sorted(gone):
-            outcome = self._desk.check_gtt(session, position_id, now, book, read_at)
+            outcome = self._upkeep.check_gtt(session, position_id, now, book, read_at)
             if outcome in (FAILED, UNVERIFIED):
                 report.gtt_unprotected.append(position_id)
             else:
@@ -631,63 +595,12 @@ class FillSync:
                 self._sale_ended(session, row, found, now)
                 if row.position_id is not None and row.purpose != ENTRY:
                     touched.add(row.position_id)
-                if _resend_due(session, row):
+                if self.mpp.resend_due(session, row):
                     report.resend.append(row.id)
         for position_id in touched - report.protected:
             # A stop that ended (a day stop expired at the close) or a sale that ended short:
             # the position must still rest on a broker stop.
             self._desk.protect(session, position_id, now)
-
-    # --- 4b. HAT's sales in the book (PR 48) ------------------------------------------------------
-
-    def _sales(
-        self,
-        session: Session,
-        rows: dict[str, HatOrder],
-        book: TagBook,
-        now: datetime,
-        report: SyncReport,
-    ) -> None:
-        """Record the price the book shows for each of HAT's working sales (a market sale under
-        market price protection shows its protected limit), and report each market sale still
-        working short of its quantity `RESTING_AFTER` after it was sent."""
-        for row in rows.values():
-            if row.purpose not in EXIT_SALES or row.status not in LIVE:
-                continue
-            found = book.for_row(row)
-            if found is None or found.status not in LIVE:
-                continue
-            _record_book_price(session, row, found)
-            if (
-                row.order_type == OrderType.MARKET.value
-                and found.filled_qty < row.qty
-                and row.placed_at is not None
-                and now - as_utc(row.placed_at) >= RESTING_AFTER
-            ):
-                report.resting.append((row.id, found))
-
-    def locked(self, session: Session, instrument_id: uuid.UUID, now: datetime) -> bool:
-        """The instrument's last trade is at its lower circuit (False when unknown)."""
-        return self._band is not None and self._band.locked(session, instrument_id, now) is True
-
-    def alert_locked(self, key: str, detail: dict[str, str], now: datetime) -> None:
-        """`sale.unfilled` (code `lower_circuit_locked`), once per sale."""
-        if key in self._locked_alerted:
-            return
-        self._locked_alerted.add(key)
-        self._notifier.alert(
-            ALERT_SALE_UNFILLED, trade_date_of(now), {**detail, "code": LOWER_CIRCUIT_LOCKED}
-        )
-
-    def page_missed(self, misses: int, detail: dict[str, str], now: datetime) -> None:
-        """Page the owner (URGENT `sale.unfilled`, code `sale_resting`) at the `page_after`th
-        miss of a sale, once."""
-        if misses == self._page_after:
-            self._notifier.alert(
-                ALERT_SALE_UNFILLED,
-                trade_date_of(now),
-                {**detail, "code": SALE_RESTING, "misses": misses},
-            )
 
     # --- 5. a GTT that triggered without a fill -------------------------------------------------
 
@@ -844,12 +757,8 @@ class FillSync:
             report.resting_gtts += 1
             self._notifier.alert(ALERT_GTT_UNFILLED, trade_date_of(now), {**alert, "code": RESTING})
         if order.order_type is OrderType.MARKET:
-            # Already at the market. Under market price protection a market sale is a limit
-            # that can rest too: with `resend` on it is asked to go at the market again (at the
-            # protection band of the price now) at every sync, unless the instrument is locked
-            # at its lower circuit, where it waits in the queue for a buyer (PR 48).
-            if self._resend:
-                self._remarket(session, gtt, order, now, alert)
+            # Already at the market; under market price protection it can rest too (PR 48).
+            self.mpp.remarket(session, gtt, order, now, alert)
             return
         if self._desk.market_sale(order.order_id).ok or order.order_id in self._unmarketed:
             return
@@ -857,25 +766,6 @@ class FillSync:
         self._notifier.alert(
             ALERT_GTT_UNFILLED, trade_date_of(now), {**alert, "code": NOT_MARKETED}
         )
-
-    def _remarket(
-        self,
-        session: Session,
-        gtt: HatOrder,
-        order: BrokerOrder,
-        now: datetime,
-        alert: dict[str, str],
-    ) -> None:
-        position = session.get(HatPosition, gtt.position_id)
-        if position is None:
-            return
-        if self.locked(session, position.instrument_id, now):
-            self.alert_locked(order.order_id, alert, now)
-            return
-        if not self._desk.market_sale(order.order_id).ok:
-            return  # asked again at the next sync
-        misses = self._gtt_misses[order.order_id] = self._gtt_misses.get(order.order_id, 0) + 1
-        self.page_missed(misses, alert, now)
 
     # --- 6. positions without a stop ---------------------------------------------------------
 

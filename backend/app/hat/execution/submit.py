@@ -75,6 +75,7 @@ from .broker import (
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
 from .modes import NO_GTT_DELIVERY, real_orders_allowed
+from .position_desk import Verdict, found_verdict
 from .tags import encode_tag, is_hat_tag
 
 __all__ = [
@@ -92,8 +93,8 @@ __all__ = [
     "find_gtt",
     "mark_resend",
     "record_broker_status",
+    "resend_event",
     "resend_requested",
-    "resends",
     "rejected_sales",
     "reserve_order",
     "resolve_by_tag",
@@ -388,7 +389,7 @@ def adopt_gtt(session: Session, row: HatOrder, gtt: BrokerGtt, bot_id: uuid.UUID
     _event(session, row, bot_id, _placed_event(row))
 
 
-def _resend_event() -> Exists:
+def resend_event() -> Exists:
     """The `order.cancelled` (code `sale_resend`) of the order row in the enclosing query."""
     return (
         select(HatEvent.id)
@@ -417,29 +418,11 @@ def rejected_sales(session: Session, signal_id: uuid.UUID, purpose: str, now: da
                 and_(
                     HatOrder.status.in_(("cancelled", "expired")),
                     HatOrder.broker_order_id.is_not(None),
-                    ~_resend_event(),
+                    ~resend_event(),
                 ),
             ),
             HatOrder.placed_at >= start,
             HatOrder.placed_at < end,
-        )
-    )
-    return int(count or 0)
-
-
-def resends(session: Session, signal_id: uuid.UUID, purpose: str, now: datetime) -> int:
-    """Sales of `purpose` for the signal sent today that HAT cancelled to send again fresh
-    (PR 48): each is one miss of a market sale that rested unfilled."""
-    start, end = day_bounds(trade_date_of(now))
-    count = session.scalar(
-        select(func.count())
-        .select_from(HatOrder)
-        .where(
-            HatOrder.signal_id == signal_id,
-            HatOrder.purpose == purpose,
-            HatOrder.placed_at >= start,
-            HatOrder.placed_at < end,
-            _resend_event(),
         )
     )
     return int(count or 0)
@@ -570,7 +553,9 @@ def _lookup_before_retry(
 ) -> SendOutcome | None:
     """An attempt was made before: ask the broker for the tag. An order found is adopted and
     returned; None means the book has none and the same tag may be placed again (a stop or a
-    sale). An entry is never placed again (HAT-BRK-102): the book may lag an order that landed."""
+    sale). An entry is never placed again (HAT-BRK-102): the book may lag an order that landed.
+    A stop or sale found with shares sold is left to the fill sync (`found_verdict`), which
+    adopts it with its fills."""
     if row.purpose == GTT_PURPOSE:
         # settled against the GTT book once old enough (StopDesk.settle_lost), never sent again
         raise UnresolvedOrderError("a GTT of unknown outcome is settled, never sent again")
@@ -579,6 +564,8 @@ def _lookup_before_retry(
         if row.purpose == ENTRY:
             raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
         return None
+    if row.purpose != ENTRY and found_verdict(found.filled_qty) is Verdict.WAIT:
+        raise UnresolvedOrderError("found with shares sold: the fill sync adopts it")
     adopt_broker_order(session, row, found, bot_id, clock=clock)
     session.commit()
     return SendOutcome(tag, row.status, row.broker_order_id, CODE_OK, 0)
