@@ -13,6 +13,12 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
+from app.hat.backtest.fillrules import (
+    NSE_BANDS,
+    lower_circuit_locked,
+    pre_break_low,
+    upper_circuit_locked,
+)
 from app.hat.backtest.fills import (
     AMBIGUOUS_OPTIMISTIC,
     AMBIGUOUS_PESSIMISTIC,
@@ -24,19 +30,15 @@ from app.hat.backtest.fills import (
     entry_fill,
     stop_fill,
 )
+from app.hat.backtest.report import TradeRow
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
-from app.hat.confighash import config_hash
-from app.hat.engine.backtest import (
-    NSE_BANDS,
+from app.hat.backtest.spec import (
     REGIME_MULT_POLICY,
     REGIME_MULT_RULES,
     BacktestError,
     RunConventions,
-    TradeRow,
-    lower_circuit_locked,
-    pre_break_low,
-    upper_circuit_locked,
 )
+from app.hat.confighash import config_hash
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal

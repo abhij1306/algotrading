@@ -72,8 +72,9 @@ here.
   indicators are own polars code on adjusted bars.
 - **Engine (T7, T8, T12).** In-process scheduler with jobs in Postgres; one async session owner per
   broker account; one engine for backtest and live.
-- **Backtest.** Behaviours not modelled are listed in `KNOWN_GAPS` (`engine/backtest.py`) and
-  reported by every run; the golden replay fixture pins the result.
+- **Backtest.** Behaviours not modelled are listed in `KNOWN_GAPS` (`backtest/spec.py`) and
+  reported by every run. No fixture pins the result: a change to the loop is checked by a base vs
+  head run on real data.
 
 ## Operations and security
 

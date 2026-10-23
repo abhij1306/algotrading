@@ -12,7 +12,7 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from app.hat.engine.backtest import GAP_PLAYBOOKS, KNOWN_GAPS, REGIME_MULT_POLICY
+from app.hat.backtest.spec import GAP_PLAYBOOKS, KNOWN_GAPS, REGIME_MULT_POLICY
 from app.hat.engine.portfolio import lifecycle
 from app.hat.engine.portfolio.lifecycle import BacktestFacts, Evidence, LifecycleError
 from app.hat.engine.scan import EP_PLAYBOOK

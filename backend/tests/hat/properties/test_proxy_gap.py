@@ -11,7 +11,7 @@ import pytest
 
 from app.hat.backtest import runs
 from app.hat.backtest.proxy_gap import GapError, Leg, columns_to_read, comparable, compare, window
-from app.hat.engine.backtest import END_OF_PERIOD
+from app.hat.backtest.report import END_OF_PERIOD
 from app.hat.engine.scan import EP_PLAYBOOK
 
 D = Decimal

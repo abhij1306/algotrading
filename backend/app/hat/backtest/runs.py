@@ -37,21 +37,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..data.store import DataStore, atomic_replace
-from ..engine.backtest import (
-    END_OF_PERIOD,
-    GAP_PLAYBOOKS,
-    KNOWN_GAPS,
-    LOWER_CIRCUIT_RULE,
-    REGIME_MULT_POLICY,
-    BacktestError,
-    BacktestResult,
-    MarketData,
-    RunConventions,
-    RunSpec,
-    run_backtest,
-    with_cooldown,
-)
-from ..engine.backtest import trades_parquet as encode_trades
 from ..engine.confidence import (
     NO_POLICY,
     NO_RUN,
@@ -94,6 +79,7 @@ from .costs import (
     check_slippage,
     load_cost_model,
 )
+from .data import MarketData, load_market
 from .dsr import (
     MIN_TRIALS,
     PBO_BLOCKS,
@@ -104,8 +90,20 @@ from .dsr import (
     pbo,
     trial_variance,
 )
-from .market import load_market
+from .loop import run_backtest
+from .report import END_OF_PERIOD, BacktestResult
+from .report import trades_parquet as encode_trades
 from .slots import SLOT_ORDER_TIME
+from .spec import (
+    GAP_PLAYBOOKS,
+    KNOWN_GAPS,
+    LOWER_CIRCUIT_RULE,
+    REGIME_MULT_POLICY,
+    BacktestError,
+    RunConventions,
+    RunSpec,
+    with_cooldown,
+)
 
 __all__ = [
     "COMPLETED",

@@ -92,7 +92,7 @@ refuse inside a session (`market_hours`).
    name an instrument on that date with the CSV's ISIN; otherwise the command lists the unknown
    ones (`SYMBOL(ISIN)` for an ISIN that differs) and writes nothing.
 6. For each sleeve: backtest its strategy's version 1,
-   `$COMPOSE exec -w /app/backend backend python -m app.hat.engine.backtest --bot <bot> --version
+   `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot <bot> --version
    <version> --from 2011-06-22 --to <last trading day> --for-promotion --regime-mult policy`; note `run_id`.
 7. `$ADMIN publish-version --version <version> --run <run_id>` (draft to backtested),
    then `$ADMIN assign-version --bot <bot> --version <version>`: the sleeve now scans with it
