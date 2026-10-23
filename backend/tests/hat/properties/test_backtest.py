@@ -97,6 +97,7 @@ CLOSE_EXITS = {"close_below_sma", "time_stop", "partial_after_days", "trailing_s
 PRICE = st.integers(100, 100_000).map(lambda n: D(n) / 100)  # 1.00 .. 1000.00 on the paise grid
 DAYS = s.sessions(SESSIONS)
 SPLITS = st.sampled_from(["0.5", "0.25"])
+FLAT = {s.instrument(0): [(80.0, 80.0, 80.0, 80.0)] * SESSIONS}
 
 
 def _run(data: MarketData, **kw: object) -> BacktestResult:
@@ -1611,17 +1612,21 @@ def test_market_point_in_time(rows: list[tuple[str, int, bool]], end_n: int) -> 
 @given(
     s.paths(SESSIONS),
     st.sampled_from(["none", "before", "after"]),
+    st.sampled_from(["all", "short", "unrun"]),
     st.booleans(),
     st.integers(1, SESSIONS - 1),
     SPLITS,
 )
+@example(FLAT, "none", "short", False, 1, "0.5")  # the last session has no partition
+@example(FLAT, "none", "unrun", False, 1, "0.5")  # no features run at all
 @RUNS
 def test_features_digest_pinned(
-    paths: dict, arrival: str, ranked: bool, ex: int, factor: str
+    paths: dict, arrival: str, last: str, ranked: bool, ex: int, factor: str
 ) -> None:
     """The backtest loads only the features the nightly job wrote for the stored corporate
-    actions over every instrument: with a split stored after the last features run, or after a
-    rebuild ranked over a narrower universe, `load_market` refuses (`backtest_features_stale`);
+    actions over every instrument and every session: with a split stored after the last
+    features run, a rebuild ranked over a narrower universe, a last run stopped before the last
+    session or no run at all, `load_market` refuses (`backtest_features_stale`);
     otherwise it loads, its snapshot records the job's digest, and the features it read equal a
     full rebuild over the same bars and actions (G42)."""
     cfg = s.config()
@@ -1632,11 +1637,13 @@ def test_features_digest_pinned(
         world = s.night_world(Path(tmp) / "night", cfg, sorted(paths), DAYS)
         for n in range(SESSIONS):
             s.store_session(world.store, paths, DAYS, n, splits=splits)
-            if n == middle:
+            if n == middle and last != "unrun":
                 world.nightly(DAYS[n]).features(DAYS[n])
         if arrival == "before":
             world.store_split(target, splits[target])
-        world.nightly(DAYS[-1]).features(DAYS[-1])
+        if last != "unrun":
+            through = DAYS[-1] if last == "all" else DAYS[-2]
+            world.nightly(through).features(through)
         if arrival == "after":
             world.store_split(target, splits[target])
         with world.session() as session:
@@ -1649,7 +1656,7 @@ def test_features_digest_pinned(
                 "start": DAYS[s.WARM_UP],
                 "end": DAYS[-1],
             }
-            if ranked or arrival == "after":
+            if ranked or arrival == "after" or last != "all":
                 with pytest.raises(BacktestError) as refused:
                     load_market(world.store, session, **period)  # type: ignore[arg-type]
                 assert refused.value.code == "backtest_features_stale"
