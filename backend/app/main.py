@@ -42,13 +42,16 @@ def _ensure_database_schema() -> None:
 
 
 async def _init_database() -> None:
-    """Create the schema. Without its database the app does not start: one clear log line, no
-    driver text and no password, then the startup fails."""
+    """Create the schema. Without its database the app does not start: an unreachable database
+    is one clear log line, no driver text and no password, then the startup fails. Any other
+    error (a schema bug, a refused permission) propagates with its traceback."""
+    from sqlalchemy.exc import InterfaceError, OperationalError
+
     from .database import describe_database_target
 
     try:
         await asyncio.to_thread(_ensure_database_schema)
-    except Exception as exc:
+    except (OperationalError, InterfaceError) as exc:
         logger.error(
             "[ERROR] Database unreachable at %s (%s; start Postgres)",
             describe_database_target(),
