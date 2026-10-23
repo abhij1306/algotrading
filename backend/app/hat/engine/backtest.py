@@ -1921,6 +1921,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..data.store import DataStore  # noqa: PLC0415
     from ..settings import operator_settings  # noqa: PLC0415
 
+    # Under `python -m` this file is `__main__`: the error `runs` raises and the conventions it
+    # reads must be the imported module's classes, not this one's copies.
+    from .backtest import BacktestError, RunConventions  # noqa: PLC0415
+
     parser = argparse.ArgumentParser(prog="python -m app.hat.engine.backtest")
     parser.add_argument("--bot", type=uuid.UUID, required=True)
     parser.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
