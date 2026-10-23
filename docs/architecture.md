@@ -23,6 +23,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), the evidence the gates read (`evidence`, through the typed `RunMetrics`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` and `risk` import only `spec` and `evidence`, never the loop |
 | `models` | SQLAlchemy models on the shared `Base`; every table is `hat_*` |
 | `api` | Read-only dashboard routes and the Fyers login routes behind the write guard |
+| `read` | The read model the dashboard and Telegram share: bots (mode, kill state, manage-only reasons), kill rows, open positions, latest watchlists; batched reads into frozen dataclasses, no writer import (CONF `hat_routes_read_only`) |
 
 Top-level helpers: `events.py` (event log), `money.py` (Decimal), `clock.py`, `ids.py` (uuid v7),
 `settings.py`, `schema.py` (`init_db` upkeep, Postgres-only DDL, seeds), `admin.py` (owner CLI).

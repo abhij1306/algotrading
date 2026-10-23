@@ -31,6 +31,7 @@ from ..engine.watchlist import EVENT_PUBLISHED
 from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatTelegramMessage
 from ..ops.jobs import JobError, JobResult
 from ..ops.scheduler import ScheduledJob
+from ..read.positions import symbol_of
 from ..risk.sessions import SessionCalendar, is_trading_day
 from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from . import reads, render, store
@@ -179,7 +180,7 @@ class Reports:
             position = session.get(HatPosition, event.aggregate_id)
             rows.append(
                 render.CloseGapRow(
-                    symbol=reads.symbol_of(session, position.instrument_id) if position else "?",
+                    symbol=symbol_of(session, position.instrument_id) if position else "?",
                     live_price=str(payload.get("live_price")),
                     official_close=str(payload.get("official_close")),
                     gap_pct=str(payload.get("gap_pct")),

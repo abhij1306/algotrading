@@ -58,6 +58,7 @@ from ..models import (
     HatTradeResult,
 )
 from ..money import exact
+from ..read.positions import symbol_of
 from ..risk.modes import Mode
 from ..time import as_utc, trade_date_of, utc_now
 from . import reads, render, store
@@ -126,7 +127,7 @@ def card_view(session: Session, signal: HatSignal, approval: HatApproval | None)
     ).first()
     return render.CardView(
         signal_id=signal.id,
-        symbol=reads.symbol_of(session, signal.instrument_id),
+        symbol=symbol_of(session, signal.instrument_id),
         playbook=signal.playbook,
         entry=trigger,
         stop=Decimal(signal.stop_price),
@@ -198,7 +199,7 @@ def _position_message(session: Session, event: HatEvent) -> Outbound | None:
     else:
         r = reads.r_so_far(Decimal(position.avg_entry), Decimal(position.initial_stop), price)
     view = render.PositionEventView(
-        symbol=reads.symbol_of(session, position.instrument_id),
+        symbol=symbol_of(session, position.instrument_id),
         qty=qty if isinstance(qty, int) and not isinstance(qty, bool) else None,
         price=price,
         r_so_far=r,
