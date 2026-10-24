@@ -7,7 +7,8 @@ Active helpers only (run from repo root):
 - `export_openapi.py` writes the OpenAPI schema for `pnpm gen:api` in `frontend/`
 - `hat_backup.py run --local DIR --remote DIR` takes the nightly HAT backup: a `pg_dump`
   (custom format) and a tar of `HAT_DATA_ROOT`, written to both targets with a `manifest.json`
-  (size and sha256 of every file) and re-verified at both; exit 1 on any mismatch.
+  (size and sha256 of every file) and re-verified at both; exit 1 on any mismatch, or when
+  `raw/` or `bars_5m/` (the parts that cannot be rebuilt) holds no file.
   `hat_backup.py verify SET_DIR` re-checks one set. Targets default to `HAT_BACKUP_LOCAL` and
   `HAT_BACKUP_REMOTE`; the password reaches `pg_dump` only via `PGPASSWORD`/`~/.pgpass`
   (HAT-OPS-060, runbook in `docs/runbook.md`)

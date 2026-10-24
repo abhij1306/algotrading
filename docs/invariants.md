@@ -65,6 +65,10 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
   are never logged or returned; no secret value in the repo.
 - **Events.** Every state change and its event commit in one transaction; `hat_event` is
   append-only (trigger); trade state replays from events.
+- **Schema.** The database holds exactly the models' tables, columns, types, nullability,
+  constraints and indexes, plus `schema.PG_DDL`'s objects; HAT refuses to start on any
+  difference and prints the DDL. A change to an existing table ships as an idempotent `PG_DDL`
+  statement or as a runbook DDL step run before the deploy (`create_all` never alters a table).
 - **Data.** Scans never run on data that failed the gate; features use bars up to the scan date
   only; raw bars are immutable; adjusted prices are raw times cumulative factors, each action
   applied once per ISIN chain, and two ISINs share a history only through a `linked` lineage

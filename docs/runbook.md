@@ -171,6 +171,33 @@ The runtime lock's connection runs in autocommit, so it is never idle in a trans
 the lineage build reads Postgres only after its DuckDB scan and ends that read before it decides,
 so no HAT job sits idle in a transaction across a long scan.
 
+### Schema drift at startup
+
+`init_db` compares the live schema with the models (and `schema.PG_DDL`) and refuses to start on
+any difference: the log line `[ERROR] Schema drift at <db>` lists the DDL to run, one statement
+per line; a line starting `--` names an object the database has and the models do not (a stray
+column, index or constraint: drop it or add it to the models). Run the DDL as the owner outside
+08:30–15:35 IST, then start again. The P6b tables `hat_isin_merge` and `hat_isin_merge_row` are
+tolerated until they are dropped (Post-merge DBA steps); then remove them from
+`DRIFT_ALLOWED_TABLES` in `app/hat/schema.py`.
+
+### Post-merge DBA steps (DB audit wave)
+
+Owner steps on each live database (hat_live), as a superuser, outside 08:30–15:35 IST, after a
+`pg_dump`:
+
+1. Role limits: the two `ALTER ROLE` statements in Database role limits above (safe now that
+   the lineage build never sits idle in a transaction), then restart the backend.
+2. `VACUUM FULL hat_instrument;` (merge churn left a 9 MB heap for 0.5 MB of rows; it locks the
+   table for about a second).
+3. Once the owner calls the P6b ISIN merge final (no `isin_merge down` will be needed):
+   `DROP TABLE hat_isin_merge_row, hat_isin_merge;` and remove both names from
+   `DRIFT_ALLOWED_TABLES`.
+4. After the next Saturday `reference.weekly` job, check that the new listings in the bars
+   (AZADIND, BONFIG, SMT, TONBO, ZETWERK on 2026-10-23) have a `hat_instrument` row:
+   `select symbol from hat_instrument where symbol in ('AZADIND','BONFIG','SMT','TONBO','ZETWERK');`
+5. Install the nightly backup timer (Backup and restore drill) and run the first restore drill.
+
 ### Runtime indexes (DB7)
 
 The backend creates its indexes at start (`ensure_hat_schema`, `PG_DDL` in `app/hat/schema.py`,
@@ -589,7 +616,11 @@ python scripts/hat_backup.py run \
   --data-root "$(docker volume inspect -f '{{ .Mountpoint }}' hat_hat_data)"
 ```
 
-`HAT_BACKUP_LOCAL` is the external disk and `HAT_BACKUP_REMOTE` a mounted cloud bucket. The run
+`HAT_BACKUP_LOCAL` is the external disk and `HAT_BACKUP_REMOTE` a mounted cloud bucket. The set
+holds the dump and every file of the data root, including the two parts that cannot be rebuilt:
+`raw/` (the bhavcopy zips) and `bars_5m/` (the Fyers minute history); the run fails before it
+writes when either holds no file (a wrong `--data-root`; `--require raw` drops `bars_5m` on a
+host that has none yet). The run
 exits 1 when any file is missing or differs at either target, and the timer's `OnFailure=` unit
 sends the alert. pg_dump must be version 18 (or pass `--pg-dump` with the postgres container's,
 see the script's help).

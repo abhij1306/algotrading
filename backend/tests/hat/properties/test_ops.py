@@ -581,6 +581,38 @@ def test_backup_manifest(files: dict[str, bytes], target: int, how: str, pick: i
         assert hat_backup.verify_manifest(targets[1 - target], manifest) == []
 
 
+def test_backup_requires_the_unrebuildable_dirs() -> None:
+    names = ["raw/a.zip", "raw/b.zip", "features_daily/date=x/p.parquet", "backend.log"]
+    assert hat_backup.top_dirs(names) == {".": 1, "features_daily": 1, "raw": 2}
+    assert hat_backup.missing_dirs(names, hat_backup.REQUIRED_DIRS) == ["bars_5m"]
+    assert hat_backup.missing_dirs([*names, "bars_5m/date=x/p.parquet"], ["raw", "bars_5m"]) == []
+    assert hat_backup.missing_dirs([], ["raw"]) == ["raw"]
+
+
+def test_backup_stores_symlinked_files_and_refuses_symlinked_dirs(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    (outside / "dir").mkdir(parents=True)
+    (outside / "a.zip").write_bytes(b"zip bytes")
+    root = tmp_path / "root"
+    (root / "raw").mkdir(parents=True)
+    (root / "raw" / "a.zip").symlink_to(outside / "a.zip")
+    names = hat_backup.data_files(root, [])
+    assert names == ["raw/a.zip"]
+    hat_backup.write_data_tar(root, names, tmp_path / "set.tar")
+    entries = hat_backup.archive_manifest(tmp_path / "set.tar")
+    assert entries["raw/a.zip"][hat_backup.SIZE] == len(b"zip bytes")
+    (root / "bars_5m").symlink_to(outside / "dir")
+    with pytest.raises(RuntimeError, match="symlinked directory"):
+        hat_backup.data_files(root, [])
+
+
+def test_backup_require_needs_a_value() -> None:
+    with pytest.raises(SystemExit):
+        hat_backup.parse_args(["run", "--local", "/a", "--remote", "/b", "--require"])
+    args = hat_backup.parse_args(["run", "--local", "/a", "--remote", "/b"])
+    assert args.require == ["raw", "bars_5m"]
+
+
 WINDOW_OPEN_MINUTE = 8 * 60 + 30
 WINDOW_CLOSE_MINUTE = 15 * 60 + 35
 guard_zones = st.sampled_from((UTC, IST, ZoneInfo("America/New_York"), ZoneInfo("Asia/Tokyo")))

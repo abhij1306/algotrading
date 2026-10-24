@@ -11,7 +11,10 @@ Usage (from the repo root, with the .env variables in the environment):
 into the local target, copies it to the remote target, then re-reads both copies against the
 manifest (HAT-OPS-060, docs/runbook.md). Any missing, resized or changed file fails
 the run with exit code 1; the host timer that runs it alerts on that exit code (runbook).
-Older sets beyond --keep are pruned only after a run verified.
+Older sets beyond --keep are pruned only after a run verified. The data root must hold files under
+`raw/` (the bhavcopy zips every daily bar and feature is rebuilt from) and `bars_5m/` (the Fyers
+minute history): a run that finds either empty fails before it writes, so a wrong --data-root
+(an empty volume mountpoint) never passes as a verified backup. `--require` narrows that list.
 
 The targets are plain directories: the local one is the external disk, the remote one a mounted
 cloud bucket (an rclone or s3fs mount), so the script holds no bucket credentials. The database
@@ -54,6 +57,9 @@ CHUNK = 1 << 20
 SET_NAME = re.compile(r"^\d{8}T\d{6}Z$")
 DEFAULT_DATA_ROOT = Path("data_system") / "hat"
 DEFAULT_KEEP = 14
+# What a backup must carry because it cannot be rebuilt (DB audit M6): the bhavcopy zips and the
+# Fyers minute history. `bars_daily_raw` and `features_daily` are rebuilt from `raw/` and the DB.
+REQUIRED_DIRS = ("raw", "bars_5m")
 
 Entry = dict[str, int | str]
 
@@ -128,18 +134,38 @@ def verify_manifest(directory: Path, manifest: Mapping) -> list[str]:
 
 
 def data_files(data_root: Path, exclude: Iterable[Path]) -> list[str]:
-    """Every regular file under `data_root`, relative, skipping the backup targets themselves."""
+    """Every regular file under `data_root`, relative, skipping the backup targets themselves.
+    A symlinked file is listed (the tar stores its bytes); a symlinked directory is refused, as
+    the walk would not enter it and its files would silently miss the backup."""
     skipped = [path.resolve() for path in exclude]
     names = []
     for path in sorted(data_root.rglob("*")):
         resolved = path.resolve()
+        if path.is_symlink() and path.is_dir():
+            raise RuntimeError(f"{path} is a symlinked directory: point --data-root at real files")
         if path.is_file() and not any(resolved.is_relative_to(skip) for skip in skipped):
             names.append(path.relative_to(data_root).as_posix())
     return names
 
 
+def top_dirs(names: Iterable[str]) -> dict[str, int]:
+    """File count per top-level directory of the relative paths `names` ("." for a root file)."""
+    counts: dict[str, int] = {}
+    for name in names:
+        top = name.split("/", 1)[0] if "/" in name else "."
+        counts[top] = counts.get(top, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def missing_dirs(names: Iterable[str], required: Iterable[str]) -> list[str]:
+    """The required top-level directories that hold no file among `names`."""
+    present = top_dirs(names)
+    return [directory for directory in required if directory not in present]
+
+
 def write_data_tar(data_root: Path, names: list[str], tar_path: Path) -> None:
-    with tarfile.open(tar_path, "w") as archive:
+    # dereference: a symlinked file is stored as its bytes, never as a link to outside the set
+    with tarfile.open(tar_path, "w", dereference=True) as archive:
         for name in names:
             archive.add(data_root / name, arcname=name, recursive=False)
 
@@ -212,13 +238,22 @@ def run_backup(args: argparse.Namespace) -> int:
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     local = args.local / stamp
     remote = args.remote / stamp
+    names = data_files(args.data_root, [args.local, args.remote])
+    missing = missing_dirs(names, args.require)
+    if missing:
+        print(
+            f"BACKUP FAILED: no file under {', '.join(d + '/' for d in missing)} in "
+            f"{args.data_root} (is --data-root right?)",
+            file=sys.stderr,
+        )
+        return 1
     local.mkdir(parents=True, exist_ok=False)
     run_pg_dump(args.pg_dump, local / DUMP_NAME)
-    names = data_files(args.data_root, [args.local, args.remote])
     write_data_tar(args.data_root, names, local / DATA_TAR)
     manifest = build_manifest(local, [DUMP_NAME, DATA_TAR])
     manifest[ARCHIVES] = {DATA_TAR: archive_manifest(local / DATA_TAR)}
     manifest["created"] = stamp
+    manifest["data_dirs"] = top_dirs(names)
     write_manifest(local, manifest)
     copy_set(local, remote)
     problems = verify_set(local, manifest) + verify_set(remote, manifest)
@@ -227,7 +262,8 @@ def run_backup(args: argparse.Namespace) -> int:
         return 1
     for target in (args.local, args.remote):
         prune(target, args.keep)
-    print(f"backup {stamp}: {len(names)} data files, verified at {local} and {remote}")
+    dirs = ", ".join(f"{name} {count}" for name, count in manifest["data_dirs"].items())
+    print(f"backup {stamp}: {len(names)} data files ({dirs}), verified at {local} and {remote}")
     return 0
 
 
@@ -256,6 +292,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     run.add_argument("--pg-dump", default="pg_dump", help="pg_dump command (version 18)")
     run.add_argument("--keep", type=int, default=DEFAULT_KEEP, help="sets kept per target")
+    run.add_argument(
+        "--require",
+        nargs="+",
+        default=list(REQUIRED_DIRS),
+        help="top-level data-root directories that must hold files (default: raw bars_5m)",
+    )
     verify = sub.add_parser("verify", help="re-check one backup set against its manifest")
     verify.add_argument("set_dir", type=Path)
     args = parser.parse_args(argv)

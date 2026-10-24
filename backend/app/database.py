@@ -18,7 +18,7 @@ from sqlalchemy.pool import QueuePool
 from .base import Base
 from .hat import models as hat_models  # noqa: F401  (registers the hat_* tables on Base)
 from .hat.risk.policy_upkeep import ensure_hat_policies
-from .hat.schema import ensure_hat_schema, seed_hat_reference
+from .hat.schema import check_schema_drift, ensure_hat_schema, seed_hat_reference
 from .hat.settings import is_enabled as hat_is_enabled
 from .paths import ENV_FILE
 from .utils.env_loader import load_dotenv
@@ -103,9 +103,11 @@ def describe_database_target(url: URL | None = None) -> str:
 
 
 def init_db() -> None:
-    """Create the HAT tables and run HAT's upkeep (called by the lifespan at startup)."""
+    """Create the HAT tables, run HAT's upkeep, then refuse a schema that differs from the models
+    (`SchemaDriftError`, HAT enabled or not; called by the lifespan at startup)."""
     Base.metadata.create_all(bind=engine)
     ensure_hat_database(bind=engine)
+    check_schema_drift(engine)
     logger.info("Database initialized: %s", describe_database_target())
 
 
