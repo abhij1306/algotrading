@@ -653,7 +653,8 @@ class FillSync:
             if found is None:
                 continue
             session.refresh(row)
-            if record_broker_status(session, row, found, self._bot_of(session, row)):
+            reason = self._desk.entries.reason_of(row.id)
+            if record_broker_status(session, row, found, self._bot_of(session, row), reason):
                 session.commit()
                 sync.report.statuses += 1
                 sync.ended.append(row)

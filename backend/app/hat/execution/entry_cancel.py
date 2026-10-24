@@ -42,14 +42,23 @@ class EntryCancel:
         self._broker = broker
         # Entries whose remainder the broker was asked to cancel: not asked again.
         self._asked: set[uuid.UUID] = set()
+        # Why HAT asked the broker to cancel an entry, for its `order.cancelled` (`reason_of`).
+        self._reasons: dict[uuid.UUID, str] = {}
 
-    def cancel_unfilled(self, session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
+    def reason_of(self, order_id: uuid.UUID) -> str | None:
+        """Why HAT cancelled the entry order, when this desk asked it (a restart forgets it)."""
+        return self._reasons.get(order_id)
+
+    def cancel_unfilled(
+        self, session: Session, signal_id: uuid.UUID, now: datetime, reason: str
+    ) -> bool:
         """Cancel the signal's real entry while nothing of it has filled (PR 49): its break
         failed or it waited too long. An entry with a fill (a real position, or a part fill the
         broker reported) is left working: the partial-entry policy keeps the remainder until the
         close. The signal ends Cancelled when the fill sync sees the order end with nothing
         filled, and a fill that lands first opens the position as any fill does. True when the
-        broker took a cancel."""
+        broker took a cancel. `reason` (`entry_timeout.BREAK_FAILED`, `TIMED_OUT`) goes into
+        the order's `order.cancelled`."""
         filled = session.scalar(
             select(HatPosition.id).where(
                 HatPosition.signal_id == signal_id, HatPosition.is_virtual.is_(False)
@@ -64,9 +73,11 @@ class EntryCancel:
         )
         if filled is not None or part is not None:
             return False
-        return self.cancel_rest(session, signal_id, trade_date_of(now))
+        return self.cancel_rest(session, signal_id, trade_date_of(now), reason)
 
-    def cancel_rest(self, session: Session, signal_id: uuid.UUID, today: date) -> bool:
+    def cancel_rest(
+        self, session: Session, signal_id: uuid.UUID, today: date, reason: str | None = None
+    ) -> bool:
         """Ask the broker to cancel what of the signal's live entries of `today` has not filled,
         each once (again only after the broker could not be reached; a refusal means it filled
         or ended). An entry of an earlier trade date expired at its close; one whose answer was
@@ -92,6 +103,8 @@ class EntryCancel:
                 self._asked.add(row.id)
             if ack.ok:
                 asked = True
+                if reason is not None:
+                    self._reasons[row.id] = reason
             else:
                 logger.warning("entry %s remainder not cancelled (%s)", row.tag, ack.code)
         return asked

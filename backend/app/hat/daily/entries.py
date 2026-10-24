@@ -29,7 +29,7 @@ from ..engine.trade_dividends import shadow_dividend_cash
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
-from ..models import HatAllocationDaily, HatBot, HatPosition, HatTradeResult
+from ..models import HatAllocationDaily, HatBot, HatInstrument, HatPosition, HatTradeResult
 from ..risk import bots, kill_ops
 from ..risk.decision import SignalContext
 from ..risk.policy_service import load_versions
@@ -160,7 +160,7 @@ def _with_industry(session: Session, request: entries.EntryRequest) -> entries.E
 class LiveRoute:
     """The trigger service's `Route`: through the bot's account router when it has a desk, else
     `route_by_mode`. The placement check is read here, at placement (not the trigger's
-    snapshot)."""
+    snapshot), with the instrument's final closes of the day for the failed-break refusal."""
 
     def __init__(
         self,
@@ -170,8 +170,10 @@ class LiveRoute:
         clock: Clock,
         calendar: CalendarSource,
         prices: LivePrices,
+        closes: Callable[[str], list[tuple[datetime, Decimal]]],
     ) -> None:
         self._routers = routers
+        self._closes = closes  # the day's final 5-minute closes of a symbol (`EntryWatch`)
         self._gates = gates
         self._feed_stale = feed_stale
         self._clock = clock
@@ -183,6 +185,9 @@ class LiveRoute:
     ) -> PlacementCheck:
         calendar = self._calendar()
         ltp, refusal = self._prices.checked(session, instrument_id, now)
+        symbol = session.scalar(
+            select(HatInstrument.symbol).where(HatInstrument.id == instrument_id)
+        )
         return PlacementCheck(
             calendar=calendar,
             feed_stale=self._feed_stale(),
@@ -190,6 +195,7 @@ class LiveRoute:
             gate_on=self._gates.gate_on(session, bot_id, now),
             ltp=ltp,
             ltp_refusal=refusal,
+            closes=() if symbol is None else tuple(self._closes(symbol)),
         )
 
     def __call__(

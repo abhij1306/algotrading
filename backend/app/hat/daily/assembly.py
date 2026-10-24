@@ -398,12 +398,14 @@ def build(
         return "connected" if parts.feed.is_connected else "disconnected"
 
     live_prices = LivePrices(prices, book, clock)
-    route = LiveRoute(desks.router, gates, feed_stale, clock, calendar, live_prices)
+    # PR 49: an unfilled entry is cancelled on a failed break or after the timeout; a failed
+    # break also refuses its placement and a Take (Q7), from the closes a restart restores
+    entries = EntryWatch(timedelta(minutes=settings.entry_timeout_minutes))
+    live.add_restore_listener(entries.restore)
+    route = LiveRoute(desks.router, gates, feed_stale, clock, calendar, live_prices, entries.closes)
     contexts = LiveContexts(gates, settings.user_id, feed_stale, desks.funds, calendar)
     service = TriggerService(TriggerMonitor(live.builder), sf, contexts, feed_stale, route)
     live.add_bar_listener(service.on_bar)
-    # PR 49: an unfilled entry is cancelled on a failed break or after the timeout
-    entries = EntryWatch(timedelta(minutes=settings.entry_timeout_minutes))
     live.add_bar_listener(entries.on_bar)
     views = ExitViews(book, live_prices.price, clock, calendar)
     shadow = ShadowExits(sf, views, desks.managed)

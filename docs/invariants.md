@@ -15,6 +15,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
    lacks is no trading day; a special session has only its stored hours, else it is closed.
 6. `max_chase` always applies, even if a config deletes the criterion.
+7. No entry is placed, and no Take passes, once its break failed: a final 5-minute bar after the
+   trigger bar closed below the level. An unfilled entry whose break failed is cancelled, and its
+   `order.cancelled` carries the reason.
 
 ## Money safety
 

@@ -546,7 +546,7 @@ class Desks:
     ) -> int:
         """One signal's cancel; its failure never holds up the account's other entries."""
         try:
-            if desk.manager.cancel_unfilled_entry(session, signal_id, now):
+            if desk.manager.cancel_unfilled_entry(session, signal_id, now, reason):
                 logger.info("entry of signal %s cancel taken: %s", signal_id, reason)
                 return 1
         except Exception:

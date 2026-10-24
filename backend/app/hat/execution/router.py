@@ -73,8 +73,9 @@ from ..risk import kill_ops
 from ..risk.decision import Reason
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import trade_date_of
+from ..time import as_utc, trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
+from .entry_timeout import BREAK_FAILED, break_failed
 from .guard import ExecutionGuard
 from .modes import HIGH, NO_GTT_DELIVERY, NOT_HIGH_CONFIDENCE, bot_mode, real_orders_allowed
 from .reconcile import ReconciliationService
@@ -127,13 +128,18 @@ class PlacementCheck:
     # (`data.live.usable_price`, PR 51), and why it is None
     ltp: Decimal | None
     ltp_refusal: str | None = None
+    # the instrument's final 5-minute closes of the day, (final instant, close); none known
+    # (no bars, even after a restart's restore: Q7) fails open
+    closes: tuple[tuple[datetime, Decimal], ...] = ()
 
 
 def placement_refusal(
-    check: PlacementCheck, now: datetime, stop: Decimal | None = None
+    check: PlacementCheck, now: datetime, signal: HatSignal | None = None
 ) -> str | None:
     """Why no real entry may be placed at `now` (the risk check's own reason code, or the live
-    price's), or None. With the entry's `stop`, a live price at or below it refuses too."""
+    price's), or None. With the entry's `signal`, a live price at or below its stop refuses
+    too, and so does a failed break: a final bar after its trigger bar closed below its level
+    (`BREAK_FAILED`, Q7)."""
     if check.calendar is None or check.calendar.state(now) is not SessionState.OPEN:
         return Reason.MARKET_CLOSED.value
     if check.feed_stale is not False:
@@ -144,13 +150,15 @@ def placement_refusal(
         return Reason.REGIME_GATE.value
     if check.ltp is None:
         return check.ltp_refusal or PRICE_UNKNOWN
-    if stop is not None and check.ltp <= stop:
+    if signal is None:
+        return None
+    if signal.stop_price is not None and check.ltp <= Decimal(signal.stop_price):
         return PRICE_AT_OR_BELOW_STOP
+    if signal.triggered_at is not None and break_failed(
+        Decimal(signal.trigger_price), as_utc(signal.triggered_at), check.closes
+    ):
+        return BREAK_FAILED
     return None
-
-
-def _stop_of(signal: HatSignal | None) -> Decimal | None:
-    return None if signal is None or signal.stop_price is None else Decimal(signal.stop_price)
 
 
 def _taken(session: Session, signal_id: uuid.UUID) -> bool:
@@ -288,7 +296,7 @@ class ExecutionRouter:
     ) -> approvals.ApprovalDecision:
         """The user's Take: the decision commits first; a Take that passed the live conditions
         and the max-chase re-check is then placed as a real entry."""
-        stop = _stop_of(session.get(HatSignal, signal_id))
+        signal = session.get(HatSignal, signal_id)
         decision = approvals.take(
             session,
             signal_id,
@@ -296,7 +304,7 @@ class ExecutionRouter:
             locked_upper_circuit=locked_upper_circuit,
             now=now,
             chat_id=chat_id,
-            refusal=placement_refusal(check, now, stop),
+            refusal=placement_refusal(check, now, signal),
         )
         if decision.place:
             self._place_committed(session, signal_id, now, check)
@@ -437,7 +445,7 @@ class ExecutionRouter:
         if signal.mode == Mode.AUTO and signal.confidence != HIGH:
             return NOT_HIGH_CONFIDENCE  # auto places only a high label (HAT-EXEC-014, D149)
         refusal = (
-            placement_refusal(check, now, _stop_of(signal))
+            placement_refusal(check, now, signal)
             or _kill_refusal(session, signal.bot_id)
             or _gtt_refusal(session, account_id, self._broker)
             or _session_refusal(session, account_id, now)

@@ -395,10 +395,13 @@ class TradeManager:
             self._sell(session, position_id, action, now, sending)
         return result
 
-    def cancel_unfilled_entry(self, session: Session, signal_id: uuid.UUID, now: datetime) -> bool:
+    def cancel_unfilled_entry(
+        self, session: Session, signal_id: uuid.UUID, now: datetime, reason: str
+    ) -> bool:
         """Cancel the signal's real entry while nothing of it filled (PR 49, HAT-EXEC-046):
-        `EntryCancel.cancel_unfilled`. A cancel is never an entry, so no gate holds it."""
-        return self._desk.entries.cancel_unfilled(session, signal_id, now)
+        `EntryCancel.cancel_unfilled`, for `reason`. A cancel is never an entry, so no gate holds
+        it."""
+        return self._desk.entries.cancel_unfilled(session, signal_id, now, reason)
 
     # --- flatten (HAT-TG-035, HAT-GOV-082) ----------------------------------------------------
 

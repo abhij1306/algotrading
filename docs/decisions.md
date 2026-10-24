@@ -96,6 +96,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   fact and alerted URGENT: shares the broker holds must be tracked and under a stop, never left
   unbooked. A reopened trade's result is rewritten at its second close; the ladder step of its
   first close stands.
+- **Failed-break closes survive a restart (Q7).** The day's closes are rebuilt from the stored
+  `bars_5m`; the refusal fails open only when no bars are stored, since refusing every Take
+  until the next close would block good entries for a data gap.
 - **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
   confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
 
