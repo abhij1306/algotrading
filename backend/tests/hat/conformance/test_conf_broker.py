@@ -373,13 +373,12 @@ def test_exec__default_mode_confirm() -> None:
     and runs shadow until every gate passes. The bot row defaults to confirm in the model and in
     the database, a new bot cannot be created in another mode, the entry path routes shadow
     unless told otherwise, a mode outside the three reads as shadow, and confirm with any gate
-    missing reads as shadow. The strategy config's `execution_mode` is not read for a bot's mode;
-    its seeds still say shadow (note in 07 )."""
+    missing reads as shadow. A strategy config holds no mode (Q10): the seeds name none."""
     seeds = sorted(SEEDS_DIR.glob("*.yaml"))
     assert seeds
     for path in seeds:
-        assert yaml.safe_load(path.read_text(encoding="utf-8"))["execution_mode"] == "shadow", path
-    assert StrategyConfig.model_fields["execution_mode"].default == "shadow"
+        assert "execution_mode" not in yaml.safe_load(path.read_text(encoding="utf-8")), path
+    assert "execution_mode" not in StrategyConfig.model_fields
     column = HatBot.__table__.c.execution_mode
     assert column.default is not None
     assert column.default.arg == "confirm"

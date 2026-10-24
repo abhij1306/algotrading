@@ -1,7 +1,6 @@
 bot: momentum-breakout-ep             # Qullamaggie-style
 version: 1
 market: NSE
-execution_mode: shadow
 # capital allocation: set in the account risk policy
 
 universe:

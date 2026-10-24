@@ -1,7 +1,6 @@
 bot: stage2-contraction-breakout      # Minervini-style
 version: 1
 market: NSE
-execution_mode: shadow                # shadow | confirm | auto
 # capital allocation: set in the account risk policy
 
 universe:

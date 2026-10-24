@@ -253,8 +253,6 @@ def raw_configs(draw: st.DrawFn) -> dict[str, Any]:
     if draw(st.booleans()):
         raw["market"] = "NSE"
     if draw(st.booleans()):
-        raw["execution_mode"] = draw(st.sampled_from(tuple(Mode)))
-    if draw(st.booleans()):
         raw.update(draw(playbook_body()))
     else:
         names = draw(

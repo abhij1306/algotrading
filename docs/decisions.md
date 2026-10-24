@@ -102,6 +102,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   broker read gives an earlier session's trades.
 - **No dormant real mode (Q9).** Confirm or auto for a sleeve that is not Live is refused; the
   owner asks again after promotion, so a promotion never turns on real orders by itself.
+- **A strategy holds no mode (Q10).** The mode is the bot's alone (`hat_bot.execution_mode`, by
+  `/mode`); the strategy config's `execution_mode`, never read, is removed so no file suggests
+  otherwise.
 - **Failed-break closes survive a restart (Q7).** The day's closes are rebuilt from the stored
   `bars_5m`; the refusal fails open only when no bars are stored, since refusing every Take
   until the next close would block good entries for a data gap.

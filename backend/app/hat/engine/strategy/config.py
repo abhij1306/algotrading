@@ -20,7 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from ...confighash import config_hash as _hash
 from ...errors import HatError
-from ...governance import Mode, ModeField
 from ...risk.policy import POLICY_FIELDS, SEED_POLICY
 from ..criteria import REGISTRY, UnknownCriterionError, get_type
 from ..criteria.base import STAGES
@@ -341,7 +340,6 @@ class Playbook(Model):
 class StrategyConfig(Model):
     bot: str
     market: Literal["NSE"] = "NSE"
-    execution_mode: ModeField = Mode.SHADOW
     universe: list[Instance] = Field(max_length=MAX_INSTANCES)
     regime: Regime
     playbooks: list[Playbook] = Field(min_length=1, max_length=8)
