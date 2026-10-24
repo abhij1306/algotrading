@@ -252,6 +252,7 @@ def _stored(session: Session, item: Item) -> HatCorporateAction:
             HatCorporateAction.ex_date == item.ex_date,
             HatCorporateAction.action_type == item.action_type,
         )
+        .with_for_update(of=HatCorporateAction)
     )
     if row is None:
         raise ActionCorrectionError("action_not_found")
@@ -294,7 +295,9 @@ def _one(
     if item.op == "add" and item.factor is not None:
         return [add(item.ex_date, item.factor, None, item.demerger)]
     if item.op == "move" and item.new_ex_date is not None:
-        # the moved row keeps its text and demerger flag: the note is the journal's and version's
+        # the moved row keeps its text and demerger flag: the note is the journal's and version's;
+        # read under the lock, so no other correction lands between this read and the move
+        lock_reference_data(session)
         row = _stored(session, item)
         factor = item.factor or Decimal(row.adjustment_factor)
         text, demerger = row.raw_text, row.demerger

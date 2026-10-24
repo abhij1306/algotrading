@@ -283,7 +283,8 @@ def apply(
 
 def neutralise(session: Session, d: Demerger, owner: tuple[int, uuid.UUID, datetime]) -> bool:
     """Store the owner-approved neutralised gap of a demerger applying the raw gap, through the
-    owner's `correct_action`, known on the row's own date; False when nothing changes."""
+    owner's `correct_action`, known when the gap settled (`gap_available`, as its cross-check
+    version; undated without it); False when nothing changes."""
     if d.neutral is None or not d.applies_gap:
         return False
     factor = factor_to_decimal(d.neutral)
@@ -291,7 +292,12 @@ def neutralise(session: Session, d: Demerger, owner: tuple[int, uuid.UUID, datet
         return False
     chat_id, user_id, now = owner
     fix = Correction(
-        d.row.isin, d.row.ex_date, d.row.action_type, factor, note=NEUTRAL_NOTE, known_on=d.known_on
+        d.row.isin,
+        d.row.ex_date,
+        d.row.action_type,
+        factor,
+        note=NEUTRAL_NOTE,
+        known_on=d.gap_available,
     )
     correct_action(session, fix, chat_id=chat_id, user_id=user_id, now=now)
     return True
