@@ -22,7 +22,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 
@@ -103,9 +103,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sessions = [d for d in calendar.trading_days() if d.weekday() >= 5] if calendar else []
     client = client_from_env(process_env())
 
-    def instruments() -> dict[str, object]:
+    def instruments() -> tuple[dict[str, object], set[str]]:
         # read when the actions are loaded, so securities registered by the build are included;
-        # a symbol several instruments share asks once, for the active one (then the lowest id)
+        # a symbol several instruments share (an ISIN change keeps it) asks once, for the active
+        # one (then the lowest id), and is listed as shared
         with HatSessionLocal() as session:
             rows = session.execute(
                 select(HatInstrument.id, HatInstrument.symbol, HatInstrument.active).where(
@@ -113,9 +114,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             ).all()
         chosen: dict[str, object] = {}
+        shared: set[str] = set()
         for instrument_id, symbol, _active in sorted(rows, key=lambda r: (not r[2], r[0].bytes)):
+            if symbol in chosen:
+                shared.add(symbol)
             chosen.setdefault(symbol, instrument_id)
-        return chosen
+        return chosen, shared
 
     def resolve(symbol: str, on: date) -> object | None:
         with HatSessionLocal() as session:
@@ -209,12 +213,13 @@ def _exit_code(report: BuildReport) -> int:
 @dataclass(frozen=True)
 class ActionSources:
     """Where the build's corporate actions come from: the MCP (None: not configured), the
-    instruments to ask it for (symbol to instrument id, read when the actions are loaded), the
-    instrument a symbol named on an ex-date (the symbol history, for the archive) and an
-    operator-supplied NSE archive CSV."""
+    instruments to ask it for (symbol to instrument id, and the symbols several instruments
+    share, read when the actions are loaded), the instrument a symbol named on an ex-date (the
+    symbol history, for the archive and the shared symbols) and an operator-supplied NSE archive
+    CSV."""
 
     client: McpClient | None
-    instruments: Callable[[], Mapping[str, object]]
+    instruments: Callable[[], tuple[Mapping[str, object], set[str]]]
     resolve: Callable[[str, date], object | None]
     archive: str | None = None
 
@@ -225,7 +230,8 @@ def _action_hooks(
     end: date,
     sink: Callable[[Sequence[ca.ActionRecord]], ca.LoadReport],
 ) -> ActionHooks:
-    """Actions from the MCP (first, `corporate_actions.lookup_actions`, the nightly lookup) and
+    """Actions from the MCP (first, `corporate_actions.lookup_actions`, the nightly lookup; an
+    action of a shared symbol goes to the ISIN that held it on its ex-date, `by_ex_date`) and
     the archive CSV (fallback); the sink keeps the first value per key. A failed, partial or
     unreadable MCP page is counted; an archive row naming a split, bonus or consolidation
     without a usable ratio, or a symbol no instrument held on its ex-date, is reported
@@ -233,9 +239,12 @@ def _action_hooks(
 
     def loader() -> tuple[list[ca.ActionRecord], int, list[str]]:
         found = ca.ActionLookup()
+        records: list[ca.ActionRecord] = []
         if sources.client is not None:
-            found = ca.lookup_actions(sources.client, sources.instruments(), start, end)
-        records = list(found.records)
+            chosen, shared = sources.instruments()
+            found = ca.lookup_actions(sources.client, chosen, start, end)
+            symbols = {iid: symbol for symbol, iid in chosen.items() if symbol in shared}
+            records = by_ex_date(found.records, symbols, sources.resolve)
         unparsed: list[str] = []
         if sources.archive:
             text = Path(sources.archive).read_text(encoding="utf-8")
@@ -247,6 +256,22 @@ def _action_hooks(
         return records, len(found.failed), unparsed
 
     return ActionHooks(loader, sink)
+
+
+def by_ex_date(
+    records: Sequence[ca.ActionRecord],
+    symbols: Mapping[object, str],
+    resolve: Callable[[str, date], object | None],
+) -> list[ca.ActionRecord]:
+    """Each MCP record of an instrument whose symbol several instruments share (`symbols`: id to
+    symbol) under the instrument that held the symbol on its ex-date, by (symbol, ISIN) as
+    `ca_import` matches; a record the symbol history places nowhere keeps the asked one."""
+    out = []
+    for r in records:
+        symbol = symbols.get(r.instrument_id)
+        held = resolve(symbol, r.ex_date) if symbol is not None else None
+        out.append(r if held is None or held == r.instrument_id else replace(r, instrument_id=held))
+    return out
 
 
 def _summary(report: BuildReport, stopped: str | None = None) -> str:
