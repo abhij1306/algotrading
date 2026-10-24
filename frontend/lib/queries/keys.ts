@@ -11,5 +11,6 @@ export const queryKeys = {
     watchlist: () => ["hat", "watchlist"] as const,
     positions: () => ["hat", "positions"] as const,
     events: (limit: number) => ["hat", "events", limit] as const,
+    signals: (limit: number) => ["hat", "signals", limit] as const,
   },
 };

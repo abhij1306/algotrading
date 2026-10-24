@@ -6,6 +6,7 @@ import { queryKeys } from "./keys";
 /** The dashboard is read-only and polls: Telegram is where anything is changed. */
 export const HAT_REFRESH_MS = 15_000;
 export const HAT_EVENT_LIMIT = 25;
+export const HAT_SIGNAL_LIMIT = 25;
 
 // Money, weights and scores arrive as exact decimal strings; they stay strings until display.
 type Schemas = components["schemas"];
@@ -14,6 +15,7 @@ export type HatAllocations = Schemas["AllocationsResponse"];
 export type HatWatchlist = Schemas["WatchlistView"][];
 export type HatPositions = Schemas["PositionView"][];
 export type HatEvents = Schemas["EventView"][];
+export type HatSignals = Schemas["SignalView"][];
 
 const polling = { refetchInterval: HAT_REFRESH_MS, refetchIntervalInBackground: false };
 
@@ -45,6 +47,14 @@ export function useHatPositions() {
   return useQuery({
     queryKey: queryKeys.hat.positions(),
     queryFn: () => unwrap(api.GET("/api/hat/positions")),
+    ...polling,
+  });
+}
+
+export function useHatSignals(limit: number = HAT_SIGNAL_LIMIT) {
+  return useQuery({
+    queryKey: queryKeys.hat.signals(limit),
+    queryFn: () => unwrap(api.GET("/api/hat/signals", { params: { query: { limit } } })),
     ...polling,
   });
 }
