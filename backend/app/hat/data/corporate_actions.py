@@ -113,6 +113,7 @@ class ActionRecord:
     factor: Decimal
     raw_text: str
     source: str
+    cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_dividends`)
 
     @property
     def key(self) -> tuple[object, date, str]:
@@ -218,7 +219,8 @@ class LoadReport:
 
 def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadReport:
     """Store the records idempotently: one row per (instrument, ex_date, action_type), the first
-    source to supply a key wins, and a later different factor is reported, not written. A key
+    source to supply a key wins, and a later different factor (or dividend cash amount) is
+    reported, not written. A key
     the owner vacated (`correct_action`: deleted, or retyped away) is never re-created: the
     owner's correction wins over every later load."""
     report = LoadReport()
@@ -247,12 +249,17 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
                 adjustment_factor=record.factor,
                 raw_text=record.raw_text,
                 source=record.source,
+                cash_amount=record.cash_amount,
             )
             session.add(row)
             existing[record.key] = row
             report.created += 1
-        elif Decimal(row.adjustment_factor) == record.factor:
-            report.unchanged += 1
+        elif Decimal(row.adjustment_factor) == record.factor and (
+            record.cash_amount is None
+            or row.cash_amount is None
+            or Decimal(row.cash_amount) == record.cash_amount
+        ):
+            report.unchanged += 1  # a stored amount is never rewritten, nor a missing one added
         else:
             report.conflicts.append(record.key)
     session.flush()

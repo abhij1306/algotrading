@@ -59,6 +59,7 @@ from .store import (
     ActionFactor,
     Adjustment,
     DataStore,
+    DividendCash,
     atomic_replace,
     latest_rows,
 )
@@ -115,7 +116,15 @@ BAR_COLUMNS = (
 _COLUMNS_SQL = """instrument_id, date, isin,
        CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
        CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
-       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value"""
+       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value,
+       CAST(div_factor AS DOUBLE) AS div_factor"""
+# The features in rupees: on the total-return series they carry the factor of the dividends after
+# their date, which is divided out (`compute_features`), so a date's levels are the ones live saw
+# that day and a later dividend never changes them (CA3).
+LEVEL_FEATURES = ("sma10", "sma20", "sma50", "sma150", "sma200", "high_52w", "low_52w", "adtr20")
+DIV_FACTOR = "div_factor"
+DIVIDEND_LINE = "dividend:"  # a dividend's value in `adjustment_lines`
+_LOADED = (*BAR_COLUMNS, DIV_FACTOR)  # what `load_bars` reads
 # The latest ingest run's row per (instrument, date), as the `bars_daily` view gives, but read
 # through `bars_daily_adj` with the date filter first: a window over the whole view would not be
 # pruned by date and would hold the full history in memory.
@@ -219,18 +228,21 @@ def compute_features(
     """(features, breadth) for the dates of `bars` (those on or after `from_date`, if given).
 
     `bars` has the `BAR_COLUMNS` (instrument_id and isin as text, date, doubles; `traded_value`
-    null where unknown). The percentile columns and breadth rank and count the rows of the
-    ranked universe (`ordinary_equity` of the row's own ISIN, so a day's members are those of
-    that day); other rows get null `rs_pct` and `mom_rank`. `features` has `date`,
-    `instrument_id` and the 18 feature columns; `breadth` has `date` and the `BREADTH_SCHEMA`
-    columns. The first rows of an instrument have null windows, so the caller passes the
-    lookback rows and `from_date`. `batch` computes the per-instrument columns that many
-    instruments at a time to bound memory; it changes no value.
+    null where unknown) and may have `div_factor` (the total-return series' factor of the
+    dividends after the date): the `LEVEL_FEATURES` of a date are then divided by its own factor.
+    The percentile columns and breadth rank and count the rows of the ranked universe
+    (`ordinary_equity` of the row's own ISIN, so a day's members are those of that day); other
+    rows get null `rs_pct` and `mom_rank`. `features` has `date`, `instrument_id` and the 18
+    feature columns; `breadth` has `date` and the `BREADTH_SCHEMA` columns. The first rows of an
+    instrument have null windows, so the caller passes the lookback rows and `from_date`. `batch`
+    computes the per-instrument columns that many instruments at a time to bound memory; it
+    changes no value.
     """
     missing = set(BAR_COLUMNS) - set(bars.columns)
     if missing:
         raise FeaturesError("features_missing_columns")
-    frame = bars.select(BAR_COLUMNS).sort("instrument_id", "date")
+    scaled = DIV_FACTOR in bars.columns
+    frame = bars.select(_LOADED if scaled else BAR_COLUMNS).sort("instrument_id", "date")
     if frame.select(pl.struct("instrument_id", "date").is_duplicated().any()).item():
         raise FeaturesError("features_duplicate_bar")
     col = pl.col
@@ -254,7 +266,11 @@ def compute_features(
             for n in MOM_WINDOWS
         ),
     ).with_columns(pl.max_horizontal(*(col(f"_pct{n}") for n in MOM_WINDOWS)).alias("mom_rank"))
-    features = ranked.select("date", "instrument_id", *FEATURE_NAMES).sort("date", "instrument_id")
+    # each date's levels on that date's scale (`LEVEL_FEATURES`); breadth compares within a date
+    leveled = (
+        ranked.with_columns(col(n) / col(DIV_FACTOR) for n in LEVEL_FEATURES) if scaled else ranked
+    )
+    features = leveled.select("date", "instrument_id", *FEATURE_NAMES).sort("date", "instrument_id")
 
     members = ranked.filter(in_universe)
     breadth = (
@@ -300,10 +316,16 @@ class FeaturesReport:
 
 def adjustment_lines(adjustment: Adjustment) -> tuple[list[str], list[str]]:
     """The adjustment as sorted text: `instrument|ex_date|factor` per factor of the adjusted
-    view (keyed by chain id) and `old>chain` per linked ISIN. The state keeps them, so a later
-    run knows which chains a change touches and can rebuild their old series."""
+    view and `instrument|ex_date|dividend:amount` per dividend (both keyed by chain id), and
+    `old>chain` per linked ISIN. The state keeps them, so a later run knows which chains a change
+    touches and can rebuild their old series. A dividend imported for past dates changes the
+    returns before it; one that goes ex later changes no stored date (`LEVEL_FEATURES`)."""
     factors = sorted(
-        f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in adjustment.factors
+        [f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in adjustment.factors]
+        + [
+            f"{d.instrument_id}|{d.ex_date.isoformat()}|{DIVIDEND_LINE}{d.amount}"
+            for d in adjustment.dividends
+        ]
     )
     lineage = sorted(f"{old}>{new}" for old, new in adjustment.lineage.items())
     return factors, lineage
@@ -311,8 +333,9 @@ def adjustment_lines(adjustment: Adjustment) -> tuple[list[str], list[str]]:
 
 def inputs_digest(adjustment: Adjustment) -> str:
     """Order-independent sha256 of what changes old dates without changing their bars: the
-    (instrument, ex-date, factor) set the adjusted view uses, its ISIN lineage, and the ranked
-    universe and formulas (`FEATURES_RULE`). No lineage leaves the digest of the factors alone."""
+    (instrument, ex-date, factor) set the adjusted view uses, its dividends, its ISIN lineage, and
+    the ranked universe and formulas (`FEATURES_RULE`). No lineage or dividend leaves the digest
+    of the factors alone."""
     factors, lineage = adjustment_lines(adjustment)
     lines = [*factors, *(f"lineage:{line}" for line in lineage)]
     return hashlib.sha256(("\n".join(lines) + "\nrule:" + FEATURES_RULE).encode()).hexdigest()
@@ -471,24 +494,29 @@ def adjustment_of(
     """The part of an adjustment (as `adjustment_lines`) that the series of `chains` read: their
     factors and every link into or out of them. A link out of a chain to an untouched one keeps
     that ISIN's bars under the other id, as in the whole adjustment."""
-    picked = []
+    picked, paid = [], []
     for line in factors:
-        instrument, ex_date, factor = line.split("|")
-        if instrument in chains:
-            picked.append(ActionFactor(instrument, date.fromisoformat(ex_date), Decimal(factor)))
+        instrument, ex_date, value = line.split("|")
+        if instrument not in chains:
+            continue
+        day = date.fromisoformat(ex_date)
+        if value.startswith(DIVIDEND_LINE):
+            paid.append(DividendCash(instrument, day, Decimal(value.removeprefix(DIVIDEND_LINE))))
+        else:
+            picked.append(ActionFactor(instrument, day, Decimal(value)))
     links = {}
     for line in lineage:
         member, chain = line.split(">", 1)
         if member in chains or chain in chains:
             links[member] = chain
-    return Adjustment(tuple(picked), links)
+    return Adjustment(tuple(picked), links, tuple(paid))
 
 
 def load_bars(
     con: duckdb.DuckDBPyConnection, first: date, last: date, days: Sequence[date] = ()
 ) -> pl.DataFrame:
-    """The adjusted bars of `first..last` plus, per instrument, the `LOOKBACK_ROWS` rows before
-    `first`: exactly what every feature of those dates reads.
+    """The adjusted bars of `first..last` (with their `div_factor`) plus, per instrument, the
+    `LOOKBACK_ROWS` rows before `first`: exactly what every feature of those dates reads.
 
     `days` is the sorted list of every store date. It bounds the first read to the
     `LOOKBACK_ROWS + LOOKBACK_SLACK_DAYS` days before `first`, which is enough unless an
@@ -501,7 +529,7 @@ def load_bars(
         position = bisect_left(days, first)
         start = days[max(0, position - LOOKBACK_ROWS - LOOKBACK_SLACK_DAYS)]
     # the latest run's row per (instrument, date), as in `bars_daily`
-    frame = latest_rows(con.execute(_RANGE_SQL, [start, last]).pl()).select(BAR_COLUMNS)
+    frame = latest_rows(con.execute(_RANGE_SQL, [start, last]).pl()).select(_LOADED)
     before = frame.filter(pl.col("date") < first)
     complete = (
         before.group_by("instrument_id")
@@ -513,7 +541,7 @@ def load_bars(
         # every instrument without a full lookback in the slice, including one with no row in it
         older = con.execute(_OLDER_SQL, [start, complete, LOOKBACK_ROWS]).pl()
         if older.height:
-            frame = pl.concat([frame, older.select(BAR_COLUMNS)])
+            frame = pl.concat([frame, older.select(_LOADED)])
     ahead = frame.filter(pl.col("date") >= first)
     behind = (
         frame.filter(pl.col("date") < first)
@@ -521,7 +549,7 @@ def load_bars(
         .group_by("instrument_id", maintain_order=True)
         .tail(LOOKBACK_ROWS)
     )
-    return pl.concat([behind, ahead]).select(BAR_COLUMNS)
+    return pl.concat([behind, ahead]).select(_LOADED)
 
 
 def write_day(store: DataStore, day: date, features: pl.DataFrame, breadth: pl.DataFrame) -> None:
@@ -646,8 +674,9 @@ def chain_features(
     """The per-instrument features of `chains` on every day, by day, computed on the chunks a
     full rebuild uses (`chunk_days` store days from the first), so each value has the inputs it
     has there: the chunk's rows and the `LOOKBACK_ROWS` before. `_member` and `_above` say
-    whether the row is ranked and above its SMA50 as `compute_features` counts breadth."""
-    bars = latest_rows(con.execute(_CHAINS_SQL, [sorted(chains)]).pl()).select(BAR_COLUMNS)
+    whether the row is ranked and above its SMA50 as `compute_features` counts breadth; the
+    `LEVEL_FEATURES` are on each date's own scale, as there."""
+    bars = latest_rows(con.execute(_CHAINS_SQL, [sorted(chains)]).pl()).select(_LOADED)
     bars = bars.sort("instrument_id", "date")
     col = pl.col
     parts = []
@@ -670,6 +699,8 @@ def chain_features(
         col("sma50").is_not_null().alias("_with"),
         _above().fill_null(value=False).alias("_above"),
     )
+    # each date's levels on that date's scale, as `compute_features` writes them
+    frame = frame.with_columns(col(n) / col(DIV_FACTOR) for n in LEVEL_FEATURES)
     frame = frame.select("date", "instrument_id", "_member", "_with", "_above", *OWN_FEATURES)
     return {
         key[0]: part.drop("date") for key, part in frame.partition_by("date", as_dict=True).items()

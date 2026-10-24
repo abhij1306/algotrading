@@ -2,11 +2,12 @@
 check of a day's 5-minute bars against the raw daily bar of the same day.
 
 Fyers answers its history with prices adjusted for every split and bonus up to the day of the
-request; `bars_daily_raw` and the live `BarBuilder` are raw. A candle of day `d` fetched on day
-`D` is on the basis `raw x F`, where `F` is the product of the price factors of the stored
-corporate actions with `d < ex_date <= D` (the factors `bars_daily_adj` multiplies by, HAT-DATA-
-053). `to_raw` divides prices by `F` and multiplies the volume by it (the inverse of the adjusted
-view's volume rule), so the store holds one basis whatever day a symbol was downloaded.
+request; `bars_daily_raw` and the live `BarBuilder` are raw. A candle of day `d` fetched on day `D`
+is on the basis `raw x F`, where `F` is the product of the price factors of the stored corporate
+actions with `d < ex_date <= D` (the factors `bars_daily_cap_adj` multiplies by, HAT-DATA-053;
+dividends are not in them). `to_raw` divides prices by `F` and multiplies the volume by it (the
+inverse of the adjusted view's volume rule), so the store holds one basis whatever day a symbol was
+downloaded.
 
 The corporate-action table can be incomplete, and a day's candles can be wrong, so the conversion
 is never trusted alone: `check_day` compares the day's 5-minute bars with the raw daily bar

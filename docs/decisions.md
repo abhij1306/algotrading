@@ -85,6 +85,22 @@ here.
   (`admin correct-actions`, through `correct_action`, plus `add` for a missing leg), each line
   with its bar evidence; a bonus to public shareholders only (promoters waived) is old shares /
   new shares, not the stated ratio.
+- **Dividends and total return (CA3, owner 2026-10-24).** Equity dividends from 2011 come from
+  NSE's corporate-actions feed (`data/ca_dividends.py`, source `nse_ca_feed`), stored as
+  `dividend` rows with factor 1 and the rupees per share in `cash_amount`; a text with no single
+  amount, a percentage of face value and cash above half the previous close are review cases,
+  never guessed. Every dividend counts, however small: no threshold, since each one is cash a
+  holder receives and leaving small ones out biases returns down. Signals read the total-return
+  series (`bars_daily`: the price factors times 1 - D / previous raw close for each dividend);
+  the price basis (`bars_daily_cap`) is what fills, marks, ticks, bands, the rescale and the GTT
+  check read. Stored level features (SMAs, 52-week high/low, ADTR) are point in time: on the
+  scale of their own date, so a later dividend never changes a stored row (the features' inputs
+  digest covers the dividends). A backtest fills on the price basis and credits `qty x D` to cash
+  on the ex-date to a position open at its start (the data has no pay date); the credit is not
+  part of a trade's R. A bonus of debentures or preference shares worth at least 1% of the
+  previous close is such a dividend (value per share as the cash, ex-date confirmed by the bars
+  or NSE's own date, source `ca_research`); below 1% it stays price-neutral (D1). Live orders
+  are unchanged: Fyers cancels resting orders on such an ex-date as before.
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with

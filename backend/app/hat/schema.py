@@ -242,6 +242,8 @@ CREATE OR REPLACE TRIGGER hat_position_no_delete_guard
 CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
   ON hat_announcement (instrument_id, published_at DESC)
 """,
+    # CA3a: a database created before the column (hat_live) gains it; create_all makes it anew
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS cash_amount numeric",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update

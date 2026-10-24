@@ -247,6 +247,12 @@ same dry-run-then-apply way. `python -m app.hat.admin correct-actions --list NAM
 applies a reviewed correction list from `<HAT_DATA_ROOT>/admin/` (columns `op isin ex_date type
 factor new_ex_date note`; ops replace, delete, move, add): a dry run reports each line, an apply
 writes all of it or nothing.
+`python -m app.hat.data.ca_dividends --feed DIR [--bonus F.csv] [--apply] [--all]` (same
+working-directory rule; DIR holds NSE's corporate-actions JSON as `ca_YYYY-MM.json`, F the
+bonus-debenture research file) stores the dividends with their cash: a dry run prints the counts
+per source (to store, already, conflict, review, skipped) and the review list, `--all` every row;
+`--apply` writes in one transaction (journalled; repeating it stores nothing). Then rebuild the
+lineage and run `features --full` (the total-return series and the features' digest change).
 `python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`
