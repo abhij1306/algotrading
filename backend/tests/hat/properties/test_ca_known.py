@@ -1,7 +1,8 @@
-"""Point in time (CA5): when a stored factor became knowable, per basis, and the factor-pending
-window a backtest skips. Plain examples; no database, no bars."""
+"""Point in time (CA5): when a stored factor became knowable, per basis, and the copy of an event
+the series applies. Plain examples; no database, no bars. The pending sessions are
+`test_ca_versions`'."""
 
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -16,12 +17,10 @@ from app.hat.data.ca_known import (
     SETTLED_CLOSE,
     UNKNOWN,
     Known,
-    Window,
     earliest,
     from_sources,
     lag_sessions,
     latest,
-    pending_days,
     settle_day,
     settle_known,
 )
@@ -33,7 +32,7 @@ from app.hat.data.ca_research import (
     research_supplied,
 )
 from app.hat.data.corporate_actions import correction_known, default_known
-from app.hat.data.point_in_time import Row, classify, log_path, series_windows
+from app.hat.data.point_in_time import Row, classify, log_path, series_events
 
 EX = date(2024, 9, 20)  # ROSSELLIND's demerger, a Friday
 # the sessions from the Thursday before: Monday 23 to Friday 27 follow the ex-date
@@ -86,18 +85,6 @@ def test_lag_sessions() -> None:
     assert lag_sessions(DAYS, EX, EX) == 0
     assert lag_sessions(DAYS, EX, date(2024, 9, 26)) == 4
     assert lag_sessions(DAYS, EX, None) is None
-
-
-def test_pending_days_from_the_ex_date_to_the_day_before_known_on() -> None:
-    known = Window("A", EX, date(2024, 9, 26))
-    assert sorted(d for _, d in pending_days([known], DAYS)) == [EX, *DAYS[2:5]]
-    assert pending_days([Window("B", EX, EX)], DAYS) == set()  # known at the ex open
-    undated = pending_days([Window("C", EX, None)], DAYS)
-    assert sorted(d for _, d in undated) == DAYS[1:]  # every session from the ex-date
-    # a window starting on a holiday covers from the next session
-    assert min(d for _, d in pending_days([Window("D", date(2024, 9, 21), None)], DAYS)) == (
-        date(2024, 9, 23)
-    )
 
 
 def _priced(day: date) -> Priced:
@@ -182,11 +169,6 @@ def test_classify_backfills_from_what_is_stored() -> None:
     assert classify(dist, owner=False, derived="", market=None) == UNKNOWN
 
 
-def test_one_window_per_day_span() -> None:
-    days = [EX + timedelta(days=n) for n in range(10)]
-    assert len(pending_days([Window("A", EX, days[3]), Window("A", EX, days[5])], days)) == 5
-
-
 def test_log_path_stays_under_the_working_directory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -197,17 +179,16 @@ def test_log_path_stays_under_the_working_directory(
             log_path(name)
 
 
-def test_series_windows_keep_the_copy_the_series_applies() -> None:
-    later = date(2024, 9, 26)
+def test_series_events_keep_the_copy_the_series_applies() -> None:
     heads = {"old": ("new", 1), "new": ("new", 0)}
     rows = [
-        ("old", EX, "other", None),  # a copy the series ignores: opens no window
-        ("new", EX, "other", later),
-        ("old", EX, "dividend", None),  # the only copy: kept, under the chain's id
-        ("solo", EX, "split", EX),
+        ("old", EX, "other"),  # a copy the series ignores
+        ("new", EX, "other"),
+        ("old", EX, "dividend"),  # the only copy: kept, under the chain's id
+        ("solo", EX, "split"),
     ]
-    assert series_windows(rows, heads) == [
-        Window("new", EX, None),
-        Window("new", EX, later),
-        Window("solo", EX, EX),
-    ]
+    assert series_events(rows, heads) == {
+        ("new", EX, "dividend"): "old",
+        ("new", EX, "other"): "new",
+        ("solo", EX, "split"): "solo",
+    }

@@ -8,12 +8,18 @@ from decimal import Decimal
 
 import pytest
 from hat_mcp_support import security
-from sqlalchemy import Connection, func, select
+from sqlalchemy import Connection, func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.hat.data import corporate_actions as ca
 from app.hat.data import instruments as inst
-from app.hat.models import HatCorporateAction, HatInstrument, HatMarket
+from app.hat.models import (
+    HatCorporateAction,
+    HatCorporateActionVersion,
+    HatInstrument,
+    HatMarket,
+)
 
 pytestmark = pytest.mark.postgres
 
@@ -54,4 +60,21 @@ def test_corporate_action_load_on_postgres(conn: Connection) -> None:
     assert (after.created, after.held, len(after.conflicts)) == (0, 2, 0)
     gone = select(HatCorporateAction).where(HatCorporateAction.instrument_id == iid)
     assert session.scalars(gone).all() == []
+    # CA6: each write appended its version, the repeated conflict once, the delete too
+    versions = session.execute(
+        select(
+            HatCorporateActionVersion.seq,
+            HatCorporateActionVersion.status,
+            HatCorporateActionVersion.factor,
+        )
+        .where(HatCorporateActionVersion.instrument_id == iid)
+        .order_by(HatCorporateActionVersion.seq)
+    ).all()
+    assert [tuple(v) for v in versions] == [
+        (1, "accepted", Decimal("0.2")),
+        (2, "conflict", Decimal("0.5")),
+        (3, "deleted", Decimal("0.2")),
+    ]
+    with pytest.raises(DBAPIError, match="append-only"), session.begin_nested():
+        session.execute(update(HatCorporateActionVersion).values(text="x"))
     session.rollback()

@@ -37,6 +37,7 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..data.ca_versions import digest as versions_digest
 from ..data.features import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.lineage import stored_adjustment, unexplained_jumps
@@ -138,9 +139,10 @@ class MarketData:
     mark. An interim rule (audit H7) until the review list's actions are loaded; the run's
     snapshot reports how many instrument-days it skipped.
 
-    `pending`: the instrument-days factor-pending (CA5, `ca_known.pending_days`): from the
-    ex-date of a stored factor up to the day before its `known_on` (on and on when it is not
-    known). The adjusted history there shows a factor nobody had yet, so the scan reads no bars
+    `pending`: the instrument-days factor-pending (CA5, CA6 `ca_versions.pending_days`): from
+    the ex-date of a stored factor, every day no version of it was available yet or the value
+    available then differs from the one the series applies (so on and on when it is never
+    dated). The adjusted history there shows a factor nobody had yet, so the scan reads no bars
     of the name that night and its entries skip it that day; an open position keeps its marks,
     stops and exits on the price basis. The snapshot reports the count.
     """
@@ -803,6 +805,7 @@ def load_market(
             last_traded[instrument_id] = min(found, last_traded.get(instrument_id, found))
     skipped, jumps = _skipped(store, bars, adjustment, window, end)
     pending = frozenset(chain_pending(session, window, wanted))
+    versions_sha, versions = versions_digest(session)
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -843,11 +846,15 @@ def load_market(
             "instrument_days": len(skipped),
         },
         "factor_pending": {
-            "rule": "no scan or entry from an ex-date until its factor's known_on (CA5)",
+            "rule": "no scan or entry from an ex-date while no version is available or the"
+            " available one differs from the series' (CA6)",
             "instruments": len({i for i, _ in pending}),
             "instrument_days": len(pending),
         },
         "actions_digest": expected,
+        # the series is the hindsight one; the pending days make the run point in time against
+        # these versions (CA6)
+        "point_in_time": {"versions_digest": versions_sha, "versions": versions},
         "content_digest": _content_digest(market),
     }
     return market, snapshot

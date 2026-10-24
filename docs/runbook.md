@@ -198,19 +198,20 @@ Owner steps on each live database (hat_live), as a superuser, outside 08:30–15
    `select symbol from hat_instrument where symbol in ('AZADIND','BONFIG','SMT','TONBO','ZETWERK');`
 5. Install the nightly backup timer (Backup and restore drill) and run the first restore drill.
 
-### Point-in-time columns (CA5)
+### Versioned factors (CA6)
 
-On each live database (hat_live), outside 08:30–15:35 IST, after a `pg_dump`:
+On each live database (hat_live), outside 08:30–15:35 IST, after a `pg_dump`, before any
+correction or nightly job runs on the new code:
 
-1. Restart the backend (or run `init_db()`): `ensure_hat_schema` adds `announced_on`,
-   `known_on`, `known_basis` and `hat_corporate_action_known_check` to `hat_corporate_action` and
-   `known_on` to `hat_isin_lineage` before the drift check reads the catalog.
-2. `python -m app.hat.data.point_in_time backfill` (with `HAT_DATA_ROOT` set): the dry run. It
-   prints the rows it would date by source, type and basis, every row that stays undated, and
-   the links it would date.
-3. The same with `--apply`: one transaction under nothing else (no nightly job running).
-4. `python -m app.hat.data.point_in_time report --log adjustment_log.tsv`: the lagged and
-   undated counts. Date an undated row the owner can source with a correction's `known_on`.
+1. Restart the backend (or run `init_db()`): `create_all` makes `hat_corporate_action_version`
+   and `ensure_hat_schema` its append-only trigger, before the drift check reads the catalog.
+2. `python -m app.hat.data.point_in_time versions` (with `HAT_DATA_ROOT` set): the dry run, the
+   versions it would append (one per stored row, each journalled correction's `before` state and
+   delete). The same with `--apply`: it ends with the projection check, which must say 0.
+3. `python -m app.hat.data.ca_demergers`: the demerger table and review list (dry run); the same
+   with `--apply` appends the estimates. Rerun it after an import adds demergers (CA7).
+4. `python -m app.hat.data.point_in_time report`: versions per event, conflicts, disputed
+   demergers, projection check 0.
 
 ### Runtime indexes (DB7)
 
@@ -336,7 +337,13 @@ backtest never trades that name from its ex-date on. A `replace` with the stored
 `known_on` dates a stored row. A research row may carry a `source_date` column.
 `python -m app.hat.data.point_in_time report [--log FILE.tsv]` counts the lagged
 (`known_on` after the ex-date) and undated actions and links and lists them, `--log` writing the
-adjustment log; `pending SYMBOL...` lists the sessions a backtest holds a name factor-pending.
+adjustment log, then the version ledger (CA6: versions per event, conflicts, disputed demergers
+and the projection check, which must say 0); `pending SYMBOL...` lists the sessions a backtest
+holds a name factor-pending. Every write of an action appends its version; a correction never
+loses the earlier value or date. `python -m app.hat.data.ca_demergers [--apply]` lists each
+demerger's raw and NIFTY 500-neutralised gaps, ratio value, band and the disputed ones (review:
+the ratio more than 10% from the applied value); `--neutral` applies the neutralised gap, only
+once the owner approved it, then `features --full`.
 `python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`

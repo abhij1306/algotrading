@@ -6,7 +6,8 @@ The adjusted series applies every factor to all earlier bars. A factor known at 
 then could not have done. A factor known only later (a demerger stored at its market gap once the
 gap held, a value only research or the owner supplied) hides the ex-date drop live would have
 seen, so on the days from the ex-date up to its `known_on` the name is factor-pending
-(`pending_days`): the backtest's scan reads no bars of it and its entries skip it, while an open
+(`ca_versions.pending_days`, which reads `known_on` as the version's `available_on`): the
+backtest's scan reads no bars of it and its entries skip it, while an open
 position keeps its price-basis handling. Live is unchanged: it sees the raw drop.
 
 `hat_corporate_action.known_on` is the last date whose data the factor rests on, so the first
@@ -28,7 +29,7 @@ its ex-date on. A linked ISIN succession records the last bar its rules read
 (`hat_isin_lineage.known_on`), reported beside the actions but not a pending window: the rules
 read what bars there are, so a nightly build can link a chain after its first session.
 
-The stored windows, the back-fill of rows stored before CA5 and the lag report are
+The pending sessions, the back-fill of rows stored before CA5 and the lag report are
 `point_in_time`'s.
 """
 
@@ -108,29 +109,3 @@ def lag_sessions(days: Sequence[date], ex_date: date, known_on: date | None) -> 
     if known_on is None:
         return None
     return max(0, bisect_right(days, known_on) - bisect_right(days, ex_date))
-
-
-@dataclass(frozen=True)
-class Window:
-    """A chain's factor-pending window: from `start` (an ex-date) up to the day before
-    `known_on`, or on and on when `known_on` is None."""
-
-    chain_id: str
-    start: date
-    known_on: date | None
-
-    @property
-    def lagged(self) -> bool:
-        return self.known_on is None or self.known_on > self.start
-
-
-def pending_days(windows: Iterable[Window], days: Sequence[date]) -> set[tuple[str, date]]:
-    """The (chain, session) pairs of the sorted sessions `days` with start <= session < known_on
-    (every session from the start when `known_on` is None)."""
-    found: set[tuple[str, date]] = set()
-    for w in windows:
-        if not w.lagged:
-            continue
-        stop = len(days) if w.known_on is None else bisect_left(days, w.known_on)
-        found.update((w.chain_id, d) for d in days[bisect_left(days, w.start) : stop])
-    return found

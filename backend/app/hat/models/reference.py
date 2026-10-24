@@ -7,10 +7,12 @@ from sqlalchemy import (
     Date,
     ForeignKey,
     Index,
+    Integer,
     Text,
     Time,
     UniqueConstraint,
     Uuid,
+    func,
 )
 
 from ...base import Base
@@ -22,6 +24,7 @@ __all__ = [
     "HatAnnouncement",
     "HatBrokerSymbol",
     "HatCorporateAction",
+    "HatCorporateActionVersion",
     "HatIndustry",
     "HatInstrument",
     "HatInstrumentSymbolHistory",
@@ -140,6 +143,47 @@ class HatCorporateAction(Base):
     announced_on = Column(Date)
     known_on = Column(Date)
     known_basis = Column(Text)
+
+
+class HatCorporateActionVersion(Base):
+    """CA6: every value a corporate action ever had, appended in the transaction of the write
+    that made it and never changed (`data/ca_versions.py`; `schema.PG_DDL` refuses an UPDATE or a
+    DELETE). `hat_corporate_action` is the hindsight projection of these rows."""
+
+    __tablename__ = "hat_corporate_action_version"
+    __table_args__ = (
+        UniqueConstraint("instrument_id", "ex_date", "action_type", "seq"),
+        CheckConstraint(
+            "status IN ('accepted', 'deleted', 'conflict', 'cross_check', 'disputed')",
+            name="ck_hat_corporate_action_version_status",
+        ),
+        CheckConstraint(
+            "factor > 0 AND factor <> 'NaN'", name="ck_hat_corporate_action_version_factor"
+        ),
+        CheckConstraint(
+            "available_on IS NULL OR available_on >= ex_date",
+            name="ck_hat_corporate_action_version_available",
+        ),
+    )
+
+    id = uuid_pk()
+    instrument_id = fk(INSTRUMENT_ID)
+    ex_date = Column(Date, nullable=False)
+    action_type = Column(Text, nullable=False)
+    seq = Column(Integer, nullable=False)  # 1, 2, ... per (instrument, ex-date, type): precedence
+    status = Column(Text, nullable=False)
+    factor = Column(Ratio, nullable=False)
+    cash = Column(Ratio)
+    basis = Column(Text)
+    source = Column(Text, nullable=False)
+    text = Column(Text, nullable=False)
+    source_published_on = Column(Date)
+    first_observed_at = Column(
+        Timestamptz, nullable=False, default=now_utc, server_default=func.now()
+    )
+    available_on = Column(Date)  # NULL: unknown, never in a point-in-time selection
+    band_low = Column(Ratio)  # a demerger's estimates, min..max (`ca_demergers`)
+    band_high = Column(Ratio)
 
 
 class HatIsinLineage(Base):
