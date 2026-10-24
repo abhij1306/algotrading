@@ -752,23 +752,33 @@ def build_lineage(
 ) -> BuildReport:
     """Find every succession in the stored bars, decide each and store the verdicts in the
     session (the caller commits). Idempotent: the same bars, actions and lists change nothing.
-    Raises `lineage_no_bars` on an empty store rather than delete every stored row."""
+    Raises `lineage_no_bars` on an empty store rather than delete every stored row.
+
+    No Postgres transaction sits idle across the long work (a role's
+    `idle_in_transaction_session_timeout` would end it): the DuckDB scan runs before the
+    database is read, and the read transaction is rolled back before the decisions are made, so
+    the session must carry no pending change. The writes then run in one transaction."""
     stored = store.days(DATASET_BARS)
     if not stored:
         raise LineageError("lineage_no_bars")
-    sessions = exchange_sessions(stored, *calendar_days(session))
+    spans = read_spans(store)
+    closed, special = calendar_days(session)
     known = {str(i) for i in session.scalars(select(HatInstrument.id))}
+    actions = stored_actions(session)
+    overrides = stored_overrides(session)
+    session.rollback()  # end the read transaction: only plain values are kept
+    sessions = exchange_sessions(stored, closed, special)
     report = BuildReport()
     found = []
-    for c in candidates(read_spans(store), sessions, changes):
+    for c in candidates(spans, sessions, changes):
         if c.old.instrument_id in known and c.new.instrument_id in known:
             found.append(c)
         else:
             report.unknown += 1
     by_instrument: dict[str, list[Action]] = defaultdict(list)
-    for action in stored_actions(session):
+    for action in actions:
         by_instrument[action.instrument_id].append(action)
-    decisions = apply_overrides(decide_all(found, by_instrument, names), stored_overrides(session))
+    decisions = apply_overrides(decide_all(found, by_instrument, names), overrides)
     for d in decisions:
         report.reasons[f"{d.status}:{d.reason}"] = (
             report.reasons.get(f"{d.status}:{d.reason}", 0) + 1

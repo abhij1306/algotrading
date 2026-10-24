@@ -44,7 +44,10 @@ incident in the PR or issue tracker).
    when that process or its connection dies. To see the holder:
    `select pid, client_addr, backend_start from pg_stat_activity where application_name = 'hat_runtime_lock';`.
    Only when that process is gone and the row remains (a half-open connection), end it:
-   `select pg_terminate_backend(<pid>);`, then start again.
+   `select pg_terminate_backend(<pid>);`, then start again. A running backend checks its lock
+   connection every minute and takes the lock again if the connection died; when it cannot
+   (another runtime took it) it alerts `runtime.lock_lost` and places no new entry until it is
+   restarted (stops and exits keep running): find and stop the other process, then restart.
 6. Never `$COMPOSE down -v`: it deletes the database and data volumes.
 
 ### Morning login (daily Fyers login)
@@ -164,7 +167,9 @@ ALTER ROLE <db_user> SET idle_in_transaction_session_timeout = '5min';
 ALTER ROLE <db_user> SET lock_timeout = '60s';
 ```
 
-The runtime lock's connection runs in autocommit, so it is never idle in a transaction.
+The runtime lock's connection runs in autocommit, so it is never idle in a transaction, and
+the lineage build reads Postgres only after its DuckDB scan and ends that read before it decides,
+so no HAT job sits idle in a transaction across a long scan.
 
 ### Deploy and planned restart: `ops.deploy_window`
 

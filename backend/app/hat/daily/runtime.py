@@ -17,7 +17,10 @@ second one refuses to start) and starts in the restart-safe order of HAT-OPS-003
 5. start the scheduler with every job of the daily cycle, the periodic loops (`daily/periodic.py`:
    exits, housekeeping, announcements) and the Telegram poller and relay.
 
-`stop` ends them in reverse, each step even if another failed, and releases the lock last.
+`stop` ends them in reverse, each step even if another failed, and releases the lock last. A
+start that fails stops through its caller (the lifespan's shutdown); a cancelled one (or an
+interrupt) stops itself, and a lock its worker thread takes after that is released at once.
+While it runs, the housekeeping checks the lock's connection every minute (`watch_lock`).
 `assembly` is None until the assembly is built; a start that failed before then stops only the
 feed.
 """
@@ -50,13 +53,14 @@ from .assembly import Assembly, Feed, RuntimeParts, TradingCalendar, build
 from .intraday import LIVE_PREPARE, PREPARE_AT
 from .periodic import Periodic, watch_sessions
 
-__all__ = ["LIVE_RESTORE", "HatRuntime", "RestoreDecision", "after_restore"]
+__all__ = ["LIVE_RESTORE", "LOCK_LOST", "HatRuntime", "RestoreDecision", "after_restore"]
 
 logger = logging.getLogger(__name__)
 
 STOPPING = "hat_stopping"
 LIVE_RESTORE = "live.restore"  # a restart's restore of the day's bars, in the job ledger
 RESTORE_FAILED = "restore_failed"
+LOCK_LOST = "runtime.lock_lost"  # the alert: the runtime lock is gone and cannot be taken again
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,9 @@ class HatRuntime:
         self._parts = parts
         self._runtime_lock = runtime_lock
         self._lock: RuntimeLock | None = None  # held from start to the end of stop
+        self._lock_guard = threading.Lock()  # the lock's worker thread against stop
+        self._lock_dropped = False  # stopped: a lock taken from now on is released at once
+        self._lock_alerted = False
         self.clock = clock
         self._halt = threading.Event()  # long job bodies (the ingest's wait) end on it
         self._stop = asyncio.Event()
@@ -121,8 +128,21 @@ class HatRuntime:
             logger.info("HAT_ENABLED is false: no HAT task is started")
             return False
         require_postgres(self._dialect_name)
+        try:
+            await self._start()
+        except BaseException as exc:
+            if not isinstance(exc, Exception):
+                # cancelled (or interrupted): the caller's `except Exception` does not stop it,
+                # so stop here, shielded from a second cancel, and release the lock
+                await asyncio.shield(asyncio.ensure_future(self.stop()))
+            raise
+        self.started = True
+        logger.info("HAT runtime started")
+        return True
+
+    async def _start(self) -> None:
         # before anything reads or reaps: a second runtime must not touch the first one's jobs
-        self._lock = await asyncio.to_thread(self._runtime_lock)
+        await asyncio.to_thread(self._take_lock)
         # reads the Telegram settings (a bad one refuses the start) and builds the HTTP clients
         parts = await asyncio.to_thread(self._parts)
         self._feed = parts.feed
@@ -147,9 +167,52 @@ class HatRuntime:
         assembly.live.attach(parts.feed)
         parts.feed.start(asyncio.get_running_loop(), prevalidated_token=parts.prevalidated_token)
         self._start_tasks(assembly)
-        self.started = True
-        logger.info("HAT runtime started")
-        return True
+
+    # --- the runtime lock (blocking: each runs off the loop) -------------------------------
+
+    def _take_lock(self) -> None:
+        """Take the runtime lock; once stopped (a cancelled start), release it at once."""
+        lock: RuntimeLock | None = self._runtime_lock()
+        with self._lock_guard:
+            if not self._lock_dropped:
+                self._lock, lock = lock, None
+        if lock is not None:
+            lock.release()
+
+    def _drop_lock(self) -> None:
+        with self._lock_guard:
+            self._lock_dropped = True
+            lock, self._lock = self._lock, None
+        if lock is not None:
+            lock.release()
+
+    def watch_lock(self, now: datetime) -> None:
+        """The housekeeping's check of the lock: when its connection is gone (a Postgres restart,
+        a terminated backend) take it again on a new one. When that fails another runtime may
+        hold it: set `lock_lost`, which refuses every new entry until a restart (stops and exits
+        keep running), and alert `runtime.lock_lost` once."""
+        with self._lock_guard:
+            lock = self._lock
+        if lock is None or lock.alive():
+            return
+        lock.release()
+        try:
+            self._take_lock()
+        except Exception as exc:
+            reason = type(exc).__name__
+        else:
+            logger.warning("HAT runtime lock connection was lost; the lock is taken again")
+            return
+        if self.assembly is not None:
+            self.assembly.lock_lost.set()
+        logger.error("HAT runtime lock lost and not taken again (%s): no new entry", reason)
+        if self._lock_alerted or self.assembly is None:
+            return
+        self._lock_alerted = True
+        try:
+            self.assembly.notifier.alert(LOCK_LOST, trade_date_of(now), {"reason": reason})
+        except Exception:
+            logger.exception("alert %s not sent", LOCK_LOST)
 
     async def _recover(self, assembly: Assembly) -> None:
         """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh
@@ -218,7 +281,7 @@ class HatRuntime:
         loop = asyncio.get_running_loop()
         for work in (
             assembly.live.run(),
-            *Periodic(assembly, self.clock).loops(self._stop),
+            *Periodic(assembly, self.clock, watch_lock=self.watch_lock).loops(self._stop),
             assembly.telegram.run(self._stop),
             run_relay(assembly.relay, self._stop),
         ):
@@ -273,9 +336,7 @@ class HatRuntime:
         await self._feed.stop()
 
     async def _release_lock(self) -> None:
-        lock, self._lock = self._lock, None
-        if lock is not None:
-            await asyncio.to_thread(lock.release)
+        await asyncio.to_thread(self._drop_lock)
 
     async def _release(self) -> None:
         if self.assembly is not None:
