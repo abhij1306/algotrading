@@ -72,10 +72,12 @@ from ..time import trade_date_of, utc_now
 __all__ = [
     "END_SESSION",
     "END_SESSION_AT",
+    "RECONCILE_DOWN_AFTER",
     "RECONCILE_FAILED",
     "AccountDesk",
     "Desks",
     "account_jobs",
+    "reconcile_down",
 ]
 
 logger = logging.getLogger(__name__)
@@ -87,6 +89,8 @@ BROKER_HEALTH = "broker_health"
 # The fill sync's cadence when nothing is watched closely; the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
 FILL_SYNC_EVERY = timedelta(minutes=1)
+# A reconciliation failing this long after the trade date's last success is alerted (C22 A1).
+RECONCILE_DOWN_AFTER = timedelta(minutes=30)
 
 BrokerFor = Callable[[HatBrokerAccount], HatBroker | None]
 TickFor = Callable[[Session, HatPosition], Decimal | None]
@@ -132,6 +136,7 @@ class AccountDesk:
     notifier: Notifier = field(default_factory=LogNotifier)
     watch: SessionWatch = field(default_factory=SessionWatch)
     failed_alerted_on: date | None = None  # the trade date `reconcile.failed` was raised for
+    reconciled_at: datetime | None = None  # the last successful reconciliation
     synced_at: datetime | None = None  # the last fill sync that read the broker's books
     fills_read_at: datetime | None = None  # the last fill sync that succeeded (ca.rescale's gate)
 
@@ -191,19 +196,30 @@ class AccountDesk:
 
     def reconcile(self, session: Session, now: datetime) -> bool:
         """Reconcile now; True when the account's trade date is reconciled (its entries may be
-        placed). Until the first success of a trade date its entries wait (HAT-BRK-110), and a
-        failure then raises one `reconcile.failed` health alert for the date; a failed routine
-        re-run after a success leaves the gate open. Stops and sales never wait (D118)."""
+        placed). Until the first success of a trade date its entries wait (HAT-BRK-110); a failure
+        raises one `reconcile.failed` health alert for the date while the date has no success, or
+        once the last success is `RECONCILE_DOWN_AFTER` old (`reconcile_down`). A failed re-run
+        after a success leaves the gate open. Stops and sales never wait (D118)."""
         try:
             self.reconciler.run(session, self.account_id)
         except Exception:
             logger.exception("reconciliation of account %s failed", self.account_id)
             day = trade_date_of(now)
-            if not self.guard.reconciled_today() and self.failed_alerted_on != day:
+            down = reconcile_down(self.guard.reconciled_today(), self.reconciled_at, now)
+            if down and self.failed_alerted_on != day:
                 self.failed_alerted_on = day
                 self.notifier.alert(RECONCILE_FAILED, day, {"account_id": str(self.account_id)})
             return False
+        self.reconciled_at = now
         return self.guard.reconciled_today()
+
+
+def reconcile_down(reconciled_today: bool, last_success: datetime | None, now: datetime) -> bool:
+    """Whether a failed reconciliation at `now` is an outage to alert (C22 A1): the trade date
+    has no success yet, or its last one is `RECONCILE_DOWN_AFTER` old."""
+    if not reconciled_today:
+        return True
+    return last_success is not None and now - last_success >= RECONCILE_DOWN_AFTER
 
 
 def _holds_real_positions() -> Exists:

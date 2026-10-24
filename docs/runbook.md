@@ -236,6 +236,8 @@ advisory lock; `features` does not take it, so run it after they finish.
   hand.
 - **`relay.skipped`:** Telegram refused a message for good; read the event. A skipped card expires.
 - **`reconcile.failed`:** no entry on that account until a pass succeeds; check the session.
+  Raised once a day: before the day's first success, or once passes have failed for 30 minutes
+  after one (the gate stays open then; mismatches go unseen until a pass succeeds).
   **`reconcile.unreadable_row`:** check the Fyers book for a manual order.
   **`reconcile.mismatch`:** that bot's entries are blocked; a broker position HAT does not know is
   not HAT's; a missing fill or quantity difference is a bug. A duplicate order at the broker:
