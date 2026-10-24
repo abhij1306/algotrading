@@ -5,7 +5,9 @@ virtual positions.
   lows).
 - `ShadowExits`: the live exit rules of every virtual position (a `TradeManager` runs the live
   rules of real positions only), and the 15:20-15:25 rules of the virtual positions of bots whose
-  account has no `TradeManager` (its `exits.close` covers its virtual positions too).
+  account has no `TradeManager` (its `exits.close` covers its virtual positions too). That close
+  pass first closes every virtual position whose demerger exit falls on the day (CA8,
+  `engine/demerger_exit.py`), whatever its account.
 
 Missing data never fires anything: an unknown price leaves the position alone.
 """
@@ -15,14 +17,14 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..engine import positions, shadow
+from ..engine import demerger_exit, positions, shadow
 from ..engine.close_gap import record_close_evaluation
 from ..engine.exits import ExitView, Phase
 from ..engine.rescale import manage_only
@@ -62,6 +64,15 @@ class ExitViews:
         self._prices = prices
         self._clock = clock
         self._calendar = calendar
+
+    def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
+        """The instrument's checked live price (`LivePrices.price`); None when unknown."""
+        return self._prices(session, instrument_id)
+
+    def trading_days(self) -> list[date]:
+        """The calendar's trading days, sorted; none without a calendar."""
+        calendar = self._calendar()
+        return sorted(calendar.trading_days()) if calendar is not None else []
 
     def __call__(self, session: Session, position: HatPosition) -> ExitView | None:
         price = self._prices(session, position.instrument_id)
@@ -136,6 +147,34 @@ class ShadowExits:
                     logger.exception("virtual exits of position %s failed", position.id)
         return done
 
+    def demergers(self, now: datetime) -> int:
+        """Close each open virtual position whose demerger exit is today at the live price
+        (CA8); one without a price stays open, and the nightly alerts it late. Returns how many
+        were closed."""
+        today = trade_date_of(now)
+        closed = 0
+        with self._session_factory() as session:
+            due = [
+                d
+                for d in demerger_exit.due_positions(session, self._views.trading_days())
+                if d.exit_on == today and d.position.is_virtual
+            ]
+            for d in due:
+                price = self._views.price(session, d.position.instrument_id)
+                if price is None:
+                    logger.warning("no price for the demerger exit of position %s", d.position.id)
+                    continue
+                try:
+                    closed += demerger_exit.close_due(session, d.position, price, now)
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    logger.exception("demerger exit of position %s failed", d.position.id)
+        return closed
+
     def close(self, now: datetime) -> int:
-        """The close-phase pass; nothing outside 15:20-15:25 IST."""
-        return self.run(now, "close") if in_close_window(now) else 0
+        """The close-phase pass (the day's demerger exits first); nothing outside 15:20-15:25
+        IST."""
+        if not in_close_window(now):
+            return 0
+        return self.demergers(now) + self.run(now, "close")

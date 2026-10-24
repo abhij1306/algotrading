@@ -17,6 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from ..confighash import config_hash
+from ..data.demerger_notice import CLOSE_REASON
 from ..engine.portfolio.allocator import Allocation
 from . import metrics as bt_metrics
 from .dsr import ReturnStats, return_stats
@@ -24,6 +25,7 @@ from .spec import ENTRY_DAY_LOW, RunSpec, known_gaps
 
 __all__ = [
     "DELISTED",
+    "DEMERGER",
     "END_OF_PERIOD",
     "TRADE_SCHEMA",
     "BacktestResult",
@@ -38,6 +40,7 @@ __all__ = [
 # The exit reasons the loop itself closes a position with.
 END_OF_PERIOD = "end_of_period"
 DELISTED = "delisted"
+DEMERGER = CLOSE_REASON  # the close before a demerger's ex-date (CA8)
 _ZERO = Decimal(0)
 
 
@@ -249,6 +252,18 @@ def compute_metrics(
         "rejections": _count_by(r.reason or "" for r in signals if r.qty == 0),
         "ambiguous_days": ambiguous_days,
         "lower_circuit_days": lower_circuit_days,
+        "demerger_exits": forced_exits(trades_, DEMERGER),
+    }
+
+
+def forced_exits(trades_: Sequence[TradeRow], reason: str) -> dict[str, Any]:
+    """The trades the loop closed for `reason` (the CA8 demerger exits), counted apart: how
+    many, their net P&L and their sum of R (both inside the run's totals too)."""
+    closed = [t for t in trades_ if t.exit_reason == reason]
+    return {
+        "trades": len(closed),
+        "net_pnl": str(sum((t.realized_pnl for t in closed), _ZERO)),
+        "sum_r": _ratio(sum((t.r_multiple for t in closed), _ZERO)),
     }
 
 

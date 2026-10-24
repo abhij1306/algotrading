@@ -89,6 +89,8 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "position.qty_corrected",
         "corporate_action.unhandled",
         "corporate_action.resolved",
+        "corporate_action.demerger_exit",
+        "corporate_action.demerger_late",
     ),
     "Control": (
         "mode.change_requested",

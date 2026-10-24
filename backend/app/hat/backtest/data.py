@@ -38,10 +38,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.ca_versions import digest as versions_digest
+from ..data.corporate_actions import PRICE_NEUTRAL_TYPES
+from ..data.demerger_notice import exit_day
 from ..data.features import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.lineage import stored_adjustment, unexplained_jumps
-from ..data.point_in_time import chain_pending
+from ..data.point_in_time import chain_pending, demerger_text
 from ..data.store import (
     DATASET_BARS,
     DATASET_BREADTH,
@@ -54,7 +56,7 @@ from ..data.ticks import scaled_tick, tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..engine.stops import lowest, mean_true_range, sma
-from ..models import HatIndustry, HatInstrument, HatUniverseMember
+from ..models import HatCorporateAction, HatIndustry, HatInstrument, HatUniverseMember
 from .spec import BacktestError
 
 __all__ = [
@@ -168,6 +170,10 @@ class MarketData:
     # by instrument: the stored amount times the basis factor of the session before the ex-date
     # (a split after it makes more, cheaper shares; each earns its share of the cash).
     dividends: Mapping[str, Sequence[tuple[date, Decimal]]] = field(default_factory=dict)
+    # CA8: (chain id, session) pairs where a position held in the chain exits at the close
+    # before a demerger whose record date was announced on or before that session
+    # (`demerger_notice.exit_day`); a demerger never dated holds through.
+    demerger_exits: frozenset[tuple[str, date]] = frozenset()
 
 
 def classifications(data: MarketData, instrument_id: str) -> list[tuple[date, str]]:
@@ -691,6 +697,35 @@ def _breadth(store: DataStore, days: Iterable[date]) -> dict[date, Decimal]:
     return found
 
 
+def demerger_exits(
+    rows: Iterable[tuple[uuid.UUID, date, date | None]],
+    lineage: Mapping[str, str],
+    sessions: Sequence[date],
+    first: date,
+    end: date,
+) -> frozenset[tuple[str, date]]:
+    """The (chain id, exit session) of each demerger (instrument, ex-date, announced_on) whose
+    forced exit falls in `first..end` over the sorted store `sessions`."""
+    found = set()
+    for instrument_id, ex_date, announced_on in rows:
+        day = exit_day(sessions, ex_date, announced_on)
+        if day is not None and first <= day <= end:
+            found.add((str(_chain_id(instrument_id, lineage)), day))
+    return frozenset(found)
+
+
+def _demerger_rows(session: Session) -> list[tuple[uuid.UUID, date, date | None]]:
+    return [
+        (a.instrument_id, a.ex_date, a.announced_on)
+        for a in session.scalars(
+            select(HatCorporateAction).where(
+                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES)
+            )
+        )
+        if demerger_text(a.raw_text)
+    ]
+
+
 def _content_digest(market: MarketData) -> str:
     """sha256 of what the run read: the bars, features, index closes, membership intervals,
     industry history and dividends, each in a fixed order. Two snapshots with the same row counts
@@ -721,6 +756,8 @@ def _content_digest(market: MarketData) -> str:
         )
     if market.pending:
         digest.update(repr(sorted((i, d.isoformat()) for i, d in market.pending)).encode())
+    if market.demerger_exits:
+        digest.update(repr(sorted((i, d.isoformat()) for i, d in market.demerger_exits)).encode())
     if market.breadth:
         digest.update(
             repr(sorted((d.isoformat(), str(v)) for d, v in market.breadth.items())).encode()
@@ -805,6 +842,8 @@ def load_market(
             last_traded[instrument_id] = min(found, last_traded.get(instrument_id, found))
     skipped, jumps = _skipped(store, bars, adjustment, window, end)
     pending = frozenset(chain_pending(session, window, wanted))
+    exits = demerger_exits(_demerger_rows(session), adjustment.lineage, every_day, window[0], end)
+    exits = frozenset((i, d) for i, d in exits if i in wanted)
     versions_sha, versions = versions_digest(session)
     market = MarketData(
         days=tuple(window),
@@ -819,6 +858,7 @@ def load_market(
         skipped=skipped,
         pending=pending,
         dividends=dict(dividends),
+        demerger_exits=exits,
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -850,6 +890,11 @@ def load_market(
             " available one differs from the series' (CA6)",
             "instruments": len({i for i, _ in pending}),
             "instrument_days": len(pending),
+        },
+        "demerger_exits": {
+            "rule": "a position held into a demerger whose record date was announced by the"
+            " last session before its ex-date exits at that session's close (CA8)",
+            "exits": len(exits),
         },
         "actions_digest": expected,
         # the series is the hindsight one; the pending days make the run point in time against

@@ -73,7 +73,9 @@ position whose instrument has no bar (suspended, not delisted) is carried at its
 `suspension_sessions` sessions, then marked 5% lower per further session, in the equity curve
 and at the period end. All three rules are in the run's conventions. A position in a stock that
 stopped trading closes at its last close on its last session (`MarketData.last_traded`,
-HAT-BT-012), and nothing trades or marks within a few sessions of an open review jump
+HAT-BT-012), one held into a demerger whose record date was announced by the last session before
+its ex-date closes at that session's close (`MarketData.demerger_exits`, CA8, exit reason
+`demerger`), and nothing trades or marks within a few sessions of an open review jump
 (`MarketData.skipped`, audit H7), without those sessions counting as a suspension. A name
 factor-pending (CA5, `MarketData.pending`) is not scanned that night nor entered that day; a
 position held in it keeps its marks, stops and exits.
@@ -177,6 +179,7 @@ from .ledger import trade_rows as ledger_trade_rows
 from .ledger import watch_rows as ledger_watch_rows
 from .report import (
     DELISTED,
+    DEMERGER,
     END_OF_PERIOD,
     BacktestResult,
     SignalRow,
@@ -377,6 +380,7 @@ class _Run:
             if prev is not None:
                 self._entries(day, prev)
             self._close_phase(day)
+            self._demergers(day)
             self._delistings(day)
             self._sync_ladder()
             shadow.expire_watchlist(self.session, day)
@@ -849,6 +853,20 @@ class _Run:
             low=held.low,
             fills=self.spec.fills,
         )
+
+    def _demergers(self, day: date) -> None:
+        """A position held into a demerger whose record date was announced by now closes at
+        this, the last session before the ex-date, at its close (CA8, `MarketData.demerger_exits`):
+        exit reason `demerger`, the run's fills. A session with no bar, or one locked at its lower
+        band, sells nothing, and the position holds through as before."""
+        for position in self._open_positions():
+            held = self.held[position.id]
+            if (held.instrument_id, day) not in self.data.demerger_exits:
+                continue
+            bar = self.view.bar(held.instrument_id, day)
+            if bar is None or self._lower_locked(held.instrument_id, day, bar):
+                continue
+            self._close(position, bar.close, DEMERGER, _at(day, _AT_END))
 
     def _delistings(self, day: date) -> None:
         """An instrument's last traded session closes its open position at that close

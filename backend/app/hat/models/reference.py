@@ -25,6 +25,7 @@ __all__ = [
     "HatBrokerSymbol",
     "HatCorporateAction",
     "HatCorporateActionVersion",
+    "HatDemergerNotice",
     "HatIndustry",
     "HatInstrument",
     "HatInstrumentSymbolHistory",
@@ -138,11 +139,31 @@ class HatCorporateAction(Base):
     # A dividend's cash per share in rupees (`data/ca_dividends.py`); NULL on every other type
     # and on a dividend whose amount is not known. Price-neutral: no view applies it.
     cash_amount = Column(Ratio)
-    # CA5, point in time (`data/ca_known.py`): the first NSE filing naming the event (information
-    # only), and the first date a backtest could have used the factor with the fact it rests on.
+    # CA5, point in time (`data/ca_known.py`): the first NSE filing naming the event (for a
+    # demerger, its record date: the backtest's forced exit reads it, CA8
+    # `data/demerger_notice.py`), and the first date a backtest could have used the factor with
+    # the fact it rests on.
     announced_on = Column(Date)
     known_on = Column(Date)
     known_basis = Column(Text)
+
+
+class HatDemergerNotice(Base):
+    """CA8: a demerger NSE's daily corporate-action file (`bc`) listed before its factor is known
+    (`data/demerger_notice.py`): the parent and its ex-date, and the night HAT first read it
+    (`announced_on`). A position held into it exits at the close of the last session before
+    the ex-date (`engine/demerger_exit.py`); the factor still comes from the ex-date gap."""
+
+    __tablename__ = "hat_demerger_notice"
+    __table_args__ = (UniqueConstraint("instrument_id", "ex_date"),)
+
+    id = uuid_pk()
+    instrument_id = fk(INSTRUMENT_ID)
+    ex_date = Column(Date, nullable=False)
+    announced_on = Column(Date, nullable=False)
+    source = Column(Text, nullable=False)
+    raw_text = Column(Text, nullable=False)
+    recorded_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 
 class HatCorporateActionVersion(Base):
