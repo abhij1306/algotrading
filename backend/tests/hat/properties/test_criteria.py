@@ -28,6 +28,7 @@ from app.hat.engine.criteria import vcp as vcp_module
 from app.hat.engine.criteria.base import EvalContext
 from app.hat.engine.criteria.darvas import Box, DarvasBoxParams, find_box
 from app.hat.engine.criteria.pullback import ema, pullback_span, volume_ratio
+from app.hat.engine.criteria.reversion import wilder_rsi
 from app.hat.engine.live_entry import ep_candidates
 
 SLOW = settings(
@@ -152,6 +153,40 @@ def test_ema_pullback_exposes_the_levels_the_trigger_and_stop_read() -> None:
     assert evaluate("ema_pullback", {}, heavy).reason == "volume_not_lighter"
     assert evaluate("ema_pullback", {"touch_pct": 0.0}, ctx).passed  # the low is under the EMA
     assert evaluate("ema_pullback", {"max_undercut_pct": 0.0}, ctx).reason == "below_ema"
+
+
+# --- rsi_below ------------------------------------------------------------------
+
+
+def test_wilder_rsi_is_the_recurrence_seeded_from_the_mean_of_its_own_window() -> None:
+    # 21 closes for RSI(2): a null before them, alternating +3 / -1 changes, then a -4 at the end
+    closes = [None, 100.0] + [100.0 + 2 * (i // 2) + 3 * (i % 2) for i in range(1, 20)] + [99.0]
+    window = closes[-21:]
+    changes = [Fraction(b) - Fraction(a) for a, b in zip(window, window[1:], strict=False)]
+    gain = sum(max(c, 0) for c in changes[:2]) / 2
+    loss = sum(max(-c, 0) for c in changes[:2]) / 2
+    for change in changes[2:]:
+        gain, loss = (gain + max(change, 0)) / 2, (loss + max(-change, 0)) / 2
+    rsi = wilder_rsi(closes, 2)
+    assert rsi is not None
+    assert abs(Fraction(rsi) - (100 - 100 / (1 + gain / loss))) < Fraction(1, 10**20)
+    assert wilder_rsi(closes[2:], 2) is None  # 20 closes: the window is not there
+    assert wilder_rsi([float(c) for c in range(21)], 2) == 100  # no loss
+    assert wilder_rsi([5.0] * 21, 2) is None  # no change at all
+
+
+def test_rsi_below_exposes_the_signal_close_as_the_pivot() -> None:
+    closes = [100.0 + i for i in range(18)] + [110.0, 104.0, 101.0]  # two hard down days
+    days = [EPOCH + timedelta(days=i) for i in range(len(closes))]
+    ctx = EvalContext(days[-1], "x", pl.DataFrame({"date": days, "close": closes}))
+    result = evaluate("rsi_below", {"length": 2, "below": 10}, ctx)
+    assert result.passed
+    assert result.value < 10
+    assert result.extras == {"pivot": 101.0}
+    deeper = evaluate("rsi_below", {"length": 2, "below": result.value * 0.99}, ctx)
+    assert deeper.reason == "rsi_not_below"
+    short = EvalContext(days[-1], "x", pl.DataFrame({"date": days[1:], "close": closes[1:]}))
+    assert evaluate("rsi_below", {}, short).reason == "no_data"
 
 
 # --- vcp ------------------------------------------------------------------------

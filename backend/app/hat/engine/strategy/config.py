@@ -263,18 +263,29 @@ class ExitPartialAfterDays(Model):
     enabled: bool = True
 
 
-class ExitCloseBelowSma(Model):
-    rule: Literal["close_below_sma"]
+class ExitVsSma(Model):
+    """A close-phase exit against the `sma`-session SMA, evaluated on the live price."""
+
     sma: int = Field(ge=2, le=400)
     sell_fraction: float = Fraction
     when: str = "15:25"
     enabled: bool = True
 
     @model_validator(mode="after")
-    def _check(self) -> ExitCloseBelowSma:
+    def _check(self) -> ExitVsSma:
         if not CLOCK.match(self.when):
             raise ValueError("bad_clock_time")
         return self
+
+
+class ExitCloseBelowSma(ExitVsSma):
+    rule: Literal["close_below_sma"]
+
+
+class ExitCloseAboveSma(ExitVsSma):
+    """The mean-reversion target: the price back above a short SMA (Connors' 5-day line)."""
+
+    rule: Literal["close_above_sma"]
 
 
 class ExitTrailingSwingLow(Model):
@@ -310,6 +321,7 @@ ExitRule = Annotated[
     | ExitPartialAtR
     | ExitPartialAfterDays
     | ExitCloseBelowSma
+    | ExitCloseAboveSma
     | ExitTrailingSwingLow
     | ExitPctGainTarget
     | ExitTimeStop

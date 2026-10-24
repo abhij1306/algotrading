@@ -382,6 +382,7 @@ def test_playbook_kind_from_data_needs() -> None:
         ("momentum-breakout-ep", "episodic_pivot"): True,
         ("darvas-box-breakout", "default"): False,
         ("trend-pullback-ema", "default"): False,
+        ("rsi2-uptrend-reversion", "default"): False,
     }
     ep = seed_config("momentum-breakout-ep").playbook("episodic_pivot")
     assert ep.model_copy(update={"name": "gap_and_go"}).preopen

@@ -1,0 +1,43 @@
+# Registration (engine/strategy/registry.py); the strategy config follows the --- line.
+sleeve: S5
+persona: Connors-style
+---
+# Source: L. Connors and C. Alvarez, "Short Term Trading Strategies That Work" (2008), the
+# 2-period RSI: buy a stock above its 200-day SMA when its RSI(2) closes below 10 (5 for fewer,
+# deeper pullbacks), sell on a close above its 5-day SMA; the book tests no stop. HAT adds what a
+# swing book needs: entry on the next session's trade back above the signal close (the pivot),
+# a wide 3 x ATR(14) hard stop, and a 10-session time stop.
+bot: rsi2-uptrend-reversion
+version: 1
+market: NSE
+# capital allocation: set in the account risk policy
+
+universe:
+  - {type: series_in, params: {series: [EQ, BE]}}
+  - {type: min_turnover, params: {days: 20, inr_cr: 10}}
+  - {type: min_price, params: {inr: 50}}
+
+regime:
+  index: NIFTY 500
+  rule: close_above_sma_and_rising    # assumption: Connors' 200-day trend filter on the index too
+  params: {sma: 200, rising_days: 21}
+
+setup:
+  criteria:
+    - {type: sma_above, mode: hard, params: {a: close, b: 200}}    # the long-term uptrend
+    - {type: rsi_below, mode: hard, params: {length: 2, below: 10}}    # pivot: the signal close
+
+trigger:
+  - {type: price_breaks_level, params: {level: pivot, bar: 5m}}    # back above the signal close
+
+entry_filters:
+  - {type: max_chase, params: {pct: 2}}
+
+stop: {rule: atr_multiple, days: 14, multiple: 3}    # wide: Connors uses none
+
+# sizing: from the account risk policy
+
+exits:                                  # evaluated top to bottom
+  - {rule: hard_stop}
+  - {rule: close_above_sma, sma: 5, sell_fraction: 1.0, when: "15:25"}    # the snap-back
+  - {rule: partial_after_days, days: 10, sell_fraction: 1.0}    # the time stop, sells all

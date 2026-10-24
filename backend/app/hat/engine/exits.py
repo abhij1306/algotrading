@@ -25,6 +25,7 @@ from typing import Any, Literal
 from ..money import require_exact
 from .strategy.config import (
     ExitBreakeven,
+    ExitCloseAboveSma,
     ExitCloseBelowSma,
     ExitHardStop,
     ExitPartialAfterDays,
@@ -34,6 +35,7 @@ from .strategy.config import (
     ExitRule,
     ExitTimeStop,
     ExitTrailingSwingLow,
+    ExitVsSma,
 )
 
 __all__ = [
@@ -68,6 +70,7 @@ _RULE_PHASE = {
     "pct_gain_target": "live",
     "partial_after_days": "close",
     "close_below_sma": "close",
+    "close_above_sma": "close",
     "trailing_swing_low": "close",
     "time_stop": "close",
     "regime_exit": "nightly",
@@ -128,7 +131,7 @@ def view_from_rules(
     sma: dict[int, Decimal] = {}
     swing: dict[int, Decimal] = {}
     for rule in rules:
-        if isinstance(rule, ExitCloseBelowSma) and (level := sma_of(rule.sma)) is not None:
+        if isinstance(rule, ExitVsSma) and (level := sma_of(rule.sma)) is not None:
             sma[rule.sma] = level
         elif (
             isinstance(rule, ExitTrailingSwingLow)
@@ -211,6 +214,11 @@ def _below_sma(rule: ExitCloseBelowSma, pos: PositionState, view: ExitView) -> b
     return view.price is not None and level is not None and view.price < level
 
 
+def _above_sma(rule: ExitCloseAboveSma, pos: PositionState, view: ExitView) -> bool:
+    level = view.sma.get(rule.sma)
+    return view.price is not None and level is not None and view.price > level
+
+
 def _below_swing_low(rule: ExitTrailingSwingLow, pos: PositionState, view: ExitView) -> bool:
     level = view.swing_low.get(rule.lookback_days)
     return view.price is not None and level is not None and view.price < level
@@ -238,6 +246,7 @@ _SELL_TESTS: dict[type, Callable[[Any, PositionState, ExitView], bool]] = {
     ExitPctGainTarget: _gain_target,
     ExitPartialAfterDays: _after_days,
     ExitCloseBelowSma: _below_sma,
+    ExitCloseAboveSma: _above_sma,
     ExitTrailingSwingLow: _below_swing_low,
     ExitTimeStop: _time_stop,
     ExitRegime: _regime_off,
