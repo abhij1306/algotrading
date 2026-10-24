@@ -35,11 +35,14 @@ def test_a_holiday_before_the_ex_date_moves_the_exit_back() -> None:
     assert exit_day(sessions, EX, date(2026, 9, 1)) == date(2026, 9, 3)
 
 
-def test_announced_on_the_exit_session_still_exits() -> None:
-    assert exit_day(SESSIONS, EX, date(2026, 9, 4)) == date(2026, 9, 4)
+def test_announced_the_session_before_the_exit_session_exits() -> None:
+    assert exit_day(SESSIONS, EX, date(2026, 9, 3)) == date(2026, 9, 4)
 
 
-@pytest.mark.parametrize("announced", [date(2026, 9, 5), EX, date(2026, 9, 8), None])
+# on the exit session itself is too late: live reads the file that night, after the close
+@pytest.mark.parametrize(
+    "announced", [date(2026, 9, 4), date(2026, 9, 5), EX, date(2026, 9, 8), None]
+)
 def test_announced_too_late_or_never_dated_holds_through(announced: date | None) -> None:
     assert exit_day(SESSIONS, EX, announced) is None
 

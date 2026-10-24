@@ -171,7 +171,7 @@ class MarketData:
     # (a split after it makes more, cheaper shares; each earns its share of the cash).
     dividends: Mapping[str, Sequence[tuple[date, Decimal]]] = field(default_factory=dict)
     # CA8: (chain id, session) pairs where a position held in the chain exits at the close
-    # before a demerger whose record date was announced on or before that session
+    # before a demerger whose record date was announced before that session
     # (`demerger_notice.exit_day`); a demerger never dated holds through.
     demerger_exits: frozenset[tuple[str, date]] = frozenset()
 
@@ -892,7 +892,7 @@ def load_market(
             "instrument_days": len(pending),
         },
         "demerger_exits": {
-            "rule": "a position held into a demerger whose record date was announced by the"
+            "rule": "a position held into a demerger whose record date was announced before the"
             " last session before its ex-date exits at that session's close (CA8)",
             "exits": len(exits),
         },

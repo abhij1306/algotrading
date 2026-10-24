@@ -2,7 +2,7 @@
 
 A position whose instrument has a demerger notice (NSE's `bc` file listed it, the nightly
 `ca.adjust` stored it) exits at the close of the last session before the ex-date, when the
-notice was read on or before that session (`demerger_notice.exit_day`):
+notice was read before that session (on a night before it) (`demerger_notice.exit_day`):
 
 - a virtual position is closed at that session's close pass (15:20-15:25,
   `daily/exits.ShadowExits`) at the live price, exit reason `demerger` (`close_due`);

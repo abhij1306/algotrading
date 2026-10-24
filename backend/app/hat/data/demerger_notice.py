@@ -8,8 +8,10 @@ session before the ex-date (`exit_day`), in the backtest and live alike, with ex
 it, so the position is out at the pre-demerger price and gets no resulting shares (intended).
 Splits and bonuses keep their rescale and rights their manage-only lock.
 
-- Point in time: the exit fires only when the record date was public (`announced_on`) on or
-  before that session; announced later or never dated, the position holds through as before.
+- Point in time: the exit fires only when the record date was public (`announced_on`) before
+  that session (strictly: live reads the `bc` file at night, so a notice first read on the exit
+  session's night is too late, and the backtest holds a same-day filing to the same rule);
+  announced on it or later, or never dated, the position holds through as before.
 - Live: the nightly `ca.adjust` reads the DEMERGER rows of NSE's daily corporate-action file
   (the `bc` CSV it already fetches for the dividends, CA4) into `hat_demerger_notice`, dated
   the night it first lists them (`store_notices`), and dates a stored demerger's
@@ -64,14 +66,15 @@ MAX_FILE_BYTES = 2_000_000
 
 def exit_day(sessions: Sequence[date], ex_date: date, announced_on: date | None) -> date | None:
     """The session at whose close a position held into a demerger exits: the last of the sorted
-    `sessions` before `ex_date` (a holiday is no session), when the record date was announced on
-    or before it. None when it was announced later or never dated (the position holds through),
-    or no session comes before the ex-date."""
+    `sessions` before `ex_date` (a holiday is no session), when the record date was announced
+    before it (live reads it the night before at the latest). None when it was announced on that
+    session or later, or never dated (the position holds through), or no session comes before
+    the ex-date."""
     at = bisect_left(sessions, ex_date)
     if at == 0 or announced_on is None:
         return None
     last = sessions[at - 1]
-    return last if announced_on <= last else None
+    return last if announced_on < last else None
 
 
 def last_session_before(sessions: Sequence[date], ex_date: date) -> date | None:
@@ -124,7 +127,9 @@ def _instruments_of(session: Session, symbol: str, day: date) -> list[HatInstrum
 def store_notices(session: Session, rows: Iterable[FeedRow], day: date) -> int:
     """Store each demerger of the night's `bc` rows not stored yet for its instrument and
     ex-date, announced on `day` (the night HAT first read it); a symbol HAT does not know is left
-    out. Returns how many were stored. Works in the caller's transaction."""
+    out. Returns how many were stored. Works in the caller's transaction, under the
+    reference-data lock, so no rename lands between the symbol's mapping and the write."""
+    lock_reference_data(session)
     stored = 0
     for row in demerger_rows(rows):
         if row.ex_date is None:  # demerger_rows keeps dated rows only
@@ -325,7 +330,7 @@ def exit_lines(demergers: Sequence[Demerger], sessions: Sequence[date]) -> list[
         elif d.announced_on is None:
             verdict = "holds through (record date not dated)"
         else:
-            verdict = "holds through (announced after the last session before the ex-date)"
+            verdict = "holds through (announced on or after the last session before the ex-date)"
         lines.append(
             f"{d.symbol:<12} {d.isin} ex {d.ex_date} announced {d.announced_on or '-'}"
             f" last session {last or '-'}: {verdict}"

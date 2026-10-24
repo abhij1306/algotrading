@@ -73,8 +73,8 @@ position whose instrument has no bar (suspended, not delisted) is carried at its
 `suspension_sessions` sessions, then marked 5% lower per further session, in the equity curve
 and at the period end. All three rules are in the run's conventions. A position in a stock that
 stopped trading closes at its last close on its last session (`MarketData.last_traded`,
-HAT-BT-012), one held into a demerger whose record date was announced by the last session before
-its ex-date closes at that session's close (`MarketData.demerger_exits`, CA8, exit reason
+HAT-BT-012), one held into a demerger whose record date was announced before the last session
+before its ex-date closes at that session's close (`MarketData.demerger_exits`, CA8, exit reason
 `demerger`), and nothing trades or marks within a few sessions of an open review jump
 (`MarketData.skipped`, audit H7), without those sessions counting as a suspension. A name
 factor-pending (CA5, `MarketData.pending`) is not scanned that night nor entered that day; a
@@ -855,10 +855,11 @@ class _Run:
         )
 
     def _demergers(self, day: date) -> None:
-        """A position held into a demerger whose record date was announced by now closes at
-        this, the last session before the ex-date, at its close (CA8, `MarketData.demerger_exits`):
-        exit reason `demerger`, the run's fills. A session with no bar, or one locked at its lower
-        band, sells nothing, and the position holds through as before."""
+        """A position held into a demerger whose record date was announced before this session
+        closes at this, the last session before the ex-date, at its close (CA8,
+        `MarketData.demerger_exits`): exit reason `demerger`, the run's fills. A session with no
+        bar, or one locked at its lower band, sells nothing, and the position holds through as
+        before."""
         for position in self._open_positions():
             held = self.held[position.id]
             if (held.instrument_id, day) not in self.data.demerger_exits:
