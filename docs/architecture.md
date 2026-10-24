@@ -150,3 +150,50 @@ CI (`.github/workflows/ci.yml`, every PR and push to main): `backend`, `backend-
 `.github/workflows/tla.yml` runs the TLC models only when
 `verification/**` or a Python file named in a model's `code:` comments changes, weekly, and on
 demand.
+
+## Startup and routes
+
+### Startup (`backend/app/main.py` lifespan)
+
+1. Get the event loop.
+2. Create the database schema (`init_db`). If the database is down, one log line says so and the
+   app does not start, whatever `HAT_ENABLED` says.
+3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
+   (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
+   database that is not PostgreSQL, a proxy variable that would carry Fyers traffic
+   (`fyers_proxy_set`) and a bad Telegram configuration, reconciles every broker
+   account before anything is placed, then starts the scheduler with the daily cycle
+   (`daily_jobs`, the job table), the live feed (`app/hat/data/feed.py`, the one Fyers
+   data socket, built in `main.py`), the periodic loop (session watch, fill sync, approval expiry,
+   reconciliation, live exits, announcements) and the Telegram poller and relay.
+
+With `HAT_ENABLED` unset or false (the default) no HAT task runs: the app serves only the routes
+below. Shutdown stops the HAT runtime (tasks, scheduler, feed, broker sessions), then the database
+engine, each even if the other failed.
+
+### Routes
+
+- `GET /` and `GET /ping`: liveness.
+- The daily Fyers login, `app/hat/api/fyers_auth.py`, under `/api/hat/auth/fyers`:
+  `GET /status`, `GET /url` (the Fyers login link), `POST /token` (trade the auth code for a
+  token and save it) and `POST /disconnect`. Fyers redirects to the registered `REDIRECT_URI`;
+  the backend serves no callback, so paste the `auth_code` from the redirected URL into the login
+  dialog in the app header. The token file is owned by `app/hat/execution/fyers_tokens.py`.
+- The read-only dashboard, `app/hat/api/dashboard.py`, under `/api/hat` (GET only; kill, re-arm, mode and
+  flatten are Telegram commands): `/status`, `/bots`, `/watchlist`, `/signals`, `/positions`, `/allocations`, `/regime` and `/events` (`signals`, `regime` and
+  `events` take `limit`, 1..200, default 50). Money and weights are decimal strings. The
+  frontend page `frontend/app/hat/page.tsx` polls them every 15 s.
+
+### Environment
+
+`.env.example` lists every variable. Read from the environment (loaded from `.env`):
+
+- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL.
+- `CLIENT_ID`, `SECRET_KEY`, `REDIRECT_URI`: the Fyers app (`FYERS_APP_ID`, `FYERS_CLIENT_ID` and
+  `FYERS_SECRET_KEY` also work).
+- `HAT_ENABLED` (default false), `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_MCP_BHAVCOPY_URL`,
+  `HAT_MCP_CMMARKET_URL`, and the Telegram secrets `HAT_TELEGRAM_TOKEN`, `HAT_TELEGRAM_CHAT_ID`,
+  `HAT_APPROVAL_SECRET`.
+- `CORS_ORIGINS`, `LOG_LEVEL`, `FRAMEWORK_LOG_LEVEL`.
+- `BACKEND_HOST`, `BACKEND_PORT`, `BACKEND_RELOAD`, `BACKEND_ACCESS_LOG`, `BACKEND_LOG_LEVEL`:
+  `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`.
