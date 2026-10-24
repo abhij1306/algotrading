@@ -15,7 +15,8 @@ sends at most one message per event:
   position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT),
   `corporate_action.demerger_exit` and `corporate_action.demerger_late` (a position held into a
   demerger: sell it by a close, or it was held into one, CA8; URGENT), `position.split_gap` (a
-  held name gapped like an unstored split: manage-only, Q3; URGENT), `order.rejected`
+  held name gapped like an unstored split: manage-only, Q3; URGENT), `position.isin_changed` (a
+  position held across an ISIN change: manage-only, Q4; URGENT), `order.rejected`
   and `relay.skipped`: a health alert (T15). The `Notifier` leaves these codes to the relay, so
   each failure is one alert.
 
@@ -95,6 +96,7 @@ HEALTH_EVENTS = frozenset(
         "corporate_action.demerger_exit",
         "corporate_action.demerger_late",
         "position.split_gap",
+        "position.isin_changed",
         "order.rejected",
         SKIPPED,
     }

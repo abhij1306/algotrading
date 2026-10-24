@@ -92,6 +92,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "corporate_action.demerger_exit",
         "corporate_action.demerger_late",
         "position.split_gap",  # a split-like gap with no stored action: manage-only (Q3)
+        "position.isin_changed",  # held across an ISIN change: manage-only (Q4)
     ),
     "Control": (
         "mode.change_requested",

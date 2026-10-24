@@ -61,6 +61,7 @@ from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regi
 from ..engine.positions import restate_dividends
 from ..engine.rescale import (
     ALERT_ACTION_UNCHECKED,
+    flag_isin_changes,
     flag_unhandled,
     held_and_watchlisted,
     rescale_open_positions,
@@ -333,6 +334,8 @@ class Nightly:
         quarantined instrument on its `since` date are asked again (HAT-DATA-062, PR 33): a
         split whose lookup failed on the day releases its quarantine at the next gate once
         stored. A failure there is only logged: the quarantine was alerted already and stands.
+        After the lineage refresh each position held across an ISIN change is flagged
+        (`_isin_changes`, Q4).
         Then the dividends of the day's corporate-action file go in with their amounts
         (`_dividends`, CA4), its demergers become notices and the positions held into them are
         alerted (`_demergers`, CA8), and every closed trade's dividends are brought up to the
@@ -377,6 +380,7 @@ class Nightly:
         except Exception:
             logger.exception("quarantine corporate-action lookup failed")
         self._refresh_lineage(day)
+        self._isin_changes(day)
         with self.deps.session_factory() as session:
             adjustment = stored_adjustment(session)
         cumulative_segments(adjustment.factors)  # raises when a factor cannot load into the view
@@ -409,6 +413,20 @@ class Nightly:
         logger.info("isin lineage: %d linked, %d for review", report.linked, report.review)
         for pair in report.new_review:
             self.deps.notifier.alert(ALERT_LINEAGE_REVIEW, day, {"isins": pair})
+
+    def _isin_changes(self, day: date) -> None:
+        """Each open position held across an ISIN change of the lineage gets one URGENT
+        `position.isin_changed` (Q4); it is manage-only and its chain takes no entry
+        (`rescale.open_guards`) whether or not this runs. A failure is alerted."""
+        try:
+            with self.deps.session_factory() as session:
+                flagged = flag_isin_changes(session, self._now())
+                session.commit()
+        except Exception:
+            logger.exception("isin change flags failed")
+            self.deps.notifier.alert(ALERT_LINEAGE_UNCHECKED, day, {})
+            return
+        logger.info("positions held across an isin change: %d newly flagged", flagged)
 
     def _next_session_actions(self, day: date) -> None:
         with self.deps.session_factory() as session:

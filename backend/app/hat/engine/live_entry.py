@@ -368,8 +368,9 @@ def submit_trigger(
 ) -> entries.EntryOutcome:
     """Write the signal of a fired trigger through `route` (the default writes in the caller's
     transaction and does not commit; the execution router commits its own steps). An instrument
-    with an open position awaiting a split or bonus rescale is manage-only: its trigger is stored
-    skipped, `corporate_action_pending` (HAT-EXEC-142)."""
+    whose lineage chain holds an open position awaiting a split or bonus rescale, or under
+    another corporate-action lock (an unhandled action, a split-like gap, an ISIN change), is
+    manage-only: its trigger is stored skipped, `corporate_action_pending` (HAT-EXEC-142, Q4)."""
     request = entry_request(trigger, base, feed_stale=feed_stale)
     if awaits_rescale(session, request.instrument_id, request.trade_date):
         request = replace(request, skip_reason=SKIP_ACTION_PENDING)

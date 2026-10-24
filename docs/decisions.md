@@ -69,6 +69,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   stored action is more likely an unstored split than a crash: selling the old quantity at the
   new price against the old stop is the costly mistake, so it is manage-only plus URGENT until the
   owner stores the action or resolves it (a real crash then waits for the owner too).
+- **A position across an ISIN change waits for the owner.** The old ISIN gets no ticks and the
+  new one may hold another quantity, so the position is manage-only plus URGENT and its chain takes
+  no entry; HAT never moves a position to the successor instrument by itself.
 - **Point in time, not full as-of rebuild.** The series stays the hindsight view; the backtest
   skips names whose value was not yet knowable (`known_on`, versions) instead of rebuilding the
   series per date.

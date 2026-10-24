@@ -76,6 +76,7 @@ URGENT_ALERTS = frozenset(
         "corporate_action.demerger_late",
         "position.series_changed",
         "position.split_gap",
+        "position.isin_changed",
         "sale.unfilled",
     }
 )

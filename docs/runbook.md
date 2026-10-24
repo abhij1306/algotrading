@@ -156,6 +156,9 @@ Alerts:
   with no stored action. A split or bonus: add it (`correct-actions`, op add), and the next
   `ca.rescale` rescales the position. A real crash: `/flatten` a real position; a virtual one,
   outside market hours: `resolve-action --action <day>:split_gap --close-at <price>`.
+- URGENT `position.isin_changed` (symbol, old and new ISIN): a position held across an ISIN
+  change. `/flatten` a real position; a virtual one, outside market hours: `resolve-action
+  --action <new first day>:isin_change --close-at <price>`.
 - `corporate_action.conflict`: a lookup disagrees with the stored factor, which stays. Check
   NSE's announcement; correct it if wrong.
 - `dividend.review`, `dividend.amount_missing`: set the amount once checked (`correct-action

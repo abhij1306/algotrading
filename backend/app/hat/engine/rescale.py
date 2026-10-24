@@ -35,6 +35,12 @@ action (it is then rescaled or flagged unhandled as above) or resolves the gap (
 `<day>:split_gap`; a real position is sold by `/flatten`). A real crash of 40% waits for the
 owner too, by decision.
 
+A position held across an ISIN change (an open position on the old side of a `linked` lineage
+row that took effect after it opened) is manage-only the same way (Q4): its old instrument gets
+no ticks and its quantity may be on the old basis. The nightly records one URGENT
+`position.isin_changed` (`flag_isin_changes`), and no instrument of its chain takes an entry
+(`awaits_rescale`), until the owner resolves it (`<new first day>:isin_change`, or `/flatten`).
+
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
 
@@ -54,7 +60,14 @@ from sqlalchemy.orm import Session
 from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
 from ..errors import HatError
 from ..events import record
-from ..models import HatCorporateAction, HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
+from ..models import (
+    HatCorporateAction,
+    HatEvent,
+    HatInstrument,
+    HatIsinLineage,
+    HatPosition,
+    HatWatchlistEntry,
+)
 from ..money import require_exact
 from ..notify import Notifier
 from ..time import as_utc, trade_date_of
@@ -64,6 +77,7 @@ from .owner import OwnerCommand
 __all__ = [
     "ALERT_ACTION_PENDING",
     "ALERT_ACTION_UNCHECKED",
+    "EVENT_ISIN_CHANGED",
     "EVENT_RESCALED",
     "EVENT_SPLIT_GAP",
     "EVENT_RESOLVED",
@@ -73,7 +87,9 @@ __all__ = [
     "Scaled",
     "applied_factors",
     "awaits_rescale",
+    "chain_of",
     "exact_factor",
+    "flag_isin_changes",
     "flag_split_gap",
     "flag_unhandled",
     "held_and_watchlisted",
@@ -98,6 +114,9 @@ GAP_KEY = "split_gap"
 # A live price at or below this share of the previous raw close, with no stored action, reads as
 # an unstored split: NSE's widest band is 20%, and a 1:2 split or a 1:1 bonus halves the price.
 SPLIT_GAP_RATIO = Decimal("0.6")
+EVENT_ISIN_CHANGED = "position.isin_changed"  # held across an ISIN change (Q4)
+ISIN_KEY = "isin_change"
+LINKED = "linked"  # `data/lineage.py`'s status of a link
 CLOSE_REASON = "corporate_action"  # the exit reason of a virtual position closed on resolution
 ALERT_ACTION_PENDING = "corporate_action.pending"
 ALERT_ACTION_UNCHECKED = "corporate_action.unchecked"  # a next-session lookup failed
@@ -274,30 +293,72 @@ def _payloads(session: Session, position_id: uuid.UUID, event_type: str) -> list
     return [dict(row or {}) for row in rows]
 
 
+def isin_successor(session: Session, position: HatPosition) -> HatIsinLineage | None:
+    """The `linked` lineage row whose old side is the position's instrument and whose new ISIN
+    first traded after the position opened: the position is held across that ISIN change."""
+    opened = trade_date_of(as_utc(position.opened_at))
+    return session.scalar(
+        select(HatIsinLineage)
+        .where(
+            HatIsinLineage.old_instrument_id == position.instrument_id,
+            HatIsinLineage.status == LINKED,
+            HatIsinLineage.effective_date > opened,
+        )
+        .order_by(HatIsinLineage.effective_date)
+        .limit(1)
+    )
+
+
+def _isin_key(link: HatIsinLineage) -> str:
+    return f"{link.effective_date.isoformat()}:{ISIN_KEY}"
+
+
+def chain_of(session: Session, instrument_id: uuid.UUID) -> set[uuid.UUID]:
+    """The instrument and every instrument `linked` to it through the lineage, either way."""
+    links = session.execute(
+        select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
+            HatIsinLineage.status == LINKED
+        )
+    ).all()
+    chain, grew = {instrument_id}, True
+    while grew:
+        grew = False
+        for old, new in links:
+            if (old in chain) != (new in chain):
+                chain |= {old, new}
+                grew = True
+    return chain
+
+
 def open_guards(session: Session, position: HatPosition) -> list[str]:
-    """The keys of the position's `position.split_gap` events the owner has not resolved
-    (`corporate_action.resolved`) and no action stored since explains: a stored action ex in the
-    gap's sessions takes the gap over (rescaled, or unhandled). None for a closed position."""
-    if position.closed_at is None:
-        resolved = {str(p.get("action")) for p in _payloads(session, position.id, EVENT_RESOLVED)}
-        return [
-            key
-            for p in _payloads(session, position.id, EVENT_SPLIT_GAP)
-            if (key := str(p.get("action"))) not in resolved
-            and not actions_between(
-                session,
-                position.instrument_id,
-                date.fromisoformat(str(p.get("previous_day"))),
-                date.fromisoformat(key.split(":")[0]),
-            )
-        ]
-    return []
+    """The keys of the position's locks the owner has not resolved (`corporate_action.resolved`):
+    each `position.split_gap` no action stored since explains (a stored action ex in the gap's
+    sessions takes the gap over: rescaled, or unhandled), and an ISIN change it is held across
+    (`isin_successor`). None for a closed position."""
+    if position.closed_at is not None:
+        return []
+    resolved = {str(p.get("action")) for p in _payloads(session, position.id, EVENT_RESOLVED)}
+    keys = [
+        key
+        for p in _payloads(session, position.id, EVENT_SPLIT_GAP)
+        if (key := str(p.get("action"))) not in resolved
+        and not actions_between(
+            session,
+            position.instrument_id,
+            date.fromisoformat(str(p.get("previous_day"))),
+            date.fromisoformat(key.split(":")[0]),
+        )
+    ]
+    link = isin_successor(session, position)
+    if link is not None and _isin_key(link) not in resolved:
+        keys.append(_isin_key(link))
+    return keys
 
 
 def manage_only(session: Session, position: HatPosition, day: date) -> bool:
     """True while the position spans an action it was not rescaled for, one the rescale cannot
-    handle, or a split-like gap no stored action explains: its exits see no view (HAT-EXEC-142,
-    HAT-EXEC-144, Q3)."""
+    handle, a split-like gap no stored action explains or an ISIN change: its exits see no view
+    (HAT-EXEC-142, HAT-EXEC-144, Q3, Q4)."""
     return bool(
         pending_actions(session, position, day)
         or unhandled_actions(session, position, day)
@@ -368,10 +429,14 @@ def held_and_watchlisted(session: Session, day: date) -> dict[str, uuid.UUID]:
 
 
 def awaits_rescale(session: Session, instrument_id: uuid.UUID, day: date) -> bool:
-    """True while some open position of the instrument has an action it was not rescaled for,
-    or one the rescale cannot handle: the instrument is manage-only and that position's exits
-    wait (HAT-EXEC-142, HAT-EXEC-144)."""
-    return any(manage_only(session, p, day) for p in _open_positions(session, instrument_id))
+    """True while some open position of the instrument's lineage chain has an action it was not
+    rescaled for, one the rescale cannot handle, or another lock (`open_guards`): the chain is
+    manage-only and that position's exits wait (HAT-EXEC-142, HAT-EXEC-144, Q4)."""
+    return any(
+        manage_only(session, p, day)
+        for iid in chain_of(session, instrument_id)
+        for p in _open_positions(session, iid)
+    )
 
 
 def _apply(
@@ -492,6 +557,50 @@ def rescale_open_positions(
     return applied, failed
 
 
+def flag_isin_changes(session: Session, now: datetime) -> int:
+    """Record one URGENT `position.isin_changed` per open position held across an ISIN change
+    not yet recorded (Q4); returns how many were. Works in the caller's transaction."""
+    flagged = 0
+    for position in _open_positions(session):
+        link = isin_successor(session, position)
+        if link is None:
+            continue
+        key = _isin_key(link)
+        if key in {
+            str(p.get("action")) for p in _payloads(session, position.id, EVENT_ISIN_CHANGED)
+        }:
+            continue
+        isins = dict(
+            session.execute(
+                select(HatInstrument.id, HatInstrument.isin).where(
+                    HatInstrument.id.in_((link.old_instrument_id, link.new_instrument_id))
+                )
+            ).all()
+        )
+        symbol = session.scalar(
+            select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+        )
+        record(
+            session,
+            aggregate_type="position",
+            aggregate_id=position.id,
+            event_type=EVENT_ISIN_CHANGED,
+            actor="scheduler",
+            payload={
+                "action": key,
+                "symbol": str(symbol or "?"),
+                "old_isin": str(isins.get(link.old_instrument_id, "?")),
+                "new_isin": str(isins.get(link.new_instrument_id, "?")),
+                "virtual": "true" if position.is_virtual else "false",
+            },
+            correlation_id=position.signal_id,
+            bot_id=position.bot_id,
+            occurred_at=now,
+        )
+        flagged += 1
+    return flagged
+
+
 class ResolutionError(HatError):
     """The owner's resolution of a locked position was refused; `code` names the rule."""
 
@@ -508,8 +617,9 @@ def resolve_action(
     command: OwnerCommand,
 ) -> HatPosition:
     """The owner resolves one unhandled action (`<ex-date>:<type>`, as its
-    `corporate_action.unhandled` names it) or open guard (`<day>:split_gap`, as its
-    `position.split_gap` names it) of an open virtual position (PR 73; PR 31 follow-ups
+    `corporate_action.unhandled` names it) or open lock (`<day>:split_gap` or
+    `<day>:isin_change`, as its `position.split_gap` or `position.isin_changed` names it) of an
+    open virtual position (PR 73; PR 31 follow-ups
     1, 12): records `corporate_action.resolved` as the owner's (`actor = user`, the allowlisted
     chat, `via = cli`) at `price` (the ex-date's adjusted price the owner reads), and the caller
     closes the position at it in the same transaction (`shadow.close_position` with
