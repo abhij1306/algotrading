@@ -305,6 +305,15 @@ CREATE OR REPLACE TRIGGER hat_event_no_update
   BEFORE UPDATE OR DELETE ON hat_event
   FOR EACH ROW EXECUTE FUNCTION hat_event_is_append_only()
 """,
+    # DB7: indexes for the runtime's existing predicates (DB audit M7, L1)
+    "CREATE INDEX IF NOT EXISTS hat_event_bot_type ON hat_event (bot_id, event_type)",
+    "CREATE INDEX IF NOT EXISTS hat_order_signal ON hat_order (signal_id)",
+    "CREATE INDEX IF NOT EXISTS hat_order_broker_account ON hat_order (broker_account_id)",
+    "CREATE INDEX IF NOT EXISTS hat_position_signal ON hat_position (signal_id)",
+    "CREATE INDEX IF NOT EXISTS hat_kill_switch_scope_bot ON hat_kill_switch (scope, bot_id)",
+    "CREATE INDEX IF NOT EXISTS hat_mode_change_bot ON hat_mode_change (bot_id)",
+    "CREATE INDEX IF NOT EXISTS hat_telegram_message_sent_at ON hat_telegram_message (sent_at)",
+    "CREATE INDEX IF NOT EXISTS hat_command_log_received_at ON hat_command_log (received_at)",
 )
 
 NSE_MARKET = {

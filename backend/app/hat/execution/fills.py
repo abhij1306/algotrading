@@ -312,11 +312,17 @@ class FillSync:
             report.gtt_book = self._read_gtts(account_id, now)
         orders = list(self._broker.orders())
         trades = list(self._broker.trades())
+        # Every step reaches a row through a tag the broker's books show today (`TagBook.for_row`
+        # and the trades match on the tag), so only those rows are read, not the account's whole
+        # history (DB audit L1).
+        tags = {o.tag for o in orders if o.tag} | {t.tag for t in trades if t.tag}
         rows = {
             row.tag: row
             for row in session.scalars(
                 select(HatOrder).where(
-                    HatOrder.broker_account_id == account_id, HatOrder.is_virtual.is_(False)
+                    HatOrder.broker_account_id == account_id,
+                    HatOrder.is_virtual.is_(False),
+                    HatOrder.tag.in_(tags),
                 )
             )
         }

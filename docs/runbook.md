@@ -171,6 +171,24 @@ The runtime lock's connection runs in autocommit, so it is never idle in a trans
 the lineage build reads Postgres only after its DuckDB scan and ends that read before it decides,
 so no HAT job sits idle in a transaction across a long scan.
 
+### Runtime indexes (DB7)
+
+The backend creates its indexes at start (`ensure_hat_schema`, `PG_DDL` in `app/hat/schema.py`,
+all `IF NOT EXISTS`). To add them to a running database without a restart, run as the owner
+outside 08:30–15:35 IST (each build blocks writes to its table while it runs; on `hat_event` it
+builds one index per partition):
+
+```sql
+CREATE INDEX IF NOT EXISTS hat_event_bot_type ON hat_event (bot_id, event_type);
+CREATE INDEX IF NOT EXISTS hat_order_signal ON hat_order (signal_id);
+CREATE INDEX IF NOT EXISTS hat_order_broker_account ON hat_order (broker_account_id);
+CREATE INDEX IF NOT EXISTS hat_position_signal ON hat_position (signal_id);
+CREATE INDEX IF NOT EXISTS hat_kill_switch_scope_bot ON hat_kill_switch (scope, bot_id);
+CREATE INDEX IF NOT EXISTS hat_mode_change_bot ON hat_mode_change (bot_id);
+CREATE INDEX IF NOT EXISTS hat_telegram_message_sent_at ON hat_telegram_message (sent_at);
+CREATE INDEX IF NOT EXISTS hat_command_log_received_at ON hat_command_log (received_at);
+```
+
 ### Deploy and planned restart: `ops.deploy_window`
 
 1. Pick a time outside 08:30–15:35 IST on a trading day (weekends and NSE holidays are free).

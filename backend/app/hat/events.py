@@ -18,10 +18,10 @@ import json
 import threading
 import uuid
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import func, insert, select
+from sqlalchemy import ColumnElement, func, insert, select
 from sqlalchemy.orm import Session
 
 from app.hat.clock import require_aware
@@ -30,7 +30,7 @@ from .errors import HatError
 from .models import HatEvent, HatOrder, HatPosition
 from .models.events import EVENT_ACTORS
 from .settings import load_settings
-from .time import utc_now
+from .time import day_bounds, utc_now
 
 __all__ = [
     "ACTORS",
@@ -41,6 +41,7 @@ __all__ = [
     "TRADE_GROUPS",
     "EventError",
     "record",
+    "recorded_for",
 ]
 
 # Spec verbatim (the Portfolio group is PR 9's).
@@ -154,6 +155,18 @@ TRADE_EVENT_TYPES: frozenset[str] = frozenset(
 
 _sqlite_lock = threading.Lock()
 _sqlite_last_id: dict[str, int] = {}
+
+
+# A read of the events about one trade date bounds `recorded_at`, the partition key, so Postgres
+# scans only the monthly partitions that can hold them (DB audit M7). An event is recorded when it
+# happens or later, and a watchlist is published the evening of the session before its trade
+# date: never more than this before the day starts.
+DAY_RECORD_MARGIN = timedelta(days=14)
+
+
+def recorded_for(day: date) -> ColumnElement[bool]:
+    """The `recorded_at` lower bound of a read of the events about trade date `day`."""
+    return HatEvent.recorded_at >= day_bounds(day)[0] - DAY_RECORD_MARGIN
 
 
 class EventError(HatError):

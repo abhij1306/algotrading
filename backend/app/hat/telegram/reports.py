@@ -28,6 +28,7 @@ from ..clock import SYSTEM_CLOCK, Clock
 from ..data.calendar import session_calendar
 from ..engine import approvals
 from ..engine.watchlist import EVENT_PUBLISHED
+from ..events import recorded_for
 from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatTelegramMessage
 from ..ops.jobs import JobError, JobResult
 from ..ops.scheduler import ScheduledJob
@@ -255,7 +256,9 @@ def _digest_sent(session: Session, bot_id: uuid.UUID, day: date) -> bool:
         at
         for at, payload in session.execute(
             select(HatEvent.occurred_at, HatEvent.payload).where(
-                HatEvent.bot_id == bot_id, HatEvent.event_type == EVENT_PUBLISHED
+                HatEvent.bot_id == bot_id,
+                HatEvent.event_type == EVENT_PUBLISHED,
+                recorded_for(day),
             )
         )
         if payload.get("trade_date") == day.isoformat()

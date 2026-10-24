@@ -206,8 +206,14 @@ class ReconciliationService:
         quantities = broker_quantities(self._broker.positions(), self._broker.holdings())
         book = TagBook.of(orders)
 
+        # HAT's rows are read through the broker's tags (adoption and `hat_tags` look up only
+        # those), and its symbols only for the ones the broker holds: not the account's whole
+        # history (DB audit L1).
         rows = session.execute(
-            select(HatOrder).where(HatOrder.broker_account_id == account_id)
+            select(HatOrder).where(
+                HatOrder.broker_account_id == account_id,
+                HatOrder.tag.in_({o.tag for o in orders if o.tag}),
+            )
         ).scalars()
         hat_orders = [row for row in rows if not row.is_virtual]
         adopted = []
@@ -227,29 +233,29 @@ class ReconciliationService:
                 select(HatBot.id).where(HatBot.broker_account_id == account_id)
             )
         }
-        symbols = dict(
-            session.execute(
-                select(HatPosition.id, HatInstrument.symbol).join(
-                    HatInstrument, HatInstrument.id == HatPosition.instrument_id
-                )
-            ).all()
-        )
         positions = [
-            HatPositionView(p.bot_id, symbols[p.id], p.qty_open)
-            for p in session.execute(
-                select(HatPosition).where(
+            HatPositionView(bot_id, symbol, qty_open)
+            for bot_id, symbol, qty_open in session.execute(
+                select(HatPosition.bot_id, HatInstrument.symbol, HatPosition.qty_open)
+                .join(HatInstrument, HatInstrument.id == HatPosition.instrument_id)
+                .where(
                     HatPosition.bot_id.in_(bots),
                     HatPosition.closed_at.is_(None),
                     HatPosition.is_virtual.is_(False),
                 )
-            ).scalars()
+            )
         ]
+        held = {symbol for symbol, quantity in quantities.items() if quantity > 0}
         hat_symbols = set(
             session.execute(
                 select(HatInstrument.symbol)
                 .join(HatSignal, HatSignal.instrument_id == HatInstrument.id)
                 .join(HatOrder, HatOrder.signal_id == HatSignal.id)
-                .where(HatOrder.broker_account_id == account_id, HatOrder.is_virtual.is_(False))
+                .where(
+                    HatOrder.broker_account_id == account_id,
+                    HatOrder.is_virtual.is_(False),
+                    HatInstrument.symbol.in_(held),
+                )
             ).scalars()
         )
         mismatches = find_mismatches(
