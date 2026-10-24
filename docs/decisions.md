@@ -60,7 +60,10 @@ here.
   18:00) with bhavcopy fallback at 22:00; history from bhavcopy archives; one Fyers WebSocket for
   live data; NSE announcement RSS; research MCPs are chat-side only and never feed a scan or
   order. A quality gate after every ingest blocks scans (never exits). Adjusted prices are raw
-  bars times cumulative corporate-action factors; raw bars are never rewritten (B27).
+  bars times cumulative corporate-action factors; raw bars are never rewritten (B27). A bonus row
+  of preference shares or debentures (NCRPS, "Bonus Debentures") is price-neutral, never a
+  factor (a split row stays a split whatever its text); the owner corrects a stored factor with
+  `admin correct-action`, journalled, and no later load re-creates a key it vacated (D1, D232).
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with
@@ -78,7 +81,8 @@ here.
   old close (1%), the first open within 10% of the factor-adjusted old close, no session move over
   25% unexplained by a stored factor in the 10 days each side, no restructuring text. Anything
   else is a review case, never a link: demergers, mergers, schemes and relistings keep separate
-  histories, and a demerger parent stays unadjusted until its factor is stored.
+  histories, and a demerger parent stays unadjusted until its factor is stored. The owner's
+  `lineage link/unlink` of a found succession overrules the rules and holds across rebuilds (D1).
 - **Storage (T5, T6, T10, T11).** Postgres is the system of record; price history is date-partitioned
   Parquet read through DuckDB; strategy configs are versioned JSONB with YAML import/export;
   indicators are own polars code on adjusted bars.

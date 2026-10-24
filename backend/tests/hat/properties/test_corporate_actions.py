@@ -18,11 +18,17 @@ from hypothesis import strategies as st
 
 from app.hat.data.bhavcopy import weekdays
 from app.hat.data.corporate_actions import (
+    TYPE_BONUS,
     TYPE_DIVIDEND,
     TYPE_NOTICE,
+    TYPE_SPLIT,
+    ActionCorrectionError,
+    Correction,
+    check_correction,
     factor_to_decimal,
     from_archive_csv,
     from_mcp,
+    non_equity_bonus,
     parse_action_text,
 )
 from app.hat.data.ingest import flag_symbol
@@ -283,3 +289,79 @@ def test_flag_rule(
         and abs(Fraction(close) - Fraction(prev)) > Fraction(1, 5) * Fraction(prev)
     )
     assert flag_symbol(stored, prev, close, in_rss) == (in_rss or prev != stored or moved)
+
+
+# The texts hat_live stored as equity bonuses (D1), and equity bonuses that must stay factors.
+NON_EQUITY_BONUSES = [
+    "Scheme Of Arrangement - Bonus Ncrps 4:1",
+    "Bonus Ncrps 1:116",
+    "Scheme Of Arrangement - Bonus Debentures 6:1",
+    "Sch Of Agmt- Bonus Deb1:1",
+    "Bonus Preference Shares 21:1",
+    "Annual General Meeting/Dividend Rs.3/- Per Share/Scheme Of Arrangement - Bonus Debentures 1:1"
+    " (Purpose Revised)",
+]
+EQUITY_BONUSES = [
+    ("Bonus 1:1", Fraction(1, 2)),
+    ("Bonus 4:5 (Pursuant To Scheme Of Amalgamation)", Fraction(5, 9)),
+    ("Annual General Meeting/Dividend Rs 2 Per Share/Bonus 1:2", Fraction(2, 3)),
+]
+
+
+@pytest.mark.parametrize("text", NON_EQUITY_BONUSES)
+def test_a_non_equity_bonus_is_price_neutral(text: str) -> None:
+    assert non_equity_bonus(text)
+    assert parse_action_text(text) is None
+    found = from_mcp(
+        "i",
+        [{"exDate": "2025-08-25", "actionType": "BONUS", "adjustmentFactor": 0.2, "purpose": text}],
+    )
+    assert [(r.action_type, r.factor) for r in found.records] == [(TYPE_NOTICE, Decimal(1))]
+    archive = from_archive_csv(
+        f'SYMBOL,PURPOSE,EX-DATE\nX,"{text}",25-Aug-2025\n', lambda s, d: "i"
+    )
+    assert (archive.records, archive.unparsed, archive.ignored) == ([], [], 1)
+
+
+@pytest.mark.parametrize(("text", "factor"), EQUITY_BONUSES)
+def test_an_equity_bonus_keeps_its_factor(text: str, factor: Fraction) -> None:
+    assert not non_equity_bonus(text)
+    parsed = parse_action_text(text)
+    assert parsed is not None
+    assert (parsed.action_type, parsed.factor) == (TYPE_BONUS, factor)
+
+
+def test_a_split_is_never_made_neutral_by_its_text() -> None:
+    row = {
+        "exDate": "2025-08-25",
+        "actionType": "SPLIT",
+        "adjustmentFactor": 0.5,
+        "purpose": "Face Value Split From Rs 10 To Rs 5 / Bonus Debentures 1:1",
+    }
+    assert [(r.action_type, r.factor) for r in from_mcp("i", [row]).records] == [
+        (TYPE_SPLIT, Decimal("0.5"))
+    ]
+
+
+def _correction(factor: str | None, new_type: str | None = None, note: str = "D1") -> Correction:
+    value = None if factor is None else Decimal(factor)
+    return Correction("INE494B01023", date(2025, 8, 25), TYPE_BONUS, value, new_type, note)
+
+
+def test_correction_rules() -> None:
+    assert check_correction(_correction(None)) is None
+    assert check_correction(_correction("1", TYPE_NOTICE)) == (TYPE_NOTICE, Decimal(1))
+    assert check_correction(_correction("0.5")) == (TYPE_BONUS, Decimal("0.5"))
+    for bad, code in [
+        (_correction("1"), "bad_factor"),  # a bonus of factor 1 changes no price
+        (_correction("0.5", TYPE_NOTICE), "bad_factor"),  # a neutral type has factor 1
+        (_correction("0"), "bad_factor"),
+        (_correction("100"), "bad_factor"),  # beyond what the view can hold (store.FACTOR_MAX)
+        (_correction("1E-10"), "bad_factor"),
+        (_correction("NaN"), "bad_factor"),
+        (_correction("1", "rights"), "bad_action_type"),
+        (_correction(None, note=" "), "note_required"),
+    ]:
+        with pytest.raises(ActionCorrectionError) as refused:
+            check_correction(bad)
+        assert refused.value.code == code

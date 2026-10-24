@@ -11,13 +11,17 @@ from sqlalchemy.orm import Session
 
 from app.hat.data import instruments as inst
 from app.hat.data.symbols import symbol_master
-from app.hat.models import HatBrokerSymbol, HatInstrument, HatMarket
+from app.hat.models import (
+    HatBrokerSymbol,
+    HatInstrument,
+    HatInstrumentSymbolHistory,
+    HatMarket,
+)
 
 pytestmark = pytest.mark.postgres
 
 
-def test_reference__refresh_on_postgres(conn: Connection) -> None:
-    session = Session(bind=conn)
+def _market(session: Session) -> HatMarket:
     market = session.scalar(select(HatMarket).where(HatMarket.code == "NSE"))
     if market is None:
         market = HatMarket(
@@ -29,6 +33,12 @@ def test_reference__refresh_on_postgres(conn: Connection) -> None:
         )
         session.add(market)
         session.flush()
+    return market
+
+
+def test_reference__refresh_on_postgres(conn: Connection) -> None:
+    session = Session(bind=conn)
+    market = _market(session)
     held = session.scalar(select(func.count()).select_from(HatInstrument))
     day = date(2026, 1, 5)
     first = [security("INE000000001", "EQ", "AAA"), security("INE000000002", "EQ", "BBB")]
@@ -52,4 +62,36 @@ def test_reference__refresh_on_postgres(conn: Connection) -> None:
         select(HatBrokerSymbol).where(HatBrokerSymbol.instrument_id.in_(mine))
     ).all()
     assert sorted(r.broker_symbol for r in rows) == ["NSE:AAA-EQ", "NSE:CCC-EQ"]
+    session.rollback()
+
+
+def test_reference__bars_rename_date_wins_over_the_masters_day(conn: Connection) -> None:
+    """TATAMOTORS -> TMPV (D1): the master saw the rename on its first run after it; the bars'
+    rename date then makes one TMPV interval from the day it took effect."""
+    session = Session(bind=conn)
+    market = _market(session)
+    iid = inst.register_history_instrument(
+        session,
+        market.id,
+        isin="INE000000009",
+        series="EQ",
+        symbol="OLDX",
+        first_seen=date(2011, 9, 13),
+    )
+    inst.upsert_instruments(
+        session, market.id, [security("INE000000009", "EQ", "NEWX")], today=date(2026, 10, 22)
+    )
+    rename = inst.SymbolRename("OLDX", "NEWX", date(2025, 10, 24), "INE000000009")
+    for _ in range(2):  # idempotent
+        inst.seed_symbol_history(session, market.id, [rename])
+        session.flush()
+        rows = session.scalars(
+            select(HatInstrumentSymbolHistory)
+            .where(HatInstrumentSymbolHistory.instrument_id == iid)
+            .order_by(HatInstrumentSymbolHistory.valid_from)
+        ).all()
+        assert [(r.symbol, r.valid_from, r.valid_to) for r in rows] == [
+            ("OLDX", date(2011, 9, 13), date(2025, 10, 24)),
+            ("NEWX", date(2025, 10, 24), None),
+        ]
     session.rollback()

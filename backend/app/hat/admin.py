@@ -36,13 +36,16 @@ Commands, in first-deploy order:
                                               closes a virtual position a corporate action
                                               locked, at PRICE (HAT-EXEC-144; a real one is
                                               refused: /flatten it)
+    correct-action --isin ISIN --ex-date DATE --type TYPE (--factor F [--as TYPE] | --delete)
+                   --note TEXT                replaces or deletes one stored corporate-action
+                                              factor (a conflict alert, a misparsed bonus; D1)
 
 Input files (`--constituents`, `--config`) are names inside `<HAT_DATA_ROOT>/admin/`: a path that
 leaves that folder, or a file without the expected suffix, is refused (`file_outside_admin`).
 
-`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version` and
-`resolve-action` are the owner's acts: their events carry `actor = user`, the allowlisted chat id
-(`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
+`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version`, `resolve-action`
+and `correct-action` are the owner's acts: their events carry `actor = user`, the allowlisted
+chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
 
 from __future__ import annotations
@@ -64,6 +67,7 @@ from sqlalchemy.orm import Session
 
 from .clock import SYSTEM_CLOCK, Clock
 from .data.calendar import session_calendar
+from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
 from .data.reference import parse_industry_csv
 from .engine.owner import OwnerCommand
 from .engine.portfolio import lifecycle, sleeve_service, universe_service
@@ -179,6 +183,15 @@ def _parser() -> argparse.ArgumentParser:
     resolve.add_argument("--position", type=uuid.UUID, required=True)
     resolve.add_argument("--action", required=True)
     resolve.add_argument("--close-at", type=_price, required=True)
+    correct = commands.add_parser("correct-action")
+    correct.add_argument("--isin", required=True)
+    correct.add_argument("--ex-date", type=date.fromisoformat, required=True)
+    correct.add_argument("--type", choices=ACTION_TYPES, required=True)
+    change = correct.add_mutually_exclusive_group(required=True)
+    change.add_argument("--factor", type=_factor)
+    change.add_argument("--delete", action="store_true")
+    correct.add_argument("--as", dest="as_type", choices=ACTION_TYPES)
+    correct.add_argument("--note", required=True)
     return parser
 
 
@@ -187,6 +200,14 @@ def _price(raw: str) -> Decimal:
     value = exact(raw)
     if value is None:
         raise argparse.ArgumentTypeError("not a price")
+    return value
+
+
+def _factor(raw: str) -> Decimal:
+    """A `--factor`: a positive finite decimal, never a float."""
+    value = exact(raw, positive=True)
+    if value is None:
+        raise argparse.ArgumentTypeError("not a positive factor")
     return value
 
 
@@ -339,11 +360,21 @@ def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
     """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote-version`,
-    `resolve-action` and `promote`) under the allowlisted chat id."""
+    `resolve-action`, `correct-action` and `promote`) under the allowlisted chat id."""
     try:
         chat_id = owner_chat_id(deps.env)
     except HatConfigError:
         raise AdminError("no_owner_chat") from None
+    if args.command == "correct-action":  # stored reference data: any time, no calendar
+        correction = Correction(
+            isin=args.isin,
+            ex_date=args.ex_date,
+            action_type=args.type,
+            factor=None if args.delete else args.factor,
+            new_type=args.as_type,
+            note=args.note,
+        )
+        return correct_action(session, correction, chat_id=chat_id, user_id=deps.user_id, now=now)
     if args.command == "revoke-ddpi":  # only narrows, so it needs no calendar (any time)
         account = revoke_ddpi(
             session, args.account, user_id=deps.user_id, note=args.note, now=now, chat_id=chat_id

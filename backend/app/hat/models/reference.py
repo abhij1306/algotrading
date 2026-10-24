@@ -26,6 +26,7 @@ __all__ = [
     "HatInstrument",
     "HatInstrumentSymbolHistory",
     "HatIsinLineage",
+    "HatLineageOverride",
     "HatMarket",
     "HatPriceBand",
     "HatTradingCalendar",
@@ -156,6 +157,25 @@ Index(
     postgresql_where=_LINKED,
     sqlite_where=_LINKED,
 )
+
+
+class HatLineageOverride(Base):
+    """The owner's verdict on one succession (`python -m app.hat.data.lineage link|unlink`, D1):
+    `link` links a review case, `unlink` keeps a pair off the chain. Every lineage build applies
+    it over the rules' verdict, so it holds across nightly rebuilds."""
+
+    __tablename__ = "hat_lineage_override"
+    __table_args__ = (
+        UniqueConstraint("old_instrument_id", "new_instrument_id"),
+        CheckConstraint("verdict IN ('link', 'unlink')", name="ck_hat_lineage_override_verdict"),
+    )
+
+    id = uuid_pk()
+    old_instrument_id = fk(INSTRUMENT_ID)
+    new_instrument_id = fk(INSTRUMENT_ID)
+    verdict = Column(Text, nullable=False)
+    note = Column(Text, nullable=False)
+    decided_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 
 class HatTradingCalendar(Base):

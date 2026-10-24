@@ -46,7 +46,15 @@ __all__ = [
 # Spec verbatim (the Portfolio group is PR 9's).
 # `CONF events.catalogue` compares this with the spec.
 EVENT_GROUPS: dict[str, tuple[str, ...]] = {
-    "Data": ("ingest.completed", "ingest.failed", "quality.failed", "gapscan.completed"),
+    "Data": (
+        "ingest.completed",
+        "ingest.failed",
+        "quality.failed",
+        "gapscan.completed",
+        # the owner's corrections of stored reference data (D1)
+        "corporate_action.corrected",
+        "lineage.overridden",
+    ),
     "Signals": (
         "watchlist.published",
         "signal.triggered",
@@ -122,6 +130,7 @@ AGGREGATE_TYPES: frozenset[str] = frozenset(
         "regime",
         "session",
         "ingest",
+        "instrument",
     }
 )
 ACTORS: frozenset[str] = frozenset(EVENT_ACTORS)

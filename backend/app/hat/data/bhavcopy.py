@@ -363,7 +363,7 @@ def http_fetcher(timeout: float = 30.0) -> Fetcher:  # pragma: no cover - the re
 
         try:
             response = requests.get(url, headers=BROWSER_HEADERS, timeout=timeout)
-        except Exception:
+        except requests.RequestException:  # the network or HTTP: a programming error raises
             return FetchResult("error")
         if response.status_code == 404:
             return FetchResult("not_found")

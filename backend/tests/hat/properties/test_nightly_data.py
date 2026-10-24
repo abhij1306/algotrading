@@ -21,7 +21,9 @@ from app.hat.time import IST
 
 def test_recorded_history_reads_holidays_and_sessions() -> None:
     days = {d.day: d for d in hat_calendar.recorded_history()}
-    assert {d.year for d in days} == set(range(2010, 2026))
+    holiday_years = {d.year for d, day in days.items() if not day.is_trading}
+    assert holiday_years == set(range(2010, 2026))
+    assert days[date(2026, 2, 1)].is_trading  # the Sunday Budget session NSE's list leaves out
     assert not days[date(2010, 1, 26)].is_trading
     # NSE closed on 15 Nov 2013 where BSE closed on the 14th; the archive has a file for the 14th
     assert not days[date(2013, 11, 15)].is_trading
@@ -42,6 +44,17 @@ def test_recorded_history_session_wins_over_holiday() -> None:
         (date(2020, 11, 14), True, "Muhurat"),
         (date(2020, 11, 16), False, None),
     ]
+
+
+def test_live_list_takes_the_recorded_sessions_of_its_years() -> None:
+    live = [
+        hat_calendar.CalendarDay(date(2026, 2, 15), False, note="Mahashivratri"),
+        hat_calendar.CalendarDay(date(2025, 10, 21), False, note="the live list wins"),
+    ]
+    days = {d.day: d for d in hat_calendar.with_recorded_sessions(live)}
+    assert days[date(2026, 2, 1)].is_trading
+    assert not days[date(2025, 10, 21)].is_trading  # a day the live list names stays its own
+    assert date(2024, 11, 1) not in days  # a year the live list does not cover is not added
 
 
 def test_calendar_holidays_is_a_set() -> None:
