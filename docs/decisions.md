@@ -90,6 +90,13 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   account, one engine for backtest and live, so the backtest tests the code that trades.
 - **Verification on real data.** See `CLAUDE.md`.
 
+## Execution safety
+
+- **A refused fill is booked (Q2).** A fill the lifecycle has no step for is stored as a broker
+  fact and alerted URGENT: shares the broker holds must be tracked and under a stop, never left
+  unbooked. A reopened trade's result is rewritten at its second close; the ladder step of its
+  first close stands.
+
 ## Planned, not built
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak

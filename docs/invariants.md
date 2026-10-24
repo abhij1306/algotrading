@@ -28,6 +28,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   committed `pending` before the broker is called; an order of unknown outcome is looked up by tag
   before any retry, and an unknown entry is never re-sent. A filled, cancelled, rejected or
   expired order never moves again: a book showing it otherwise is logged and ignored.
+- **A broker fill is a fact.** Every fill is recorded, never refused by the lifecycle: a late
+  entry fill on an ended trade opens or reopens its position so the stop covers the shares, and
+  raises URGENT `fill.off_lifecycle`.
 - **Exact math.** `Decimal` for prices, notional, P&L and size; floats and non-finite numbers are
   refused. Product CNC, a finite positive price, the stored broker symbol.
 - **Risk never raises.** A missing input is a REJECT with a typed reason. Size is

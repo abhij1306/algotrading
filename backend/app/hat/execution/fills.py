@@ -9,7 +9,9 @@ position lock is ever taken over an uncommitted fill (`PositionDesk`).
 1. adopts a pending or unconfirmed HAT order the broker shows under its tag
    (`submit.adopt_broker_order`), so a fill never lands on an order HAT thinks was not sent;
 2. records each new trade of an HT-tagged order as a fill (`live_trades.apply_entry_fill`,
-   `apply_exit_fill`);
+   `apply_exit_fill`); a fill is a broker fact, so one whose trade had already ended is booked
+   too (a late entry fill opens or reopens the position, so the stop covers it) and raises the
+   URGENT `fill.off_lifecycle` once (Q2);
 3. attributes the SELL trade of a triggered GTT to that GTT: one under the GTT's own tag
    (`gtt_tag`: the adapter reads a row under one of HAT's GTT tags as that GTT's sale; whether
    Fyers puts the tag on the sale is [verify on a live account]) to the working GTT with that
@@ -115,6 +117,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ALERT_FILL_EXCESS",
+    "ALERT_FILL_OFF_LIFECYCLE",
     "ALERT_FILL_REFUSED",
     "ALERT_SALE_UNFILLED",
     "RESTING_AFTER",
@@ -133,6 +136,8 @@ ALERT_FILL_REFUSED = "fill.refused"
 # An entry filled beyond its quantity: its tag reached the broker twice (HAT-BRK-103). Every
 # fill is still recorded, so the shares the broker holds are tracked and under the stop.
 ALERT_FILL_EXCESS = "fill.excess"
+# A fill booked as a broker fact after its trade had ended (Q2): the owner checks the position.
+ALERT_FILL_OFF_LIFECYCLE = "fill.off_lifecycle"
 _ENDED_SHORT = ("cancelled", "rejected", "expired")
 STOPS = (STOP_DAY, STOP_GTT)
 TRIGGER_ORDER = "trigger_order_id"  # the untagged broker order a triggered GTT became
@@ -491,19 +496,30 @@ class FillSync:
         )
         try:
             if row.purpose == ENTRY:
-                position = live_trades.apply_entry_fill(session, row.id, fill)
+                booked = live_trades.apply_entry_fill(session, row.id, fill)
             else:
-                position = live_trades.apply_exit_fill(session, row.id, fill)
+                booked = live_trades.apply_exit_fill(session, row.id, fill)
         except TradeError as exc:
             session.rollback()
             self._refused(row, trade.trade_id, exc.code, now, report)
             return None
-        if position is None:
+        if booked is None:
             session.rollback()  # this broker trade is already recorded
             return None
         session.commit()
         report.fills += 1
-        return position.id
+        if booked.off_lifecycle:
+            self._notifier.alert(
+                ALERT_FILL_OFF_LIFECYCLE,
+                trade_date_of(now),
+                {
+                    "tag": row.tag,
+                    "signal_id": str(row.signal_id),
+                    "position_id": str(booked.position.id),
+                    "qty": trade.qty,
+                },
+            )
+        return booked.position.id
 
     @staticmethod
     def _check_excess(session: Session, row: HatOrder, qty: int, sync: _SyncPass) -> None:
