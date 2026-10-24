@@ -198,24 +198,35 @@ def _exact(units: object) -> Decimal:
 @dataclass(frozen=True)
 class _Series:
     """One instrument's bars with four positive prices, columnar: the dates as days since
-    `_EPOCH`, ascending, (open, high, low, close) in 1/10,000 per row, per row the row of
-    the last bar on or before it that is not skipped near a jump (-1 before one), and the raw
-    (unadjusted) close in 1/10,000 per row (0 when absent)."""
+    `_EPOCH`, ascending, (open, high, low, close) in 1/10,000 per row, and per row the row of
+    the last bar on or before it that is not skipped near a jump (-1 before one)."""
 
     days: np.ndarray
     prices: np.ndarray
     traded: np.ndarray
-    raw: np.ndarray
 
     def bars(self, start: int, stop: int) -> list[Bar]:
         return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
 
 
 _NO_SERIES = _Series(
-    np.empty(0, dtype=np.int32),
-    np.empty((0, 4), dtype=np.int64),
-    np.empty(0, dtype=np.int64),
-    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.int32), np.empty((0, 4), dtype=np.int64), np.empty(0, dtype=np.int64)
+)
+
+
+@dataclass(frozen=True)
+class _RawCloses:
+    """One instrument's bars with a positive raw close, whatever their other prices (live reads
+    every raw close for the tick, `daily.market._RAW_SQL`): the dates as days since `_EPOCH`,
+    ascending, and the raw and adjusted closes in 1/10,000 (adjusted 0 when absent)."""
+
+    days: np.ndarray
+    raw: np.ndarray
+    adjusted: np.ndarray
+
+
+_NO_RAW = _RawCloses(
+    np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
 )
 
 
@@ -233,6 +244,7 @@ class MarketView:
         self.index = {d: n for n, d in enumerate(self.days)}
         self.bars = data.bars
         self.series = self._series(data.skipped)
+        self.raw_closes = self._raw_closes()
         self.skipped: dict[str, list[date]] = {}
         for instrument_id, day in sorted(data.skipped):
             self.skipped.setdefault(instrument_id, []).append(day)
@@ -244,13 +256,9 @@ class MarketView:
 
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
-        frame = self.bars.select(
-            "instrument_id",
-            "date",
-            *_EXACT,
-            # a raw price has at most the store's 4 places, so the double rounds back exactly
-            raw_e4=(pl.col("raw_close") * 10_000).round(0).cast(pl.Int64).fill_null(0),
-        ).filter(pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False))
+        frame = self.bars.select("instrument_id", "date", *_EXACT).filter(
+            pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
+        )
         # A skipped bar stays in the history: it is a real session, whose close sets the tick and
         # the SMA, ATR and swing low; only the loop's trades and marks leave it out.
         left_out = pl.DataFrame(
@@ -265,9 +273,25 @@ class MarketView:
                 part["date"].to_physical().to_numpy(),
                 part.select(_EXACT).to_numpy(),
                 np.maximum.accumulate(kept) if part.height else kept,
-                part["raw_e4"].to_numpy(),
             )
         return found
+
+    def _raw_closes(self) -> dict[str, _RawCloses]:
+        frame = self.bars.select(
+            "instrument_id",
+            "date",
+            # a raw price has at most the store's 4 places, so the double rounds back exactly
+            raw=(pl.col("raw_close") * 10_000).round(0).cast(pl.Int64),
+            adjusted=pl.col("close_e4").fill_null(0),
+        ).filter(pl.col("raw") > 0)
+        return {
+            str(key[0]): _RawCloses(
+                part["date"].to_physical().to_numpy(),
+                part["raw"].to_numpy(),
+                part["adjusted"].to_numpy(),
+            )
+            for key, part in frame.partition_by("instrument_id", as_dict=True).items()
+        }
 
     def _find(self, instrument_id: str, day: date, *, inclusive: bool) -> tuple[_Series, int]:
         """The instrument's bars and the count of them dated on or before `day` (before it, if
@@ -327,18 +351,18 @@ class MarketView:
         later split must not move a day to a finer slab), and the tick is scaled by the
         adjustment of its bar of `day` (or the last before it, `ticks.scaled_tick`): on a bar no
         action adjusts it is the NSE tick itself. None without an earlier raw close."""
-        series, end = self._find(instrument_id, day, inclusive=False)
-        month = int(np.searchsorted(series.days[:end], _ordinal(day.replace(day=1)), side="left"))
+        closes = self.raw_closes.get(instrument_id, _NO_RAW)
+        end = int(np.searchsorted(closes.days, _ordinal(day), side="left"))
+        month = int(np.searchsorted(closes.days[:end], _ordinal(day.replace(day=1)), side="left"))
         # the only closes the tick reads: the last before the month, and the last before `day`
         rows = sorted({n for n in (month - 1, end - 1) if n >= 0})
-        dates = [_EPOCH + timedelta(days=int(series.days[n])) for n in rows]
-        raw = [_exact(series.raw[n]) if series.raw[n] > 0 else None for n in rows]
-        tick = tick_for_date(dates, raw, day)
-        _, through = self._find(instrument_id, day, inclusive=True)
+        dates = [_EPOCH + timedelta(days=int(closes.days[n])) for n in rows]
+        tick = tick_for_date(dates, [_exact(closes.raw[n]) for n in rows], day)
+        through = int(np.searchsorted(closes.days, _ordinal(day), side="right"))
         if tick is None or not through:
             return None
         last = through - 1
-        return scaled_tick(tick, _exact(series.prices[last][3]), _exact(series.raw[last]))
+        return scaled_tick(tick, _exact(closes.adjusted[last]), _exact(closes.raw[last]))
 
     def sma_through(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The `length`-session SMA of the closes up to `day`."""

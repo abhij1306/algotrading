@@ -541,7 +541,6 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
     assert view.bar("x", days[10]) is None  # not four positive prices
     assert view.bar("x", days[20]) is None  # skipped near a jump
     assert view.bar("y", days[0]) is None
-    priced = [d for n, d in enumerate(days) if n != 10]  # day 20 is skipped but priced
     closes = {d: D(close).scaleb(-4) for d, _, _, _, close in rows}
     assert [b.close for b in view.bars_through("x", days[22], 3)] == [
         closes[days[20]],
@@ -559,7 +558,8 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
     assert view.prev_close("x", days[11]) == closes[days[9]]
     assert view.tick("x", days[38]) == D("0.05")  # January's last close, 260.5123
     for day in days:
-        before = [d for d in priced if d < day]
+        # every raw close sets the tick, the 10th bar's too (live reads every raw close)
+        before = [d for d in days if d < day]
         assert view.tick("x", day) == tick_for_date(before, [closes[d] for d in before], day)
     # the same bars adjusted for a later 1:10 split: the slab is still picked from the raw
     # closes (₹260.51 -> 0.05), and the tick is read in the bars' adjusted units
