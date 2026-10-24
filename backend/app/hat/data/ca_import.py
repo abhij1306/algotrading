@@ -992,12 +992,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import SessionLocal
+    from app.database import HatSessionLocal
 
     from ..time import utc_now
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
-    with SessionLocal() as session:
+    with HatSessionLocal() as session:
         outcomes = evaluate(session, store, tables)
         if args.apply:
             created = apply(session, outcomes, digest=file_digest(path), now=utc_now())

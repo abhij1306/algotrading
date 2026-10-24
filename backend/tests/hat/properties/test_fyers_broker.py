@@ -33,6 +33,7 @@ from app.hat.execution.fyers_broker import (
     MAX_PAUSE,
     READ,
     READ_SHARE,
+    SDK_HTTP_TIMEOUT,
     SUBMIT_UNCONFIRMED,
     WRITE,
     CallBudget,
@@ -40,6 +41,8 @@ from app.hat.execution.fyers_broker import (
     CircuitBreaker,
     FyersBroker,
     FyersUnavailableError,
+    HungCalls,
+    _with_timeout,
     classify_place_reply,
     limits_from,
 )
@@ -628,3 +631,31 @@ def test_reply_amounts_exact(buy: float, available: float, used: float, bad: obj
     got = parse_funds(funds)
     assert (got.available, got.used) == (Decimal(repr(available)), Decimal(repr(used)))
     assert got.total == Decimal(repr(available)) + Decimal(repr(used))
+
+
+def test_hung_calls_replace_at_limit() -> None:
+    """The pool is replaced once `limit` timed-out calls of one generation still hold workers;
+    a call that returned frees its count, and a call of a replaced generation counts toward
+    nothing. Harm: hung SDK calls fill every worker and each later call, exits included, times
+    out in the queue until a restart."""
+    hung = HungCalls(limit=3)
+    assert [hung.timed_out(0), hung.timed_out(0)] == [False, False]
+    hung.returned(0)
+    assert hung.timed_out(0) is False  # one returned: two still hung
+    assert hung.timed_out(0) is True  # three hung: replace
+    assert (hung.generation, hung.count) == (1, 0)
+    hung.returned(0)  # an old-pool call finally returned
+    assert hung.count == 0
+    assert hung.timed_out(0) is False  # and an old-pool timeout counts toward nothing
+    assert hung.count == 0
+
+
+def test_sdk_requests_get_a_timeout() -> None:
+    """Every SDK request carries `SDK_HTTP_TIMEOUT` unless the SDK set its own (it sets none).
+    Harm: a stalled socket holds a worker thread until kernel keepalive."""
+    sent: list[object] = []
+    bounded = _with_timeout(lambda _method, _url, **kwargs: sent.append(kwargs.get("timeout")))
+    bounded("POST", "https://example.invalid/orders")
+    bounded("GET", "https://example.invalid/orders", timeout=None)
+    bounded("GET", "https://example.invalid/orders", timeout=1)
+    assert sent == [SDK_HTTP_TIMEOUT, SDK_HTTP_TIMEOUT, 1]

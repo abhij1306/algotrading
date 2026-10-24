@@ -64,12 +64,11 @@ def create_engine_from_env() -> Engine:
 
 
 engine = create_engine_from_env()
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# The longest one statement of the HAT runtime may run (lock waits included). Every runtime
-# statement reads or writes a few thousand rows at most (bars and features live in Parquet), so
-# a statement still running after two minutes is wedged: it fails, and the periodic loop or job
-# that sent it moves on instead of holding its thread.
+# The longest one statement may run (lock waits included). Every statement reads or writes a few
+# thousand rows at most (bars and features live in Parquet), so a statement still running after
+# two minutes is wedged: it fails, and the periodic loop, job, route or command line that sent it
+# moves on instead of holding its thread and its locks.
 HAT_STATEMENT_TIMEOUT_MS = 120_000
 
 
@@ -87,7 +86,8 @@ def bounded_sessionmaker(
     return factory
 
 
-# The HAT runtime's sessions (`HatRuntime`, its jobs, loops and feed calendar).
+# Every session: the HAT runtime (`HatRuntime`, its jobs, loops and feed calendar), the dashboard
+# routes (`get_db`), the Fyers login and the command lines (`db_session_scope` and the data tools).
 HatSessionLocal = bounded_sessionmaker(engine)
 
 
@@ -129,7 +129,7 @@ def ensure_hat_database(*, bind: Engine | None = None) -> None:
 
 def get_db() -> Generator[Session, None, None]:
     """FastAPI Dependency for database session"""
-    db = SessionLocal()
+    db = HatSessionLocal()
     try:
         yield db
     finally:
@@ -139,7 +139,7 @@ def get_db() -> Generator[Session, None, None]:
 @contextmanager
 def db_session_scope() -> Generator[Session, None, None]:
     """Context-managed service session boundary with commit/rollback semantics."""
-    db = SessionLocal()
+    db = HatSessionLocal()
     try:
         yield db
         db.commit()

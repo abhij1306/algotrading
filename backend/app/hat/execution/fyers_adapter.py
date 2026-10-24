@@ -108,10 +108,10 @@ def map_session(*, connected: bool, has_client: bool, store_error: bool) -> Sess
 def _stored_instruments() -> list[tuple[str, str]]:
     """(database symbol, Fyers symbol) of the active instruments with a Fyers mapping, read from
     `hat_instrument` and `hat_broker_symbol`."""
-    from app.database import SessionLocal  # deferred: importing it connects the engine
+    from app.database import HatSessionLocal  # deferred: importing it connects the engine
     from app.hat.data.instruments import fyers_instruments
 
-    with SessionLocal() as session:
+    with HatSessionLocal() as session:
         return fyers_instruments(session)
 
 

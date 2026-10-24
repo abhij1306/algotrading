@@ -105,6 +105,7 @@ async def _start_hat_runtime(app: FastAPI, feed: Any) -> None:  # noqa: ANN401 -
     from . import database
     from .hat.daily.production import production_parts
     from .hat.daily.runtime import HatRuntime
+    from .hat.ops.runtime_lock import RuntimeLock
     from .hat.settings import load_settings
 
     settings = load_settings()
@@ -114,6 +115,7 @@ async def _start_hat_runtime(app: FastAPI, feed: Any) -> None:  # noqa: ANN401 -
         database.HatSessionLocal,
         dialect_name=database.engine.dialect.name,
         parts=production_parts(settings, feed, prevalidated_token=app.state.fyers_token_valid),
+        runtime_lock=lambda: RuntimeLock.acquire(database.engine),
     )
     app.state.hat_runtime = runtime
     await runtime.start()

@@ -237,12 +237,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import SessionLocal
+    from app.database import HatSessionLocal
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     through = args.through or trade_date_of(utc_now()) - timedelta(days=1)
     write = sys.stdout.write
-    with SessionLocal() as session:
+    with HatSessionLocal() as session:
         if args.command == "report":
             found = pending_gaps(session, store, through)
             counts = {kind: len(getattr(found, kind)) for kind in _KINDS}

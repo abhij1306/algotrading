@@ -24,6 +24,12 @@ cannot grant in time is never sent and is answered as Fyers' own rate limit (cod
 fails closed with `broker_rate_limited` (the fill sync tries again at its next step) and a write is
 refused as not sent, burning no retry. An HTTP 429 from Fyers is the same refusal; its
 `Retry-After` (else `THROTTLE_PAUSE`) pauses the whole budget.
+
+A guard timeout cannot stop the SDK call it gave up on: the thread keeps waiting on its socket.
+Every SDK HTTP request therefore carries `SDK_HTTP_TIMEOUT` (the SDK sets none), and the worker
+pool (`BrokerPool`) counts the calls that timed out and still hold a thread: at `HUNG_LIMIT` it
+trips the breaker, logs an error and starts a new pool, so later calls are not queued behind hung
+ones (DB audit H6).
 """
 
 from __future__ import annotations
@@ -34,7 +40,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from datetime import date
@@ -50,6 +56,7 @@ __all__ = [
     "BROKER_CIRCUIT_OPEN",
     "BROKER_ORDER_UNCONFIRMED",
     "CLIENT_NOT_INITIALIZED",
+    "BrokerPool",
     "CallBudget",
     "CallLimits",
     "PROCESS_BREAKER",
@@ -61,6 +68,7 @@ __all__ = [
     "FyersRateLimitedError",
     "FyersSessionExpiredError",
     "FyersUnavailableError",
+    "HungCalls",
     "checked_reply",
     "classify_place_reply",
     "process_budget",
@@ -215,6 +223,12 @@ class CircuitBreaker:
             self.failures += 1
             if self.failures >= self.threshold:
                 self.open_until = self._clock() + self.recovery_sec
+
+    def trip(self) -> None:
+        """Open the circuit now, as `threshold` failures in a row would."""
+        with self._lock:
+            self.failures = max(self.failures, self.threshold)
+            self.open_until = self._clock() + self.recovery_sec
 
 
 PROCESS_BREAKER = CircuitBreaker()
@@ -387,9 +401,27 @@ def _retry_after(raw: object) -> float:
     return seconds if math.isfinite(seconds) and seconds >= 0 else THROTTLE_PAUSE
 
 
+# The (connect, read) seconds of every SDK HTTP request. The guard gives up on a call after a
+# second or two; this ends the request itself, so its worker thread comes back.
+SDK_HTTP_TIMEOUT = (3.05, 10.0)
+
+
+def _with_timeout(request: Callable[..., Any]) -> Callable[..., Any]:
+    """`requests.Session.request` with `SDK_HTTP_TIMEOUT` when the caller sets none."""
+
+    def bounded(method: str, url: str, **kwargs: Any) -> Any:  # noqa: ANN401
+        if kwargs.get("timeout") is None:
+            kwargs["timeout"] = SDK_HTTP_TIMEOUT
+        return request(method, url, **kwargs)
+
+    bounded.hat_bounded = True  # type: ignore[attr-defined]
+    return bounded
+
+
 def _watch_responses(model: Any) -> None:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
-    """Hook `_note_response` into the model's requests session once (best effort: a model
-    without one, such as a test double, is left as it is)."""
+    """Hook `_note_response` into the model's requests session and bound its requests with
+    `SDK_HTTP_TIMEOUT`, once (best effort: a model without one, such as a test double, is left as
+    it is)."""
     session = getattr(getattr(model, "service", None), "session", None)
     hooks = getattr(session, "hooks", None)
     if not isinstance(hooks, dict):
@@ -397,9 +429,84 @@ def _watch_responses(model: Any) -> None:  # noqa: ANN401 - the untyped fyers_ap
     response_hooks = hooks.setdefault("response", [])
     if isinstance(response_hooks, list) and _note_response not in response_hooks:
         response_hooks.append(_note_response)
+    request = getattr(session, "request", None)
+    if callable(request) and not getattr(request, "hat_bounded", False):
+        session.request = _with_timeout(request)  # type: ignore[union-attr]
 
 
-_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="fyers-broker")
+POOL_WORKERS = 8
+HUNG_LIMIT = 4  # timed-out calls still holding a worker before the pool is replaced
+
+
+class HungCalls:
+    """The calls of the current pool generation that timed out and still hold a worker. Not
+    thread-safe: `BrokerPool` holds its lock around each call."""
+
+    def __init__(self, limit: int = HUNG_LIMIT) -> None:
+        self.limit = limit
+        self.generation = 0
+        self.count = 0
+
+    def timed_out(self, generation: int) -> bool:
+        """Count a hung call of `generation`; True when the count reaches the limit, which
+        starts a new generation (the caller replaces the pool). A call of an older generation
+        counts toward nothing: its pool is already replaced."""
+        if generation != self.generation:
+            return False
+        self.count += 1
+        if self.count < self.limit:
+            return False
+        self.generation += 1
+        self.count = 0
+        return True
+
+    def returned(self, generation: int) -> None:
+        """A hung call of `generation` finally returned and freed its worker."""
+        if generation == self.generation and self.count > 0:
+            self.count -= 1
+
+
+class BrokerPool:
+    """The worker threads every `FyersBroker` call runs on, replaced when `HUNG_LIMIT` calls
+    that timed out still hold its workers (the old pool's threads end with their requests)."""
+
+    def __init__(self, workers: int = POOL_WORKERS, limit: int = HUNG_LIMIT) -> None:
+        self._workers = workers
+        self._lock = Lock()
+        self._hung = HungCalls(limit)
+        self._executor = self._new_executor()
+
+    def _new_executor(self) -> ThreadPoolExecutor:
+        return ThreadPoolExecutor(max_workers=self._workers, thread_name_prefix="fyers-broker")
+
+    def submit(self, fn: Callable[[], object]) -> tuple[Future[object], int]:
+        """`fn` on a worker, with the pool generation it runs in."""
+        with self._lock:
+            return self._executor.submit(fn), self._hung.generation
+
+    def timed_out(self, future: Future[object], generation: int) -> bool:
+        """Note a call whose caller gave up. A call still queued is cancelled and never sent; one
+        already running is counted until it returns. True when this replaced the pool: the
+        caller trips the breaker."""
+        if future.cancel():
+            return False
+        with self._lock:
+            replace = self._hung.timed_out(generation)
+            if replace:
+                old, self._executor = self._executor, self._new_executor()
+        future.add_done_callback(lambda _f: self._returned(generation))
+        if replace:
+            # the calls still queued on the old pool are cancelled (their callers read no
+            # answer); the hung ones end with their requests (`SDK_HTTP_TIMEOUT`)
+            old.shutdown(wait=False, cancel_futures=True)
+        return replace
+
+    def _returned(self, generation: int) -> None:
+        with self._lock:
+            self._hung.returned(generation)
+
+
+_POOL = BrokerPool()
 
 
 # What `_admit` answers for a call the open circuit holds back, and what `_run` answers for one
@@ -504,7 +611,7 @@ class FyersBroker:
                 return throttled()
             return result
 
-        future = _EXECUTOR.submit(watched)
+        future, generation = _POOL.submit(watched)
         try:
             result = future.result(timeout=timeout_sec)
             if isinstance(result, _Throttled):
@@ -513,9 +620,20 @@ class FyersBroker:
             self.breaker.record_success()
             return result
         except FutureTimeoutError:
-            future.cancel()
             self.breaker.record_failure()
             logger.warning("Fyers operation %s timed out after %.2fs", operation, timeout_sec)
+            if _POOL.timed_out(future, generation):
+                self.breaker.trip()
+                logger.error(
+                    "Fyers broker: %d timed-out calls still hold workers; circuit opened and the "
+                    "worker pool replaced",
+                    HUNG_LIMIT,
+                )
+            return _NO_ANSWER
+        except CancelledError:
+            # queued on a pool replaced before it ran: never sent
+            self.breaker.record_failure()
+            logger.warning("Fyers operation %s dropped with a replaced worker pool", operation)
             return _NO_ANSWER
         except Exception as error:
             self.breaker.record_failure()

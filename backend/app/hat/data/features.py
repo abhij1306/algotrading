@@ -439,12 +439,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import SessionLocal
+    from app.database import HatSessionLocal
 
     from .lineage import stored_adjustment
 
     logging.basicConfig(level=logging.INFO)
-    with SessionLocal() as session:
+    with HatSessionLocal() as session:
         adjustment = stored_adjustment(session)
     report = run_features(
         DataStore(settings.data_root, memory_limit=settings.duckdb_memory),

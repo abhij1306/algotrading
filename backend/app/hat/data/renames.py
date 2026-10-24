@@ -56,12 +56,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import SessionLocal
+    from app.database import HatSessionLocal
 
     from ..models import HatMarket
 
     renames = renames_from_bars(DataStore(settings.data_root, memory_limit=settings.duckdb_memory))
-    with SessionLocal() as session:
+    with HatSessionLocal() as session:
         market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
         if market_id is None:
             sys.stderr.write("refused: no_market\n")
