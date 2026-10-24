@@ -258,7 +258,8 @@ bars (the weekly job and the history build do it too). A build that changes a li
 inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`
 does it now).
 Every writer of the actions, the lineage and the symbol history (`lineage build`/`link`/`unlink`,
-`ca.adjust`, the nightly action lookups, the history build, `correct-action(s)`, `ca_import` and
+`ca.adjust`, the nightly action lookups, the history build, `correct-action(s)`, `ca_import`,
+`ca_dividends` and
 `ca_research --apply`, the weekly reference refresh, `renames`, `repair-symbol-history --apply`)
 takes one transaction-scoped advisory lock (`hat_reference_data`): one waits for the other, so an
 owner's link is never overwritten by a build that read the overrides before it.
