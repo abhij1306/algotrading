@@ -169,8 +169,11 @@ class DailyData:
         self.trade_date = trade_date
         window = sessions_before(store, trade_date, DAILY_SESSIONS)
         self._atr_days, self._swing_days = stop_lengths(configs)
+        adjustment = stored_adjustment(session)
+        # a position bought under a linked older ISIN reads its chain's bars, features and tick
+        self._chain: dict[str, str] = dict(adjustment.lineage)
         if window:
-            with store.connect(stored_adjustment(session)) as con:
+            with store.connect(adjustment) as con:
                 bars = con.execute(_ADJ_SQL, [window[0], window[-1]]).pl()
                 month_start = trade_date.replace(day=1)
                 raw = con.execute(
@@ -198,16 +201,22 @@ class DailyData:
             else {}
         )
 
+    def chain_key(self, instrument_id: uuid.UUID) -> str:
+        """The id the adjusted view gives the instrument's bars: its chain's current ISIN when
+        it is a linked older one (`lineage`), else its own."""
+        key = str(instrument_id)
+        return self._chain.get(key, key)
+
     def bars(self, instrument_id: uuid.UUID) -> pl.DataFrame:
         """The instrument's adjusted daily bars before the trade date (empty when unknown)."""
-        return self._bars.get(str(instrument_id), pl.DataFrame())
+        return self._bars.get(self.chain_key(instrument_id), pl.DataFrame())
 
     def tick(self, instrument_id: uuid.UUID) -> Decimal | None:
-        dates, closes = self._raw.get(str(instrument_id), ([], []))
+        dates, closes = self._raw.get(self.chain_key(instrument_id), ([], []))
         return tick_for_date(dates, closes, self.trade_date)
 
     def feature(self, instrument_id: uuid.UUID, name: str) -> Decimal | None:
-        return exact(self._features.get(str(instrument_id), {}).get(name), floats=True)
+        return exact(self._features.get(self.chain_key(instrument_id), {}).get(name), floats=True)
 
     def _closes(self, instrument_id: uuid.UUID) -> list[Decimal]:
         frame = self.bars(instrument_id)

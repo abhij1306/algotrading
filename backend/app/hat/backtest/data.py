@@ -271,18 +271,31 @@ def _chain_id(instrument_id: uuid.UUID, lineage: Mapping[str, str]) -> uuid.UUID
 
 
 def _industries(
-    session: Session, instruments: Iterable[uuid.UUID]
+    session: Session, instruments: Iterable[uuid.UUID], lineage: Mapping[str, str]
 ) -> dict[str, list[tuple[date, str]]]:
     """Each instrument's industry classifications as (effective_from, industry), oldest first:
-    the run reads the one in force on each trade date, never a later reclassification."""
+    the run reads the one in force on each trade date, never a later reclassification. A
+    linked older ISIN's classifications count for its chain (the id the run knows it by)."""
+    rows = session.scalars(select(HatIndustry))
+    return chain_industries(
+        ((r.instrument_id, r.effective_from, r.industry) for r in rows), instruments, lineage
+    )
+
+
+def chain_industries(
+    rows: Iterable[tuple[uuid.UUID, date, str]],
+    instruments: Iterable[uuid.UUID],
+    lineage: Mapping[str, str],
+) -> dict[str, list[tuple[date, str]]]:
+    """(instrument, effective_from, industry) rows grouped under each wanted instrument's id,
+    oldest first, a linked older ISIN's under its chain's id."""
     wanted = set(instruments)
     found: dict[str, list[tuple[date, str]]] = {}
-    for row in session.scalars(
-        select(HatIndustry).order_by(HatIndustry.instrument_id, HatIndustry.effective_from)
-    ):
-        if row.instrument_id in wanted:
-            found.setdefault(str(row.instrument_id), []).append((row.effective_from, row.industry))
-    return found
+    for instrument_id, effective_from, industry in rows:
+        chain = _chain_id(instrument_id, lineage)
+        if chain in wanted:
+            found.setdefault(str(chain), []).append((effective_from, industry))
+    return {k: sorted(v) for k, v in found.items()}
 
 
 def _delisted(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, date]:
@@ -433,7 +446,7 @@ def load_market(
         features=features,
         index_closes=index_closes,
         members=members,
-        industries=_industries(session, instruments),
+        industries=_industries(session, instruments, adjustment.lineage),
         series=series,
         last_traded=last_traded,
         breadth=breadth,

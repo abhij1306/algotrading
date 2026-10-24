@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from app.hat.backtest.data import chain_industries
 from app.hat.data.lineage import (
     AMBIGUOUS,
     FACE_VALUE_CHANGE,
@@ -35,6 +36,7 @@ from app.hat.data.lineage import (
     chain_factors,
     chains,
     decide_all,
+    exchange_sessions,
     parse_name_changes,
     parse_symbol_changes,
     sessions_between,
@@ -268,6 +270,26 @@ def test_suspension_gap_bounds() -> None:
     assert _decide([old, gone]) == []
 
 
+def test_a_missing_partition_never_shortens_the_gap() -> None:
+    """The gap counts exchange sessions, not stored partitions: with the six sessions between
+    the two ISINs missing from the store, the gap is still six (review), a known holiday is not
+    a session and a special Saturday session is."""
+    old = _span("m1", "INE0000000M1", date(2020, 1, 1), date(2020, 6, 1), "HOLE")
+    new = _span("m2", "INE0000000M2", date(2020, 6, 10), date(2021, 1, 1), "HOLE")
+    stored = [d for d in SESSIONS if not date(2020, 6, 1) < d < date(2020, 6, 10)]
+    assert sessions_between(stored, old.last_day, new.first_day) == 0  # the store alone: a link
+    sessions = exchange_sessions(stored, closed=set(), special=set())
+    assert sessions_between(sessions, old.last_day, new.first_day) == 6
+    [decision] = decide_all(candidates([old, new], sessions, []), {})
+    assert (decision.status, decision.reason) == (REVIEW, LONG_GAP)
+    holiday, saturday = date(2020, 6, 3), date(2020, 6, 6)
+    sessions = exchange_sessions(stored, closed={holiday}, special={saturday})
+    assert holiday not in sessions
+    assert saturday in sessions
+    assert sessions_between(sessions, old.last_day, new.first_day) == 6
+    assert exchange_sessions([], closed=set(), special={saturday}) == []
+
+
 def test_symbol_change_needs_a_record() -> None:
     old = _span("y1", "INE0000000E1", date(2020, 1, 1), date(2020, 6, 1), "OLDSYM")
     new = _span("y2", "INE0000000E2", date(2020, 6, 2), date(2021, 1, 1), "NEWSYM")
@@ -353,3 +375,21 @@ def test_adjusted_view_reads_a_linked_chain_as_one_series() -> None:
             ).fetchall()
     assert {r[0] for r in rows} == {str(new)}
     assert [r[2] for r in rows] == [D("1093.875"), D("1101.05"), D("1199.60"), D("1257.25")]
+
+
+def test_industries_follow_the_chain() -> None:
+    """A classification stored under a linked older ISIN counts for its chain (the id the
+    backtest knows the instrument by); one under an unlinked ISIN does not."""
+    old, mid, head, other = (uuid.UUID(int=i) for i in (1, 2, 3, 4))
+    lineage = {str(old): str(head), str(mid): str(head)}
+    rows = [
+        (head, date(2020, 1, 1), "Financial Services"),
+        (old, date(2010, 1, 1), "Banks"),
+        (other, date(2010, 1, 1), "Housing Finance"),
+    ]
+    assert chain_industries(rows, [head], lineage) == {
+        str(head): [(date(2010, 1, 1), "Banks"), (date(2020, 1, 1), "Financial Services")]
+    }
+    assert chain_industries(rows, [head], {}) == {
+        str(head): [(date(2020, 1, 1), "Financial Services")]
+    }

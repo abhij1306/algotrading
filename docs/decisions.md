@@ -70,8 +70,9 @@ here.
 - **ISIN lineage (PR 74, owner 2026-10-24).** A new ISIN for the same shares (face-value split or
   consolidation, reissue, symbol or name change) keeps its own instrument; `hat_isin_lineage`
   links old -> new and the adjusted view reads the chain as one series under the current ISIN's
-  id, each corporate action applied once per chain. Link only on evidence: succession within 5
-  sessions, the same symbol or an NSE symbol-change record, NSE's first PREVCLOSE carrying the
+  id, each corporate action applied once per chain; a position held under an older ISIN reads its
+  chain's bars, features and tick. Link only on evidence: succession within 5 exchange sessions
+  (weekdays less recorded and stored holidays, never only the stored partitions), the same symbol or an NSE symbol-change record, NSE's first PREVCLOSE carrying the
   old close (1%), the first open within 10% of the factor-adjusted old close, no session move over
   25% unexplained by a stored factor in the 10 days each side, no restructuring text. Anything
   else is a review case, never a link: demergers, mergers, schemes and relistings keep separate

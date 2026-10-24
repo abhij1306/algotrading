@@ -50,7 +50,7 @@ import sys
 import uuid
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -63,6 +63,7 @@ from sqlalchemy.orm import Session
 
 from ..errors import HatError
 from ..models import HatCorporateAction, HatInstrument, HatIsinLineage
+from .calendar import recorded_history, session_calendar
 from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_SPLIT
 from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore
 
@@ -260,8 +261,39 @@ def parse_name_changes(text: str) -> list[NameChange]:
 
 
 def sessions_between(sessions: Sequence[date], first: date, last: date) -> int:
-    """The sessions strictly between two days, from the sorted store dates."""
+    """The sessions strictly between two days, from the sorted exchange sessions."""
     return max(0, bisect_left(sessions, last) - bisect_right(sessions, first))
+
+
+def exchange_sessions(
+    stored: Sequence[date], closed: Collection[date], special: Collection[date]
+) -> list[date]:
+    """The exchange sessions from the first stored day to the last: every weekday not a known
+    holiday, every special session and every stored day. A session whose bar partition is
+    missing still counts, so a gap is never shorter than the exchange's; with no holiday known
+    a holiday counts as a session, which only lengthens a gap (never a link it should not be)."""
+    if not stored:
+        return []
+    first, last = min(stored), max(stored)
+    out = set(stored) | {d for d in special if first <= d <= last}
+    day = first
+    while day <= last:
+        if day.weekday() < 5 and day not in closed:
+            out.add(day)
+        day += timedelta(days=1)
+    return sorted(out)
+
+
+def calendar_days(session: Session) -> tuple[set[date], set[date]]:
+    """(closed days, special sessions) from the recorded holiday history and the stored
+    calendar; a stored row wins over the recorded file."""
+    days = {d.day: d.is_trading for d in recorded_history()}
+    calendar = session_calendar(session)
+    if calendar is not None:
+        days.update((day, row.is_trading) for day, row in calendar.days.items())
+    closed = {d for d, trading in days.items() if not trading}
+    special = {d for d, trading in days.items() if trading and d.weekday() >= 5}
+    return closed, special
 
 
 def candidates(
@@ -672,9 +704,10 @@ def build_lineage(
     """Find every succession in the stored bars, decide each and store the verdicts in the
     session (the caller commits). Idempotent: the same bars, actions and lists change nothing.
     Raises `lineage_no_bars` on an empty store rather than delete every stored row."""
-    sessions = store.days(DATASET_BARS)
-    if not sessions:
+    stored = store.days(DATASET_BARS)
+    if not stored:
         raise LineageError("lineage_no_bars")
+    sessions = exchange_sessions(stored, *calendar_days(session))
     known = {str(i) for i in session.scalars(select(HatInstrument.id))}
     report = BuildReport()
     found = []
