@@ -209,8 +209,7 @@ def add_action(
         known_basis=known.basis,
         demerger=demerger,
     )
-    session.add(row)
-    Ledger.open(session, [instrument.id]).add_row(
+    Ledger.open(session, [instrument.id]).insert(
         row, text=note.strip()[:500], published_on=known_on
     )
     payload = {

@@ -17,8 +17,9 @@ from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 
 from app.hat.engine import entries
+from app.hat.engine.portfolio.sleeve_service import create_bot
 from app.hat.engine.strategy.config import StrategyConfig
-from app.hat.engine.strategy.versions import VersionError, create_bot
+from app.hat.engine.strategy.versions import VersionError
 from app.hat.execution import accounts, modes
 from app.hat.execution.broker import GttRequest, HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
@@ -318,8 +319,8 @@ def _seed_scope_strategies_and_owner() -> None:
     from sqlalchemy import select
     from sqlalchemy.orm import Session
 
+    from app.hat.engine.portfolio.sleeve_service import seed_default_bots
     from app.hat.engine.strategy.registry import STRATEGIES
-    from app.hat.engine.strategy.versions import seed_default_bots
     from app.hat.models import HatBot, HatMarket, HatStrategy
     from app.hat.schema import seed_hat_reference
 

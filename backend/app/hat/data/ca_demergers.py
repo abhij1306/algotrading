@@ -48,7 +48,8 @@ from sqlalchemy.orm import Session
 
 from ..errors import HatConfigError
 from ..models import HatCorporateAction, HatEvent, HatInstrument
-from .ca_import import CHILD_DAYS, EVENT_IMPORTED, read_first_closes, same_factor
+from .ca_gate import EVENT_IMPORTED, read_first_closes, same_factor
+from .ca_import import CHILD_DAYS
 from .ca_known import settle_known
 from .ca_research import ratio_factor
 from .ca_versions import (

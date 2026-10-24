@@ -135,7 +135,7 @@ class ActionRecord:
     factor: Decimal
     raw_text: str
     source: str
-    cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_dividends`)
+    cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_payouts`)
     known: Known | None = None  # when the factor became knowable; None: `default_known`
     demerger: bool = False  # an `other` that is a demerger, not a rights issue
 
@@ -289,9 +289,8 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
                 known_basis=known.basis,
                 demerger=record.demerger,
             )
-            session.add(row)
+            ledger.insert(row)
             existing[record.key] = row
-            ledger.add_row(row)
             report.created += 1
         elif Decimal(row.adjustment_factor) == record.factor and (
             record.cash_amount is None
@@ -504,6 +503,31 @@ def _state(row: HatCorporateAction) -> dict[str, object]:
     return state
 
 
+def _replaced(
+    row: HatCorporateAction,
+    new_type: str,
+    factor: Decimal,
+    correction: Correction,
+    known: Known,
+) -> dict[str, object]:
+    """The columns the owner's replacement writes to the row: its type and factor, the demerger
+    flag only an `other` keeps, the cash only a dividend pays, and the correction's date unless
+    the line dates nothing and leaves a stored amount alone (it keeps its own date)."""
+    values: dict[str, object] = {
+        "action_type": new_type,
+        "adjustment_factor": factor,
+        "demerger": row.demerger and new_type == TYPE_OTHER,
+    }
+    if correction.cash is not None:
+        values["cash_amount"] = correction.cash
+    elif new_type != TYPE_DIVIDEND:
+        values["cash_amount"] = None
+    cash = values.get("cash_amount", row.cash_amount)
+    if not (correction.known_on is None and correction.cash is None and cash):
+        values |= {"known_on": known.on, "known_basis": known.basis}
+    return values
+
+
 def correct_action(
     session: Session, correction: Correction, *, chat_id: int, user_id: uuid.UUID, now: datetime
 ) -> dict[str, object]:
@@ -543,8 +567,7 @@ def correct_action(
     # a delete is known on the line's `known_on` (never before the ex-date), else not dated
     vacated = None if correction.known_on is None else max(correction.ex_date, correction.known_on)
     if replacement is None:
-        ledger.delete(row, available=vacated, text=note)
-        session.delete(row)
+        ledger.vacate(row, available=vacated, text=note)
     else:
         new_type, factor = replacement
         known = correction_known(
@@ -568,24 +591,21 @@ def correct_action(
         if holder is not None and correction.cash is not None:
             raise ActionCorrectionError("action_key_taken")  # the amount is the holder's
         if holder is not None:
-            ledger.delete(row, available=vacated, text=note)
-            session.delete(row)
+            ledger.vacate(row, available=vacated, text=note)
             if correction.known_on is not None:  # else the stored fact keeps its own date
-                holder.known_on, holder.known_basis = known.on, known.basis
-                ledger.add_row(holder, text=note, published_on=correction.known_on)
+                dated = {"known_on": known.on, "known_basis": known.basis}
+                ledger.accept(holder, dated, text=note, published_on=correction.known_on)
             after = {**_state(holder), "kept_stored": True}
         else:
-            if new_type != row.action_type:  # the old key is vacated
-                ledger.delete(row, available=vacated, text=note)
-            row.action_type, row.adjustment_factor = new_type, factor
-            row.demerger = row.demerger and new_type == TYPE_OTHER  # only an `other` is one
-            if correction.cash is not None:
-                row.cash_amount = correction.cash
-            elif new_type != TYPE_DIVIDEND:
-                row.cash_amount = None  # only a dividend pays cash
-            if not (correction.known_on is None and correction.cash is None and row.cash_amount):
-                row.known_on, row.known_basis = known.on, known.basis
-            ledger.add_row(row, source=SOURCE_OWNER, text=note, published_on=correction.known_on)
+            # a new type vacates the old key (`Ledger.accept`)
+            ledger.accept(
+                row,
+                _replaced(row, new_type, factor, correction, known),
+                source=SOURCE_OWNER,
+                text=note,
+                published_on=correction.known_on,
+                vacated=vacated,
+            )
             after = _state(row)
         kept = (holder or row).known_on
         after["known_on"] = kept.isoformat() if kept else None

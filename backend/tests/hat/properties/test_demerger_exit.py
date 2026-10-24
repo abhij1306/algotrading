@@ -10,7 +10,7 @@ import pytest
 
 from app.hat.backtest.data import demerger_exits
 from app.hat.backtest.report import DEMERGER, TradeRow, forced_exits
-from app.hat.data.ca_dividends import FeedRow, read_bc
+from app.hat.data.ca_bc import FeedRow, read_bc
 from app.hat.data.demerger_notice import (
     AnnouncedFileError,
     Demerger,
