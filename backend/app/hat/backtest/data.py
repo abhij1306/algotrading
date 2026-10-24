@@ -14,7 +14,8 @@ reads each input only up to the date it decides for (`MarketView`). The features
 the nightly job wrote for the corporate actions the bars are adjusted with: the job's stored inputs
 digest must equal the digest of the stored actions over the whole store (HAT-DATA-077, PR 67). A run
 under the `policy` regime rule also reads the regime engine's inputs: the NIFTY 500 and India VIX
-closes and the features job's breadth of each session (PR 68).
+closes and the features job's breadth of each session (PR 68). A name is not scanned or entered on
+the days its adjusted history shows a factor not yet knowable (CA5, `MarketData.pending`).
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from sqlalchemy.orm import Session
 from ..data.features import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.lineage import stored_adjustment, unexplained_jumps
+from ..data.point_in_time import chain_pending
 from ..data.store import (
     DATASET_BARS,
     DATASET_BREADTH,
@@ -135,6 +137,12 @@ class MarketData:
     are real sessions), and they do not count as sessions without a bar for the suspension
     mark. An interim rule (audit H7) until the review list's actions are loaded; the run's
     snapshot reports how many instrument-days it skipped.
+
+    `pending`: the instrument-days factor-pending (CA5, `ca_known.pending_days`): from the
+    ex-date of a stored factor up to the day before its `known_on` (on and on when it is not
+    known). The adjusted history there shows a factor nobody had yet, so the scan reads no bars
+    of the name that night and its entries skip it that day; an open position keeps its marks,
+    stops and exits on the price basis. The snapshot reports the count.
     """
 
     days: tuple[date, ...]
@@ -153,6 +161,7 @@ class MarketData:
     )
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
     skipped: frozenset[tuple[str, date]] = frozenset()
+    pending: frozenset[tuple[str, date]] = frozenset()
     # The cash each dividend pays per share of the price basis, (ex-date, rupees) oldest first,
     # by instrument: the stored amount times the basis factor of the session before the ex-date
     # (a split after it makes more, cheaper shares; each earns its share of the cash).
@@ -287,6 +296,10 @@ class MarketView:
         }
         self.closes = list(data.index_closes.get(index, ()))
         self.dividends = data.dividends
+        by_day: dict[date, set[str]] = defaultdict(set)
+        for instrument_id, day in data.pending:
+            by_day[day].add(instrument_id)
+        self.pending: dict[date, frozenset[str]] = {d: frozenset(ids) for d, ids in by_day.items()}
 
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
@@ -420,11 +433,19 @@ class MarketView:
             [b.high for b in window], [b.low for b in window], [b.close for b in window], length
         )
 
+    def pending_on(self, day: date) -> frozenset[str]:
+        """The instruments factor-pending on `day` (`MarketData.pending`)."""
+        return self.pending.get(day, frozenset())
+
     def window(self, as_of: date) -> pl.DataFrame:
         """The bars of the `LOOKBACK_SESSIONS` sessions up to `as_of`: what the scan reads, as
-        the total-return series on each instrument's scale of its last bar by `as_of` (CA3)."""
+        the total-return series on each instrument's scale of its last bar by `as_of` (CA3),
+        without the instruments factor-pending on `as_of` (CA5: no signal)."""
         first = self.days[max(0, self.index[as_of] - LOOKBACK_SESSIONS)]
         frame = self.bars.filter((pl.col("date") >= first) & (pl.col("date") <= as_of))
+        pending = self.pending_on(as_of)
+        if pending:
+            frame = frame.filter(~pl.col("instrument_id").cast(pl.String).is_in(sorted(pending)))
         if _DIV not in frame.columns:
             return frame
         ratio = pl.col(_DIV) / pl.col(_DIV).last().over("instrument_id")
@@ -696,6 +717,8 @@ def _content_digest(market: MarketData) -> str:
                 )
             ).encode()
         )
+    if market.pending:
+        digest.update(repr(sorted((i, d.isoformat()) for i, d in market.pending)).encode())
     if market.breadth:
         digest.update(
             repr(sorted((d.isoformat(), str(v)) for d, v in market.breadth.items())).encode()
@@ -779,6 +802,7 @@ def load_market(
             found: date = dates.max()  # type: ignore[assignment]
             last_traded[instrument_id] = min(found, last_traded.get(instrument_id, found))
     skipped, jumps = _skipped(store, bars, adjustment, window, end)
+    pending = frozenset(chain_pending(session, adjustment.lineage, window, wanted))
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -790,6 +814,7 @@ def load_market(
         last_traded=last_traded,
         breadth=breadth,
         skipped=skipped,
+        pending=pending,
         dividends=dict(dividends),
     )
     snapshot = {
@@ -816,6 +841,11 @@ def load_market(
             "rule": f"no trade or mark within {JUMP_SKIP_SESSIONS} sessions of an open jump",
             "jumps": jumps,
             "instrument_days": len(skipped),
+        },
+        "factor_pending": {
+            "rule": "no scan or entry from an ex-date until its factor's known_on (CA5)",
+            "instruments": len({i for i, _ in pending}),
+            "instrument_days": len(pending),
         },
         "actions_digest": expected,
         "content_digest": _content_digest(market),

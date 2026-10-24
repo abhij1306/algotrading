@@ -105,6 +105,15 @@ def test_rights_terms() -> None:
     assert rights_terms("Rights 1:10 @ Premium Rs 95/-", "-") == "unparsed"
 
 
+def test_subdivision_and_grouped_premium() -> None:
+    """The two misreads CodeAnt found in the NSE-noodles port: "Subdivision" spelt as one word
+    is a split, and a premium with digit groups is read whole, not as 1."""
+    text = "Face Value Subdivision - From Rs 10/- Per Share To Re 1/- Per Share"
+    assert split_bonus_legs(text) == (Leg(TYPE_SPLIT, Fraction(1, 10)),)
+    assert rights_terms("Rights 1:5 @ Premium Rs 1,000/-", "10") == RightsTerms(1, 5, 1010)
+    assert rights_terms("Rights 1:5 @ Premium Rs 1,00,000/-", "10") == RightsTerms(1, 5, 100010)
+
+
 def test_rights_factor() -> None:
     # BHARATGEAR 2021: 1 new per 10 held at 105, cum 173.70
     terms = RightsTerms(Fraction(1), Fraction(10), Fraction(105))

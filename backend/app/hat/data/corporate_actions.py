@@ -41,6 +41,7 @@ from ..errors import HatError
 from ..models import HatCorporateAction, HatEvent, HatInstrument
 from ..money import exact
 from ..notify import Notifier
+from .ca_known import CORRECTION, UNKNOWN, Known, at_ex_open
 from .mcp_client import McpClient, McpError
 from .store import FACTOR_MAX, FACTOR_MIN, ActionFactor
 
@@ -88,6 +89,9 @@ def non_equity_bonus(text: str) -> bool:
     return _NON_EQUITY_BONUS.search(text.lower()) is not None
 
 
+_SUBDIVISION = re.compile(r"sub-?\s*division")  # "Sub-Division", "Sub Division", "Subdivision"
+
+
 @dataclass(frozen=True)
 class ParsedAction:
     action_type: str
@@ -99,7 +103,7 @@ def parse_action_text(text: str) -> ParsedAction | None:
     y / (x + y). Anything else, or a factor outside (0, 1), is None: never a guessed factor. A
     bonus of preference shares or debentures (`non_equity_bonus`) is None too: no price factor."""
     lowered = text.lower()
-    if "split" in lowered or "sub-division" in lowered or "sub division" in lowered:
+    if "split" in lowered or _SUBDIVISION.search(lowered):
         pair = split_pair_numbers(lowered)
         if pair is not None:
             old, new = pair
@@ -130,10 +134,18 @@ class ActionRecord:
     raw_text: str
     source: str
     cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_dividends`)
+    known: Known | None = None  # when the factor became knowable; None: `default_known`
 
     @property
     def key(self) -> tuple[object, date, str]:
         return (self.instrument_id, self.ex_date, self.action_type)
+
+
+def default_known(action_type: str, ex_date: date) -> Known:
+    """When a factor whose writer names no basis became knowable (CA5): a split, a bonus or a
+    price-neutral row at the ex-date open (its ratio or amount is announced before it); any
+    other factor (an MCP `other`) is not dated, never guessed."""
+    return UNKNOWN if action_type == TYPE_OTHER else at_ex_open(ex_date)
 
 
 @dataclass
@@ -260,6 +272,7 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             report.held += 1
             continue
         if row is None:
+            known = record.known or default_known(record.action_type, record.ex_date)
             row = HatCorporateAction(
                 instrument_id=record.instrument_id,
                 ex_date=record.ex_date,
@@ -268,6 +281,8 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
                 raw_text=record.raw_text,
                 source=record.source,
                 cash_amount=record.cash_amount,
+                known_on=known.on,
+                known_basis=known.basis,
             )
             session.add(row)
             existing[record.key] = row
@@ -425,6 +440,16 @@ class Correction:
     new_type: str | None = None
     note: str = ""
     cash: Decimal | None = None
+    known_on: date | None = None  # when the corrected value was public (CA5); None: not known
+
+
+def correction_known(ex_date: date, known_on: date | None, *, price_neutral: bool) -> Known:
+    """When a corrected value became knowable (CA5): the line's `known_on`, never before the
+    ex-date (`correction`); without one, a price-neutral row at the ex-date open (it changes no
+    price) and a factor not at all: the owner's value is never dated by guess."""
+    if known_on is not None:
+        return Known(max(ex_date, known_on), CORRECTION)
+    return at_ex_open(ex_date) if price_neutral else UNKNOWN
 
 
 def check_correction(correction: Correction) -> tuple[str, Decimal] | None:
@@ -474,7 +499,8 @@ def correct_action(
     The adjusted view reads the change at the next features run (its digest covers the
     factors). A `cash` correction sets a dividend's amount, which the total-return series and the
     backtest and shadow credits read; a later import never rewrites it (its key is the owner's,
-    `owner_vacated`)."""
+    `owner_vacated`). The replacement's `known_on` is `correction_known`'s (CA5); a stored cash
+    amount the correction leaves alone keeps its own date."""
     replacement = check_correction(correction)
     lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == correction.isin))
@@ -497,6 +523,11 @@ def correct_action(
         session.delete(row)
     else:
         new_type, factor = replacement
+        known = correction_known(
+            correction.ex_date,
+            correction.known_on,
+            price_neutral=new_type in PRICE_NEUTRAL_TYPES and correction.cash is None,
+        )
         holder = (
             session.scalar(
                 select(HatCorporateAction).where(
@@ -514,6 +545,8 @@ def correct_action(
             raise ActionCorrectionError("action_key_taken")  # the amount is the holder's
         if holder is not None:
             session.delete(row)
+            if correction.known_on is not None:  # else the stored fact keeps its own date
+                holder.known_on, holder.known_basis = known.on, known.basis
             after = {**_state(holder), "kept_stored": True}
         else:
             row.action_type, row.adjustment_factor = new_type, factor
@@ -521,7 +554,11 @@ def correct_action(
                 row.cash_amount = correction.cash
             elif new_type != TYPE_DIVIDEND:
                 row.cash_amount = None  # only a dividend pays cash
+            if not (correction.known_on is None and correction.cash is None and row.cash_amount):
+                row.known_on, row.known_basis = known.on, known.basis
             after = _state(row)
+        kept = (holder or row).known_on
+        after["known_on"] = kept.isoformat() if kept else None
     payload = {
         "chat_id": chat_id,
         "via": "cli",

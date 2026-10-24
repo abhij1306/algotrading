@@ -38,12 +38,14 @@ Commands, in first-deploy order:
                                               refused: /flatten it)
     correct-action --isin ISIN --ex-date DATE --type TYPE
                    (--factor F [--as TYPE] | --cash RS | --delete) --note TEXT
+                   [--known-on DATE]
                                               replaces or deletes one stored corporate-action
                                               factor (a conflict alert, a misparsed bonus; D1),
-                                              or sets a dividend's cash per share (CA4)
+                                              or sets a dividend's cash per share (CA4);
+                                              --known-on: when the value was public (CA5)
     correct-actions --list TSV [--apply]      the owner's reviewed list of such corrections
-                                              (replace, delete, move, add; CA2; an optional
-                                              `cash` column for dividends, CA4), one
+                                              (replace, delete, move, add; CA2; optional
+                                              `cash` (CA4) and `known_on` (CA5) columns), one
                                               transaction; without --apply a dry run that
                                               writes nothing
     repair-symbol-history [--apply]           closes the overlapping symbol intervals from the
@@ -210,6 +212,7 @@ def _parser() -> argparse.ArgumentParser:
     change.add_argument("--delete", action="store_true")
     correct.add_argument("--as", dest="as_type", choices=ACTION_TYPES)
     correct.add_argument("--note", required=True)
+    correct.add_argument("--known-on", type=date.fromisoformat)
     corrections = commands.add_parser("correct-actions")
     corrections.add_argument("--list", required=True)
     corrections.add_argument("--apply", action="store_true")
@@ -407,6 +410,7 @@ def _owner(
             new_type=args.as_type,
             note=args.note,
             cash=cash,
+            known_on=args.known_on,
         )
         return correct_action(session, correction, chat_id=chat_id, user_id=deps.user_id, now=now)
     if args.command == "correct-actions":  # the reviewed list (CA2), a dry run without --apply

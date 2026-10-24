@@ -3,8 +3,15 @@ gate shows wrong (a misparsed ratio, a missing leg, a demerger stored from a res
 company's price where the market gap is the factor), applied as one batch.
 
 The list is a TSV file in the admin folder, one correction per line, with columns
-`op isin ex_date type factor new_ex_date note`, and optionally `cash` after them (CA4): a
-dividend's rupees per share, on a `replace` or `add` line of type `dividend` with factor 1:
+`op isin ex_date type factor new_ex_date note`, and optionally, in this order after them:
+
+- `cash` (CA4): a dividend's rupees per share, on a `replace` or `add` line of type `dividend`
+  with factor 1;
+- `known_on` (CA5): the date the corrected value was public, which the stored row keeps
+  (`correction_known`: never before the ex-date; without it a factor is not dated and its name
+  stays factor-pending in a backtest, `ca_known`). A `replace` with the stored factor and a
+  `known_on` dates a stored row.
+
 
 - `replace`: the stored (isin, ex_date, type) row takes `factor` (and `cash`; `correct_action`);
 - `delete`: the row is deleted (`correct_action`), e.g. a bonus of preference shares;
@@ -44,6 +51,7 @@ from .corporate_actions import (
     Correction,
     check_correction,
     correct_action,
+    correction_known,
     lock_reference_data,
 )
 
@@ -51,6 +59,8 @@ SOURCE_OWNER = "owner"
 OPS = ("replace", "delete", "move", "add")
 COLUMNS = ("op", "isin", "ex_date", "type", "factor", "new_ex_date", "note")
 CASH_COLUMN = "cash"
+KNOWN_ON = "known_on"  # optional, after `cash` when both are given (CA5)
+EXTRA_COLUMNS = ((), (CASH_COLUMN,), (KNOWN_ON,), (CASH_COLUMN, KNOWN_ON))
 MAX_LINES = 500
 
 
@@ -75,6 +85,7 @@ class Item:
     new_ex_date: date | None
     note: str
     cash: Decimal | None = None
+    known_on: date | None = None
 
 
 def _date(raw: str, line: int) -> date:
@@ -92,7 +103,7 @@ def parse_list(text: str) -> list[Item]:
     reader = csv.reader(io.StringIO(text), delimiter="\t")
     rows = [(n, r) for n, r in enumerate(reader, start=1) if r and not r[0].startswith("#")]
     header = tuple(c.strip() for c in rows[0][1]) if rows else ()
-    if header not in (COLUMNS, (*COLUMNS, CASH_COLUMN)):
+    if header[: len(COLUMNS)] != COLUMNS or header[len(COLUMNS) :] not in EXTRA_COLUMNS:
         raise CorrectionListError("bad_header")
     if len(rows) - 1 > MAX_LINES:
         raise CorrectionListError("too_many_lines")
@@ -101,7 +112,8 @@ def parse_list(text: str) -> list[Item]:
         if len(row) != len(header):
             raise CorrectionListError("bad_columns", line)
         op, isin, ex, kind, factor_raw, new_ex, note, *rest = (c.strip() for c in row)
-        cash_raw = rest[0] if rest else ""
+        extra = dict(zip(header[len(COLUMNS) :], rest, strict=True))
+        cash_raw, known_on = extra.get(CASH_COLUMN, ""), extra.get(KNOWN_ON, "")
         if op not in OPS:
             raise CorrectionListError("bad_op", line)
         factor = exact(factor_raw, positive=True) if factor_raw else None
@@ -126,6 +138,7 @@ def parse_list(text: str) -> list[Item]:
                 _date(new_ex, line) if new_ex else None,
                 note,
                 cash,
+                _date(known_on, line) if known_on else None,
             )
         )
     return items
@@ -143,12 +156,13 @@ def add_action(
     user_id: uuid.UUID,
     now: datetime,
     cash: Decimal | None = None,
+    known_on: date | None = None,
 ) -> dict[str, object]:
     """Store one price-changing action the owner adds (a missing leg, the new date of a moved
-    one), or a dividend with its `cash` (CA4), and journal it as `corporate_action.corrected`
-    (before: absent). Refused like `correct_action`: `instrument_not_found`, `action_key_taken`
-    (the key is stored), or `check_correction`'s codes (another price-neutral type, or a
-    dividend without cash, is not added: it changes nothing)."""
+    one), or a dividend with its `cash` (CA4), known on `correction_known`'s date (CA5), and
+    journal it as `corporate_action.corrected` (before: absent). Refused like `correct_action`:
+    `instrument_not_found`, `action_key_taken` (the key is stored), or `check_correction`'s codes
+    (another price-neutral type, or a dividend without cash, is not added: it changes nothing)."""
     checked = check_correction(Correction(isin, ex_date, action_type, factor, note=note, cash=cash))
     if checked is None or (action_type in PRICE_NEUTRAL_TYPES and cash is None):
         raise ActionCorrectionError("bad_action_type")
@@ -165,6 +179,7 @@ def add_action(
     )
     if taken is not None:
         raise ActionCorrectionError("action_key_taken")
+    known = correction_known(ex_date, known_on, price_neutral=False)
     session.add(
         HatCorporateAction(
             instrument_id=instrument.id,
@@ -174,6 +189,8 @@ def add_action(
             raw_text=note.strip()[:500],
             source=SOURCE_OWNER,
             cash_amount=cash,
+            known_on=known.on,
+            known_basis=known.basis,
         )
     )
     payload = {
@@ -187,6 +204,7 @@ def add_action(
             "factor": str(checked[1]),
             **({"cash": str(cash)} if cash is not None else {}),
             "added": True,
+            "known_on": known.on.isoformat() if known.on else None,
         },
         "note": note.strip(),
     }
@@ -234,12 +252,19 @@ def _one(
             user_id=user_id,
             now=now,
             cash=item.cash if item.op == "add" else None,
+            known_on=item.known_on,
         )
 
     def correct(factor: Decimal | None) -> dict[str, object]:
         cash = item.cash if item.op == "replace" else None
         fix = Correction(
-            item.isin, item.ex_date, item.action_type, factor, note=item.note, cash=cash
+            item.isin,
+            item.ex_date,
+            item.action_type,
+            factor,
+            note=item.note,
+            cash=cash,
+            known_on=item.known_on,
         )
         return correct_action(session, fix, chat_id=chat_id, user_id=user_id, now=now)
 

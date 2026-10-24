@@ -44,6 +44,13 @@ terms the research flags without correcting go to review.
 Rows are stored with source `ca_research` and journalled `corporate_action.imported` with the
 digests of every input file and each row's research file, line, confidence and source URL. A
 stored key is never rewritten (a conflict is reported; `correct-action` replaces it).
+
+Point in time (CA5, `ca_known`): a research row may carry a `source_date` column, the date its
+source was published. A demerger is known on the first route that accepts its market gap: an
+agreeing ratio check at the latest of the resulting company's priced close and the legs' source
+dates, an agreeing CoA check at the legs' source dates, or the close `SETTLE_SESSIONS` on. A rights
+factor resting on terms only research gives (`research_supplied`) is known at its source date (not
+known without one); one whose terms NSE's text already gave, at the ex-date open.
 """
 
 from __future__ import annotations
@@ -103,6 +110,15 @@ from .ca_import import (
     settle,
     stored_price_actions,
 )
+from .ca_known import (
+    RESEARCH_SOURCE_DATE,
+    RESULTING_FIRST_CLOSE,
+    SETTLE_SESSIONS,
+    Known,
+    earliest,
+    from_sources,
+    settle_known,
+)
 from .corporate_actions import TYPE_OTHER
 from .store import DataStore
 
@@ -113,9 +129,9 @@ CONFIDENCE = {"low": 0, "medium": 1, "high": 2}
 COA_SUM_TOL = Fraction(1, 2)  # the parent's and the resulting companies' % add up to 100 +- this
 RECORD_DAYS = 7  # a record date falls this soon after the ex-date (T+2 then T+1 settlement)
 DISPUTE_DAYS = 60  # a record or ex date this close to the ex-date but off it disputes the event
-SETTLE_SESSIONS = 5  # an uncross-checked gap must hold to this session's close (ex session = 1)
 MAX_ROWS = 5000
 MAX_BYTES = 5_000_000
+SOURCE_DATE = "source_date"  # the optional column: when the row's source was published (CA5)
 
 FILE_A, FILE_B, FILE_C, FILE_D = "a", "b", "c", "d"
 REQUIRED: dict[str, tuple[str, ...]] = {
@@ -204,7 +220,8 @@ TABLES = (
 # --- parsing (pure) -----------------------------------------------------------------------------
 
 _DECIMAL = re.compile(r"\d+(?:\.\d+)?")
-_LEADING_NUMBER = re.compile(r"\s*(?:rs\.?\s*)?(\d+(?:\.\d+)?)\b", re.IGNORECASE)
+_AMOUNT = r"(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)"  # "1,000" and "1,00,000" too
+_LEADING_NUMBER = re.compile(rf"\s*(?:rs\.?\s*)?{_AMOUNT}\b", re.IGNORECASE)
 _SYMBOL = re.compile(r"[A-Z0-9][A-Z0-9&-]{0,19}")
 
 
@@ -217,7 +234,7 @@ def number(raw: str) -> Fraction | None:
 def leading_number(raw: str) -> Fraction | None:
     """The amount a free-text price cell begins with (`700 per share (FV 10 + premium 690)`)."""
     found = _LEADING_NUMBER.match(raw)
-    return Fraction(found.group(1)) if found else None
+    return Fraction(found.group(1).replace(",", "")) if found else None
 
 
 def iso_date(raw: str) -> date | None:
@@ -385,6 +402,7 @@ class Source:
     confidence: int
     url: str
     quote: str
+    day: date | None = None  # the `source_date` cell: when the source was published
 
 
 @dataclass(frozen=True)
@@ -429,7 +447,7 @@ _ALONGSIDE = re.compile(
     r"\bwarrants?\b|\bccps\b|\bccds?\b|\bncds?\b|convertible|debenture|\b(?:two|second|2nd)\s+tranches?\b",
     re.I,
 )
-_PREMIUM = re.compile(r"premium\s*(?:of\s*)?(?:rs\.?\s*)?(\d+(?:\.\d+)?)", re.I)
+_PREMIUM = re.compile(rf"premium\s*(?:of\s*)?(?:rs\.?\s*)?{_AMOUNT}", re.I)
 _NO_PREMIUM = re.compile(r"no premium|premium\s*(?:rs\.?\s*)?0\b|at par", re.I)
 
 
@@ -438,7 +456,7 @@ def premium_in(text: str) -> Fraction | None:
     if _NO_PREMIUM.search(text):
         return Fraction(0)
     found = _PREMIUM.findall(text)
-    return Fraction(found[0]) if len(found) == 1 else None
+    return Fraction(found[0].replace(",", "")) if len(found) == 1 else None
 
 
 def _cell(value: object) -> str:
@@ -456,7 +474,14 @@ def _isin(raw: str) -> str:
 
 
 def _source(file: str, line: int, row: Mapping[str, str]) -> Source:
-    return Source(file, line, confidence(row["confidence"]), row["source_url"], row["quote"])
+    return Source(
+        file,
+        line,
+        confidence(row["confidence"]),
+        row["source_url"],
+        row["quote"],
+        iso_date(row.get(SOURCE_DATE, "")),
+    )
 
 
 def _excluded_a(row: Mapping[str, str]) -> str:
@@ -654,7 +679,7 @@ def read_csv(path: Path, file: str) -> list[dict[str, str]]:
         for row in reader:
             if len(out) >= MAX_ROWS:
                 raise CaFileError("research_file_too_large")
-            out.append({k: _cell(row.get(k)) for k in REQUIRED[file]})
+            out.append({k: _cell(row.get(k)) for k in (*REQUIRED[file], SOURCE_DATE)})
     except csv.Error as exc:
         raise CaFileError("research_file_unreadable") from exc
     return out
@@ -885,7 +910,7 @@ def decide_demerger(
         (b for b in bars if b.instrument_id == on.instrument_id and b.day >= on.day),
         key=lambda b: b.day,
     )
-    settled = None
+    held = None
     if len(after) >= SETTLE_SESSIONS and after[SETTLE_SESSIONS - 1].close > 0:
         last = after[SETTLE_SESSIONS - 1]
         # the raw close is unadjusted: an action stored after the ex session moves it too
@@ -897,12 +922,13 @@ def decide_demerger(
             ),
             start=Fraction(1),
         )
-        settled = Fraction(last.close) / prev_close / same_day / later
-    if settled is not None:
-        detail += f", close {SETTLE_SESSIONS} sessions on {fmt4(settled)}"
-    factor, reason = market_factor(gap, checks, when, settled)
+        held = Fraction(last.close) / prev_close / same_day / later
+    if held is not None:
+        detail += f", close {SETTLE_SESSIONS} sessions on {fmt4(held)}"
+    factor, reason = market_factor(gap, checks, when, held)
     if factor is None:
         return Outcome(p, REVIEW, reason, detail)
+    known = demerger_known(p.ex_date, gap, checks, distributing, priced, [b.day for b in after])
     evidence["derived"] = f"{MARKET_GAP} {reason}"
     evidence["gap"] = fmt4(gap)
     p = replace(p, text=_event_text(legs, checks, gap, note))
@@ -918,10 +944,33 @@ def decide_demerger(
         detail,
         evidence,
         source=SOURCE_RESEARCH,
+        known=known,
     )
     if outcome.status == STORED:
         outcome.reason = f"{MARKET_GAP} ({reason})"
     return outcome
+
+
+def demerger_known(
+    ex_date: date,
+    gap: Fraction,
+    checks: Mapping[str, Fraction],
+    distributing: Sequence[ResultingLeg],
+    priced: Sequence[Priced | None],
+    days: Sequence[date],
+) -> Known:
+    """When a demerger's market gap was knowable (CA5): the first route that accepts it, an
+    agreeing `ratio` check (at the latest of its priced closes and the legs' source dates), an
+    agreeing `coa` check (at the legs' source dates), or the gap held to the close
+    `SETTLE_SESSIONS` on (`days`: the ex instrument's sessions)."""
+    sources = [leg.source.day for leg in distributing]
+    routes = [settle_known(days, ex_date)]
+    if "ratio" in checks and agrees(gap, checks["ratio"]):
+        closes = [c.day for c in priced if c is not None]
+        routes.append(from_sources(ex_date, [*sources, *closes], RESULTING_FIRST_CLOSE))
+    if "coa" in checks and agrees(gap, checks["coa"]):
+        routes.append(from_sources(ex_date, sources, RESEARCH_SOURCE_DATE))
+    return earliest(routes)
 
 
 def rights_override(
@@ -992,13 +1041,36 @@ def decide_rights(
     """CA1's decision with the research's terms; the gate's `ambiguous` still stores, tagged
     `price_unconfirmed`."""
     p = replace(p, text=f"{p.text} [research {research.source.file}: {note}]"[:TEXT_MAX])
-    outcome = decide(p, ctx, bars, source=SOURCE_RESEARCH, accept=frozenset({"ambiguous"}))
+    known = None
+    if p.ex_date is not None and research_supplied(p.text):
+        known = from_sources(p.ex_date, [research.source.day], RESEARCH_SOURCE_DATE)
+    outcome = decide(
+        p, ctx, bars, source=SOURCE_RESEARCH, accept=frozenset({"ambiguous"}), known=known
+    )
     outcome.evidence["research"] = _sources_rights(research)
     if outcome.status == STORED and outcome.reason == "ambiguous":
         tag = f"{p.text[:-1]}; {PRICE_UNCONFIRMED}]"
         outcome.records = [replace(r, raw_text=tag) for r in outcome.records]
         outcome.reason = PRICE_UNCONFIRMED
     return outcome
+
+
+_SUPPLIED = (
+    "terms corrected by research",
+    "face value at the issue per research",
+)
+_PARTLY_PAID = re.compile(r"partly[\s-]*paid(?:[\s-]*up)?", re.IGNORECASE)
+
+
+def research_supplied(text: str) -> bool:
+    """Does a stored rights text (`decide_rights`: NSE's purpose, then `[research ...]`) rest on
+    terms only research gives: terms or a face value research corrected, or a purpose whose own
+    terms do not price the issue (no issue price, non-simple terms)? Then the factor is known at
+    the research's source date, not at the ex-date open (CA5)."""
+    head, _, tag = text.partition(" [research ")
+    if any(marker in tag for marker in _SUPPLIED):
+        return True
+    return not isinstance(rights_terms(_PARTLY_PAID.sub(" ", head), "1"), RightsTerms)
 
 
 def _sources_rights(research: RightsResearch) -> list[dict[str, Any]]:

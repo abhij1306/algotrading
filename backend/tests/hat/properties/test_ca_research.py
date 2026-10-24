@@ -209,6 +209,8 @@ def test_price_cells() -> None:
     assert premium_in("700 per share (FV 10 + premium 690)") == 690
     assert premium_in("10 (FV 10, no premium)") == 0
     assert premium_in("15 (premium Rs 5 on FV 10 per share)") == 5
+    assert premium_in("1,010 per share (FV 10 + premium Rs 1,000)") == 1000
+    assert leading_number("Rs 1,010 per share") == 1010
 
 
 def _rights(text: str, fv: str, ratio: str) -> tuple[Proposal, dict[str, str]]:
