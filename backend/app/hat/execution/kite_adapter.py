@@ -44,6 +44,7 @@ from app.hat.data.kite_symbols import (
 from app.hat.data.store import DataStore
 
 from .broker import (
+    CODE_INVALID_INTENT,
     CODE_RATE_LIMITED,
     CODE_REJECTED,
     CODE_SESSION_EXPIRED,
@@ -60,6 +61,7 @@ from .broker import (
     GttModify,
     GttRequest,
     GttResult,
+    InvalidIntentError,
     OrderBook,
     OrderIntent,
     OrderType,
@@ -199,19 +201,27 @@ class KiteHatBroker:
     # --- symbols --------------------------------------------------------------------------
 
     def _stored(self) -> dict[str, str]:
+        """The stored zerodha mappings; `BrokerUnavailableError` when they cannot be read (an
+        empty map would send a trade-for-trade stock under its EQ name)."""
         try:
             return dict(self._instruments())
         except Exception:
             logger.warning("Stored Kite symbols unreadable")
-            return {}
+            raise BrokerUnavailableError(CODE_UNAVAILABLE) from None
 
     def _tradingsymbol(self, symbol: str) -> str:
-        """The Kite trading symbol orders for `symbol` go out under: the stored one (`-BE` for a
-        trade-for-trade stock), else the database symbol (an EQ stock's Kite symbol)."""
-        return self._stored().get(symbol) or symbol
+        """The stored Kite trading symbol orders for `symbol` go out under (`-BE` for a
+        trade-for-trade stock). An instrument without one is refused (`InvalidIntentError`):
+        its Kite row was missing or named another symbol, so no name is guessed."""
+        stored = self._stored().get(symbol)
+        if not stored:
+            logger.warning("No Kite trading symbol stored for %s: not sent", symbol)
+            raise InvalidIntentError(CODE_INVALID_INTENT)
+        return stored
 
     def _to_db(self) -> Callable[[str], str]:
-        """Kite trading symbol -> database symbol, by the stored rows, else `kite_db_symbol`."""
+        """Kite trading symbol -> database symbol, by the stored rows, else `kite_db_symbol` (a
+        stock HAT never mapped); a failed lookup fails the read (`BrokerUnavailableError`)."""
         back = {kite: db for db, kite in self._stored().items()}
         return lambda tradingsymbol: back.get(tradingsymbol) or kite_db_symbol(tradingsymbol)
 
@@ -222,7 +232,10 @@ class KiteHatBroker:
     # --- writes ---------------------------------------------------------------------------
 
     def place_order(self, intent: OrderIntent) -> PlaceResult:
-        params = order_params(intent, self._tradingsymbol)
+        try:
+            params = order_params(intent, self._tradingsymbol)
+        except BrokerUnavailableError as error:
+            return PlaceResult("rejected", None, error.code)  # the lookup failed: nothing sent
         try:
             reply = self._broker.place_order(params)
         except Exception:
@@ -259,8 +272,8 @@ class KiteHatBroker:
 
     def place_gtt_stop(self, request: GttRequest) -> GttResult:
         trigger = check_gtt_request(request)  # before any call
-        tradingsymbol = self._tradingsymbol(request.symbol)
         try:
+            tradingsymbol = self._tradingsymbol(request.symbol)
             last = self._last_price(tradingsymbol)
         except BrokerUnavailableError as error:
             return GttResult("rejected", None, error.code)  # nothing was sent

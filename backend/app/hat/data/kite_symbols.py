@@ -38,6 +38,7 @@ __all__ = [
     "kite_listings",
     "kite_symbol",
     "latest_nse_tokens",
+    "plausible_refresh",
 ]
 
 KITE_SERIES = frozenset({"EQ", "BE"})  # the series HAT routes orders to, as for Fyers
@@ -115,6 +116,18 @@ def kite_symbol(
         return None
     expected = symbol if series == _EQUITY else f"{symbol}-{series}"
     return listing if listing.tradingsymbol == expected else None
+
+
+# A refresh keeps at least this share of the stored mappings (numerator, denominator): a week's
+# listings and delistings move a few, so a larger drop is a bad input, not the market.
+KEEP_AT_LEAST = (8, 10)
+
+
+def plausible_refresh(stored: int, mapped: int) -> bool:
+    """Whether a refresh that maps `mapped` instruments may replace the `stored` mappings: never
+    with none, and never with fewer than `KEEP_AT_LEAST` of them (the last set stays)."""
+    keep, of = KEEP_AT_LEAST
+    return mapped > 0 and mapped * of >= stored * keep
 
 
 TOKEN_LOOKBACK_DAYS = 10  # calendar days back the token list looks for a published bhavcopy

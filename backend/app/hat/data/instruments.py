@@ -14,7 +14,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import events
@@ -30,7 +30,7 @@ from ..models import (
 from ..models.strategy import BROKER_FYERS, BROKER_ZERODHA
 from ..time import utc_now
 from .corporate_actions import lock_reference_data
-from .kite_symbols import KiteListing, kite_symbol
+from .kite_symbols import KiteListing, kite_symbol, plausible_refresh
 from .reference import BandRow, IndustryRow, Security, one_per_isin
 from .symbols import SymbolMaster
 
@@ -786,8 +786,9 @@ def refresh_kite_symbols(
     """Make the zerodha rows exactly the Kite listings of active instruments (`kite_symbol`:
     by ISIN and series to NSE's exchange token, then Kite's row with that token, its trading
     symbol checked), each with Kite's `instrument_token`. Idempotent. An empty dump or token
-    list maps nothing and is refused (`kite_symbols_empty`), so a failed download never empties
-    the rows."""
+    list is refused (`kite_symbols_empty`), and so is a result that maps no instrument or far
+    fewer than are stored (`kite_symbols_shrank`, `plausible_refresh`): a bad input never
+    empties or guts the rows, the last set stays and the caller alerts."""
     if not nse_tokens or not listings:
         raise ReferenceDataError("kite_symbols_empty")
     report = BrokerSymbolReport()
@@ -802,6 +803,10 @@ def refresh_kite_symbols(
             continue
         taken.add(listing.tradingsymbol)
         wanted[instrument.id] = (listing.tradingsymbol, listing.instrument_token)
+    stored = session.scalar(select(func.count()).where(HatBrokerSymbol.broker == BROKER_ZERODHA))
+    if not plausible_refresh(stored or 0, len(wanted)):
+        logger.warning("kite symbols: %d mapped of %d stored; kept", len(wanted), stored)
+        raise ReferenceDataError("kite_symbols_shrank")
     return _replace_broker_rows(session, BROKER_ZERODHA, wanted, report)
 
 

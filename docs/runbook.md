@@ -128,6 +128,9 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
 HAT places orders with one broker, `HAT_BROKER` (decisions: One active order broker). To make
 Zerodha the order broker, outside market hours:
 
+0. Close every real position and working order at Fyers first: HAT refuses to start with them on
+   an account of a broker that is not the active one (`inactive_broker_holds_positions: account
+   <id> (<broker>)`; the same holds switching back).
 1. Register the host's static IP with the Kite Connect app; set the app's redirect URL to
    `http://127.0.0.1:8000/api/hat/auth/zerodha/callback` (no route serves it: copy the
    `request_token` from the address bar) and put `KITE_*` and `HAT_BROKER=zerodha` in `.env`.
@@ -136,6 +139,8 @@ Zerodha the order broker, outside market hours:
 3. `refresh-kite-symbols [--dump <instruments.csv>]` maps the instruments to Kite's trading
    symbols and `instrument_token` (from the latest bhavcopy's NSE tokens; the weekly reference job
    does it too while Zerodha is active). Without `--dump` it downloads Kite's instrument list.
+   A result that maps nothing or under 80% of the stored mappings changes no row
+   (`kite_symbols_shrank`; on the weekly job, `job.failed`): check the dump and the bhavcopy.
 4. The account stays shadow until the live check (decisions: Zerodha stays shadow). Moving bots
    and sleeves from the Fyers account is not built.
 

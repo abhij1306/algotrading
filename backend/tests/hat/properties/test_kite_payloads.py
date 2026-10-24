@@ -15,7 +15,13 @@ from pathlib import Path
 import pytest
 
 from app.hat.data.bhavcopy import nse_tokens
-from app.hat.data.kite_symbols import KiteListing, dump_rows, kite_listings, kite_symbol
+from app.hat.data.kite_symbols import (
+    KiteListing,
+    dump_rows,
+    kite_listings,
+    kite_symbol,
+    plausible_refresh,
+)
 from app.hat.errors import HatConfigError
 from app.hat.execution.broker import (
     CODE_OK,
@@ -23,6 +29,7 @@ from app.hat.execution.broker import (
     CODE_SESSION_EXPIRED,
     CODE_UNAVAILABLE,
     CODE_UNCONFIRMED,
+    BrokerUnavailableError,
     GttRequest,
     InvalidIntentError,
     OrderIntent,
@@ -30,6 +37,7 @@ from app.hat.execution.broker import (
     Side,
 )
 from app.hat.execution.fyers_auth import TokenRejectedError
+from app.hat.execution.kite_adapter import KiteHatBroker
 from app.hat.execution.kite_auth import session_reply_fields
 from app.hat.execution.kite_broker import (
     EXPIRED,
@@ -473,3 +481,45 @@ def test_kite_symbol_mapping() -> None:
     assert 1594 not in kite_listings(clash)  # one token, two rows: names no one instrument
     assert kite_db_symbol("ACC-BE") == "ACC"
     assert kite_db_symbol("BAJAJ-AUTO") == "BAJAJ-AUTO"
+
+
+@pytest.mark.parametrize(
+    ("stored", "mapped", "replaces"),
+    [
+        (0, 3, True),  # the first refresh
+        (0, 0, False),  # never replaced with nothing
+        (2543, 0, False),
+        (2543, 2540, True),
+        (2543, 2035, True),  # 80% kept
+        (2543, 2034, False),  # a drop that large is a bad input: the last set stays
+        (2543, 3, False),
+    ],
+)
+def test_plausible_refresh(stored: int, mapped: int, replaces: bool) -> None:
+    assert plausible_refresh(stored, mapped) is replaces
+
+
+def _unreadable() -> list[tuple[str, str]]:
+    raise OSError("database down")
+
+
+class _NoCalls:
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"Kite called: {name}")
+
+
+def test_symbol_lookup_fails_closed() -> None:
+    """An order or GTT for an instrument whose Kite symbol cannot be read, or is not stored,
+    is refused before any Kite call, never sent under the database symbol; a read fails."""
+    gtt = GttRequest("ACC", 1, Decimal("100"), Decimal("99"), tag=GTT_TAG)
+    down = KiteHatBroker(broker=_NoCalls(), instruments=_unreadable)  # type: ignore[arg-type]
+    assert down.place_order(_intent(OrderType.MARKET, symbol="ACC")).code == CODE_UNAVAILABLE
+    assert down.place_gtt_stop(gtt).code == CODE_UNAVAILABLE
+    with pytest.raises(BrokerUnavailableError):
+        down.orders()
+    unmapped = KiteHatBroker(broker=_NoCalls(), instruments=lambda: [("INFY", "INFY")])  # type: ignore[arg-type]
+    intent = _intent(OrderType.MARKET, symbol="ACC")
+    with pytest.raises(InvalidIntentError):
+        unmapped.place_order(intent)
+    with pytest.raises(InvalidIntentError):
+        unmapped.place_gtt_stop(gtt)

@@ -37,7 +37,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   that changes series keeps its exits under the new symbol. An account holding an open real
   position gets a desk at start whatever its status, so its fill sync, stops, exits and flatten
   keep running, unless another account's desk holds its broker login (then it is logged); the
-  mode gates keep real entries to active accounts.
+  mode gates keep real entries to active accounts. An account of a broker other than the active
+  one (`HAT_BROKER`) has no adapter, so if it holds an open real position or a working real order
+  the start is refused (`inactive_broker_holds_positions`), never left without a desk.
 - **Fail closed on the broker.** A missing client, open circuit or failed read raises
   `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
   entry on a trade date before its first reconciliation succeeded; a mismatch blocks entries and
