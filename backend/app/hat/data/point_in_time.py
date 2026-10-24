@@ -383,8 +383,8 @@ def apply_backfill(session: Session, plan: Backfill) -> tuple[int, int]:
         )
     ):
         known = dated[str(row.id)]
-        row.known_on, row.known_basis = known.on, known.basis
-        ledger.add_row(row, text=f"CA5 back-fill: {known.basis}")
+        dated = {"known_on": known.on, "known_basis": known.basis}
+        ledger.accept(row, dated, text=f"CA5 back-fill: {known.basis}")
     links = {k: v for k, v in plan.links.items() if v is not None}
     for link in session.scalars(
         select(HatIsinLineage).where(HatIsinLineage.id.in_([uuid.UUID(k) for k in links]))

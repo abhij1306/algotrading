@@ -716,10 +716,10 @@ def apply(
         )
         if row is None or row.cash_amount is not None:
             raise CaFileError("ca_import_raced")
-        row.cash_amount = o.record.cash_amount
         known = o.record.known or UNKNOWN
-        row.known_on, row.known_basis = known.on, known.basis
-        ledger.add_row(row, source=o.record.source, text=o.record.raw_text)
+        values = {"cash_amount": o.record.cash_amount, "known_on": known.on}
+        values["known_basis"] = known.basis
+        ledger.accept(row, values, source=o.record.source, text=o.record.raw_text)
     for o in [*new, *fills]:
         r = o.record
         assert r is not None

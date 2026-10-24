@@ -66,6 +66,10 @@ RAW_GAP = "raw_gap"
 RESULTING_RATIO = "resulting_ratio"
 
 SOURCE_OWNER = "owner"  # a value the owner's correction or list wrote
+# The columns of a stored row `Ledger.accept` writes; the rest name the event or where it came from.
+WRITABLE = frozenset(
+    {"action_type", "adjustment_factor", "cash_amount", "demerger", "known_on", "known_basis"}
+)
 
 Key = tuple[str, date, str]  # (instrument id, ex-date, type)
 Value = tuple[Decimal, Decimal | None]  # (factor, cash)
@@ -161,9 +165,12 @@ def _cash(raw: object) -> Decimal | None:
 
 @dataclass
 class Ledger:
-    """Appends versions in the caller's transaction, under the reference-data lock its writer
-    holds: `seq` follows the event's stored versions. Built for the instruments a write touches
-    (`open`)."""
+    """The one writer of `hat_corporate_action` and its versions, in the caller's transaction,
+    under the reference-data lock its writer holds. A row is inserted (`insert`), changed
+    (`accept`) or deleted (`vacate`) together with the version that records it, so the row stays
+    the projection of its versions; `add` appends a version alone (a conflict, a cross-check, a
+    back-fill of the ledger). `seq` follows the event's stored versions. Built for the
+    instruments a write touches (`open`)."""
 
     session: Session
     seqs: dict[Key, int] = field(default_factory=dict)
@@ -245,16 +252,49 @@ class Ledger:
         self.session.add(row)
         return seq
 
-    def add_row(
+    def insert(
+        self, row: HatCorporateAction, *, text: str | None = None, published_on: date | None = None
+    ) -> int:
+        """Store a new event's row and append its value as the event's accepted version."""
+        self.session.add(row)
+        return self._accepted(row, text=text, published_on=published_on)
+
+    def accept(
+        self,
+        row: HatCorporateAction,
+        values: Mapping[str, object],
+        *,
+        source: str | None = None,
+        text: str | None = None,
+        published_on: date | None = None,
+        vacated: date | None = None,
+    ) -> int:
+        """Write `values` (columns of `WRITABLE`) to a stored event's row and append its new value
+        as the event's accepted version. A new `action_type` moves the row to another event: the
+        one it leaves gets the owner's delete first, available on `vacated`."""
+        if not set(values) <= WRITABLE:
+            raise ValueError("not_writable")
+        if values.get("action_type", row.action_type) != row.action_type:
+            self._deleted(row, available=vacated, text=text or "")
+        for name, value in values.items():
+            setattr(row, name, value)
+        return self._accepted(row, source=source, text=text, published_on=published_on)
+
+    def vacate(self, row: HatCorporateAction, *, available: date | None, text: str) -> int:
+        """The owner's delete of a stored row's event: append it as a version and delete the
+        row."""
+        seq = self._deleted(row, available=available, text=text)
+        self.session.delete(row)
+        return seq
+
+    def _accepted(
         self,
         row: HatCorporateAction,
         *,
         source: str | None = None,
         text: str | None = None,
         published_on: date | None = None,
-        observed_at: datetime | None = None,
     ) -> int:
-        """Append a stored row's value as the event's accepted version (`row` as just written)."""
         return self.add(
             _key(row.instrument_id, row.ex_date, row.action_type),
             status=ACCEPTED,
@@ -265,11 +305,9 @@ class Ledger:
             source=source or row.source,
             text=row.raw_text if text is None else text,
             published_on=published_on,
-            observed_at=observed_at,
         )
 
-    def delete(self, row: HatCorporateAction, *, available: date | None, text: str) -> int:
-        """Append the owner's delete of a stored row's event (a delete, a retype away)."""
+    def _deleted(self, row: HatCorporateAction, *, available: date | None, text: str) -> int:
         return self.add(
             _key(row.instrument_id, row.ex_date, row.action_type),
             status=DELETED,
