@@ -16,12 +16,14 @@ The list is a TSV file in the admin folder, one correction per line, with column
 - `replace`: the stored (isin, ex_date, type) row takes `factor` (and `cash`; `correct_action`);
 - `delete`: the row is deleted (`correct_action`), e.g. a bonus of preference shares;
 - `move`: the row is deleted at `ex_date` and stored again at `new_ex_date`, with `factor` when
-  given, else its own (`correct_action`, then `add_action`);
+  given, else its own, and its own text and demerger flag (`correct_action`, then `add_action`);
 - `add`: a missing leg is stored (`add_action`), e.g. the bonus of a bonus-and-split day, or a
-  dividend with its `cash` the imports could not read (a review case).
+  dividend with its `cash` the imports could not read (a review case). Type `demerger` (only on
+  an `add`) stores an `other` row flagged a demerger.
 
 `note` carries the reason and the bar evidence; it goes into the journal entry of each change
-(`corporate_action.corrected`, actor user, via cli). A dry run (`apply_list(..., apply=False)`)
+(`corporate_action.corrected`, actor user, via cli) and its version, and is the text of a row an
+`add` stores. A dry run (`apply_list(..., apply=False)`)
 tries each line in a savepoint that is rolled back and reports what it would do or why it is
 refused; an apply runs every line in the caller's transaction and refuses the whole list on any
 line's refusal, so nothing is written unless all of it is.
@@ -48,6 +50,7 @@ from .ca_versions import SOURCE_OWNER, Ledger
 from .corporate_actions import (
     EVENT_CORRECTED,
     PRICE_NEUTRAL_TYPES,
+    TYPE_OTHER,
     ActionCorrectionError,
     Correction,
     check_correction,
@@ -62,6 +65,7 @@ CASH_COLUMN = "cash"
 KNOWN_ON = "known_on"  # optional, after `cash` when both are given (CA5)
 EXTRA_COLUMNS = ((), (CASH_COLUMN,), (KNOWN_ON,), (CASH_COLUMN, KNOWN_ON))
 MAX_LINES = 500
+TYPE_DEMERGER = "demerger"  # a list's type for an `add` of an `other` row that is a demerger
 
 
 class CorrectionListError(HatError):
@@ -86,6 +90,7 @@ class Item:
     note: str
     cash: Decimal | None = None
     known_on: date | None = None
+    demerger: bool = False  # the line's type is `demerger`: an `other` row flagged one
 
 
 def _date(raw: str, line: int) -> date:
@@ -127,18 +132,22 @@ def parse_list(text: str) -> list[Item]:
         cash = exact(cash_raw, positive=True) if cash_raw else None
         if cash_raw and (cash is None or op not in ("replace", "add")):
             raise CorrectionListError("bad_cash", line)
+        demerger = kind == TYPE_DEMERGER
+        if demerger and op != "add":
+            raise CorrectionListError("bad_type", line)
         items.append(
             Item(
                 line,
                 op,
                 isin,
                 _date(ex, line),
-                kind,
+                TYPE_OTHER if demerger else kind,
                 factor,
                 _date(new_ex, line) if new_ex else None,
                 note,
                 cash,
                 _date(known_on, line) if known_on else None,
+                demerger,
             )
         )
     return items
@@ -157,14 +166,22 @@ def add_action(
     now: datetime,
     cash: Decimal | None = None,
     known_on: date | None = None,
+    text: str | None = None,
+    demerger: bool = False,
 ) -> dict[str, object]:
     """Store one price-changing action the owner adds (a missing leg, the new date of a moved
     one), or a dividend with its `cash` (CA4), known on `correction_known`'s date (CA5), and
-    journal it as `corporate_action.corrected` (before: absent). Refused like `correct_action`:
-    `instrument_not_found`, `action_key_taken` (the key is stored), or `check_correction`'s codes
-    (another price-neutral type, or a dividend without cash, is not added: it changes nothing)."""
+    journal it as `corporate_action.corrected` (before: absent). The row's text is `text` (a
+    moved row's own), else the note, which is always the version's text; `demerger` flags an
+    `other` row a demerger. Refused like `correct_action`: `instrument_not_found`,
+    `action_key_taken` (the key is stored), or `check_correction`'s codes (another price-neutral
+    type, or a dividend without cash, is not added: it changes nothing; a demerger not `other`)."""
     checked = check_correction(Correction(isin, ex_date, action_type, factor, note=note, cash=cash))
-    if checked is None or (action_type in PRICE_NEUTRAL_TYPES and cash is None):
+    if (
+        checked is None
+        or (action_type in PRICE_NEUTRAL_TYPES and cash is None)
+        or (demerger and action_type != TYPE_OTHER)
+    ):
         raise ActionCorrectionError("bad_action_type")
     lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == isin))
@@ -185,14 +202,17 @@ def add_action(
         ex_date=ex_date,
         action_type=action_type,
         adjustment_factor=checked[1],
-        raw_text=note.strip()[:500],
+        raw_text=note.strip()[:500] if text is None else text,
         source=SOURCE_OWNER,
         cash_amount=cash,
         known_on=known.on,
         known_basis=known.basis,
+        demerger=demerger,
     )
     session.add(row)
-    Ledger.open(session, [instrument.id]).add_row(row, published_on=known_on)
+    Ledger.open(session, [instrument.id]).add_row(
+        row, text=note.strip()[:500], published_on=known_on
+    )
     payload = {
         "chat_id": chat_id,
         "via": "cli",
@@ -204,6 +224,7 @@ def add_action(
             "factor": str(checked[1]),
             **({"cash": str(cash)} if cash is not None else {}),
             "added": True,
+            **({"demerger": True} if demerger else {}),
             "known_on": known.on.isoformat() if known.on else None,
         },
         "note": note.strip(),
@@ -222,7 +243,7 @@ def add_action(
     return {"symbol": instrument.symbol, **{k: v for k, v in payload.items() if k != "chat_id"}}
 
 
-def _stored_factor(session: Session, item: Item) -> Decimal:
+def _stored(session: Session, item: Item) -> HatCorporateAction:
     row = session.scalar(
         select(HatCorporateAction)
         .join(HatInstrument, HatInstrument.id == HatCorporateAction.instrument_id)
@@ -234,13 +255,13 @@ def _stored_factor(session: Session, item: Item) -> Decimal:
     )
     if row is None:
         raise ActionCorrectionError("action_not_found")
-    return Decimal(row.adjustment_factor)
+    return row
 
 
 def _one(
     session: Session, item: Item, *, chat_id: int, user_id: uuid.UUID, now: datetime
 ) -> list[dict[str, object]]:
-    def add(ex_date: date, factor: Decimal) -> dict[str, object]:
+    def add(ex_date: date, factor: Decimal, text: str | None, demerger: bool) -> dict[str, object]:
         return add_action(
             session,
             isin=item.isin,
@@ -253,6 +274,8 @@ def _one(
             now=now,
             cash=item.cash if item.op == "add" else None,
             known_on=item.known_on,
+            text=text,
+            demerger=demerger,
         )
 
     def correct(factor: Decimal | None) -> dict[str, object]:
@@ -269,10 +292,13 @@ def _one(
         return correct_action(session, fix, chat_id=chat_id, user_id=user_id, now=now)
 
     if item.op == "add" and item.factor is not None:
-        return [add(item.ex_date, item.factor)]
+        return [add(item.ex_date, item.factor, None, item.demerger)]
     if item.op == "move" and item.new_ex_date is not None:
-        factor = item.factor or _stored_factor(session, item)
-        return [correct(None), add(item.new_ex_date, factor)]
+        # the moved row keeps its text and demerger flag: the note is the journal's and version's
+        row = _stored(session, item)
+        factor = item.factor or Decimal(row.adjustment_factor)
+        text, demerger = row.raw_text, row.demerger
+        return [correct(None), add(item.new_ex_date, factor, text, demerger)]
     return [correct(item.factor if item.op == "replace" else None)]
 
 

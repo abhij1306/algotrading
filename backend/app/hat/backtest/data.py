@@ -38,12 +38,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.ca_versions import digest as versions_digest
-from ..data.corporate_actions import PRICE_NEUTRAL_TYPES
 from ..data.demerger_notice import exit_day
 from ..data.features import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.lineage import stored_adjustment, unexplained_jumps
-from ..data.point_in_time import chain_pending, demerger_text
+from ..data.point_in_time import chain_pending
 from ..data.store import (
     DATASET_BARS,
     DATASET_BREADTH,
@@ -717,12 +716,7 @@ def demerger_exits(
 def _demerger_rows(session: Session) -> list[tuple[uuid.UUID, date, date | None]]:
     return [
         (a.instrument_id, a.ex_date, a.announced_on)
-        for a in session.scalars(
-            select(HatCorporateAction).where(
-                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES)
-            )
-        )
-        if demerger_text(a.raw_text)
+        for a in session.scalars(select(HatCorporateAction).where(HatCorporateAction.demerger))
     ]
 
 

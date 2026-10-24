@@ -27,8 +27,8 @@ one.
   two ISINs (open over the previous close times the factors between) is within `JUMP_TOL`
   (25%, beyond NSE's widest band). The action that brings the new ISIN is often ex on the old
   ISIN's last session; when its factor is not stored the chain would carry a crash there.
-- No restructuring: no stored action of either side near the change names a demerger,
-  amalgamation, merger, scheme of arrangement or capital reduction.
+- No restructuring: no stored action of either side near the change is a demerger or names a
+  demerger, amalgamation, merger, scheme of arrangement or capital reduction.
 
 The owner can overrule the rules on a found succession (`link` / `unlink OLD NEW`, D1): the
 verdict is kept in `hat_lineage_override` and every build applies it over the rules'
@@ -41,9 +41,8 @@ A demerger is never a succession: the parent keeps its ISIN (TATAMOTORS became T
 INE155A01022) and the resulting company is a new listing with its own history (TMCV,
 INE1TAE01010). A merged-away company's history just ends (HDFC Ltd, July 2023). The parent's
 price drop on a demerger ex-date is adjusted only by a factor the corporate-action file import
-stored (`ca_import.py`, type `other`, its text naming the demerger, so a succession near it is
-reviewed); without one the drop shows in the report's unexplained jumps (`show TMPV` lists its
-chain's).
+stored (`ca_import.py`, type `other` flagged a demerger, so a succession near it is reviewed);
+without one the drop shows in the report's unexplained jumps (`show TMPV` lists its chain's).
 """
 
 from __future__ import annotations
@@ -213,6 +212,7 @@ class Action:
     action_type: str
     factor: Decimal
     text: str = ""
+    demerger: bool = False
 
     @property
     def changes_price(self) -> bool:
@@ -441,7 +441,7 @@ def decide(
         {
             a.text
             for a in actions
-            if window[0] <= a.ex_date <= window[1] and RESTRUCTURING.search(a.text)
+            if window[0] <= a.ex_date <= window[1] and (a.demerger or RESTRUCTURING.search(a.text))
         }
     )
     renamed = sorted(
@@ -660,7 +660,12 @@ def adjustment(
 def stored_actions(session: Session) -> list[Action]:
     return [
         Action(
-            str(r.instrument_id), r.ex_date, r.action_type, Decimal(r.adjustment_factor), r.raw_text
+            str(r.instrument_id),
+            r.ex_date,
+            r.action_type,
+            Decimal(r.adjustment_factor),
+            r.raw_text,
+            r.demerger,
         )
         for r in session.scalars(select(HatCorporateAction))
     ]

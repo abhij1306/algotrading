@@ -190,15 +190,11 @@ class Row:
     text: str
     source: str
     cash: Decimal | None
+    demerger: bool = False
 
 
 _RESULTING = re.compile(r"first close \S+ on (\d{4}-\d{2}-\d{2})")
 _MARKET = re.compile(r"market (?:gap|factor)", re.IGNORECASE)
-
-
-def demerger_text(text: str) -> bool:
-    """A demerger row: CA1 and CA2 texts begin "Demerger", the owner's notes name it."""
-    return "demerger" in text.lower()
 
 
 def classify(
@@ -223,7 +219,7 @@ def classify(
         if row.action_type in (TYPE_SPLIT, TYPE_BONUS):
             confirmed = gate(Fraction(row.factor), Fraction(1), gap).confirmed
             return at_ex_open(row.ex_date) if confirmed else UNKNOWN
-        if demerger_text(row.text) and same_factor(row.factor, gap):
+        if row.demerger and same_factor(row.factor, gap):
             return settle_known(days, row.ex_date)
         return UNKNOWN
     if row.action_type in (TYPE_SPLIT, TYPE_BONUS):
@@ -231,7 +227,7 @@ def classify(
     if row.source in (SOURCE_MCP, SOURCE_ARCHIVE):
         return UNKNOWN  # an MCP factor of another type: its basis is not known
     if row.source == SOURCE_FILE:
-        if not demerger_text(row.text):
+        if not row.demerger:
             return at_ex_open(row.ex_date)  # rights at TERP from NSE's terms
         found = _RESULTING.search(derived)
         if found:
@@ -240,7 +236,7 @@ def classify(
             return settle_known(market[1], row.ex_date)
         return UNKNOWN
     if row.source == SOURCE_RESEARCH:
-        if demerger_text(row.text):
+        if row.demerger:
             return UNKNOWN if market is None else settle_known(market[1], row.ex_date)
         return UNKNOWN if research_supplied(row.text) else at_ex_open(row.ex_date)
     return UNKNOWN
@@ -263,6 +259,7 @@ def _rows(session: Session) -> list[Row]:
             a.raw_text,
             a.source,
             None if a.cash_amount is None else Decimal(a.cash_amount),
+            a.demerger,
         )
         for a, isin in session.execute(query)
     ]
@@ -378,7 +375,7 @@ def plan_backfill(session: Session, store: DataStore) -> Backfill:
         r
         for r in rows
         if r.action_type not in PRICE_NEUTRAL_TYPES
-        and ((r.instrument_id, r.ex_date, r.action_type) in owned or demerger_text(r.text))
+        and ((r.instrument_id, r.ex_date, r.action_type) in owned or r.demerger)
     ]
     gaps = market_gaps(store, needs_bars, session)
     actions = {}

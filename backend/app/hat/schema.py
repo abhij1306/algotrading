@@ -177,6 +177,27 @@ BEGIN
 END $$
 """
 
+# A demerger is a stored fact, not a word in the text (`hat_corporate_action.demerger`). A
+# database created before the column (hat_live) gains it once, with the rows the text named a
+# demerger until then (an `other` whose text contains "demerger") marked; a database that has the
+# column never runs this again, so no later text makes a row a demerger.
+_DEMERGER_COLUMN = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid = to_regclass('hat_corporate_action') AND attname = 'demerger'
+      AND NOT attisdropped
+  ) THEN
+    ALTER TABLE hat_corporate_action ADD COLUMN demerger boolean NOT NULL DEFAULT false;
+    UPDATE hat_corporate_action SET demerger = true
+      WHERE action_type = 'other' AND raw_text ILIKE '%demerger%';
+    ALTER TABLE hat_corporate_action ADD CONSTRAINT hat_corporate_action_demerger_check
+      CHECK (NOT demerger OR action_type = 'other');
+  END IF;
+END $$
+"""
+
 # One instrument holds a symbol on any day (audit M3): no two rows of the symbol history with one
 # symbol overlap (a null `valid_to` is open). Checked at commit, as a writer closes the previous
 # holder's interval and adds the new one in either order. It needs `btree_gist`, and is added
@@ -362,6 +383,7 @@ CREATE OR REPLACE TRIGGER hat_event_no_truncate
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_on date",
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",
     _KNOWN_CHECK,
+    _DEMERGER_COLUMN,
     "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
     # Q1: drawdown points keep the allocation they were measured against; the realised P&L
     # of a re-arm base is gone (equity carries it through the broker funds)

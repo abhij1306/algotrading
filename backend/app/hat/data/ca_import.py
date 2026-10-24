@@ -21,8 +21,8 @@ What each row proposes (`proposals`):
   it lists as a new instrument named like the parent or its evidence (`demerger_factor`). With
   no such listing, the ex-date gap itself is the factor when it is a clear drop
   (`DEMERGER_MIN_DROP`); a composite scheme goes to review. The resulting company is never linked
-  into the parent's lineage (owner rule); the stored row's text names the demerger, so the
-  lineage build reviews any ISIN change near it (`lineage.RESTRUCTURING`).
+  into the parent's lineage (owner rule); the stored row is flagged a demerger
+  (`hat_corporate_action.demerger`), so the lineage build reviews any ISIN change near it.
 - an ETF unit split: new face value over old.
 
 Every factor passes the price gate (`gate`) against the raw bars: the ex-date open over the
@@ -96,7 +96,7 @@ NEAR_DAYS = 5  # a stored action this close to the ex-date is the same event (so
 BAR_DAYS = 14  # the previous session and the ex session must fall this close to the ex-date
 CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
 DEMERGER_MIN_DROP = Fraction(1, 10)  # a gap-only demerger factor needs a drop beyond 10%
-KIND_DEMERGER = "demerger"  # a stored `other` row whose text begins "Demerger" (`Stored.kind`)
+KIND_DEMERGER = "demerger"  # a stored `other` row that is a demerger (`Stored.kind`)
 SAME_FACTOR_TOL = Fraction(1, 20000)  # half a unit in the 4th place
 TEXT_MAX = 2000  # cells are cut to this length
 
@@ -168,10 +168,11 @@ def parse_ratio(raw: str) -> tuple[Fraction, Fraction] | None:
 
 @dataclass(frozen=True)
 class Leg:
-    """One factor a row proposes, of a stored type."""
+    """One factor a row proposes, of a stored type (an `other` that is a demerger flagged)."""
 
     action_type: str
     factor: Fraction
+    demerger: bool = False
 
 
 _SPLIT_START = re.compile(r"face\s*val\w*\s*split|split|sub-?\s*division")
@@ -599,14 +600,12 @@ class Stored:
     ex_date: date
     action_type: str
     factor: Decimal
-    text: str = ""
+    demerger: bool = False
 
     @property
     def kind(self) -> str:
-        """The type, with a demerger told apart from the other `other` rows (rights) by the
-        text this import gives it."""
-        demerger = self.action_type == TYPE_OTHER and self.text.lower().startswith("demerger")
-        return KIND_DEMERGER if demerger else self.action_type
+        """The type, with a demerger told apart from the other `other` rows (rights)."""
+        return KIND_DEMERGER if self.demerger else self.action_type
 
 
 @dataclass
@@ -816,6 +815,7 @@ def settle(
             p.text,
             source,
             known=known,
+            demerger=leg.demerger,
         )
         for leg in new
     ]
@@ -851,11 +851,11 @@ def _demerger_leg(
         if factor is None:
             return None, "resulting_price_too_high", how, UNKNOWN
         known = Known(max(first, p.ex_date), RESULTING_FIRST_CLOSE)
-        return Leg(TYPE_OTHER, factor), "", f"{how} -> factor {fmt4(factor)}", known
+        return Leg(TYPE_OTHER, factor, True), "", f"{how} -> factor {fmt4(factor)}", known
     gap, days = market
     if gap <= 1 - DEMERGER_MIN_DROP:
         return (
-            Leg(TYPE_OTHER, gap),
+            Leg(TYPE_OTHER, gap, True),
             "",
             ", no resulting listing found: the ex-date gap is the factor",
             settle_known(days, p.ex_date),
@@ -893,7 +893,7 @@ def stored_price_actions(session: Session) -> dict[str, list[Stored]]:
     ):
         iid = str(row.instrument_id)
         out[iid].append(
-            Stored(iid, row.ex_date, row.action_type, Decimal(row.adjustment_factor), row.raw_text)
+            Stored(iid, row.ex_date, row.action_type, Decimal(row.adjustment_factor), row.demerger)
         )
     return out
 

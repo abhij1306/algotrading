@@ -137,6 +137,7 @@ class ActionRecord:
     source: str
     cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_dividends`)
     known: Known | None = None  # when the factor became knowable; None: `default_known`
+    demerger: bool = False  # an `other` that is a demerger, not a rights issue
 
     @property
     def key(self) -> tuple[object, date, str]:
@@ -286,6 +287,7 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
                 cash_amount=record.cash_amount,
                 known_on=known.on,
                 known_basis=known.basis,
+                demerger=record.demerger,
             )
             session.add(row)
             existing[record.key] = row
@@ -576,6 +578,7 @@ def correct_action(
             if new_type != row.action_type:  # the old key is vacated
                 ledger.delete(row, available=vacated, text=note)
             row.action_type, row.adjustment_factor = new_type, factor
+            row.demerger = row.demerger and new_type == TYPE_OTHER  # only an `other` is one
             if correction.cash is not None:
                 row.cash_amount = correction.cash
             elif new_type != TYPE_DIVIDEND:
