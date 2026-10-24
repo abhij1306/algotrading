@@ -36,7 +36,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   Kill switches, pause and a failed gate stop new entries only (manage-only). A held instrument
   that changes series keeps its exits under the new symbol. An account holding an open real
   position gets a desk at start whatever its status, so its fill sync, stops, exits and flatten
-  keep running; the mode gates keep real entries to active accounts.
+  keep running, unless another account's desk holds its broker login (then it is logged); the
+  mode gates keep real entries to active accounts.
 - **Fail closed on the broker.** A missing client, open circuit or failed read raises
   `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
   entry on a trade date before its first reconciliation succeeded; a mismatch blocks entries and

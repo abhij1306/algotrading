@@ -219,6 +219,28 @@ def _holds_real_positions() -> Exists:
     )
 
 
+def desk_accounts(accounts: list[HatBrokerAccount]) -> list[HatBrokerAccount]:
+    """The accounts that get a desk, active ones first: every active account (a second active
+    account of one broker still refuses the start in `broker_for`), and an account that is not
+    active but holds open real positions only when no earlier one claimed its broker. A broker
+    has one login (trading-safety rule 9), so such an account's desk would reconcile and sell
+    through another account's login; it is logged and left without a desk."""
+    claimed: set[str] = set()
+    kept = []
+    for account in sorted(accounts, key=lambda a: a.status != ACCOUNT_ACTIVE):
+        if account.status != ACCOUNT_ACTIVE and account.broker in claimed:
+            logger.error(
+                "account %s (%s) holds open positions but its broker login belongs to another "
+                "account: no desk",
+                account.id,
+                account.status,
+            )
+            continue
+        claimed.add(account.broker)
+        kept.append(account)
+    return kept
+
+
 class Desks:
     """The desks of the active broker accounts and of any other account holding open real
     positions, built once at start."""
@@ -258,7 +280,7 @@ class Desks:
                     .order_by(HatBrokerAccount.id)
                 )
             )
-            for account in accounts:
+            for account in desk_accounts(accounts):
                 broker = broker_for(account)
                 if broker is None:
                     continue
