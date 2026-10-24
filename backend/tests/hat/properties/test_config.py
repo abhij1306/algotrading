@@ -351,6 +351,7 @@ def test_registry_reads_a_seed() -> None:
         "bot: new-bot\n",  # no header
         "sleeve: S3\n---\nbot: new-bot\n",  # no persona
         "sleeve: X3\npersona: P\n---\nbot: new-bot\n",
+        'sleeve: "S3\\n"\npersona: P\n---\nbot: new-bot\n',  # a trailing newline
         "sleeve: S3\npersona: P\nrisk_pct: 1\n---\nbot: new-bot\n",
         "sleeve: S3\npersona: P\n---\nbot: other-bot\n",
     ],

@@ -26,7 +26,7 @@ from ...errors import HatError
 from ...money import require_exact
 
 SEPARATOR = "\n---\n"
-SLEEVE = re.compile(r"^S[1-9]\d*$")
+SLEEVE = re.compile(r"S[1-9]\d*")
 HEADER_FIELDS = frozenset({"sleeve", "persona"})
 
 
@@ -63,7 +63,7 @@ def parse_seed(name: str, text: str) -> Strategy:
     if not sep or not isinstance(header, Mapping) or set(header) != HEADER_FIELDS:
         raise RegistryError(f"{name}: needs a header of exactly {sorted(HEADER_FIELDS)}")
     sleeve, persona = header["sleeve"], header["persona"]
-    if not isinstance(sleeve, str) or not SLEEVE.match(sleeve):
+    if not isinstance(sleeve, str) or not SLEEVE.fullmatch(sleeve):
         raise RegistryError(f"{name}: sleeve must look like S1")
     if not isinstance(persona, str) or not persona.strip():
         raise RegistryError(f"{name}: persona must be text")
@@ -82,6 +82,8 @@ def _load() -> Mapping[str, Strategy]:
         for path in seeds.iterdir()
         if path.name.endswith(".yaml")
     ]
+    if not found:
+        raise RegistryError("no seed files: every strategy is registered by one")
     sleeves = [s.sleeve for s in found]
     if len(set(sleeves)) != len(sleeves):
         raise RegistryError("two seeds share a sleeve")
