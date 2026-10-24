@@ -3,7 +3,8 @@
 import copy
 import random
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 import yaml
@@ -25,17 +26,19 @@ from app.hat.engine.strategy.config import (
     StrategyConfig,
     parse_config,
 )
+from app.hat.engine.strategy.registry import STRATEGIES, RegistryError, parse_seed
 from app.hat.engine.strategy.versions import (
-    SEED_NAMES,
+    VersionError,
     publish_version,
     save_draft,
     seed_config,
+    seed_default_strategies,
     seed_text,
     start_shadow,
 )
 from app.hat.engine.strategy.yamlio import import_yaml
 from app.hat.models import HatBacktestRun, HatStrategyVersion
-from app.hat.risk.policy import POLICY_FIELDS
+from app.hat.risk.policy import POLICY_FIELDS, SEED_POLICY
 from app.hat.schema import seed_hat_reference
 
 # Any string, lone surrogates included: JSON text from an API can carry them.
@@ -287,7 +290,7 @@ def test_yaml_round_trip(raw: dict) -> None:
     assert again.to_json() == config.to_json()
 
 
-@pytest.mark.parametrize("name", SEED_NAMES)
+@pytest.mark.parametrize("name", list(STRATEGIES))
 def test_yaml_round_trip_seed(name: str) -> None:
     config = seed_config(name)
     assert import_yaml(dump_yaml(config)).hash() == config.hash()
@@ -321,9 +324,67 @@ def released(session: Session, strategy_id: uuid.UUID, at: datetime) -> HatStrat
     draft = save_draft(
         session,
         strategy_id=strategy_id,
-        config=seed_config(SEED_NAMES[0]),
+        config=seed_config(next(iter(STRATEGIES))),
         calendar=GATE_CALENDAR,
         now=at,
     )
     publish_version(session, draft.id, backtest_run_id=add_run(session, draft).id)
     return start_shadow(session, draft.id, calendar=GATE_CALENDAR, now=at)
+
+
+SEED = "sleeve: S3\npersona: Test-style\n---\nbot: {name}\nentry_filters:\n{filters}"
+CHASE = "  - {{type: max_chase, params: {{pct: {pct}}}}}\n"
+
+
+def test_registry_reads_a_seed() -> None:
+    text = SEED.format(name="new-bot", filters=CHASE.format(pct=3) + CHASE.format(pct=1.5))
+    strategy = parse_seed("new-bot", text)
+    assert (strategy.sleeve, strategy.persona) == ("S3", "Test-style")
+    assert strategy.max_chase_pct == Decimal("1.5")  # the strictest
+    assert strategy.config_text == text.partition("\n---\n")[2]
+    assert parse_seed("new-bot", SEED.format(name="new-bot", filters="")).max_chase_pct is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "bot: new-bot\n",  # no header
+        "sleeve: S3\n---\nbot: new-bot\n",  # no persona
+        "sleeve: X3\npersona: P\n---\nbot: new-bot\n",
+        'sleeve: "S3\\n"\npersona: P\n---\nbot: new-bot\n',  # a trailing newline
+        "sleeve: S3\npersona: P\nrisk_pct: 1\n---\nbot: new-bot\n",
+        "sleeve: S3\npersona: P\n---\nbot: other-bot\n",
+    ],
+)
+def test_registry_refuses_a_bad_seed(text: str) -> None:
+    with pytest.raises(RegistryError):
+        parse_seed("new-bot", text)
+
+
+def test_seed_policy_names_registered_strategies() -> None:
+    assert set(SEED_POLICY["p_max"]) <= set(STRATEGIES)
+    assert set(SEED_POLICY["base_weight"]) <= {s.sleeve for s in STRATEGIES.values()}
+
+
+def test_save_draft_refuses_another_bot_name() -> None:
+    """One identity: a strategy saves only a config whose `bot` is its own name (F3)."""
+    saturday = datetime(2026, 12, 5, 12, tzinfo=UTC)
+    with Session(ENGINE) as session:
+        first, second = seed_default_strategies(session, USER)[:2]
+        with pytest.raises(VersionError) as caught:
+            save_draft(
+                session,
+                strategy_id=first.id,
+                config=seed_config(second.name),
+                calendar=GATE_CALENDAR,
+                now=saturday,
+            )
+        assert caught.value.code == "bot_name_mismatch"
+        draft = save_draft(
+            session,
+            strategy_id=first.id,
+            config=seed_config(first.name),
+            calendar=GATE_CALENDAR,
+            now=saturday,
+        )
+        assert draft.version == 2

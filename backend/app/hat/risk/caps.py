@@ -12,17 +12,14 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from ..engine.strategy.registry import STRATEGIES
 from .exposure import max_positions
 from .policy import RiskPolicy
 from .sessions import SessionCalendar
 
-# The documented max-chase default per strategy (HAT-CRIT-122) and the fallback for any other
-# strategy (the stricter value; QA7). Percentages, not fractions.
+# The max-chase fallback for a strategy whose seed documents none (HAT-CRIT-122): the stricter
+# value (QA7). A percentage, not a fraction.
 MAX_CHASE_DEFAULT_PCT = Decimal(2)
-MAX_CHASE_BY_STRATEGY = {
-    "stage2-contraction-breakout": Decimal(5),
-    "momentum-breakout-ep": Decimal(2),
-}
 
 
 @dataclass(frozen=True)
@@ -103,11 +100,14 @@ def stop_valid(entry: Decimal, stop: Decimal) -> bool:
 
 def effective_max_chase_pct(configured: Decimal | None, strategy_key: str) -> Decimal:
     """HAT-RISK-076: the playbook's last configured percentage, else the strategy's documented
-    default, else 2. A deleted or disabled criterion leaves `configured` as its last value or
-    None; either way a percentage is returned."""
+    default (its seed's `max_chase`, `registry`), else 2. A deleted or disabled criterion leaves
+    `configured` as its last value or None; either way a percentage is returned."""
     if configured is not None:
         return configured
-    return MAX_CHASE_BY_STRATEGY.get(strategy_key, MAX_CHASE_DEFAULT_PCT)
+    registered = STRATEGIES.get(strategy_key)
+    if registered is None or registered.max_chase_pct is None:
+        return MAX_CHASE_DEFAULT_PCT
+    return registered.max_chase_pct
 
 
 def chase_ok(price: Decimal, trigger_level: Decimal, pct: Decimal, *, locked_upper: bool) -> bool:

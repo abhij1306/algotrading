@@ -23,8 +23,6 @@ DIRECTIONS = ("initial", "increase", "decrease")
 # --- The policy record (HAT-RISK-010, HAT-RISK-011) -----------------------------------
 
 LEVELS = ("L1", "L2", "L3")
-STRATEGY_KEYS = ("stage2-contraction-breakout", "momentum-breakout-ep")
-SLEEVES = ("S1", "S2")
 
 
 class PolicyError(HatError):

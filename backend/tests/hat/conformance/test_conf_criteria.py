@@ -6,16 +6,14 @@ from sqlalchemy.orm import Session
 
 from app.hat.engine.criteria import REGISTRY
 from app.hat.engine.strategy.config import parse_config
+from app.hat.engine.strategy.registry import STRATEGIES
 from app.hat.engine.strategy.versions import (
-    SEED_NAMES,
     seed_config,
     seed_text,
     sync_criterion_types,
 )
 from app.hat.models import HatCriterionType
 from app.hat.schema import seed_hat_reference
-
-S1, S2 = SEED_NAMES
 
 
 def _memory_session() -> Session:
@@ -40,7 +38,7 @@ def test_criterion_type_registry() -> None:
 
 
 def test_seeds_parse_and_hash_stably() -> None:
-    for name in SEED_NAMES:
+    for name in STRATEGIES:
         _seed_parses(name)
 
 
