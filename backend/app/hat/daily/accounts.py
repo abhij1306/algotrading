@@ -1,4 +1,5 @@
-"""One trading desk per active broker account (PR 17, HAT-OPS-003).
+"""One trading desk per active broker account and per other account holding open real positions
+(PR 17, HAT-OPS-003).
 
 A desk holds the account's one broker session (`SessionRegistry`: one owner per account, and
 every broker call of the desk goes through it), its `ExecutionGuard` (no entry is placed before
@@ -30,8 +31,9 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql.expression import Exists
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.entries import TokenIssuer
@@ -200,8 +202,48 @@ class AccountDesk:
         return self.guard.reconciled_today()
 
 
+def _holds_real_positions() -> Exists:
+    """The account has an open real position: its desk keeps the fill sync, GTT upkeep, exit
+    rules and flatten running whatever its status, while the mode gates keep real entries
+    blocked unless it is active (HAT-EXEC-012)."""
+    return (
+        select(HatPosition.id)
+        .join(HatBot, HatBot.id == HatPosition.bot_id)
+        .where(
+            HatBot.broker_account_id == HatBrokerAccount.id,
+            HatPosition.is_virtual.is_(False),
+            HatPosition.closed_at.is_(None),
+            HatPosition.qty_open > 0,
+        )
+        .exists()
+    )
+
+
+def desk_accounts(accounts: list[HatBrokerAccount]) -> list[HatBrokerAccount]:
+    """The accounts that get a desk, active ones first: every active account (a second active
+    account of one broker still refuses the start in `broker_for`), and an account that is not
+    active but holds open real positions only when no earlier one claimed its broker. A broker
+    has one login (trading-safety rule 9), so such an account's desk would reconcile and sell
+    through another account's login; it is logged and left without a desk."""
+    claimed: set[str] = set()
+    kept = []
+    for account in sorted(accounts, key=lambda a: a.status != ACCOUNT_ACTIVE):
+        if account.status != ACCOUNT_ACTIVE and account.broker in claimed:
+            logger.error(
+                "account %s (%s) holds open positions but its broker login belongs to another "
+                "account: no desk",
+                account.id,
+                account.status,
+            )
+            continue
+        claimed.add(account.broker)
+        kept.append(account)
+    return kept
+
+
 class Desks:
-    """The desks of the active broker accounts, built once at start."""
+    """The desks of the active broker accounts and of any other account holding open real
+    positions, built once at start."""
 
     def __init__(
         self,
@@ -234,11 +276,11 @@ class Desks:
             accounts = list(
                 session.scalars(
                     select(HatBrokerAccount)
-                    .where(HatBrokerAccount.status == ACCOUNT_ACTIVE)
+                    .where(or_(HatBrokerAccount.status == ACCOUNT_ACTIVE, _holds_real_positions()))
                     .order_by(HatBrokerAccount.id)
                 )
             )
-            for account in accounts:
+            for account in desk_accounts(accounts):
                 broker = broker_for(account)
                 if broker is None:
                     continue

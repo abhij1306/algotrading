@@ -33,8 +33,10 @@ from app.hat.execution.broker import (
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_payloads import map_fyers_status
 from app.hat.execution.order_book import (
+    TERMINAL_STATUSES,
     TagBook,
     find_gtt,
+    record_broker_status,
 )
 from app.hat.execution.reconcile import (
     DUPLICATE_HT_ORDER,
@@ -804,3 +806,13 @@ def test_the_gtt_book_reads_only_resting_stops(
             unknown.gtts()
         return
     assert adapter_over(GttBookSdk(book)).gtts() == [g for _, g in rows if g is not None]
+
+
+@pytest.mark.parametrize("terminal", sorted(TERMINAL_STATUSES))
+@pytest.mark.parametrize("shown", ORDER_STATUSES)
+def test_a_terminal_order_never_moves(terminal: str, shown: str) -> None:
+    """A stale book row never moves a terminal order (C2): no status change, no session use."""
+    row = HatOrder(tag="HT", purpose="entry", status=terminal, qty=10)
+    found = replace(_order("HT", "ABC", 10), status=shown)
+    assert record_broker_status(SimpleNamespace(), row, found, None) is False  # type: ignore[arg-type]
+    assert row.status == terminal

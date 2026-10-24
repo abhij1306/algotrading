@@ -73,6 +73,8 @@ EVENT_ORDER_CANCELLED = "order.cancelled"
 RESEND = "sale_resend"
 _PLACED_STATES = {"placed", "partially_filled", "filled"}
 _ENTRY_ENDINGS = {"cancelled", "expired", "rejected"}
+# An order in one of these never moves again: a stale book row never reopens it.
+TERMINAL_STATUSES = frozenset({"filled", *_ENTRY_ENDINGS})
 EXIT_SALES = ("exit_partial", "exit_full", "flatten")
 MAX_SALE_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 # The reason a signal ends Rejected when its entry is first found already ended, unfilled.
@@ -181,8 +183,14 @@ def record_broker_status(
     DAY limit expired at the close (its signal ends Cancelled), and a final `order.rejected` when
     the exchange rejected it after the broker took it (its signal ends Rejected); any other
     change is the order's own bookkeeping (fills are recorded from the trade book, stops have no
-    lifecycle step)."""
+    lifecycle step). An order already terminal keeps its status: a book showing it otherwise
+    (a stale row) is logged and ignored, so reconcile and the stops never see it working."""
     if found.status == row.status:
+        return False
+    if row.status in TERMINAL_STATUSES:
+        logger.warning(
+            "order %s is %s; broker status %s ignored", row.tag, row.status, found.status
+        )
         return False
     row.status = found.status
     if row.purpose == ENTRY and found.filled_qty == 0:
