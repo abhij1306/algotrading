@@ -25,12 +25,14 @@ from ..data.calendar import session_calendar
 from ..errors import HatError
 from ..execution.mode_changes import request_mode_change
 from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal
+from ..governance import MODE_VALUES, Mode
 from ..models import HatBot, HatBrokerAccount
 from ..read import bots as read_bots
 from ..read import kill as read_kill
+from ..read.sessions import account_label
 from ..risk import kill, kill_ops
 from ..risk.bots import pause_bot, resume_bot
-from ..risk.modes import MODE_VALUES, Mode, ModeChangeError, plan_mode_change
+from ..risk.modes import ModeChangeError, plan_mode_change
 from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
 from ..time import trade_date_of
@@ -153,8 +155,7 @@ def _login(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
     if not accounts:
         return refused("unknown_broker")
     links = [
-        (reads.account_label(a), ctx.links.link(a) if ctx.links is not None else None)
-        for a in accounts
+        (account_label(a), ctx.links.link(a) if ctx.links is not None else None) for a in accounts
     ]
     return Reply(True, text=render.login_text(links, repeat=False))
 

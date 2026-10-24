@@ -32,6 +32,7 @@ from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatTelegramMessag
 from ..ops.jobs import JobError, JobResult
 from ..ops.scheduler import ScheduledJob
 from ..read.positions import symbol_of
+from ..read.sessions import account_label
 from ..risk.sessions import SessionCalendar, is_trading_day
 from ..time import IST, as_utc, day_bounds, trade_date_of, utc_now
 from . import reads, render, store
@@ -121,7 +122,7 @@ class Reports:
             if not accounts:
                 return JobResult(rows=0)
             links = [
-                (reads.account_label(a), self._links.link(a) if self._links is not None else None)
+                (account_label(a), self._links.link(a) if self._links is not None else None)
                 for a in accounts
             ]
             kind = "login_reprompt" if repeat else "login_prompt"

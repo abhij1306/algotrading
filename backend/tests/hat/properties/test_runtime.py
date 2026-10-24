@@ -11,8 +11,8 @@ from hat_support import memory_engine
 from hypothesis import given
 from hypothesis import strategies as st
 
+from app.hat.governance import MODE_VALUES, Mode
 from app.hat.models import HatApproval, HatFill, HatOrder, HatPosition, HatSignal
-from app.hat.risk.modes import MODE_VALUES, Mode
 from app.hat.runtime import position_is_virtual
 
 ENGINE = memory_engine(HatSignal, HatApproval, HatOrder, HatFill, HatPosition)

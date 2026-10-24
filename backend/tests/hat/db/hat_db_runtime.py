@@ -16,6 +16,7 @@ from sqlalchemy import Connection, Engine, delete, func, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
+from app.hat.governance import Mode
 from app.hat.ids import uuid7
 from app.hat.notify import RecordingNotifier
 from app.hat.ops.jobs import JobError
@@ -28,7 +29,6 @@ from app.hat.ops.partitions import (
     partition_bounds,
     partition_name,
 )
-from app.hat.risk.modes import Mode
 from app.hat.schema import ensure_hat_schema
 
 if TYPE_CHECKING:

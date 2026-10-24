@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from ...backtest.evidence import RunMetrics
 from ...errors import HatError
 from ...events import record
+from ...governance import Mode
 from ...models import (
     HatBacktestRun,
     HatBot,
@@ -39,10 +40,10 @@ from ...models import (
     HatStrategy,
     HatStrategyVersion,
 )
-from ...risk.modes import Mode
 from ...risk.sessions import SessionCalendar, SessionState
 from ...time import as_utc, trade_date_of
 from ..criteria import REGISTRY
+from ..owner import OwnerCommand
 from ..portfolio.lifecycle import LIVE, PROBATION, shadow_gate
 from .config import StrategyConfig, parse_config
 
@@ -224,10 +225,7 @@ def start_shadow(
 def promote_version(
     session: Session,
     version_id: uuid.UUID,
-    *,
-    calendar: SessionCalendar,
-    now: datetime,
-    chat_id: int,
+    command: OwnerCommand,
 ) -> HatStrategyVersion:
     """Make a shadow version live (HAT-BOT-084): outside market hours, with its backtest run and
     at least 20 trading sessions of shadow on the calendar. The strategy's previous live
@@ -235,6 +233,7 @@ def promote_version(
     that ran it move to this one (their open trades keep their entry version, HAT-BOT-083), and
     `strategy.promoted` is recorded as the owner's (`actor = user`, the allowlisted chat, `via =
     cli`). A refusal changes nothing."""
+    calendar, now, chat_id = command.calendar, command.now, command.chat_id
     _closed(calendar, now)
     row = session.get(HatStrategyVersion, version_id, with_for_update=True)
     if row is None:
@@ -289,8 +288,7 @@ def assign_version(
     *,
     bot_id: uuid.UUID,
     version_id: uuid.UUID,
-    chat_id: int,
-    now: datetime,
+    command: OwnerCommand,
 ) -> HatBot:
     """Point a sleeve at the version it scans and trades with (`live_version_id`): a version of
     its own strategy that has left draft and is not retired. A sleeve that places real orders
@@ -311,7 +309,7 @@ def assign_version(
         raise VersionError("version_not_live")
     if bot.live_version_id == row.id:  # a repeated step: nothing changes, nothing is recorded
         return bot
-    _assigned(session, bot, row, chat_id=chat_id, now=now)
+    _assigned(session, bot, row, chat_id=command.chat_id, now=command.now)
     session.flush()
     return bot
 

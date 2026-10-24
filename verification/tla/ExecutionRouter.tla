@@ -22,8 +22,7 @@
 (*   GTT, broker session and price flips repeat without bound (every       *)
 (*   variable has a finite domain); a Take may carry any size the user     *)
 (*   chose, which the router must ignore; one approval card per confirm    *)
-(*   signal, whose 5-minute window is the boolean `expired`; BrokenMode    *)
-(*   names a deliberately broken variant ("none" is the real router).      *)
+(*   signal, whose 5-minute window is the boolean `expired`.               *)
 (* Assumptions: each action is one database transaction or one change of   *)
 (*   the environment; an auto signal commits in Triggered and its entry is *)
 (*   placed in a later step, under the conditions read at placement (the   *)
@@ -52,20 +51,10 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS NSignals, BrokenMode
-
-ASSUME BrokenMode \in {"none", "confirm_places_now", "shadow_calls_broker",
-                       "route_without_risk", "no_stop_check", "take_skips_chase",
-                       "skip_drops_trade", "exit_asks", "take_ignores_hours",
-                       "take_ignores_feed", "gate_unknown_ok", "take_ignores_gate",
-                       "any_mode", "short_entry", "no_gtt_gate", "pyramid", "apply_now",
-                       "no_expiry_sweep", "exits_wait", "place_unchecked",
-                       "no_session_check", "card_on_reject", "user_resizes",
-                       "user_creates_entry", "no_resume"}
+CONSTANTS NSignals
 
 Signals == 1..NSignals
 Modes == {"shadow", "confirm", "auto"}
-Asked == IF BrokenMode = "any_mode" THEN Modes \cup {"live"} ELSE Modes
 
 SigStates == {"idle", "rejected", "triggered", "awaiting", "taken", "placed", "virtual", "veto",
               "ended", "closed"}
@@ -129,11 +118,11 @@ Init ==
 
 \* The effective mode (modes.bot_mode / capability_gated): confirm and auto need GTT.
 Effective ==
-    IF BrokenMode # "no_gtt_gate" /\ mode # "shadow" /\ ~gtt THEN "shadow" ELSE mode
+    IF mode # "shadow" /\ ~gtt THEN "shadow" ELSE mode
 
 Held(s) == \E t \in Signals \ {s} : sig[t] \in Holding
 
-GateOpen == gate = "on" \/ (BrokenMode = "gate_unknown_ok" /\ gate = "unknown")
+GateOpen == gate = "on"
 
 \* evaluate_signal's state and cap checks that the model sees: market hours, the feed and the
 \* quality gate, the regime gate, max-chase, and no second position on a held instrument.
@@ -142,7 +131,7 @@ RiskOK(s) ==
     /\ ~stale
     /\ GateOpen
     /\ ~chased
-    /\ (~Held(s) \/ BrokenMode = "pyramid")
+    /\ ~Held(s)
 
 \* What was wrong when an entry went ahead (empty for a correct one).
 EntryFaults(s) ==
@@ -156,29 +145,21 @@ EntryFaults(s) ==
 
 OrderFaults(s, m) ==
     EntryFaults(s) \cup (IF ~gtt THEN {"nogtt"} ELSE {}) \cup (IF m = "shadow" THEN {"shadow"} ELSE {})
-        \cup (IF BrokenMode = "short_entry" THEN {"sell"} ELSE {})
         \cup (IF ~live THEN {"nosession"} ELSE {})
 
 \* code: backend/app/hat/execution/router.py:route  (open_entry runs evaluate_signal under the
 \* bot's lock and writes what the effective mode needs; an auto signal commits in Triggered)
 Route(s) ==
     /\ sig[s] = "idle"
-    /\ RiskOK(s) \/ BrokenMode = "route_without_risk"
-    /\ \E st \in BOOLEAN :
-         /\ st \/ BrokenMode \in {"no_stop_check", "route_without_risk"}
-         /\ stop' = [stop EXCEPT ![s] = st]
+    /\ RiskOK(s)
+    /\ stop' = [stop EXCEPT ![s] = TRUE]
     /\ smode' = [smode EXCEPT ![s] = Effective]
     /\ badEntry' = badEntry \cup EntryFaults(s) \cup (IF RiskOK(s) THEN {} ELSE {"unrisked"})
     /\ CASE Effective = "shadow" ->
               /\ sig' = [sig EXCEPT ![s] = "virtual"]
               /\ card' = card
-              /\ badOrder' = IF BrokenMode = "shadow_calls_broker"
-                                THEN badOrder \cup OrderFaults(s, "shadow") ELSE badOrder
-         [] Effective = "confirm" /\ BrokenMode = "confirm_places_now" ->
-              /\ sig' = [sig EXCEPT ![s] = "placed"]
-              /\ card' = card
-              /\ badOrder' = badOrder \cup OrderFaults(s, "confirm") \cup {"untaken"}
-         [] Effective = "confirm" /\ BrokenMode # "confirm_places_now" ->
+              /\ badOrder' = badOrder
+         [] Effective = "confirm" ->
               /\ sig' = [sig EXCEPT ![s] = "awaiting"]
               /\ card' = [card EXCEPT ![s] = "open"]
               /\ badOrder' = badOrder
@@ -191,15 +172,7 @@ Route(s) ==
     /\ UNCHANGED tgVars
 
 \* The live conditions the auto placement re-reads (router.placement_refusal, the GTT re-check).
-PlaceLive ==
-    \/ BrokenMode = "place_unchecked"
-    \/ /\ phase = "open" /\ ~stale /\ gate = "on"
-       /\ gtt \/ BrokenMode = "no_gtt_gate"
-       /\ live \/ BrokenMode = "no_session_check"
-
-\* A process that dies after it committed may not place. Without the restart's resume
-\* (BrokenMode "no_resume") nothing places it after that.
-Resumable(s) == ~lost[s] \/ BrokenMode # "no_resume"
+PlaceLive == phase = "open" /\ ~stale /\ gate = "on" /\ gtt /\ live
 
 \* code: backend/app/hat/execution/router.py:place_entry  (after the signal committed and the
 \* bot's lock was released: the real entry is sent when the conditions still allow it, else the
@@ -208,7 +181,6 @@ Resumable(s) == ~lost[s] \/ BrokenMode # "no_resume"
 \* date's sweep ends the signal: router.expire)
 Place(s) ==
     /\ sig[s] = "triggered"
-    /\ Resumable(s)
     /\ sig' = [sig EXCEPT ![s] = IF PlaceLive THEN "placed" ELSE "rejected"]
     /\ badOrder' = IF PlaceLive THEN badOrder \cup (OrderFaults(s, smode[s]) \ {"chased"})
                                  ELSE badOrder
@@ -236,11 +208,11 @@ Reject(s) ==
 \* The live conditions a Take re-reads (router.placement_refusal and the GTT re-check; the broker
 \* session is send_order's check, submit._check_allowed).
 TakeLive ==
-    /\ live \/ BrokenMode = "no_session_check"
-    /\ phase = "open" \/ BrokenMode = "take_ignores_hours"
-    /\ ~stale \/ BrokenMode = "take_ignores_feed"
-    /\ gate = "on" \/ BrokenMode = "take_ignores_gate"
-    /\ gtt \/ BrokenMode = "no_gtt_gate"
+    /\ live
+    /\ phase = "open"
+    /\ ~stale
+    /\ gate = "on"
+    /\ gtt
 
 \* code: backend/app/hat/engine/approvals.py:take  (the decision, committed first: before expiry,
 \* the live conditions and the max-chase re-check pass and the card is taken, or the signal ends
@@ -248,10 +220,10 @@ TakeLive ==
 Take(s, userSize) ==
     /\ card[s] = "open" /\ ~expired[s]
     /\ card' = [card EXCEPT ![s] = "taken"]
-    /\ LET ok == TakeLive /\ (~chased \/ BrokenMode = "take_skips_chase")
+    /\ LET ok == TakeLive /\ ~chased
        IN /\ sig' = [sig EXCEPT ![s] = IF ok THEN "taken" ELSE "rejected"]
           /\ badEntry' = IF ok /\ chased THEN badEntry \cup {"chased"} ELSE badEntry
-          /\ userRisk' = (userRisk \/ (ok /\ userSize /\ BrokenMode = "user_resizes"))
+          /\ userRisk' = userRisk
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, smode, expired, stop, exitDue,
                    badOrder, exitAsked, midChange, live, msg>>
 
@@ -260,7 +232,6 @@ Take(s, userSize) ==
 \* signal ends Rejected; after a crash the restart's resume runs it)
 PlaceTaken(s) ==
     /\ sig[s] = "taken"
-    /\ Resumable(s)
     /\ sig' = [sig EXCEPT ![s] = IF TakeLive THEN "placed" ELSE "rejected"]
     /\ badOrder' = IF TakeLive THEN badOrder \cup (OrderFaults(s, smode[s]) \ {"chased"})
                                 ELSE badOrder
@@ -271,7 +242,7 @@ PlaceTaken(s) ==
 
 \* The signal's state once its card is skipped or expired: the veto trade, opened in the same
 \* transaction (shadow.open_veto_trade).
-DecidedAway == IF BrokenMode = "skip_drops_trade" THEN "ended" ELSE "veto"
+DecidedAway == "veto"
 
 \* code: backend/app/hat/execution/router.py:skip
 Skip(s) ==
@@ -294,7 +265,6 @@ Tick(s) ==
 \* code: backend/app/hat/execution/router.py:expire  (the sweep expires a card past its window)
 Expire(s) ==
     /\ card[s] = "open" /\ expired[s]
-    /\ BrokenMode # "no_expiry_sweep"
     /\ card' = [card EXCEPT ![s] = "expired"]
     /\ sig' = [sig EXCEPT ![s] = DecidedAway]
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, smode, expired, stop, exitDue,
@@ -313,10 +283,9 @@ ExitDue(s) ==
 \* every mode; no card is written)
 ExitSend(s) ==
     /\ exitDue[s]
-    /\ ~(BrokenMode = "exits_wait" /\ smode[s] = "confirm" /\ sig[s] = "placed")
     /\ sig' = [sig EXCEPT ![s] = "closed"]
     /\ exitDue' = [exitDue EXCEPT ![s] = FALSE]
-    /\ exitAsked' = (exitAsked \/ (BrokenMode = "exit_asks" /\ smode[s] = "confirm"))
+    /\ exitAsked' = exitAsked
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, smode, card, expired, stop,
                    badEntry, badOrder, midChange>>
     /\ UNCHANGED tgVars
@@ -324,14 +293,10 @@ ExitSend(s) ==
 \* code: backend/app/hat/execution/mode_changes.py:request_mode_change  (outside market hours only;
 \* confirm and auto need GTT; the change waits for the next open)
 RequestMode(m) ==
-    /\ phase = "closed" \/ BrokenMode = "apply_now"
-    /\ m = "shadow" \/ gtt \/ BrokenMode = "no_gtt_gate"
-    /\ IF BrokenMode = "apply_now"
-          THEN /\ mode' = m
-               /\ midChange' = (midChange \/ (phase = "open" /\ m # mode))
-               /\ queued' = queued
-          ELSE /\ queued' = m
-               /\ UNCHANGED <<mode, midChange>>
+    /\ phase = "closed"
+    /\ m = "shadow" \/ gtt
+    /\ queued' = m
+    /\ UNCHANGED <<mode, midChange>>
     /\ UNCHANGED <<phase, gtt, stale, gate, chased, sig, smode, card, expired, stop, exitDue,
                    badEntry, badOrder, exitAsked>>
     /\ UNCHANGED tgVars
@@ -402,31 +367,18 @@ Relay(s) ==
     /\ ~msg[s]
     /\ \/ card[s] = "open"
        \/ sig[s] = "virtual"
-       \/ BrokenMode = "card_on_reject" /\ sig[s] = "rejected"
     /\ msg' = [msg EXCEPT ![s] = TRUE]
     /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, sig, smode, card, expired, stop,
                    exitDue, badEntry, badOrder, exitAsked, midChange, live, userRisk>>
-
-\* code: backend/app/hat/telegram/commands.py:run_command  (the chat's command set has no entry
-\* command: no text names a price, a size or a stop; the broken variant adds one)
-UserEntry(s) ==
-    /\ BrokenMode = "user_creates_entry"
-    /\ sig[s] = "idle"
-    /\ sig' = [sig EXCEPT ![s] = "placed"]
-    /\ smode' = [smode EXCEPT ![s] = "auto"]
-    /\ stop' = [stop EXCEPT ![s] = TRUE]
-    /\ userRisk' = TRUE
-    /\ UNCHANGED <<phase, mode, queued, gtt, stale, gate, chased, card, expired, exitDue,
-                   badEntry, badOrder, exitAsked, midChange, live, msg>>
 
 \* Every step but Crash, Place and PlaceTaken keeps `lost`.
 RouterNext ==
     \/ SessionOpen \/ SessionClose \/ GateRefresh \/ FeedFlip \/ GttFlip \/ PriceMove
     \/ SessionFlip
-    \/ \E m \in Asked : RequestMode(m)
+    \/ \E m \in Modes : RequestMode(m)
     \/ \E s \in Signals :
           Route(s) \/ Reject(s) \/ (\E u \in BOOLEAN : Take(s, u)) \/ Skip(s)
-          \/ Tick(s) \/ Expire(s) \/ ExitDue(s) \/ ExitSend(s) \/ Relay(s) \/ UserEntry(s)
+          \/ Tick(s) \/ Expire(s) \/ ExitDue(s) \/ ExitSend(s) \/ Relay(s)
 
 Next ==
     \/ (RouterNext /\ UNCHANGED lost)

@@ -33,9 +33,9 @@ from enum import StrEnum
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..governance import Mode
 from ..models import HatApproval, HatEvent, HatPosition, HatSignal, HatTradeResult
 from ..money import exact
-from ..risk.modes import Mode
 from ..time import as_utc
 from . import botlock, journal, lifecycle, shadow
 from .criteria.base import CriterionResult

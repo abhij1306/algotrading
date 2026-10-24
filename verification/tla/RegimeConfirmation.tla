@@ -9,8 +9,7 @@
 (*                                                                         *)
 (* Bounds: MaxDays = 7 daily readings (the longest sequence explored: it   *)
 (*   holds every pattern of one confirmation and one reversal); 4 raw      *)
-(*   states; BrokenMode names a deliberately broken variant ("none" is the *)
-(*   real rule).                                                           *)
+(*   states.                                                               *)
 (* Assumptions: each daily reading is one database transaction (the        *)
 (*   `regime` job body; `hat_regime_state` is unique per trade date, so a  *)
 (*   rerun adds no reading); the raw state of a day is arbitrary (the      *)
@@ -22,9 +21,7 @@
 (***************************************************************************)
 EXTENDS Naturals, Sequences
 
-CONSTANTS MaxDays, BrokenMode
-
-ASSUME BrokenMode \in {"none", "immediate", "two_days", "never_confirm", "run_not_reset"}
+CONSTANTS MaxDays
 
 States == {"bull_quiet", "bull_volatile", "correction", "bear"}
 
@@ -42,14 +39,11 @@ Init ==
     /\ run = 0
     /\ prevConfirmed = "none"
 
-Need ==
-    CASE BrokenMode = "immediate" -> 1
-      [] BrokenMode = "two_days" -> 2
-      [] OTHER -> 3
+Need == 3
 
 \* The confirmed state after a reading of r that makes the run newRun.
 Next3(r, newRun) ==
-    IF BrokenMode # "never_confirm" /\ r # confirmed /\ newRun >= Need THEN r ELSE confirmed
+    IF r # confirmed /\ newRun >= Need THEN r ELSE confirmed
 
 \* code: backend/app/hat/engine/portfolio/regime.py:confirm_step  (the first reading: no
 \* previous confirmation, so the raw state is the confirmed state)
@@ -76,8 +70,8 @@ Switch(r) ==
     /\ Len(hist) \in 1..(MaxDays - 1)
     /\ r # hist[Len(hist)]
     /\ hist' = Append(hist, r)
-    /\ confirmed' = Next3(r, IF BrokenMode = "run_not_reset" THEN run + 1 ELSE 1)
-    /\ run' = IF BrokenMode = "run_not_reset" THEN run + 1 ELSE 1
+    /\ confirmed' = Next3(r, 1)
+    /\ run' = 1
     /\ prevConfirmed' = confirmed
 
 Next ==

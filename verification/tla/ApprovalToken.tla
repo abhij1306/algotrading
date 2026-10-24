@@ -21,8 +21,7 @@
 (*   its whole window fits on the clock); the price crosses the max-chase  *)
 (*   level and back without bound; the three levers (auto, arm, flatten)   *)
 (*   each hold at most one pending ask, re-asked without bound; a press    *)
-(*   comes from the allowlisted chat or another one; BrokenMode names a    *)
-(*   deliberately broken variant ("none" is the real service).             *)
+(*   comes from the allowlisted chat or another one.                       *)
 (* Assumptions: each action is one database transaction holding the bot's *)
 (*   lock; the decision compares the clock with the stored expires_at in   *)
 (*   that transaction; time passes and the expiry sweep runs (weak         *)
@@ -33,11 +32,8 @@
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS NCards, Window, MaxTime, BrokenMode
+CONSTANTS NCards, Window, MaxTime
 
-ASSUME BrokenMode \in {"none", "take_after_expiry", "no_chase_recheck", "decide_twice",
-                       "no_sweep", "act_without_confirm", "confirm_twice",
-                       "confirm_after_expiry", "other_chat"}
 ASSUME Window >= 1 /\ MaxTime >= Window
 
 Cards == 1..NCards
@@ -74,7 +70,7 @@ Init ==
 
 IsSent(c) == sent[c] > 0
 ExpiresAt(c) == sent[c] - 1 + Window
-Open(c) == IsSent(c) /\ (decision[c] = "none" \/ (BrokenMode = "decide_twice" /\ decided[c] < 2))
+Open(c) == IsSent(c) /\ decision[c] = "none"
 Live(c) == clock < ExpiresAt(c)
 
 \* code: backend/app/hat/engine/entries.py:send_approval  (the card is written with its signal,
@@ -90,8 +86,8 @@ Send(c) ==
 \* and the order may be placed, or the card ends Rejected)
 Take(c) ==
     /\ Open(c)
-    /\ Live(c) \/ BrokenMode = "take_after_expiry"
-    /\ LET pass == ~chased \/ BrokenMode = "no_chase_recheck"
+    /\ Live(c)
+    /\ LET pass == ~chased
        IN /\ decision' = [decision EXCEPT ![c] = IF pass THEN "take" ELSE "rejected"]
           /\ chaseTake' = (chaseTake \/ (pass /\ chased))
           /\ lateTake' = (lateTake \/ (pass /\ ~Live(c)))
@@ -111,7 +107,6 @@ Skip(c) ==
 \* expires an undecided card at or past its expiry)
 Expire(c) ==
     /\ IsSent(c) /\ decision[c] = "none" /\ ~Live(c)
-    /\ BrokenMode # "no_sweep"
     /\ decision' = [decision EXCEPT ![c] = "expired"]
     /\ decided' = [decided EXCEPT ![c] = @ + 1]
     /\ UNCHANGED <<clock, sent, chased, lateTake, chaseTake>>
@@ -132,11 +127,11 @@ PriceMove ==
     /\ UNCHANGED leverVars
 
 \* code: backend/app/hat/telegram/confirm.py:ask  (/mode … auto, /arm or /flatten: the command
-\* only registers a pending ask with a fresh nonce; act_without_confirm acts at once)
+\* only registers a pending ask with a fresh nonce)
 Ask(l) ==
     /\ ask' = [ask EXCEPT ![l] = clock + 1]
     /\ used' = [used EXCEPT ![l] = FALSE]
-    /\ unconfirmed' = (unconfirmed \/ BrokenMode = "act_without_confirm")
+    /\ unconfirmed' = unconfirmed
     /\ UNCHANGED cardVars
 
 \* code: backend/app/hat/telegram/confirm.py:take  (the Confirm button: the ask is removed
@@ -144,14 +139,10 @@ Ask(l) ==
 Confirm(l, own) ==
     /\ ask[l] > 0
     /\ LET live == clock < ask[l] - 1 + Window
-           acts == /\ live \/ BrokenMode = "confirm_after_expiry"
-                   /\ own \/ BrokenMode = "other_chat"
+           acts == live /\ own
        IN unconfirmed' = (unconfirmed \/ (acts /\ (~live \/ ~own \/ used[l])))
-    /\ IF BrokenMode = "confirm_twice"
-          THEN /\ ask' = ask
-               /\ used' = [used EXCEPT ![l] = TRUE]
-          ELSE /\ ask' = [ask EXCEPT ![l] = 0]
-               /\ used' = used
+    /\ ask' = [ask EXCEPT ![l] = 0]
+    /\ used' = used
     /\ UNCHANGED cardVars
 
 Next ==

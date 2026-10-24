@@ -1,9 +1,11 @@
-"""The Fyers side of the live feed: the SDK data socket factory and the token source.
+"""The Fyers side of the live feed: the SDK data socket factory.
 
 ProviderSession (provider_session.py) owns the socket's lifecycle; this module
-only builds `fyers_apiv3` sockets and reads the current token. It also hands the
-minute-history download (HAT-DATA-119) the history request of HAT's Fyers session:
-a REST call on the same session, never a second socket.
+only builds `fyers_apiv3` sockets. The token the socket is built with comes from
+HAT's Fyers session (`execution.fyers_session.fyers_token`), which `app/main.py`
+hands the feed. It also hands the minute-history download (HAT-DATA-119) the
+history request of HAT's Fyers session: a REST call on the same session, never a
+second socket.
 """
 
 import logging
@@ -25,30 +27,6 @@ SDK_RECONNECT_RETRIES = 10
 
 class FyersWebSocketError(RuntimeError):
     """The Fyers data socket cannot be built: the SDK is not installed."""
-
-
-def fyers_token() -> str | None:
-    """The current "client_id:access_token" from HAT's Fyers session, or None if logged out.
-
-    Read on every connect, so a re-login reaches the next socket.
-    """
-    from app.hat.execution.fyers_session import get_fyers_session
-
-    session = get_fyers_session()
-    if session.fyers is None:  # also drops a token past its expiry
-        return None
-    client_id = session.client_id
-    access_token = session.access_token
-    if not client_id or not access_token:
-        return None
-    return f"{client_id}:{access_token}"
-
-
-def session_token_valid() -> bool:
-    """Whether Fyers accepts the session's token (a network call: never on the event loop)."""
-    from app.hat.execution.fyers_session import get_fyers_session
-
-    return bool(get_fyers_session().validate_token())
 
 
 def fyers_history() -> Callable[[dict[str, str]], Mapping[str, object]] | None:

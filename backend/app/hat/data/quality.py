@@ -5,10 +5,11 @@ universe has a bar), `ohlc` (no fetched row broke a row check), `big_moves` (eve
 is explained by a stored corporate action or excluded from the day's scans) and `index_snapshot`
 (NIFTY 500 and India VIX are stored). The checks are pure functions; `gate_body` is the
 `quality.gate` job body for `run_job`. It writes one `hat_quality_check` row per check and, in
-the same transaction, either `quality.failed` and the data-health kill (bots take no entry; exits
-and stops go on) or, on a pass, the clearing of that kill (HAT-RISK-063). A failed gate fails
-its job, so the steps that follow it do not run (HAT-OPS-021), and raises one alert through the
-`Notifier` protocol.
+the same transaction, hands the result to the `Verdict` hook `daily` wires
+(`daily.nightly.quality_verdict`): on a FAIL `quality.failed` and the data-health kill (bots
+take no entry; exits and stops go on), on a pass the clearing of that kill (HAT-RISK-063). A
+failed gate fails its job, so the steps that follow it do not run (HAT-OPS-021), and raises one
+alert through the `Notifier` protocol.
 
 The quarantine (PR 33, design review item 12): an unexplained mover does not fail the day. It is
 quarantined (`hat_quality_quarantine`, since the trade date), listed in the `big_moves` row's
@@ -32,7 +33,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..events import record
 from ..models import (
     HatCorporateAction,
     HatEvent,
@@ -43,7 +43,6 @@ from ..models import (
 )
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, RunStatus, SessionFactory
-from ..risk.kill_ops import sync_health
 from ..time import utc_now
 from .corporate_actions import PRICE_NEUTRAL_TYPES
 from .ingest import JOB_INGEST, has_required_indices, moved_over_limit
@@ -68,6 +67,11 @@ CODE_FAILED = "quality_failed"
 CODE_QUARANTINED = "quality.quarantined"  # one alert per newly quarantined instrument
 CODE_NO_INGEST = "quality_no_ingest"
 CODE_NO_RUN = "quality_no_run"
+
+# What a gate's result does besides its check rows, in the gate's own transaction: called as
+# `(session, run_id, result, trade_date, now)`, True when this FAIL is news (the gate alerts then).
+# `daily` wires it (`daily.nightly.quality_verdict`: the data-health kill and `quality.failed`).
+Verdict = Callable[[Session, uuid.UUID, "GateResult", date, datetime], bool]
 
 
 @dataclass(frozen=True)
@@ -165,13 +169,16 @@ def evaluate(
 
 
 def persist(
-    session: Session, run_id: uuid.UUID, result: GateResult, trade_date: date, clock: Clock | None
+    session: Session,
+    run_id: uuid.UUID,
+    result: GateResult,
+    trade_date: date,
+    clock: Clock | None,
+    verdict: Verdict,
 ) -> bool:
     """Write the gate's rows and its consequences in the caller's transaction (HAT-DATA-064,
-    065): one row per check, then `quality.failed` and the health kill on a FAIL, or the health
-    kill's clearing on a pass. A retry of the day's gate (the same `hat_job_run`) that fails the
-    same checks again records no second `quality.failed`. True when this FAIL is news (the
-    caller alerts then)."""
+    065): one row per check, then `verdict` (the health kill and `quality.failed` on a FAIL, the
+    kill's clearing on a pass). True when this FAIL is news (the caller alerts then)."""
     session.execute(delete(HatQualityCheck).where(HatQualityCheck.job_run_id == run_id))
     for check in result.checks:
         session.add(
@@ -181,29 +188,7 @@ def persist(
         )
     session.flush()
     now = utc_now(clock) if clock is not None else utc_now()
-    if result.passed:
-        sync_health(
-            session, scope="account", bot_id=None, failing=False, reason="data_health", now=now
-        )
-        return False
-    sync_health(session, scope="account", bot_id=None, failing=True, reason="data_health", now=now)
-    earlier = session.scalars(
-        select(HatEvent.payload).where(
-            HatEvent.aggregate_id == run_id, HatEvent.event_type == "quality.failed"
-        )
-    ).all()
-    if any(payload.get("failed") == result.failed_names for payload in earlier):
-        return False
-    record(
-        session,
-        aggregate_type="ingest",
-        aggregate_id=run_id,
-        event_type="quality.failed",
-        actor="scheduler",
-        payload={"trade_date": trade_date.isoformat(), "failed": result.failed_names},
-        occurred_at=now,
-    )
-    return True
+    return verdict(session, run_id, result, trade_date, now)
 
 
 def _run_id(session: Session, job: str, trade_date: date) -> uuid.UUID | None:
@@ -318,16 +303,17 @@ def gate_body(
     session_factory: SessionFactory,
     store: DataStore,
     trade_date: date,
+    verdict: Verdict,
     notifier: Notifier | None = None,
     excluded: Collection[uuid.UUID | str] = (),
     clock: Clock | None = None,
 ) -> Callable[[], JobResult]:
     """The `quality.gate` body for `run_job`. It fails (so the next step does not run) when any
-    check fails, after committing the check rows, the event and the health kill. `excluded`
-    names instruments to keep out of the day's scans besides the quarantine. On a passing gate
-    the unexplained movers of `big_moves` are quarantined in the same transaction and each is
-    alerted once, after the commit; a failing gate quarantines nothing (its retry, on data
-    fixed meanwhile, decides afresh), and a passing one is never run again for its day."""
+    check fails, after committing the check rows and `verdict`'s writes (the event, the kill).
+    `excluded` names instruments to keep out of the day's scans besides the quarantine. On a
+    passing gate the unexplained movers of `big_moves` are quarantined in the same transaction
+    and each is alerted once, after the commit; a failing gate quarantines nothing (its retry, on
+    data fixed meanwhile, decides afresh), and a passing one is never run again for its day."""
     sink = notifier if notifier is not None else LogNotifier()
     skipped = {str(i) for i in excluded}
 
@@ -341,7 +327,7 @@ def gate_body(
                 raise JobError(CODE_NO_INGEST)
             result, new = _judge(session, store, trade_date, summary, skipped, clock)
             symbols = _symbols(session, new)
-            news = persist(session, run_id, result, trade_date, clock)
+            news = persist(session, run_id, result, trade_date, clock, verdict)
             session.commit()
         for instrument in new:  # only a passing gate quarantines, and it does not run again
             sink.alert(

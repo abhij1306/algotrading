@@ -133,9 +133,9 @@ def test_no_private_imports() -> None:
     # imported HAT module (by alias, by `import app.hat.x`, through a package, by `getattr`); a
     # module's own private names and a non-HAT one pass
     bad = (
-        "from .trades import _emit, open_entry\n"
+        "from .entries import _emit, open_entry\n"
         "from app.hat.time import _parse\n"
-        "from ..engine import trades\n"
+        "from ..engine import entries\n"
         "import app.hat.engine.journal as journal\n"
         "from collections import _OrderedDictKeysView\n"
         "import app.hat.engine.snapshot\n"
@@ -143,17 +143,17 @@ def test_no_private_imports() -> None:
         "def f(self):\n"
         "    _local(self._own)\n"
         "    app.hat.engine.snapshot._slots()\n"
-        "    engine.trades._emit()\n"
-        "    getattr(trades, '_emit')(getattr(trades, 'open_entry'))\n"
-        "    return trades._day_bounds, journal._move, open_entry\n"
+        "    engine.entries._emit()\n"
+        "    getattr(entries, '_emit')(getattr(entries, 'open_entry'))\n"
+        "    return entries._day_bounds, journal._move, open_entry\n"
     )
     assert private_imports("app.hat.engine.live_trades", bad) == [
-        "line 1: from app.hat.engine.trades import _emit",
+        "line 1: from app.hat.engine.entries import _emit",
         "line 2: from app.hat.time import _parse",
         "line 10: app.hat.engine.snapshot._slots",
-        "line 11: app.hat.engine.trades._emit",
-        "line 12: app.hat.engine.trades._emit",
-        "line 13: app.hat.engine.trades._day_bounds",
+        "line 11: app.hat.engine.entries._emit",
+        "line 12: app.hat.engine.entries._emit",
+        "line 13: app.hat.engine.entries._day_bounds",
         "line 13: app.hat.engine.journal._move",
     ]
 

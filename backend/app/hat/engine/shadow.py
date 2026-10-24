@@ -27,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..execution.tags import encode_tag
+from ..governance import Mode
 from ..ids import uuid7
 from ..models import (
     HatApproval,
@@ -37,7 +38,6 @@ from ..models import (
     HatSignal,
     HatWatchlistEntry,
 )
-from ..risk.modes import Mode
 from . import exits, journal, lifecycle
 from .botlock import lock_bot
 from .positions import Trade, TradeError, evaluate_stack, fill_payload, record_sale, trade_of

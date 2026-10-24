@@ -37,7 +37,7 @@ from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.features import features_job
 from ..data.lineage import refresh_lineage, stored_adjustment
 from ..data.mcp_client import McpClient
-from ..data.quality import JOB_QUALITY, excluded_for, gate_body
+from ..data.quality import JOB_QUALITY, GateResult, excluded_for, gate_body
 from ..data.quarantine import open_quarantines
 from ..data.reference_jobs import (
     CircuitSource,
@@ -63,7 +63,7 @@ from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
 from ..events import record
-from ..models import HatBot, HatJobRun, HatStrategyVersion
+from ..models import HatBot, HatEvent, HatJobRun, HatStrategyVersion
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
 from ..ops.partitions import events_partitions
@@ -234,6 +234,38 @@ def ingest_outcome_recorder(
             )
 
     return hook
+
+
+def quality_verdict(
+    session: Session, run_id: uuid.UUID, result: GateResult, trade_date: date, now: datetime
+) -> bool:
+    """The quality gate's `Verdict`, in the gate's transaction (HAT-DATA-064, 065, HAT-RISK-063):
+    a pass clears the data-health kill; a FAIL trips it and records `quality.failed`, except that
+    a retry of the day's gate (the same `hat_job_run`) failing the same checks again records no
+    second one. True when this FAIL is news."""
+    if result.passed:
+        sync_health(
+            session, scope="account", bot_id=None, failing=False, reason="data_health", now=now
+        )
+        return False
+    sync_health(session, scope="account", bot_id=None, failing=True, reason="data_health", now=now)
+    earlier = session.scalars(
+        select(HatEvent.payload).where(
+            HatEvent.aggregate_id == run_id, HatEvent.event_type == "quality.failed"
+        )
+    ).all()
+    if any(payload.get("failed") == result.failed_names for payload in earlier):
+        return False
+    record(
+        session,
+        aggregate_type="ingest",
+        aggregate_id=run_id,
+        event_type="quality.failed",
+        actor="scheduler",
+        payload={"trade_date": trade_date.isoformat(), "failed": result.failed_names},
+        occurred_at=now,
+    )
+    return True
 
 
 class Nightly:
@@ -557,6 +589,7 @@ def _quality_gate(n: Nightly) -> JobBody:
         "trade_date",
         session_factory=deps.session_factory,
         store=deps.store,
+        verdict=quality_verdict,
         notifier=deps.notifier,
         clock=deps.clock,
     )

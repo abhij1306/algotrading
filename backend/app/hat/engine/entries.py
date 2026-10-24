@@ -46,11 +46,11 @@ from sqlalchemy.orm import Session
 
 from ..backtest.evidence import signal_confidence
 from ..execution.modes import route_mode
+from ..governance import MODE_VALUES, Mode
 from ..ids import uuid7
 from ..models import HatApproval, HatBot, HatSignal
 from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
-from ..risk.modes import MODE_VALUES, Mode
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.service import evaluate_signal
 from ..time import as_utc

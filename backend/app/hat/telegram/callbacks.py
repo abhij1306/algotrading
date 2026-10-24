@@ -36,8 +36,8 @@ from ..events import record
 from ..execution.manage import FlattenReport, TradeManager
 from ..execution.order_book import ENTRY
 from ..execution.router import ExecutionRouter, PlacementCheck
+from ..governance import Mode
 from ..models import HatApproval, HatBot, HatOrder, HatSignal
-from ..risk.modes import Mode
 from ..settings import load_settings
 from .commands import Reply, queue_modes, rearm_all, refused
 from .confirm import PendingConfirmations

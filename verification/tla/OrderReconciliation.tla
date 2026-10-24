@@ -15,8 +15,7 @@
 (*   protocol allows one); MaxRetries = 1 retry after a rejection;         *)
 (*   MaxBook = 2 broker orders per tag counted (2 means a double place);   *)
 (*   MaxDiverge = 1 broker/HAT divergences; NOwners = 2 session services;  *)
-(*   MaxRestarts = 2 process restarts; BrokenMode names a deliberately     *)
-(*   broken variant ("none" is the real protocol).                         *)
+(*   MaxRestarts = 2 process restarts.                                     *)
 (* Assumptions: each action is one database transaction or one broker call *)
 (*   (atomic), and a crash can fall between any two of them (Restart); the *)
 (*   broker never invents an order and a rejection means nothing was      *)
@@ -38,12 +37,7 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS MaxTags, MaxRetries, MaxBook, MaxDiverge, NOwners, MaxRestarts, BrokenMode
-
-ASSUME BrokenMode \in {"none", "no_persist", "retry_new_tag", "retry_without_lookup",
-                       "no_reconcile", "ignore_mismatch", "alert_every_run",
-                       "inactive_account", "two_owners", "non_cnc", "unlimited_retry",
-                       "retry_on_lagging_lookup", "no_late_adoption"}
+CONSTANTS MaxTags, MaxRetries, MaxBook, MaxDiverge, NOwners, MaxRestarts
 
 Tags == 0..(MaxTags - 1)
 Owners == 1..NOwners
@@ -110,7 +104,7 @@ CheckAccount ==
 \* code: backend/app/hat/execution/session.py:acquire  (one owner per account session)
 AcquireSession(o) ==
     /\ o \notin owners
-    /\ owners = {} \/ BrokenMode = "two_owners"
+    /\ owners = {}
     /\ owners' = owners \cup {o}
     /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, reconciled, diverged, divergeCount, blocked, alerts, restarts,
@@ -132,10 +126,8 @@ Reserve(t, p) ==
     /\ row[t] = "none"
     /\ \/ t = 0
        \/ /\ t > 0
-          /\ \/ row[t - 1] = "rejected"
-             \/ (BrokenMode = "retry_new_tag" /\ row[t - 1] = "unconfirmed")
-          /\ \/ retries < MaxRetries
-             \/ BrokenMode = "unlimited_retry"
+          /\ row[t - 1] = "rejected"
+          /\ retries < MaxRetries
     /\ row' = [row EXCEPT ![t] = "pending"]
     /\ product' = [product EXCEPT ![t] = p]
     /\ retries' = IF t > 0 THEN retries + 1 ELSE retries
@@ -145,24 +137,15 @@ Reserve(t, p) ==
 
 \* code: backend/app/hat/execution/submit.py:send_order  (the guards, then commit the attempt in
 \* hat_order.placed_at before the broker call; an entry is attempted once per tag: one whose
-\* outcome is unknown is looked up and adopted, never sent again (broken variant
-\* "retry_on_lagging_lookup": sent again after a lookup that found nothing, the code before
-\* PR 28; "retry_without_lookup": sent again with no lookup at all))
+\* outcome is unknown is looked up and adopted, never sent again)
 Stamp(t) ==
-    /\ \/ row[t] \in {"pending", "unconfirmed"}
-       \/ BrokenMode = "no_persist" /\ t = 0 /\ row[t] = "none"
+    /\ row[t] \in {"pending", "unconfirmed"}
     /\ stage[t] = "idle"
-    /\ \/ ~attempted[t]
-       \/ BrokenMode = "retry_on_lagging_lookup" /\ ~unresolved[t]
-       \/ BrokenMode = "retry_without_lookup"
-    /\ \/ acct = "active"
-       \/ BrokenMode = "inactive_account"
-    /\ \/ reconciled
-       \/ BrokenMode = "no_reconcile"
-    /\ \/ ~blocked
-       \/ BrokenMode = "ignore_mismatch"
-    /\ \/ product[t] = "CNC"
-       \/ BrokenMode \in {"non_cnc", "no_persist"}
+    /\ ~attempted[t]
+    /\ acct = "active"
+    /\ reconciled
+    /\ ~blocked
+    /\ product[t] = "CNC"
     /\ attempted' = [attempted EXCEPT ![t] = TRUE]
     /\ stage' = [stage EXCEPT ![t] = "stamped"]
     /\ UNCHANGED <<seen, row, answer, unresolved, book, product, retries, acct, checked, owners,
@@ -174,10 +157,8 @@ Stamp(t) ==
 \* call; the answer is accepted, rejected (nothing placed), or lost with the order landed or not)
 PlaceCall(t, a) ==
     /\ stage[t] = "stamped"
-    /\ \/ reconciled
-       \/ BrokenMode = "no_reconcile"
-    /\ \/ ~blocked
-       \/ BrokenMode = "ignore_mismatch"
+    /\ reconciled
+    /\ ~blocked
     /\ \/ a \in {"accepted", "lost_landed"} /\ book[t] < MaxBook
        \/ a \in {"rejected", "lost_not_landed"}
     /\ book' = [book EXCEPT ![t] = IF a \in {"accepted", "lost_landed"} THEN @ + 1 ELSE @]
@@ -235,7 +216,7 @@ Restart ==
 Reconcile ==
     /\ reconciled' = TRUE
     /\ blocked' = diverged
-    /\ alerts' = IF diverged /\ (~blocked \/ BrokenMode = "alert_every_run")
+    /\ alerts' = IF diverged /\ ~blocked
                     THEN alerts + 1 ELSE alerts
     /\ UNCHANGED <<seen, row, attempted, stage, answer, unresolved, book, product, retries, acct,
                    checked, owners, diverged, divergeCount, restarts, violUnresolved,
@@ -272,7 +253,6 @@ BookCatchesUp(t) ==
 \* code: backend/app/hat/execution/fills.py:FillSync._adopt  (and ReconciliationService.run: an
 \* attempted order whose lookup found nothing is adopted once the book shows its tag)
 Adopt(t) ==
-    /\ BrokenMode # "no_late_adoption"
     /\ stage[t] = "idle"
     /\ attempted[t]
     /\ row[t] \in {"pending", "unconfirmed"}

@@ -13,7 +13,6 @@ LANE_E = {
     "app/hat/backtest/data.py",
     "app/hat/backtest/runs.py",
     "app/hat/engine/portfolio/jobs.py",
-    "app/hat/engine/portfolio/regime_service.py",
 }
 _TEXT = {"str", "repr", "float"}
 

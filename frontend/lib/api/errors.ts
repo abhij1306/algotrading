@@ -7,7 +7,6 @@ export type ApiErrorCode =
   | "HTTP_ERROR"
   | "VALIDATION_ERROR"
   | "RESPONSE_SHAPE_ERROR"
-  | "DATABASE_UNAVAILABLE"
   | "BROKER_UNAVAILABLE"
   | (string & Record<never, never>);
 
@@ -38,13 +37,9 @@ function firstValidationMessage(detail: unknown[]): string | null {
 
 /**
  * Fixed, user-facing wording for the backend's "dependency is down" codes. These win over
- * the server's message so every screen reads the same when Postgres or the broker is down.
+ * the server's message so every screen reads the same when the broker is down.
  */
 const UNAVAILABLE_MESSAGES: ReadonlyMap<string, string> = new Map([
-  [
-    "DATABASE_UNAVAILABLE",
-    "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
-  ],
   ["BROKER_UNAVAILABLE", "Broker unavailable: Fyers could not be reached. Retry once it is back."],
 ]);
 

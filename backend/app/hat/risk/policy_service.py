@@ -19,15 +19,10 @@ from sqlalchemy.orm import Session
 
 from ..backtest.evidence import gate_evidence
 from ..errors import HatError
+from ..governance import COOLING_OFF
 from ..models import HatEvent, HatRiskPolicyVersion
 from ..time import as_utc
-from .policy import (
-    COOLING_OFF,
-    SEED_POLICY,
-    RiskPolicy,
-    classify_direction,
-    require_increase_gate,
-)
+from .policy import SEED_POLICY, RiskPolicy, classify_direction, require_increase_gate
 from .policy_upkeep import (
     EVENT_EFFECTIVE,
     EVENT_REQUESTED,

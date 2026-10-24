@@ -11,8 +11,7 @@
 (* would not be checkable in a few seconds.                                *)
 (*                                                                         *)
 (* Bounds: Cut = 3 ten-minute slots between 18:00 (slot 0) and the 22:00  *)
-(*   cutoff (slot Cut), standing for the 24 real slots; BrokenMode names   *)
-(*   a deliberately broken variant ("none" is the real protocol). One      *)
+(*   cutoff (slot Cut), standing for the 24 real slots. One                *)
 (*   trade date, one open position whose exit falls due once, seven        *)
 (*   pipeline steps (gate = 1, adjust = 2, features = 3, regime = 4,       *)
 (*   allocate = 5, scan = 6, digest = 7) each run at most until it         *)
@@ -35,13 +34,8 @@
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
-CONSTANTS Cut, BrokenMode
+CONSTANTS Cut
 
-ASSUME BrokenMode \in {"none", "probe_twice", "probe_at_cutoff", "fetch_without_match",
-                       "fallback_always", "no_fallback", "nodata_no_kill",
-                       "nodata_no_alert", "skip_order", "scan_ignores_gate",
-                       "gate_fail_no_kill", "exit_needs_pipeline", "adjust_needs_gate",
-                       "snapshot_needs_allocate"}
 
 Steps == 1..7
 
@@ -101,8 +95,8 @@ McpBecomesReady ==
 \* or after the cutoff)
 Probe ==
     /\ phase = "polling"
-    /\ probesInSlot < (IF BrokenMode = "probe_twice" THEN 2 ELSE 1)
-    /\ now < Cut \/ BrokenMode = "probe_at_cutoff"
+    /\ probesInSlot < 1
+    /\ now < Cut
     /\ probesInSlot' = probesInSlot + 1
     /\ lastProbe' = now
     /\ IF mcpReady
@@ -116,14 +110,14 @@ Probe ==
 \* code: backend/app/hat/data/ingest.py:_fetch_mcp  (the full fetch and the raw write, or a
 \* failed fetch that fails the run, trips the health kill and alerts)
 Fetch ==
-    /\ phase = "fetching" \/ (BrokenMode = "fetch_without_match" /\ phase = "polling")
+    /\ phase = "fetching"
     /\ fetchStarted' = TRUE
     /\ \/ /\ rawCommits' = rawCommits + 1
           /\ phase' = "ingested"
           /\ UNCHANGED <<healthKill, alerted>>
        \/ /\ phase' = "nodata"
-          /\ healthKill' = (IF BrokenMode = "nodata_no_kill" THEN healthKill ELSE TRUE)
-          /\ alerted' = (IF BrokenMode = "nodata_no_alert" THEN alerted ELSE TRUE)
+          /\ healthKill' = TRUE
+          /\ alerted' = TRUE
           /\ UNCHANGED rawCommits
     /\ UNCHANGED <<now, mcpReady, matched, probesInSlot, lastProbe, fallbackRuns, st, exitDue,
                    exitUsed, snapDone>>
@@ -131,23 +125,23 @@ Fetch ==
 \* code: backend/app/hat/data/ingest.py:bhavcopy_day  (22:00 with no matching probe: the bhavcopy
 \* download, at most once; it commits the day or finds nothing, which fails the run)
 Fallback ==
-    /\ BrokenMode # "no_fallback"
     /\ now = Cut
     /\ fallbackRuns = 0
-    /\ phase = "polling" \/ (BrokenMode = "fallback_always" /\ phase # "nodata")
+    /\ phase = "polling"
     /\ fallbackRuns' = 1
     /\ \/ /\ rawCommits' = rawCommits + 1
           /\ phase' = "ingested"
           /\ UNCHANGED <<healthKill, alerted>>
        \/ /\ phase' = "nodata"
-          /\ healthKill' = (IF BrokenMode = "nodata_no_kill" THEN healthKill ELSE TRUE)
-          /\ alerted' = (IF BrokenMode = "nodata_no_alert" THEN alerted ELSE TRUE)
+          /\ healthKill' = TRUE
+          /\ alerted' = TRUE
           /\ UNCHANGED rawCommits
     /\ UNCHANGED <<now, mcpReady, matched, fetchStarted, probesInSlot, lastProbe, st, exitDue,
                    exitUsed, snapDone>>
 
-\* code: backend/app/hat/data/quality.py:gate_body  (step 1: a pass clears the data-health kill; a
-\* fail commits its rows, trips the kill and alerts, in one transaction)
+\* code: backend/app/hat/data/quality.py:gate_body, backend/app/hat/daily/nightly.py:quality_verdict
+\* (step 1: a pass clears the data-health kill; a fail commits its rows, trips the kill and
+\* alerts, in one transaction)
 Gate ==
     /\ phase = "ingested"
     /\ st[1] # "succeeded"
@@ -155,7 +149,7 @@ Gate ==
           /\ healthKill' = FALSE
           /\ UNCHANGED alerted
        \/ /\ st' = [st EXCEPT ![1] = "failed"]
-          /\ healthKill' = (IF BrokenMode = "gate_fail_no_kill" THEN healthKill ELSE TRUE)
+          /\ healthKill' = TRUE
           /\ alerted' = TRUE
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
                    fallbackRuns, rawCommits, exitDue, exitUsed, snapDone>>
@@ -163,7 +157,7 @@ Gate ==
 \* What a step waits for (backend/app/hat/daily/nightly.py:nightly_jobs, PR 33): the adjustment
 \* only the ingested day; features the gate and the adjustment; every later step the one before.
 Ready(k) ==
-    CASE k = 2 -> phase = "ingested" /\ (BrokenMode # "adjust_needs_gate" \/ st[1] = "succeeded")
+    CASE k = 2 -> phase = "ingested"
       [] k = 3 -> st[1] = "succeeded" /\ st[2] = "succeeded"
       [] OTHER -> st[k - 1] = "succeeded"
 
@@ -172,9 +166,7 @@ Ready(k) ==
 Step(k, r) ==
     /\ k \in 2..7
     /\ st[k] # "succeeded"
-    /\ IF BrokenMode = "skip_order" \/ (BrokenMode = "scan_ignores_gate" /\ k = 6)
-          THEN phase = "ingested"
-          ELSE Ready(k)
+    /\ Ready(k)
     /\ st' = [st EXCEPT ![k] = r]
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
                    fallbackRuns, rawCommits, healthKill, alerted, exitDue, exitUsed, snapDone>>
@@ -185,7 +177,6 @@ LaterStep(k) == \E r \in {"succeeded", "failed"} : Step(k, r)
 \* allocation on or before the day: it waits on no step, PR 33)
 Snapshot ==
     /\ ~snapDone
-    /\ BrokenMode # "snapshot_needs_allocate" \/ st[5] = "succeeded"
     /\ snapDone' = TRUE
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
                    fallbackRuns, rawCommits, healthKill, alerted, st, exitDue, exitUsed>>
@@ -201,7 +192,6 @@ ExitBecomesDue ==
 \* code: backend/app/hat/risk/decision.py:_exit_decision  (the exit is sent: it reads no pipeline state)
 ExitSend ==
     /\ exitDue
-    /\ BrokenMode # "exit_needs_pipeline" \/ st[7] = "succeeded"
     /\ exitDue' = FALSE
     /\ UNCHANGED <<now, mcpReady, phase, matched, fetchStarted, probesInSlot, lastProbe,
                    fallbackRuns, rawCommits, healthKill, alerted, st, exitUsed, snapDone>>

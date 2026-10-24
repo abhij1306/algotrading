@@ -1,4 +1,5 @@
-"""HAT's read model: the bots, kill switches, open positions and watchlists as the dashboard
+"""HAT's read model: the bots, kill switches, open positions, watchlists, broker sessions and
+regime as the dashboard
 (`api/dashboard.py`) and the Telegram replies (`telegram/reads.py`) both show them.
 
 Each function takes a session and returns frozen dataclasses, reading in batches (no query per

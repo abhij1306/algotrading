@@ -57,8 +57,8 @@ from app.hat.execution.session import (
 )
 from app.hat.execution.stop_plans import stop_confirmed
 from app.hat.execution.tags import encode_tag
+from app.hat.governance import MODE_VALUES, Mode
 from app.hat.models import HatOrder
-from app.hat.risk.modes import MODE_VALUES, Mode
 
 
 @given(

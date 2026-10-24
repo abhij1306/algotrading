@@ -20,17 +20,17 @@ from ..data.calendar import session_calendar
 from ..models import (
     HatBot,
     HatBrokerAccount,
-    HatBrokerSession,
     HatDailyBotSnapshot,
     HatEvent,
     HatPosition,
-    HatRegimeState,
     HatSignal,
 )
 from ..models.strategy import ACCOUNT_ACTIVE
 from ..read import bots as read_bots
 from ..read import kill as read_kill
-from ..read.positions import open_positions, symbol_of
+from ..read.positions import UNKNOWN, open_positions, symbols
+from ..read.regime import latest_regimes
+from ..read.sessions import broker_sessions
 from ..read.watchlist import latest_watchlists
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc, day_bounds, trade_date_of
@@ -96,14 +96,9 @@ def accounts(session: Session, broker: str | None = None) -> list[HatBrokerAccou
     return [a for a in rows if a.broker.lower() == broker.strip().lower()]
 
 
-def session_status(session: Session, account_id: uuid.UUID, day: date) -> str:
-    row = session.get(HatBrokerSession, (account_id, day))
-    return row.status if row is not None else "missing"
-
-
 def logged_out(session: Session, day: date) -> list[HatBrokerAccount]:
     """The active accounts with no live `hat_broker_session` for `day` (the 09:05 prompt)."""
-    return [a for a in accounts(session) if session_status(session, a.id, day) != LIVE]
+    return [row.account for row in broker_sessions(session, day) if row.status != LIVE]
 
 
 def open_real_positions(session: Session, account_ids: Sequence[uuid.UUID]) -> int:
@@ -126,19 +121,14 @@ def open_real_positions(session: Session, account_ids: Sequence[uuid.UUID]) -> i
     )
 
 
-def account_label(account: HatBrokerAccount) -> str:
-    return f"{account.broker} {account.account_ref}"
-
-
 # --- /status -----------------------------------------------------------------------------------
 
 
 def _regime(session: Session) -> str:
-    row = session.scalars(
-        select(HatRegimeState).order_by(HatRegimeState.trade_date.desc()).limit(1)
-    ).first()
-    if row is None:
+    rows = latest_regimes(session, 1)
+    if not rows:
         return "n/a"
+    row = rows[0]
     return f"{row.state}{'' if row.confirmed else ' (unconfirmed)'} {row.trade_date.isoformat()}"
 
 
@@ -157,9 +147,7 @@ def status_view(session: Session, now: datetime, feed: str) -> render.StatusView
     day = trade_date_of(now)
     regime = _regime(session)
     return render.StatusView(
-        sessions=tuple(
-            (account_label(a), session_status(session, a.id, day)) for a in accounts(session)
-        ),
+        sessions=tuple((row.label, row.status) for row in broker_sessions(session, day)),
         feed=feed,
         kill_account=read_kill.account_tripped(read_kill.kill_rows(session)),
         bots=tuple(
@@ -250,22 +238,34 @@ def watchlist_digest(session: Session, bot: HatBot, day: date) -> render.Watchli
 def rejection_rows(session: Session, day: date) -> list[render.RejectionRow]:
     """HAT-TG-024, HAT-EXEC-043: every `signal.rejected` event of the trade date, in order."""
     start, end = day_bounds(day)
-    rows = []
-    for event in session.scalars(
-        select(HatEvent)
-        .where(
-            HatEvent.event_type == "signal.rejected",
-            HatEvent.occurred_at >= start,
-            HatEvent.occurred_at < end,
+    events = list(
+        session.scalars(
+            select(HatEvent)
+            .where(
+                HatEvent.event_type == "signal.rejected",
+                HatEvent.occurred_at >= start,
+                HatEvent.occurred_at < end,
+            )
+            .order_by(HatEvent.id)
         )
-        .order_by(HatEvent.id)
-    ):
-        signal = session.get(HatSignal, event.aggregate_id)
-        bot = session.get(HatBot, signal.bot_id) if signal is not None else None
+    )
+    signals = {
+        s.id: s
+        for s in session.scalars(
+            select(HatSignal).where(HatSignal.id.in_({e.aggregate_id for e in events}))
+        )
+    }
+    names = read_bots.labels(session, {s.bot_id for s in signals.values()})
+    symbol_names = symbols(session, {s.instrument_id for s in signals.values()})
+    rows = []
+    for event in events:
+        signal = signals.get(event.aggregate_id)
         rows.append(
             render.RejectionRow(
-                bot=read_bots.label_of(session, bot) if bot is not None else "?",
-                symbol=symbol_of(session, signal.instrument_id) if signal is not None else "?",
+                bot=names.get(signal.bot_id, "?") if signal is not None else "?",
+                symbol=symbol_names.get(signal.instrument_id, UNKNOWN)
+                if signal is not None
+                else "?",
                 reason=str((event.payload or {}).get("reason") or "unknown"),
             )
         )
@@ -274,17 +274,33 @@ def rejection_rows(session: Session, day: date) -> list[render.RejectionRow]:
 
 def daily_bots(session: Session, day: date) -> list[render.BotDay]:
     """HAT-TG-024: per bot, its latest `hat_daily_bot_snapshot` on or before `day`."""
+    bots = bots_named(session, None)
+    names = read_bots.labels(session, (bot.id for bot in bots))
+    latest = (
+        select(
+            HatDailyBotSnapshot.bot_id,
+            func.max(HatDailyBotSnapshot.trade_date).label("trade_date"),
+        )
+        .where(HatDailyBotSnapshot.trade_date <= day)
+        .group_by(HatDailyBotSnapshot.bot_id)
+        .subquery()
+    )
+    snaps = {
+        snap.bot_id: snap
+        for snap in session.scalars(
+            select(HatDailyBotSnapshot).join(
+                latest,
+                (HatDailyBotSnapshot.bot_id == latest.c.bot_id)
+                & (HatDailyBotSnapshot.trade_date == latest.c.trade_date),
+            )
+        )
+    }
     out = []
-    for bot in bots_named(session, None):
-        snap = session.scalars(
-            select(HatDailyBotSnapshot)
-            .where(HatDailyBotSnapshot.bot_id == bot.id, HatDailyBotSnapshot.trade_date <= day)
-            .order_by(HatDailyBotSnapshot.trade_date.desc())
-            .limit(1)
-        ).first()
+    for bot in bots:
+        snap = snaps.get(bot.id)
         out.append(
             render.BotDay(
-                bot=read_bots.label_of(session, bot),
+                bot=names[bot.id],
                 trade_date=snap.trade_date if snap else None,
                 open_risk=Decimal(snap.open_risk) if snap else None,
                 realized_r=Decimal(snap.realized_r) if snap else None,

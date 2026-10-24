@@ -4,8 +4,7 @@
  * - The user's explicit choice is persisted in localStorage; with no choice the theme follows
  *   the system preference (and keeps following it while it changes).
  * - `index.html` runs an inline copy of the initial read before first paint so the page never
- *   flashes the wrong theme; keep `THEME_STORAGE_KEY` and the values in sync with it. That copy
- *   also moves a choice saved under the old `smarttrader-theme` key, once.
+ *   flashes the wrong theme; keep `THEME_STORAGE_KEY` and the values in sync with it.
  * - React reads the store through `useSyncExternalStore`; there are no effects.
  */
 import { useSyncExternalStore } from "react";

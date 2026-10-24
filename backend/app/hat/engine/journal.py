@@ -40,8 +40,8 @@ from sqlalchemy.sql.expression import Exists
 
 from ..events import Actor
 from ..events import record as append
+from ..governance import Mode
 from ..models import HatApproval, HatEvent, HatOrder, HatPosition, HatSignal
-from ..risk.modes import Mode
 from . import lifecycle
 
 __all__ = [

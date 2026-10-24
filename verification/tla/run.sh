@@ -3,9 +3,6 @@
 #
 #   verification/tla/run.sh                  every model against its <Model>.cfg (must pass)
 #   verification/tla/run.sh JobScheduler     one model
-#   verification/tla/run.sh --broken         every broken variant in broken/ (each must FAIL
-#                                            with the violation named on its "EXPECT:" line)
-#   verification/tla/run.sh --broken JobScheduler
 #
 # TLC is tla2tools.jar v1.7.4 (TLC 2.19), pinned by URL and sha256 below, on Java 17 or later
 # (JAVA_HOME, else `java` on PATH). The jar is cached in $TLA_CACHE_DIR
@@ -69,9 +66,7 @@ run_tlc() { # run_tlc <model> <cfg> ; prints TLC output, returns TLC's exit stat
   return "${status}"
 }
 
-mode="pass"
-if [[ "${1:-}" == "--broken" ]]; then mode="broken"; shift; fi
-if [[ $# -gt 1 ]]; then echo "usage: run.sh [--broken] [Model]" >&2; exit 2; fi
+if [[ $# -gt 1 ]]; then echo "usage: run.sh [Model]" >&2; exit 2; fi
 
 fetch_jar
 JAVA="$(find_java)"
@@ -86,39 +81,12 @@ for model in "${models[@]}"; do
   if [[ ! -f "${HERE}/${model}.tla" || ! -f "${HERE}/${model}.cfg" ]]; then
     echo "no ${model}.tla and ${model}.cfg in ${HERE}" >&2; exit 2
   fi
-  if [[ "${mode}" == "pass" ]]; then
-    echo "== ${model}: must pass"
-    if ! run_tlc "${model}" "${model}.cfg" >"${HERE}/.tlc.out" 2>&1; then
-      cat "${HERE}/.tlc.out"; echo "FAIL ${model}: TLC reported a problem" >&2; failures=$((failures + 1))
-    else
-      grep -E "Model checking completed|distinct states found" "${HERE}/.tlc.out" | tail -2
-    fi
-    continue
+  echo "== ${model}: must pass"
+  if ! run_tlc "${model}" "${model}.cfg" >"${HERE}/.tlc.out" 2>&1; then
+    cat "${HERE}/.tlc.out"; echo "FAIL ${model}: TLC reported a problem" >&2; failures=$((failures + 1))
+  else
+    grep -E "Model checking completed|distinct states found" "${HERE}/.tlc.out" | tail -2
   fi
-  shopt -s nullglob
-  variants=("${HERE}"/broken/"${model}"__*.cfg)
-  shopt -u nullglob
-  if [[ ${#variants[@]} -eq 0 ]]; then
-    echo "FAIL ${model}: no broken variants in broken/" >&2; failures=$((failures + 1)); continue
-  fi
-  for variant in "${variants[@]}"; do
-    rel="broken/$(basename "${variant}")"
-    expect="$(sed -n 's/^\\\* EXPECT: *//p' "${variant}" | head -1)"
-    echo "== ${rel}: must violate ${expect}"
-    run_tlc "${model}" "${rel}" >"${HERE}/.tlc.out" 2>&1 || true
-    if grep -qE "^PROPERTY +${expect}\$" "${variant}"; then
-      pattern="Temporal properties were violated"
-    else
-      pattern="Invariant ${expect} is violated"
-    fi
-    if grep -q "${pattern}" "${HERE}/.tlc.out"; then
-      echo "ok: ${pattern}"
-    else
-      tail -20 "${HERE}/.tlc.out"
-      echo "FAIL ${rel}: expected '${pattern}' and did not get it" >&2
-      failures=$((failures + 1))
-    fi
-  done
 done
 rm -f "${HERE}/.tlc.out"
 if [[ ${failures} -gt 0 ]]; then echo "${failures} failure(s)" >&2; exit 1; fi

@@ -349,8 +349,7 @@ def _owner(
             session, args.account, user_id=deps.user_id, note=args.note, now=now, chat_id=chat_id
         )
         return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
-    calendar = _calendar(session)
-    owner = OwnerCommand(chat_id, now, calendar)
+    owner = OwnerCommand(chat_id, now, _calendar(session))
     if args.command == "confirm-ddpi":
         account = confirm_ddpi(
             session,
@@ -358,14 +357,12 @@ def _owner(
             user_id=deps.user_id,
             since=args.since,
             note=args.note,
-            calendar=calendar,
-            now=now,
-            chat_id=chat_id,
+            command=owner,
         )
         return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
     if args.command == "assign-version":
         bot = versions.assign_version(
-            session, bot_id=args.bot, version_id=args.version, chat_id=chat_id, now=now
+            session, bot_id=args.bot, version_id=args.version, command=owner
         )
         return {"bot_id": str(bot.id), "live_version_id": str(bot.live_version_id)}
     if args.command == "resolve-action":
@@ -373,9 +370,7 @@ def _owner(
         close_position(session, position.id, args.close_at, CLOSE_REASON, now)
         return {"position_id": str(position.id), "closed": position.closed_at is not None}
     if args.command == "promote-version":
-        row = versions.promote_version(
-            session, args.version, calendar=calendar, now=now, chat_id=chat_id
-        )
+        row = versions.promote_version(session, args.version, owner)
         return {"version_id": str(row.id), "status": row.status}
     bot = sleeve_service.owner_transition(
         session, args.bot, args.to, _policy(session, deps.user_id, now), owner

@@ -6,8 +6,9 @@ from hat_support import memory_engine
 from hypothesis import given
 from hypothesis import strategies as st
 
+from app.hat.governance import cooling_off_satisfied
 from app.hat.models import HatRiskPolicyVersion
-from app.hat.risk.policy import DIRECTIONS, cooling_off_satisfied
+from app.hat.risk.policy import DIRECTIONS
 
 SEVEN_DAYS_US = 7 * 24 * 3600 * 1_000_000
 requested = st.datetimes(

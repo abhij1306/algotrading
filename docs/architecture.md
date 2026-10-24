@@ -13,7 +13,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 
 | Package | Holds |
 | --- | --- |
-| `data` | NSE MCP client, bhavcopy, reference data, the trading universe (`universe.py`), ingest (breadth in `breadth.py`; its outcome events and health kill are written by `daily`), quality gate, corporate actions (one pooled `lookup_actions`), the ISIN lineage (`lineage.py`: one adjusted series per chain of ISINs, `stored_adjustment` feeds every `bars_daily` reader), the history build (`history_build.py`, CLI `history_cli.py`, `index_history.py`, `history_validation.py`) and minute history, one call pacer (`pacing.py`), Parquet store (`store.py`, `bars_store.py`; `store.atomic_replace` is the one atomic writer), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
+| `data` | NSE MCP client, bhavcopy, reference data, the trading universe (`universe.py`), ingest (breadth in `breadth.py`; its outcome events and health kill are written by `daily`), quality gate (its kill and `quality.failed` too, through the `Verdict` hook), corporate actions (one pooled `lookup_actions`), the ISIN lineage (`lineage.py`: one adjusted series per chain of ISINs, `stored_adjustment` feeds every `bars_daily` reader), the history build (`history_build.py`, CLI `history_cli.py`, `index_history.py`, `history_validation.py`) and minute history (candle parsing in `candles.py`), one call pacer (`pacing.py`), Parquet store (`store.py`, `bars_store.py`; `store.atomic_replace` is the one atomic writer), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, entries (`entries`), the shadow engine (`shadow`), real positions (`live_trades`) and the sale recording both share (`positions.record_sale`), approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy and its versions, sizing, caps, exposure ladder and pause (`bots.py`), kill switches (`kill.py` rules, `kill_ops.py` rows), drawdown kills and the nightly snapshot (`drawdown.py`), modes and the mode queue (`controls.py`), `evaluate_signal` |
 | `execution` | `HatBroker` interface, Fyers adapter (`fyers_adapter.py` over the pure payloads and parsers in `fyers_payloads.py`)/broker/session/auth/tokens, router, order submit and tags (`submit.py`; the rows against the broker's books in `order_book.py`), stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`: every sale a `SaleOrder` through one pure `sale_gate`), the fill sync in phases read, settle, commit, market, protect (`fills.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
@@ -23,7 +23,7 @@ is the control surface. Orders reach Fyers only from a HAT signal.
 | `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), the evidence the gates read (`evidence`, through the typed `RunMetrics`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` and `risk` import only `spec` and `evidence`, never the loop |
 | `models` | SQLAlchemy models on the shared `Base`; every table is `hat_*` |
 | `api` | Read-only dashboard routes and the Fyers login routes behind the write guard |
-| `read` | The read model the dashboard and Telegram share: bots (mode, kill state, manage-only reasons), kill rows, open positions, latest watchlists; batched reads into frozen dataclasses, no writer import (CONF `hat_routes_read_only`) |
+| `read` | The read model the dashboard and Telegram share: bots (mode, kill state, manage-only reasons), kill rows, open positions, latest watchlists, broker sessions, regime states; batched reads into frozen dataclasses, no writer import (CONF `hat_routes_read_only`) |
 
 Top-level helpers: `events.py` (event log), `money.py` (Decimal), `clock.py`, `ids.py` (uuid v7),
 `settings.py`, `schema.py` (`init_db` upkeep, Postgres-only DDL, seeds), `admin.py` (owner CLI).
@@ -70,7 +70,7 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   (`fyers_tokens.token_store`), one live socket (`LiveFeed`, built only in `main.py`).
 - **One clock, one mode:** code that needs "now" takes a `clock.Clock` (`SYSTEM_CLOCK` in
   production); `send_order`, `adopt_broker_order` and `ReconciliationService` stamp from it.
-  `risk/modes.py:Mode` is the only spelling of shadow/confirm/auto (the schema CHECKs read it);
+  `governance.py:Mode` is the only spelling of shadow/confirm/auto (the schema CHECKs read it);
   `queued_mode_at` is the queued change in force, `execution/modes.py:capability_gated` the gate.
 - **Gates:** `execution/modes.py:gate_refusal` decides confirm/auto vs shadow; `ExecutionGuard`
   holds the per-trade-date reconciliation gate; kill switches live in `risk/kill.py`, `kill_ops.py` (each read is the latest row of each stream).
@@ -125,13 +125,13 @@ run every transaction under `SET LOCAL statement_timeout` (120 s).
 
 TLA+ models in `verification/tla/` (ExecutionRouter, OrderReconciliation, StopPlacement,
 KillSwitch, ApprovalToken, TradeLifecycle, JobScheduler, NightlyPipeline, DailyCycle,
-RegimeConfirmation, SleeveLifecycle; each with `broken/` variants), Hypothesis properties in
+RegimeConfirmation, SleeveLifecycle), Hypothesis properties in
 `backend/tests/hat/properties/`, Postgres checks in `tests/hat/db/` (only what a real server
 enforces: triggers, partial unique indexes, CHECK constraints, row and advisory locks), conformance checks in
 `tests/hat/conformance/`. A change is verified by running it on real data, never by a backtest.
 
 CI (`.github/workflows/ci.yml`, every PR and push to main): `backend`, `backend-postgres`,
 `verification-conformance`, `verification-properties` (sharded, each file once), `frontend`, `api-schema`.
-`.github/workflows/tla.yml` runs the TLC models and their broken variants only when
+`.github/workflows/tla.yml` runs the TLC models only when
 `verification/**` or a Python file named in a model's `code:` comments changes, weekly, and on
 demand.
