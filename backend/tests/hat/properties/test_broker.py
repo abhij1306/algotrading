@@ -49,6 +49,7 @@ from app.hat.execution.modes import (
     UnknownModeError,
     capability_gated,
     request_mode,
+    sleeve_refusal,
 )
 from app.hat.execution.position_desk import LOST_ANSWER_SETTLE, Verdict, settle_verdict
 from app.hat.execution.session import (
@@ -103,6 +104,14 @@ def test_confirm_and_auto_need_gtt(
         assert refused.value.code == first
     else:
         assert request_mode(mode, gates) == mode
+
+
+@pytest.mark.parametrize("state", ["research", "backtested", "shadow", "probation", "live", "x"])
+@pytest.mark.parametrize("mode", [*sorted(MODE_VALUES), "bogus"])
+def test_sleeve_refusal(mode: str, state: str) -> None:
+    """Q9: confirm and auto are refused for a sleeve that is not Live; shadow never is."""
+    refused = mode in (Mode.CONFIRM, Mode.AUTO) and state != "live"
+    assert sleeve_refusal(mode, state) == ("sleeve_not_live" if refused else None)
 
 
 @given(status=st.sampled_from(["active", "pending", "failed", "suspended"]))

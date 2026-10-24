@@ -26,7 +26,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   from `decide` only.
 - **Shadow never reaches the broker.** Confirm and auto need an active account with GTT delivery,
   DDPI confirmed by the owner and policy weights confirmed; otherwise the bot runs shadow. A mode
-  change takes effect at the next session open.
+  change takes effect at the next session open; confirm or auto is refused for a sleeve that is
+  not Live (`sleeve_not_live`), at the request and at the open.
 - **Orders are idempotent.** Every order has an `HT` tag (signal id + purpose + sequence)
   committed `pending` before the broker is called; an order of unknown outcome is looked up by tag
   before any retry, and an unknown entry is never re-sent. A filled, cancelled, rejected or
