@@ -4,6 +4,9 @@ window a backtest skips. Plain examples; no database, no bars."""
 from datetime import date, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from pathlib import Path
+
+import pytest
 
 from app.hat.data.ca_known import (
     CORRECTION,
@@ -30,7 +33,7 @@ from app.hat.data.ca_research import (
     research_supplied,
 )
 from app.hat.data.corporate_actions import correction_known, default_known
-from app.hat.data.point_in_time import Row, classify
+from app.hat.data.point_in_time import Row, classify, log_path
 
 EX = date(2024, 9, 20)  # ROSSELLIND's demerger, a Friday
 # the sessions from the Thursday before: Monday 23 to Friday 27 follow the ex-date
@@ -180,3 +183,13 @@ def test_classify_backfills_from_what_is_stored() -> None:
 def test_one_window_per_day_span() -> None:
     days = [EX + timedelta(days=n) for n in range(10)]
     assert len(pending_days([Window("A", EX, days[3]), Window("A", EX, days[5])], days)) == 5
+
+
+def test_log_path_stays_under_the_working_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert log_path("out/log.tsv") == tmp_path.resolve() / "out" / "log.tsv"
+    for name in ("../log.tsv", "/etc/log.tsv", "log.csv"):
+        with pytest.raises(SystemExit):
+            log_path(name)

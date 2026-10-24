@@ -429,6 +429,16 @@ def report_lines(
     return lines
 
 
+def log_path(name: str) -> Path:
+    """The adjustment log's file, named on the command line: a `.tsv` under the working
+    directory, anything else refused before it is opened."""
+    base = Path.cwd().resolve()
+    target = (base / name).resolve()
+    if not target.is_relative_to(base) or target.suffix.lower() != ".tsv":
+        raise SystemExit("point_in_time: the log must be a .tsv file under the working directory")
+    return target
+
+
 def write_log(path: Path, log: Sequence[Mapping[str, Any]]) -> None:
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, LOG_COLUMNS, delimiter="\t")
@@ -502,6 +512,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 session.commit()
                 write(f"applied: {actions} rows and {links} links dated")
         elif args.command == "report":
+            target = log_path(args.log) if args.log else None
             log = adjustment_log(session, store.days(DATASET_BARS))
             links = [
                 (s, k)
@@ -513,8 +524,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             ]
             for line in report_lines(log, links):
                 write(line)
-            if args.log:
-                write_log(Path(args.log), log)
+            if target is not None:
+                write_log(target, log)
                 write(f"adjustment log: {len(log)} rows to {args.log}")
         else:
             for line in pending_lines(session, store, args.symbols):
