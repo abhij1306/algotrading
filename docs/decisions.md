@@ -64,6 +64,15 @@ here.
   of preference shares or debentures (NCRPS, "Bonus Debentures") is price-neutral, never a
   factor (a split row stays a split whatever its text); the owner corrects a stored factor with
   `admin correct-action`, journalled, and no later load re-creates a key it vacated (D1, D232).
+- **Corporate-action file import (CA1, D232, owner 2026-10-24).** Splits and bonuses the MCP
+  missed, rights issues and demergers come from a collected NSE file (`data/ca_import.py`, source
+  `nse_ca_file`), stored only when the ex-date open over the previous close is within 20% of the
+  factor and at least twice as close to it as to 1; anything else is a review case. Rights factor
+  TERP / cum price (neutral at or above the cum price); a demerger's parent factor is 1 - r x
+  resulting company's first close / parent's previous close, cross-checked by that gate, or the
+  ex-date gap itself when no resulting listing is found and the drop exceeds 10%. Both are
+  stored as type `other`; the resulting company is never linked into the parent's lineage. The
+  file's instrument class is a hint only: the bars decide. An import never rewrites a stored key.
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with
