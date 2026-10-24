@@ -29,6 +29,7 @@ __all__ = [
     "PAISE",
     "ZERO",
     "Decimal",
+    "dividend_credit",
     "NotExactError",
     "exact",
     "require_exact",
@@ -84,6 +85,12 @@ def require_exact(
     if number is None:
         raise NotExactError(f"{name}: not an exact number")
     return number
+
+
+def dividend_credit(qty: int, cash_per_share: Decimal) -> Decimal:
+    """The cash `qty` shares held into an ex-date earn: the dividend per share times the shares,
+    to the paisa a broker credits (the backtest's and the shadow ledger's one rule, CA3/CA4)."""
+    return (qty * cash_per_share).quantize(PAISE, rounding=ROUND_HALF_EVEN)
 
 
 def to_money(value: Decimal) -> Decimal:

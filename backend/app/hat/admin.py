@@ -36,11 +36,14 @@ Commands, in first-deploy order:
                                               closes a virtual position a corporate action
                                               locked, at PRICE (HAT-EXEC-144; a real one is
                                               refused: /flatten it)
-    correct-action --isin ISIN --ex-date DATE --type TYPE (--factor F [--as TYPE] | --delete)
-                   --note TEXT                replaces or deletes one stored corporate-action
-                                              factor (a conflict alert, a misparsed bonus; D1)
+    correct-action --isin ISIN --ex-date DATE --type TYPE
+                   (--factor F [--as TYPE] | --cash RS | --delete) --note TEXT
+                                              replaces or deletes one stored corporate-action
+                                              factor (a conflict alert, a misparsed bonus; D1),
+                                              or sets a dividend's cash per share (CA4)
     correct-actions --list TSV [--apply]      the owner's reviewed list of such corrections
-                                              (replace, delete, move, add; CA2), one
+                                              (replace, delete, move, add; CA2; an optional
+                                              `cash` column for dividends, CA4), one
                                               transaction; without --apply a dry run that
                                               writes nothing
     repair-symbol-history [--apply]           closes the overlapping symbol intervals from the
@@ -203,6 +206,7 @@ def _parser() -> argparse.ArgumentParser:
     correct.add_argument("--type", choices=ACTION_TYPES, required=True)
     change = correct.add_mutually_exclusive_group(required=True)
     change.add_argument("--factor", type=_factor)
+    change.add_argument("--cash", type=_cash)
     change.add_argument("--delete", action="store_true")
     correct.add_argument("--as", dest="as_type", choices=ACTION_TYPES)
     correct.add_argument("--note", required=True)
@@ -227,6 +231,14 @@ def _factor(raw: str) -> Decimal:
     value = exact(raw, positive=True)
     if value is None:
         raise argparse.ArgumentTypeError("not a positive factor")
+    return value
+
+
+def _cash(raw: str) -> Decimal:
+    """A `--cash`: a dividend's rupees per share, a positive finite decimal, never a float."""
+    value = exact(raw, positive=True)
+    if value is None:
+        raise argparse.ArgumentTypeError("not a positive amount")
     return value
 
 
@@ -386,13 +398,15 @@ def _owner(
     except HatConfigError:
         raise AdminError("no_owner_chat") from None
     if args.command == "correct-action":  # stored reference data: any time, no calendar
+        cash = args.cash  # a dividend's amount: its factor stays 1
         correction = Correction(
             isin=args.isin,
             ex_date=args.ex_date,
             action_type=args.type,
-            factor=None if args.delete else args.factor,
+            factor=None if args.delete else Decimal(1) if cash is not None else args.factor,
             new_type=args.as_type,
             note=args.note,
+            cash=cash,
         )
         return correct_action(session, correction, chat_id=chat_id, user_id=deps.user_id, now=now)
     if args.command == "correct-actions":  # the reviewed list (CA2), a dry run without --apply

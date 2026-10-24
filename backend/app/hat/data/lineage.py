@@ -68,6 +68,7 @@ from sqlalchemy.orm import Session
 from ..errors import HatConfigError, HatError
 from ..events import record
 from ..models import HatCorporateAction, HatInstrument, HatIsinLineage, HatLineageOverride
+from .ca_dividends import missing_amounts
 from .calendar import recorded_history, session_calendar
 from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_DIVIDEND, TYPE_SPLIT, lock_reference_data
 from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore, DividendCash
@@ -1032,6 +1033,12 @@ def review_report(
     out(f"action copies that disagree within a chain: {len(conflicts)} (the current ISIN's kept)")
     for chain, ex_date, kind in conflicts[:limit]:
         out(f"  CONFLICT {_label(instruments, chain)} {ex_date} {kind}")
+    # a dividend stored without its cash (the MCP lookup, a review case) stays price-neutral:
+    # its ex-date drop is in the total-return series (CA4)
+    missing = missing_amounts(session)
+    out(f"dividends without an amount (price-neutral in the total-return series): {len(missing)}")
+    for m in missing[:limit]:
+        out(f"  NO_AMOUNT {m.symbol} {m.isin} {m.ex_date} ({m.source})")
     jumps = unexplained_jumps(store, adjustment(actions, links), since)
     out(
         f"unexplained jumps since {since} (adjusted open vs previous close beyond "

@@ -31,9 +31,18 @@ rewritten. A key the owner vacated is never re-created. `--apply` writes in one 
 journals each row as `corporate_action.imported`; a repeat stores nothing.
 
 A stored amount moves the total-return series the signals read (`store.bars_daily`) and pays
-the cash a backtest position earns on the ex-date; the price basis (`bars_daily_cap`), the
-rescale and the GTT check read only the price-changing rows. After `--apply`, run `lineage
-build` and `features --full`: the stored features' inputs digest covers the dividends.
+the cash a backtest position (and a shadow one, `engine/paper_dividends.py`) earns on the
+ex-date; the price basis (`bars_daily_cap`), the rescale and the GTT check read only the
+price-changing rows. After `--apply`, run `lineage build` and `features --full`: the stored
+features' inputs digest covers the dividends.
+
+Going forward (CA4) the nightly `ca.adjust` reads NSE's daily corporate-action file, the `bc`
+CSV of the PR archive (`read_bc`: every security's actions of the coming days, by symbol and
+series, with an abbreviated purpose such as "INTDIV - RS 7.50 PER SH", rewritten to the feed's
+words by `bc_subject`), and runs its dividends up to the next session through the same
+proposals, checks and verdicts (`nightly_import`, table `nightly`, source `nse_pr_bc`): a
+review case is alerted, never guessed, and a stored dividend without an amount (the MCP lookup
+stores none) gets the file's. `missing_amounts` lists the dividends still without one.
 """
 
 from __future__ import annotations
@@ -59,7 +68,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import events
-from ..models import HatCorporateAction
+from ..models import HatCorporateAction, HatInstrument
 from ..money import exact, require_exact
 from .ca_import import (
     ALREADY,
@@ -91,9 +100,12 @@ from .store import DATASET_BARS, DataStore
 
 SOURCE_FEED = "nse_ca_feed"
 SOURCE_RESEARCH = "ca_research"
+SOURCE_BC = "nse_pr_bc"  # NSE's daily corporate-action file, read by the nightly (CA4)
 T_FEED = "feed"
 T_BONUS = "bonus_research"
-TABLES = (T_FEED, T_BONUS)
+T_NIGHTLY = "nightly"
+TABLES = (T_FEED, T_BONUS, T_NIGHTLY)
+SOURCES = {T_FEED: SOURCE_FEED, T_BONUS: SOURCE_RESEARCH, T_NIGHTLY: SOURCE_BC}
 FROM_DATE = date(2011, 1, 1)
 # A cash amount above half the previous close is not a dividend the bars can carry (the largest
 # real ones, HINDZINC's and VEDL's specials, are under a fifth): it is a misparse or a wrong row.
@@ -218,12 +230,42 @@ def _clause(prefix: str, body: str) -> list[Payout] | str:
     return found
 
 
+# a figure in thousands groups, western (1,000,000) or Indian (10,00,000): its commas go
+_GROUPED = re.compile(r"(?<![\d.,])\d{1,3}(?:(?:,\d{3})+|(?:,\d{2})+,\d{3})(?![\d,])")
+_DIGIT_COMMA = re.compile(r"\d,\d")
+
+
+def _prefix(lowered: str, found: Sequence[re.Match[str]], n: int) -> str:
+    """The words of the n-th "dividend" mention's clause before it."""
+    before = lowered[found[n - 1].end() if n else 0 : found[n].start()]
+    seps = list(_SEP.finditer(before))
+    return before[seps[-1].end() :] if seps else before
+
+
+def _lowered(text: str) -> str | None:
+    """The text in lower case with single spaces and grouped figures without their commas
+    ("Rs 1,000" is 1000); None when a comma still sits between digits ("Rs 2,50"): a figure
+    that cannot be read is never read as its first digits."""
+    lowered = _GROUPED.sub(lambda m: m.group().replace(",", ""), re.sub(r"\s+", " ", text.lower()))
+    return None if _DIGIT_COMMA.search(lowered) else lowered
+
+
+def named_kinds(text: str) -> set[str]:
+    """The kinds of the dividends a purpose text mentions, with an amount or not."""
+    lowered = re.sub(r"\s+", " ", text.lower())
+    found = list(_DIVIDEND.finditer(lowered))
+    return {_kind(_prefix(lowered, found, n)) for n in range(len(found))}
+
+
 def payouts(text: str) -> tuple[Payout, ...] | str:
     """The dividends a purpose text names, or why it gives none it can trust: `no_dividend`,
     `preference_dividend` (only dividends on preference shares), `percent_of_face_value`,
-    `several_amounts` (one clause with amounts not each named by its kind) or `no_amount`. One
-    clause the text cannot be read for is enough: a partial sum is never returned."""
-    lowered = re.sub(r"\s+", " ", text.lower())
+    `several_amounts` (one clause with amounts not each named by its kind), `bad_figure` (a
+    comma inside a figure that is no thousands grouping) or `no_amount`. One clause the text
+    cannot be read for is enough: a partial sum is never returned."""
+    lowered = _lowered(text)
+    if lowered is None:
+        return "bad_figure"
     found = list(_DIVIDEND.finditer(lowered))
     if not found:
         return "no_dividend"
@@ -231,12 +273,18 @@ def payouts(text: str) -> tuple[Payout, ...] | str:
     inside: list[Payout] = []  # named in brackets: a breakdown of the amount before them
     preference = False
     for n, match in enumerate(found):
-        start = found[n - 1].end() if n else 0
         stop = found[n + 1].start() if n + 1 < len(found) else len(lowered)
-        before = lowered[start : match.start()]
-        seps = list(_SEP.finditer(before))
-        prefix = before[seps[-1].end() :] if seps else before
+        prefix = _prefix(lowered, found, n)
         parts = _clause(prefix, lowered[match.end() : stop])
+        if parts == [] and n == 0:
+            # "Rs 50/- Per Share (Special Dividend)": the label of the one amount before it
+            amounts = _MONEY.findall(lowered[: match.start()])
+            if len(amounts) != 1:
+                return "several_amounts" if amounts else "no_amount"
+            amount = require_exact(amounts[0], "amount")
+            if amount <= 0:
+                return "no_amount"
+            parts = [Payout(_kind(prefix), amount)]
         if parts == "preference_dividend":
             preference = True
         elif isinstance(parts, str):
@@ -287,12 +335,17 @@ def combine(rows: Sequence[FeedRow]) -> tuple[Payout, ...] | str:
     unreadable one names no amount at all."""
     read: dict[str, tuple[Payout, ...]] = {}
     failed: list[str] = []
+    unpriced: set[str] = set()  # the kinds the rows without an amount name
     for row in rows:
         found = payouts(row.subject)
         if isinstance(found, str):
             failed.append(found)
+            if found == "no_amount":
+                unpriced |= named_kinds(row.subject)
         else:
             read[row.subject] = tuple(sorted(found))
+    if unpriced - {p.kind for parts in read.values() for p in parts} and read:
+        return "no_amount"  # a kind no row gives an amount for: never a partial sum
     hard = [r for r in failed if r not in ("no_amount", "preference_dividend", "no_dividend")]
     if hard:
         return hard[0]
@@ -416,6 +469,75 @@ def read_bonus_file(path: Path) -> list[dict[str, str]]:
     return out
 
 
+# NSE's daily corporate-action file (the `bc` CSV of the PR archive) abbreviates its purposes:
+# "INTDIV - RS 7.50 PER SH", "DIV-RS 8/SPLDIV-RS 2", "DIV/SPDV RS 5/RS 3", "FVSPLT FRM RS 10 TO
+# RS 2". `bc_subject` writes them in the feed's words so `payouts` reads them as it reads the feed.
+BC_COLUMNS = ("SERIES", "SYMBOL", "EX_DT", "PURPOSE")
+# the series of an equity share's normal market and of the SME platform; the file lists the same
+# action again under each window (BL, IQ, T0, TL) and every debt or ETF series
+BC_SERIES = frozenset({"EQ", "BE", "BZ", *SME_SERIES})
+_BC_WORDS = (
+    (re.compile(r"\bint\s*di?v"), " interim dividend "),
+    (re.compile(r"\bfi?n(?:a?l)?\s*di?v"), " final dividend "),
+    (re.compile(r"\b(?:spl|sp)\s*di?v"), " special dividend "),
+    (re.compile(r"\bdiv(?!idend)"), " dividend "),
+    (re.compile(r"\bfv\s*splt"), " face value split "),
+    (re.compile(r"\br(?:i)?ghts\b"), " rights "),
+    (re.compile(r"\bcnsldatn"), " consolidation "),
+)
+# two kinds before two amounts: "DIV/SPDV RS 5/RS 3", "INTDVSPDVRS 4 & 6", "DIVSPDV - RS 5 & 2"
+_BC_PAIR = re.compile(
+    r"^(int\s*di?v|div)\s*/?\s*(?:spl|sp)\s*di?v\s*-?\s*(?:rs|re)\s*(\d+(?:\.\d+)?)\s*[/&]\s*"
+    r"(?:(?:rs|re)\s*)?(\d+(?:\.\d+)?)$"
+)
+_BC_RUPEE = re.compile(r"\b(rs|re)\.?\s*(?=\d)")  # "RS5", "RS.8": the amount after a space
+
+
+def bc_subject(purpose: str) -> str:
+    """A `bc` purpose in the feed's words ("INTDIV - RS 7.50 PER SH" is "Interim Dividend - Rs
+    7.50 Per Sh"), so `payouts` reads it; a purpose naming no dividend keeps its own words."""
+    text = re.sub(r"\s+", " ", purpose.lower()).strip()
+    pair = _BC_PAIR.match(text)
+    if pair is not None:
+        kind = "interim dividend" if pair.group(1).startswith("int") else "dividend"
+        return f"{kind} - rs {pair.group(2)} / special dividend - rs {pair.group(3)}"
+    text = _BC_RUPEE.sub(r"\1 ", text)
+    for pattern, words in _BC_WORDS:
+        text = pattern.sub(words, text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def read_bc(text: str) -> list[FeedRow]:
+    """The equity rows of a `bc` file (columns SERIES, SYMBOL, EX_DT, PURPOSE among others), the
+    purpose in the feed's words (`bc_subject`); the file names no ISIN. A file too large or
+    missing a column is refused (`CaFileError`); a row of another series is left out."""
+    if len(text) > MAX_FILE_BYTES:
+        raise CaFileError("bc_too_large")
+    try:
+        reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff")))
+        fields = {(f or "").strip().upper() for f in reader.fieldnames or ()}
+        if not set(BC_COLUMNS) <= fields:
+            raise CaFileError("bc_columns")
+        rows = []
+        for raw in reader:
+            row = {(k or "").strip().upper(): _cell(v) for k, v in raw.items()}
+            series = row.get("SERIES", "").upper()
+            if series not in BC_SERIES:
+                continue
+            rows.append(
+                FeedRow(
+                    row.get("SYMBOL", "").upper(),
+                    "",
+                    series,
+                    _any_date(row.get("EX_DT", "")),
+                    bc_subject(row.get("PURPOSE", "")),
+                )
+            )
+    except csv.Error as exc:
+        raise CaFileError("bc_unreadable") from exc
+    return rows
+
+
 def _any_date(raw: str) -> date | None:
     try:
         return date.fromisoformat(raw.strip())
@@ -445,8 +567,9 @@ class Proposal:
         return replace(self, status=status, reason=reason)
 
 
-def feed_proposals(rows: Iterable[FeedRow]) -> list[Proposal]:
-    """One proposal per (ISIN or symbol, ex-date) of the feed's dividend rows."""
+def feed_proposals(rows: Iterable[FeedRow], table: str = T_FEED) -> list[Proposal]:
+    """One proposal per (ISIN or symbol, ex-date) of the feed's (or the nightly file's) dividend
+    rows."""
     groups: dict[tuple[str, date | None], list[FeedRow]] = defaultdict(list)
     for row in rows:
         if _DIVIDEND.search(row.subject.lower()):
@@ -456,7 +579,7 @@ def feed_proposals(rows: Iterable[FeedRow]) -> list[Proposal]:
         first = members[0]
         subjects = list(dict.fromkeys(m.subject for m in members))
         p = Proposal(
-            T_FEED, key, first.symbol, first.isin, ex_date, " | ".join(subjects), hint=first.series
+            table, key, first.symbol, first.isin, ex_date, " | ".join(subjects), hint=first.series
         )
         if ex_date is None:
             out.append(p.ends(REVIEW, "bad_ex_date"))
@@ -623,7 +746,7 @@ def decide(
         return Outcome(p, SKIPPED, "before_bars")  # no instrument has a bar to hold it
     if not reference.ids(p.symbol, p.isin, p.ex_date):
         sme = p.hint in SME_SERIES
-        return Outcome(p, SKIPPED if p.table == T_FEED or sme else REVIEW, "no_instrument")
+        return Outcome(p, SKIPPED if p.table != T_BONUS or sme else REVIEW, "no_instrument")
     amount = total(p.parts)
     placed = ""
     if p.table == T_BONUS:
@@ -656,7 +779,7 @@ def decide(
         TYPE_DIVIDEND,
         Decimal(1),
         stored_text(p.parts, [p.text]),
-        SOURCE_FEED if p.table == T_FEED else SOURCE_RESEARCH,
+        SOURCES[p.table],
         amount,
     )
     evidence = {
@@ -709,9 +832,10 @@ def merge(outcomes: Sequence[Outcome]) -> None:
             first.record,
             cash_amount=total(parts),
             raw_text=stored_text(parts, [o.proposal.text for o in group]),
-            source=SOURCE_FEED
-            if any(o.proposal.table == T_FEED for o in group)
-            else first.record.source,
+            source=next(
+                (SOURCES[o.proposal.table] for o in group if o.proposal.table != T_BONUS),
+                first.record.source,
+            ),
         )
         first.evidence["payouts"] = [{"kind": x.kind, "amount": str(x.amount)} for x in parts]
         first.evidence["merged"] = [f"{o.proposal.table}:{o.proposal.rowid}" for o in rest]
@@ -783,10 +907,14 @@ def named_bonus_dates(feed: Iterable[FeedRow]) -> dict[str, set[date]]:
 
 
 def evaluate(
-    session: Session, store: DataStore, feed: Sequence[FeedRow], bonus: Sequence[Mapping[str, str]]
+    session: Session,
+    store: DataStore,
+    feed: Sequence[FeedRow],
+    bonus: Sequence[Mapping[str, str]],
+    table: str = T_FEED,
 ) -> list[Outcome]:
     """Every event's outcome; nothing is written."""
-    props = feed_proposals(feed) + bonus_proposals(bonus)
+    props = feed_proposals(feed, table) + bonus_proposals(bonus)
     reference = load_reference(session)
     named = named_bonus_dates(feed)
     wanted = {
@@ -929,6 +1057,95 @@ def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool
     return lines
 
 
+# --- the nightly file (CA4) ---------------------------------------------------------------------
+
+# NSE lists a dividend in its daily file from a few days before its ex-date to the ex-date's own
+# file, the last word on a revised amount; one still listed after it is read for this long.
+CATCH_UP_DAYS = 7
+ALERT_DIVIDEND_REVIEW = "dividend.review"  # a listed dividend is a review or conflict case
+ALERT_DIVIDEND_NO_AMOUNT = "dividend.amount_missing"  # a stored dividend has no cash amount
+
+
+@dataclass(frozen=True)
+class MissingAmount:
+    """A stored dividend without a cash amount: price-neutral in the total-return series."""
+
+    symbol: str
+    isin: str
+    ex_date: date
+    source: str
+
+
+def nightly_window(rows: Iterable[FeedRow], day: date) -> list[FeedRow]:
+    """The rows of the night's file whose ex-date is `day` or up to `CATCH_UP_DAYS` before it:
+    a dividend is stored on its ex-date's night, from that day's file."""
+    first = day - timedelta(days=CATCH_UP_DAYS)
+    return [r for r in rows if r.ex_date is not None and first <= r.ex_date <= day]
+
+
+def missing_amounts(
+    session: Session, since: date | None = None, through: date | None = None
+) -> list[MissingAmount]:
+    """Every stored dividend without a cash amount (ex-dates in `since..through` when given),
+    newest first: each is a drop the total-return series does not pay back."""
+    query = (
+        select(HatInstrument.symbol, HatInstrument.isin, HatCorporateAction)
+        .join(HatInstrument, HatInstrument.id == HatCorporateAction.instrument_id)
+        .where(
+            HatCorporateAction.action_type == TYPE_DIVIDEND,
+            HatCorporateAction.cash_amount.is_(None),
+        )
+        .order_by(HatCorporateAction.ex_date.desc(), HatInstrument.symbol)
+    )
+    if since is not None:
+        query = query.where(HatCorporateAction.ex_date >= since)
+    if through is not None:
+        query = query.where(HatCorporateAction.ex_date <= through)
+    return [
+        MissingAmount(symbol, isin, row.ex_date, row.source)
+        for symbol, isin, row in session.execute(query)
+    ]
+
+
+@dataclass
+class NightlyReport:
+    outcomes: list[Outcome] = field(default_factory=list)
+    created: int = 0
+    added: int = 0
+    missing: list[MissingAmount] = field(default_factory=list)
+
+    @property
+    def flagged(self) -> list[Outcome]:
+        """The review and conflict cases: alerted, never stored."""
+        return [o for o in self.outcomes if o.status in (REVIEW, CONFLICT)]
+
+
+def bc_journal(text: str, day: date) -> dict[str, Any]:
+    """What each row stored from a `bc` file journals of it."""
+    return {
+        "source": SOURCE_BC,
+        "day": day.isoformat(),
+        "bc_sha256": hashlib.sha256(text.encode()).hexdigest(),
+    }
+
+
+def nightly_import(
+    session: Session, store: DataStore, text: str, day: date, now: datetime
+) -> NightlyReport:
+    """Store the dividends the night's `bc` file lists for `day` (and the catch-up days) as
+    `ca_dividends` stores the feed's (`evaluate`, `apply`: the same checks and verdicts, table
+    `nightly`, source `nse_pr_bc`), in the caller's transaction, and list the stored dividends
+    of those days still without an amount. Raises `CaFileError` for a file it cannot read."""
+    rows = nightly_window(read_bc(text), day)
+    report = NightlyReport()
+    if rows:
+        report.outcomes = evaluate(session, store, rows, [], T_NIGHTLY)
+        journal = bc_journal(text, day)
+        report.created, report.added = apply(session, report.outcomes, journal=journal, now=now)
+    report.missing = missing_amounts(session, day - timedelta(days=CATCH_UP_DAYS), day)
+    return report
+
+
 # --- command line -------------------------------------------------------------------------------
 
 
@@ -945,24 +1162,36 @@ def input_path(name: str, *, directory: bool = False, suffix: str = "") -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
-    """python -m app.hat.data.ca_dividends --feed DIR [--bonus F.csv] [--apply] [--all]
+    """python -m app.hat.data.ca_dividends (--feed DIR [--bonus F.csv] | --bc F.csv --day DATE)
+    [--apply] [--all]
 
-    Reads NSE's corporate-actions feed (DIR of `ca_YYYY-MM.json`) and the research file f (both
-    under the working directory, read-only) and the raw bars under `HAT_DATA_ROOT`, and prints
-    what it would store (a dry run) or, with `--apply`, stores it in one transaction. The
-    report goes to stdout; `--all` lists every event. Dividends change no price: no lineage or
-    features rebuild is needed for them."""
+    Reads NSE's corporate-actions feed (DIR of `ca_YYYY-MM.json`) and the research file f, or one
+    night's `bc` file of NSE's PR archive (the catch-up of a night `ca.adjust` could not download
+    it: the dividends of `--day` and the days before, as the nightly reads them), all under the
+    working directory, read-only, and the raw bars under `HAT_DATA_ROOT`, and prints what it
+    would store (a dry run) or, with `--apply`, stores it in one transaction. The report goes to
+    stdout; `--all` lists every event."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.ca_dividends")
-    parser.add_argument("--feed", required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--feed")
+    source.add_argument("--bc", help="a night's bc file of NSE's PR archive (.csv)")
+    parser.add_argument("--day", type=date.fromisoformat, help="the bc file's trade date")
     parser.add_argument("--bonus", help="research file f (.csv)")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--all", action="store_true")
     args = parser.parse_args(argv)
+    if args.bc and (args.day is None or args.bonus):
+        parser.error("--bc takes --day and no --bonus")
     try:
-        feed_dir = input_path(args.feed, directory=True)
-        feed, feed_sha = read_feed(feed_dir)
-        bonus_path = input_path(args.bonus, suffix=".csv") if args.bonus else None
-        bonus = read_bonus_file(bonus_path) if bonus_path else []
+        if args.bc:
+            bc_path = input_path(args.bc, suffix=".csv")
+            bc_text = bc_path.read_text(encoding="utf-8-sig", errors="replace")
+            feed, feed_sha = nightly_window(read_bc(bc_text), args.day), ""
+            bonus_path, bonus = None, []
+        else:
+            feed, feed_sha = read_feed(input_path(args.feed, directory=True))
+            bonus_path = input_path(args.bonus, suffix=".csv") if args.bonus else None
+            bonus = read_bonus_file(bonus_path) if bonus_path else []
     except CaFileError as exc:
         sys.stderr.write(f"refused: {exc.code}\n")
         return 2
@@ -974,10 +1203,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..time import utc_now
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+    table = T_NIGHTLY if args.bc else T_FEED
     with HatSessionLocal() as session:
-        outcomes = evaluate(session, store, feed, bonus)
+        outcomes = evaluate(session, store, feed, bonus, table)
         if args.apply:
-            journal: dict[str, Any] = {"source": SOURCE_FEED, "feed_sha256": feed_sha}
+            journal = (
+                bc_journal(bc_text, args.day)
+                if args.bc
+                else {"source": SOURCE_FEED, "feed_sha256": feed_sha}
+            )
             if bonus_path is not None:
                 journal["research_sha256"] = {
                     "f": hashlib.sha256(bonus_path.read_bytes()).hexdigest()

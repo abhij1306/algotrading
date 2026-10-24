@@ -7,6 +7,7 @@ import hashlib
 import tempfile
 import uuid
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal, localcontext
 from fractions import Fraction
@@ -365,3 +366,21 @@ def test_correction_rules() -> None:
         with pytest.raises(ActionCorrectionError) as refused:
             check_correction(bad)
         assert refused.value.code == code
+
+
+def test_correction_sets_only_a_dividends_cash() -> None:
+    day = date(2024, 6, 4)
+    itc = Correction(
+        "INE154A01025", day, TYPE_DIVIDEND, Decimal(1), note="6.25", cash=Decimal("6.25")
+    )
+    assert check_correction(itc) == (TYPE_DIVIDEND, Decimal(1))
+    for bad in [
+        replace(itc, cash=Decimal(0)),
+        replace(itc, cash=Decimal("NaN")),
+        replace(itc, factor=None),  # a delete takes no cash
+        replace(itc, new_type=TYPE_NOTICE),  # only a dividend pays cash
+        replace(itc, action_type=TYPE_BONUS, factor=Decimal("0.5")),
+    ]:
+        with pytest.raises(ActionCorrectionError) as refused:
+            check_correction(bad)
+        assert refused.value.code == "bad_cash"

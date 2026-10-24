@@ -101,6 +101,17 @@ here.
   previous close is such a dividend (value per share as the cash, ex-date confirmed by the bars
   or NSE's own date, source `ca_research`); below 1% it stays price-neutral (D1). Live orders
   are unchanged: Fyers cancels resting orders on such an ex-date as before.
+- **Dividends going forward (CA4, owner 2026-10-24).** The nightly `ca.adjust` stores the
+  dividends going ex on the trade date from NSE's daily corporate-action file (the `bc` CSV of
+  the PR archive on nsearchives, every security, published about 17:30 IST; not the
+  `www.nseindia.com/api` feed), the day's file being the last word on a revised amount, through
+  the CA3 checks (source `nse_pr_bc`): a review or conflict case and a stored dividend without
+  an amount are alerted, never guessed, and `lineage report` lists every dividend without one.
+  The MCP lookup covers only held, watchlisted and flagged names, so it is not the amount
+  source; its amount-less rows get the file's. The owner sets an amount with `correct-action
+  --cash` (or a `cash` column in `correct-actions`), journalled, and no import rewrites it. A
+  shadow sleeve's equity counts the dividends its virtual positions earned, by the backtest's
+  rule (`engine/paper_dividends.py`); a trade's R stays price-only on both sides.
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with

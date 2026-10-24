@@ -278,8 +278,8 @@ A review case is fixed at its source (store the missing factor in `hat_corporate
 next build links it if the rules then hold. A wrong stored factor (a `corporate_action.conflict`
 alert, a misparsed bonus) is replaced or deleted with
 `python -m app.hat.admin correct-action --isin ISIN --ex-date D --type T (--factor F [--as T2] |
---delete) --note TEXT` (journalled `corporate_action.corrected`; a nightly load never rewrites a
-stored key). `python -m app.hat.data.ca_import --db FILE [--apply]` (FILE a `.db` under the working
+--cash RS | --delete) --note TEXT` (journalled `corporate_action.corrected`; a nightly load never
+rewrites a stored key; `--cash` sets a dividend's rupees per share). `python -m app.hat.data.ca_import --db FILE [--apply]` (FILE a `.db` under the working
 directory; run it there with `PYTHONPATH=<repo>/backend`) loads a collected NSE corporate-action file (splits/bonuses, rights, demergers, ETF unit splits): a dry
 run by default, it prints per table what it would store, what is already stored, the conflicts
 with a stored factor (fix with `correct-action`) and the review list with reasons; `--apply`
@@ -290,7 +290,8 @@ chains whose factors or links changed (more than 100 rebuild every date; `featur
 (same working-directory rule) adds the demergers and rights the research files confirm, the
 same dry-run-then-apply way. `python -m app.hat.admin correct-actions --list NAME.tsv [--apply]`
 applies a reviewed correction list from `<HAT_DATA_ROOT>/admin/` (columns `op isin ex_date type
-factor new_ex_date note`; ops replace, delete, move, add): a dry run reports each line, an apply
+factor new_ex_date note`, optionally `cash` last: a dividend's amount on a `replace` or `add` of
+type `dividend`, factor 1; ops replace, delete, move, add): a dry run reports each line, an apply
 writes all of it or nothing.
 `python -m app.hat.data.ca_dividends --feed DIR [--bonus F.csv] [--apply] [--all]` (same
 working-directory rule; DIR holds NSE's corporate-actions JSON as `ca_YYYY-MM.json`, F the
@@ -298,6 +299,14 @@ bonus-debenture research file) stores the dividends with their cash: a dry run p
 per source (to store, already, conflict, review, skipped) and the review list, `--all` every row;
 `--apply` writes in one transaction (journalled; repeating it stores nothing). Then rebuild the
 lineage and run `features --full` (the total-return series and the features' digest change).
+Nightly, `ca.adjust` stores the trade date's dividends from NSE's daily file itself (CA4). Alerts:
+`dividend.review` (a listed dividend the checks refuse: fix it with `correct-action --cash` or a
+`correct-actions` line once checked), `dividend.amount_missing` (a stored dividend has no amount:
+its ex-date drop is in the signals' series until one is set) and `dividend.unchecked` (the file
+could not be read or stored): download that day's `PR<ddmmyy>.zip` from
+`nsearchives.nseindia.com/archives/equities/bhavcopy/pr/`, take `bc<ddmmyyyy>.csv` and run
+`python -m app.hat.data.ca_dividends --bc bc<ddmmyyyy>.csv --day YYYY-MM-DD [--apply]` (same
+working-directory rule). `lineage report` lists every dividend without an amount.
 `python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`

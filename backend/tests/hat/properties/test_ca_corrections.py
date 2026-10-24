@@ -50,3 +50,28 @@ def test_parse_list_needs_the_header() -> None:
     with pytest.raises(CorrectionListError) as exc:
         parse_list("add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")
     assert exc.value.code == "bad_header"
+
+
+def test_parse_list_reads_a_dividend_cash_column() -> None:
+    items = parse_list(
+        HEADER.replace("note\n", "note\tcash\n")
+        + "replace\tINE154A01025\t2024-06-04\tdividend\t1\t\tfeed said 6.52\t6.25\n"
+        + "add\tINE002A01018\t2024-08-19\tdividend\t1\t\tmissed, NSE file\t10\n"
+        + "delete\tINE477B01010\t2021-08-05\tbonus\t\t\tpreference-share bonus\t\n"
+    )
+    assert [i.cash for i in items] == [Decimal("6.25"), Decimal(10), None]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "replace\tINE1\t2024-06-04\tdividend\t1\t\tn\t0\n",  # not positive
+        "replace\tINE1\t2024-06-04\tdividend\t1\t\tn\t6.2.5\n",
+        "delete\tINE1\t2024-06-04\tdividend\t\t\tn\t6.25\n",  # a delete takes none
+        "move\tINE1\t2024-06-04\tdividend\t\t2024-06-05\tn\t6.25\n",
+    ],
+)
+def test_parse_list_refuses_a_bad_cash(line: str) -> None:
+    with pytest.raises(CorrectionListError) as refused:
+        parse_list(HEADER.replace("note\n", "note\tcash\n") + line)
+    assert refused.value.code == "bad_cash@2"
