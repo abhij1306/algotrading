@@ -231,8 +231,16 @@ advisory lock; `features` does not take it, so run it after they finish.
 - **`position.series_changed`:** exits continue under the new symbol; `unmapped` means none run:
   decide whether to sell at Fyers.
 - **`sale.unfilled`:** check the book and band; decide on `/flatten` or a sale at Fyers.
-  **`sale.settled_from_holdings`:** those shares' price is missing from P&L; check the contract
-  note.
+  **`sale.settled_from_holdings`:** those shares' price is missing from P&L. Outside market
+  hours, book it from the contract note: `$ADMIN resolve-sale --tag <sale tag> --qty <n> --price
+  <p> --at <trade time> --note <contract note no.> [--fees <rs>]`; an emptied position then
+  closes with its proceeds. `baseline: unknown` means HAT could not tell your own shares of the
+  symbol from its own: it refuses every sale of the position until you book that sale with
+  `resolve-sale` (the contract note's quantity; `--qty 0` when it shows no fill, which ends the
+  sale so the exit sells again).
+- **`fill.off_lifecycle`:** URGENT. A fill landed after its trade ended (an entry seen cancelled
+  or closed, or a sale on a closed position); it is booked and the stop covers the shares.
+  Check the position and decide on `/flatten`.
 - **Kill and flatten:** `/kill` makes every bot manage-only. Re-arm after fixing the cause with
   `/arm` and Confirm (`/resume` does not lift a kill; data-health kills clear themselves).
   `/flatten` and Confirm sells every real position.

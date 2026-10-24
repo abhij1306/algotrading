@@ -74,7 +74,7 @@ from ..models import (
 )
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, trade_date_of
+from ..time import IST, as_utc, trade_date_of
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
 from .gtt_upkeep import GttUpkeep
@@ -97,7 +97,7 @@ from .protect import (
     VERIFIED,
     StopDesk,
 )
-from .reconcile import broker_quantities
+from .reconcile import baseline_at, broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
 from .stop_plans import LIVE, UNSURE
 from .submit import (
@@ -327,6 +327,8 @@ class TradeManager:
         self._notifier = config.notifier
         self._sending = config.sending
         self._ticker = config.ticker
+        # positions whose lost earlier sales wait for the owner (no holding baseline): told once
+        self._baseline_alerted: set[uuid.UUID] = set()
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows), for the manager and its
@@ -645,17 +647,21 @@ class TradeManager:
         self, session: Session, position: HatPosition, rows: list[HatOrder], now: datetime
     ) -> bool:
         """Settle lost sales of an earlier session from the broker's holdings: a DAY market sale
-        cannot still rest, so it sold or it did not. The shares held of the symbol, less those
-        the account's other open HAT positions of it hold, are this position's
-        (`earlier_sale_verdict`). Never sold: the sales end `expired` and their rules fire again.
-        Sold, or unsure: the sales end `filled` (their fills are not in today's book), the open
-        quantity drops to the shares held (`position.qty_corrected`, never raised), the stop is
-        resized to it (cancelled at none) and the owner is told once
-        (`sale.settled_from_holdings`); the exit then sells what is held. The shares held are
-        the holdings plus today's net CNC position (`broker_quantities`, as reconciliation
-        reads them), so another position bought today counts on both sides. Runs under the
-        bot's lock, as fills do, on the position re-read. False, with nothing changed, when
-        the holdings or positions cannot be read."""
+        cannot still rest, so it sold or it did not. The shares held of the symbol, less those the
+        account's other open HAT positions of it hold and less the owner's own (the holding baseline
+        a reconciliation recorded by the first sale's send, Q12), are this position's
+        (`earlier_sale_verdict`); with no baseline recorded by then nothing changes and False is
+        returned (the sale is refused, `sale_unresolved`), so the owner's shares are never read as
+        HAT's and sold: the owner books the sale (`admin resolve-sale`). Never sold: the sales end
+        `expired` and their rules fire again. Sold, or unsure: the sales end `filled` (their fills
+        are not in today's book), the open quantity drops to the shares held
+        (`position.qty_corrected`, never raised), the stop is resized to it (cancelled at none) and
+        the owner is told once (`sale.settled_from_holdings`); the exit then sells what is held, and
+        the owner books the sale's fill from the contract note (`admin resolve-sale`). The shares
+        held are the holdings plus today's net CNC position (`broker_quantities`, as reconciliation
+        reads them), so another position bought today counts on both sides. Runs under the bot's
+        lock, as fills do, on the position re-read. False, with nothing changed, when the holdings
+        or positions cannot be read or no baseline is known."""
         try:
             held = broker_quantities(self._broker.positions(), self._broker.holdings())
         except BrokerUnavailableError:
@@ -680,7 +686,12 @@ class TradeManager:
                 HatPosition.closed_at.is_(None),
             )
         )
-        own = max(0, held.get(symbol, 0) - int(others or 0))
+        sent = min((as_utc(row.placed_at) for row in rows if row.placed_at), default=now)
+        baseline = baseline_at(session, account_id, symbol, sent) if account_id else None
+        if baseline is None:
+            self._baseline_unknown(position, rows, now)
+            return False
+        own = max(0, held.get(symbol, 0) - int(others or 0) - baseline)
         verdict = earlier_sale_verdict(position.qty_open, own, sum(row.qty for row in rows))
         logger.info("lost sales %s of an earlier session: %s", [row.tag for row in rows], verdict)
         if verdict == NEVER_SOLD:
@@ -723,6 +734,25 @@ class TradeManager:
             },
         )
         return True
+
+    def _baseline_unknown(self, position: HatPosition, rows: list[HatOrder], now: datetime) -> None:
+        """No holding baseline recorded by the lost sales' send (Q12): the shares held cannot be
+        told from the owner's own, so nothing is changed and the position's sales are refused
+        (`sale_unresolved`) until the owner books the sale (`admin resolve-sale`); told once."""
+        logger.warning("lost sales %s: no holding baseline", [row.tag for row in rows])
+        if position.id in self._baseline_alerted:
+            return
+        self._baseline_alerted.add(position.id)
+        self._notifier.alert(
+            ALERT_SALE_SETTLED,
+            trade_date_of(now),
+            {
+                "bot_id": str(position.bot_id),
+                "position_id": str(position.id),
+                "code": "baseline_unknown",
+                "tags": ",".join(row.tag for row in rows),
+            },
+        )
 
     def _send_sale(
         self, session: Session, sale: _Sale, gate: SaleGate, now: datetime

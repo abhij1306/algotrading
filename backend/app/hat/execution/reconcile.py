@@ -15,6 +15,11 @@ signed net position. The quantity compared is the holding plus today's signed ne
 per symbol (MX-F8): a buy today adds, a sale today of a holding subtracts, so a holding sold in
 full reads as 0. A same-day buy shown in both would count twice and read as a mismatch, which
 fails closed. [verify] on a live account (owner step).
+
+Holding baseline (Q12): each run records, per symbol of HAT's open real positions, the shares the
+broker holds beyond them (the owner's own), when it changed and no HAT entry or sale of the
+symbol is working or unsure (its shares may be in flight). A lost sale of an earlier session is
+settled net of it (`manage.TradeManager`), so HAT never reads the owner's shares as its own.
 """
 
 from __future__ import annotations
@@ -24,18 +29,27 @@ import uuid
 from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
-from ..models import HatBot, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..models import (
+    HatBot,
+    HatFill,
+    HatHoldingBaseline,
+    HatInstrument,
+    HatOrder,
+    HatPosition,
+    HatSignal,
+)
 from ..notify import Notifier
-from ..time import trade_date_of
+from ..time import trade_date_of, utc_now
 from .broker import BrokerHolding, BrokerOrder, BrokerPosition, HatBroker
 from .guard import ExecutionGuard
-from .order_book import TagBook, adopt_broker_order
+from .order_book import EXIT_SALES, TagBook, adopt_broker_order
+from .stop_plans import WORKING
 from .tags import is_hat_tag
 
 __all__ = [
@@ -44,6 +58,7 @@ __all__ = [
     "Mismatch",
     "ReconcileReport",
     "ReconciliationService",
+    "baseline_at",
     "broker_quantities",
     "find_mismatches",
     "notifier_sink",
@@ -138,6 +153,109 @@ def find_mismatches(
     return mismatches
 
 
+def baseline_at(session: Session, account_id: uuid.UUID, symbol: str, at: datetime) -> int | None:
+    """The owner's own shares of `symbol` on the account as last recorded at or before `at`, or
+    None when no reconciliation recorded one by then."""
+    return session.scalar(
+        select(HatHoldingBaseline.qty)
+        .where(
+            HatHoldingBaseline.broker_account_id == account_id,
+            HatHoldingBaseline.symbol == symbol,
+            HatHoldingBaseline.recorded_at <= at,
+        )
+        .order_by(HatHoldingBaseline.recorded_at.desc())
+        .limit(1)
+    )
+
+
+def _unbooked(
+    session: Session, orders: Iterable[BrokerOrder], hat_orders: Iterable[HatOrder]
+) -> set[str]:
+    """The symbols of the book's orders whose fills HAT's record and the book disagree on: one of
+    HAT's with other than the shares the book shows filled booked (fewer: the fill sync has not
+    read it yet; more: it filled after the book was read), and any other with a fill (an untagged
+    GTT sale, or the owner's own trade today), whose shares the holding baseline cannot place."""
+    rows = {row.tag: row for row in hat_orders}
+    booked = dict(
+        session.execute(
+            select(HatFill.order_id, func.sum(HatFill.qty))
+            .where(HatFill.order_id.in_([row.id for row in rows.values()]))
+            .group_by(HatFill.order_id)
+        ).all()
+    )
+    found = set()
+    for order in orders:
+        row = rows.get(order.tag) if order.tag else None
+        if row is None:
+            if order.filled_qty > 0:
+                found.add(order.symbol)
+        elif int(booked.get(row.id, 0)) != order.filled_qty:
+            found.add(order.symbol)
+    return found
+
+
+def _record_baselines(
+    session: Session,
+    account_id: uuid.UUID,
+    quantities: dict[str, int],
+    positions: Iterable[HatPositionView],
+    read_at: datetime,
+    unbooked: set[str],
+) -> None:
+    """Record the owner's shares of each symbol HAT holds open (the broker's quantity less
+    HAT's), stamped with `read_at` (when the broker's book was read, so baselines are ordered by
+    the snapshot they come from, not by which run finished last), when it changed, unless shares
+    may be in flight: a HAT entry or sale of the symbol works or is unsure, one was placed or a
+    HAT fill of it traded at or after the read, or the book and HAT's record disagree on its
+    fills (`unbooked`). Nor when HAT counts more than the broker holds (a mismatch, not a
+    baseline), or a run that read the book later has already recorded one. No commit."""
+    hat: dict[str, int] = defaultdict(int)
+    for view in positions:
+        hat[view.symbol] += view.qty_open
+    if not hat:
+        return
+    busy = set(
+        session.scalars(
+            select(HatInstrument.symbol)
+            .join(HatSignal, HatSignal.instrument_id == HatInstrument.id)
+            .join(HatOrder, HatOrder.signal_id == HatSignal.id)
+            .where(
+                HatOrder.broker_account_id == account_id,
+                HatOrder.is_virtual.is_(False),
+                HatInstrument.symbol.in_(set(hat)),
+                or_(
+                    and_(
+                        HatOrder.purpose.in_(("entry", *EXIT_SALES)),
+                        HatOrder.status.in_(WORKING),
+                    ),
+                    HatOrder.placed_at >= read_at,
+                    HatOrder.id.in_(select(HatFill.order_id).where(HatFill.filled_at >= read_at)),
+                ),
+            )
+        )
+    )
+    busy |= unbooked
+    later = set(
+        session.scalars(
+            select(HatHoldingBaseline.symbol).where(
+                HatHoldingBaseline.broker_account_id == account_id,
+                HatHoldingBaseline.recorded_at > read_at,
+            )
+        )
+    )
+    for symbol, qty in sorted(hat.items()):
+        own = quantities.get(symbol, 0) - qty
+        if symbol in busy or symbol in later or own < 0:
+            continue
+        if baseline_at(session, account_id, symbol, read_at) == own:
+            continue
+        session.add(
+            HatHoldingBaseline(
+                broker_account_id=account_id, symbol=symbol, recorded_at=read_at, qty=own
+            )
+        )
+
+
 @dataclass(frozen=True)
 class ReconcileReport:
     mismatches: list[Mismatch]
@@ -200,6 +318,7 @@ class ReconciliationService:
         the entries of the guard's trade date (`ExecutionGuard.update`)."""
         day = self._guard.today()  # the date of the book read, not of the run's end
         read = self._guard.begin_read()
+        read_at = utc_now(self._clock)  # the holding baselines' snapshot time
         orders = self._broker.orders()
         skipped = orders.skipped
         self._alert_unreadable(day, skipped)
@@ -265,6 +384,15 @@ class ReconciliationService:
             hat_positions=positions,
             hat_symbols=hat_symbols,
         )
+        _record_baselines(
+            session,
+            account_id,
+            quantities,
+            positions,
+            read_at,
+            _unbooked(session, orders, hat_orders),
+        )
+        session.commit()
 
         blocked_bots = {m.bot_id for m in mismatches if m.bot_id is not None}
         blocked_accounts = {account_id} if any(m.bot_id is None for m in mismatches) else set()

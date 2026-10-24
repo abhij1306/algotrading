@@ -23,7 +23,7 @@ from sqlalchemy import (
 
 from ...base import Base
 from ..governance import Mode
-from ._types import JsonB, Money, Ratio, Timestamptz, fk, in_values, uuid_pk
+from ._types import JsonB, Money, Ratio, Timestamptz, fk, in_values, now_utc, uuid_pk
 
 __all__ = [
     "APPROVAL_DECISIONS",
@@ -35,6 +35,7 @@ __all__ = [
     "SIGNAL_CONFIDENCES",
     "HatApproval",
     "HatFill",
+    "HatHoldingBaseline",
     "HatOrder",
     "HatPosition",
     "HatSignal",
@@ -255,6 +256,20 @@ class HatPosition(Base):
     state = Column(Text, nullable=False)
     # Exit rules already fired (fire-once).
     rules_fired = Column(JsonB, nullable=False)
+
+
+class HatHoldingBaseline(Base):
+    """The owner's own shares of a symbol on a broker account (Q12): what the broker held beyond
+    HAT's open real positions of it, recorded by a reconciliation when it changed. A lost sale
+    of an earlier session is settled net of the baseline in force when it was sent."""
+
+    __tablename__ = "hat_holding_baseline"
+    __table_args__ = (CheckConstraint("qty >= 0", name="ck_hat_holding_baseline_qty"),)
+
+    broker_account_id = fk("hat_broker_account.id", primary_key=True)
+    symbol = Column(Text, primary_key=True)
+    recorded_at = Column(Timestamptz, primary_key=True, default=now_utc)
+    qty = Column(Integer, nullable=False)
 
 
 class HatTradeResult(Base):

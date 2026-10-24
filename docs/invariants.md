@@ -54,7 +54,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   auto-closes or adopts a position.
 - **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
-  a lost broker answer is settled against the broker's book, never left frozen.
+  a lost broker answer is settled against the broker's book, never left frozen. A lost sale of
+  an earlier session is settled from the holdings net of the owner's own shares (the holding
+  baseline a reconciliation recorded before the sale); with no baseline the position sells
+  nothing until the owner books that sale.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
   restarts the peak at the equity then. Drawdown equity is capital + realised P&L + open positions

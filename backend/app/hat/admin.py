@@ -41,6 +41,11 @@ Commands, in first-deploy order:
                                               closes a virtual position a corporate action
                                               locked, at PRICE (HAT-EXEC-144; a real one is
                                               refused: /flatten it)
+    resolve-sale --tag TAG --qty N --price P --at TIME --note NOTE [--fees RS]
+                                              books a lost sale settled from the broker's
+                                              holdings from its contract note (Q12): its fill,
+                                              and the trade result's proceeds; outside market
+                                              hours. TIME is ISO 8601 (IST when no offset)
     correct-action --isin ISIN --ex-date DATE --type TYPE
                    (--factor F [--as TYPE] | --cash RS | --delete) --note TEXT
                    [--known-on DATE]
@@ -62,7 +67,8 @@ Input files (`--constituents`, `--config`, `--list`, `--dump`) are names inside
 refused (`file_outside_admin`).
 
 `assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version`, `resolve-action`,
-`correct-action`, `correct-actions` and `repair-symbol-history` are the owner's acts: their
+`resolve-sale`, `correct-action`, `correct-actions` and `repair-symbol-history` are the owner's
+acts: their
 events carry `actor = user`, the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
 
@@ -92,6 +98,7 @@ from .data.kite_symbols import KiteSymbolData
 from .data.reference import parse_industry_csv
 from .data.renames import symbol_first_bars
 from .data.store import DataStore
+from .engine.live_trades import BrokerFill, resolve_sale
 from .engine.owner import OwnerCommand
 from .engine.portfolio import lifecycle, sleeve_service, universe_service
 from .engine.portfolio.common import market_id_of
@@ -118,7 +125,7 @@ from .risk.policy_service import load_versions, seed_initial_policy
 from .risk.sessions import SessionCalendar
 from .settings import active_broker
 from .telegram.config import owner_chat_id
-from .time import trade_date_of, utc_now
+from .time import IST, trade_date_of, utc_now
 
 __all__ = ["AdminDeps", "AdminError", "main"]
 
@@ -219,6 +226,13 @@ def _parser() -> argparse.ArgumentParser:
     resolve.add_argument("--position", type=uuid.UUID, required=True)
     resolve.add_argument("--action", required=True)
     resolve.add_argument("--close-at", type=_price, required=True)
+    sale = commands.add_parser("resolve-sale")
+    sale.add_argument("--tag", required=True)
+    sale.add_argument("--qty", type=int, required=True)
+    sale.add_argument("--price", type=_price, required=True)
+    sale.add_argument("--at", type=_instant, required=True)
+    sale.add_argument("--note", required=True)
+    sale.add_argument("--fees", type=_price, default=Decimal(0))
     correct = commands.add_parser("correct-action")
     correct.add_argument("--isin", required=True)
     correct.add_argument("--ex-date", type=date.fromisoformat, required=True)
@@ -244,6 +258,15 @@ def _price(raw: str) -> Decimal:
     if value is None:
         raise argparse.ArgumentTypeError("not a price")
     return value
+
+
+def _instant(raw: str) -> datetime:
+    """An `--at` time: ISO 8601, read in IST when it names no offset."""
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError("not an ISO 8601 time") from None
+    return value if value.tzinfo is not None else value.replace(tzinfo=IST)
 
 
 def _factor(raw: str) -> Decimal:
@@ -442,8 +465,8 @@ def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
     """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote-version`,
-    `resolve-action`, `correct-action`, `correct-actions`, `repair-symbol-history` and
-    `promote`) under the allowlisted chat id."""
+    `resolve-action`, `resolve-sale`, `correct-action`, `correct-actions`,
+    `repair-symbol-history` and `promote`) under the allowlisted chat id."""
     try:
         chat_id = owner_chat_id(deps.env)
     except HatConfigError:
@@ -495,6 +518,10 @@ def _owner(
     if args.command == "resolve-action":
         position = resolve_action(session, args.position, args.action, args.close_at, owner)
         close_position(session, position.id, args.close_at, CLOSE_REASON, now)
+        return {"position_id": str(position.id), "closed": position.closed_at is not None}
+    if args.command == "resolve-sale":
+        fill = BrokerFill(args.qty, args.price, args.note, args.at, args.fees)
+        position = resolve_sale(session, args.tag, fill, args.note, owner)
         return {"position_id": str(position.id), "closed": position.closed_at is not None}
     if args.command == "promote-version":
         row = versions.promote_version(session, args.version, owner)

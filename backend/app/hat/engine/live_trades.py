@@ -26,6 +26,9 @@ are sent by `execution/manage.py`.
   reopens the position, so the stop covers the shares; a sale fill on a closed position is stored
   with its proceeds and changes nothing else. Either is `off_lifecycle`, for the fill sync's
   URGENT `fill.off_lifecycle`.
+- `resolve_sale` is the owner's booking of a lost sale of an earlier session that was settled
+  from the broker's holdings without its fill (Q12): the quantity and price of the contract
+  note become its fill, and an emptied position closes with a trade result that has proceeds.
 - `evaluate_real_position` runs the same `positions.evaluate_stack` as the shadow engine (T12).
   It raises the stop and marks fired the rules that sell nothing; a rule that sells is marked
   fired by `mark_fired` once its order went out, so a sale the broker refused is evaluated again.
@@ -40,7 +43,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..ids import uuid7
@@ -48,6 +51,7 @@ from ..models import HatEvent, HatFill, HatOrder, HatPosition, HatSignal
 from ..time import as_utc, trade_date_of
 from . import exits, journal, lifecycle
 from .botlock import lock_bot
+from .owner import OwnerCommand
 from .positions import (
     STOP_PURPOSES,
     TradeError,
@@ -57,6 +61,7 @@ from .positions import (
     record_sale,
     sold_qty,
     trade_of,
+    write_result,
 )
 from .snapshot import ENTRY_WORKING, HARD_STOP
 
@@ -73,6 +78,7 @@ __all__ = [
     "mark_fired",
     "unmark_fired",
     "real_position_of",
+    "resolve_sale",
 ]
 
 logger = logging.getLogger(__name__)
@@ -415,6 +421,117 @@ def close_if_emptied(session: Session, position_id: uuid.UUID, now: datetime) ->
     close_trade(
         session, trade_of(session, position), rule, Decimal(fill.price), at=as_utc(fill.filled_at)
     )
+    return position
+
+
+def resolve_sale(
+    session: Session,
+    tag: str,
+    sale: BrokerFill,
+    note: str,
+    command: OwnerCommand,
+) -> HatPosition:
+    """The owner books the fill of a lost sale of an earlier session (Q12), from the contract note:
+    `sale` is its quantity, price and trade time, `note` the contract note's number (the fill's
+    trade id, `contract:<note>`). A sale settled from the broker's holdings keeps the open quantity
+    the settle corrected; one still unsure (no holding baseline was known, so nothing was corrected)
+    lowers it by the sale, and the fill sync resizes the stop; a partial exit's sale that leaves
+    shares open moves the trade to PartiallyExited (`exit.partial`), as a fill from the broker does;
+    with a quantity of 0 (the contract note shows no fill) it ends `expired` instead and its rules
+    fire again (`order.expired`), so the exit can sell. A position left at no shares closes at this
+    price (`position.closed` and the trade result, with the sale's proceeds), and one already closed
+    gets its result rewritten. Recorded as the owner's (`actor = user`, the allowlisted chat, `via =
+    cli`). Outside market hours, under the bot's lock. Refused, writing nothing: inside a session
+    (`market_hours`), a tag that is no real sale (`sale_unknown`), a sale neither settled from the
+    holdings nor lost in an earlier session (`sale_not_settled`: its fills come from the broker's
+    trade book), a quantity beyond the sale's with what is already booked (`qty_exceeds_sale`), a
+    time outside the sale's send and now (`time_outside_sale`), and an invalid fill, negative fees
+    or empty note (`invalid_fill`)."""
+    if command.in_session:
+        raise TradeError("market_hours")
+    if sale.qty != 0:
+        _check_fill(sale)
+    fees_ok = isinstance(sale.fees, Decimal) and sale.fees.is_finite() and sale.fees >= 0
+    if not note.strip() or not fees_ok:
+        raise TradeError("invalid_fill")
+    order_id = session.scalar(select(HatOrder.id).where(HatOrder.tag == tag))
+    if order_id is None:
+        raise TradeError("sale_unknown")
+    order, signal = _locked_order(session, order_id)
+    if order.purpose not in EXIT_PURPOSES or order.position_id is None:
+        raise TradeError("sale_unknown")
+    if order.broker_order_id is not None or order.placed_at is None:
+        raise TradeError("sale_not_settled")
+    # still unsure: the settle found no holding baseline, so the open quantity was not corrected
+    unsure = order.status in ("pending", "unconfirmed")
+    earlier = trade_date_of(as_utc(order.placed_at)) < command.trade_date
+    if not (order.status == "filled" or (unsure and earlier)):
+        raise TradeError("sale_not_settled")
+    if sale.qty == 0 and not unsure:
+        raise TradeError("invalid_fill")
+    booked = session.scalar(select(func.sum(HatFill.qty)).where(HatFill.order_id == order.id))
+    if int(booked or 0) + sale.qty > order.qty:
+        raise TradeError("qty_exceeds_sale")
+    at = as_utc(sale.at)
+    if at < as_utc(order.placed_at) or at > command.now:
+        raise TradeError("time_outside_sale")
+    position = session.get(HatPosition, order.position_id)
+    if position is None:
+        raise TradeError("sale_unknown")
+    session.refresh(position)
+    if sale.qty == 0:
+        order.status = "expired"
+        if order.rule_ids:
+            unmark_fired(session, position.id, order.rule_ids)
+        payload = {"chat_id": command.chat_id, "via": "cli", "contract_note": note.strip()}
+        journal.record(
+            session, signal, journal.on_order(order, "order.expired", payload, now=at, actor="user")
+        )
+        session.flush()
+        return position
+    if unsure:
+        order.status = "filled"
+        if position.closed_at is None:
+            position.qty_open = sold_qty(position.qty_open, sale.qty)  # the stop follows it
+    fill = BrokerFill(sale.qty, sale.price, f"contract:{note.strip()}", at, sale.fees)
+    _insert_fill(session, order, fill)
+    payload = {**fill_payload(order, fill.qty, fill.price), "chat_id": command.chat_id}
+    payload |= {"via": "cli", "contract_note": note.strip()}
+    closes = position.closed_at is None and position.qty_open == 0
+    if closes and signal.state in (lifecycle.OPEN, lifecycle.PARTIALLY_EXITED):
+        payload[lifecycle.EXIT_TRIGGERED] = True  # stands for the exit order placed
+    open_trade = position.closed_at is None and signal.state in (
+        lifecycle.OPEN,
+        lifecycle.PARTIALLY_EXITED,
+    )
+    journal.record(
+        session,
+        signal,
+        journal.on_order(
+            order,
+            "order.filled",
+            payload,
+            now=at,
+            position=position,
+            actor="user",
+            broker_fact=True,
+        ),
+    )
+    rule = _exit_rule_of(session, order)
+    if open_trade and not closes and order.purpose == "exit_partial":
+        partial = {"qty": fill.qty, "price": str(fill.price), "rule": rule, "via": "cli"}
+        journal.record(
+            session,
+            signal,
+            journal.on_position(
+                position, "exit.partial", partial, now=at, actor="user", broker_fact=True
+            ),
+        )
+    if position.closed_at is not None:
+        write_result(session, signal, position, rule, as_utc(position.closed_at))
+    elif closes:
+        close_trade(session, trade_of(session, position), rule, fill.price, at=at)
+    session.flush()
     return position
 
 

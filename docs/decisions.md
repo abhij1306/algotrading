@@ -96,6 +96,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   fact and alerted URGENT: shares the broker holds must be tracked and under a stop, never left
   unbooked. A reopened trade's result is rewritten at its second close; the ladder step of its
   first close stands.
+- **Lost earlier-session sales (Q12).** Reconciliation records the owner's own shares per symbol
+  (the holding baseline) and the settle nets them out, so HAT never sells the owner's shares;
+  the owner books the missing fill from the contract note (`admin resolve-sale`), since no
+  broker read gives an earlier session's trades.
 - **Failed-break closes survive a restart (Q7).** The day's closes are rebuilt from the stored
   `bars_5m`; the refusal fails open only when no bars are stored, since refusing every Take
   until the next close would block good entries for a data gap.

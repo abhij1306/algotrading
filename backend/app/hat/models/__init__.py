@@ -42,6 +42,7 @@ from .reference import (
 from .runtime import (
     HatApproval,
     HatFill,
+    HatHoldingBaseline,
     HatOrder,
     HatPosition,
     HatSignal,
@@ -69,6 +70,7 @@ __all__ = [
     "HatDailyBotSnapshot",
     "HatEvent",
     "HatFill",
+    "HatHoldingBaseline",
     "HatOrder",
     "HatPosition",
     "HatSignal",
