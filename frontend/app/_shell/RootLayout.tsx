@@ -1,6 +1,6 @@
 import { Outlet } from "react-router";
-import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { AppShell } from "@/components/layout";
+import { AppShell } from "@/components/templates/app-shell";
+import { ErrorBoundary } from "@/components/templates/error-boundary";
 
 export default function RootLayout() {
   return (

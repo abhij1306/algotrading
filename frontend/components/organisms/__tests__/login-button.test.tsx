@@ -5,7 +5,7 @@ import { createQueryClient } from "@/lib/queries/query-client";
 
 // The client reads VITE_API_URL at import time; Node cannot build a Request from a relative URL.
 vi.stubEnv("VITE_API_URL", "http://api.test");
-const { default: LoginButton } = await import("../LoginButton");
+const { LoginButton } = await import("../login-button");
 
 type Route = () => Response | Promise<Response>;
 

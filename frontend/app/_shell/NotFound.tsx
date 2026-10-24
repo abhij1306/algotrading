@@ -1,10 +1,10 @@
 import { Link } from "react-router";
-import { Button } from "@/components/ui/button";
-import { PageContainer } from "@/components/ui/PageContainer";
+import { Button } from "@/components/atoms/button";
+import { PageLayout } from "@/components/templates/page-layout";
 
 export default function NotFoundPage() {
   return (
-    <PageContainer>
+    <PageLayout>
       <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
         <h1 className="text-xl font-semibold text-foreground">Page Not Found</h1>
         <p className="text-sm text-foreground-secondary">The page you requested does not exist.</p>
@@ -14,6 +14,6 @@ export default function NotFoundPage() {
           </Button>
         </Link>
       </div>
-    </PageContainer>
+    </PageLayout>
   );
 }

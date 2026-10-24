@@ -7,7 +7,9 @@ The map. Rules: `invariants.md`. Decisions: `decisions.md`. Operations: `runbook
 One FastAPI process (`backend/app/main.py`), one PostgreSQL database, Parquet under
 `HAT_DATA_ROOT`. All of HAT is `backend/app/hat/`, which imports only `app.base`,
 `app.database`, `app.paths` and `app.utils.env_loader`. The runtime starts only with
-`HAT_ENABLED=true`. The frontend (`frontend/`) is a read-only dashboard; Telegram is the control
+`HAT_ENABLED=true`. The frontend (`frontend/`) is a read-only dashboard whose components sit in
+atomic layers under `frontend/components/`: `atoms/` and `molecules/` take props only,
+`organisms/` own the query hooks, `templates/` lay out the shell and page. Telegram is the control
 surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
 | Package | Holds |
@@ -133,7 +135,7 @@ Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET 
 /url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`), and the same four
 under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
 dashboard under `/api/hat` (`/status`, `/bots`, `/watchlist`, `/signals`, `/positions`,
-`/allocations`, `/regime`, `/events`), polled every 15 s by `frontend/app/hat/page.tsx`.
+`/allocations`, `/regime`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes.
 
 Environment: `.env.example` lists every variable: `DB_*`; the Fyers app `CLIENT_ID`,
 `SECRET_KEY`, `REDIRECT_URI`; `HAT_BROKER` and the Kite app `KITE_API_KEY`, `KITE_API_SECRET`,

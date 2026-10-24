@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { useRouteError } from "react-router";
-import { Button } from "@/components/ui/button";
+import { Button } from "@/components/atoms/button";
 
 export default function RouteError() {
   const error = useRouteError();
