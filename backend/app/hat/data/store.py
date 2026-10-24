@@ -12,9 +12,10 @@ Views, per connection from `DataStore.connect`:
 - `bars_daily_raw`: every raw row, with the partition's `date`.
 - `bars_daily_adj`: raw x cumulative factor, prev_close by the factor of its own day (NSE's
   ex-date PREVCLOSE is already the adjusted close, F14); volume is divided by the same factor
-  (multiplied by its reciprocal, rounded to 12 places). A bar of an older ISIN linked by the
-  ISIN lineage (`data/lineage.py`) carries the id of its chain's current ISIN, so a chain reads
-  as one instrument.
+  (multiplied by its reciprocal, rounded to 12 places); `raw_close` keeps the unadjusted close
+  for the rules on an absolute rupee price (`min_price`, the NSE tick slab). A bar of an older
+  ISIN linked by the ISIN lineage (`data/lineage.py`) carries the id of its chain's current
+  ISIN, so a chain reads as one instrument.
 - `bars_daily`: `bars_daily_adj` with one row per (instrument_id, date), from the latest
   ingest run (run ids are uuid v7, so byte order is time order).
 - `index_daily`: index levels.
@@ -309,7 +310,7 @@ SELECT COALESCE(l.chain_id, r.instrument_id) AS instrument_id, r.date, r.isin, r
        r.close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS close,
        r.prev_close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS prev_close,
        CAST(r.volume AS DECIMAL(14,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
-       r.traded_value, r.source, r.ingest_run_id
+       r.traded_value, r.close AS raw_close, r.source, r.ingest_run_id
 FROM bars_daily_raw r
 LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
 LEFT JOIN ca_segment c ON c.instrument_id = COALESCE(l.chain_id, r.instrument_id)

@@ -22,7 +22,7 @@ from typing import Any
 
 import polars as pl
 
-from ..data.ticks import tick_for_date
+from ..data.ticks import scaled_tick, tick_for_date
 from ..money import exact
 from .criteria import EvalContext
 from .regime_gate import regime_allows_longs
@@ -49,7 +49,8 @@ class ScanInputs:
     """Everything a scan reads. `members` are instrument ids (text) in the universe on `as_of`.
 
     `bars` holds the members' adjusted daily bars (`instrument_id`, `date`, `high`, `low`,
-    `close`, `volume`, optional `traded_value`); `features` the date's feature rows
+    `close`, `volume`, optional `traded_value`) with `raw_close`, the unadjusted close the
+    rules on a rupee price read (`criteria.base.EvalContext`); `features` the date's feature rows
     (`instrument_id`, `rs_pct`, `adtr20`, ...). `regime_closes` are the regime index's closes
     up to `as_of`, oldest first."""
 
@@ -149,10 +150,20 @@ def next_session_tick(ctx: EvalContext) -> Decimal | None:
     """The tick of the session after the scan date: NSE sets it from the close of the last
     trading day of the month before (`data.ticks`). The day after `as_of` stands for the next
     session; across a month end with a holiday on its last weekday it reads one month early,
-    which only the overnight planned stop uses (the live entry prices its own stop)."""
+    which only the overnight planned stop uses (the live entry prices its own stop). The slab
+    is picked from the raw closes, as NSE sets it, and read in the units of the adjusted bars
+    the stop is priced on (`ticks.scaled_tick`; the NSE tick itself on a live scan)."""
     history = ctx.history
-    closes = [None if c is None else exact(c, floats=True) for c in history.close]
-    return tick_for_date(history.dates, closes, ctx.as_of + timedelta(days=1))
+    closes = [None if c is None else exact(c, floats=True) for c in history.raw_close]
+    tick = tick_for_date(history.dates, closes, ctx.as_of + timedelta(days=1))
+    if tick is None:
+        return None
+    adjusted, raw = history.close[-1], history.raw_close[-1]
+    return scaled_tick(
+        tick,
+        None if adjusted is None else exact(adjusted, floats=True),
+        None if raw is None else exact(raw, floats=True),
+    )
 
 
 def _lookback_lows(playbook: Playbook, ctx: EvalContext) -> list[float | None]:

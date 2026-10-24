@@ -55,8 +55,9 @@ class MinPriceParams(ParamModel):
 
 
 def min_price(ctx: EvalContext, params: MinPriceParams) -> CriterionResult:
-    """HAT-CRIT-102: the latest close is at least `inr`."""
-    close = ctx.history.close
+    """HAT-CRIT-102: the latest close, as traded (unadjusted: a later split or bonus must not
+    drop the day's price below the threshold), is at least `inr`."""
+    close = ctx.history.raw_close
     if not close or close[-1] is None:
         return no_data()
     return verdict(dec(close[-1]) >= dec(params.inr), close[-1], "price_below_min")

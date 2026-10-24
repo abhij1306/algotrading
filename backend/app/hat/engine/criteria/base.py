@@ -91,13 +91,14 @@ class Bars(NamedTuple):
     close: list[float | None]
     volume: list[float | None]
     traded_value: list[float | None]
+    raw_close: list[float | None]  # the unadjusted close, for rules on a rupee price
 
     def __len__(self) -> int:
         return len(self.dates)
 
 
-EMPTY_BARS = Bars([], [], [], [], [], [])
-BAR_FIELDS = ("high", "low", "close", "volume", "traded_value")
+EMPTY_BARS = Bars([], [], [], [], [], [], [])
+BAR_FIELDS = ("high", "low", "close", "volume", "traded_value", "raw_close")
 
 
 def _clean(values: Sequence[float | None]) -> list[float | None]:
@@ -119,9 +120,12 @@ class EvalContext:
     """What a criterion may read, for one instrument on one evaluation date.
 
     `bars`: the instrument's adjusted daily bars (`date`, `high`, `low`, `close`, `volume`,
-    optional `traded_value`); rows after `as_of` are ignored. `universe`: the date's feature
-    rows of every universe instrument (`instrument_id`, `rs_pct`, `ret21`, ...), for the rank
-    criteria. `series`: the instrument's series (instrument master). `price_bands`: the
+    optional `traded_value`) and `raw_close`, the close as traded before any corporate-action
+    adjustment; rows after `as_of` are ignored. A rule on an absolute rupee price (`min_price`)
+    reads `raw_close`, which a later split or bonus does not change; ratio and indicator rules
+    read the adjusted columns. Without `raw_close` such a rule fails closed. `universe`: the
+    date's feature rows of every universe instrument (`instrument_id`, `rs_pct`, `ret21`, ...),
+    for the rank criteria. `series`: the instrument's series (instrument master). `price_bands`: the
     instrument's `(effective_from, band_pct)` rows, `band_pct` None for no band.
     `fundamentals`: rows `filed_at`, `eps_yoy`, `sales_yoy` (none until Phase 2).
     `levels`: the numeric levels earlier criteria of the same stage exposed (such as `vcp`'s

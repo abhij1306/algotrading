@@ -43,7 +43,7 @@ from ..data.store import (
     DataStore,
     latest_rows,
 )
-from ..data.ticks import tick_for_date
+from ..data.ticks import scaled_tick, tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..engine.stops import lowest, mean_true_range, sma
@@ -87,6 +87,7 @@ _BAR_COLUMNS = (
     "prev_close",
     "volume",
     "traded_value",
+    "raw_close",
     *_EXACT,
 )
 
@@ -97,7 +98,8 @@ class MarketData:
 
     `days`: every session of the store, sorted. `bars`: the universe's adjusted daily bars,
     sorted by instrument and date (`instrument_id` text, `date`, `open`, `high`, `low`, `close`,
-    `prev_close`, `volume`, `traded_value`, as doubles, for the scan, and `open_e4` ..
+    `prev_close`, `volume`, `traded_value`, and `raw_close`, the unadjusted close the rules on
+    a rupee price read (`min_price`, the tick slab), as doubles, for the scan, and `open_e4` ..
     `close_e4`, the exact 4-place prices as integers of 1/10,000, for the day loop's Decimals).
     `features`: the daily features (`date`, `instrument_id`, columns). `index_closes`:
     per index name, (date, close) oldest first. `members`: the universe's membership intervals,
@@ -196,19 +198,24 @@ def _exact(units: object) -> Decimal:
 @dataclass(frozen=True)
 class _Series:
     """One instrument's bars with four positive prices, columnar: the dates as days since
-    `_EPOCH`, ascending, (open, high, low, close) in 1/10,000 per row, and per row the row of
-    the last bar on or before it that is not skipped near a jump (-1 before one)."""
+    `_EPOCH`, ascending, (open, high, low, close) in 1/10,000 per row, per row the row of
+    the last bar on or before it that is not skipped near a jump (-1 before one), and the raw
+    (unadjusted) close in 1/10,000 per row (0 when absent)."""
 
     days: np.ndarray
     prices: np.ndarray
     traded: np.ndarray
+    raw: np.ndarray
 
     def bars(self, start: int, stop: int) -> list[Bar]:
         return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
 
 
 _NO_SERIES = _Series(
-    np.empty(0, dtype=np.int32), np.empty((0, 4), dtype=np.int64), np.empty(0, dtype=np.int64)
+    np.empty(0, dtype=np.int32),
+    np.empty((0, 4), dtype=np.int64),
+    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.int64),
 )
 
 
@@ -237,9 +244,13 @@ class MarketView:
 
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
-        frame = self.bars.select("instrument_id", "date", *_EXACT).filter(
-            pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
-        )
+        frame = self.bars.select(
+            "instrument_id",
+            "date",
+            *_EXACT,
+            # a raw price has at most the store's 4 places, so the double rounds back exactly
+            raw_e4=(pl.col("raw_close") * 10_000).round(0).cast(pl.Int64).fill_null(0),
+        ).filter(pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False))
         # A skipped bar stays in the history: it is a real session, whose close sets the tick and
         # the SMA, ATR and swing low; only the loop's trades and marks leave it out.
         left_out = pl.DataFrame(
@@ -254,6 +265,7 @@ class MarketView:
                 part["date"].to_physical().to_numpy(),
                 part.select(_EXACT).to_numpy(),
                 np.maximum.accumulate(kept) if part.height else kept,
+                part["raw_e4"].to_numpy(),
             )
         return found
 
@@ -310,14 +322,23 @@ class MarketView:
         return series.bars(max(0, end - count), end)
 
     def tick(self, instrument_id: str, day: date) -> Decimal | None:
-        """The instrument's NSE tick on `day` (HAT-EXEC-053), from its closes before `day`, as
-        the live trigger prices it; None without an earlier close."""
+        """The instrument's NSE tick on `day` (HAT-EXEC-053) in the units of its adjusted bars.
+        The slab is picked from its raw closes before `day`, as the live trigger prices it (a
+        later split must not move a day to a finer slab), and the tick is scaled by the
+        adjustment of its bar of `day` (or the last before it, `ticks.scaled_tick`): on a bar no
+        action adjusts it is the NSE tick itself. None without an earlier raw close."""
         series, end = self._find(instrument_id, day, inclusive=False)
         month = int(np.searchsorted(series.days[:end], _ordinal(day.replace(day=1)), side="left"))
         # the only closes the tick reads: the last before the month, and the last before `day`
         rows = sorted({n for n in (month - 1, end - 1) if n >= 0})
         dates = [_EPOCH + timedelta(days=int(series.days[n])) for n in rows]
-        return tick_for_date(dates, [_exact(series.prices[n][3]) for n in rows], day)
+        raw = [_exact(series.raw[n]) if series.raw[n] > 0 else None for n in rows]
+        tick = tick_for_date(dates, raw, day)
+        _, through = self._find(instrument_id, day, inclusive=True)
+        if tick is None or not through:
+            return None
+        last = through - 1
+        return scaled_tick(tick, _exact(series.prices[last][3]), _exact(series.raw[last]))
 
     def sma_through(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The `length`-session SMA of the closes up to `day`."""
@@ -360,6 +381,7 @@ SELECT instrument_id, date, series,
        CAST(open AS DOUBLE) AS open, CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
        CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
        CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value,
+       CAST(raw_close AS DOUBLE) AS raw_close,
        price_e4(open) AS open_e4,
        price_e4(high) AS high_e4,
        price_e4(low) AS low_e4,

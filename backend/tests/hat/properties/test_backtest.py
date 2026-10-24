@@ -14,7 +14,13 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 
 from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
-from app.hat.backtest.data import Bar, MarketData, MarketView, jump_skips, stopped_trading
+from app.hat.backtest.data import (
+    Bar,
+    MarketData,
+    MarketView,
+    jump_skips,
+    stopped_trading,
+)
 from app.hat.backtest.fillrules import (
     NSE_BANDS,
     lower_circuit_locked,
@@ -41,7 +47,7 @@ from app.hat.backtest.spec import (
     RunConventions,
 )
 from app.hat.confighash import config_hash
-from app.hat.data.ticks import tick_for_date
+from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal
@@ -515,7 +521,7 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
         for n, d in enumerate(days)
     ]
     bars = pl.DataFrame(
-        [("x", d, *p) for d, *p in rows],
+        [("x", d, *p, p[-1] / 10_000) for d, *p in rows],
         schema={
             "instrument_id": pl.String,
             "date": pl.Date,
@@ -523,6 +529,7 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
             "high_e4": pl.Int64,
             "low_e4": pl.Int64,
             "close_e4": pl.Int64,
+            "raw_close": pl.Float64,
         },
         orient="row",
     )
@@ -554,3 +561,17 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
     for day in days:
         before = [d for d in priced if d < day]
         assert view.tick("x", day) == tick_for_date(before, [closes[d] for d in before], day)
+    # the same bars adjusted for a later 1:10 split: the slab is still picked from the raw
+    # closes (₹260.51 -> 0.05), and the tick is read in the bars' adjusted units
+    split = bars.with_columns(pl.col(c) // 10 for c in ("open_e4", "high_e4", "low_e4", "close_e4"))
+    adjusted = MarketView(dataclasses.replace(market, bars=split), "NIFTY 500")
+    assert adjusted.tick("x", days[38]) == D("0.0050")
+
+
+def test_scaled_tick_reads_the_tick_in_adjusted_units() -> None:
+    assert scaled_tick(D("0.05"), D("123.45"), D("123.45")) == D("0.05")  # no adjustment
+    assert scaled_tick(D("0.10"), D("120"), D("1200")) == D("0.0100")  # 1:10 split
+    assert scaled_tick(D("0.05"), D("100"), D("300")) == D("0.0167")  # 2:1 bonus, rounded
+    assert scaled_tick(D("0.01"), D("0.01"), D("1000")) == D("0.0001")  # never below 0.0001
+    assert scaled_tick(D("0.05"), D("100"), D("0")) is None  # no raw close
+    assert scaled_tick(D("0.05"), D("100"), None) is None
