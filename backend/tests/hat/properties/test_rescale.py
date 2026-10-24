@@ -127,3 +127,18 @@ class _Book:
 
 
 # --- the night before ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("price", "previous", "split"),
+    [
+        ("50", "100", True),  # a 1:2 split
+        ("60", "100", True),
+        ("60.01", "100", False),
+        ("80", "100", False),  # a 20% band move
+        ("1", "0", False),  # no previous close: never a gap
+    ],
+)
+def test_split_like(price: str, previous: str, split: bool) -> None:
+    """A live price at or below 0.6 of the previous raw close reads as an unstored split (Q3)."""
+    assert rescale.split_like(D(price), D(previous)) is split

@@ -27,6 +27,14 @@ holds, or, for a virtual position, the admin command line's `resolve-action` (PR
 `corporate_action.resolved` (`resolve_action`) and closes it virtually at the price the owner
 gives (the ex-date's adjusted price, PR 31 follow-ups 1 and 12).
 
+An action that was never stored leaves no row to see, so a held name whose live price is at or
+below `SPLIT_GAP_RATIO` of the previous session's raw close, with no action stored between the
+two, is taken for an unstored split (Q3): the exits record one URGENT `position.split_gap`
+(`flag_split_gap`) and the position is manage-only (`open_guards`) until the owner stores the
+action (it is then rescaled or flagged unhandled as above) or resolves the gap (`resolve_action`,
+`<day>:split_gap`; a real position is sold by `/flatten`). A real crash of 40% waits for the
+owner too, by decision.
+
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
 
@@ -57,6 +65,7 @@ __all__ = [
     "ALERT_ACTION_PENDING",
     "ALERT_ACTION_UNCHECKED",
     "EVENT_RESCALED",
+    "EVENT_SPLIT_GAP",
     "EVENT_RESOLVED",
     "EVENT_UNHANDLED",
     "ResolutionError",
@@ -65,14 +74,17 @@ __all__ = [
     "applied_factors",
     "awaits_rescale",
     "exact_factor",
+    "flag_split_gap",
     "flag_unhandled",
     "held_and_watchlisted",
     "manage_only",
+    "open_guards",
     "pending_actions",
     "rescale_open_positions",
     "resolve_action",
     "scale_position",
     "scale_qty",
+    "split_like",
     "unhandled_actions",
 ]
 
@@ -81,6 +93,11 @@ logger = logging.getLogger(__name__)
 EVENT_RESCALED = "position.rescaled"
 EVENT_UNHANDLED = "corporate_action.unhandled"
 EVENT_RESOLVED = "corporate_action.resolved"
+EVENT_SPLIT_GAP = "position.split_gap"  # a split-like gap with no stored action (Q3)
+GAP_KEY = "split_gap"
+# A live price at or below this share of the previous raw close, with no stored action, reads as
+# an unstored split: NSE's widest band is 20%, and a 1:2 split or a 1:1 bonus halves the price.
+SPLIT_GAP_RATIO = Decimal("0.6")
 CLOSE_REASON = "corporate_action"  # the exit reason of a virtual position closed on resolution
 ALERT_ACTION_PENDING = "corporate_action.pending"
 ALERT_ACTION_UNCHECKED = "corporate_action.unchecked"  # a next-session lookup failed
@@ -157,16 +174,7 @@ def scale_position(
 
 
 def _rescale_events(session: Session, position_id: uuid.UUID) -> list[dict]:
-    rows = session.scalars(
-        select(HatEvent.payload)
-        .where(
-            HatEvent.aggregate_type == "position",
-            HatEvent.aggregate_id == position_id,
-            HatEvent.event_type == EVENT_RESCALED,
-        )
-        .order_by(HatEvent.id)
-    )
-    return [dict(row or {}) for row in rows]
+    return _payloads(session, position_id, EVENT_RESCALED)
 
 
 def applied_factors(session: Session, position_id: uuid.UUID) -> list[Fraction]:
@@ -232,12 +240,107 @@ def unhandled_actions(
     return [a for a in actions if not _rescalable(a)]
 
 
-def manage_only(session: Session, position: HatPosition, day: date) -> bool:
-    """True while the position spans an action it was not rescaled for, or one the rescale
-    cannot handle: its exits see no view (HAT-EXEC-142, HAT-EXEC-144)."""
-    return bool(
-        pending_actions(session, position, day) or unhandled_actions(session, position, day)
+def split_like(price: Decimal, previous_close: Decimal) -> bool:
+    """True when `price` is at or below `SPLIT_GAP_RATIO` of a positive `previous_close`."""
+    return previous_close > 0 and price <= SPLIT_GAP_RATIO * previous_close
+
+
+def actions_between(session: Session, instrument_id: uuid.UUID, after: date, through: date) -> bool:
+    """Whether a price-changing action of the instrument is stored with its ex-date after
+    `after` and on or before `through`."""
+    found = session.scalar(
+        select(HatCorporateAction.id)
+        .where(
+            HatCorporateAction.instrument_id == instrument_id,
+            HatCorporateAction.ex_date > after,
+            HatCorporateAction.ex_date <= through,
+            HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES),
+        )
+        .limit(1)
     )
+    return found is not None
+
+
+def _payloads(session: Session, position_id: uuid.UUID, event_type: str) -> list[dict]:
+    rows = session.scalars(
+        select(HatEvent.payload)
+        .where(
+            HatEvent.aggregate_type == "position",
+            HatEvent.aggregate_id == position_id,
+            HatEvent.event_type == event_type,
+        )
+        .order_by(HatEvent.id)
+    )
+    return [dict(row or {}) for row in rows]
+
+
+def open_guards(session: Session, position: HatPosition) -> list[str]:
+    """The keys of the position's `position.split_gap` events the owner has not resolved
+    (`corporate_action.resolved`) and no action stored since explains: a stored action ex in the
+    gap's sessions takes the gap over (rescaled, or unhandled). None for a closed position."""
+    if position.closed_at is None:
+        resolved = {str(p.get("action")) for p in _payloads(session, position.id, EVENT_RESOLVED)}
+        return [
+            key
+            for p in _payloads(session, position.id, EVENT_SPLIT_GAP)
+            if (key := str(p.get("action"))) not in resolved
+            and not actions_between(
+                session,
+                position.instrument_id,
+                date.fromisoformat(str(p.get("previous_day"))),
+                date.fromisoformat(key.split(":")[0]),
+            )
+        ]
+    return []
+
+
+def manage_only(session: Session, position: HatPosition, day: date) -> bool:
+    """True while the position spans an action it was not rescaled for, one the rescale cannot
+    handle, or a split-like gap no stored action explains: its exits see no view (HAT-EXEC-142,
+    HAT-EXEC-144, Q3)."""
+    return bool(
+        pending_actions(session, position, day)
+        or unhandled_actions(session, position, day)
+        or open_guards(session, position)
+    )
+
+
+def flag_split_gap(
+    session: Session,
+    position: HatPosition,
+    day: date,
+    gap: tuple[date, Decimal, Decimal],
+    now: datetime,
+) -> bool:
+    """Record one URGENT `position.split_gap` for the position on `day`, `gap` being (the
+    previous session, its raw close, the live price); False when it is recorded already. Works
+    in the caller's transaction."""
+    key = f"{day.isoformat()}:{GAP_KEY}"
+    if key in {str(p.get("action")) for p in _payloads(session, position.id, EVENT_SPLIT_GAP)}:
+        return False
+    previous_day, previous_close, price = gap
+    symbol = session.scalar(
+        select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+    )
+    record(
+        session,
+        aggregate_type="position",
+        aggregate_id=position.id,
+        event_type=EVENT_SPLIT_GAP,
+        actor="scheduler",
+        payload={
+            "action": key,
+            "symbol": str(symbol or "?"),
+            "previous_day": previous_day.isoformat(),
+            "previous_close": str(previous_close),
+            "price": str(price),
+            "virtual": "true" if position.is_virtual else "false",
+        },
+        correlation_id=position.signal_id,
+        bot_id=position.bot_id,
+        occurred_at=now,
+    )
+    return True
 
 
 def _open_positions(session: Session, instrument_id: uuid.UUID | None = None) -> list[HatPosition]:
@@ -405,7 +508,8 @@ def resolve_action(
     command: OwnerCommand,
 ) -> HatPosition:
     """The owner resolves one unhandled action (`<ex-date>:<type>`, as its
-    `corporate_action.unhandled` names it) of an open virtual position (PR 73; PR 31 follow-ups
+    `corporate_action.unhandled` names it) or open guard (`<day>:split_gap`, as its
+    `position.split_gap` names it) of an open virtual position (PR 73; PR 31 follow-ups
     1, 12): records `corporate_action.resolved` as the owner's (`actor = user`, the allowlisted
     chat, `via = cli`) at `price` (the ex-date's adjusted price the owner reads), and the caller
     closes the position at it in the same transaction (`shadow.close_position` with
@@ -430,7 +534,7 @@ def resolve_action(
     locking = {
         _key(a.ex_date, a.action_type)
         for a in unhandled_actions(session, position, command.trade_date)
-    }
+    } | set(open_guards(session, position))
     if action not in locking:
         raise ResolutionError("action_not_unhandled")
     if price is None or not price.is_finite() or price <= 0:

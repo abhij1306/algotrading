@@ -15,6 +15,7 @@ Missing data never fires anything: an unknown price leaves the position alone.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from collections.abc import Callable
 from datetime import date, datetime
@@ -27,7 +28,7 @@ from ..clock import Clock
 from ..engine import demerger_exit, positions, shadow
 from ..engine.close_gap import record_close_evaluation
 from ..engine.exits import ExitView, Phase
-from ..engine.rescale import manage_only
+from ..engine.rescale import actions_between, flag_split_gap, manage_only, split_like
 from ..execution.manage import in_close_window
 from ..execution.series import broker_symbol, series_changed
 from ..models import HatBot, HatPosition, HatSignal
@@ -49,7 +50,10 @@ class ExitViews:
     (HAT-EXEC-144). A position whose instrument moved to another series (EQ to BE) while it was
     held keeps its exits (D210, HAT-EXEC-146): its prices are continuous under one instrument,
     and a sale goes out under the new series' symbol; only one moved to a series with no Fyers
-    symbol (BZ) has none, as no sale can be sent for it. The price is
+    symbol (BZ) has none, as no sale can be sent for it. A live price at or below 0.6 of the
+    previous raw close with no action stored since is an unstored split (Q3): the position
+    gets one URGENT `position.split_gap`, in its own transaction, and no view until the owner
+    stores the action or resolves the gap (`rescale.open_guards`). The price is
     `LivePrices.price`: one the stale threshold old or outside the day's band gives no view, so
     no exit fires on it (PR 51; the broker stop still rests)."""
 
@@ -59,11 +63,14 @@ class ExitViews:
         prices: Callable[[Session, uuid.UUID], Decimal | None],
         clock: Clock,
         calendar: CalendarSource,
+        session_factory: Callable[[], Session],
     ) -> None:
         self._book = book
         self._prices = prices
         self._clock = clock
         self._calendar = calendar
+        self._session_factory = session_factory
+        self._flag_lock = threading.Lock()  # the shadow and account exits share the views
 
     def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
         """The instrument's checked live price (`LivePrices.price`); None when unknown."""
@@ -82,6 +89,8 @@ class ExitViews:
         if manage_only(session, position, today):
             logger.warning("position %s spans a corporate action not rescaled", position.id)
             return None
+        if self._split_gap(session, position, price, today):
+            return None
         moved = series_changed(session, position)
         if moved is not None and broker_symbol(session, moved.id) is None:
             logger.warning("position %s moved to a series with no Fyers symbol", position.id)
@@ -94,6 +103,28 @@ class ExitViews:
         held = held_sessions(trading, trade_date_of(as_utc(position.opened_at)), today)
         rules = positions.exit_rules_of(session, signal)
         return self._book.day(today).exit_view(position.instrument_id, price, rules, held)
+
+    def _split_gap(
+        self, session: Session, position: HatPosition, price: Decimal, today: date
+    ) -> bool:
+        """True, after recording `position.split_gap` in a transaction of its own, when the
+        live price gaps split-like from the previous raw close with no action stored since."""
+        previous = self._book.day(today).previous_raw_close(position.instrument_id)
+        if previous is None or not split_like(price, previous[1]):
+            return False
+        if actions_between(session, position.instrument_id, previous[0], today):
+            return False
+        logger.warning("position %s gaps like an unstored split", position.id)
+        try:
+            with self._flag_lock, self._session_factory() as own:
+                held = own.get(HatPosition, position.id)
+                if held is not None and held.closed_at is None:
+                    gap = (previous[0], previous[1], price)
+                    flag_split_gap(own, held, today, gap, utc_now(self._clock))
+                    own.commit()
+        except Exception:
+            logger.exception("recording the split gap of position %s failed", position.id)
+        return True
 
 
 class ShadowExits:

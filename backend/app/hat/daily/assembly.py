@@ -407,7 +407,7 @@ def build(
     service = TriggerService(TriggerMonitor(live.builder), sf, contexts, feed_stale, route)
     live.add_bar_listener(service.on_bar)
     live.add_bar_listener(entries.on_bar)
-    views = ExitViews(book, live_prices.price, clock, calendar)
+    views = ExitViews(book, live_prices.price, clock, calendar, sf)
     shadow = ShadowExits(sf, views, desks.managed)
     subscriptions = LiveSubscriptions(
         registry, subscribe, unsubscribe, subscription_alert(notifier, clock)

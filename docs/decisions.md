@@ -65,6 +65,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Exit before a demerger.** HAT learns a demerger's factor only from the gap after the event, so
   a position exits the session before the ex-date (under T+1 it gets no resulting shares, by
   intent); live sells a real one only through the owner (`/flatten`).
+- **An unexplained split-like gap waits for the owner.** A held name that opens 40% down with no
+  stored action is more likely an unstored split than a crash: selling the old quantity at the
+  new price against the old stop is the costly mistake, so it is manage-only plus URGENT until the
+  owner stores the action or resolves it (a real crash then waits for the owner too).
 - **Point in time, not full as-of rebuild.** The series stays the hindsight view; the backtest
   skips names whose value was not yet knowable (`known_on`, versions) instead of rebuilding the
   series per date.

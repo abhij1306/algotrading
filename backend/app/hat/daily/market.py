@@ -214,6 +214,15 @@ class DailyData:
         dates, closes = self._raw.get(self.chain_key(instrument_id), ([], []))
         return tick_for_date(dates, closes, self.trade_date)
 
+    def previous_raw_close(self, instrument_id: uuid.UUID) -> tuple[date, Decimal] | None:
+        """The last session before the trade date and its raw close (the price as traded);
+        None without one."""
+        frame = self.bars(instrument_id)
+        if frame.height == 0:
+            return None
+        close = exact(frame["raw_close"][-1], floats=True)
+        return None if close is None else (frame["date"][-1], close)
+
     def feature(self, instrument_id: uuid.UUID, name: str) -> Decimal | None:
         return exact(self._features.get(self.chain_key(instrument_id), {}).get(name), floats=True)
 

@@ -59,6 +59,11 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   an earlier session is settled from the holdings net of the owner's own shares (the holding
   baseline a reconciliation recorded before the sale); with no baseline the position sells
   nothing until the owner books that sale.
+- **Corporate-action locks.** A position whose prices may be on the wrong scale gets no exit
+  evaluation and its instrument no entry; its broker stop rests and `/flatten` still sells it:
+  a stored split or bonus not yet rescaled, an action the rescale cannot handle, and a held name
+  whose live price is at or below 0.6 of the previous raw close with no action stored since
+  (URGENT `position.split_gap`, until the owner stores the action or resolves it).
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
   restarts the peak at the equity then, the drawdown kill's and, for a bot, the health
