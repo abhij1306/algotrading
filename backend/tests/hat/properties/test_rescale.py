@@ -67,8 +67,9 @@ def test_factor_exact(d: int, n: int) -> None:
     short = Fraction((D(n) / D(d)).quantize(D("0.00001")))
     five = (short * 10**4).denominator != 1  # not a factor sent to 4 places
     if five and short.limit_denominator(rescale.MAX_DENOMINATOR) != short:
+        stored = factor_to_decimal(short)
         with pytest.raises(ValueError):
-            rescale.exact_factor(factor_to_decimal(short))
+            rescale.exact_factor(stored)
 
 
 @settings(max_examples=200, deadline=None)
@@ -102,8 +103,9 @@ def test_factor_mcp_rounded(stored: str, ratio: Fraction) -> None:
 @pytest.mark.parametrize("stored", ["0.66667", "0.6668", "0.666670000001"])
 def test_factor_not_rounded_refused(stored: str) -> None:
     """Past 4 places, or 4 places no small ratio rounds to, the factor is refused."""
+    factor = D(stored)
     with pytest.raises(ValueError):
-        rescale.exact_factor(D(stored))
+        rescale.exact_factor(factor)
 
 
 # --- until rescaled, no exit and no entry ---------------------------------------
