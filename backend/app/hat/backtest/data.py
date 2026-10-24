@@ -123,7 +123,8 @@ class MarketData:
     (`lineage.unexplained_jumps`: a price-changing action with no stored factor, such as a
     demerger whose ratio the owner has not set; a reviewed one has its factor and is no longer a
     jump). Their bars stay in `bars` for the scan, but the day loop does not trade or mark on
-    them (`MarketView.bar`), and they do not count as sessions without a bar for the suspension
+    them (`MarketView.bar`), though their closes still set the tick and the indicators (they
+    are real sessions), and they do not count as sessions without a bar for the suspension
     mark. An interim rule (audit H7) until the review list's actions are loaded; the run's
     snapshot reports how many instrument-days it skipped.
     """
@@ -194,17 +195,21 @@ def _exact(units: object) -> Decimal:
 
 @dataclass(frozen=True)
 class _Series:
-    """One instrument's tradeable bars, columnar: the dates as days since `_EPOCH`, ascending,
-    and (open, high, low, close) in 1/10,000 per row."""
+    """One instrument's bars with four positive prices, columnar: the dates as days since
+    `_EPOCH`, ascending, (open, high, low, close) in 1/10,000 per row, and per row the row of
+    the last bar on or before it that is not skipped near a jump (-1 before one)."""
 
     days: np.ndarray
     prices: np.ndarray
+    traded: np.ndarray
 
     def bars(self, start: int, stop: int) -> list[Bar]:
         return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
 
 
-_NO_SERIES = _Series(np.empty(0, dtype=np.int32), np.empty((0, 4), dtype=np.int64))
+_NO_SERIES = _Series(
+    np.empty(0, dtype=np.int32), np.empty((0, 4), dtype=np.int64), np.empty(0, dtype=np.int64)
+)
 
 
 class MarketView:
@@ -212,7 +217,8 @@ class MarketView:
     tradeable bars as exact Decimals, an instrument's bars up to a day and the SMA, swing low,
     ATR and NSE tick live computes from them, the features of a session and the closes of the
     strategy's regime index (`index`). A bar without four positive prices is not tradeable and
-    is left out, as is a skipped one (`MarketData.skipped`). The bars are held per instrument as
+    is left out; a skipped one (`MarketData.skipped`) is not traded on (`bar`, `last_close`)
+    but stays in the history the indicators and the tick read. The bars are held per instrument as
     arrays; a `Bar` of Decimals is built only for the bars a read returns."""
 
     def __init__(self, data: MarketData, index: str) -> None:
@@ -234,17 +240,22 @@ class MarketView:
         frame = self.bars.select("instrument_id", "date", *_EXACT).filter(
             pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
         )
-        if skipped:
-            left_out = pl.DataFrame(
-                sorted(skipped), schema={"instrument_id": pl.String, "date": pl.Date}, orient="row"
+        # A skipped bar stays in the history: it is a real session, whose close sets the tick and
+        # the SMA, ATR and swing low; only the loop's trades and marks leave it out.
+        left_out = pl.DataFrame(
+            sorted(skipped), schema={"instrument_id": pl.String, "date": pl.Date}, orient="row"
+        ).with_columns(skipped=pl.lit(value=True))
+        frame = frame.join(left_out, on=["instrument_id", "date"], how="left")
+        found: dict[str, _Series] = {}
+        for key, part in frame.partition_by("instrument_id", as_dict=True).items():
+            rows = np.arange(part.height)
+            kept = np.where(part["skipped"].is_null().to_numpy(), rows, -1)
+            found[str(key[0])] = _Series(
+                part["date"].to_physical().to_numpy(),
+                part.select(_EXACT).to_numpy(),
+                np.maximum.accumulate(kept) if part.height else kept,
             )
-            frame = frame.join(left_out, on=["instrument_id", "date"], how="anti")
-        return {
-            str(key[0]): _Series(
-                part["date"].to_physical().to_numpy(), part.select(_EXACT).to_numpy()
-            )
-            for key, part in frame.partition_by("instrument_id", as_dict=True).items()
-        }
+        return found
 
     def _find(self, instrument_id: str, day: date, *, inclusive: bool) -> tuple[_Series, int]:
         """The instrument's bars and the count of them dated on or before `day` (before it, if
@@ -256,7 +267,7 @@ class MarketView:
     def bar(self, instrument_id: str, day: date) -> Bar | None:
         """The instrument's tradeable bar of `day`; None without one."""
         series, at = self._find(instrument_id, day, inclusive=False)
-        if at < len(series.days) and series.days[at] == _ordinal(day):
+        if at < len(series.days) and series.days[at] == _ordinal(day) and series.traded[at] == at:
             return series.bars(at, at + 1)[0]
         return None
 
@@ -264,9 +275,10 @@ class MarketView:
         """The instrument's last tradeable session on or before `day` and its close; None
         without one."""
         series, end = self._find(instrument_id, day, inclusive=True)
-        if not end:
+        at = int(series.traded[end - 1]) if end else -1
+        if at < 0:
             return None
-        return _EPOCH + timedelta(days=int(series.days[end - 1])), _exact(series.prices[end - 1][3])
+        return _EPOCH + timedelta(days=int(series.days[at])), _exact(series.prices[at][3])
 
     def skipped_after(self, instrument_id: str, after: date, through: date) -> int:
         """The count of the instrument's skipped sessions (`MarketData.skipped`) after `after`, up

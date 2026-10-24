@@ -534,21 +534,23 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
     assert view.bar("x", days[10]) is None  # not four positive prices
     assert view.bar("x", days[20]) is None  # skipped near a jump
     assert view.bar("y", days[0]) is None
-    traded = [d for n, d in enumerate(days) if n not in (10, 20)]
+    priced = [d for n, d in enumerate(days) if n != 10]  # day 20 is skipped but priced
     closes = {d: D(close).scaleb(-4) for d, _, _, _, close in rows}
     assert [b.close for b in view.bars_through("x", days[22], 3)] == [
-        closes[days[19]],
+        closes[days[20]],
         closes[days[21]],
         closes[days[22]],
     ]
     assert view.bars_through("x", days[22], 3, inclusive=False)[-1].close == closes[days[21]]
     assert view.prev_close("x", days[0]) is None
     assert view.last_close("x", days[20]) == (days[19], closes[days[19]])
+    assert view.last_close("x", days[21]) == (days[21], closes[days[21]])
+    assert view.prev_close("x", days[21]) == closes[days[20]]
     assert view.last_close("x", days[0] - timedelta(days=1)) is None
     assert view.skipped_after("x", days[19], days[21]) == 1
     assert view.skipped_after("x", days[20], days[30]) == 0
     assert view.prev_close("x", days[11]) == closes[days[9]]
     assert view.tick("x", days[38]) == D("0.05")  # January's last close, 260.5123
     for day in days:
-        before = [d for d in traded if d < day]
+        before = [d for d in priced if d < day]
         assert view.tick("x", day) == tick_for_date(before, [closes[d] for d in before], day)
