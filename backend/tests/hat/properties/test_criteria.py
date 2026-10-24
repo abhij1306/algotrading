@@ -13,6 +13,7 @@ from datetime import timedelta
 from decimal import Decimal
 from fractions import Fraction
 
+import polars as pl
 from hat.hat_criteria_support import (
     EPOCH,
     Row,
@@ -27,6 +28,7 @@ from hypothesis import strategies as st
 from app.hat.data.gapscan import Gapper, GapRow
 from app.hat.engine.criteria import evaluate
 from app.hat.engine.criteria import vcp as vcp_module
+from app.hat.engine.criteria.base import EvalContext
 from app.hat.engine.live_entry import ep_candidates
 
 SLOW = settings(
@@ -47,6 +49,22 @@ SERIES = ["EQ", "BE", "SM", "N1", "BZ"]
 
 
 # --- min_price ------------------------------------------------------------------
+
+
+def test_min_price_reads_the_raw_close_not_the_adjusted_one() -> None:
+    # a ₹120 close later split 1:10 reads ₹12 adjusted; the rule sees the price as traded
+    day = EPOCH + timedelta(days=3)
+    bars = pl.DataFrame(
+        {"date": [day], "high": [12.5], "low": [11.5], "close": [12.0], "raw_close": [120.0]}
+    )
+    passed = evaluate("min_price", {"inr": 50.0}, EvalContext(day, "x", bars))
+    assert (passed.passed, passed.value) == (True, 120.0)
+    split_later = bars.with_columns(raw_close=pl.lit(12.0))
+    failed = evaluate("min_price", {"inr": 50.0}, EvalContext(day, "x", split_later))
+    assert (failed.passed, failed.reason) == (False, "price_below_min")
+    # without the raw close the rule fails closed, whatever the adjusted close says
+    blind = evaluate("min_price", {"inr": 5.0}, EvalContext(day, "x", bars.drop("raw_close")))
+    assert (blind.passed, blind.reason) == (False, "no_data")
 
 
 # --- price_band_allowed ---------------------------------------------------------

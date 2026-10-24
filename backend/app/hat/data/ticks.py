@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
-__all__ = ["NSE_TICK_SLABS", "reference_close", "tick_for_date", "tick_size"]
+__all__ = ["NSE_TICK_SLABS", "reference_close", "scaled_tick", "tick_for_date", "tick_size"]
 
 # (upper bound of the price slab, inclusive, or None for no bound; tick). Below 250 is 0.01; a
 # price of exactly 250 is in the 0.05 slab.
@@ -26,6 +26,7 @@ NSE_TICK_SLABS: tuple[tuple[Decimal | None, Decimal], ...] = (
 )
 SUB_250_TICK = Decimal("0.01")
 SUB_250_BELOW = Decimal(250)
+TICK_PLACES = Decimal("0.0001")  # a tick in adjusted units is held to the store's 4 places
 
 
 def tick_size(price: Decimal) -> Decimal | None:
@@ -67,3 +68,15 @@ def tick_for_date(
     before the trade date."""
     close = reference_close(dates, closes, trade_date)
     return None if close is None else tick_size(close)
+
+
+def scaled_tick(tick: Decimal, adjusted: Decimal | None, raw: Decimal | None) -> Decimal | None:
+    """`tick`, the NSE tick of the prices as traded, in the units of prices adjusted for later
+    corporate actions, from one bar's `adjusted` and `raw` closes: the tick itself when they are
+    equal (no action adjusts the bar, as on every live scan date), else tick x adjusted / raw,
+    rounded half to even to 4 places and at least 0.0001. None without both closes positive."""
+    if adjusted is None or raw is None or adjusted <= 0 or raw <= 0:
+        return None
+    if adjusted == raw:
+        return tick
+    return max((tick * adjusted / raw).quantize(TICK_PLACES, ROUND_HALF_EVEN), TICK_PLACES)

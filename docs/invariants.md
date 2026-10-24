@@ -68,6 +68,8 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
 - **Data.** Scans never run on data that failed the gate; features use bars up to the scan date
   only; raw bars are immutable; adjusted prices are raw times cumulative factors, each action
   applied once per ISIN chain, and two ISINs share a history only through a `linked` lineage
-  row. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
+  row. A rule on an absolute rupee price (`min_price`, the NSE tick slab) reads the raw close of
+  its date, never an adjusted one, in the scan and the backtest alike; ratio and indicator rules
+  read adjusted bars. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
   day, and a day that does not fit the raw daily bar is ledgered (`bars_5m_rejects`), never
   written.

@@ -58,7 +58,8 @@ _ADJ_SQL = """
 SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
        CAST(open AS DOUBLE) AS open, CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
        CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
-       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value
+       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value,
+       CAST(raw_close AS DOUBLE) AS raw_close
 FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
 """
 # The two closes `reference_close` can pick, per instrument: the last before the month start and
