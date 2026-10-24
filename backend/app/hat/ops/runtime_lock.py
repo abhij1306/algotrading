@@ -6,7 +6,8 @@ runtime takes a session-level advisory lock (`pg_try_advisory_lock`) on a connec
 before it touches anything, holds it for the life of the process and refuses to start when another
 process holds it. The lock ends with the connection: a crashed process frees it. The connection
 runs in autocommit, so it is never idle in a transaction, and carries `application_name`
-`hat_runtime_lock`, so an operator can find its holder (`docs/runbook.md`).
+`hat_runtime_lock`, so an operator can find its holder (`docs/runbook.md`). The runtime checks the
+connection every minute (`alive`): a dead one has lost the lock.
 """
 
 from __future__ import annotations
@@ -54,6 +55,18 @@ class RuntimeLock:
             )
         logger.info("HAT runtime lock taken")
         return cls(connection)
+
+    def alive(self) -> bool:
+        """The lock's connection still answers, so the session, and with it the lock, lives. A
+        Postgres restart or a terminated backend ends both: False."""
+        connection = self._connection
+        if connection is None:
+            return False
+        try:
+            connection.exec_driver_sql("SELECT 1").scalar_one()
+        except Exception:
+            return False
+        return True
 
     def release(self) -> None:
         """Close the lock's connection (never back to the pool, where the lock would outlive

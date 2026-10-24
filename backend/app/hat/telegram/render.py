@@ -56,12 +56,14 @@ __all__ = [
 # PR 36: a trade whose stored state is not the fold of its events (the nightly journal check).
 # P5: a job that failed, missed its deadline or hangs; a calendar about to run out; a drawdown
 # kill tripped (bots manage-only). A8: a periodic loop (live exits, housekeeping) stopped.
+# DB4b: the runtime lock was lost and not taken again (no new entry until a restart).
 URGENT_ALERTS = frozenset(
     {
         "job.failed",
         "job.missed",
         "job.running_long",
         "periodic.stalled",
+        "runtime.lock_lost",
         "calendar.short",
         "kill.drawdown",
         "journal.mismatch",

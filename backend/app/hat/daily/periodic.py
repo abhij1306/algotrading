@@ -5,7 +5,8 @@ step of one never delays another:
   virtual position, then each account's real positions through its `TradeManager`), the drawdown
   kills on equity marked to market (every minute) and the stale-entry cancels. They read prices,
   the database and the managers;
-- `housekeeping`: the calendar check, and on a trading day the session watch, the fill sync,
+- `housekeeping`: the calendar check, the runtime lock check (`HatRuntime.watch_lock`), and on a
+  trading day the session watch, the fill sync,
   the approval expiry, the reconciliation (every 5 minutes) and the resume of stranded entries;
 - `announcements`, when the parts give a fetch: the NSE announcements poll (up to two feeds of
   `FETCH_TIMEOUT_SECONDS` each).
@@ -149,9 +150,16 @@ def watch_sessions(assembly: Assembly, now: datetime) -> None:
 class Periodic:
     """The periodic loops over one `Assembly`."""
 
-    def __init__(self, assembly: Assembly, clock: Clock) -> None:
+    def __init__(
+        self,
+        assembly: Assembly,
+        clock: Clock,
+        *,
+        watch_lock: Callable[[datetime], None] | None = None,
+    ) -> None:
         self._a = assembly
         self._clock = clock
+        self._watch_lock = watch_lock
         self._exits = Every()
         self._housekeeping = Every()
         self._announcements = Every()
@@ -194,6 +202,9 @@ class Periodic:
     def housekeeping(self, now: datetime) -> None:
         a = self._a
         steps: list[Step] = [("calendar", CALENDAR_EVERY, lambda: self.check_calendar(now))]
+        if self._watch_lock is not None:
+            watch = self._watch_lock
+            steps.append(("lock", MINUTE, lambda: watch(now)))
         if a.calendar.trading(trade_date_of(now)):
             steps += [
                 ("sessions", MINUTE, lambda: watch_sessions(a, now)),

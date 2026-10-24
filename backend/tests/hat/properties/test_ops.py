@@ -148,6 +148,163 @@ def test_refuses_non_postgres(raw: str, dialect: str) -> None:
 
 
 # ---------------------------------------------------------------------------------------
+# the runtime lock: a cancelled start releases it, a lost one stops entries
+# ---------------------------------------------------------------------------------------
+
+
+class _Lock:
+    """A runtime lock that records its release; `alive` is what its connection answers."""
+
+    def __init__(self, alive: bool = True) -> None:
+        self.released = threading.Event()
+        self._alive = alive
+
+    def alive(self) -> bool:
+        return self._alive and not self.released.is_set()
+
+    def release(self) -> None:
+        self.released.set()
+
+
+def _enabled_runtime(lock: object, parts: object) -> HatRuntime:
+    return HatRuntime(
+        load_settings({"HAT_ENABLED": "true"}),
+        lambda: None,  # type: ignore[arg-type,return-value]
+        dialect_name="postgresql",
+        parts=parts,  # type: ignore[arg-type]
+        runtime_lock=lock,  # type: ignore[arg-type]
+    )
+
+
+def _cancel_start(runtime: HatRuntime, reached: threading.Event, go: threading.Event) -> bool:
+    """Cancel the start once it reaches the blocking step, let its stop run, then unblock the
+    step; whether the lock was released before the step ended."""
+
+    async def run() -> bool:
+        task = asyncio.ensure_future(runtime.start())
+        await asyncio.to_thread(reached.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.05)  # the shielded stop finishes
+        early = runtime._lock is not None
+        go.set()
+        return early
+
+    return asyncio.run(run())
+
+
+def test_cancel_while_taking_the_lock_releases_it() -> None:
+    """A start cancelled while its worker thread takes the lock: the lock the thread takes
+    afterwards is released at once, not held until the process dies."""
+    lock, reached, go = _Lock(), threading.Event(), threading.Event()
+
+    def take() -> _Lock:
+        reached.set()
+        go.wait(5)
+        return lock
+
+    runtime = _enabled_runtime(take, lambda: pytest.fail("no parts after a cancel"))
+    assert _cancel_start(runtime, reached, go) is False
+    assert lock.released.wait(5)
+    assert runtime.started is False
+
+
+def test_cancel_after_the_lock_releases_it() -> None:
+    """A start cancelled after the lock is taken (here while the parts build) releases it."""
+    lock, reached, go = _Lock(), threading.Event(), threading.Event()
+
+    def parts() -> None:
+        reached.set()
+        go.wait(5)
+
+    runtime = _enabled_runtime(lambda: lock, parts)
+    _cancel_start(runtime, reached, go)
+    assert lock.released.wait(5)
+
+
+def test_second_cancel_during_the_stop_still_releases_the_lock() -> None:
+    """A second cancel ends the start's wait on its (shielded) stop while the stop is still
+    stopping the feed: the lock is released before the start returns, not left to the
+    detached stop."""
+    lock, reached, go = _Lock(), threading.Event(), threading.Event()
+
+    def parts() -> None:
+        reached.set()
+        go.wait(5)
+
+    class Feed:
+        async def stop(self) -> None:
+            await asyncio.Event().wait()  # never stops
+
+    runtime = _enabled_runtime(lambda: lock, parts)
+    runtime._feed = Feed()  # type: ignore[assignment]
+
+    async def run() -> bool:
+        task = asyncio.ensure_future(runtime.start())
+        await asyncio.to_thread(reached.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0.05)  # the stop is now waiting on the feed
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        released = lock.released.is_set()
+        go.set()
+        return released
+
+    assert asyncio.run(run()) is True
+
+
+def test_failed_start_keeps_the_lock_for_the_callers_stop() -> None:
+    """A start that raises leaves the stop to its caller (the lifespan's shutdown), which
+    releases the lock last; a runtime that never started holds no other runtime's lock."""
+    lock = _Lock()
+
+    def parts() -> None:
+        raise HatConfigError("bad telegram")
+
+    runtime = _enabled_runtime(lambda: lock, parts)
+
+    async def run() -> None:
+        with pytest.raises(HatConfigError):
+            await runtime.start()
+        assert not lock.released.is_set()
+        await runtime.stop()
+
+    asyncio.run(run())
+    assert lock.released.is_set()
+
+
+def _watched(take: object) -> tuple[HatRuntime, RecordingNotifier, threading.Event]:
+    notifier, lost = RecordingNotifier(), threading.Event()
+    runtime = _enabled_runtime(take, lambda: None)
+    runtime._lock = _Lock(alive=False)  # type: ignore[assignment]
+    runtime.assembly = mock.Mock(notifier=notifier, lock_lost=lost)
+    return runtime, notifier, lost
+
+
+def test_lost_lock_taken_again_keeps_entries() -> None:
+    fresh = _Lock()
+    runtime, notifier, lost = _watched(lambda: fresh)
+    runtime.watch_lock(datetime(2026, 10, 26, 5, tzinfo=UTC))
+    assert not lost.is_set()
+    assert notifier.alerts == []
+    runtime.watch_lock(datetime(2026, 10, 26, 5, 1, tzinfo=UTC))  # alive: nothing to do
+    assert not fresh.released.is_set()
+
+
+def test_lost_lock_held_elsewhere_stops_entries_and_alerts_once() -> None:
+    def held() -> None:
+        raise HatConfigError("another HAT runtime holds the runtime lock")
+
+    runtime, notifier, lost = _watched(held)
+    for minute in range(3):
+        runtime.watch_lock(datetime(2026, 10, 26, 5, minute, tzinfo=UTC))
+    assert lost.is_set()
+    assert [code for code, _day, _detail in notifier.alerts] == ["runtime.lock_lost"]
+
+
+# ---------------------------------------------------------------------------------------
 # trade-date jobs start only on trading days
 # ---------------------------------------------------------------------------------------
 

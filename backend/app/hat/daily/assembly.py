@@ -13,6 +13,7 @@ import asyncio
 import dataclasses
 import functools
 import logging
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -329,6 +330,7 @@ class Assembly:
     heartbeats: Heartbeats
     scheduler: HatScheduler
     feed_stale: Callable[[], bool]
+    lock_lost: threading.Event  # set by `HatRuntime.watch_lock`: no new entry until a restart
 
 
 def build(
@@ -382,11 +384,16 @@ def build(
         gtt_check_every=timedelta(minutes=settings.gtt_check_minutes),
     )
 
+    # the runtime lost its lock (`HatRuntime.watch_lock`): another runtime may run, so every
+    # entry path (trigger, placement, approval take, resume) reads it as a stale feed and
+    # refuses; stops and exits never read it
+    lock_lost = threading.Event()
+
     def feed_stale() -> bool:
-        return stale_feed(live.staleness, utc_now(clock))
+        return lock_lost.is_set() or stale_feed(live.staleness, utc_now(clock))
 
     def feed_state() -> str:
-        if feed_stale():
+        if stale_feed(live.staleness, utc_now(clock)):
             return "stale"
         return "connected" if parts.feed.is_connected else "disconnected"
 
@@ -473,4 +480,5 @@ def build(
         heartbeats=heartbeats,
         scheduler=scheduler,
         feed_stale=feed_stale,
+        lock_lost=lock_lost,
     )
