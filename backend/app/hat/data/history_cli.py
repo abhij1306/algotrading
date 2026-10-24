@@ -268,7 +268,8 @@ def _summary(report: BuildReport, stopped: str | None = None) -> str:
     if report.actions is not None:
         lines.append(
             f"actions: created {report.actions.created}, unchanged {report.actions.unchanged}, "
-            f"conflicts {len(report.actions.conflicts)}"
+            f"conflicts {len(report.actions.conflicts)}, owner-corrected keys kept "
+            f"{report.actions.held}"
         )
     if report.index is not None:
         missing = {name: len(days) for name, days in report.index_missing.items() if days}

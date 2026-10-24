@@ -1,7 +1,9 @@
 """The corporate-action loader against real Postgres: the unique key the
-database enforces never trips through repeated, overlapping and conflicting loads."""
+database enforces never trips through repeated, overlapping and conflicting loads, and a key the
+owner deleted stays deleted."""
 
-from datetime import date, time
+import uuid
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
 import pytest
@@ -45,4 +47,11 @@ def test_corporate_action_load_on_postgres(conn: Connection) -> None:
     ).all()
     assert [(r.adjustment_factor, r.source) for r in rows] == [(Decimal("0.2"), "mcp")]
     assert session.scalar(select(func.count()).select_from(HatCorporateAction)) >= 1
+    # the owner deletes the key: no later load re-creates it (D1)
+    fix = ca.Correction("INE000000771", ex, "split", None, note="wrong split")
+    ca.correct_action(session, fix, chat_id=1, user_id=uuid.uuid4(), now=datetime.now(UTC))
+    after = ca.load_actions(session, [mcp, archive])
+    assert (after.created, after.held, len(after.conflicts)) == (0, 2, 0)
+    gone = select(HatCorporateAction).where(HatCorporateAction.instrument_id == iid)
+    assert session.scalars(gone).all() == []
     session.rollback()

@@ -38,11 +38,11 @@ from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
 
 from .. import events
 from ..errors import HatError
-from ..models import HatCorporateAction, HatInstrument
+from ..models import HatCorporateAction, HatEvent, HatInstrument
 from ..money import exact
 from ..notify import Notifier
 from .mcp_client import McpClient, McpError
-from .store import ActionFactor
+from .store import FACTOR_MAX, FACTOR_MIN, ActionFactor
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,7 @@ TYPE_DIVIDEND = "dividend"
 TYPE_NOTICE = "notice"  # any other action the MCP gives factor 1: no price changes
 PRICE_NEUTRAL_TYPES = (TYPE_DIVIDEND, TYPE_NOTICE)
 ACTION_TYPES = (TYPE_SPLIT, TYPE_BONUS, TYPE_OTHER, *PRICE_NEUTRAL_TYPES)
+EVENT_CORRECTED = "corporate_action.corrected"  # the owner's correction (`correct_action`)
 STORED_PLACES = 12  # a factor such as 2/3 is stored rounded to 12 places
 
 _MCP_TYPES = {"SPLIT": TYPE_SPLIT, "BONUS": TYPE_BONUS}
@@ -212,12 +213,16 @@ class LoadReport:
     created: int = 0
     unchanged: int = 0
     conflicts: list[tuple[object, date, str]] = field(default_factory=list)
+    held: int = 0  # keys the owner deleted or retyped away (`correct_action`): never re-created
 
 
 def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadReport:
     """Store the records idempotently: one row per (instrument, ex_date, action_type), the first
-    source to supply a key wins, and a later different factor is reported, not written."""
+    source to supply a key wins, and a later different factor is reported, not written. A key
+    the owner vacated (`correct_action`: deleted, or retyped away) is never re-created: the
+    owner's correction wins over every later load."""
     report = LoadReport()
+    held = owner_vacated(session, {r.instrument_id for r in records})
     existing = {
         (row.instrument_id, row.ex_date, row.action_type): row
         for row in session.scalars(
@@ -231,6 +236,9 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             report.conflicts.append(record.key)  # a non-positive factor is never stored
             continue
         row = existing.get(record.key)
+        if row is None and record.key in held:
+            report.held += 1
+            continue
         if row is None:
             row = HatCorporateAction(
                 instrument_id=record.instrument_id,
@@ -249,6 +257,26 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             report.conflicts.append(record.key)
     session.flush()
     return report
+
+
+def owner_vacated(session: Session, instrument_ids: Iterable[object]) -> set[tuple]:
+    """(instrument, ex-date, type) of every stored key the owner corrected, read from the journal
+    (`corporate_action.corrected`); a key still stored is matched first, so only a vacated one
+    counts."""
+    ids = set(instrument_ids)
+    if not ids:
+        return set()
+    events = session.scalars(
+        select(HatEvent).where(
+            HatEvent.event_type == EVENT_CORRECTED,
+            HatEvent.aggregate_type == "instrument",
+            HatEvent.aggregate_id.in_(ids),
+        )
+    )
+    return {
+        (e.aggregate_id, date.fromisoformat(e.payload["ex_date"]), e.payload["before"]["type"])
+        for e in events
+    }
 
 
 @dataclass(frozen=True)
@@ -348,7 +376,6 @@ def stored_factors(session: Session) -> list[ActionFactor]:
 
 # --- the owner's correction ---------------------------------------------------------------------
 
-EVENT_CORRECTED = "corporate_action.corrected"
 NOTE_MAX = 500
 
 
@@ -375,8 +402,8 @@ class Correction:
 
 def check_correction(correction: Correction) -> tuple[str, Decimal] | None:
     """The (type, factor) a replacement stores, None for a delete. A price-neutral type takes
-    factor 1 and a price-changing type any other positive factor; else `ActionCorrectionError`
-    (`bad_action_type`, `bad_factor`, `note_required`)."""
+    factor 1 and a price-changing type any other factor the view can hold; else
+    `ActionCorrectionError` (`bad_action_type`, `bad_factor`, `note_required`)."""
     if not correction.note.strip() or len(correction.note) > NOTE_MAX:
         raise ActionCorrectionError("note_required")
     target = correction.new_type or correction.action_type
@@ -385,7 +412,9 @@ def check_correction(correction: Correction) -> tuple[str, Decimal] | None:
     if correction.factor is None:
         return None
     factor = correction.factor
-    if not factor.is_finite() or factor <= 0 or (factor == 1) != (target in PRICE_NEUTRAL_TYPES):
+    neutral = target in PRICE_NEUTRAL_TYPES
+    # the view holds a cumulative factor only within [FACTOR_MIN, FACTOR_MAX) (store.py)
+    if not factor.is_finite() or not FACTOR_MIN <= factor < FACTOR_MAX or (factor == 1) != neutral:
         raise ActionCorrectionError("bad_factor")
     return target, factor
 
@@ -396,7 +425,8 @@ def correct_action(
     """Replace or delete one stored action, keyed by (ISIN, ex-date, type), and journal it as
     `corporate_action.corrected` (actor user, via cli) in the same transaction: the fix for a
     `corporate_action.conflict` or a misparsed factor (D1), which no later load overwrites (a
-    stored key is never rewritten by a load). A replacement whose key another stored row already
+    stored key is never rewritten by a load, and a key it vacates is never re-created:
+    `owner_vacated`). A replacement whose key another stored row already
     holds with the same factor deletes the corrected row (the right fact is stored); with
     another factor it is refused (`action_key_taken`). Refused too: an unknown ISIN
     (`instrument_not_found`), no such action (`action_not_found`) or `check_correction`'s codes.

@@ -356,6 +356,8 @@ def test_correction_rules() -> None:
         (_correction("1"), "bad_factor"),  # a bonus of factor 1 changes no price
         (_correction("0.5", TYPE_NOTICE), "bad_factor"),  # a neutral type has factor 1
         (_correction("0"), "bad_factor"),
+        (_correction("100"), "bad_factor"),  # beyond what the view can hold (store.FACTOR_MAX)
+        (_correction("1E-10"), "bad_factor"),
         (_correction("NaN"), "bad_factor"),
         (_correction("1", "rights"), "bad_action_type"),
         (_correction(None, note=" "), "note_required"),
