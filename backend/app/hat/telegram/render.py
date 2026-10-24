@@ -35,6 +35,7 @@ __all__ = [
     "card_text",
     "confidence_line",
     "confirm_text",
+    "kill_line",
     "daily_report_text",
     "login_text",
     "mode_text",
@@ -58,6 +59,7 @@ __all__ = [
 # kill tripped (bots manage-only). A8: a periodic loop (live exits, housekeeping) stopped.
 # DB4b: the runtime lock was lost and not taken again (no new entry until a restart).
 # Q8: a position `ca.rescale` could not rescale stays manage-only (`corporate_action.pending`).
+# An exit view that raised: that position's exit rules are off until it reads again.
 # Q11: the broker calls of the day are spent: no new entry until the next trade date.
 URGENT_ALERTS = frozenset(
     {
@@ -79,6 +81,7 @@ URGENT_ALERTS = frozenset(
         "corporate_action.demerger_late",
         "position.series_changed",
         "position.split_gap",
+        "exits.view_failed",
         "position.isin_changed",
         "sale.unfilled",
         "broker.budget_spent",
@@ -448,12 +451,22 @@ _CONFIRM_TEXT = {
         " trips the account kill switch, even with the market closed (then nothing is sold):"
         " every bot stays manage-only until /arm. This is logged as a discipline breach."
     ),
-    "arm": "Re-arm the tripped kill switches?",
+    "arm": (
+        "Re-arm these kill switches? A re-arm restarts the drawdown peak at the equity then;"
+        " only these are re-armed:"
+    ),
     "mode_auto": (
         "Switch to auto mode from the next session? Real orders will go out without a card."
     ),
 }
 
 
-def confirm_text(action: str, expires_at: datetime) -> str:
-    return f"{_CONFIRM_TEXT.get(action, action)}\nConfirm before {_ist(expires_at)}."
+def confirm_text(action: str, expires_at: datetime, lines: Sequence[str] = ()) -> str:
+    body = "\n".join([_CONFIRM_TEXT.get(action, action), *lines])
+    return f"{body}\nConfirm before {_ist(expires_at)}."
+
+
+def kill_line(name: str, reason: str, tripped_at: datetime) -> str:
+    """One kill an `/arm` lists: whose, why and when it tripped."""
+    when = tripped_at.astimezone(IST).strftime("%Y-%m-%d %H:%M IST")
+    return f"- {name}: {_safe(reason)}, tripped {when}"

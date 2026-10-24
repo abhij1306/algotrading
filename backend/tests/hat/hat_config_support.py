@@ -175,8 +175,7 @@ STOPS = st.one_of(
     st.fixed_dictionaries({"rule": st.just("swing_low"), "lookback_days": st.integers(1, 60)}),
 )
 FRACTION = st.sampled_from([0.25, 0.33, 0.5, 1.0])
-EXITS = st.one_of(
-    st.just({"rule": "hard_stop"}),
+EXITS = st.one_of(  # beside the one enabled hard_stop every config has
     st.fixed_dictionaries({"rule": st.just("move_stop_to_breakeven"), "at_r": POS}),
     st.just({"rule": "move_stop_to_breakeven", "after": "partial"}),
     st.fixed_dictionaries(
@@ -246,7 +245,7 @@ def raw_configs(draw: st.DrawFn) -> dict[str, Any]:
         "bot": draw(st.sampled_from(["alpha", "stage2-x", "b_1"])),
         "universe": draw(instance_list(UNIVERSE_TYPES, "universe", scored=False)),
         "regime": draw(REGIMES),
-        "exits": draw(st.lists(EXITS, min_size=1, max_size=4)),
+        "exits": [{"rule": "hard_stop"}, *draw(st.lists(EXITS, max_size=3))],
     }
     if draw(st.booleans()):
         raw["version"] = draw(st.integers(1, 9))

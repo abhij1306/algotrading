@@ -10,10 +10,20 @@ from hypothesis import strategies as st
 
 from app.hat.engine.approvals import ApprovalDecision, Placement
 from app.hat.errors import HatConfigError
+from app.hat.risk.kill import ARMED, TRIPPED, KillRow
 from app.hat.risk.sessions import SessionCalendar
+from app.hat.telegram import render
 from app.hat.telegram.callbacks import take_reply
-from app.hat.telegram.client import refusal_retryable
-from app.hat.telegram.commands import AUTO_NOT_OWNER, AUTO_UNCONFIRMED, auto_refusal
+from app.hat.telegram.client import MAX_TEXT, refusal_retryable
+from app.hat.telegram.commands import (
+    AUTO_NOT_OWNER,
+    AUTO_UNCONFIRMED,
+    KILL_CHANGED,
+    arm_fits,
+    arm_refusal,
+    auto_refusal,
+    tripped_kills,
+)
 from app.hat.telegram.config import MIN_SECRET_BYTES
 from app.hat.telegram.reports import is_week_end
 from app.hat.telegram.tokens import SKIP, TAKE, ApprovalSigner, ButtonClaim
@@ -104,6 +114,53 @@ def test_auto_is_the_owners_switch_after_confirmation() -> None:
     ]
     for users, confirmed, expected in table:
         assert auto_refusal(owner, users, confirmed=confirmed) == expected, (users, confirmed)
+
+
+T0 = datetime(2026, 10, 20, 5, 0, tzinfo=UTC)
+
+
+def test_arm_rearms_only_the_kills_it_listed() -> None:
+    """`/arm` lists the latest trip of each tripped drawdown or manual kill (a re-armed one, a
+    health kill and an older trip are not listed), and its Confirm re-arms only while the
+    tripped set is exactly the listed one. Harm: undoing a manual kill re-arms a drawdown kill
+    the owner never saw, or one that tripped after the question, and restarts its peak."""
+    bot_b, bot_c = uuid.uuid4(), uuid.uuid4()
+    later = T0 + timedelta(hours=2)
+    rows = [
+        KillRow("account", None, TRIPPED, T0, "drawdown_account"),
+        KillRow("account", None, ARMED, T0, "drawdown_account", rearmed_at=T0 + timedelta(hours=1)),
+        KillRow("account", None, TRIPPED, later, "manual"),
+        KillRow("bot", bot_b, TRIPPED, T0, "drawdown_bot"),
+        KillRow("bot", bot_c, TRIPPED, T0, "drawdown_bot"),
+        KillRow("bot", bot_c, ARMED, T0, "drawdown_bot", rearmed_at=later),
+        KillRow("bot", bot_c, TRIPPED, later, "feed_health"),
+    ]
+    listed = tripped_kills(rows)
+    assert listed == [rows[2], rows[3]]
+    assert arm_refusal(listed, tripped_kills(rows)) is None
+    # a kill tripped after the question
+    newer = [*rows, KillRow("bot", bot_c, TRIPPED, later + timedelta(minutes=1), "drawdown_bot")]
+    assert arm_refusal(listed, tripped_kills(newer)) == KILL_CHANGED
+    # a listed kill re-armed and tripped again since
+    again = [
+        *rows,
+        KillRow("bot", bot_b, ARMED, T0, "drawdown_bot", rearmed_at=later),
+        KillRow("bot", bot_b, TRIPPED, later + timedelta(minutes=1), "drawdown_bot"),
+    ]
+    assert arm_refusal(listed, tripped_kills(again)) == KILL_CHANGED
+    # one of them re-armed elsewhere: the set changed, nothing is re-armed
+    assert arm_refusal(listed, [rows[2]]) == KILL_CHANGED
+    assert arm_refusal(listed, []) == "nothing_tripped"
+
+
+def test_arm_refuses_a_list_one_message_cannot_hold() -> None:
+    """The `/arm` question is offered only when every kill it lists fits one Telegram message
+    (`MAX_TEXT`). Harm: a cut list keeps its Confirm and re-arms kills the owner never saw."""
+    line = render.kill_line("x" * 40, "drawdown_bot", T0)
+    assert arm_fits([line] * 10, EXPIRES)
+    fit = max(n for n in range(200) if arm_fits([line] * n, EXPIRES))
+    assert len(render.confirm_text("arm", EXPIRES, [line] * fit)) <= MAX_TEXT
+    assert len(render.confirm_text("arm", EXPIRES, [line] * (fit + 1))) > MAX_TEXT
 
 
 SIGNER = ApprovalSigner(b"s" * MIN_SECRET_BYTES)

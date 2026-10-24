@@ -1,8 +1,9 @@
 """The periodic work beside the scheduled jobs (audit R5), in independent loops so that a slow
 step of one never delays another:
 
-- `exits`, on a trading day while the market is open: the live exits (`live_exits`: every
-  virtual position, then each account's real positions through its `TradeManager`), the drawdown
+- `exits`, on a trading day while the market is open: the live exits (`live_exits`: each
+  account's real positions through its `TradeManager`, then every virtual position as a step of
+  its own, so a shadow failure never holds up a real exit), the drawdown
   kills on equity marked to market (every minute) and the stale-entry cancels. They read prices,
   the database and the managers;
 - `housekeeping`: the calendar check, the runtime lock check (`HatRuntime.watch_lock`), and on a
@@ -194,6 +195,7 @@ class Periodic:
             return
         steps: list[Step] = [
             (EXITS, timedelta(0), lambda: self.live_exits(now)),
+            ("shadow", timedelta(0), lambda: a.shadow.run(now)),
             ("drawdown", DRAWDOWN_EVERY, lambda: a.intraday.drawdown(now, a.user_id)),
             ("entries", timedelta(0), lambda: a.desks.cancel_stale_entries(now, a.entries)),
         ]
@@ -249,19 +251,20 @@ class Periodic:
             )
 
     def live_exits(self, now: datetime) -> int:
-        """The live exit rules: every virtual position, then each account's real positions
-        through its `TradeManager` (stops follow, sales go out)."""
+        """The live exit rules of each account's real positions through its `TradeManager`
+        (stops follow, sales go out), each position alone: one whose view or rules raise leaves
+        the others evaluated. The virtual positions are a step of their own after these."""
         a = self._a
-        done = a.shadow.run(now)
+        done = 0
         for account_id, manager in a.desks.managers():
             if not manager.orders_allowed(now):
                 continue
             with a.session_factory() as session:
                 for position in manager.open_positions(session, account_id):
-                    view = a.views(session, position)
-                    if view is None:
-                        continue
                     try:
+                        view = a.views(session, position)
+                        if view is None:
+                            continue
                         manager.on_price(session, position.id, view, now)
                         done += 1
                     except Exception:

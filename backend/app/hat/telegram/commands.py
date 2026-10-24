@@ -15,7 +15,7 @@ and does not commit; the service logs the command in the same transaction.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -35,22 +35,26 @@ from ..risk.bots import pause_bot, resume_bot
 from ..risk.modes import ModeChangeError, plan_mode_change
 from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
-from ..time import trade_date_of
+from ..time import as_utc, trade_date_of
 from . import reads, render
-from .client import Button
-from .confirm import PendingConfirmations
+from .client import MAX_TEXT, Button
+from .confirm import CONFIRM_WINDOW, Confirmation, PendingConfirmations
 
 __all__ = [
     "COMMANDS",
     "CommandContext",
     "Reply",
+    "KILL_CHANGED",
     "addressee",
+    "arm_fits",
+    "arm_refusal",
     "for_another_bot",
     "parse",
     "mode_refused",
     "queue_modes",
-    "rearm_all",
+    "rearm",
     "run_command",
+    "tripped_kills",
 ]
 
 # (fewest, most) arguments of each command; its keys are the command set, in spec order.
@@ -63,11 +67,15 @@ _ARITY = {
     "/mode": (2, 2),
     "/kill": (0, 0),
     "/flatten": (0, 0),
-    "/arm": (0, 0),
+    "/arm": (0, 1),
     "/login": (0, 1),
 }
 COMMANDS = tuple(_ARITY)
 _MAX_ARG = 64
+ACCOUNT = "account"
+NOTHING_TRIPPED = "nothing_tripped"
+KILL_CHANGED = "kill_changed"
+TOO_MANY_KILLS = "too_many_kills"
 
 
 @dataclass(frozen=True)
@@ -208,11 +216,17 @@ def _kill(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
     return Reply(True, text="Kill switch tripped: every bot is manage-only; approvals cancelled")
 
 
-def _ask(ctx: CommandContext, action: str, bots: tuple[str, ...] = ()) -> Reply:
-    data, pending = ctx.confirmations.ask(action, ctx.chat_id, ctx.now, bots)
+def _ask(
+    ctx: CommandContext,
+    action: str,
+    bots: tuple[str, ...] = (),
+    kills: tuple[kill.KillRow, ...] = (),
+    lines: Sequence[str] = (),
+) -> Reply:
+    data, pending = ctx.confirmations.ask(action, ctx.chat_id, ctx.now, bots, kills)
     return Reply(
         True,
-        text=render.confirm_text(action, pending.expires_at),
+        text=render.confirm_text(action, pending.expires_at, lines),
         buttons=((("Confirm", data),),),
     )
 
@@ -221,38 +235,105 @@ def _flatten(ctx: CommandContext, _session: Session, _args: Sequence[str]) -> Re
     return _ask(ctx, "flatten")
 
 
-def _tripped(session: Session) -> list[tuple[str, HatBot | None]]:
-    """The drawdown or manual kills that are tripped now: (scope, bot)."""
-    rows = read_kill.kill_rows(session)
-    out: list[tuple[str, HatBot | None]] = []
-    if kill.current_state(rows, "account", None, "risk") == kill.TRIPPED:
-        out.append(("account", None))
-    for bot in reads.bots_named(session, None):
-        if kill.current_state(rows, "bot", bot.id, "risk") == kill.TRIPPED:
-            out.append(("bot", bot))
+def tripped_kills(rows: Iterable[kill.KillRow]) -> list[kill.KillRow]:
+    """The trip row of each key whose drawdown or manual kill is tripped in `rows` (the latest
+    trip, the one a re-arm ends), the account's first, then by bot id."""
+    risk = [r for r in rows if kill.channel_of(r.reason) == "risk"]
+    keys = sorted({(r.scope, r.bot_id) for r in risk}, key=lambda k: (k[1] is not None, str(k[1])))
+    out: list[kill.KillRow] = []
+    for scope, bot_id in keys:
+        if kill.current_state(risk, scope, bot_id, "risk") != kill.TRIPPED:
+            continue
+        trips = [
+            r for r in risk if (r.scope, r.bot_id) == (scope, bot_id) and r.state == kill.TRIPPED
+        ]
+        out.append(max(trips, key=lambda r: as_utc(r.tripped_at)))
     return out
 
 
-def _arm(ctx: CommandContext, session: Session, _args: Sequence[str]) -> Reply:
-    if not _tripped(session):
-        return refused("nothing_tripped", "No kill switch to re-arm")
-    return _ask(ctx, "arm")
+def arm_refusal(asked: Sequence[kill.KillRow], tripped: Sequence[kill.KillRow]) -> str | None:
+    """Whether the confirmed `/arm` may re-arm the kills its question listed (`asked`), given
+    those tripped now among the keys it named (`tripped`): None when they are the same set (same
+    key, reason and trip time); `nothing_tripped` when none is tripped now; `kill_changed` when
+    one was re-armed, tripped again or newly tripped since the question. Either refusal re-arms
+    nothing."""
+    if not tripped:
+        return NOTHING_TRIPPED
+    return None if set(tripped) == set(asked) else KILL_CHANGED
 
 
-def rearm_all(session: Session, now: datetime, chat_id: int) -> int:
-    """The confirmed `/arm`: re-arm every tripped drawdown or manual kill (HAT-RISK-064)."""
+def arm_fits(lines: Sequence[str], expires_at: datetime) -> bool:
+    """Whether the `/arm` question listing every kill in `lines` fits one Telegram message. A
+    longer one is cut on sending while its Confirm stays, which would re-arm kills the owner
+    never saw, so it is refused instead (`too_many_kills`)."""
+    return len(render.confirm_text("arm", expires_at, lines)) <= MAX_TEXT
+
+
+def _key_of(row: kill.KillRow) -> str:
+    return ACCOUNT if row.bot_id is None else str(row.bot_id)
+
+
+def _tripped(session: Session, keys: Sequence[str]) -> list[kill.KillRow]:
+    """The tripped drawdown or manual kills of `keys` (`account` or bot ids; none: every key)."""
+    rows = tripped_kills(read_kill.kill_rows(session))
+    return [r for r in rows if not keys or _key_of(r) in keys]
+
+
+def _arm_keys(session: Session, name: str | None) -> tuple[str, ...] | None:
+    """The keys `/arm` names: none for every key, `account`, or the ids of the bots `name`
+    names; None when it names no bot."""
+    if name is None:
+        return ()
+    if name.strip().lower() == ACCOUNT:
+        return (ACCOUNT,)
+    return tuple(str(b.id) for b in reads.bots_named(session, name)) or None
+
+
+def _arm(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
+    """HAT-RISK-064: `/arm` asks to re-arm the tripped drawdown or manual kills it names (every
+    one, `account`, or a bot), listing each; the Confirm re-arms exactly those (`rearm`)."""
+    keys = _arm_keys(session, args[0] if args else None)
+    if keys is None:
+        return refused("unknown_bot")
+    trips = _tripped(session, keys)
+    if not trips:
+        return refused(NOTHING_TRIPPED, "No kill switch to re-arm")
+    names = read_bots.labels(session, (r.bot_id for r in trips if r.bot_id is not None))
+    lines = [
+        render.kill_line(
+            ACCOUNT if r.bot_id is None else names.get(r.bot_id, str(r.bot_id)[:8]),
+            r.reason,
+            r.tripped_at,
+        )
+        for r in trips
+    ]
+    if not arm_fits(lines, as_utc(ctx.now) + CONFIRM_WINDOW):
+        return refused(
+            TOO_MANY_KILLS, "Too many kill switches to list: name one, /arm account or /arm <bot>"
+        )
+    return _ask(ctx, "arm", keys, tuple(trips), lines)
+
+
+def rearm(
+    session: Session, pending: Confirmation, now: datetime, chat_id: int
+) -> tuple[int, str | None]:
+    """The confirmed `/arm`: re-arm the kills its question listed, only while they are exactly
+    the ones tripped among the keys it named (`arm_refusal`); (how many, the refusal)."""
+    refusal = arm_refusal(pending.kills, _tripped(session, pending.bots))
+    if refusal is not None:
+        return 0, refusal
     count = 0
-    for scope, bot in _tripped(session):
+    for trip in pending.kills:
         row = kill_ops.rearm_kill(
             session,
-            scope=scope,
-            bot_id=bot.id if bot is not None else None,
+            scope=trip.scope,
+            bot_id=trip.bot_id,
             confirmed=True,
             now=now,
             chat_id=chat_id,
         )
         count += row is not None
-    return count
+    return count, None
 
 
 def _account(session: Session, bot: HatBot) -> HatBrokerAccount | None:

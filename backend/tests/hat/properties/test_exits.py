@@ -4,16 +4,21 @@
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from typing import Any, cast
 
 import pytest
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+from app.hat.clock import FixedClock
+from app.hat.daily.exits import VIEW_FAILED, ExitViews
 from app.hat.engine import exits
-from app.hat.engine.approvals import veto_score, veto_verdict
+from app.hat.engine.approvals import chase_recheck, veto_score, veto_verdict
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.positions import TradeError, raise_stop, sold_qty
 from app.hat.engine.strategy.config import (
@@ -28,6 +33,7 @@ from app.hat.engine.strategy.config import (
     ExitTrailingSwingLow,
 )
 from app.hat.models import HatPosition, HatSignal
+from app.hat.notify import AlertDetail, RecordingNotifier
 
 D = Decimal
 FRACTIONS = st.sampled_from([0.1, 0.25, 0.33, 0.5, 0.75, 1.0])
@@ -475,3 +481,44 @@ def test_sold_qty_never_goes_below_zero(qty_open: int, qty: int, left: int) -> N
     """`positions.record_sale`'s quantity: a sale leaves the open shares less the sold ones, and
     a sale larger than the open quantity (logged, then reconciliation's) leaves none."""
     assert sold_qty(qty_open, qty) == left
+
+
+def test_chase_recheck_is_exact() -> None:
+    """The Take re-check compares the decision price with the trigger level on the exact
+    percentage fixed at the trigger, at the boundary too; a percentage outside (0, 100] or a
+    missing input refuses. Harm: a float-rounded bound lets a chased entry through at a Take."""
+    at = datetime(2026, 10, 26, 5, 0, tzinfo=UTC)
+    level, pct = Decimal("1000.00"), Decimal("1.1")
+    assert chase_recheck(Decimal("1011.00"), level, pct, False, at).passed
+    assert not chase_recheck(Decimal("1011.05"), level, pct, False, at).passed
+    assert not chase_recheck(Decimal("1000.00"), level, pct, True, at).passed  # upper circuit
+    for bad in (None, Decimal(0), Decimal("100.01"), Decimal("NaN")):
+        assert chase_recheck(Decimal("1000.00"), level, bad, False, at).reason == "no_data"
+
+
+def test_a_failing_exit_view_alerts_once_a_day() -> None:
+    """An exit view that raises still raises (its loop skips that position), and raises URGENT
+    `exits.view_failed` once per position and trade date, again when that alert was not
+    delivered. Harm: a position whose exits are off goes unseen."""
+
+    def broken(_session: object, _instrument: object) -> Decimal | None:
+        raise RuntimeError("bad bar")
+
+    class Undelivered(RecordingNotifier):
+        def alert(self, code: str, trade_date: date, detail: AlertDetail) -> bool:
+            super().alert(code, trade_date, detail)
+            return False
+
+    clock = FixedClock(datetime(2026, 10, 26, 5, 0, tzinfo=UTC))
+    position = HatPosition(id=uuid.uuid4(), instrument_id=uuid.uuid4(), is_virtual=False)
+    for notifier, expected in ((RecordingNotifier(), 1), (Undelivered(), 2)):
+        views = ExitViews(cast(Any, None), broken, clock, lambda: None, cast(Any, None), notifier)
+        for _ in range(2):
+            with pytest.raises(RuntimeError):
+                views(cast(Any, None), position)
+        assert [a[0] for a in notifier.alerts] == [VIEW_FAILED] * expected
+    clock.advance(timedelta(days=1))
+    with pytest.raises(RuntimeError):
+        views(cast(Any, None), position)
+    assert len(notifier.alerts) == 3
+    assert notifier.alerts[-1][2] == {"position": str(position.id), "kind": "real"}

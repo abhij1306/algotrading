@@ -40,7 +40,7 @@ from ..governance import Mode
 from ..models import HatApproval, HatBot, HatOrder, HatSignal
 from ..risk import kill_ops
 from ..settings import load_settings
-from .commands import Reply, queue_modes, rearm_all, refused
+from .commands import Reply, queue_modes, rearm, refused
 from .confirm import PendingConfirmations
 from .tokens import ACTIONS, CONFIRM, TAKE, ApprovalSigner
 
@@ -313,9 +313,9 @@ def _confirmed(ctx: ButtonContext, session: Session, data: str) -> tuple[str, st
     if pending.action == "flatten":
         return "confirm", "flatten", _flatten(ctx, session)
     if pending.action == "arm":
-        count = rearm_all(session, ctx.now, ctx.chat_id)
-        if not count:
-            return "confirm", "arm", refused("nothing_tripped")
+        count, refusal = rearm(session, pending, ctx.now, ctx.chat_id)
+        if refusal is not None:
+            return "confirm", "arm", refused(refusal)
         return "confirm", "arm", Reply(True, text=f"Re-armed {count} kill switch(es)")
     ids = {uuid.UUID(b) for b in pending.bots}
     bots = list(session.scalars(select(HatBot).where(HatBot.id.in_(ids)).order_by(HatBot.id)))

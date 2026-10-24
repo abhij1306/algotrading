@@ -39,7 +39,7 @@ from ..money import exact
 from ..time import as_utc
 from . import botlock, journal, lifecycle, shadow
 from .criteria.base import CriterionResult
-from .criteria.live import LiveContext, MaxChaseParams, max_chase
+from .criteria.live import LiveContext, chase_within
 
 __all__ = [
     "APPROVED",
@@ -64,6 +64,7 @@ SKIP = "skip"
 EXPIRED = "expired"
 _DECIDED_AWAY = (SKIP, EXPIRED)
 _ZERO = Decimal(0)
+_HUNDRED = Decimal(100)
 
 
 @dataclass(frozen=True)
@@ -98,8 +99,9 @@ def chase_recheck(
     at: datetime,
 ) -> CriterionResult:
     """The Take re-check (HAT-EXEC-031): the `max_chase` entry filter on the decision price, the
-    trigger level and the percentage fixed at the trigger. A missing input fails closed."""
-    if pct is None or not pct.is_finite() or pct <= 0 or trigger_level is None:
+    trigger level and the exact percentage fixed at the trigger (in (0, 100], as the filter's
+    parameter). A missing input fails closed."""
+    if pct is None or not pct.is_finite() or not 0 < pct <= _HUNDRED or trigger_level is None:
         return CriterionResult(False, 0.0, None, "no_data")
     ctx = LiveContext(at=at, price=price).for_entry(
         entry=price if price is not None else _ZERO,
@@ -108,7 +110,7 @@ def chase_recheck(
         trigger_level=trigger_level,
         locked_upper_circuit=locked_upper_circuit,
     )
-    return max_chase(ctx, MaxChaseParams(pct=float(pct)))
+    return chase_within(ctx, pct)
 
 
 def _triggered_pct(session: Session, signal_id: uuid.UUID) -> Decimal | None:

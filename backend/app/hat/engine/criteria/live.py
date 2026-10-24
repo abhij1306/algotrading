@@ -237,11 +237,16 @@ def adtr_filter(ctx: LiveContext, p: AdtrFilterParams) -> CriterionResult:
 def max_chase(ctx: LiveContext, p: MaxChaseParams) -> CriterionResult:
     """HAT-CRIT-122: price <= level x (1 + pct/100) and the stock is not locked at its upper
     circuit. Unknown circuit state fails closed."""
+    return chase_within(ctx, dec(p.pct))
+
+
+def chase_within(ctx: LiveContext, pct: Decimal) -> CriterionResult:
+    """`max_chase` on an exact percentage (the Take re-checks the one fixed at the trigger)."""
     price, level = _pos(ctx.price), _pos(ctx.trigger_level)
     if price is None or level is None or ctx.locked_upper_circuit is None:
         return no_data()
     if ctx.locked_upper_circuit:
         return CriterionResult(False, 0.0, float(price), REASON_UPPER_CIRCUIT)
-    passed = price * _HUNDRED <= level * (_HUNDRED + dec(p.pct))
+    passed = price * _HUNDRED <= level * (_HUNDRED + pct)
     chased = (price / level - 1) * _HUNDRED
     return verdict(passed, float(chased), REASON_CHASED)

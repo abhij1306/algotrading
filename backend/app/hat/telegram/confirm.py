@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from ..risk.kill import KillRow
 from ..time import as_utc
 from .tokens import CONFIRM
 
@@ -27,13 +28,15 @@ _MAX_PENDING = 16
 
 @dataclass(frozen=True)
 class Confirmation:
-    """An action waiting for its second confirmation: `action` is flatten, arm or mode_auto,
-    `bots` the bot ids a mode change names."""
+    """An action waiting for its second confirmation: `action` is flatten, arm or mode_auto;
+    `bots` the bot ids a mode change names, or the keys an `/arm` names (`account` or bot ids;
+    none: every key); `kills` the trips an `/arm` listed, the only ones its Confirm re-arms."""
 
     action: str
     chat_id: int
     expires_at: datetime
     bots: tuple[str, ...] = field(default=())
+    kills: tuple[KillRow, ...] = field(default=())
 
 
 class PendingConfirmations:
@@ -42,11 +45,16 @@ class PendingConfirmations:
         self._pending: dict[str, Confirmation] = {}
 
     def ask(
-        self, action: str, chat_id: int, now: datetime, bots: tuple[str, ...] = ()
+        self,
+        action: str,
+        chat_id: int,
+        now: datetime,
+        bots: tuple[str, ...] = (),
+        kills: tuple[KillRow, ...] = (),
     ) -> tuple[str, Confirmation]:
         """Register a confirmation and return its button's callback data."""
         nonce = secrets.token_urlsafe(16)
-        pending = Confirmation(action, chat_id, as_utc(now) + CONFIRM_WINDOW, bots)
+        pending = Confirmation(action, chat_id, as_utc(now) + CONFIRM_WINDOW, bots, kills)
         with self._lock:
             self._drop_expired(now)
             while len(self._pending) >= _MAX_PENDING:
