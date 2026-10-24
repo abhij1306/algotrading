@@ -611,7 +611,7 @@ class Outcome:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
-def _f(value: Fraction | Decimal) -> str:
+def fmt4(value: Fraction | Decimal) -> str:
     return f"{float(value):.4f}"
 
 
@@ -645,7 +645,7 @@ class Context:
     first_closes: dict[str, tuple[date, Decimal]]
 
 
-def _near(ctx: Context, ids: Iterable[str], ex_date: date) -> list[Stored]:
+def near_actions(ctx: Context, ids: Iterable[str], ex_date: date) -> list[Stored]:
     seen: dict[tuple[date, str, Decimal], Stored] = {}
     for iid in ids:
         for s in ctx.stored.get(iid, ()):
@@ -693,9 +693,16 @@ def resulting_company(
     return found
 
 
-def decide(p: Proposal, ctx: Context, bars: Sequence[Bar]) -> Outcome:
+def decide(
+    p: Proposal,
+    ctx: Context,
+    bars: Sequence[Bar],
+    *,
+    source: str = SOURCE_FILE,
+    accept: frozenset[str] = frozenset(),
+) -> Outcome:
     """The outcome of one proposal: its factor from the bars where it needs them, the gate, and
-    the plan against what is stored."""
+    the plan against what is stored (`settle`: `source` and `accept`)."""
     if p.status or p.ex_date is None:
         return Outcome(p, p.status or REVIEW, p.reason or "bad_ex_date")
     ids = ctx.reference.ids(p.symbol, p.isin, p.ex_date)
@@ -715,11 +722,11 @@ def decide(p: Proposal, ctx: Context, bars: Sequence[Bar]) -> Outcome:
         "ex_day": on.day.isoformat(),
         "ex_open": str(on.open),
     }
-    near = _near(ctx, ids | {before.instrument_id, on.instrument_id}, p.ex_date)
+    near = near_actions(ctx, ids | {before.instrument_id, on.instrument_id}, p.ex_date)
     legs = list(p.legs)
     if p.rights is not None:
         factor = rights_factor(p.rights, prev_close)
-        detail += f", TERP factor {_f(factor)}"
+        detail += f", TERP factor {fmt4(factor)}"
         if factor == 1:
             return Outcome(p, SKIPPED, "rights_at_or_above_price", detail)
         legs = [Leg(TYPE_OTHER, factor)]
@@ -748,21 +755,41 @@ def decide(p: Proposal, ctx: Context, bars: Sequence[Bar]) -> Outcome:
         evidence["derived"] = how.lstrip(", ")
     expected = math.prod((leg.factor for leg in legs), start=Fraction(1)) * same_day
     verdict = gate(expected, prev_close, ex_open)
-    detail += f", gap {_f(verdict.gap)} vs factor {_f(expected)}"
-    evidence["gap"] = _f(verdict.gap)
-    new, already, conflicts = plan_legs(legs, [s for s in near if s.kind in kinds])
+    detail += f", gap {fmt4(verdict.gap)} vs factor {fmt4(expected)}"
+    evidence["gap"] = fmt4(verdict.gap)
+    near = [s for s in near if s.kind in kinds]
+    return settle(p, before, legs, near, verdict, detail, evidence, source=source, accept=accept)
+
+
+def settle(
+    p: Proposal,
+    before: Bar,
+    legs: Sequence[Leg],
+    near: Sequence[Stored],
+    verdict: Verdict,
+    detail: str,
+    evidence: dict[str, Any],
+    *,
+    source: str = SOURCE_FILE,
+    accept: frozenset[str] = frozenset(),
+) -> Outcome:
+    """The plan of `legs` against the same-kind actions stored `near` the ex-date, given the
+    gate's verdict: store, already, conflict or review. A verdict whose reason is in `accept`
+    still stores (the research import's rights, `price_unconfirmed`); the row goes on the
+    instrument of the bar `before` the ex-date."""
+    new, already, conflicts = plan_legs(legs, near)
     if conflicts:
         text = "; ".join(
-            f"{leg.action_type} file {_f(leg.factor)} vs stored {s.factor} on {s.ex_date}"
+            f"{leg.action_type} file {fmt4(leg.factor)} vs stored {s.factor} on {s.ex_date}"
             for leg, s in conflicts
         )
         bars_say = "the bars confirm the file" if verdict.confirmed else f"file {verdict.reason}"
         return Outcome(p, CONFLICT, "stored_factor_differs", f"{detail}; {text}; {bars_say}")
     if not new:
         return Outcome(p, ALREADY, "", detail)
-    if not verdict.confirmed:
+    if not verdict.confirmed and verdict.reason not in accept:
         return Outcome(p, REVIEW, verdict.reason, detail)
-    if any(not FACTOR_MIN <= factor_to_decimal(leg.factor) < 1 for leg in new):
+    if p.ex_date is None or any(not FACTOR_MIN <= factor_to_decimal(leg.factor) < 1 for leg in new):
         return Outcome(p, REVIEW, "factor_out_of_range", detail)
     records = [
         ActionRecord(
@@ -771,11 +798,11 @@ def decide(p: Proposal, ctx: Context, bars: Sequence[Bar]) -> Outcome:
             leg.action_type,
             factor_to_decimal(leg.factor),
             p.text,
-            SOURCE_FILE,
+            source,
         )
         for leg in new
     ]
-    reason = "other legs stored" if already else ""
+    reason = "other legs stored" if already else verdict.reason
     return Outcome(p, STORED, reason, detail, records, evidence)
 
 
@@ -800,17 +827,17 @@ def _demerger_leg(
         factor = demerger_factor(p.demerger, Fraction(close), prev_close)
         if factor is None:
             return None, "resulting_price_too_high", how
-        return Leg(TYPE_OTHER, factor), "", f"{how} -> factor {_f(factor)}"
+        return Leg(TYPE_OTHER, factor), "", f"{how} -> factor {fmt4(factor)}"
     if gap <= 1 - DEMERGER_MIN_DROP:
         return (
             Leg(TYPE_OTHER, gap),
             "",
             ", no resulting listing found: the ex-date gap is the factor",
         )
-    return None, "gap_too_small_no_resulting", f", gap {_f(gap)}, no resulting listing found"
+    return None, "gap_too_small_no_resulting", f", gap {fmt4(gap)}, no resulting listing found"
 
 
-def _dedupe(outcomes: list[Outcome]) -> None:
+def dedupe(outcomes: list[Outcome]) -> None:
     """Two rows of the file (NSE keeps revisions as separate rows) that store the same key: the
     same factor is stored once, by the first row (a later row keeps its other legs); different
     factors for the key put every row naming it in review, since the file contradicts itself."""
@@ -863,7 +890,7 @@ def evaluate(
     }
     windows = read_windows(store, wanted)
     outcomes = [decide(p, ctx, windows.get(k, ())) for k, p in enumerate(props)]
-    _dedupe(outcomes)
+    dedupe(outcomes)
     held = owner_vacated(session, {r.instrument_id for o in outcomes for r in o.records})
     for o in outcomes:
         if any(r.key in held for r in o.records):
@@ -871,10 +898,13 @@ def evaluate(
     return outcomes
 
 
-def apply(session: Session, outcomes: Sequence[Outcome], *, digest: str, now: datetime) -> int:
+def apply(
+    session: Session, outcomes: Sequence[Outcome], *, journal: Mapping[str, Any], now: datetime
+) -> int:
     """Store every confirmed record (`load_actions`) and journal each new row as
-    `corporate_action.imported` in the same transaction; returns the rows created. Raises when
-    the database disagrees with the plan (a row appeared meanwhile): nothing is then kept."""
+    `corporate_action.imported` in the same transaction, `journal` (the source and the input
+    files' digests) in every payload; returns the rows created. Raises when the database
+    disagrees with the plan (a row appeared meanwhile): nothing is then kept."""
     run_id = str(uuid.uuid4())
     records = [r for o in outcomes for r in o.records]
     report = load_actions(session, records)
@@ -889,9 +919,8 @@ def apply(session: Session, outcomes: Sequence[Outcome], *, digest: str, now: da
                 event_type=EVENT_IMPORTED,
                 actor="engine",
                 payload={
-                    "source": SOURCE_FILE,
+                    **journal,
                     "run_id": run_id,
-                    "file_sha256": digest,
                     "table": o.proposal.table,
                     "row": o.proposal.rowid,
                     "symbol": o.proposal.symbol,
@@ -908,7 +937,13 @@ def apply(session: Session, outcomes: Sequence[Outcome], *, digest: str, now: da
     return report.created
 
 
-def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool) -> list[str]:
+def report_lines(
+    outcomes: Sequence[Outcome],
+    *,
+    applied: bool,
+    everything: bool,
+    tables: Sequence[str] = tuple(COLUMNS),
+) -> list[str]:
     """Counts per table and status, then the stored, conflict and review rows with their
     reasons (every row when `everything`)."""
     counts: Counter[tuple[str, str]] = Counter((o.proposal.table, o.status) for o in outcomes)
@@ -917,7 +952,7 @@ def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool
     lines = [
         "table               " + " ".join(f"{label.get(s, s):>9}" for s in STATUSES) + "    total",
     ]
-    for table in COLUMNS:
+    for table in tables:
         cells = [counts[(table, s)] for s in STATUSES]
         lines.append(f"{table:<20}" + " ".join(f"{c:>9}" for c in cells) + f" {sum(cells):>8}")
     lines.append(
@@ -926,8 +961,16 @@ def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool
         + ": "
         + ", ".join(f"{k} {v}" for k, v in sorted(rows.items()))
     )
-    reasons = Counter((o.status, o.reason) for o in outcomes if o.status in (REVIEW, SKIPPED))
-    lines.append("reasons: " + ", ".join(f"{s}/{r} {n}" for (s, r), n in sorted(reasons.items())))
+    for table in tables:
+        reasons = Counter(
+            (o.status, o.reason)
+            for o in outcomes
+            if o.proposal.table == table and o.status in (REVIEW, SKIPPED)
+        )
+        lines.append(
+            f"reasons {table}: "
+            + ", ".join(f"{s}/{r} {n}" for (s, r), n in sorted(reasons.items()))
+        )
     shown = STATUSES if everything else (STORED, CONFLICT, REVIEW)
     for status in shown:
         for o in outcomes:
@@ -1000,7 +1043,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     with HatSessionLocal() as session:
         outcomes = evaluate(session, store, tables)
         if args.apply:
-            created = apply(session, outcomes, digest=file_digest(path), now=utc_now())
+            journal = {"source": SOURCE_FILE, "file_sha256": file_digest(path)}
+            created = apply(session, outcomes, journal=journal, now=utc_now())
             session.commit()
             sys.stdout.write(f"applied: {created} rows\n")
         else:

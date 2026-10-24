@@ -73,6 +73,18 @@ here.
   ex-date gap itself when no resulting listing is found and the drop exceeds 10%. Both are
   stored as type `other`; the resulting company is never linked into the parent's lineage. The
   file's instrument class is a hint only: the bars decide. An import never rewrites a stored key.
+- **Corporate-action research import and corrections (CA2, D241/D245, owner 2026-10-24).** A
+  demerger's stored factor is the market factor, ex-date open / previous close, when a research
+  source confirms the event and date (`data/ca_research.py`, source `ca_research`). The CoA %
+  (a book-value tax allocation) and the ratio priced at the resulting company's first close are
+  cross-checks only, written beside it (`market_gap; coa X; ratio Y`), never the factor. It is a
+  review case when the gap disagrees with every cross-check (the CA1 gate, the check as
+  expected), or with no cross-check unless the date is confirmed, the drop is at least 10% and
+  the close five sessions on holds it. Research rights terms are stored through the CA1 gate,
+  an ambiguous gate as `price_unconfirmed`. Wrong stored factors are fixed by a reviewed list
+  (`admin correct-actions`, through `correct_action`, plus `add` for a missing leg), each line
+  with its bar evidence; a bonus to public shareholders only (promoters waived) is old shares /
+  new shares, not the stated ratio.
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with

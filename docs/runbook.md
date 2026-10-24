@@ -235,6 +235,12 @@ run by default, it prints per table what it would store, what is already stored,
 with a stored factor (fix with `correct-action`) and the review list with reasons; `--apply`
 stores the bar-confirmed factors in one transaction (journalled `corporate_action.imported`;
 repeating it stores nothing). Then rebuild the lineage and run `features --full`.
+`python -m app.hat.data.ca_research --db FILE --a A.csv --b B.csv --c C.csv --d D.csv [--apply]`
+(same working-directory rule) adds the demergers and rights the research files confirm, the
+same dry-run-then-apply way. `python -m app.hat.admin correct-actions --list NAME.tsv [--apply]`
+applies a reviewed correction list from `<HAT_DATA_ROOT>/admin/` (columns `op isin ex_date type
+factor new_ex_date note`; ops replace, delete, move, add): a dry run reports each line, an apply
+writes all of it or nothing.
 `python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs digest, so the next `features` run rebuilds every date (`features --full` does it now).
