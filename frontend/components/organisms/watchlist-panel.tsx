@@ -1,7 +1,7 @@
 import { Decimal } from "@/components/atoms/number";
 import { noRows, QuerySection } from "@/components/molecules/query-section";
 import { PLACEHOLDER } from "@/lib/format";
-import { useHatWatchlist, type HatWatchlist } from "@/lib/queries/hat";
+import { useHatWatchlist, useSharedStale, type HatWatchlist } from "@/lib/queries/hat";
 import { formatIstDate } from "@/lib/time";
 
 const WATCHLIST_TOP = 10;
@@ -36,8 +36,10 @@ function BotWatchlist({ bot }: Readonly<{ bot: HatWatchlist[number] }>) {
 /** Each bot's top watchlist candidates with their scores. */
 export function WatchlistPanel({ className }: Readonly<{ className?: string }>) {
   const watchlist = useHatWatchlist();
+  const sharedStale = useSharedStale() !== null;
   return (
     <QuerySection
+      sharedStale={sharedStale}
       title="Watchlist"
       query={watchlist}
       isEmpty={noRows}

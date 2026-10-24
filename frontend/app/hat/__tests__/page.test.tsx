@@ -276,6 +276,28 @@ describe("HatPage", () => {
     expect(screen.getByText("Stale, last snapshot 11:30:00 IST").closest("output")).not.toBeNull();
   });
 
+  it("shows one page banner, not one per section, when every read fails together", async () => {
+    let up = true;
+    const down = () => Response.json({ detail: "HTTP 502: Bad Gateway" }, { status: 422 });
+    stubBackend(
+      Object.fromEntries(
+        Object.entries(ROUTES).map(([path, route]) => [path, () => (up ? route() : down())]),
+      ),
+    );
+    const client = renderPage();
+
+    const positions = await screen.findByRole("region", { name: "Open positions" });
+    expect(await within(positions).findByText("3,950.25")).toBeInTheDocument();
+    up = false;
+    await client.refetchQueries({ queryKey: ["hat"] });
+
+    const banner = await screen.findByText(/^Not refreshing since \d{2}:\d{2}:\d{2} IST/);
+    expect(banner.textContent).toContain("(HTTP 502: Bad Gateway)");
+    expect(screen.getAllByRole("alert")).toEqual([banner]);
+    // The stale values stay on screen, dimmed.
+    expect(within(positions).getByText("3,950.25").closest(".opacity-60")).not.toBeNull();
+  });
+
   it("opens a signal's details in a drawer", async () => {
     stubBackend(ROUTES);
     renderPage();

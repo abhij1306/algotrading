@@ -6,7 +6,7 @@ import { DataTable, RowOpener } from "@/components/molecules/data-table";
 import { DetailList, Drawer } from "@/components/molecules/drawer";
 import { LabelledValue } from "@/components/molecules/labelled-value";
 import { noRows, QuerySection, rowCount } from "@/components/molecules/query-section";
-import { useHatPositions, type HatPositions } from "@/lib/queries/hat";
+import { useHatPositions, useSharedStale, type HatPositions } from "@/lib/queries/hat";
 import { formatIstDateTime } from "@/lib/time";
 
 type Position = HatPositions[number];
@@ -90,10 +90,12 @@ function PositionRow({
 /** Every open position, virtual (shadow) ones tagged; a row opens its details. */
 export function PositionsPanel({ className }: Readonly<{ className?: string }>) {
   const positions = useHatPositions();
+  const sharedStale = useSharedStale() !== null;
   const [openId, setOpenId] = useState<string | null>(null);
   const open = positions.data?.find((p) => p.id === openId);
   return (
     <QuerySection
+      sharedStale={sharedStale}
       title="Open positions"
       query={positions}
       isEmpty={noRows}

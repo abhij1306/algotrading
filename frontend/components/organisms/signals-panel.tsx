@@ -7,7 +7,7 @@ import { DetailList, Drawer } from "@/components/molecules/drawer";
 import { LabelledValue } from "@/components/molecules/labelled-value";
 import { noRows, QuerySection } from "@/components/molecules/query-section";
 import { PLACEHOLDER } from "@/lib/format";
-import { useHatSignals, type HatSignals } from "@/lib/queries/hat";
+import { useHatSignals, useSharedStale, type HatSignals } from "@/lib/queries/hat";
 import { formatIstDate, formatIstDateTime } from "@/lib/time";
 
 type Signal = HatSignals[number];
@@ -111,10 +111,12 @@ function SignalRow({ signal: s, onOpen }: Readonly<{ signal: Signal; onOpen: () 
 /** Recent signals with their mode, state and confidence; a row opens its basis and risk. */
 export function SignalsPanel({ className }: Readonly<{ className?: string }>) {
   const signals = useHatSignals();
+  const sharedStale = useSharedStale() !== null;
   const [openId, setOpenId] = useState<string | null>(null);
   const open = signals.data?.find((s) => s.id === openId);
   return (
     <QuerySection
+      sharedStale={sharedStale}
       title="Signals"
       query={signals}
       isEmpty={noRows}

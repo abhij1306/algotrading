@@ -3,7 +3,7 @@ import { TableCell, TableRow } from "@/components/atoms/table";
 import { DataTable } from "@/components/molecules/data-table";
 import { QuerySection } from "@/components/molecules/query-section";
 import { PLACEHOLDER } from "@/lib/format";
-import { useHatAllocations, type HatAllocations } from "@/lib/queries/hat";
+import { useHatAllocations, useSharedStale, type HatAllocations } from "@/lib/queries/hat";
 import { formatIstDate } from "@/lib/time";
 
 const COLUMNS = [
@@ -45,8 +45,10 @@ function AllocationsTable({ allocations }: Readonly<{ allocations: HatAllocation
 /** The latest allocation: each bot's weight, multipliers, capital and risk per trade. */
 export function AllocationsPanel({ className }: Readonly<{ className?: string }>) {
   const allocations = useHatAllocations();
+  const sharedStale = useSharedStale() !== null;
   return (
     <QuerySection
+      sharedStale={sharedStale}
       title="Allocations"
       query={allocations}
       isEmpty={(data) => data.rows.length === 0}

@@ -4,8 +4,8 @@ import { cn } from "@/lib/utils";
 import { freshness, type QueryState } from "@/lib/queries/freshness";
 import { formatIstTime } from "@/lib/time";
 
-/** The stale-data notice: the data below is the last good read, not the current state. */
-export function StaleNotice({ since, message }: Readonly<{ since: number; message: string }>) {
+/** The stale-data notice of one section: the data below is the last good read. */
+function StaleNotice({ since, message }: Readonly<{ since: number; message: string }>) {
   const when = since > 0 ? ` since ${formatIstTime(since)} IST` : "";
   return (
     <p role="alert" className="mb-3 rounded-md bg-warning-bg px-3 py-2 text-sm text-warning">
@@ -42,7 +42,8 @@ function Body<T>({
 
 /**
  * One titled dashboard section with the loading, error, empty and stale states of its query.
- * A failed refetch keeps the last data on screen, dimmed, under a stale notice.
+ * A failed refetch keeps the last data on screen, dimmed, under a stale notice (or under the
+ * page's one banner when `sharedStale`).
  */
 export function QuerySection<T>(
   props: Readonly<{
@@ -52,11 +53,13 @@ export function QuerySection<T>(
     empty: string;
     /** A short note beside the title, such as a count or a date. */
     meta?: (data: T) => ReactNode;
+    /** The page already shows one banner for a stale state shared by several sections. */
+    sharedStale?: boolean;
     className?: string;
     children: (data: T) => ReactNode;
   }>,
 ) {
-  const { title, query, isEmpty, meta, className } = props;
+  const { title, query, isEmpty, meta, sharedStale = false, className } = props;
   const stale = freshness(query) === "stale";
   const note = meta && query.data !== undefined && !isEmpty(query.data) ? meta(query.data) : null;
   return (
@@ -65,7 +68,7 @@ export function QuerySection<T>(
         <h2 className="text-lg">{title}</h2>
         {note === null ? null : <span className="text-xs text-foreground-muted">{note}</span>}
       </header>
-      {stale && query.error ? (
+      {stale && !sharedStale && query.error ? (
         <StaleNotice since={query.dataUpdatedAt} message={query.error.message} />
       ) : null}
       <div className={stale ? "opacity-60" : undefined}>

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { DetailList, Drawer } from "@/components/molecules/drawer";
 import { LabelledValue } from "@/components/molecules/labelled-value";
 import { noRows, QuerySection } from "@/components/molecules/query-section";
-import { useHatEvents, type HatEvents } from "@/lib/queries/hat";
+import { useHatEvents, useSharedStale, type HatEvents } from "@/lib/queries/hat";
 import { formatIstDateTime } from "@/lib/time";
 
 type Event = HatEvents[number];
@@ -31,10 +31,12 @@ function EventDetails({ event, onClose }: Readonly<{ event: Event; onClose: () =
 /** The latest audit events: when, what and who; an event opens its payload. */
 export function EventsPanel({ className }: Readonly<{ className?: string }>) {
   const events = useHatEvents();
+  const sharedStale = useSharedStale() !== null;
   const [openId, setOpenId] = useState<number | null>(null);
   const open = events.data?.find((event) => event.id === openId);
   return (
     <QuerySection
+      sharedStale={sharedStale}
       title="Recent events"
       query={events}
       isEmpty={noRows}

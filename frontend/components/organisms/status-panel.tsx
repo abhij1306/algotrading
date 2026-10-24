@@ -2,7 +2,7 @@ import { Badge } from "@/components/atoms/badge";
 import { LabelledValue } from "@/components/molecules/labelled-value";
 import { QuerySection } from "@/components/molecules/query-section";
 import { PLACEHOLDER } from "@/lib/format";
-import { useHatStatus, type HatStatus } from "@/lib/queries/hat";
+import { useHatStatus, useSharedStale, type HatStatus } from "@/lib/queries/hat";
 import { formatIstDate, formatIstTime } from "@/lib/time";
 
 function regimeText(regime: HatStatus["regime"]): string {
@@ -63,8 +63,16 @@ const never = () => false;
 /** Account kill, trade date, regime, feed, bot kills, broker sessions and today's jobs. */
 export function StatusPanel({ className }: Readonly<{ className?: string }>) {
   const status = useHatStatus();
+  const sharedStale = useSharedStale() !== null;
   return (
-    <QuerySection title="Status" query={status} isEmpty={never} empty="" className={className}>
+    <QuerySection
+      sharedStale={sharedStale}
+      title="Status"
+      query={status}
+      isEmpty={never}
+      empty=""
+      className={className}
+    >
       {(data) => <StatusSummary status={data} />}
     </QuerySection>
   );

@@ -6,7 +6,7 @@ import { DetailList, Drawer } from "@/components/molecules/drawer";
 import { LabelledValue } from "@/components/molecules/labelled-value";
 import { noRows, QuerySection, rowCount } from "@/components/molecules/query-section";
 import { PLACEHOLDER } from "@/lib/format";
-import { useHatStatus, type HatStatus } from "@/lib/queries/hat";
+import { useHatStatus, useSharedStale, type HatStatus } from "@/lib/queries/hat";
 import { formatIstDateTime } from "@/lib/time";
 
 type Bot = HatStatus["bots"][number];
@@ -101,11 +101,13 @@ function BotRow({ bot, onOpen }: Readonly<{ bot: Bot; onOpen: () => void }>) {
 /** Every bot with its effective mode, lifecycle and manage-only state; a row opens its details. */
 export function BotsPanel({ className }: Readonly<{ className?: string }>) {
   const status = useHatStatus();
+  const sharedStale = useSharedStale() !== null;
   const [openId, setOpenId] = useState<string | null>(null);
   const bots = { ...status, data: status.data?.bots };
   const open = bots.data?.find((bot) => bot.id === openId);
   return (
     <QuerySection
+      sharedStale={sharedStale}
       title="Bots"
       query={bots}
       isEmpty={noRows}
