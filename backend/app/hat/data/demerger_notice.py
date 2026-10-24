@@ -51,7 +51,8 @@ from ..models import (
     HatInstrument,
     HatInstrumentSymbolHistory,
 )
-from .ca_dividends import SOURCE_BC, FeedRow, input_path
+from .ca_bc import SOURCE_BC, FeedRow
+from .ca_dividends import input_path
 from .corporate_actions import PRICE_NEUTRAL_TYPES, lock_reference_data
 
 __all__ = [
@@ -121,7 +122,7 @@ def entry_blocked(
 
 
 def demerger_rows(rows: Iterable[FeedRow]) -> list[FeedRow]:
-    """The rows of a `bc` file (`ca_dividends.read_bc`) that name a demerger and an ex-date
+    """The rows of a `bc` file (`ca_bc.read_bc`) that name a demerger and an ex-date
     ("DEMERGER", "MERGER DEMERGER"), one per (symbol, ex-date)."""
     found: dict[tuple[str, date], FeedRow] = {}
     for row in rows:

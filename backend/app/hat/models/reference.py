@@ -144,7 +144,7 @@ class HatCorporateAction(Base):
     adjustment_factor = Column(Ratio, nullable=False)
     raw_text = Column(Text, nullable=False)
     source = Column(Text, nullable=False)
-    # A dividend's cash per share in rupees (`data/ca_dividends.py`); NULL on every other type
+    # A dividend's cash per share in rupees (`data/ca_payouts.py`); NULL on every other type
     # and on a dividend whose amount is not known. Price-neutral: no view applies it.
     cash_amount = Column(Ratio)
     # CA5, point in time (`data/ca_known.py`): the first NSE filing naming the event (for a

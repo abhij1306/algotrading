@@ -8,11 +8,8 @@ from fractions import Fraction
 
 import pytest
 
+from app.hat.data.ca_gate import ALREADY, REVIEW, SKIPPED, STORED, gate, nse_date, same_factor
 from app.hat.data.ca_import import (
-    ALREADY,
-    REVIEW,
-    SKIPPED,
-    STORED,
     Leg,
     Outcome,
     Proposal,
@@ -22,14 +19,11 @@ from app.hat.data.ca_import import (
     dedupe,
     demerger_factor,
     equity_share_isin,
-    gate,
     name_key,
-    nse_date,
     parse_ratio,
     plan_legs,
     rights_factor,
     rights_terms,
-    same_factor,
     split_bonus_legs,
 )
 from app.hat.data.corporate_actions import TYPE_BONUS, TYPE_OTHER, TYPE_SPLIT, ActionRecord

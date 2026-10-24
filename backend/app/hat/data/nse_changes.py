@@ -12,8 +12,6 @@ from pathlib import Path
 from .chains import LineageError
 
 SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
-
-
 NAME_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/namechange.csv"
 
 

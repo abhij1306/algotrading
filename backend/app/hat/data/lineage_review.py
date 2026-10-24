@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import HatInstrument, HatIsinLineage
-from .ca_dividends import missing_amounts
+from .ca_nightly import missing_amounts
 from .chains import (
     LINKED,
     REVIEW,

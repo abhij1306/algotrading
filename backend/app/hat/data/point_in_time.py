@@ -43,15 +43,8 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models import HatCorporateAction, HatEvent, HatInstrument, HatIsinLineage
-from .ca_import import (
-    EVENT_IMPORTED,
-    SOURCE_FILE,
-    Bar,
-    around,
-    gate,
-    read_windows,
-    same_factor,
-)
+from .ca_gate import EVENT_IMPORTED, Bar, around, gate, read_windows, same_factor
+from .ca_import import SOURCE_FILE
 from .ca_known import (
     BASES,
     RESULTING_FIRST_CLOSE,

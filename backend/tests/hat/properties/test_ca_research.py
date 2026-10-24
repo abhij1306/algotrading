@@ -5,7 +5,8 @@ rights override. Plain examples from the research files' real rows; no database,
 from datetime import date
 from fractions import Fraction
 
-from app.hat.data.ca_import import REVIEW, Proposal, RightsTerms
+from app.hat.data.ca_gate import REVIEW
+from app.hat.data.ca_import import Proposal, RightsTerms
 from app.hat.data.ca_research import (
     FILE_A,
     FILE_C,

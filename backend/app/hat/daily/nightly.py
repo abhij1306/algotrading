@@ -30,7 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
-from ..data import ca_dividends
+from ..data import ca_bc, ca_nightly
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
@@ -465,7 +465,7 @@ class Nightly:
         Without tonight's file the stored notices are still checked, so a position whose exit
         passed is alerted late."""
         with self.deps.session_factory() as session:
-            rows = ca_dividends.read_bc(text) if text is not None else None
+            rows = ca_bc.read_bc(text) if text is not None else None
             stored = store_notices(session, rows, day) if rows is not None else 0
             unlisted = (
                 flag_unlisted(session, unlisted_notices(session, rows, day), self._now())
@@ -490,11 +490,11 @@ class Nightly:
 
     def _dividends(self, day: date, text: str) -> None:
         """The dividends going ex on `day` (and the catch-up days) from NSE's corporate-action
-        file of `day`, stored with their cash in one transaction (`ca_dividends.nightly_import`,
+        file of `day`, stored with their cash in one transaction (`ca_nightly.nightly_import`,
         the CA3 checks). Each review or conflict case is alerted, and so is each stored dividend
         of those days still without an amount: it is never guessed."""
         with self.deps.session_factory() as session:
-            report = ca_dividends.nightly_import(session, self.deps.store, text, day, self._now())
+            report = ca_nightly.nightly_import(session, self.deps.store, text, day, self._now())
             session.commit()
         logger.info(
             "dividends of %s: %d stored, %d amounts added, %d for review, %d without an amount",
@@ -507,7 +507,7 @@ class Nightly:
         for o in report.flagged:
             p = o.proposal
             self.deps.notifier.alert(
-                ca_dividends.ALERT_DIVIDEND_REVIEW,
+                ca_nightly.ALERT_DIVIDEND_REVIEW,
                 day,
                 {
                     "symbol": p.symbol,
@@ -518,7 +518,7 @@ class Nightly:
             )
         for m in report.missing:
             self.deps.notifier.alert(
-                ca_dividends.ALERT_DIVIDEND_NO_AMOUNT,
+                ca_nightly.ALERT_DIVIDEND_NO_AMOUNT,
                 day,
                 {"symbol": m.symbol, "isin": m.isin, "ex_date": m.ex_date.isoformat()},
             )

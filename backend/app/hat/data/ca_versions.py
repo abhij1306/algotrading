@@ -467,7 +467,7 @@ def plan_backfill(
 
 def journal(session: Session) -> tuple[list[Correction], dict[Key, tuple[datetime, str]]]:
     """The owner's corrections and each event's first import, from the journal."""
-    from .ca_import import EVENT_IMPORTED
+    from .ca_gate import EVENT_IMPORTED
     from .corporate_actions import EVENT_CORRECTED
 
     corrections = []

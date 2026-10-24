@@ -135,7 +135,7 @@ class ActionRecord:
     factor: Decimal
     raw_text: str
     source: str
-    cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_dividends`)
+    cash_amount: Decimal | None = None  # a dividend's rupees per share (`ca_payouts`)
     known: Known | None = None  # when the factor became knowable; None: `default_known`
     demerger: bool = False  # an `other` that is a demerger, not a rights issue
 

@@ -26,8 +26,6 @@ from .lineage import (
 )
 
 EVENT_OVERRIDDEN = "lineage.overridden"
-
-
 NOTE_MAX = 500
 
 
