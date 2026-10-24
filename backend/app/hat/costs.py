@@ -1,4 +1,5 @@
-"""The backtest fill and cost model (HAT-BT-022, HAT-BT-023, HAT-BT-024): exact and pure.
+"""The fill and cost model of the backtest and shadow trading (HAT-BT-022..024, QA4): exact and
+pure.
 
 A simulated fill is moved against the trade by the run's slippage, then charged the statutory
 and exchange costs of a delivery (CNC) trade. Every rate lives in a versioned cost-model file
@@ -7,8 +8,8 @@ value, capped where the file says so, and rounded half up to the paisa; GST is c
 of the components the file marks taxable. All of it is Decimal.
 
 `BacktestFills` is the fill model the shadow engine's virtual fills accept
-(`app.hat.engine.shadow.FillModel`), so the backtest fills through the same code as shadow
-trading, with slippage and charges where shadow has neither.
+(`app.hat.engine.shadow.FillModel`): shadow trading fills at the default slippage and cost model
+(`engine.shadow.SHADOW_FILLS`), a backtest run at its own, through the same code.
 """
 
 from __future__ import annotations

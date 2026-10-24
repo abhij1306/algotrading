@@ -37,6 +37,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Exits.** Intraday stop on fill, swapped to a GTT around 15:25; MA exits 15:20-15:25 on the
   live price (a known gap to the official close, logged nightly); an ordered exit stack where
   stops only tighten.
+- **Shadow fills pay costs (QA4).** A virtual fill carries the backtest's default model: 20 bps
+  slippage against the trade, then the versioned statutory charges (`costs.py`), so shadow
+  results are net of what real trading pays.
 
 ## Data
 

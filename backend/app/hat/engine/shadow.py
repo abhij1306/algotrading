@@ -26,6 +26,7 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from ..execution.tags import encode_tag
 from ..governance import Mode
 from ..ids import uuid7
@@ -53,8 +54,6 @@ __all__ = [
     "open_virtual",
 ]
 
-_ZERO = Decimal(0)
-
 
 class FillModel(Protocol):
     """How a virtual fill is priced: (fill price, fees) for `qty` shares at the reference
@@ -63,16 +62,11 @@ class FillModel(Protocol):
     def fill(self, side: str, qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]: ...
 
 
-class _ShadowFills:
-    """Shadow trading's fills: at the reference price, with no fees (PR 11)."""
-
-    def fill(self, _side: str, _qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]:
-        return price, _ZERO
-
-
-# The backtest passes its own model (slippage and charges, `app.hat.costs`); the shadow
-# engine and the backtest otherwise fill through the same functions (HAT-BT-010).
-SHADOW_FILLS: FillModel = _ShadowFills()
+# Shadow trading's fills carry the backtest's default cost model (QA4): the default slippage
+# against the trade, then the statutory charges, so a virtual result is net of what a real one
+# pays. A backtest run passes its own (its slippage and cost model); both fill through the same
+# functions (HAT-BT-010).
+SHADOW_FILLS: FillModel = BacktestFills(load_cost_model(DEFAULT_COST_MODEL), DEFAULT_SLIPPAGE_BPS)
 
 
 def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
