@@ -119,6 +119,11 @@ def _gaps(raw: object) -> tuple[str, ...] | None:
     return None
 
 
+def _pbo(raw: object) -> Decimal | None:
+    """The probability of a stored PBO block (`runs.family_pbo`); None when it has none."""
+    return _decimal(raw.get("prob")) if isinstance(raw, Mapping) else None
+
+
 def _returns(raw: object) -> ReturnStats | None:
     if not isinstance(raw, Mapping):
         return None
@@ -154,6 +159,7 @@ class RunMetrics:
     for_promotion: bool = False
     returns: ReturnStats | None = None
     initial_equity: Decimal | None = None
+    pbo: Decimal | None = None  # the family's PBO at the run's completion (None: unscored)
     completed_at: datetime | None = None
 
     @staticmethod
@@ -176,6 +182,7 @@ class RunMetrics:
             for_promotion=metrics.get("for_promotion") is True,
             returns=_returns(metrics.get("returns")),
             initial_equity=_decimal(metrics.get("initial_equity")),
+            pbo=_pbo(metrics.get("pbo")),
             completed_at=_instant(metrics.get("completed_at")),
         )
 
@@ -337,6 +344,7 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
         trades=metrics.trades or 0,
         expectancy=metrics.expectancy_r,
         trials=trials,
+        pbo=metrics.pbo,
         first_session=metrics.first_session,
         last_session=metrics.last_session,
         ambiguous_days=metrics.ambiguous_days,

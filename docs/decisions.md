@@ -20,7 +20,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   lower bound on mean R. Labels must come from measured results, not opinion.
 - **Earn real money in stages.** At least five years of backtest on real data, 20 sessions of
   shadow, then owner-approved trades; promotion needs deflated-Sharpe probability ≥ 0.95 and 200
-  trades, and every backtest run counts as a trial.
+  trades, and every backtest run counts as a trial. Research -> Backtested also needs the family's
+  probability of backtest overfitting (PBO, stored at the run's completion) below 0.5 (QA6); an
+  unscored PBO (fewer than two distinct variants) fails.
 
 ## Strategy and risk
 

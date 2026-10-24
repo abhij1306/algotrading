@@ -56,7 +56,8 @@ def test_run_metrics_reads_what_compute_metrics_writes() -> None:
         lower_circuit_days=0,
     )
     at = datetime(2026, 10, 23, 12, 30, tzinfo=UTC)
-    stored = json.loads(json.dumps({**written, "completed_at": at.isoformat()}))
+    pbo = {"prob": "0.25", "runs": 2, "variants": 2, "sessions": 8, "blocks": 2}
+    stored = json.loads(json.dumps({**written, "pbo": pbo, "completed_at": at.isoformat()}))
     read = RunMetrics.from_json(stored)
     assert read.trades == 2
     assert read.expectancy_r == D("0.25")
@@ -72,6 +73,7 @@ def test_run_metrics_reads_what_compute_metrics_writes() -> None:
     assert read.returns is not None
     assert read.returns.t == len(days)
     assert read.initial_equity == spec.initial_equity
+    assert read.pbo == D("0.25")
     assert read.completed_at == at
 
 
@@ -89,6 +91,7 @@ def test_run_metrics_fail_closed() -> None:
         "cooldown_sessions": None,
         "for_promotion": "true",
         "returns": {"sr": 0.1},
+        "pbo": {"prob": None, "reason": "pbo_too_few_variants"},
         "completed_at": "yesterday",
     }
     assert RunMetrics.from_json(garbled) == RunMetrics()
