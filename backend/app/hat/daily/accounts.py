@@ -133,6 +133,7 @@ class AccountDesk:
     watch: SessionWatch = field(default_factory=SessionWatch)
     failed_alerted_on: date | None = None  # the trade date `reconcile.failed` was raised for
     synced_at: datetime | None = None  # the last fill sync that read the broker's books
+    fills_read_at: datetime | None = None  # the last fill sync that succeeded (ca.rescale's gate)
 
     def check_session(self, session: Session, now: datetime) -> bool:
         """Write today's `hat_broker_session` from one read of the broker's status (the router
@@ -407,6 +408,11 @@ class Desks:
     def managed(self) -> set[uuid.UUID]:
         return set(self.by_account)
 
+    def fills_read_at(self, account_id: uuid.UUID) -> datetime | None:
+        """When the account's fills were last read without failing; None without a desk."""
+        desk = self.by_account.get(account_id)
+        return None if desk is None else desk.fills_read_at
+
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """Hand every desk the calendar the runtime has just read: a desk built before the
         calendar existed, or across a new year, would otherwise never see a session open."""
@@ -459,7 +465,7 @@ class Desks:
                     self._resume[account_id] = _left_unplaced(session, account_id)
                     desk.reconcile(session, now)
                     if desk.manager.sync(session, account_id, now) is not None:
-                        desk.synced_at = now
+                        desk.synced_at = desk.fills_read_at = now
             except Exception:
                 logger.exception("recovery of account %s failed", account_id)
 
@@ -514,7 +520,7 @@ class Desks:
                     if quiet and not watch_closely(session, account_id, now):
                         continue
                     if desk.manager.sync(session, account_id, now) is not None:
-                        desk.synced_at = now
+                        desk.synced_at = desk.fills_read_at = now
             except Exception:
                 desk.synced_at = now
                 logger.exception("fill sync of account %s failed", account_id)

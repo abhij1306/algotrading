@@ -448,6 +448,7 @@ def build(
         bhavcopy=parts.bhavcopy,
         sources=parts.sources,
         total_equity=desks.total_equity,
+        fills_read_at=desks.fills_read_at,
         sleep=parts.sleep or sleep,
         notifier=notifier,
         digest=reports.send_watchlist_digest,

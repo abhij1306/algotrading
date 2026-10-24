@@ -536,16 +536,26 @@ def flag_unhandled(session: Session, day: date, now: datetime) -> int:
 
 
 def rescale_open_positions(
-    session_factory: Callable[[], Session], day: date, now: datetime, notifier: Notifier
-) -> tuple[int, Sequence[uuid.UUID]]:
+    session_factory: Callable[[], Session],
+    day: date,
+    now: datetime,
+    notifier: Notifier,
+    ready: Callable[[Session, HatPosition], bool],
+) -> tuple[int, Sequence[uuid.UUID], Sequence[uuid.UUID]]:
     """The `ca.rescale` body: every open position with a pending action, each in its own
-    transaction. Returns (actions applied, positions that failed); each failure is alerted
-    `corporate_action.pending` and the position stays manage-only."""
+    transaction, once `ready` says its fills are read (a real position's account read them
+    after the previous session closed, Q8: a fill booked after the rescale on the old scale would
+    size it wrongly). Returns (actions applied, positions that failed, positions waiting for
+    their fills); each failure is alerted `corporate_action.pending`, and a failed or waiting
+    position stays manage-only."""
     with session_factory() as session:
         ids = [p.id for p in _open_positions(session) if pending_actions(session, p, day)]
+        waiting = [p for p in ids if not ready(session, session.get(HatPosition, p))]
     applied = 0
     failed: list[uuid.UUID] = []
     for position_id in ids:
+        if position_id in waiting:
+            continue
         try:
             with session_factory() as session:
                 applied += rescale_position(session, position_id, day, now)
@@ -554,7 +564,7 @@ def rescale_open_positions(
             logger.exception("rescaling position %s failed", position_id)
             failed.append(position_id)
             notifier.alert(ALERT_ACTION_PENDING, day, {"position_id": str(position_id)})
-    return applied, failed
+    return applied, failed, waiting
 
 
 def flag_isin_changes(session: Session, now: datetime) -> int:

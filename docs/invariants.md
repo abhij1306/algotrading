@@ -66,7 +66,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   (URGENT `position.split_gap`, until the owner stores the action or resolves it), and a position
   held across an ISIN change (a `linked` lineage row from its instrument, effective after it
   opened: URGENT `position.isin_changed`, until the owner resolves it). No instrument of the
-  lineage chain of a locked position takes an entry.
+  lineage chain of a locked position takes an entry. A real position is rescaled only once its
+  account's fills were read after the previous session's close; until then (at the latest the
+  09:00 deadline, then URGENT `job.failed`) it stays locked.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
   restarts the peak at the equity then, the drawdown kill's and, for a bot, the health

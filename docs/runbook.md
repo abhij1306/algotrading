@@ -159,6 +159,10 @@ Alerts:
 - URGENT `position.isin_changed` (symbol, old and new ISIN): a position held across an ISIN
   change. `/flatten` a real position; a virtual one, outside market hours: `resolve-action
   --action <new first day>:isin_change --close-at <price>`.
+- URGENT `job.failed` of `ca.rescale`, `fills_not_synced`: an account holding a position to rescale
+  has not read its fills since the last close (no broker login, a broker outage). Its positions
+  stay manage-only: log in, and the next morning's run rescales them; `/flatten` sells one now.
+  URGENT `corporate_action.pending`: a position could not be rescaled; read the log.
 - `corporate_action.conflict`: a lookup disagrees with the stored factor, which stays. Check
   NSE's announcement; correct it if wrong.
 - `dividend.review`, `dividend.amount_missing`: set the amount once checked (`correct-action

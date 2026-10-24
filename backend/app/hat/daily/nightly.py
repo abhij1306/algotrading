@@ -70,7 +70,7 @@ from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
 from ..events import record
-from ..models import HatBot, HatEvent, HatJobRun, HatStrategyVersion
+from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatStrategyVersion
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
 from ..ops.partitions import events_partitions
@@ -83,7 +83,7 @@ from ..risk.drawdown import (
     snapshot_bots,
 )
 from ..risk.kill_ops import sync_health
-from ..time import utc_now
+from ..time import IST, as_utc, utc_now
 from .market import official_closes, scan_inputs
 
 __all__ = [
@@ -143,6 +143,10 @@ PARTITIONS_AT = time(0, 30)
 PURGE_AT = time(1, 0)
 INGEST_RETRY = timedelta(minutes=10)
 RESCALE_RETRY = timedelta(minutes=5)  # three tries before the 09:00 pre-open
+# A real position's rescale waits for its account's fill sync until this time (Q8), reading again
+# every `RESCALE_POLL`; then the job fails (`fills_not_synced`) before its 09:00 deadline.
+RESCALE_SYNC_UNTIL = time(8, 58)
+RESCALE_POLL = timedelta(seconds=30)
 # The ISIN lineage refresh failed (the stored one stands), or found a succession it would not
 # link: the owner reads `python -m app.hat.data.lineage report`.
 ALERT_LINEAGE_UNCHECKED = "lineage.unchecked"
@@ -183,6 +187,8 @@ class NightlyDeps:
     bhavcopy: Callable[[], Fetcher]  # the 22:00 fallback's downloader
     sources: TextSources
     total_equity: Callable[[date], Decimal]  # the broker funds total (Q1)
+    # an account's last successful fill sync (`Desks.fills_read_at`): `ca.rescale`'s gate (Q8)
+    fills_read_at: Callable[[uuid.UUID], datetime | None]
     sleep: Callable[[float], None]  # the ingest's wait; the runtime's raises when HAT stops
     notifier: Notifier = field(default_factory=LogNotifier)
     digest: Callable[[uuid.UUID, date], None] | None = None  # Reports.send_watchlist_digest
@@ -530,20 +536,53 @@ class Nightly:
 
     def rescale(self, day: date) -> JobResult:
         """`ca.rescale` (before the open): every open position spanning a stored split or bonus
-        is rescaled (HAT-EXEC-141), then every action the rescale cannot handle is flagged once
-        per position (`corporate_action.unhandled`, HAT-EXEC-144). Fails when a position could
-        not be rescaled or the flags not written, so the job is retried; the position stays
-        manage-only and is alerted meanwhile."""
-        now = self._now()
-        applied, failed = rescale_open_positions(
-            self.deps.session_factory, day, now, self.deps.notifier
+        is rescaled (HAT-EXEC-141), a real one only once its account's fills were read after
+        the previous session's close (Q8: read again every `RESCALE_POLL` until
+        `RESCALE_SYNC_UNTIL`), then every action the rescale cannot handle is flagged once per
+        position (`corporate_action.unhandled`, HAT-EXEC-144). Fails when a position could not
+        be rescaled (`rescale_failed`, retried) or still waits for its fills
+        (`fills_not_synced`, an URGENT `job.failed`), or the flags were not written; the
+        position stays manage-only meanwhile."""
+        ready = self._fills_ready(day)
+        until = datetime.combine(day, RESCALE_SYNC_UNTIL, tzinfo=IST)
+        applied, failed, waiting = rescale_open_positions(
+            self.deps.session_factory, day, self._now(), self.deps.notifier, ready
         )
+        while waiting and not failed and self._now() < until:
+            self.deps.sleep(RESCALE_POLL.total_seconds())
+            more, failed, waiting = rescale_open_positions(
+                self.deps.session_factory, day, self._now(), self.deps.notifier, ready
+            )
+            applied += more
         with self.deps.session_factory() as session:
-            flag_unhandled(session, day, now)
+            flag_unhandled(session, day, self._now())
             session.commit()
         if failed:
             raise JobError("rescale_failed")
+        if waiting:
+            raise JobError("fills_not_synced")
         return JobResult(rows=applied)
+
+    def _fills_ready(self, day: date) -> Callable[[Session, HatPosition], bool]:
+        """Whether a position's fills are read for the rescale of `day`: a virtual one always; a
+        real one when its account's last successful fill sync came after the close of the
+        session before `day` (no calendar row for it: never)."""
+        with self.deps.session_factory() as session:
+            calendar = session_calendar(session)
+        previous = calendar.previous_trading_day(day) if calendar is not None else None
+        row = calendar.days.get(previous) if calendar is not None and previous else None
+        closed = row.close_at if row is not None else None
+
+        def ready(session: Session, position: HatPosition) -> bool:
+            if position.is_virtual:
+                return True
+            bot = session.get(HatBot, position.bot_id)
+            if closed is None or bot is None or bot.broker_account_id is None:
+                return False
+            read = self.deps.fills_read_at(bot.broker_account_id)
+            return read is not None and as_utc(read) >= as_utc(closed)
+
+        return ready
 
     def features(self, day: date) -> JobResult:
         def adjustment() -> Adjustment:
