@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Reduce test-runner output to the failures plus the final summary.
 
-Reads a test run's combined stdout/stderr on stdin. Recognises pytest and
-vitest output; for anything else it keeps the tail. Never hides a failure:
+Reads a test run's combined stdout/stderr on stdin. Recognises pytest, vitest
+and TLC output; for anything else it keeps the tail. Never hides a failure:
 failure sections are kept (capped), and the summary line always survives.
 """
 
@@ -22,6 +22,13 @@ PYTEST_SHORT = re.compile(r"^=+ short test summary info =+$")
 PYTEST_ANY_BANNER = re.compile(r"^=+ .+ =+$")
 VITEST_SUMMARY = re.compile(r"^\s*(Test Files|Tests|Duration)\s")
 VITEST_FAIL = re.compile(r"(\bFAIL\b|×|✗|Failed Tests|AssertionError|Error:)")
+# TLC (verification/tla/run.sh): its final result lines.
+TLC_RESULT = re.compile(
+    r"^(Model checking completed|Error:|\d+ states generated, \d+ distinct states found"
+    r"|The depth of the complete state graph)"
+)
+TLC_KEEP = re.compile(r"^(== \S+: must pass|FAIL \S+:|\d+ failure\(s\))")
+TLC_STATS = re.compile(r"^\d+ states generated, \d+ distinct states found")
 
 
 def clip(line: str) -> str:
@@ -65,10 +72,27 @@ def vitest_view(lines: list[str]) -> list[str] | None:
     return out + [line for line in lines[last + 1 :] if line not in out][-TAIL_UNKNOWN:]
 
 
+def tlc_view(lines: list[str]) -> list[str] | None:
+    if not any(TLC_RESULT.match(line) for line in lines):
+        return None
+    out: list[str] = []
+    in_error = False  # an Error: line through the run's stats line is the counterexample
+    for line in lines:
+        if line.startswith("Error:"):
+            in_error = True
+        if in_error or TLC_RESULT.match(line) or TLC_KEEP.match(line):
+            out.append(line)
+        if TLC_STATS.match(line):
+            in_error = False
+    # Keep output from commands chained after the run, as pytest_view does.
+    last = max(i for i, line in enumerate(lines) if TLC_RESULT.match(line) or TLC_KEEP.match(line))
+    return out + lines[last + 1 :][-TAIL_UNKNOWN:]
+
+
 def main() -> None:
     text = sys.stdin.read()
     lines = text.splitlines()
-    view = pytest_view(lines) or vitest_view(lines)
+    view = pytest_view(lines) or vitest_view(lines) or tlc_view(lines)
     note = ""
     if view is None:
         view = lines[-TAIL_UNKNOWN:]

@@ -603,6 +603,18 @@ After any change to `.env`:
    `.dockerignore` files keep it out of the build context) or a backup set.
 4. Record the check in the check log.
 
+### Local development
+
+The dev server (`python backend/start_server.py`, see `CLAUDE.md`), not the deployed stack.
+
+- **The server exits at start:** run `python backend/start_server.py` in a terminal for the
+  traceback; install dependencies with `python scripts/install_backend_deps.py`; check that port
+  8000 is free.
+- **"Database unreachable" in the log:** start PostgreSQL and check the `DB_*` variables. The
+  server will not start until the database answers.
+- **Fyers shows disconnected:** the token lasts until midnight IST. Log in again from the app
+  header.
+
 ### Check log
 
 | Date | Check | Initials | Result |

@@ -24,39 +24,9 @@ pnpm install
 pnpm dev                          # http://127.0.0.1:3000, proxies /api to the backend
 ```
 
-`BACKEND_HOST`, `BACKEND_PORT`, `BACKEND_RELOAD`, `BACKEND_ACCESS_LOG` and `BACKEND_LOG_LEVEL`
-configure `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`.
-
-### Startup (`backend/app/main.py` lifespan)
-
-1. Get the event loop.
-2. Create the database schema (`init_db`). If the database is down, one log line says so and the
-   app does not start, whatever `HAT_ENABLED` says.
-3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
-   (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
-   database that is not PostgreSQL, a proxy variable that would carry Fyers traffic
-   (`fyers_proxy_set`) and a bad Telegram configuration, reconciles every broker
-   account before anything is placed, then starts the scheduler with the daily cycle
-   (`daily_jobs`, the job table), the live feed (`app/hat/data/feed.py`, the one Fyers
-   data socket, built in `main.py`), the periodic loop (session watch, fill sync, approval expiry,
-   reconciliation, live exits, announcements) and the Telegram poller and relay.
-
-With `HAT_ENABLED` unset or false (the default) no HAT task runs: the app serves only the routes
-below. Shutdown stops the HAT runtime (tasks, scheduler, feed, broker sessions), then the database
-engine, each even if the other failed.
-
-### Routes
-
-- `GET /` and `GET /ping`: liveness.
-- The daily Fyers login, `app/hat/api/fyers_auth.py`, under `/api/hat/auth/fyers`:
-  `GET /status`, `GET /url` (the Fyers login link), `POST /token` (trade the auth code for a
-  token and save it) and `POST /disconnect`. Fyers redirects to the registered `REDIRECT_URI`;
-  the backend serves no callback, so paste the `auth_code` from the redirected URL into the login
-  dialog in the app header. The token file is owned by `app/hat/execution/fyers_tokens.py`.
-- The read-only dashboard, `app/hat/api/dashboard.py`, under `/api/hat` (GET only, kill, re-arm, mode and flatten are Telegram commands): `/status`, `/bots`, `/watchlist`,
-  `/signals`, `/positions`, `/allocations`, `/regime` and `/events` (`signals`, `regime` and
-  `events` take `limit`, 1..200, default 50). Money and weights are decimal strings. The
-  frontend page `frontend/app/hat/page.tsx` polls them every 15 s.
+Startup sequence, routes and environment variables: `docs/architecture.md` (Startup and
+routes). Server won't start, database unreachable, Fyers disconnected: `docs/runbook.md` (Local
+development).
 
 ---
 
@@ -65,9 +35,9 @@ engine, each even if the other failed.
 - **Code is the source of truth; docs are a guide, not something maintained one-to-one with the
   code. Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to
   date -- architecture, invariants, CLAUDE.md, decisions -- and they stay compact.** The canonical
-  docs: `docs/architecture.md` (module map, data flow, seams), `docs/invariants.md` (the
-  money-safety and trading rules),
-  `docs/decisions.md` (decisions in force), `docs/runbook.md` (operator procedures).
+  docs: `docs/architecture.md` (module map, data flow, seams, startup, routes, environment),
+  `docs/invariants.md` (the money-safety and trading rules), `docs/decisions.md` (decisions in
+  force), `docs/runbook.md` (operator procedures).
 - **Implement and verify; don't build test ceremony.** Verify a change by running it for real:
   the affected job, CLI or route on real data (`HAT_DATA_ROOT`, the local database read-only);
   never a backtest as PR verification; put the evidence in the PR. Tests are
@@ -101,20 +71,6 @@ engine, each even if the other failed.
 
 ---
 
-## Environment
-
-`.env.example` lists every variable. Read from the environment (loaded from `.env`):
-
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL.
-- `CLIENT_ID`, `SECRET_KEY`, `REDIRECT_URI`: the Fyers app (`FYERS_APP_ID`, `FYERS_CLIENT_ID` and
-  `FYERS_SECRET_KEY` also work).
-- `HAT_ENABLED` (default false), `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_MCP_BHAVCOPY_URL`,
-  `HAT_MCP_CMMARKET_URL`, and the Telegram secrets `HAT_TELEGRAM_TOKEN`, `HAT_TELEGRAM_CHAT_ID`,
-  `HAT_APPROVAL_SECRET`.
-- `CORS_ORIGINS`, `LOG_LEVEL`, `FRAMEWORK_LOG_LEVEL`.
-
----
-
 ## Code Quality
 
 ### Frontend
@@ -139,48 +95,31 @@ ruff check .
 cd backend
 python -m pytest tests/hat/conformance -q            # CONF checks, no database needed
 CI=1 python -m pytest tests/hat/properties/<file> -q # Hypothesis properties under the CI profile
-python -m pytest -n auto --ignore=tests/hat/properties --ignore=tests/hat/conformance
+python -m pytest -n auto -q --ignore=tests/hat/properties --ignore=tests/hat/conformance
 
 # the TLC models, from the repo root
 cd ..
 verification/tla/run.sh
 ```
 
-Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything.
+Run only the tests your change touches plus `tests/hat/conformance`; CI runs everything. For
+questions spanning many files, write one throwaway command/script that prints only the answer
+instead of reading files one by one.
 
 ### CI
-`.github/workflows/ci.yml` runs on every pull request and on pushes to main: `backend` (ruff and
-the app tests), `backend-postgres`, `verification-conformance`, `verification-properties` (sharded,
-each property file once), `frontend` and `api-schema`. `.github/workflows/tla.yml` runs
-the TLC models only when `verification/**` or a Python file a model's actions map to (its `code:`
-comments) changes, plus weekly and on `workflow_dispatch`; add a newly mapped file to its paths.
-Ruff, `vp check` and the tests stay at zero errors and zero warnings. CI installs the hash-pinned
-`backend/requirements-ci.lock`; regenerate it with `python scripts/lock_ci_requirements.py` after
-changing `backend/requirements*.txt`. `fyers-apiv3` is installed with `--no-deps` because it pins
-an `aiohttp` that does not build on Python 3.14.
-
----
-
-## Troubleshooting
-
-- **The server exits at start:** run `python backend/start_server.py` in a terminal for the
-  traceback; install dependencies with `python scripts/install_backend_deps.py`; check that port
-  8000 is free.
-- **"Database unreachable" in the log:** start PostgreSQL and check the `DB_*` variables. The
-  server will not start until the database answers.
-- **Fyers shows disconnected:** the token lasts until midnight IST. Log in again from the app
-  header.
+The jobs: `docs/architecture.md` (Verification layout). Ruff, `vp check` and the tests stay at
+zero errors and zero warnings. A Python file newly mapped by a TLA model's `code:` comments goes
+into `tla.yml`'s paths. CI installs the hash-pinned `backend/requirements-ci.lock`; regenerate it
+with `python scripts/lock_ci_requirements.py` after changing `backend/requirements*.txt`
+(`fyers-apiv3` goes in with `--no-deps`: it pins an `aiohttp` that does not build on 3.14).
 
 ---
 
 ## Contribution Workflow
 
-1. Read the invariants and decisions that touch your change.
-2. Implement, then verify by running the change on real data.
-3. Run the quality checks above.
-4. Update the canonical docs only where architecture, an invariant or a decision changed; delete
-   any plan or spec the change finishes.
-5. Submit.
+Read the invariants and decisions that touch your change; implement and verify on real data; run
+the checks above; update the canonical docs only where architecture, an invariant or a decision
+changed, and delete any plan or spec the change finishes; submit.
 
 ---
 
