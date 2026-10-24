@@ -56,7 +56,7 @@ from .positions import (
     sold_qty,
     trade_of,
 )
-from .snapshot import HARD_STOP
+from .snapshot import ENTRY_WORKING, HARD_STOP
 
 __all__ = [
     "EXIT_PURPOSES",
@@ -76,8 +76,6 @@ logger = logging.getLogger(__name__)
 
 ENTRY = "entry"
 EXIT_PURPOSES = ("exit_partial", "exit_full", "flatten")
-# An entry order the broker may still fill (`stop_plans.WORKING`; the engine does not import it).
-_ENTRY_WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 _PRICE_PLACES = Decimal("0.0001")
 _ZERO = Decimal(0)
 
@@ -330,7 +328,7 @@ def entry_working(session: Session, signal_id: uuid.UUID, now: datetime) -> bool
             HatOrder.signal_id == signal_id,
             HatOrder.purpose == ENTRY,
             HatOrder.is_virtual.is_(False),
-            HatOrder.status.in_(_ENTRY_WORKING),
+            HatOrder.status.in_(ENTRY_WORKING),
             HatOrder.placed_at.is_not(None),
         )
     )
