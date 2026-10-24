@@ -23,6 +23,7 @@ from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.positions import TradeError, raise_stop, sold_qty
 from app.hat.engine.strategy.config import (
     ExitBreakeven,
+    ExitCloseAboveSma,
     ExitCloseBelowSma,
     ExitHardStop,
     ExitPartialAfterDays,
@@ -98,6 +99,12 @@ RULE_KINDS = (
     st.builds(
         ExitCloseBelowSma,
         rule=st.just("close_below_sma"),
+        sma=st.sampled_from([10, 20, 50]),
+        sell_fraction=FRACTIONS,
+    ),
+    st.builds(
+        ExitCloseAboveSma,
+        rule=st.just("close_above_sma"),
         sma=st.sampled_from([10, 20, 50]),
         sell_fraction=FRACTIONS,
     ),
@@ -262,7 +269,13 @@ def test_fraction_arithmetic_closes_with_last_exit(original: int, fractions: lis
 
 def expected_phase(rule: object, phase: str) -> bool:
     live = (ExitHardStop, ExitBreakeven, ExitPartialAtR, ExitPctGainTarget)
-    close = (ExitPartialAfterDays, ExitCloseBelowSma, ExitTrailingSwingLow, ExitTimeStop)
+    close = (
+        ExitPartialAfterDays,
+        ExitCloseBelowSma,
+        ExitCloseAboveSma,
+        ExitTrailingSwingLow,
+        ExitTimeStop,
+    )
     if phase == "live":
         return isinstance(rule, live)
     if phase == "close":
@@ -289,6 +302,8 @@ def expected_sells(rule: object, pos: PositionState, view: ExitView) -> bool:
         return view.days_held >= rule.days and (not rule.only_if_profit or gain > 0)
     if isinstance(rule, ExitCloseBelowSma):
         return price < view.sma[rule.sma]
+    if isinstance(rule, ExitCloseAboveSma):
+        return price > view.sma[rule.sma]
     if isinstance(rule, ExitTrailingSwingLow):
         return price < view.swing_low[rule.lookback_days]
     if isinstance(rule, ExitTimeStop):

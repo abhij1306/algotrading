@@ -25,6 +25,9 @@ with the broker.
   - **S4 `trend-pullback-ema`** (Research): trend pullback. Relative-strength leaders above a
     rising 50- and 200-day average that pull back on light volume to a rising 10- or 20-day EMA,
     bought when price takes out the pullback day's high, stop under the pullback low.
+  - **S5 `rsi2-uptrend-reversion`** (Research): Connors-style mean reversion. Stocks above their
+    200-day average whose 2-day RSI drops below 10, bought on the next session's bounce, sold on
+    a close above the 5-day average or after 10 sessions, with a wide ATR stop.
 - **You stay in charge.** Every bot runs in one of three modes, switched per bot:
   - `shadow` (paper trading, virtual fills, never at the broker)
   - `confirm` (a Telegram card per entry; you approve each one)

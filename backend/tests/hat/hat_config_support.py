@@ -190,7 +190,7 @@ EXITS = st.one_of(  # beside the one enabled hard_stop every config has
     ),
     st.fixed_dictionaries(
         {
-            "rule": st.just("close_below_sma"),
+            "rule": st.sampled_from(["close_below_sma", "close_above_sma"]),
             "sma": SMAS,
             "sell_fraction": FRACTION,
             "when": st.sampled_from(["15:25", "09:30", "00:00"]),
