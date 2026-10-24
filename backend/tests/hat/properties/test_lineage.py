@@ -18,13 +18,18 @@ from app.hat.data.lineage import (
     AMBIGUOUS,
     FACE_VALUE_CHANGE,
     ISIN_REISSUE,
+    LINK,
     LINKED,
     LONG_GAP,
+    OWNER_DISPLACED,
+    OWNER_LINK,
+    OWNER_UNLINK,
     PREV_CLOSE_MISMATCH,
     PRICE_JUMP,
     RESTRUCTURED,
     REVIEW,
     SYMBOL_CHANGE,
+    UNLINK,
     Action,
     Bar,
     Decision,
@@ -32,6 +37,7 @@ from app.hat.data.lineage import (
     Span,
     SymbolChange,
     adjustment,
+    apply_overrides,
     candidates,
     chain_factors,
     chains,
@@ -338,6 +344,28 @@ def test_a_chain_never_forks() -> None:
         chains([("a", "b"), ("a", "c")])
     with pytest.raises(LineageError):
         chains([("a", "c"), ("b", "c")])
+
+
+def test_owner_overrides_win_over_the_rules() -> None:
+    day = date(2020, 1, 1)
+    rules = [
+        Decision("a", "b", day, REVIEW, PRICE_JUMP, {"old_isin": "A"}),
+        Decision("c", "d", day, LINKED, FACE_VALUE_CHANGE),
+        Decision("x", "b", day, LINKED, ISIN_REISSUE),  # shares b with the owner's link
+        Decision("e", "f", day, LINKED, ISIN_REISSUE),
+    ]
+    out = apply_overrides(rules, {("a", "b"): LINK, ("c", "d"): UNLINK, ("q", "r"): LINK})
+    assert [(d.old_id, d.status, d.reason, d.evidence.get("rules")) for d in out] == [
+        ("a", LINKED, OWNER_LINK, "review:price_jump"),
+        ("c", REVIEW, OWNER_UNLINK, "linked:face_value_change"),
+        ("x", REVIEW, OWNER_DISPLACED, "linked:isin_reissue"),
+        ("e", LINKED, ISIN_REISSUE, None),
+    ]
+    assert out[0].evidence["old_isin"] == "A"
+    chains((d.old_id, d.new_id) for d in out if d.status == LINKED)  # no fork
+    # applied again (to the stored rows), the rules' verdict is the first one's
+    again = apply_overrides(out, {("a", "b"): UNLINK})
+    assert (again[0].reason, again[0].evidence["rules"]) == (OWNER_UNLINK, "review:price_jump")
 
 
 def test_nse_lists_parse() -> None:

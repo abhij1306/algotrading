@@ -4,12 +4,24 @@ HAT reads no legacy table. A bhavcopy row names its security by ISIN and series 
 symbol it traded under that day, so a symbol that changes for one (ISIN, series) between two days
 in `bars_daily_raw` is a rename, effective on the first day of the new symbol. The records go to
 `instruments.seed_symbol_history` (as the `renames` source of `reference.weekly`), which places
-them in `hat_instrument_symbol_history`.
+them in `hat_instrument_symbol_history`, and to the history build (D1). The instrument master
+places a rename on the day it first lists the new symbol; the bars give the day it took effect.
+
+    python -m app.hat.data.renames
+
+seeds the symbol history from the bars under `HAT_DATA_ROOT` now, in one transaction, and prints
+how many renames it read and how many matched no instrument.
 """
 
 from __future__ import annotations
 
-from .instruments import SymbolRename
+import json
+import sys
+from collections.abc import Sequence
+
+from sqlalchemy import select
+
+from .instruments import SymbolRename, seed_symbol_history
 from .store import DataStore
 
 _RENAMES_SQL = """
@@ -35,3 +47,30 @@ def renames_from_bars(store: DataStore) -> list[SymbolRename]:
     finally:
         con.close()
     return [SymbolRename(old, new, day, isin) for isin, old, new, day in rows]
+
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
+    if argv:
+        sys.stderr.write("usage: python -m app.hat.data.renames\n")
+        return 2
+    from ..settings import operator_settings
+
+    settings = operator_settings()  # before the database module, which reads .env too
+    from app.database import SessionLocal
+
+    from ..models import HatMarket
+
+    renames = renames_from_bars(DataStore(settings.data_root, memory_limit=settings.duckdb_memory))
+    with SessionLocal() as session:
+        market_id = session.scalar(select(HatMarket.id).where(HatMarket.code == "NSE"))
+        if market_id is None:
+            sys.stderr.write("refused: no_market\n")
+            return 2
+        unmatched = seed_symbol_history(session, market_id, renames)
+        session.commit()
+    sys.stdout.write(json.dumps({"renames": len(renames), "unmatched": unmatched}) + "\n")
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main(sys.argv[1:]))

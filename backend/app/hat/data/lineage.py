@@ -30,6 +30,10 @@ one.
 - No restructuring: no stored action of either side near the change names a demerger,
   amalgamation, merger, scheme of arrangement or capital reduction.
 
+The owner can overrule the rules on a found succession (`link` / `unlink OLD NEW`, D1): the
+verdict is kept in `hat_lineage_override` and every build applies it over the rules'
+(`apply_overrides`), so it holds across nightly rebuilds.
+
 A demerger is never a succession: the parent keeps its ISIN (TATAMOTORS became TMPV on
 INE155A01022) and the resulting company is a new listing with its own history (TMCV,
 INE1TAE01010). A merged-away company's history just ends (HDFC Ltd, July 2023). The parent's
@@ -52,7 +56,7 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -61,8 +65,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..errors import HatError
-from ..models import HatCorporateAction, HatInstrument, HatIsinLineage
+from ..errors import HatConfigError, HatError
+from ..events import record
+from ..models import HatCorporateAction, HatInstrument, HatIsinLineage, HatLineageOverride
 from .calendar import recorded_history, session_calendar
 from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_SPLIT
 from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore
@@ -77,12 +82,14 @@ __all__ = [
     "Span",
     "SymbolChange",
     "adjustment",
+    "apply_overrides",
     "build_lineage",
     "candidates",
     "chain_factors",
     "chains",
     "decide",
     "decide_all",
+    "override_lineage",
     "parse_name_changes",
     "parse_symbol_changes",
     "stored_adjustment",
@@ -120,6 +127,12 @@ FACE_VALUE_CHANGE, SYMBOL_CHANGE, NAME_CHANGE, ISIN_REISSUE = (
 AMBIGUOUS, LONG_GAP, RESTRUCTURED = "ambiguous", "long_gap", "restructuring"
 FACTOR_CONFLICT, NO_PREV_CLOSE = "factor_conflict", "no_prev_close"
 PREV_CLOSE_MISMATCH, PRICE_JUMP = "prev_close_mismatch", "price_jump"
+# The owner's verdicts (`hat_lineage_override`) and the reasons they leave.
+LINK, UNLINK = "link", "unlink"
+OWNER_LINK, OWNER_UNLINK = "owner_link", "owner_unlink"
+OWNER_DISPLACED = "owner_displaced"  # a rules link that shares a side with an owner link
+EVENT_OVERRIDDEN = "lineage.overridden"
+NOTE_MAX = 500
 
 
 class LineageError(HatError):
@@ -499,6 +512,35 @@ def decide_all(
     ]
 
 
+def apply_overrides(
+    decisions: Iterable[Decision], overrides: Mapping[tuple[str, str], str]
+) -> list[Decision]:
+    """The decisions with the owner's verdicts, keyed (old id, new id), over the rules': a pair
+    the owner linked is linked (`owner_link`), one unlinked is a review case (`owner_unlink`),
+    and a rules link sharing a side with an owner link becomes a review case
+    (`owner_displaced`), so a chain never forks. The rules' own verdict stays in the evidence
+    (`rules`). A verdict on a pair no decision holds changes nothing."""
+    owned = [pair for pair, verdict in overrides.items() if verdict == LINK]
+    olds, news = {old for old, _ in owned}, {new for _, new in owned}
+    out = []
+    for d in decisions:
+        verdict = overrides.get((d.old_id, d.new_id))
+        if verdict == LINK:
+            status, reason = LINKED, OWNER_LINK
+        elif verdict == UNLINK:
+            status, reason = REVIEW, OWNER_UNLINK
+        elif d.status == LINKED and (d.old_id in olds or d.new_id in news):
+            status, reason = REVIEW, OWNER_DISPLACED
+        else:
+            out.append(d)
+            continue
+        rules = d.evidence.get("rules", f"{d.status}:{d.reason}")
+        out.append(
+            replace(d, status=status, reason=reason, evidence={**d.evidence, "rules": rules})
+        )
+    return out
+
+
 def chains(links: Iterable[tuple[str, str]]) -> dict[str, tuple[str, int]]:
     """Each linked instrument -> (its chain's current id, its distance from it); the current
     one maps to itself at 0. Raises on a fork or a cycle."""
@@ -571,6 +613,13 @@ def stored_links(session: Session) -> list[tuple[str, str]]:
         )
     )
     return [(str(old), str(new)) for old, new in rows]
+
+
+def stored_overrides(session: Session) -> dict[tuple[str, str], str]:
+    return {
+        (str(r.old_instrument_id), str(r.new_instrument_id)): r.verdict
+        for r in session.scalars(select(HatLineageOverride))
+    }
 
 
 def stored_adjustment(session: Session) -> Adjustment:
@@ -719,7 +768,7 @@ def build_lineage(
     by_instrument: dict[str, list[Action]] = defaultdict(list)
     for action in stored_actions(session):
         by_instrument[action.instrument_id].append(action)
-    decisions = decide_all(found, by_instrument, names)
+    decisions = apply_overrides(decide_all(found, by_instrument, names), stored_overrides(session))
     for d in decisions:
         report.reasons[f"{d.status}:{d.reason}"] = (
             report.reasons.get(f"{d.status}:{d.reason}", 0) + 1
@@ -729,6 +778,83 @@ def build_lineage(
     chains((d.old_id, d.new_id) for d in decisions if d.status == LINKED)  # never a fork
     save_decisions(session, decisions, report)
     return report
+
+
+def override_lineage(
+    session: Session,
+    old_isin: str,
+    new_isin: str,
+    verdict: str,
+    *,
+    note: str,
+    owner: tuple[int, uuid.UUID, datetime],
+) -> dict[str, Any]:
+    """Store the owner's `link` or `unlink` of a found succession (old ISIN -> new ISIN), apply
+    it to the stored verdicts at once (`apply_overrides`) and journal `lineage.overridden`
+    (actor user, via cli), in the caller's transaction. `owner` is (chat id, user id, now).
+    Refused, writing nothing: a bad verdict or note (`lineage_bad_override`), an ISIN with no
+    instrument (`lineage_unknown_isin`), a pair no build found (`lineage_not_a_succession`) and
+    a link that would fork a chain another owner link holds (`lineage_fork`). A rules link it
+    displaces comes back at the next build once the owner's link is undone."""
+    if verdict not in (LINK, UNLINK) or not note.strip() or len(note) > NOTE_MAX:
+        raise LineageError("lineage_bad_override")
+    ids = {
+        i.isin: i.id
+        for i in session.scalars(
+            select(HatInstrument).where(HatInstrument.isin.in_((old_isin, new_isin)))
+        )
+    }
+    if old_isin not in ids or new_isin not in ids:
+        raise LineageError("lineage_unknown_isin")
+    pair = (str(ids[old_isin]), str(ids[new_isin]))
+    rows = {
+        (str(r.old_instrument_id), str(r.new_instrument_id)): r
+        for r in session.scalars(select(HatIsinLineage))
+    }
+    if pair not in rows:
+        raise LineageError("lineage_not_a_succession")
+    before = f"{rows[pair].status}:{rows[pair].reason}"
+    stored = [
+        Decision(old, new, r.effective_date, r.status, r.reason, dict(r.evidence))
+        for (old, new), r in rows.items()
+    ]
+    decisions = apply_overrides(stored, {**stored_overrides(session), pair: verdict})
+    chains((d.old_id, d.new_id) for d in decisions if d.status == LINKED)  # never a fork
+    chat_id, user_id, now = owner
+    row = session.scalar(
+        select(HatLineageOverride).where(
+            HatLineageOverride.old_instrument_id == ids[old_isin],
+            HatLineageOverride.new_instrument_id == ids[new_isin],
+        )
+    )
+    if row is None:
+        row = HatLineageOverride(old_instrument_id=ids[old_isin], new_instrument_id=ids[new_isin])
+        session.add(row)
+    row.verdict, row.note, row.decided_at = verdict, note.strip(), now
+    report = BuildReport()
+    save_decisions(session, decisions, report)
+    payload = {
+        "chat_id": chat_id,
+        "via": "cli",
+        "old_isin": old_isin,
+        "new_isin": new_isin,
+        "verdict": verdict,
+        "before": before,
+        "note": note.strip(),
+    }
+    record(
+        session,
+        aggregate_type="instrument",
+        aggregate_id=ids[old_isin],
+        event_type=EVENT_OVERRIDDEN,
+        actor="user",
+        payload=payload,
+        user_id=user_id,
+        occurred_at=now,
+    )
+    session.flush()
+    changed = report.updated
+    return {**{k: v for k, v in payload.items() if k != "chat_id"}, "rows_changed": changed}
 
 
 TextSource = Callable[[], str]
@@ -940,10 +1066,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     """python -m app.hat.data.lineage build [--symbol-changes CSV] [--name-changes CSV]
     python -m app.hat.data.lineage report [--since YYYY-MM-DD] [--limit N]
     python -m app.hat.data.lineage show SYMBOL [SYMBOL ...]
+    python -m app.hat.data.lineage link|unlink OLD_ISIN NEW_ISIN --note TEXT
 
     `build` finds and decides every ISIN succession in the bars under `HAT_DATA_ROOT` and stores
     the verdicts (one transaction; run again, it changes nothing). Without a CSV it downloads
-    NSE's list. `report` prints the review list, `show` the chains of some symbols. After a
+    NSE's list. `report` prints the review list, `show` the chains of some symbols. `link` and
+    `unlink` are the owner's verdict on a succession the build found (`override_lineage`; it
+    needs `HAT_TELEGRAM_CHAT_ID`, the owner's chat id its event carries). After a
     build that changed a link, the next features run rebuilds every date (its inputs digest
     covers the lineage); `python -m app.hat.data.features --full` does it at once."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.lineage")
@@ -956,6 +1085,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     report.add_argument("--limit", type=int, default=50)
     show = sub.add_parser("show")
     show.add_argument("symbols", nargs="+")
+    for verdict in (LINK, UNLINK):
+        override = sub.add_parser(verdict)
+        override.add_argument("old_isin")
+        override.add_argument("new_isin")
+        override.add_argument("--note", required=True)
     args = parser.parse_args(argv)
     from ..settings import operator_settings
 
@@ -971,6 +1105,23 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             result = build_lineage(session, store, changes, names)
             session.commit()
             write(json.dumps(result.__dict__, sort_keys=True) + "\n")
+        elif args.command in (LINK, UNLINK):
+            from ..telegram.config import owner_chat_id
+            from ..time import utc_now
+
+            try:
+                owner = (owner_chat_id(), settings.user_id, utc_now())
+                result = override_lineage(
+                    session, args.old_isin, args.new_isin, args.command, note=args.note, owner=owner
+                )
+            except HatConfigError:
+                sys.stderr.write("refused: no_owner_chat\n")
+                return 2
+            except LineageError as exc:
+                sys.stderr.write(f"refused: {exc.code}\n")
+                return 2
+            session.commit()
+            write(json.dumps(result, sort_keys=True) + "\n")
         elif args.command == "report":
             review_report(session, store, args.since, args.limit, lambda s: write(s + "\n"))
         else:

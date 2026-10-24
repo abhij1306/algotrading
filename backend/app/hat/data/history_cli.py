@@ -84,8 +84,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
     from . import calendar as hat_calendar
     from .bhavcopy import http_fetcher
-    from .instruments import resolve_symbol
+    from .instruments import resolve_symbol, seed_symbol_history
     from .mcp_client import client_from_env
+    from .renames import renames_from_bars
 
     logging.basicConfig(level=logging.INFO)
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
@@ -120,6 +121,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         with SessionLocal() as session:
             found = resolve_symbol(session, market_id, symbol, on)
             return None if found is None else found.id
+
+    def symbols() -> int:
+        # the bars' own rename dates; the master would place a rename on the day it saw it
+        with SessionLocal() as session:
+            unmatched = seed_symbol_history(session, market_id, renames_from_bars(store))
+            session.commit()
+            return unmatched
 
     def sink(records: Sequence[ca.ActionRecord]) -> ca.LoadReport:
         with SessionLocal() as session:
@@ -158,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             BuildSteps(
                 pacer=pacer,
+                symbols=symbols,
                 actions=hooks,
                 index_source=index_source,
                 index_absent=(lambda name: archive.absent[name.upper()]) if archive else None,
@@ -254,6 +263,8 @@ def _summary(report: BuildReport, stopped: str | None = None) -> str:
         f"unresolved securities {len(report.unresolved)}, problem days {len(report.problems)}",
         f"left out {dict(report.left_out)}",
     ]
+    if report.renames_unmatched is not None:
+        lines.append(f"symbol renames no instrument took: {report.renames_unmatched}")
     if report.actions is not None:
         lines.append(
             f"actions: created {report.actions.created}, unchanged {report.actions.unchanged}, "

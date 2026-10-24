@@ -122,7 +122,14 @@ def _place_symbol(
         covering.symbol = old_symbol  # the legacy record says what it was before
     if covering.symbol == new_symbol:
         return False
-    session.add(_new_interval(instrument_id, new_symbol, effective, covering.valid_to))
+    end = covering.valid_to
+    following = next((r for r in rows if end is not None and r.valid_from == end), None)
+    if following is not None and following.symbol == new_symbol:
+        # the new symbol already holds from `end` (the master saw the rename only on that day):
+        # it becomes one interval from `effective`
+        end = following.valid_to
+        session.delete(following)
+    session.add(_new_interval(instrument_id, new_symbol, effective, end))
     covering.valid_to = effective
     return True
 

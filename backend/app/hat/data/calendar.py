@@ -116,8 +116,9 @@ def parse_recorded_history(text: str) -> list[CalendarDay]:
     """The recorded past years (`{"holidays": {year: [ISO dates]}, "sessions": [{"date",
     "note"}]}`): every listed holiday closed, every special session (Budget Saturday, Muhurat)
     a trading day without its own hours (none were recorded, so a reader takes the market's
-    default session). A date that is both is a session. Raises on an unreadable file:
-    it is checked in, so a bad one is a bug, not a bad answer."""
+    default session). A date that is both is a session. A session may fall in a year with no
+    recorded holidays: one NSE's live holiday list leaves out (the 2026 Sunday Budget session).
+    Raises on an unreadable file: it is checked in, so a bad one is a bug, not a bad answer."""
     payload = json.loads(text)
     days = {
         date.fromisoformat(raw): CalendarDay(date.fromisoformat(raw), False)
@@ -137,17 +138,33 @@ def recorded_history() -> list[CalendarDay]:
     )
 
 
+def with_recorded_sessions(days: Iterable[CalendarDay]) -> list[CalendarDay]:
+    """`days` (the live holiday list) plus every recorded special session of the years it covers
+    that it does not name itself: NSE's list leaves out a session announced by circular (the
+    Sunday Budget session of 2026-02-01), and without its row the build never fetches the day."""
+    listed = {d.day: d for d in days}
+    years = {d.year for d in listed}
+    for extra in recorded_history():
+        if extra.is_trading and extra.day.year in years and extra.day not in listed:
+            listed[extra.day] = extra
+    return sorted(listed.values(), key=lambda d: d.day)
+
+
 def store_recorded_history(
     session: Session, market: HatMarket, skip_years: Collection[int] = ()
 ) -> int:
     """Store the recorded past years with a row for every other weekday (`with_weekdays`), one
     full snapshot per year so a corrected file replaces what an earlier one stored. A year in
-    `skip_years` (one the live holiday list covers) is left to that list. Returns rows changed."""
+    `skip_years` (one the live holiday list covers) is left to that list. A recorded session of
+    a year with no recorded holidays is stored on its own row, no snapshot (its weekdays are the
+    live list's). Returns rows changed."""
+    recorded = [d for d in recorded_history() if d.day.year not in skip_years]
+    holiday_years = {d.day.year for d in recorded if not d.is_trading}
     by_year: dict[int, list[CalendarDay]] = {}
-    for day in recorded_history():
-        if day.day.year not in skip_years:
+    for day in recorded:
+        if day.day.year in holiday_years:
             by_year.setdefault(day.day.year, []).append(day)
-    return sum(
+    changed = sum(
         upsert_calendar(
             session,
             market.id,
@@ -156,6 +173,8 @@ def store_recorded_history(
         )
         for days in by_year.values()
     )
+    sessions_only = [d for d in recorded if d.day.year not in holiday_years]
+    return changed + upsert_calendar(session, market.id, sessions_only)
 
 
 def _to_instant(day: date, wall: time) -> datetime:

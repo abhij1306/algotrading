@@ -198,9 +198,18 @@ it will not link is alerted once (`lineage.review`). From `backend/`:
   not linked (and why), action copies that disagree within a chain, and the unexplained jumps of
   the adjusted series (a missing or wrong split/bonus factor, a demerger's parent).
 - `python -m app.hat.data.lineage show SYMBOL...`: the chains and jumps of some symbols.
+- `python -m app.hat.data.lineage link|unlink OLD_ISIN NEW_ISIN --note TEXT`: the owner's verdict
+  on a succession a build found (`hat_lineage_override`, journalled `lineage.overridden`); every
+  later build applies it over the rules. A rules link that shares a side with an owner link
+  becomes a review case (`owner_displaced`).
 
 A review case is fixed at its source (store the missing factor in `hat_corporate_action`); the
-next build links it if the rules then hold. A build that changes a link changes the features'
+next build links it if the rules then hold. A wrong stored factor (a `corporate_action.conflict`
+alert, a misparsed bonus) is replaced or deleted with
+`python -m app.hat.admin correct-action --isin ISIN --ex-date D --type T (--factor F [--as T2] |
+--delete) --note TEXT` (journalled `corporate_action.corrected`; a nightly load never rewrites a
+stored key). `python -m app.hat.data.renames` seeds the symbol history from the renames in the
+bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs digest, so the next `features` run rebuilds every date (`features --full` does it now).
 
 ### Restart recovery: reconcile, then resume

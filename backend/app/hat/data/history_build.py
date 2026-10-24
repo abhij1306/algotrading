@@ -117,6 +117,7 @@ class BuildReport:
     actions: LoadReport | None = None
     action_symbols_failed: int = 0
     actions_unparsed: list[str] = field(default_factory=list)  # archive texts, HAT-DATA-055
+    renames_unmatched: int | None = None  # renames in the bars no instrument took (None: not run)
     index: IndexLoadReport | None = None
     index_missing: dict[str, list[date]] = field(default_factory=dict)  # no row, unexplained
     index_absent: dict[str, list[date]] = field(default_factory=dict)  # the source has none
@@ -151,11 +152,13 @@ class BuildPlan:
 @dataclass(frozen=True)
 class BuildSteps:
     """The pacer of the NSE archive requests (by default the downloader's one a second) and the
-    optional steps after the bars: corporate actions, index history (with each index's first
-    expected day, by default its first archive day, and the days its source is known to lack)
-    and validation; a step left None is skipped."""
+    optional steps after the bars: the symbol history from the renames in the bars (before the
+    actions: the archive resolves a symbol as of its ex-date), corporate actions, index history
+    (with each index's first expected day, by default its first archive day, and the days its
+    source is known to lack) and validation; a step left None is skipped."""
 
     pacer: Pacer | None = None
+    symbols: Callable[[], int] | None = None  # returns the renames no instrument took
     actions: ActionHooks | None = None
     index_source: IndexSource | None = None
     index_starts: Mapping[str, date] = field(default_factory=lambda: dict(INDEX_STARTS))
@@ -201,6 +204,8 @@ def run_history_build(
     # every day asked for that is not an explained holiday should have rows: gaps show as missing
     trading_days = [d for d in days if d not in report.days.holidays]
     report.partitions = partition_report(store, DATASET_BARS, trading_days)
+    if steps.symbols is not None:
+        report.renames_unmatched = steps.symbols()
     if steps.actions is not None:
         records, failed, unparsed = steps.actions.loader()
         report.actions = steps.actions.sink(records)
