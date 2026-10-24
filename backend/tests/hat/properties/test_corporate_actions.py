@@ -31,6 +31,7 @@ from app.hat.data.store import (
     FACTOR_MAX,
     FACTOR_MIN,
     ActionFactor,
+    Adjustment,
     BarRow,
     DataStore,
     StoreError,
@@ -123,7 +124,7 @@ def test_adjusted_view_split_factor(
     with tempfile.TemporaryDirectory() as tmp:
         store = DataStore(Path(tmp))
         _write(store, {iid: dict.fromkeys(DAYS, (close, close, close, close, close, vol))})
-        con = store.connect([ActionFactor(iid, ex, factor)])
+        con = store.connect(Adjustment((ActionFactor(iid, ex, factor),)))
         rows = con.execute("SELECT date, close FROM bars_daily_adj ORDER BY date").fetchall()
         con.close()
     assert [c for d, c in rows if d < ex] == [close * factor] * sum(1 for d in DAYS if d < ex)
@@ -140,9 +141,9 @@ def test_adjusted_view_idempotent(world: tuple) -> None:
         store = DataStore(Path(tmp))
         _write(store, bars)
         sql = "SELECT * FROM bars_daily_adj ORDER BY instrument_id, date"
-        one = store.connect(actions).execute(sql).fetchall()
-        two = store.connect(actions).execute(sql).fetchall()
-        reordered = store.connect(list(reversed(actions))).execute(sql).fetchall()
+        one = store.connect(Adjustment(tuple(actions))).execute(sql).fetchall()
+        two = store.connect(Adjustment(tuple(actions))).execute(sql).fetchall()
+        reordered = store.connect(Adjustment(tuple(reversed(actions)))).execute(sql).fetchall()
     assert one == two
     assert one == reordered
 

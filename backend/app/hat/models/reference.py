@@ -25,6 +25,7 @@ __all__ = [
     "HatIndustry",
     "HatInstrument",
     "HatInstrumentSymbolHistory",
+    "HatIsinLineage",
     "HatMarket",
     "HatPriceBand",
     "HatTradingCalendar",
@@ -114,6 +115,47 @@ class HatCorporateAction(Base):
     adjustment_factor = Column(Ratio, nullable=False)
     raw_text = Column(Text, nullable=False)
     source = Column(Text, nullable=False)
+
+
+class HatIsinLineage(Base):
+    """One ISIN succession `data/lineage.py` found: the old ISIN's instrument, the new one's,
+    the new ISIN's first session and the verdict. `linked` rows make one price history of a
+    chain (at most one linked successor and predecessor per instrument); `review` rows are the
+    owner's review list and change nothing."""
+
+    __tablename__ = "hat_isin_lineage"
+    __table_args__ = (
+        UniqueConstraint("old_instrument_id", "new_instrument_id"),
+        CheckConstraint("status IN ('linked', 'review')", name="ck_hat_isin_lineage_status"),
+        CheckConstraint("old_instrument_id <> new_instrument_id", name="ck_hat_isin_lineage_pair"),
+    )
+
+    id = uuid_pk()
+    old_instrument_id = fk(INSTRUMENT_ID)
+    new_instrument_id = fk(INSTRUMENT_ID)
+    effective_date = Column(Date, nullable=False)
+    status = Column(Text, nullable=False)
+    reason = Column(Text, nullable=False)
+    evidence = Column(JsonB, nullable=False)
+    decided_at = Column(Timestamptz, nullable=False, default=now_utc)
+
+
+# A chain never forks: one linked successor per instrument and one linked predecessor.
+_LINKED = HatIsinLineage.status == "linked"
+Index(
+    "hat_isin_lineage_linked_old",
+    HatIsinLineage.old_instrument_id,
+    unique=True,
+    postgresql_where=_LINKED,
+    sqlite_where=_LINKED,
+)
+Index(
+    "hat_isin_lineage_linked_new",
+    HatIsinLineage.new_instrument_id,
+    unique=True,
+    postgresql_where=_LINKED,
+    sqlite_where=_LINKED,
+)
 
 
 class HatTradingCalendar(Base):

@@ -33,8 +33,9 @@ from ..clock import Clock
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
-from ..data.corporate_actions import lookup_actions, store_actions, stored_factors
+from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.features import features_job
+from ..data.lineage import refresh_lineage, stored_adjustment
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY, excluded_for, gate_body
 from ..data.quarantine import open_quarantines
@@ -46,7 +47,7 @@ from ..data.reference_jobs import (
     reference_weekly,
 )
 from ..data.renames import renames_from_bars
-from ..data.store import ActionFactor, DataStore
+from ..data.store import Adjustment, DataStore
 from ..data.symbols import symbol_master
 from ..engine.close_gap import record_close_gaps
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
@@ -133,6 +134,10 @@ PARTITIONS_AT = time(0, 30)
 PURGE_AT = time(1, 0)
 INGEST_RETRY = timedelta(minutes=10)
 RESCALE_RETRY = timedelta(minutes=5)  # three tries before the 09:00 pre-open
+# The ISIN lineage refresh failed (the stored one stands), or found a succession it would not
+# link: the owner reads `python -m app.hat.data.lineage report`.
+ALERT_LINEAGE_UNCHECKED = "lineage.unchecked"
+ALERT_LINEAGE_REVIEW = "lineage.review"
 
 
 @dataclass(frozen=True)
@@ -144,6 +149,8 @@ class TextSources:
     price_bands: Callable[[date], TextSource]
     industry_list: TextSource | None = None
     circuit_limits: CircuitSource | None = None
+    symbol_changes: TextSource | None = None  # NSE symbolchange.csv: the ISIN lineage
+    name_changes: TextSource | None = None
 
 
 @dataclass
@@ -288,11 +295,39 @@ class Nightly:
             self._quarantine_actions()
         except Exception:
             logger.exception("quarantine corporate-action lookup failed")
+        self._refresh_lineage(day)
         with self.deps.session_factory() as session:
-            factors = stored_factors(session)
-        with self.deps.store.connect(factors):
-            logger.info("adjusted view loads with %d factors", len(factors))
-        return JobResult(rows=len(factors))
+            adjustment = stored_adjustment(session)
+        with self.deps.store.connect(adjustment):
+            logger.info(
+                "adjusted view loads with %d factors and %d linked ISINs",
+                len(adjustment.factors),
+                len(adjustment.lineage),
+            )
+        return JobResult(rows=len(adjustment.factors))
+
+    def _refresh_lineage(self, day: date) -> None:
+        """The ISIN lineage from tonight's bars and NSE's symbol-change list (PR 74), before the
+        features read the adjusted view. A failure keeps the stored lineage and is alerted; a
+        succession newly on the review list is alerted once (`python -m app.hat.data.lineage
+        report` lists them)."""
+        sources = self.deps.sources
+        if sources.symbol_changes is None:
+            return
+        try:
+            report = refresh_lineage(
+                self.deps.session_factory,
+                self.deps.store,
+                sources.symbol_changes,
+                sources.name_changes,
+            )
+        except Exception:
+            logger.exception("isin lineage refresh failed; the stored lineage stands")
+            self.deps.notifier.alert(ALERT_LINEAGE_UNCHECKED, day, {})
+            return
+        logger.info("isin lineage: %d linked, %d for review", report.linked, report.review)
+        for pair in report.new_review:
+            self.deps.notifier.alert(ALERT_LINEAGE_REVIEW, day, {"isins": pair})
 
     def _next_session_actions(self, day: date) -> None:
         with self.deps.session_factory() as session:
@@ -349,11 +384,11 @@ class Nightly:
         return JobResult(rows=applied)
 
     def features(self, day: date) -> JobResult:
-        def actions() -> list[ActionFactor]:
+        def adjustment() -> Adjustment:
             with self.deps.session_factory() as session:
-                return stored_factors(session)
+                return stored_adjustment(session)
 
-        return features_job(self.deps.store, actions, through=day)()
+        return features_job(self.deps.store, adjustment, through=day)()
 
     def regime(self, day: date) -> JobResult:
         with self.deps.session_factory() as session:

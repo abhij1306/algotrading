@@ -67,6 +67,15 @@ here.
   IL windows trade beside EQ/BE). Databases from before are migrated by `data/isin_merge.py`.
   A position held across a series change keeps its exits (D210). BZ stays unmapped: only an active
   EQ or BE instrument is scanned or entered, and a held one moved to BZ is alerted `unmapped`.
+- **ISIN lineage (PR 74, owner 2026-10-24).** A new ISIN for the same shares (face-value split or
+  consolidation, reissue, symbol or name change) keeps its own instrument; `hat_isin_lineage`
+  links old -> new and the adjusted view reads the chain as one series under the current ISIN's
+  id, each corporate action applied once per chain. Link only on evidence: succession within 5
+  sessions, the same symbol or an NSE symbol-change record, NSE's first PREVCLOSE carrying the
+  old close (1%), the first open within 10% of the factor-adjusted old close, no session move over
+  25% unexplained by a stored factor in the 10 days each side, no restructuring text. Anything
+  else is a review case, never a link: demergers, mergers, schemes and relistings keep separate
+  histories, and a demerger parent stays unadjusted until its factor is stored.
 - **Storage (T5, T6, T10, T11).** Postgres is the system of record; price history is date-partitioned
   Parquet read through DuckDB; strategy configs are versioned JSONB with YAML import/export;
   indicators are own polars code on adjusted bars.

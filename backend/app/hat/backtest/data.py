@@ -30,9 +30,9 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.corporate_actions import stored_factors
 from ..data.features import STATE_FILE, inputs_digest
 from ..data.identity import series_changes
+from ..data.lineage import stored_adjustment
 from ..data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataStore
 from ..data.ticks import tick_for_date
 from ..engine.portfolio import regime
@@ -249,13 +249,25 @@ WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 """
 
 
-def _members(session: Session, universe_id: uuid.UUID) -> tuple[Interval, ...]:
+def _members(
+    session: Session, universe_id: uuid.UUID, lineage: Mapping[str, str]
+) -> tuple[Interval, ...]:
+    """The universe's membership intervals; a linked older ISIN's are its chain's, whose id its
+    bars carry in `bars_daily`."""
     rows = session.scalars(
         select(HatUniverseMember)
         .where(HatUniverseMember.universe_id == universe_id)
         .order_by(HatUniverseMember.instrument_id, HatUniverseMember.effective_from)
     ).all()
-    return tuple(Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows)
+    return tuple(
+        Interval(_chain_id(r.instrument_id, lineage), r.effective_from, r.effective_to)
+        for r in rows
+    )
+
+
+def _chain_id(instrument_id: uuid.UUID, lineage: Mapping[str, str]) -> uuid.UUID:
+    chain = lineage.get(str(instrument_id))
+    return instrument_id if chain is None else uuid.UUID(chain)
 
 
 def _industries(
@@ -380,14 +392,14 @@ def load_market(
     if first >= len(days):
         raise BacktestError("backtest_no_data")
     window = days[max(0, first - LOOKBACK_SESSIONS) :]
-    actions = stored_factors(session)
-    expected = inputs_digest(actions, None)
+    adjustment = stored_adjustment(session)
+    expected = inputs_digest(adjustment, None)
     features, breadth = _current_features(
         store, expected, days[max(0, first - 1) :], window if regime_inputs else []
     )
-    members = _members(session, universe_id)
+    members = _members(session, universe_id, adjustment.lineage)
     instruments = {m.instrument_id for m in members}
-    with store.connect(actions) as con:
+    with store.connect(adjustment) as con:
         bars = con.execute(_BARS_SQL, [window[0], end]).pl()
         traded = con.execute(_SERIES_SQL, [window[0], end]).fetchall()
         names = sorted({index, *((regime.INDEX_NAME, regime.VIX_NAME) if regime_inputs else ())})

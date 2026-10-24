@@ -19,8 +19,8 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.corporate_actions import stored_factors
 from ..data.instruments import current_band
+from ..data.lineage import stored_adjustment
 from ..data.store import (
     DATASET_BARS,
     DATASET_FEATURES,
@@ -113,7 +113,7 @@ def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> 
     if not window:
         bars = pl.DataFrame()
     else:
-        with store.connect(stored_factors(session)) as con:
+        with store.connect(stored_adjustment(session)) as con:
             bars = con.execute(_ADJ_SQL, [window[0], as_of]).pl()
     return ScanInputs(
         as_of=as_of,
@@ -170,7 +170,7 @@ class DailyData:
         window = sessions_before(store, trade_date, DAILY_SESSIONS)
         self._atr_days, self._swing_days = stop_lengths(configs)
         if window:
-            with store.connect(stored_factors(session)) as con:
+            with store.connect(stored_adjustment(session)) as con:
                 bars = con.execute(_ADJ_SQL, [window[0], window[-1]]).pl()
                 month_start = trade_date.replace(day=1)
                 raw = con.execute(
