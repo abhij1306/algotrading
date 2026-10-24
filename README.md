@@ -33,6 +33,8 @@ with the broker.
   official NSE sources.
   - Every split, bonus, rights issue and demerger is adjusted for, and ISIN changes are
     linked into one history per company, so a split or a demerger never looks like a crash.
+  - Dividends count: the signals read a total-return series, and the cash is credited on each
+    ex-date to the shares held into it, so a trade's P&L and R include the dividends it earned.
   - Delisted stocks stay in the history, so backtests carry no survivorship bias.
 - **Nothing is hidden.** Every state change is written to an append-only event log in the same
   transaction, and trade state can be replayed from it.

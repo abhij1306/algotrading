@@ -193,9 +193,11 @@ def _position_message(session: Session, event: HatEvent) -> Outbound | None:
         payload.get("price") if event.event_type != "stop.moved" else payload.get("to"), floats=True
     )
     qty = payload.get("qty")
+    dividends = None
     if event.event_type == "position.closed":
         result = session.get(HatTradeResult, position.id)
         r = Decimal(result.r_multiple) if result is not None else None
+        dividends = Decimal(result.dividends) if result is not None else None
     else:
         r = reads.r_so_far(Decimal(position.avg_entry), Decimal(position.initial_stop), price)
     view = render.PositionEventView(
@@ -203,6 +205,7 @@ def _position_message(session: Session, event: HatEvent) -> Outbound | None:
         qty=qty if isinstance(qty, int) and not isinstance(qty, bool) else None,
         price=price,
         r_so_far=r,
+        dividends=dividends,
     )
     return Outbound(
         event.event_type, position.id, render.position_event_text(event.event_type, view)

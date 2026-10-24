@@ -1,15 +1,18 @@
-"""The cash dividends a shadow (paper) position earns (CA4), by the backtest's rule (CA3,
+"""The cash dividends a position earns (CA4, R-DIV), by the backtest's rule (CA3,
 `backtest/loop.py`): a position holding shares at the start of an ex-date session earns its
 dividends that day, the shares then held times the stored cash per share (`dividend_credit`,
 to the paisa); a buy on the ex-date earns nothing, a sale on it does not lose the credit.
 
 The shares held at the start of a day are read from the position's own history, oldest first:
-its virtual fills (a buy adds, a sale takes away) and its `position.rescaled` events (a split or
-bonus sets the new share count). Nothing is stored: the credit is computed from the stored
-dividends each time, so an amount stored or corrected later counts at once, as it does in the
-next backtest. A shadow sleeve's equity is its nominal capital plus its realised P&L plus
-these credits (`daily/entries.py`), so paper and the backtest compare like for like. A real
-position earns nothing here: the broker credits its cash to the account's funds.
+its fills (a buy adds, a sale takes away) and its `position.rescaled` events (a split or bonus
+sets the new share count). A closed trade's dividends are part of its result in the backtest,
+paper and live alike (`positions.write_result`: its P&L and R include them, its `dividends`
+column shows them). A dividend is stored on its ex-date's night, after a trade that closed that
+day was written, and an amount can be corrected later, so `positions.restate_dividends` brings
+every closed trade up to the stored dividends each night. An open shadow position's credit is
+computed each time (`shadow_dividend_cash`): a shadow sleeve's equity is its nominal capital
+plus its realised P&L plus these credits (`daily/entries.py`), so paper and the backtest
+compare like for like. A real account's cash comes in the broker's funds.
 """
 
 from __future__ import annotations
@@ -30,7 +33,14 @@ from ..money import ZERO, dividend_credit
 from ..time import as_utc, trade_date_of
 from .rescale import EVENT_RESCALED
 
-__all__ = ["Step", "held_at_start", "position_dividends", "shadow_dividend_cash"]
+__all__ = [
+    "Step",
+    "held_at_start",
+    "position_dividends",
+    "shadow_dividend_cash",
+    "trade_dividends",
+    "trades_dividends",
+]
 
 BUY = "buy"
 SELL = "sell"
@@ -78,11 +88,14 @@ def position_dividends(
 
 
 def _steps(session: Session, ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[Step]]:
+    """Each position's share history: its own fills (virtual on a virtual position, real on a
+    real one) and its rescales."""
     out: dict[uuid.UUID, list[Step]] = defaultdict(list)
     for position_id, side, qty, at in session.execute(
         select(HatOrder.position_id, HatOrder.side, HatFill.qty, HatFill.filled_at)
         .join(HatFill, HatFill.order_id == HatOrder.id)
-        .where(HatOrder.position_id.in_(ids), HatFill.is_virtual.is_(True))
+        .join(HatPosition, HatPosition.id == HatOrder.position_id)
+        .where(HatOrder.position_id.in_(ids), HatFill.is_virtual == HatPosition.is_virtual)
     ):
         out[position_id].append(Step(as_utc(at), BUY if side == BUY else SELL, qty))
     for event in session.scalars(
@@ -116,22 +129,40 @@ def _dividends(
     return out
 
 
+def trades_dividends(
+    session: Session, positions: Sequence[tuple[uuid.UUID, uuid.UUID, date]]
+) -> dict[uuid.UUID, Decimal]:
+    """The dividends each of `positions` ((position, instrument, through)) earned on ex-dates
+    on or before its `through`; a position that earned none is left out."""
+    if not positions:
+        return {}
+    paid = _dividends(session, {instrument for _, instrument, _ in positions})
+    held = [p for p in positions if paid.get(p[1])]
+    if not held:
+        return {}
+    steps = _steps(session, [p[0] for p in held])
+    out = {
+        position_id: position_dividends(steps.get(position_id, []), paid[instrument], through)
+        for position_id, instrument, through in held
+    }
+    return {k: v for k, v in out.items() if v}
+
+
+def trade_dividends(session: Session, position: HatPosition, through: date) -> Decimal:
+    """The dividends the position earned on ex-dates on or before `through` (its exit day)."""
+    found = trades_dividends(session, [(position.id, position.instrument_id, through)])
+    return found.get(position.id, ZERO)
+
+
 def shadow_dividend_cash(session: Session, bot_id: uuid.UUID, through: date) -> Decimal:
-    """The dividends every virtual position of the bot earned on ex-dates on or before
-    `through`: those its shares were held into, open or closed since."""
+    """The dividends the bot's open virtual positions earned on ex-dates on or before `through`
+    (a closed one's are in its trade result's P&L)."""
     positions = session.execute(
         select(HatPosition.id, HatPosition.instrument_id).where(
-            HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(True)
+            HatPosition.bot_id == bot_id,
+            HatPosition.is_virtual.is_(True),
+            HatPosition.closed_at.is_(None),
         )
     ).all()
-    if not positions:
-        return ZERO
-    paid = _dividends(session, {p.instrument_id for p in positions})
-    held = [p for p in positions if paid.get(p.instrument_id)]
-    if not held:
-        return ZERO
-    steps = _steps(session, [p.id for p in held])
-    return sum(
-        (position_dividends(steps.get(p.id, []), paid[p.instrument_id], through) for p in held),
-        ZERO,
-    )
+    found = trades_dividends(session, [(p.id, p.instrument_id, through) for p in positions])
+    return sum(found.values(), ZERO)

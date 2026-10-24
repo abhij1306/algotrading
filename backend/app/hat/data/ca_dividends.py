@@ -31,8 +31,8 @@ rewritten. A key the owner vacated is never re-created. `--apply` writes in one 
 journals each row as `corporate_action.imported`; a repeat stores nothing.
 
 A stored amount moves the total-return series the signals read (`store.bars_daily`) and pays
-the cash a backtest position (and a shadow one, `engine/paper_dividends.py`) earns on the
-ex-date; the price basis (`bars_daily_cap`), the rescale and the GTT check read only the
+the cash a backtest position (and a live or shadow trade, `engine/trade_dividends.py`) earns on
+the ex-date; the price basis (`bars_daily_cap`), the rescale and the GTT check read only the
 price-changing rows. After `--apply`, run `lineage build` and `features --full`: the stored
 features' inputs digest covers the dividends.
 

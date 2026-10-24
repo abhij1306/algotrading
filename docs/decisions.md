@@ -96,8 +96,8 @@ here.
   check read. Stored level features (SMAs, 52-week high/low, ADTR) are point in time: on the
   scale of their own date, so a later dividend never changes a stored row (the features' inputs
   digest covers the dividends). A backtest fills on the price basis and credits `qty x D` to cash
-  on the ex-date to a position open at its start (the data has no pay date); the credit is not
-  part of a trade's R. A bonus of debentures or preference shares worth at least 1% of the
+  on the ex-date to a position open at its start (the data has no pay date); the credit is part
+  of the trade's P&L and R (R-DIV). A bonus of debentures or preference shares worth at least 1% of the
   previous close is such a dividend (value per share as the cash, ex-date confirmed by the bars
   or NSE's own date, source `ca_research`); below 1% it stays price-neutral (D1). Live orders
   are unchanged: Fyers cancels resting orders on such an ex-date as before.
@@ -110,8 +110,18 @@ here.
   The MCP lookup covers only held, watchlisted and flagged names, so it is not the amount
   source; its amount-less rows get the file's. The owner sets an amount with `correct-action
   --cash` (or a `cash` column in `correct-actions`), journalled, and no import rewrites it. A
-  shadow sleeve's equity counts the dividends its virtual positions earned, by the backtest's
-  rule (`engine/paper_dividends.py`); a trade's R stays price-only on both sides.
+  shadow sleeve's equity counts the dividends its open virtual positions earned, by the
+  backtest's rule (`engine/trade_dividends.py`); a closed one's are in its trade result (R-DIV).
+- **Trade results include dividends (R-DIV, owner 2026-10-24).** A closed trade's P&L and R
+  include the cash dividends its shares earned while held, by the backtest's rule (ex-date in
+  the holding period, shares held at the start of the ex-date session: none for a buy on the
+  ex-date, kept by a sale on it), in the backtest, paper and live alike (`positions.write_result`,
+  `engine/trade_dividends.py`); `hat_trade_result.dividends` holds that part, and the backtest's
+  `trades.parquet` and the Telegram close message show it. Fills, marks and orders stay on the
+  price basis and the signals on the total-return series, so a dividend is counted once in each.
+  A dividend is stored on its ex-date's night and an amount can be corrected later, so the
+  nightly `ca.adjust` restates every closed trade's dividends, P&L and R from the stored ones
+  (`positions.restate_dividends`); the exposure-ladder step taken at the close stands.
 - **Point-in-time adjustments (CA5, owner 2026-10-24).** The adjusted series stays the
   hindsight view; each stored action records when its factor became knowable (`known_on`,
   `known_basis`, `data/ca_known.py`): the ex-date for a split, bonus, TERP rights factor or

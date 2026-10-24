@@ -265,6 +265,9 @@ class HatTradeResult(Base):
     position_id = fk("hat_position.id", primary_key=True)
     realized_pnl = Column(Money, nullable=False)
     fees = Column(Money, nullable=False)
+    # The cash dividends the shares earned while held (R-DIV), already in `realized_pnl` and R;
+    # brought up to the stored dividends each night (`positions.restate_dividends`).
+    dividends = Column(Money, nullable=False)
     r_multiple = Column(Ratio, nullable=False)
     holding_days = Column(Integer, nullable=False)
     exit_reason = Column(Text, nullable=False)

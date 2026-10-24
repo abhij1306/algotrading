@@ -34,9 +34,10 @@ from ..models import (
 from ..risk import bots
 from ..risk.policy import effective_version
 from ..risk.policy_service import load_versions
-from ..time import trade_date_of
+from ..time import as_utc, trade_date_of
 from . import exits, journal, lifecycle, rescale
 from .strategy.config import ExitRule, parse_config
+from .trade_dividends import trade_dividends, trades_dividends
 
 __all__ = [
     "STOP_PURPOSES",
@@ -51,9 +52,11 @@ __all__ = [
     "position_state",
     "raise_stop",
     "record_sale",
+    "restate_dividends",
     "signal_and_bot",
     "sold_qty",
     "trade_of",
+    "trade_outcome",
     "trade_r",
     "write_result",
 ]
@@ -109,6 +112,15 @@ def trade_r(realized_pnl: Decimal, avg_entry: Decimal, initial_stop: Decimal, qt
     if risk <= 0:
         return _ZERO
     return (realized_pnl / risk).quantize(_RATIO_PLACES)
+
+
+def trade_outcome(
+    price_pnl: Decimal, dividends: Decimal, avg_entry: Decimal, initial_stop: Decimal, qty: int
+) -> tuple[Decimal, Decimal]:
+    """(realised P&L, R) of a closed trade (R-DIV): the fills' net cash after fees plus the
+    cash dividends its shares earned while held, over the initial risk (`trade_r`)."""
+    pnl = price_pnl + dividends
+    return pnl, trade_r(pnl, avg_entry, initial_stop, qty)
 
 
 def is_veto(signal: HatSignal, position: HatPosition) -> bool:
@@ -333,9 +345,11 @@ def write_result(
     """The one `hat_trade_result` of a closed position, in the closing transaction
     (HAT-SCH-057), and the ladder step for a real trade (a virtual one changes nothing).
 
-    MFE and MAE are measured on a virtual trade from `high` and `low`, the extremes since its
-    entry (none given counts as the entry price). A real trade has no record of its extremes
-    since entry, so its MFE and MAE are stored NULL, never a made-up zero."""
+    Its P&L and R include the cash dividends its shares earned on ex-dates up to the exit day
+    (`trade_outcome`, `trade_dividends`), stored apart in `dividends` too. MFE and MAE are
+    measured on a virtual trade from `high` and `low`, the extremes since its entry (none given
+    counts as the entry price). A real trade has no record of its extremes since entry, so its
+    MFE and MAE are stored NULL, never a made-up zero."""
     fills = session.execute(
         select(HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
         .join(HatOrder, HatOrder.id == HatFill.order_id)
@@ -351,13 +365,15 @@ def write_result(
     stop = Decimal(position.initial_stop)
     qty = entry_qty(session, signal, position)
     risk = entry - stop
-    r = trade_r(pnl, entry, stop, qty)
+    dividends = trade_dividends(session, position, trade_date_of(now))
+    pnl, r = trade_outcome(pnl, dividends, entry, stop, qty)
     mfe, mae = _excursions(entry, risk, high, low) if position.is_virtual else (None, None)
     session.add(
         HatTradeResult(
             position_id=position.id,
             realized_pnl=pnl,
             fees=fees,
+            dividends=dividends,
             r_multiple=r,
             holding_days=max(0, (trade_date_of(now) - signal.trade_date).days),
             exit_reason=reason,
@@ -368,6 +384,43 @@ def write_result(
     policy = effective_version(load_versions(session, _owner_of(session, signal)), now)
     if policy is not None:
         bots.record_closed_trade(session, signal.bot_id, r, position.is_virtual, policy.policy)
+
+
+def restate_dividends(session: Session) -> int:
+    """Bring every closed trade's dividends up to the stored ones (R-DIV): a dividend is stored
+    on its ex-date's night, after a trade closed that day was written, and an amount can be
+    stored or corrected later. A changed trade gets the new `dividends`, and its P&L and R move
+    by the difference (`trade_outcome`); its ladder step, taken at the close, stands. Returns how
+    many trades changed; nothing is committed."""
+    rows = session.execute(
+        select(HatPosition, HatTradeResult).join(
+            HatTradeResult, HatTradeResult.position_id == HatPosition.id
+        )
+    ).all()
+    earned = trades_dividends(
+        session,
+        [(p.id, p.instrument_id, trade_date_of(as_utc(p.closed_at))) for p, _ in rows],
+    )
+    changed = 0
+    for position, result in rows:
+        dividends = earned.get(position.id, _ZERO)
+        before = Decimal(result.dividends)
+        if dividends == before:
+            continue
+        signal = session.get(HatSignal, position.signal_id)
+        if signal is None:
+            raise TradeError("unknown_signal")
+        pnl, r = trade_outcome(
+            Decimal(result.realized_pnl) - before,
+            dividends,
+            Decimal(position.avg_entry),
+            Decimal(position.initial_stop),
+            entry_qty(session, signal, position),
+        )
+        result.dividends, result.realized_pnl, result.r_multiple = dividends, pnl, r
+        changed += 1
+    session.flush()
+    return changed
 
 
 def _excursions(

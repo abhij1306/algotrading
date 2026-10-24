@@ -320,6 +320,10 @@ CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
 """,
     # CA3a: a database created before the column (hat_live) gains it; create_all makes it anew
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS cash_amount numeric",
+    # R-DIV: a trade's dividends; the rows before the column start at 0 and the nightly
+    # `positions.restate_dividends` brings them up to the stored dividends
+    "ALTER TABLE hat_trade_result ADD COLUMN IF NOT EXISTS dividends numeric(18,4)"
+    " NOT NULL DEFAULT 0",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update

@@ -25,7 +25,7 @@ from ..clock import Clock
 from ..data.instruments import current_industry
 from ..engine import entries
 from ..engine.live_entry import route_by_mode
-from ..engine.paper_dividends import shadow_dividend_cash
+from ..engine.trade_dividends import shadow_dividend_cash
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
@@ -80,12 +80,13 @@ def _open_notional(session: Session, bot_id: uuid.UUID, virtual: bool) -> Decima
 
 class LiveContexts:
     """The `ContextSource` of live entries. Equity is the sleeve's allocation capital plus its
-    realised P&L in the bot's mode, and for a shadow sleeve the dividends its virtual positions
-    earned (`paper_dividends`, the backtest's rule: a real account's come in the broker's
-    funds); free cash is the broker's available funds for a real
-    entry and the sleeve's equity less its open virtual positions for a shadow one. A virtual
-    entry of a Shadow or Probation sleeve (weight 0) is sized from its nominal allocation
-    (`virtual_capital`, `virtual_risk_pct`, health 1; HAT-PORT-050); a real entry never is."""
+    realised P&L in the bot's mode (a closed trade's dividends included, R-DIV), and for a shadow
+    sleeve the dividends its open virtual positions earned (`trade_dividends`, the backtest's
+    rule: an open real position's come in the broker's funds); free cash is the broker's
+    available funds for a real entry and the sleeve's equity less its open virtual positions for
+    a shadow one. A virtual entry of a Shadow or Probation sleeve (weight 0) is sized from its
+    nominal allocation (`virtual_capital`, `virtual_risk_pct`, health 1; HAT-PORT-050); a real
+    entry never is."""
 
     def __init__(
         self,
