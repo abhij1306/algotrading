@@ -146,6 +146,8 @@ ALERT_LINEAGE_REVIEW = "lineage.review"
 # NSE's daily corporate-action file could not be read or stored: the night's dividends are not
 # in the total-return series until `ca_dividends --bc` imports that day's file (runbook).
 ALERT_DIVIDENDS_UNCHECKED = "dividend.unchecked"
+# the closed trades' dividends could not be restated: their P&L and R lag the stored dividends
+ALERT_TRADE_DIVIDENDS_STALE = "dividend.trades_stale"
 
 
 @dataclass(frozen=True)
@@ -349,8 +351,10 @@ class Nightly:
                 session.commit()
             logger.info("trade dividends restated: %d trades changed", restated)
         except Exception:
-            # The trades keep their figures until the next night restates them.
+            # The trades keep their figures until a later night restates them; alerted, so a
+            # repeated failure does not leave their P&L and R quietly stale.
             logger.exception("trade dividend restatement failed")
+            self.deps.notifier.alert(ALERT_TRADE_DIVIDENDS_STALE, day, {})
         try:
             self._quarantine_actions()
         except Exception:
