@@ -423,7 +423,9 @@ def _setup(
         return {"strategies": {s.name: str(s.id) for s in rows}}
     if command == "seed-bots":
         require_active_account(session, args.account, user_id)
-        bots = sleeve_service.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
+        bots = sleeve_service.seed_default_bots(
+            session, user_id=user_id, broker_account_id=args.account
+        )
         return {"bots": [str(b.id) for b in bots]}
     if command == "add-sleeve":
         require_active_account(session, args.account, user_id)

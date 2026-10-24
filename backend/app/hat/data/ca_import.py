@@ -66,9 +66,10 @@ from sqlalchemy.orm import Session
 
 from .. import events
 from ..errors import HatError
-from ..models import HatCorporateAction, HatInstrument, HatInstrumentSymbolHistory, HatIsinLineage
+from ..models import HatCorporateAction, HatInstrument, HatInstrumentSymbolHistory
 from ..money import exact
 from .ca_known import RESULTING_FIRST_CLOSE, UNKNOWN, Known, at_ex_open, settle_known
+from .chains import chain_members, stored_links
 from .corporate_actions import (
     PRICE_NEUTRAL_TYPES,
     TYPE_BONUS,
@@ -472,7 +473,7 @@ class Reference:
     by_isin: dict[str, str]
     by_symbol: dict[str, set[str]]  # current symbols
     history: dict[str, list[tuple[str, date, date | None]]]  # symbol -> (id, from, to)
-    chain: dict[str, set[str]]  # a linked instrument -> every member of its chain
+    chain: dict[str, frozenset[str]]  # a linked instrument -> every member of its chain
     successors: set[str]  # the newer side of a linked pair: not a fresh listing
 
     def ids(self, symbol: str, isin: str, day: date) -> set[str]:
@@ -501,23 +502,14 @@ def load_reference(session: Session) -> Reference:
     history: dict[str, list[tuple[str, date, date | None]]] = defaultdict(list)
     for h in session.scalars(select(HatInstrumentSymbolHistory)):
         history[h.symbol].append((str(h.instrument_id), h.valid_from, h.valid_to))
-    links = session.execute(
-        select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
-            HatIsinLineage.status == "linked"
-        )
-    ).all()
-    members: dict[str, set[str]] = {}
-    for old, new in links:
-        group = members.get(str(old), {str(old)}) | members.get(str(new), {str(new)})
-        for iid in group:
-            members[iid] = group
+    links = stored_links(session)
     return Reference(
         instruments,
         {i.isin: i.id for i in instruments.values()},
         dict(by_symbol),
         dict(history),
-        members,
-        {str(new) for _, new in links},
+        chain_members(links),
+        {new for _, new in links},
     )
 
 

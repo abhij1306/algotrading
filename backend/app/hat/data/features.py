@@ -978,7 +978,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     settings = operator_settings()  # before the database module, which reads .env too
     from app.database import HatSessionLocal
 
-    from .lineage import stored_adjustment
+    from .chains import stored_adjustment
 
     logging.basicConfig(level=logging.INFO)
     with HatSessionLocal() as session:

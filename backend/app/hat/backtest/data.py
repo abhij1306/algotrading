@@ -38,10 +38,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.ca_versions import digest as versions_digest
+from ..data.chains import stored_adjustment
 from ..data.demerger_notice import exit_day
 from ..data.features import features_current, inputs_digest
 from ..data.identity import series_changes
-from ..data.lineage import stored_adjustment, unexplained_jumps
+from ..data.lineage_review import unexplained_jumps
 from ..data.point_in_time import chain_pending
 from ..data.store import (
     DATASET_BARS,
@@ -132,7 +133,7 @@ class MarketData:
 
     `skipped`: the instrument-days with a bar within `JUMP_SKIP_SESSIONS` sessions (either side,
     the jump day included) of an open jump of the lineage review list
-    (`lineage.unexplained_jumps`: a price-changing action with no stored factor, such as a
+    (`lineage_review.unexplained_jumps`: a price-changing action with no stored factor, such as a
     demerger whose ratio the owner has not set; a reviewed one has its factor and is no longer a
     jump). Their bars stay in `bars` for the scan, but the day loop does not trade or mark on
     them (`MarketView.bar`), though their closes still set the tick and the indicators (they

@@ -6,13 +6,13 @@ face-value split or consolidation, at a reissue, sometimes with a symbol or name
 ISIN then holds a piece of one history: a fresh listing on one side, a dead end on the other.
 `hat_isin_lineage` links the old ISIN's instrument to the new one; the adjusted view reads every
 linked instrument under its chain's current id (`Adjustment.lineage`) and applies each corporate
-action once per chain (`chain_factors`: the copies the MCP lookup stored under each ISIN of the
-chain collapse into one). The instruments, their symbol histories, signals and positions are not
+action once per chain (`chains`: the copies the MCP lookup stored under each ISIN of the chain
+collapse into one). The instruments, their symbol histories, signals and positions are not
 touched: each ISIN keeps its own id and rows.
 
 A succession is linked only when all of these hold (`decide`), else it goes to the review list
-(`review` rows, `python -m app.hat.data.lineage report`): a false link is worse than a missing
-one.
+(`review` rows, `python -m app.hat.data.lineage report`, `lineage_review`): a false link is
+worse than a missing one.
 - Succession: the old ISIN's last session is followed by the new ISIN's first within
   `MAX_GAP_SESSIONS` (NSE suspends a few sessions around the change), the two never trade on
   the same day, and neither side has another candidate.
@@ -30,9 +30,9 @@ one.
 - No restructuring: no stored action of either side near the change is a demerger or names a
   demerger, amalgamation, merger, scheme of arrangement or capital reduction.
 
-The owner can overrule the rules on a found succession (`link` / `unlink OLD NEW`, D1): the
-verdict is kept in `hat_lineage_override` and every build applies it over the rules'
-(`apply_overrides`), so it holds across nightly rebuilds.
+The owner can overrule the rules on a found succession (`link` / `unlink OLD NEW`, D1,
+`lineage_override`): the verdict is kept in `hat_lineage_override` and every build applies it
+over the rules' (`apply_overrides`), so it holds across nightly rebuilds.
 
 Each row keeps `known_on`, the last bar the rules read (the new ISIN's head, its first
 `EDGE_DAYS` days), which the point-in-time report lists (CA5, `point_in_time`).
@@ -48,8 +48,6 @@ without one the drop shows in the report's unexplained jumps (`show TMPV` lists 
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
 import re
 import sys
@@ -59,48 +57,50 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..errors import HatConfigError, HatError
-from ..events import record
-from ..models import HatCorporateAction, HatInstrument, HatIsinLineage, HatLineageOverride
-from .ca_dividends import missing_amounts
+from ..errors import HatConfigError
+from ..models import HatInstrument, HatIsinLineage, HatLineageOverride
 from .calendar import recorded_history, session_calendar
-from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_DIVIDEND, TYPE_SPLIT, lock_reference_data
-from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore, DividendCash
+from .chains import (
+    LINKED,
+    REVIEW,
+    Action,
+    LineageError,
+    chain_members,
+    chains,
+    stored_actions,
+    stored_links,
+)
+from .corporate_actions import TYPE_SPLIT, lock_reference_data
+from .lineage_review import JUMP_KINDS, JUMP_TOL, review_report, show_chains
+from .nse_changes import (
+    NAME_CHANGES_URL,
+    SYMBOL_CHANGES_URL,
+    NameChange,
+    SymbolChange,
+    parse_name_changes,
+    parse_symbol_changes,
+    read_list,
+)
+from .store import DATASET_BARS, DataStore
 
 __all__ = [
-    "Action",
     "Bar",
     "Candidate",
     "Decision",
-    "LineageError",
-    "NameChange",
     "Span",
-    "SymbolChange",
-    "adjustment",
     "apply_overrides",
     "build_lineage",
     "candidates",
-    "chain_factors",
-    "chain_members",
-    "chains",
     "decide",
     "decide_all",
-    "override_lineage",
-    "parse_name_changes",
-    "parse_symbol_changes",
-    "stored_adjustment",
 ]
-
-SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
-NAME_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/namechange.csv"
 
 MAX_GAP_SESSIONS = 5  # sessions between the old ISIN's last day and the new one's first
 REVIEW_GAP_SESSIONS = 30  # a longer gap is not a succession at all; up to it, a review case
@@ -114,18 +114,8 @@ RESTRUCTURING = re.compile(
 )
 # A session move (open over the previous close) this far from 1 needs a factor: NSE's widest
 # price band is 20%, and the margin keeps band moves rounded to the tick off the list.
-JUMP_TOL = Decimal("0.25")
 EDGE_DAYS = 10  # the days each side of a change whose every session move is checked
-JUMP_MAX_DAYS = 14  # a relisting after a longer suspension may jump on its own
-# What a jump is, from its ISIN and raw prices (`jump_kind`, CA7): a rights entitlement (security
-# type `20`, the `-RE` symbols) and an ETF or fund unit (`INF`) trade on their own terms; a raw
-# move of at most two Rs 0.05 ticks passes `JUMP_TOL` only at a price of Rs 0.40 or less, where
-# one tick is the move (2,505 of the 2,835 jumps 2011-2026). `other` is what needs a reason.
-JUMP_RIGHTS, JUMP_ETF, JUMP_TICK, JUMP_OTHER = "rights_entitlement", "etf", "tick", "other"
-JUMP_KINDS = (JUMP_OTHER, JUMP_TICK, JUMP_RIGHTS, JUMP_ETF)
-TICK_MOVE = Decimal("0.10")
 
-LINKED, REVIEW = "linked", "review"
 VIA_SYMBOL, VIA_SYMBOL_CHANGE = "same_symbol", "symbol_change"
 # Why a succession is linked, most specific first.
 FACE_VALUE_CHANGE, SYMBOL_CHANGE, NAME_CHANGE, ISIN_REISSUE = (
@@ -142,18 +132,6 @@ PREV_CLOSE_MISMATCH, PRICE_JUMP = "prev_close_mismatch", "price_jump"
 LINK, UNLINK = "link", "unlink"
 OWNER_LINK, OWNER_UNLINK = "owner_link", "owner_unlink"
 OWNER_DISPLACED = "owner_displaced"  # a rules link that shares a side with an owner link
-EVENT_OVERRIDDEN = "lineage.overridden"
-NOTE_MAX = 500
-
-
-class LineageError(HatError):
-    """A lineage rule was broken; `code` is stable and carries no data."""
-
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
-        self.code = code
-
-
 # --- the pure rules -----------------------------------------------------------------------------
 
 
@@ -189,37 +167,6 @@ class Span:
 
 
 @dataclass(frozen=True)
-class SymbolChange:
-    old: str
-    new: str
-    effective: date
-
-
-@dataclass(frozen=True)
-class NameChange:
-    symbol: str
-    old_name: str
-    new_name: str
-    effective: date
-
-
-@dataclass(frozen=True)
-class Action:
-    """A stored corporate action, as the rules read it."""
-
-    instrument_id: str
-    ex_date: date
-    action_type: str
-    factor: Decimal
-    text: str = ""
-    demerger: bool = False
-
-    @property
-    def changes_price(self) -> bool:
-        return self.action_type not in PRICE_NEUTRAL_TYPES
-
-
-@dataclass(frozen=True)
 class Candidate:
     """A possible succession old -> new; `change` is the symbol-change record it came by."""
 
@@ -239,51 +186,6 @@ class Decision:
     reason: str
     evidence: dict[str, Any] = field(default_factory=dict)
     known_on: date | None = None  # the last bar the rules read: the new ISIN's head (CA5)
-
-
-def _nse_date(raw: str) -> date | None:
-    try:
-        return datetime.strptime(raw.strip(), "%d-%b-%Y").date()
-    except ValueError:
-        return None
-
-
-def _csv_rows(text: str) -> list[dict[str, str]]:
-    return [
-        {(k or "").strip().upper(): (v or "").strip() for k, v in row.items()}
-        for row in csv.DictReader(io.StringIO(text))
-    ]
-
-
-def parse_symbol_changes(text: str) -> list[SymbolChange]:
-    """NSE's `symbolchange.csv` (NAME OF THE COMPANY, OLD SYMBOL, NEW SYMBOL, EFFECTIVE DATE);
-    a row without both symbols or a readable date is skipped."""
-    out = []
-    for row in _csv_rows(text):
-        old, new = row.get("OLD SYMBOL", "").upper(), row.get("NEW SYMBOL", "").upper()
-        day = _nse_date(row.get("EFFECTIVE DATE", ""))
-        if old and new and old != new and day is not None:
-            out.append(SymbolChange(old, new, day))
-    return out
-
-
-def parse_name_changes(text: str) -> list[NameChange]:
-    """NSE's `namechange.csv` (SYMBOL, OLD NAME OF THE COMPANY, NEW NAME OF THE COMPANY,
-    EFFECTIVE DATE)."""
-    out = []
-    for row in _csv_rows(text):
-        symbol = row.get("SYMBOL", "").upper()
-        day = _nse_date(row.get("EFFECTIVE DATE", ""))
-        if symbol and day is not None:
-            out.append(
-                NameChange(
-                    symbol,
-                    row.get("OLD NAME OF THE COMPANY", ""),
-                    row.get("NEW NAME OF THE COMPANY", ""),
-                    day,
-                )
-            )
-    return out
 
 
 def sessions_between(sessions: Sequence[date], first: date, last: date) -> int:
@@ -508,16 +410,6 @@ def _near(actions: Iterable[Action], last: date, first: date) -> list[Action]:
     return [a for a in actions if last - SYMBOL_CHANGE_SLACK <= a.ex_date <= first]
 
 
-def chain_members(links: Iterable[tuple[str, str]]) -> dict[str, frozenset[str]]:
-    """Each instrument of a linked pair -> every instrument of its chain (itself included)."""
-    members: dict[str, frozenset[str]] = {}
-    for old, new in links:
-        group = members.get(old, frozenset({old})) | members.get(new, frozenset({new}))
-        for iid in group:
-            members[iid] = group
-    return members
-
-
 def decide_all(
     found: Sequence[Candidate],
     actions: Mapping[str, Sequence[Action]],
@@ -581,103 +473,7 @@ def apply_overrides(
     return out
 
 
-def chains(links: Iterable[tuple[str, str]]) -> dict[str, tuple[str, int]]:
-    """Each linked instrument -> (its chain's current id, its distance from it); the current
-    one maps to itself at 0. Raises on a fork or a cycle."""
-    successor: dict[str, str] = {}
-    predecessor: dict[str, str] = {}
-    for old, new in links:
-        if old in successor or new in predecessor:
-            raise LineageError("lineage_fork")
-        successor[old], predecessor[new] = new, old
-    out: dict[str, tuple[str, int]] = {}
-    for node in {*successor, *predecessor}:
-        head, depth = node, 0
-        while head in successor:
-            head, depth = successor[head], depth + 1
-            if depth > len(successor):
-                raise LineageError("lineage_cycle")
-        out[node] = (head, depth)
-    return out
-
-
-def chain_factors(
-    actions: Iterable[Action], heads: Mapping[str, tuple[str, int]]
-) -> tuple[list[ActionFactor], list[tuple[str, date, str]]]:
-    """The price-changing actions keyed by chain, one per (chain, ex-date, type): the copy of the
-    member nearest the chain's current ISIN wins. The keys whose copies disagree come second."""
-    best: dict[tuple[str, date, str], tuple[int, str, Action]] = {}
-    conflicts: set[tuple[str, date, str]] = set()
-    for action in actions:
-        if not action.changes_price:
-            continue
-        chain, depth = heads.get(action.instrument_id, (action.instrument_id, 0))
-        key = (chain, action.ex_date, action.action_type)
-        rank = (depth, action.instrument_id, action)
-        held = best.get(key)
-        if held is not None and held[2].factor != action.factor:
-            conflicts.add(key)
-        if held is None or rank[:2] < held[:2]:
-            best[key] = rank
-    factors = [
-        ActionFactor(key[0], key[1], held[2].factor)
-        for key, held in sorted(best.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2]))
-    ]
-    return factors, sorted(conflicts)
-
-
-def chain_dividends(
-    dividends: Iterable[tuple[str, date, Decimal]], heads: Mapping[str, tuple[str, int]]
-) -> list[DividendCash]:
-    """The dividends with a cash amount keyed by chain, one per (chain, ex-date): the copy of the
-    member nearest the chain's current ISIN wins, as for the factors."""
-    best: dict[tuple[str, date], tuple[int, str, Decimal]] = {}
-    for instrument_id, ex_date, amount in dividends:
-        chain, depth = heads.get(instrument_id, (instrument_id, 0))
-        rank = (depth, instrument_id, amount)
-        held = best.get((chain, ex_date))
-        if held is None or rank[:2] < held[:2]:
-            best[(chain, ex_date)] = rank
-    return [DividendCash(key[0], key[1], held[2]) for key, held in sorted(best.items())]
-
-
-def adjustment(
-    actions: Iterable[Action],
-    links: Iterable[tuple[str, str]],
-    dividends: Iterable[tuple[str, date, Decimal]] = (),
-) -> Adjustment:
-    """What the adjusted views apply, from the stored actions, the linked pairs and the
-    dividends with a cash amount (instrument, ex-date, rupees per share)."""
-    heads = chains(links)
-    factors, _ = chain_factors(actions, heads)
-    lineage = {member: head for member, (head, depth) in heads.items() if depth}
-    return Adjustment(tuple(factors), lineage, tuple(chain_dividends(dividends, heads)))
-
-
 # --- the database -------------------------------------------------------------------------------
-
-
-def stored_actions(session: Session) -> list[Action]:
-    return [
-        Action(
-            str(r.instrument_id),
-            r.ex_date,
-            r.action_type,
-            Decimal(r.adjustment_factor),
-            r.raw_text,
-            r.demerger,
-        )
-        for r in session.scalars(select(HatCorporateAction))
-    ]
-
-
-def stored_links(session: Session) -> list[tuple[str, str]]:
-    rows = session.execute(
-        select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
-            HatIsinLineage.status == LINKED
-        )
-    )
-    return [(str(old), str(new)) for old, new in rows]
 
 
 def stored_overrides(session: Session) -> dict[tuple[str, str], str]:
@@ -685,28 +481,6 @@ def stored_overrides(session: Session) -> dict[tuple[str, str], str]:
         (str(r.old_instrument_id), str(r.new_instrument_id)): r.verdict
         for r in session.scalars(select(HatLineageOverride))
     }
-
-
-def stored_dividends(session: Session) -> list[tuple[str, date, Decimal]]:
-    """(instrument, ex-date, cash per share) of every stored dividend with an amount (CA3)."""
-    rows = session.execute(
-        select(
-            HatCorporateAction.instrument_id,
-            HatCorporateAction.ex_date,
-            HatCorporateAction.cash_amount,
-        ).where(
-            HatCorporateAction.action_type == TYPE_DIVIDEND,
-            HatCorporateAction.cash_amount.is_not(None),
-        )
-    )
-    return [(str(i), ex, Decimal(amount)) for i, ex, amount in rows]
-
-
-def stored_adjustment(session: Session) -> Adjustment:
-    """The adjusted views' input: every stored price-changing action and every dividend with an
-    amount, once per chain, and the linked lineage. Every reader of `bars_daily` takes it from
-    here."""
-    return adjustment(stored_actions(session), stored_links(session), stored_dividends(session))
 
 
 # Aggregates only (a window over every bar would hold the whole history in memory); on a day
@@ -877,85 +651,6 @@ def build_lineage(
     return report
 
 
-def override_lineage(
-    session: Session,
-    old_isin: str,
-    new_isin: str,
-    verdict: str,
-    *,
-    note: str,
-    owner: tuple[int, uuid.UUID, datetime],
-) -> dict[str, Any]:
-    """Store the owner's `link` or `unlink` of a found succession (old ISIN -> new ISIN), apply
-    it to the stored verdicts at once (`apply_overrides`) and journal `lineage.overridden`
-    (actor user, via cli), in the caller's transaction, under the reference-data lock.
-    `owner` is (chat id, user id, now).
-    Refused, writing nothing: a bad verdict or note (`lineage_bad_override`), an ISIN with no
-    instrument (`lineage_unknown_isin`), a pair no build found (`lineage_not_a_succession`) and
-    a link that would fork a chain another owner link holds (`lineage_fork`). A rules link it
-    displaces comes back at the next build once the owner's link is undone."""
-    if verdict not in (LINK, UNLINK) or not note.strip() or len(note) > NOTE_MAX:
-        raise LineageError("lineage_bad_override")
-    lock_reference_data(session)
-    ids = {
-        i.isin: i.id
-        for i in session.scalars(
-            select(HatInstrument).where(HatInstrument.isin.in_((old_isin, new_isin)))
-        )
-    }
-    if old_isin not in ids or new_isin not in ids:
-        raise LineageError("lineage_unknown_isin")
-    pair = (str(ids[old_isin]), str(ids[new_isin]))
-    rows = {
-        (str(r.old_instrument_id), str(r.new_instrument_id)): r
-        for r in session.scalars(select(HatIsinLineage))
-    }
-    if pair not in rows:
-        raise LineageError("lineage_not_a_succession")
-    before = f"{rows[pair].status}:{rows[pair].reason}"
-    stored = [
-        Decision(old, new, r.effective_date, r.status, r.reason, dict(r.evidence), r.known_on)
-        for (old, new), r in rows.items()
-    ]
-    decisions = apply_overrides(stored, {**stored_overrides(session), pair: verdict})
-    chains((d.old_id, d.new_id) for d in decisions if d.status == LINKED)  # never a fork
-    chat_id, user_id, now = owner
-    row = session.scalar(
-        select(HatLineageOverride).where(
-            HatLineageOverride.old_instrument_id == ids[old_isin],
-            HatLineageOverride.new_instrument_id == ids[new_isin],
-        )
-    )
-    if row is None:
-        row = HatLineageOverride(old_instrument_id=ids[old_isin], new_instrument_id=ids[new_isin])
-        session.add(row)
-    row.verdict, row.note, row.decided_at = verdict, note.strip(), now
-    report = BuildReport()
-    save_decisions(session, decisions, report)
-    payload = {
-        "chat_id": chat_id,
-        "via": "cli",
-        "old_isin": old_isin,
-        "new_isin": new_isin,
-        "verdict": verdict,
-        "before": before,
-        "note": note.strip(),
-    }
-    record(
-        session,
-        aggregate_type="instrument",
-        aggregate_id=ids[old_isin],
-        event_type=EVENT_OVERRIDDEN,
-        actor="user",
-        payload=payload,
-        user_id=user_id,
-        occurred_at=now,
-    )
-    session.flush()
-    changed = report.updated
-    return {**{k: v for k, v in payload.items() if k != "chat_id"}, "rows_changed": changed}
-
-
 TextSource = Callable[[], str]
 
 
@@ -978,261 +673,7 @@ def refresh_lineage(
     return report
 
 
-# --- the review list ----------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Jump:
-    """A day whose adjusted open is more than `JUMP_TOL` from the previous adjusted close: a
-    price-changing action with no stored factor (a missing split or bonus, a demerger, a
-    capital reduction) or a wrong one."""
-
-    instrument_id: str
-    previous_day: date
-    day: date
-    previous_close: Decimal
-    open: Decimal
-    isin: str = ""  # the day's own ISIN
-    previous_raw_close: Decimal | None = None
-    raw_open: Decimal | None = None
-
-    @property
-    def ratio(self) -> Decimal:
-        return self.open / self.previous_close
-
-    @property
-    def kind(self) -> str:
-        return jump_kind(self.isin, self.previous_raw_close, self.raw_open)
-
-
-def jump_kind(isin: str, previous_raw_close: Decimal | None, raw_open: Decimal | None) -> str:
-    """What a jump is (`JUMP_KINDS`): a rights entitlement or an ETF unit by its ISIN, else a
-    tick when the raw open is within `TICK_MOVE` of the raw previous close, else `other`."""
-    if isin[7:9] == "20":
-        return JUMP_RIGHTS
-    if isin.startswith("INF"):
-        return JUMP_ETF
-    if (
-        previous_raw_close is not None
-        and raw_open is not None
-        and abs(raw_open - previous_raw_close) <= TICK_MOVE
-    ):
-        return JUMP_TICK
-    return JUMP_OTHER
-
-
-def jump_counts(jumps: Iterable[Jump]) -> tuple[dict[int, int], dict[str, int]]:
-    """The jumps per year of their day and per kind, each in order."""
-    years: dict[int, int] = defaultdict(int)
-    kinds: dict[str, int] = dict.fromkeys(JUMP_KINDS, 0)
-    for j in jumps:
-        years[j.day.year] += 1
-        kinds[j.kind] += 1
-    return dict(sorted(years.items())), kinds
-
-
-# One year at a time, from the latest run's rows filtered by date first (a window over the
-# whole view holds every bar in memory); the lookback gives the year's first day its previous
-# close. The raw open is the adjusted one over the day's factor (close / raw close).
-_JUMPS_SQL = """
-WITH latest AS (
-    SELECT instrument_id, date, isin, open, close, raw_close FROM bars_daily_adj
-    WHERE date BETWEEN ? AND ?
-    QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-),
-s AS (
-    SELECT instrument_id, date, isin, open, close, raw_close,
-           lag(close) OVER w AS previous_close, lag(date) OVER w AS previous_day,
-           lag(raw_close) OVER w AS previous_raw_close
-    FROM latest WINDOW w AS (PARTITION BY instrument_id ORDER BY date)
-)
-SELECT instrument_id, previous_day, date, previous_close, open, isin, previous_raw_close,
-       CASE WHEN close > 0 THEN CAST(open * raw_close / close AS DECIMAL(18, 4)) END AS raw_open
-FROM s
-WHERE date >= ? AND previous_close > 0 AND date - previous_day <= ?
-  AND abs(open - previous_close) > ? * previous_close
-"""
-
-
-def unexplained_jumps(
-    store: DataStore, adjust: Adjustment, since: date, until: date | None = None
-) -> list[Jump]:
-    """Every jump in the adjusted series HAT reads, from `since` on (to `until`, when given),
-    newest first."""
-    days = [d for d in store.days(DATASET_BARS) if d >= since and (until is None or d <= until)]
-    found: list[Jump] = []
-    if not days:
-        return found
-    with closing(store.connect(adjust)) as con:
-        for year in range(days[0].year, days[-1].year + 1):
-            first = max(since, date(year, 1, 1))
-            lookback = first - timedelta(days=JUMP_MAX_DAYS)
-            params = [lookback, min(date(year, 12, 31), days[-1]), first, JUMP_MAX_DAYS, JUMP_TOL]
-            found += [
-                Jump(
-                    str(r[0]),
-                    r[1],
-                    r[2],
-                    r[3],
-                    r[4],
-                    r[5] or "",
-                    r[6],
-                    r[7],
-                )
-                for r in con.execute(_JUMPS_SQL, params).fetchall()
-            ]
-    return sorted(found, key=lambda j: (j.day, j.instrument_id), reverse=True)
-
-
-def _instruments(session: Session) -> dict[str, HatInstrument]:
-    return {str(i.id): i for i in session.scalars(select(HatInstrument))}
-
-
-def _label(instruments: Mapping[str, HatInstrument], instrument_id: str) -> str:
-    found = instruments.get(instrument_id)
-    return f"{found.symbol} {found.isin}" if found is not None else instrument_id
-
-
-HINDSIGHT = "hindsight: every factor and link as stored today, not as of any date (CA6)"
-
-
-def review_report(
-    session: Session,
-    store: DataStore,
-    since: date,
-    limit: int,
-    out: Callable[[str], Any],
-    kinds: Collection[str] = JUMP_KINDS,
-) -> None:
-    """Print the review list: the successions not linked, the chains whose action copies
-    disagree and the unexplained jumps since `since` (the newest `limit` of each, of `kinds`),
-    with their count per year and per kind."""
-    instruments = _instruments(session)
-    rows = session.scalars(
-        select(HatIsinLineage).order_by(HatIsinLineage.effective_date.desc())
-    ).all()
-    linked = [r for r in rows if r.status == LINKED]
-    review = [r for r in rows if r.status == REVIEW]
-    out(HINDSIGHT)
-    out(f"lineage: {len(linked)} linked, {len(review)} for review")
-    reasons: dict[str, int] = defaultdict(int)
-    for r in review:
-        reasons[r.reason] += 1
-    out("review reasons: " + ", ".join(f"{k} {v}" for k, v in sorted(reasons.items())))
-    for r in review[:limit]:
-        e = r.evidence
-        out(
-            f"  REVIEW {r.reason}: {e.get('old_symbol')} {e.get('old_isin')} "
-            f"(last {e.get('old_last_day')}, close {e.get('old_last_close')}) -> "
-            f"{e.get('new_symbol')} {e.get('new_isin')} (first {e.get('new_first_day')}, "
-            f"prev {e.get('new_prev_close')}, open {e.get('new_first_open')}), "
-            f"gap {e.get('gap_sessions')}, factor {e.get('gap_factor')}"
-            + (f", {'; '.join(e['restructuring'])}" if e.get("restructuring") else "")
-        )
-    actions = stored_actions(session)
-    links = [(str(r.old_instrument_id), str(r.new_instrument_id)) for r in linked]
-    _, conflicts = chain_factors(actions, chains(links))
-    out(f"action copies that disagree within a chain: {len(conflicts)} (the current ISIN's kept)")
-    for chain, ex_date, kind in conflicts[:limit]:
-        out(f"  CONFLICT {_label(instruments, chain)} {ex_date} {kind}")
-    # a dividend stored without its cash (the MCP lookup, a review case) stays price-neutral:
-    # its ex-date drop is in the total-return series (CA4)
-    missing = missing_amounts(session)
-    out(f"dividends without an amount (price-neutral in the total-return series): {len(missing)}")
-    for m in missing[:limit]:
-        out(f"  NO_AMOUNT {m.symbol} {m.isin} {m.ex_date} ({m.source})")
-    # the series the signals read: a dividend with its cash explains its ex-date drop (CA7)
-    jumps = unexplained_jumps(store, adjustment(actions, links, stored_dividends(session)), since)
-    out(
-        f"unexplained jumps since {since} (total-return open vs previous close beyond "
-        f"{JUMP_TOL:.0%}, no factor or dividend; demerger ex-dates show here): {len(jumps)}"
-    )
-    years, by_kind = jump_counts(jumps)
-    out("  by year: " + ", ".join(f"{y} {n}" for y, n in years.items()))
-    out(
-        "  by kind: "
-        + ", ".join(f"{k} {n}" for k, n in by_kind.items())
-        + f" (tick: a raw move of at most Rs {TICK_MOVE}, past {JUMP_TOL:.0%} only below Rs 0.40)"
-    )
-    for j in [j for j in jumps if j.kind in kinds][:limit]:
-        out(
-            f"  JUMP {_label(instruments, j.instrument_id)} {j.previous_day} close "
-            f"{j.previous_close:.2f} -> {j.day} open {j.open:.2f} (x{j.ratio:.3f}) {j.kind}"
-        )
-
-
-def show_chains(
-    session: Session, store: DataStore, symbols: Sequence[str], out: Callable[[str], Any]
-) -> None:
-    """Each instrument that ever traded under one of `symbols`, with its links both ways and
-    the unexplained jumps of its chain."""
-    from ..models import HatInstrumentSymbolHistory
-
-    wanted = {s.upper() for s in symbols}
-    ids = {
-        str(i)
-        for i in session.scalars(
-            select(HatInstrumentSymbolHistory.instrument_id).where(
-                HatInstrumentSymbolHistory.symbol.in_(wanted)
-            )
-        )
-    } | {
-        str(i)
-        for i in session.scalars(select(HatInstrument.id).where(HatInstrument.symbol.in_(wanted)))
-    }
-    instruments = _instruments(session)
-    rows = session.scalars(select(HatIsinLineage)).all()
-    links = [
-        (str(r.old_instrument_id), str(r.new_instrument_id)) for r in rows if r.status == LINKED
-    ]
-    heads = chains(links)
-    actions = stored_actions(session)
-    jumps = unexplained_jumps(store, adjustment(actions, links), date.min)
-    out(HINDSIGHT)
-    for instrument_id in sorted(ids, key=lambda i: (instruments[i].symbol, instruments[i].isin)):
-        head = heads.get(instrument_id, (instrument_id, 0))[0]
-        found = instruments[instrument_id]
-        out(
-            f"{found.symbol} {found.isin} {found.name!r} active={found.active} "
-            f"chain={_label(instruments, head)}"
-        )
-        for r in rows:
-            if instrument_id in (str(r.old_instrument_id), str(r.new_instrument_id)):
-                e = r.evidence
-                out(
-                    f"  {r.status} {r.reason}: {e['old_isin']} ({e['old_symbol']}, last "
-                    f"{e['old_last_day']}) -> {e['new_isin']} ({e['new_symbol']}, first "
-                    f"{e['new_first_day']}) gap {e['gap_sessions']} "
-                    f"prev x{e.get('prev_close_ratio')} open x{e.get('open_ratio')} "
-                    f"factor {e['gap_factor']}"
-                )
-        if head == instrument_id:
-            for j in jumps:
-                if j.instrument_id == head:
-                    out(
-                        f"  jump {j.previous_day} close {j.previous_close:.2f} -> {j.day} open "
-                        f"{j.open:.2f} (x{j.ratio:.3f})"
-                    )
-
-
 # --- command line -------------------------------------------------------------------------------
-
-
-def _text(path: str | None, url: str) -> str:  # pragma: no cover - a file or the network
-    if path is not None:
-        # A CSV under the working directory: anything resolving outside it, or with another
-        # suffix, is refused before it is opened.
-        base = Path.cwd().resolve()
-        target = (base / path).resolve()
-        if not target.is_relative_to(base) or target.suffix.lower() != ".csv":
-            raise LineageError("lineage_file_outside_cwd")
-        return target.read_text("utf-8-sig")
-    from .bhavcopy import http_fetcher
-
-    result = http_fetcher()(url)
-    if result.status != "ok":
-        raise LineageError("lineage_download_failed")
-    return result.data.decode("utf-8-sig")
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
@@ -1274,14 +715,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     write = sys.stdout.write
     with HatSessionLocal() as session:
         if args.command == "build":
-            changes = parse_symbol_changes(_text(args.symbol_changes, SYMBOL_CHANGES_URL))
-            names = parse_name_changes(_text(args.name_changes, NAME_CHANGES_URL))
+            changes = parse_symbol_changes(read_list(args.symbol_changes, SYMBOL_CHANGES_URL))
+            names = parse_name_changes(read_list(args.name_changes, NAME_CHANGES_URL))
             result = build_lineage(session, store, changes, names)
             session.commit()
             write(json.dumps(result.__dict__, sort_keys=True) + "\n")
         elif args.command in (LINK, UNLINK):
             from ..telegram.config import owner_chat_id
             from ..time import utc_now
+            from .lineage_override import override_lineage
 
             try:
                 owner = (owner_chat_id(), settings.user_id, utc_now())

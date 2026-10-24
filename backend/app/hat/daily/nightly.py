@@ -34,12 +34,13 @@ from ..data import ca_dividends
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
+from ..data.chains import stored_adjustment
 from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.coverage import JOB_COVERAGE, coverage_body
 from ..data.demerger_notice import announce_stored, store_notices, unlisted_notices
 from ..data.features import features_job
 from ..data.kite_symbols import KiteSymbolData
-from ..data.lineage import refresh_lineage, stored_adjustment
+from ..data.lineage import refresh_lineage
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY, GateResult, excluded_for, gate_body
 from ..data.quarantine import open_quarantines

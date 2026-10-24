@@ -221,7 +221,7 @@ class Adjustment:
     """What the adjusted views apply: the price factors, the dividends and the ISIN lineage.
     `lineage` maps the id of each linked older ISIN to the id of its chain's current ISIN; the
     view gives the older bars that id, so the factors and dividends of a chain are keyed by it
-    (`lineage.stored_adjustment`)."""
+    (`chains.stored_adjustment`)."""
 
     factors: tuple[ActionFactor, ...] = ()
     lineage: Mapping[str, str] = field(default_factory=dict)
@@ -621,7 +621,7 @@ class DataStore:
 
     def connect(self, adjustment: Adjustment = NO_ADJUSTMENT) -> duckdb.DuckDBPyConnection:
         """An in-memory DuckDB connection with the views; `adjustment` is what the adjusted
-        view applies (`lineage.stored_adjustment`: the corporate actions and the ISIN lineage).
+        view applies (`chains.stored_adjustment`: the corporate actions and the ISIN lineage).
         DuckDB's own default is 80% of RAM; the store's `memory_limit` caps it and a larger query
         spills to `temp_dir`."""
         con = duckdb.connect(

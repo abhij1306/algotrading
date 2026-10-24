@@ -79,6 +79,7 @@ from .ca_versions import (
     versioned_keys,
 )
 from .ca_versions import plan_backfill as plan_versions
+from .chains import LINKED, chain_neighbours, chains, stored_adjustment, stored_links
 from .corporate_actions import (
     EVENT_CORRECTED,
     PRICE_NEUTRAL_TYPES,
@@ -89,7 +90,7 @@ from .corporate_actions import (
     TYPE_SPLIT,
     lock_reference_data,
 )
-from .lineage import chains, read_spans, stored_links
+from .lineage import read_spans
 from .store import DATASET_BARS, DataStore
 
 _SERIES = or_(
@@ -102,8 +103,8 @@ def series_events(
     rows: Iterable[tuple[str, date, str]], heads: Mapping[str, tuple[str, int]]
 ) -> dict[tuple[str, date, str], str]:
     """(chain, ex-date, type) -> the member whose stored row (instrument, ex-date, type) the
-    series applies: the copy nearest the chain's current ISIN, as `lineage.chain_factors` and
-    `chain_dividends` pick it (`heads`: `lineage.chains`), so a copy the series ignores opens no
+    series applies: the copy nearest the chain's current ISIN, as `chains.chain_factors` and
+    `chain_dividends` pick it (`heads`: `chains.chains`), so a copy the series ignores opens no
     pending span."""
     best: dict[tuple[str, date, str], tuple[int, str]] = {}
     for instrument_id, ex_date, action_type in rows:
@@ -289,21 +290,6 @@ def import_derived(session: Session) -> dict[tuple[str, date, str], str]:
     return found
 
 
-def neighbours(session: Session) -> dict[str, set[str]]:
-    """Each instrument -> its linked predecessor and successor (the bar before an ex-date or the
-    ex bar may be on either)."""
-    rows = session.execute(
-        select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
-            HatIsinLineage.status == "linked"
-        )
-    )
-    found: dict[str, set[str]] = defaultdict(set)
-    for old, new in rows:
-        found[str(old)].add(str(new))
-        found[str(new)].add(str(old))
-    return found
-
-
 @dataclass(frozen=True)
 class ExGap:
     """A row's ex-date gap from the raw bars: the gap, the ex instrument's sessions near it and
@@ -325,7 +311,7 @@ def market_gaps(
 def ex_gaps(store: DataStore, rows: Sequence[Row], session: Session) -> dict[str, ExGap]:
     """Each row's ex-date gap (ex open over the previous close, divided by the other stored
     factors ex between the two sessions, as CA1's gate reads it), by row id."""
-    near = neighbours(session)
+    near = chain_neighbours(stored_links(session))
     wanted = {k: (r.ex_date, {r.instrument_id, *near[r.instrument_id]}) for k, r in enumerate(rows)}
     stored: dict[str, list[tuple[date, str, Decimal]]] = defaultdict(list)
     for iid, ex, kind, factor in session.execute(
@@ -536,8 +522,6 @@ def write_log(path: Path, log: Sequence[Mapping[str, Any]]) -> None:
 def pending_lines(session: Session, store: DataStore, symbols: Sequence[str]) -> list[str]:
     """For each symbol: its chain's events with pending sessions and the sessions a backtest
     skips for each."""
-    from .lineage import stored_adjustment
-
     lineage = stored_adjustment(session).lineage
     days = store.days(DATASET_BARS)
     events = series(session)
@@ -662,7 +646,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 (s, k)
                 for s, k in session.execute(
                     select(HatIsinLineage.effective_date, HatIsinLineage.known_on).where(
-                        HatIsinLineage.status == "linked"
+                        HatIsinLineage.status == LINKED
                     )
                 )
             ]

@@ -25,7 +25,7 @@ from app.hat.data.ca_dividends import (
     read_bc,
 )
 from app.hat.data.ca_import import CaFileError
-from app.hat.data.lineage import chain_dividends
+from app.hat.data.chains import chain_dividends
 from app.hat.data.store import DividendCash, dividend_factor
 from app.hat.money import dividend_credit
 

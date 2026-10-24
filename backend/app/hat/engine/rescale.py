@@ -58,6 +58,7 @@ from fractions import Fraction
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..data.chains import LINKED, chain_members, stored_links
 from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
 from ..errors import HatError
 from ..events import record
@@ -117,7 +118,6 @@ GAP_KEY = "split_gap"
 SPLIT_GAP_RATIO = Decimal("0.6")
 EVENT_ISIN_CHANGED = "position.isin_changed"  # held across an ISIN change (Q4)
 ISIN_KEY = "isin_change"
-LINKED = "linked"  # `data/lineage.py`'s status of a link
 CLOSE_REASON = "corporate_action"  # the exit reason of a virtual position closed on resolution
 ALERT_ACTION_PENDING = "corporate_action.pending"
 ALERT_ACTION_UNCHECKED = "corporate_action.unchecked"  # a next-session lookup failed
@@ -316,19 +316,8 @@ def _isin_key(link: HatIsinLineage) -> str:
 
 def chain_of(session: Session, instrument_id: uuid.UUID) -> set[uuid.UUID]:
     """The instrument and every instrument `linked` to it through the lineage, either way."""
-    links = session.execute(
-        select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
-            HatIsinLineage.status == LINKED
-        )
-    ).all()
-    chain, grew = {instrument_id}, True
-    while grew:
-        grew = False
-        for old, new in links:
-            if (old in chain) != (new in chain):
-                chain |= {old, new}
-                grew = True
-    return chain
+    members = chain_members(stored_links(session)).get(str(instrument_id), ())
+    return {instrument_id, *(uuid.UUID(iid) for iid in members)}
 
 
 def open_guards(session: Session, position: HatPosition) -> list[str]:
