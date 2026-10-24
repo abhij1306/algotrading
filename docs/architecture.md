@@ -1,112 +1,84 @@
 # Architecture
 
-Code is the source of truth; this is the map. Rules the code must keep: `invariants.md`. Decisions
-in force: `decisions.md`. Operator procedures: `runbook.md`.
+The map. Rules: `invariants.md`. Decisions: `decisions.md`. Operations: `runbook.md`.
 
 ## Shape
 
-One FastAPI process (`backend/app/main.py`) and one PostgreSQL database. All of HAT is the bounded
-package `backend/app/hat/`. It imports only `app.base`, `app.database`, `app.paths` and
-`app.utils.env_loader` from the rest of the backend (CONF `imports.*`). The runtime starts only when
-`HAT_ENABLED` is true (default false). The frontend (`frontend/`) is a read-only dashboard; Telegram
-is the control surface. Orders reach Fyers only from a HAT signal.
+One FastAPI process (`backend/app/main.py`), one PostgreSQL database, Parquet under
+`HAT_DATA_ROOT`. All of HAT is `backend/app/hat/`, which imports only `app.base`,
+`app.database`, `app.paths` and `app.utils.env_loader`. The runtime starts only with
+`HAT_ENABLED=true`. The frontend (`frontend/`) is a read-only dashboard; Telegram is the control
+surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
 | Package | Holds |
 | --- | --- |
-| `data` | NSE MCP client, bhavcopy, reference data, the trading universe (`universe.py`), ingest (breadth in `breadth.py`; its outcome events and health kill are written by `daily`), quality gate (its kill and `quality.failed` too, through the `Verdict` hook), corporate actions (one pooled `lookup_actions`; the price-gated NSE file import `ca_import.py`, the research import `ca_research.py`, the owner's correction list `ca_corrections.py`; when each factor became knowable, `ca_known.py`, with the back-fills, pending sessions and lag report in `point_in_time.py`; the append-only version ledger and its as-of selection `ca_versions.py`, demerger estimates `ca_demergers.py`; the demerger notices and forced-exit rule `demerger_notice.py`, CA8), the ISIN lineage (`lineage.py`: one adjusted series per chain of ISINs, `stored_adjustment` feeds every `bars_daily` reader), the history build (`history_build.py`, CLI `history_cli.py`, `index_history.py`, `history_validation.py`) and minute history (candle parsing in `candles.py`), one call pacer (`pacing.py`), Parquet store (`store.py`, `bars_store.py`; `store.atomic_replace` is the one atomic writer), features, the live feed (`feed.py`, `provider/`, `subscriptions.py`), 5-minute bars, gap scan, announcements |
-| `engine` | Criteria library (`criteria/`), strategy config and seeds (`strategy/`), scan, trigger monitor, exits, stops, lifecycle, entries (`entries`), the shadow engine (`shadow`), the dividends a trade earns (`trade_dividends`), real positions (`live_trades`) and the sale recording both share (`positions.record_sale`), approvals, portfolio (`portfolio/`: universe, regime, health, allocator, sleeve lifecycle) |
-| `risk` | Risk policy and its versions, sizing, caps, exposure ladder and pause (`bots.py`), kill switches (`kill.py` rules, `kill_ops.py` rows), drawdown kills and the nightly snapshot (`drawdown.py`), modes and the mode queue (`controls.py`), `evaluate_signal` |
-| `execution` | `HatBroker` interface, Fyers adapter (`fyers_adapter.py` over the pure payloads and parsers in `fyers_payloads.py`)/broker/session/auth/tokens, router, order submit and tags (`submit.py`; the rows against the broker's books in `order_book.py`), stop placement (`protect.py` over the pure planners in `stop_plans.py`), the swap, nightly verify and GTT-book check (`gtt_upkeep.py`), entry-remainder cancels (`entry_cancel.py`), trade management (`manage.py`: every sale a `SaleOrder` through one pure `sale_gate`), the fill sync in phases read, settle, commit, market, protect (`fills.py`), market price protection re-send (`mpp.py`), per-position lock and lost-answer settle (`position_desk.py`), GTT, reconciliation, mode gates |
-| `telegram` | Bot API client, long-poll service, commands, approval cards, notifier, reports |
-| `ops` | In-process scheduler, job runner, partitions, retention |
-| `daily` | `HatRuntime` lifecycle (`runtime.py`: start, recover, stop), the wiring into one frozen `Assembly` (`assembly.py`) with the daily job table (`daily_jobs`), the periodic loops (`periodic.py`), the live day's prices, gates, entries and exits (`prices.py`, `gates.py`, `entries.py`, `exits.py`), nightly (one declared chain, `nightly.py`) and intraday job bodies, production parts |
-| `backtest` | The day loop (`loop`, over `spec`, `data`, `ledger`, `fillrules`, `report`), the evidence the gates read (`evidence`, through the typed `RunMetrics`), costs, fills, deflated Sharpe, run records, metrics. It imports `engine`; `engine` and `risk` import only `spec` and `evidence`, never the loop |
-| `models` | SQLAlchemy models on the shared `Base`; every table is `hat_*` |
-| `api` | Read-only dashboard routes and the Fyers login routes behind the write guard |
-| `read` | The read model the dashboard and Telegram share: bots (mode, kill state, manage-only reasons), kill rows, open positions, latest watchlists, broker sessions, regime states; batched reads into frozen dataclasses, no writer import (CONF `hat_routes_read_only`) |
+| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data and calendar, universe, corporate actions (`corporate_actions`, imports `ca_import`/`ca_research`/`ca_dividends`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions`, `point_in_time`, `ca_demergers`, notices
+`demerger_notice`), ISIN lineage (`lineage`), history build, features, Parquet store (`store`), live feed and 5-minute bars, gap scan, announcements |
+| `engine` | Criteria library, strategy config, scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
+| `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
+| `execution` | `HatBroker` and the Fyers adapter, session and tokens, router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
+| `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
+| `ops` | Scheduler, job runner, partitions, retention, runtime lock |
+| `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies |
+| `backtest` | Day loop, evidence for the gates (`RunMetrics`), costs, fills, deflated Sharpe, run records. `engine` and `risk` import only `spec` and `evidence` |
+| `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and Fyers login routes; the read model the dashboard and Telegram share (no writer import) |
 
-Top-level helpers: `events.py` (event log), `money.py` (Decimal), `clock.py`, `ids.py` (uuid v7),
-`settings.py`, `schema.py` (`init_db` upkeep, Postgres-only DDL, seeds), `admin.py` (owner CLI).
+Top level: `events.py` (event log), `money.py`, `clock.py`, `ids.py` (uuid v7), `settings.py`,
+`schema.py` (`init_db` upkeep, `PG_DDL`, drift check), `admin.py`.
 
 ## Data flow
 
-Nightly (the scheduler chains jobs with `after`; each job is keyed `(job, trade_date)`):
+Nightly (jobs chained with `after`, keyed `(job, trade_date)`):
 
 ```text
-ingest.nightly (NSE MCP from 18:00, bhavcopy fallback 22:00) -> raw bars (Parquet) + index/breadth
-  -> quality.gate -> ca.adjust (corporate actions, the day's dividends from NSE's bc file,
-     ISIN lineage, adjusted view)
-  -> features -> regime (3-day confirm) -> allocate (sleeve multipliers)
-  -> scan (universe -> regime gate -> setup score) -> hat_watchlist_entry -> Telegram digest
-ingest.nightly -> coverage.check (stored bar and index days against the calendar, data/coverage.py)
+ingest.nightly (NSE MCP from 18:00, bhavcopy 22:00) -> raw bars + index/breadth, then each after it:
+  quality.gate ─┐
+  ca.adjust ────┴> features -> regime -> allocate -> scan -> watchlist digest
+  (ca.adjust: corporate actions, the day's dividends and demerger notices, lineage, trade dividends)
+  coverage.check, exits.close_gaps
 ```
 
-Intraday (one `LiveFeed`, one Fyers data socket, owned by HAT):
+Intraday (one `LiveFeed`, one Fyers data socket):
 
 ```text
-ticks -> 5-minute bars -> TriggerMonitor (pure) -> signal
-  -> evaluate_signal (risk authority: sizing, caps, kill switches, invariants, price band)
-  -> ExecutionRouter, mode of the bot: shadow (virtual fill) | confirm (Telegram card, Take/Skip,
-     5-minute expiry, max-chase re-check) | auto (high-confidence only)
-  -> reserve_order (row + tag committed) -> send_order -> HatBroker (Fyers)
-  -> fill sync -> StopDesk.protect (intraday stop, swapped to a GTT around 15:25)
-  -> TradeManager: exit stack (`exits.evaluate`), 15:25 MA exits, nightly GTT verify
+ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
+  -> ExecutionRouter by mode: shadow (virtual fill) | confirm (card, Take/Skip) | auto
+  -> reserve_order -> send_order -> HatBroker -> fill sync -> StopDesk.protect (stop, then GTT)
+  -> TradeManager: exit stack, 15:20-15:25 MA exits
 ```
-
-Every state change and its event are written in one transaction (`events.record` into the
-append-only `hat_event`); trade state replays from events (`journal.replay_state`).
 
 ## Key seams
 
 - **Pure core shared by backtest and live:** `scan.scan_bot`, `exits.evaluate/apply`, the criteria
-  and `decide` read no clock, database or file; `backtest/loop.py` calls the same code live runs.
-- **One risk authority:** `risk/service.py:evaluate_signal` calls `decide`, the only caller of
-  `size_position`. No override path exists.
-- **One path to the broker:** `execution/submit.py` (`reserve_order`, `send_order(session, sender,
-  tag)`, `sender` binding one account's broker, guard and clock) is the only caller of `HatBroker`; `FyersHatBroker` is its only implementation. `FakeBroker`
-  (`tests/hat/fakes/broker.py`) is the only fake.
-- **One position desk per broker account** (`execution/position_desk.py:PositionDesk`, shared by
-  `StopDesk` and `TradeManager`): one re-entrant write lock per position, held by every stop write
-  and by a sale from its checks to its send; one settle rule for a lost answer (`settle_verdict`).
-- **One HAT runtime per database** (`ops/runtime_lock.py`): `HatRuntime.start` takes a
-  session-level advisory lock on a connection held for the life of the process, before it reaps
-  or reads anything; a second runtime on the same database refuses to start.
-- **One session owner per broker account** (`SessionRegistry.acquire`), one token store
-  (`fyers_tokens.token_store`), one live socket (`LiveFeed`, built only in `main.py`).
-- **One clock, one mode:** code that needs "now" takes a `clock.Clock` (`SYSTEM_CLOCK` in
-  production); `send_order`, `adopt_broker_order` and `ReconciliationService` stamp from it.
-  `governance.py:Mode` is the only spelling of shadow/confirm/auto (the schema CHECKs read it);
-  `queued_mode_at` is the queued change in force, `execution/modes.py:capability_gated` the gate.
-- **Gates:** `execution/modes.py:gate_refusal` decides confirm/auto vs shadow; `ExecutionGuard`
-  holds the per-trade-date reconciliation gate; kill switches live in `risk/kill.py`, `kill_ops.py` (each read is the latest row of each stream).
-- **Configs are data:** strategy versions are immutable JSONB with a canonical hash; the risk policy
-  is a versioned account-level record; bots hold no risk numbers.
-- **No private imports:** no HAT module imports another's underscore name (CONF `no_private_imports`).
-- **Scheduler:** in-process asyncio, jobs recorded in `hat_job_run`, restart-safe (reconcile before
-  acting, an overdue job runs late the same day unless it has a window).
+  and `decide` read no clock, database or file; `backtest/loop.py` calls the same code.
+- **One risk authority:** `risk/service.py:evaluate_signal` -> `decide`, the only caller of
+  `size_position`.
+- **One path to an order:** `execution/submit.py:send_order` is the only way an entry reaches
+  the broker (stops, sales and reads go through `HatBroker` in `execution/`);
+  `FyersHatBroker` is its only implementation, `tests/hat/fakes/broker.py:FakeBroker` the only fake.
+- **One position desk per account** (`execution/position_desk.py`): one write lock per position
+  for every stop write and sale.
+- **One runtime per database** (`ops/runtime_lock.py`, a session advisory lock); one session owner
+  per account (`SessionRegistry`), one token store (`fyers_tokens`), one live socket.
+- **One clock:** code that needs "now" takes a `clock.Clock`. `governance.py:Mode` is the only
+  spelling of shadow/confirm/auto; `execution/modes.py` holds the gates.
+- **Events:** `events.record` writes each state change's event in its transaction; trade state
+  replays from events (`journal.replay_state`).
+- **Conformance:** `tests/hat/conformance/` enforces the structural rules (imports, no private
+  imports, read-only routes, one Decimal boundary, admin CLI calls services).
 
 ## Storage
 
-- PostgreSQL (`hat_*` tables, `init_db` creates them; no Alembic; HAT refuses SQLite at runtime):
-  reference (market, instrument (one per ISIN, `data/identity.py`), symbol history (one holder
-  per symbol and day, an EXCLUDE constraint), bands,
-  calendar, corporate actions, announcements), strategy/risk/bot (criterion types, strategy versions, risk policy versions,
-  broker accounts, bots, kill switches, exposure), portfolio (universes, regime, allocations),
-  runtime (watchlist, signal, approval, order, fill, position, trade result), ops (event, job run,
-  quality, Telegram, snapshots, backtest runs). The event table is monthly-partitioned on Postgres.
-- Parquet under `HAT_DATA_ROOT`, date-partitioned, read through DuckDB: `bars_daily_raw`
-  (immutable; the views over it, `data/store.py`: `bars_daily_cap` the price basis, raw times the
-  price-changing factors, and `bars_daily` the total-return series signals read, which also
-  carries each dividend, CA3), `index_daily`, `features_daily`, `breadth_daily`, `market_breadth`, 5-minute bars
-  (`bars_5m`, raw basis; the minute-history loader's refusals in `bars_5m_rejects`).
-- `features_daily/_state.json` (`data/features.py:FeaturesState`, version 2): the inputs digest
-  (adjustment lines + `FEATURES_RULE`, the ranked universe and formulas), the adjustment as
-  lines (`instrument|ex_date|factor`, `old>chain`) and, per featured day, the fingerprint of its
-  bars (part file name with run id, size, mtime). A day with a new run is recomputed with the
-  later days that read it; a day whose recorded file was removed or rewritten makes every later
-  day stale; an adjustment change recomputes the touched chains only; a run unrecords the days it
-  will rewrite first, so a crash resumes. The backtest refuses a window with an unrecorded or
-  changed day, or bars that changed while it read them (`backtest_features_stale`).
+- PostgreSQL `hat_*` tables (created by `init_db`; `hat_event` monthly-partitioned): reference
+  (instruments one per ISIN, symbol history, calendar, bands, corporate actions and their
+  versions, lineage), strategy, risk and bots, portfolio, runtime (watchlist, signal, approval,
+  order, fill, position, trade result), ops (events, job runs, Telegram, snapshots, backtest runs).
+- Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
+  `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily`,
+  `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`.
+- `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
+  chains or inputs are recomputed; the backtest refuses stale features
+  (`backtest_features_stale`).
 
 ## Daily cycle (IST, trading days; `daily/assembly.py:daily_jobs`)
 
@@ -114,93 +86,44 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 | --- | --- |
 | 00:30 / 01:00 | events.partitions, retention.purge |
 | 07:00-07:45 | calendar.refresh, bands.nightly (Saturday 09:00 reference.weekly) |
-| 08:30, 09:05 | Telegram login prompts (no entries until logged in) |
-| 08:40-08:45 | ca.rescale open positions, gtt.check (GTT book; the fill sync re-reads it every 5 min), live.prepare |
-| 09:15-09:20 | modes.apply (queued mode changes), gapscan |
+| 08:30, 09:05 | Telegram login prompts |
+| 08:40-08:45 | ca.rescale, gtt.check, live.prepare |
+| 09:15-09:20 | modes.apply, gapscan |
 | 09:20-15:20 | triggers, routing, stops on fill |
-| 15:20-15:25 | exits.close (MA exits on live price); 15:25 gtt.swap |
-| 15:30-15:45 | watchlist.expire, trade.end_session, Telegram rejections, daily report, veto digest |
-| 18:00 on | the nightly chain above |
-| 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots (drawdown kills at the close marks) |
+| 15:20-15:25 | exits.close; 15:25 gtt.swap |
+| 15:30-15:45 | watchlist.expire, trade.end_session, reports and digests |
+| 18:00 on | the nightly chain |
+| 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots |
 
-Every job has a deadline after its time (`daily/assembly.py:JOB_DEADLINES`); a job that fails,
-misses its deadline or runs past it raises one URGENT alert per job and trade date
-(`job.failed`, `job.missed`, `job.running_long`). A calendar with no trading day more than a week
-ahead alerts `calendar.short` daily.
+Each job has a deadline (`JOB_DEADLINES`); failing, missing or overrunning it raises one URGENT
+alert. Periodic loops (`daily/periodic.py`, every 5 s): live exits and intraday drawdown kills;
+housekeeping (session watch, fill sync, approval expiry, reconciliation every 5 min, stranded
+entries); announcements. A stalled loop alerts `periodic.stalled`. Broker calls have timeouts and
+a circuit breaker; every DB transaction runs under a 120 s `statement_timeout`.
 
-Periodic loops beside the jobs (`daily/periodic.py`), each its own task every 5 s: `exits` (live
-exits of virtual and real positions, the drawdown kills on equity marked to market every minute,
-stale-entry cancels; while the market is open), `housekeeping` (calendar check; session watch,
-fill sync, approval expiry, reconciliation every 5 min, resume of stranded entries) and the
-announcements poll. The scheduler tick raises URGENT `periodic.stalled` when a loop has not
-started a pass for 60 s while the market is open. A wedged step is bounded, never killed: broker
-calls have the broker guard's timeout and every SDK HTTP request a `(connect, read)` timeout
-(`SDK_HTTP_TIMEOUT`); timed-out calls still holding workers past `HUNG_LIMIT` trip the breaker and
-replace the worker pool. Every session (`app.database.HatSessionLocal`: the runtime, `get_db`,
-`db_session_scope`, the data tools) runs each transaction under `SET LOCAL statement_timeout`
-(120 s).
+## Verification and CI
 
-## Verification layout
-
-TLA+ models in `verification/tla/` (ExecutionRouter, OrderReconciliation, StopPlacement,
-KillSwitch, ApprovalToken, TradeLifecycle, JobScheduler, NightlyPipeline, DailyCycle,
-RegimeConfirmation, SleeveLifecycle), Hypothesis properties in
-`backend/tests/hat/properties/`, Postgres checks in `tests/hat/db/` (only what a real server
-enforces: triggers, partial unique indexes, CHECK constraints, row and advisory locks), conformance checks in
-`tests/hat/conformance/`. A change is verified by running it on real data, never by a backtest.
-
-CI (`.github/workflows/ci.yml`, every PR and push to main): `backend`, `backend-postgres`,
-`verification-conformance`, `verification-properties` (sharded, each file once), `frontend`, `api-schema`.
-`.github/workflows/tla.yml` runs the TLC models only when
-`verification/**` or a Python file named in a model's `code:` comments changes, weekly, and on
-demand.
+TLA+ models in `verification/tla/`, Hypothesis properties in `backend/tests/hat/properties/`,
+Postgres-only checks in `tests/hat/db/`, conformance in `tests/hat/conformance/`.
+`.github/workflows/ci.yml` (every PR and push to main): `backend`, `backend-postgres`,
+`verification-conformance`, `verification-properties`, `frontend`, `api-schema`. `tla.yml` runs
+the TLC models when `verification/**` or a Python file named in a model's `code:` comments
+changes, weekly and on demand.
 
 ## Startup and routes
 
-### Startup (`backend/app/main.py` lifespan)
+Startup (`main.py` lifespan): `init_db` (a database that is down stops the app), then
+`check_schema_drift` refuses any difference from the models and logs the DDL. With
+`HAT_ENABLED=true` it then checks the Fyers token, and `daily/runtime.py` refuses a non-Postgres
+database, a proxy variable that would carry Fyers traffic and a bad Telegram setup, reconciles
+every account, and starts the scheduler, live feed, periodic loops and Telegram. Shutdown stops
+the runtime, then the engine.
 
-1. Get the event loop.
-2. Create the database schema (`init_db`). If the database is down, one log line says so and the
-   app does not start, whatever `HAT_ENABLED` says. Then `check_schema_drift` (`schema.py`)
-   compares the live catalog with the models' (created as temporary tables and rolled back):
-   any difference in tables, columns, types, nullability, constraints or indexes refuses the
-   start and logs the DDL to run (runbook, Schema drift at startup).
-3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
-   (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
-   database that is not PostgreSQL, a proxy variable that would carry Fyers traffic
-   (`fyers_proxy_set`) and a bad Telegram configuration, reconciles every broker
-   account before anything is placed, then starts the scheduler with the daily cycle
-   (`daily_jobs`, the job table), the live feed (`app/hat/data/feed.py`, the one Fyers
-   data socket, built in `main.py`), the periodic loop (session watch, fill sync, approval expiry,
-   reconciliation, live exits, announcements) and the Telegram poller and relay.
+Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET /status`, `GET
+/url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`); the read-only
+dashboard under `/api/hat` (`/status`, `/bots`, `/watchlist`, `/signals`, `/positions`,
+`/allocations`, `/regime`, `/events`), polled every 15 s by `frontend/app/hat/page.tsx`.
 
-With `HAT_ENABLED` unset or false (the default) no HAT task runs: the app serves only the routes
-below. Shutdown stops the HAT runtime (tasks, scheduler, feed, broker sessions), then the database
-engine, each even if the other failed.
-
-### Routes
-
-- `GET /` and `GET /ping`: liveness.
-- The daily Fyers login, `app/hat/api/fyers_auth.py`, under `/api/hat/auth/fyers`:
-  `GET /status`, `GET /url` (the Fyers login link), `POST /token` (trade the auth code for a
-  token and save it) and `POST /disconnect`. Fyers redirects to the registered `REDIRECT_URI`;
-  the backend serves no callback, so paste the `auth_code` from the redirected URL into the login
-  dialog in the app header. The token file is owned by `app/hat/execution/fyers_tokens.py`.
-- The read-only dashboard, `app/hat/api/dashboard.py`, under `/api/hat` (GET only; kill, re-arm, mode and
-  flatten are Telegram commands): `/status`, `/bots`, `/watchlist`, `/signals`, `/positions`, `/allocations`, `/regime` and `/events` (`signals`, `regime` and
-  `events` take `limit`, 1..200, default 50). Money and weights are decimal strings. The
-  frontend page `frontend/app/hat/page.tsx` polls them every 15 s.
-
-### Environment
-
-`.env.example` lists every variable. Read from the environment (loaded from `.env`):
-
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: PostgreSQL.
-- `CLIENT_ID`, `SECRET_KEY`, `REDIRECT_URI`: the Fyers app (`FYERS_APP_ID`, `FYERS_CLIENT_ID` and
-  `FYERS_SECRET_KEY` also work).
-- `HAT_ENABLED` (default false), `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_MCP_BHAVCOPY_URL`,
-  `HAT_MCP_CMMARKET_URL`, and the Telegram secrets `HAT_TELEGRAM_TOKEN`, `HAT_TELEGRAM_CHAT_ID`,
-  `HAT_APPROVAL_SECRET`.
-- `CORS_ORIGINS`, `LOG_LEVEL`, `FRAMEWORK_LOG_LEVEL`.
-- `BACKEND_HOST`, `BACKEND_PORT`, `BACKEND_RELOAD`, `BACKEND_ACCESS_LOG`, `BACKEND_LOG_LEVEL`:
-  `backend/start_server.py`. The frontend reads `BACKEND_URL` and `PORT`.
+Environment: `.env.example` lists every variable: `DB_*`; the Fyers app `CLIENT_ID`,
+`SECRET_KEY`, `REDIRECT_URI`; `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, the MCP URLs and
+Telegram secrets; `BACKEND_HOST`/`BACKEND_PORT` and logging for `backend/start_server.py`.

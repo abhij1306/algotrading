@@ -90,8 +90,7 @@ that happened once.
 
 While builders work, run read-only audit subagents with the `hat-architecture-audit` skill on a
 detached worktree of `main`, one lens and one scope each (architecture, money-safety, tests). They
-don't count against the two-builder limit. Reports go to `/data/workspace/audits/`, outside the
-repo. Triage each confirmed Critical or High finding into a PR in the queue. Fold a finding that
+don't count against the two-builder limit. Reports go to a directory outside the repo. Triage each confirmed Critical or High finding into a PR in the queue. Fold a finding that
 touches a running builder's files into that builder's next PR rather than racing it.
 
 ## Never
