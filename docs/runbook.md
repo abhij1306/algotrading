@@ -155,10 +155,11 @@ Alerts:
 - URGENT `position.split_gap` (symbol, previous close, price): a held name gapped like a split
   with no stored action. A split or bonus: add it (`correct-actions`, op add), and the next
   `ca.rescale` rescales the position. A real crash: `/flatten` a real position; a virtual one,
-  outside market hours: `resolve-action --action <day>:split_gap --close-at <price>`.
+  outside market hours: `$ADMIN resolve-action --position <id> --action <day>:split_gap
+  --close-at <price>`.
 - URGENT `position.isin_changed` (symbol, old and new ISIN): a position held across an ISIN
-  change. `/flatten` a real position; a virtual one, outside market hours: `resolve-action
-  --action <new first day>:isin_change --close-at <price>`.
+  change. `/flatten` a real position; a virtual one, outside market hours: `$ADMIN resolve-action
+  --position <id> --action <new first day>:isin_change --close-at <price>`.
 - URGENT `job.failed` of `ca.rescale`, `fills_not_synced`: an account holding a position to rescale
   has not read its fills since the last close (no broker login, a broker outage). Its positions
   stay manage-only: log in, and the next morning's run rescales them; `/flatten` sells one now.
