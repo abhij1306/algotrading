@@ -17,6 +17,7 @@ from app.hat.execution.stop_plans import (
     raise_only,
     retry_due,
     stop_covers,
+    stops_cover,
     verify_plan,
 )
 from app.hat.models import HatOrder
@@ -69,6 +70,21 @@ def test_stop_covers(
     trigger: Decimal | None, current_stop: Decimal, tick: Decimal | None, covers: bool
 ) -> None:
     assert stop_covers(trigger, current_stop, tick) is covers
+
+
+@pytest.mark.parametrize(
+    ("stops", "covered"),
+    [
+        ([(D("100"), 10)], True),
+        ([(D("100"), 6)], False),  # a refused resize left it short of the open shares
+        ([(D("100"), 6), (D("100"), 4)], True),  # two stops at the stop hold every share
+        ([(D("100"), 6), (D("92"), 4)], False),  # one of them left low
+        ([(D("92"), 10)], False),
+        ([], False),
+    ],
+)
+def test_stops_cover(stops: list[tuple[Decimal, int]], covered: bool) -> None:
+    assert stops_cover(stops, D("100"), D("0.05"), 10) is covered
 
 
 @pytest.mark.parametrize(

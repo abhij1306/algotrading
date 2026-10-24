@@ -261,14 +261,14 @@ def _entry_attempted(session: Session, signal_id: uuid.UUID) -> bool:
     return found is not None
 
 
+_KILLED = "\nKill switch tripped: every bot is manage-only until /arm"
+
+
 def _flatten(ctx: ButtonContext, session: Session) -> Reply:
     if ctx.flattener is None:
         return refused("no_flattener")
-    if not ctx.flattener.orders_open(ctx.now):
-        # nothing could be sold: no breach is recorded and the owner sends /flatten again
-        return refused("market_closed")
-    # The owner asked for no exposure: the account kill trips and commits before anything is
-    # sold (every bot manage-only, pending cards ended), and the flatten withdraws the working
+    # The owner asked for no exposure: the account kill trips and commits first, market open or
+    # not (every bot manage-only, pending cards ended), and the flatten withdraws the working
     # entries; the account stays killed until /arm.
     kill_ops.trip_kill(
         session,
@@ -280,6 +280,10 @@ def _flatten(ctx: ButtonContext, session: Session) -> Reply:
         chat_id=ctx.chat_id,
     )
     session.commit()
+    if not ctx.flattener.orders_open(ctx.now):
+        # nothing can be sold now and nothing is queued: no breach is recorded, and the owner
+        # sends /flatten again in the session
+        return refused("market_closed", f"Refused: market_closed, nothing sold.{_KILLED}")
     report = ctx.flattener.flatten(session, ctx.now)
     record(
         session,
@@ -298,7 +302,7 @@ def _flatten(ctx: ButtonContext, session: Session) -> Reply:
     text = f"Flatten: {report.sent} of {report.positions} position(s) sent"
     if report.failed:
         text += f"; {report.failed} failed, see the alerts"
-    text += "\nKill switch tripped: every bot is manage-only until /arm"
+    text += _KILLED
     return Reply(True, text=text)
 
 

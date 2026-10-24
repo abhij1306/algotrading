@@ -99,7 +99,7 @@ from .protect import (
 )
 from .reconcile import baseline_at, broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
-from .stop_plans import LIVE, UNSURE, stop_covers
+from .stop_plans import LIVE, UNSURE, stops_cover
 from .submit import (
     OrderRefusedError,
     OrderRequest,
@@ -506,32 +506,31 @@ class TradeManager:
         purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
         qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
         order = SaleOrder(position, purpose, qty, tuple(action.rule_ids))
-        if order.rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position, now):
-            # The stop resting at the broker is the hard stop; HAT sells at market only when no
-            # stop the broker confirmed rests at the position's stop (HAT-EXEC-065).
-            return None
         return self._sell_qty(session, order, now, sending)
 
     def _broker_stop_rests(self, session: Session, position: HatPosition, now: datetime) -> bool:
-        """A stop the broker confirmed rests under the position at its current stop
-        (`stop_covers`), once any stop whose answer was lost is settled; one left low by a raise
-        the broker refused is raised now (`follow`), and if it still rests low HAT sells. One
-        still unknown does not count: should it rest after all, the broker refuses the market
-        sale (the shares are held for it), the safe way round."""
+        """Under the position lock: the stops the broker confirmed rest at the position's current
+        stop for every open share (`stops_cover`), once any stop whose answer was lost is
+        settled; one left low by a raise the broker refused is raised now (`follow`), and if
+        they still do not cover the position HAT sells. One still unknown does not count: should
+        it rest after all, the broker refuses the market sale (the shares are held for it), the
+        safe way round."""
         self._desk.settle_lost(session, position.id)
-        return self._stop_covers(session, position) or (
-            self._desk.follow(session, position.id, now) and self._stop_covers(session, position)
+        return self._stops_cover(session, position) or (
+            self._desk.follow(session, position.id, now) and self._stops_cover(session, position)
         )
 
-    def _stop_covers(self, session: Session, position: HatPosition) -> bool:
-        tick = self._desk.tick(session, position)
-        stop = Decimal(position.current_stop)
-        return any(
-            row.broker_order_id is not None
-            and stop_covers(
-                Decimal(row.trigger_price) if row.trigger_price is not None else None, stop, tick
-            )
-            for row in self._desk.stops_of(session, position.id, *LIVE)
+    def _stops_cover(self, session: Session, position: HatPosition) -> bool:
+        rows = self._desk.stops_of(session, position.id, *LIVE)
+        return stops_cover(
+            (
+                (Decimal(row.trigger_price) if row.trigger_price is not None else None, row.qty)
+                for row in rows
+                if row.broker_order_id is not None
+            ),
+            Decimal(position.current_stop),
+            self._desk.tick(session, position),
+            position.qty_open,
         )
 
     def _sell_qty(
@@ -546,6 +545,11 @@ class TradeManager:
         with self._positions.lock(position.id, "sale"):
             session.refresh(position)
             if min(order.qty, position.qty_open) <= 0 or position.closed_at is not None:
+                return None
+            if order.rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position, now):
+                # The stops resting at the broker are the hard stop; HAT sells at market only
+                # when they do not cover the position at its stop (HAT-EXEC-065). Decided under
+                # the lock, so no stop path cancels or shrinks them after the sale was skipped.
                 return None
             return self._sell_locked(session, order, now, sending)
 

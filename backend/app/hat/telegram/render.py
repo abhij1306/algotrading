@@ -445,8 +445,8 @@ def watchlist_text(bot: str, trade_date: date | None, rows: Sequence[tuple[str, 
 _CONFIRM_TEXT = {
     "flatten": (
         "Flatten closes every open real position at market and cancels the working entries. It"
-        " trips the account kill switch: every bot stays manage-only until /arm. This is logged"
-        " as a discipline breach."
+        " trips the account kill switch, even with the market closed (then nothing is sold):"
+        " every bot stays manage-only until /arm. This is logged as a discipline breach."
     ),
     "arm": "Re-arm the tripped kill switches?",
     "mode_auto": (
