@@ -78,7 +78,6 @@ def valid_ctx(**changes: object) -> SignalContext:
         entry_price=D(100),
         stop_price=D(95),
         trigger_level=D(100),
-        ltp=D(100),
         locked_upper_circuit=False,
         configured_max_chase_pct=None,
         equity=D(1_000_000),

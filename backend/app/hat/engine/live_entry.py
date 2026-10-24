@@ -297,7 +297,6 @@ def entry_request(
         entry_price=plan.entry,
         stop_price=plan.stop,
         trigger_level=plan.level,
-        ltp=plan.entry,
         locked_upper_circuit=plan.locked_upper_circuit,
         configured_max_chase_pct=candidate.configured_max_chase_pct,
         adv20=candidate.daily.adv20,

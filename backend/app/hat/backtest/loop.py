@@ -567,7 +567,6 @@ class _Run:
             entry_price=plan.price,
             stop_price=plan.stop,
             trigger_level=Decimal(row.pivot),
-            ltp=plan.price,
             locked_upper_circuit=plan.locked,
             configured_max_chase_pct=self.chase[row.playbook],
             equity=capital,

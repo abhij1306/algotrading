@@ -1,9 +1,10 @@
 """`evaluate_signal`: the single risk authority for a HAT signal (HAT-RISK-100).
 
-It works out whether the entry price lies within the price band around the last traded price,
-then calls the pure `decide` (which reads the session from the context's trading calendar) and
+It calls the pure `decide` (which reads the session from the context's trading calendar) and
 returns ACCEPT with a quantity or REJECT with a typed reason. It never raises: a missing or
-unreadable input is a REJECT. An exit or a protective-stop move is always accepted.
+unreadable input is a REJECT. An exit or a protective-stop move is always accepted. The live
+price is checked at placement, not here (invariant 4: `data.live.usable_price`, the router's
+`placement_refusal`).
 
 Moved here from the legacy `RiskManager.evaluate_signal` (K1, backend review C5), so HAT's risk
 authority depends on nothing outside `app.hat`. Two things that method did are gone:
@@ -16,41 +17,11 @@ authority depends on nothing outside `app.hat`. Two things that method did are g
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
-
-from .decision import EXIT_ACTIONS, EntryChecks, RiskDecision, SignalContext, decide
-
-# A limit entry further than this percent from the last traded price is out of band. It is the
-# value the legacy risk manager used (`max_price_deviation_pct`); it is a constant, not a policy
-# field, because the policy document's fields are fixed by (HAT-RISK-010).
-MAX_PRICE_DEVIATION_PCT = Decimal(20)
-_PRECISION = 120  # wide enough that no product of a plausible input is rounded
+from .decision import RiskDecision, SignalContext, decide
 
 
-def price_band_ok(
-    entry: object, ltp: object, band_pct: Decimal = MAX_PRICE_DEVIATION_PCT
-) -> bool | None:
-    """Whether `entry` is within `band_pct` percent of `ltp`: |entry - ltp| * 100 <= band * ltp.
-
-    None when it cannot be evaluated: either price is not an exact finite Decimal, or there is no
-    live price (`ltp` not above zero), so the decision fails closed."""
-    if not (isinstance(entry, Decimal) and isinstance(ltp, Decimal)):
-        return None
-    if not (isinstance(band_pct, Decimal) and band_pct.is_finite() and band_pct >= 0):
-        return None
-    if not (entry.is_finite() and ltp.is_finite()) or ltp <= 0:
-        return None
-    with localcontext() as ctx:
-        ctx.prec = _PRECISION
-        return abs(entry - ltp) * 100 <= band_pct * ltp
-
-
-def evaluate_signal(
-    ctx: SignalContext, band_pct: Decimal = MAX_PRICE_DEVIATION_PCT
-) -> RiskDecision:
+def evaluate_signal(ctx: SignalContext) -> RiskDecision:
     """ACCEPT with a quantity or REJECT with a typed reason for one signal (HAT-RISK-100). An entry
     needs the context's trading calendar to say OPEN at its instant (`decide`), so a holiday, a
     closed day and a day the calendar does not hold are closed and a special session is open."""
-    if ctx.action in EXIT_ACTIONS:
-        return decide(ctx, EntryChecks(price_band_ok=None))
-    return decide(ctx, EntryChecks(price_band_ok=price_band_ok(ctx.entry_price, ctx.ltp, band_pct)))
+    return decide(ctx)

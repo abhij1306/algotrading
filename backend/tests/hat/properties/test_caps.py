@@ -13,13 +13,11 @@ from hat_risk_support import (
     TRADE_DAY,
     D,
     policy_with,
-    valid_ctx,
 )
 from hypothesis import given
 from hypothesis import strategies as st
 
 from app.hat.risk import kill
-from app.hat.risk.decision import Reason
 from app.hat.risk.kill import EquityPoint
 from app.hat.risk.policy import (
     MIN_LIVE_TRADES,
@@ -33,7 +31,6 @@ from app.hat.risk.policy import (
     require_increase_gate,
     seed_policy,
 )
-from app.hat.risk.service import evaluate_signal, price_band_ok
 from app.hat.settings import load_settings
 from app.hat.time import IST
 
@@ -264,17 +261,6 @@ def instants(draw: st.DrawFn) -> tuple[datetime, bool]:
 
 
 # --- HAT's own kill switches are the halt ---
-
-
-# --- the price band ---
-
-
-@given(st.sampled_from([D("NaN"), D("Infinity"), D("-1"), D("-Infinity")]))
-def test_price_band_width_fails_closed(band: Decimal) -> None:
-    """A band width that is not a finite number of at least zero cannot be evaluated: the entry is
-    `missing_input`, never an exception and never an unlimited band."""
-    assert price_band_ok(D(100), D(100), band) is None
-    assert evaluate_signal(valid_ctx(), band_pct=band).reason == Reason.MISSING_INPUT
 
 
 # --- total, typed, fail closed ---
