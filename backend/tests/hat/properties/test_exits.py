@@ -1,6 +1,6 @@
-"""PBT exits.*: the exit stack of
-`app.hat.engine.exits` against rules written out independently, and the shadow engine of
-`app.hat.engine.shadow` driven end to end on SQLite with a broker that records every call."""
+"""The exit stack of `app.hat.engine.exits` against rules written out independently (full
+beats partial, fire once, fraction arithmetic, never lowering the stop, the veto), and the pure
+position rules beside it: `raise_stop`, `record_sale`'s quantity and the Take's chase re-check."""
 
 from __future__ import annotations
 
@@ -396,11 +396,6 @@ def test_never_lowers_stop(
 
 # --- the shadow engine, end to end -----------------------------------------------------------
 
-paths = st.lists(
-    st.tuples(st.integers(60, 160), st.integers(0, 3)),
-    min_size=1,
-    max_size=12,
-)
 R_MULTIPLES = st.decimals(
     min_value=-50, max_value=50, places=4, allow_nan=False, allow_infinity=False
 )

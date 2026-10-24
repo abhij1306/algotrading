@@ -1,13 +1,8 @@
-"""PBT dsr.*: the deflated
-Sharpe ratio of `app.hat.backtest.dsr` against the formula written out with `math.erf`, its
-family floors and the probability of backtest overfitting, and the trial counting,
-family keys, returns files, lifecycle evidence and risk-increase gate evidence of
-`app.hat.backtest.runs` on SQLite."""
+"""The deflated Sharpe ratio of `app.hat.backtest.dsr` against the formula written out with
+`math.erf`, its family floors, and the probability of backtest overfitting."""
 
 import math
 import statistics
-from datetime import UTC, date, datetime
-from decimal import Decimal
 from itertools import combinations
 
 from hat_support import memory_engine
@@ -35,7 +30,6 @@ EXCESS = st.integers(0, 2000).map(lambda n: n / 100)
 T = st.integers(2, 3000)
 N = st.integers(1, 10_000)
 V = st.integers(0, 1000).map(lambda n: n / 100_000)
-START, END = date(2025, 1, 1), date(2025, 12, 31)
 
 
 def phi(z: float) -> float:
@@ -216,18 +210,3 @@ def test_pbo_refused(case: str, noise: list[float]) -> None:
     if case == "short" and blocks % 2:
         blocks += 1
     assert pbo(matrix, blocks) is None
-
-
-# --- runs on SQLite ---------------------------------------------------
-
-
-# --- the risk-increase gate's backtest benchmark ---------------------------------
-
-R = st.integers(-300, 500).map(lambda n: Decimal(n) / 100)
-CLOSED = datetime(2025, 6, 2, 10, 0, tzinfo=UTC)
-
-
-# --- run-gated DSR, returns files, completion order, PBO ----
-
-
-EQUITY = st.lists(st.integers(1, 3_000_000).map(Decimal), min_size=0, max_size=12)

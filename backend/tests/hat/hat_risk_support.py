@@ -15,11 +15,10 @@ from decimal import Decimal
 from hypothesis import strategies as st
 
 from app.hat.risk.caps import OpenPosition
-from app.hat.risk.decision import RiskDecision, SignalContext
+from app.hat.risk.decision import SignalContext
 from app.hat.risk.exposure import LadderState
 from app.hat.risk.kill import KillState
 from app.hat.risk.policy import PolicyVersion, RiskPolicy, parse_policy, seed_policy
-from app.hat.risk.service import evaluate_signal
 from app.hat.risk.sessions import SessionCalendar, SessionDay
 from app.hat.time import IST
 
@@ -101,10 +100,6 @@ def valid_ctx(**changes: object) -> SignalContext:
     return replace(base, **changes)  # type: ignore[arg-type]
 
 
-def decide(ctx: SignalContext) -> RiskDecision:
-    return evaluate_signal(ctx)
-
-
 HUNDRED, NINETY_FIVE = D(100), D(95)
 
 
@@ -140,10 +135,8 @@ def money(low: str, high: str, places: int = 2) -> st.SearchStrategy[Decimal]:
 
 fractions_open = st.decimals(min_value=D("0.0001"), max_value=D(1), places=4)  # (0, 1]
 equities = money("1000", "5000000")
-prices = money("1", "5000")
 volumes = st.integers(min_value=0, max_value=50_000_000).map(D)
 cash_amounts = money("0", "50000000")
-levels = st.sampled_from(("L1", "L2", "L3"))
 
 
 @st.composite
@@ -152,6 +145,3 @@ def entry_and_stop(draw: st.DrawFn) -> tuple[Decimal, Decimal]:
     entry = draw(money("2", "5000"))
     stop = draw(st.decimals(min_value=D("0.01"), max_value=entry - D("0.01"), places=2))
     return entry, stop
-
-
-# --- rows for the service-level properties (SQLite in memory, foreign keys not enforced) --------

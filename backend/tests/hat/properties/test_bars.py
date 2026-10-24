@@ -1750,14 +1750,6 @@ class _LevelsBook:
         return ExitView(price=price, days_held=held, sma={10: price})
 
 
-class _OpenGates:
-    def quality_failed(self, *_args: object) -> bool:
-        return False
-
-    def gate_on(self, *_args: object) -> bool:
-        return True
-
-
 def test_exit_price_takes_an_illiquid_names_last_trade() -> None:
     """QA15: an exit view takes a silent symbol's last trade of the day while the feed itself
     is fresh, still inside the band; with the feed stale, from an earlier day or stamped ahead,

@@ -22,10 +22,6 @@ from app.hat.data.mcp_client import (
 )
 
 GOOD = fixture_json("mcp_bulk_quote.json")
-RECORDED = {  # replies of the live servers (the breadth one recorded 2026-10-22)
-    "get_bulk_quote": GOOD,
-    "get_market_breadth": fixture_json("mcp_market_breadth.json"),
-}
 CODES = [
     mcp_client.CODE_TRANSPORT,
     mcp_client.CODE_TIMEOUT,

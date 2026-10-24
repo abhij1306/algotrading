@@ -1,7 +1,5 @@
-"""PBT fyers_auth.*: the login flow trades an auth code for a token through one
-store, fails closed on anything Fyers or the disk gets wrong, never logs or raises the token, the
-secret or the code, lets a logout win over a login in flight, and keeps its status cache honest.
-Runs on a temporary token file and a recording SDK session."""
+"""The Fyers login settings and status: credential names in order of precedence, and a token
+Fyers refused reads not connected until a new login."""
 
 import os
 from unittest import mock
@@ -20,17 +18,9 @@ from app.hat.execution.fyers_auth import (
     MissingCredentialsError,
     credentials_from_env,
 )
-from app.hat.execution.fyers_tokens import TokenStore
 
 SECRET = "SECRETKEY-9f8e7d6c"
 CREDS = FyersCredentials("APP-100", SECRET, "https://app.example.test/cb")
-codes = st.from_regex(r"AUTHCODE[0-9a-f]{10,24}", fullmatch=True)
-tokens = st.from_regex(r"TKN[0-9a-f]{16,32}", fullmatch=True)
-GOOD = st.builds(token_reply, tokens)
-
-
-def listing(store: TokenStore) -> list[str]:
-    return sorted(p.name for p in store.path.parent.iterdir()) if store.path.parent.exists() else []
 
 
 ENV_NAMES = [

@@ -1,8 +1,6 @@
-"""PBT announcements.*: the poll cadence, GUID
-dedupe, unmatched items, the 24-hour match window and the rule that text never gates, on the real
-parser and store with RSS fixtures. No network."""
+"""The announcements poll: its cadence and window edges in IST, and the bounded fetch that
+counts the size limit in bytes. No network."""
 
-from collections import deque
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
@@ -14,7 +12,6 @@ from hat_live_support import (
 )
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from sqlalchemy import Engine
 
 from app.hat.data import announcements
 from app.hat.data.announcements import (
@@ -26,7 +23,6 @@ from app.hat.data.announcements import (
 )
 from app.hat.time import IST
 
-NOW = datetime(2026, 10, 21, 10, 0, tzinfo=IST)
 SYMBOL_ISINS = {"AAA": "INE000000001", "BBB": "INE000000002", "CCC": "INE000000003"}
 
 
@@ -109,15 +105,6 @@ def test_poll_schedule_edges() -> None:
         assert next_poll_at(at) - at == timedelta(minutes=minutes)
 
 
-# --- dedupe ----------------------------------------------------------------------
-
-published = st.integers(0, 72 * 60).map(lambda m: NOW - timedelta(minutes=m))
-_RECENT: deque[Engine] = deque()
-
-
-# --- unmatched items are kept ----------------------------------------------------
-
 # --- the match window ------------------------------------------------------------
 
 AT = datetime(2026, 10, 21, 9, 20, tzinfo=IST)
-# --- text never gates ------------------------------------------------------------

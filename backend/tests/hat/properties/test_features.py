@@ -1,17 +1,9 @@
-"""PBT features.*: the polars features on adjusted bars.
+"""The pure rules of the features job: SMA comparison under float noise, which ISINs are ranked
+and counted, the stale days and chains a change touches, the rebuild chunks, and when a day's
+percentiles may be spliced instead of recomputed."""
 
-No look-ahead, the formulas against a direct Fraction evaluation, the RS and momentum percentiles,
-breadth, split invariance, incremental equals full rebuild, the job's idempotence, and the
-X The real `compute_features`,
-store, adjusted view and `run_features` run; no network. Frames are a few hundred rows; failures
-compare digests and short summaries, never whole frames.
-"""
-
-import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
-from fractions import Fraction
-from pathlib import Path
 
 import polars as pl
 from hypothesis import strategies as st
@@ -28,9 +20,6 @@ from app.hat.data.features import (
     ordinary_equity,
     splice_day,
     stale_days,
-)
-from app.hat.data.store import (
-    DATASET_BARS,
 )
 
 EPOCH = date(2020, 1, 6)
@@ -169,75 +158,6 @@ def frame(world: list[Series]) -> pl.DataFrame:
     return pl.DataFrame(cols, schema=schema)
 
 
-def digest(df: pl.DataFrame) -> str:
-    """A short summary for assertion messages and equality: a sha256 over the sorted rows."""
-    text = df.sort(df.columns).write_csv()
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
-
-
-# --- no look-ahead --------------------------------------------------------------
-
-
-# --- formulas -------------------------------------------------------------------
-
-
-def _mean(values: list[Fraction]) -> Fraction:
-    return sum(values, Fraction(0)) / len(values)
-
-
-def naive(s: Series) -> dict[date, dict[str, Fraction | None]]:
-    """The feature definitions evaluated directly, in exact arithmetic, row by row."""
-    rows = s.rows
-    out: dict[date, dict[str, Fraction | None]] = {}
-    for i, row in enumerate(rows):
-        res: dict[str, Fraction | None] = {}
-
-        def window(n: int, i: int = i) -> list[dict] | None:
-            return rows[i - n + 1 : i + 1] if i + 1 >= n else None
-
-        for n in (10, 20, 50, 150, 200):
-            w = window(n)
-            res[f"sma{n}"] = None if w is None else _mean([Fraction(r["close"]) for r in w])
-        w = window(252)
-        res["high_52w"] = None if w is None else max(Fraction(r["high"]) for r in w)
-        res["low_52w"] = None if w is None else min(Fraction(r["low"]) for r in w)
-        w = window(20)
-        if w is None:
-            res.update(adr20=None, adtr20=None, adv20=None, turnover20=None)
-        else:
-            if any(r["low"] <= 0 for r in w):
-                res["adr20"] = None
-            else:
-                res["adr20"] = 100 * _mean(
-                    [Fraction(r["high"]) / Fraction(r["low"]) - 1 for r in w]
-                )
-
-            def true_range(r: dict) -> Fraction:
-                high, low, prev = Fraction(r["high"]), Fraction(r["low"]), Fraction(r["prev_close"])
-                if prev > 0:
-                    return max(high, prev) - min(low, prev)
-                return high - low  # no usable previous close: the bar's own range
-
-            res["adtr20"] = _mean([true_range(r) for r in w])
-            res["adv20"] = _mean([Fraction(r["volume"]) for r in w])
-            res["turnover20"] = _mean(
-                [
-                    Fraction(r["close"]) * r["volume"]
-                    if r["traded_value"] is None
-                    else Fraction(r["traded_value"])
-                    for r in w
-                ]
-            )
-        for n in (21, 63, 126, 252):
-            base = Fraction(rows[i - n]["close"]) if i >= n else None
-            res[f"ret{n}"] = None if not base else Fraction(row["close"]) / base - 1
-        out[row["date"]] = res
-    return out
-
-
-# --- percentiles -----------------------------------------------------------
-
-
 # --- breadth --------------------------------------------------------------------
 
 
@@ -264,30 +184,6 @@ def test_flat_series_is_not_above_its_own_mean() -> None:
     assert last["above_sma50"] == 0
     assert last["with_sma50"] == 2
     assert ABOVE_MARGIN < 1e-9
-
-
-# --- stores ----------------------------------------------------------------------------------
-
-
-# --- incremental equals full ----------------------------------------------------
-
-
-# --- split invariance -----------------------------------------------------------
-
-
-# --- idempotence and resume ------------------------------------------------------------------
-
-
-def _hashes(root: Path) -> dict[str, str]:
-    """Sha256 of every derived file (features, breadth and the job's state), by relative path."""
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file() and p.relative_to(root).parts[0] != DATASET_BARS
-    }
-
-
-# --- equivalence with the legacy pandas implementation (frozen oracle) -----------------------
 
 
 # --- the ranked universe (D257) --------------------------------------------------------------

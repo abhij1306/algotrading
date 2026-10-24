@@ -1,6 +1,5 @@
-"""PBT bhavcopy.*: file names, the two parsers, the
-resumable polite downloader, day reconciliation and the validation report, on the real code with
-in-memory zips and fake fetchers (no network)."""
+"""Bhavcopy file names by date, the two parsers agreeing, the downloader's pacing and the
+traded value kept, on the real code with in-memory zips and fake fetchers (no network)."""
 
 import dataclasses
 import tempfile
@@ -75,22 +74,6 @@ def test_no_file_before_first_isin_day(day: date) -> None:
         assert exc.code == "bhavcopy_no_isin"
     else:
         raise AssertionError("a day before FIRST_ISIN_DAY got a file name")
-
-
-STATUSES = st.sampled_from(["ok", "ok", "not_found", "error"])
-
-
-@st.composite
-def outcomes(draw: st.DrawFn) -> tuple[list[date], dict[date, str], set[date]]:
-    start = draw(st.dates(date(2012, 1, 2), date(2024, 6, 1)))
-    days = weekdays(start, start + timedelta(days=draw(st.integers(0, 40))))
-    status = {d: draw(STATUSES) for d in days}
-    holidays = {d for d in days if draw(st.booleans())}
-    return days, status, holidays
-
-
-class CrashError(Exception):
-    """An interruption injected into a fetch."""
 
 
 @given(

@@ -1,9 +1,6 @@
-"""PBT for order tags, the Fyers payload mapping, fail-closed broker reads and idempotent
-submission.
-
-Every property runs the real adapter, tag encoder and order path on `FakeBroker` or a recording
-stand-in for the Fyers SDK model. Nothing reaches a real broker.
-"""
+"""Order tags, the Fyers payload mapping, fail-closed broker reads and write results, the
+broker status mapping, the reconciliation scope and the GTT book reads, on the real adapter over
+`FakeBroker` or a recording stand-in for the Fyers SDK model. Nothing reaches a real broker."""
 
 import re
 import uuid
@@ -144,9 +141,6 @@ def test_tags_are_unique_within_one_millisecond(clock_ms: int, count: int) -> No
 def test_a_37th_order_is_refused(signal: uuid.UUID, purpose: str, sequence: int) -> None:
     with pytest.raises(TagExhaustedError):
         encode_tag(signal, purpose, sequence)
-
-
-# --- sequence from the order table ----------------------------------------------------------
 
 
 # --- the Fyers payload ----------------------------------------------------------------------

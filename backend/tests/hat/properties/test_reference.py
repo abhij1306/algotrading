@@ -1,6 +1,5 @@
-"""PBT reference.*: instrument identity, delisting, symbol
-history, prefix paging, Fyers symbols, price bands and industries on the real code, with an
-in-memory SQLite database and recorded or fake MCP servers (no network)."""
+"""Reference data on the real code: prefix paging of the listing, price bands from the file and
+from circuit limits, and which instrument holds a symbol (claims and the overlap repair)."""
 
 import itertools
 import uuid
@@ -29,11 +28,6 @@ from app.hat.data.reference import (
     page_listing,
     parse_band_value,
 )
-
-START = date(2026, 1, 5)
-KEYS = [(f"INE00000000{i}", "BE" if i == 5 else "EQ") for i in range(6)]
-SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH"]
-
 
 # --- prefix paging -------------------------------------------------------------
 
@@ -68,8 +62,6 @@ def test_prefix_paging_complete(listed: list[tuple[str, str]]) -> None:
         if matches >= 500:
             assert all(prefix + c in asked for c in "AB&01")
 
-
-# --- Fyers symbols ----------------------------------------------------------------
 
 # --- price bands and industries -----------------------------------------------
 

@@ -67,6 +67,7 @@ from app.hat.execution.kite_payloads import (
     parse_trades,
     place_result,
     rows_of,
+    stop_is_below,
 )
 from app.hat.execution.kite_tokens import kite_token_expiry
 from app.hat.execution.tags import encode_tag
@@ -523,3 +524,10 @@ def test_symbol_lookup_fails_closed() -> None:
         unmapped.place_order(intent)
     with pytest.raises(InvalidIntentError):
         unmapped.place_gtt_stop(gtt)
+
+
+def test_stop_is_below() -> None:
+    """A sell stop's trigger must sit strictly below the last price Kite places it with."""
+    assert stop_is_below(Decimal("99.95"), Decimal("100"))
+    assert not stop_is_below(Decimal("100"), Decimal("100"))
+    assert not stop_is_below(Decimal("100.05"), Decimal("100"))

@@ -28,13 +28,6 @@ def memory_engine(*models: type[DeclarativeBase] | type) -> Engine:
     return engine
 
 
-def event_engine(*models: type) -> Engine:
-    """An in-memory SQLite database with `hat_event` and the tables of `models`."""
-    from app.hat.models import HatEvent
-
-    return memory_engine(HatEvent, *models)
-
-
 # Where a command line's HAT_DATA_ROOT comes from: only the `.env` file, only the
 # process environment, both (the environment wins), or a blank environment value over a `.env`
 # value (blank means the default).

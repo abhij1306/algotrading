@@ -7,24 +7,23 @@ driver passes each tick's own instant as its arrival time, and no property reads
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any
 
 import yaml
 
-from app.hat.data.bars import Bar, BarBuilder, Tick
+from app.hat.data.bars import BarBuilder, Tick
 from app.hat.engine.strategy.config import Playbook, StrategyConfig, parse_config
 from app.hat.engine.strategy.versions import seed_text
-from app.hat.engine.trigger import Candidate, DailyInputs, Trigger, TriggerMonitor
+from app.hat.engine.trigger import Candidate, DailyInputs
 from app.hat.time import IST
 
 DAY = date(2026, 10, 21)
 BOT = uuid.UUID("00000000-0000-7000-8000-0000000000c1")
 S1 = "stage2-contraction-breakout"
 S2 = "momentum-breakout-ep"
-FEED = "FEED"  # another symbol on the feed, never a candidate
 
 
 def paise(value: int) -> Decimal:
@@ -33,9 +32,6 @@ def paise(value: int) -> Decimal:
 
 def ist(day: date, hh: int, mm: int, ss: int = 0) -> datetime:
     return datetime.combine(day, time(hh, mm, ss), tzinfo=IST)
-
-
-AT = ist(DAY, 10, 32, 2)
 
 
 def playbook(
@@ -101,38 +97,3 @@ def watch_from_open(builder: BarBuilder, symbols: Iterable[str], day: date = DAY
     preopen = ist(day, 9, 0)
     for symbol in symbols:
         builder.on_tick(Tick(symbol, preopen, Decimal(1)), preopen)
-
-
-def drive(
-    monitor: TriggerMonitor,
-    builder: BarBuilder,
-    ticks: Iterable[Tick],
-    until: datetime,
-    *,
-    from_open: bool = True,
-    seed: Callable[[Tick], tuple[Decimal, Decimal]] | None = None,
-) -> tuple[list[Bar], list[Trigger]]:
-    """Feed `ticks` in exchange-time order (each arriving at its own instant, then the bars
-    final by then are handed to the monitor, as the live step does), and finish at `until`, when
-    another symbol of the feed ticks. With `from_open` each symbol is first watched from before
-    the open; with `seed` each tick also carries the exchange's (high, low) so far.
-    Returns the final bars and the triggers, in order."""
-    bars: list[Bar] = []
-    triggers: list[Trigger] = []
-    ticks = list(ticks)
-    if from_open and ticks:
-        watch_from_open(builder, {t.symbol for t in ticks}, ticks[0].at.astimezone(IST).date())
-
-    def advance(now: datetime) -> None:
-        for bar in builder.advance(now):
-            bars.append(bar)
-            triggers.extend(monitor.on_bar(bar))
-
-    for tick in sorted(ticks, key=lambda t: t.at):
-        builder.on_tick(tick, tick.at)
-        if seed is not None:
-            builder.seed(tick, *seed(tick), tick.at)
-        advance(tick.at)
-    builder.on_tick(Tick(FEED, until, Decimal(1)), until)  # the rest of the feed ticks on
-    advance(until)
-    return bars, triggers
