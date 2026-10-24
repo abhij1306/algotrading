@@ -66,7 +66,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   a position exits the session before the ex-date (under T+1 it gets no resulting shares, by
   intent); live sells a real one only through the owner (`/flatten`). No entry from that session
   until the factor is stored: a buy that day is sold at its close, and after the ex-date the
-  history waits for the factor, as the backtest's `factor_pending` does.
+  history waits for the factor, as the backtest's `factor_pending` does. A notice the `bc` file
+  stops listing is alerted, not retired, until archived files show the file lists a demerger
+  every night up to its ex-date (none are kept yet): a wrongly retired notice would hold a
+  position through the demerger.
 - **The rescale waits for the fill sync.** A fill of the previous session booked after the rescale
   would land on the new scale, so `ca.rescale` waits for each real position's account to read its
   fills since the last close, until 09:00; then the job fails URGENT and the position stays

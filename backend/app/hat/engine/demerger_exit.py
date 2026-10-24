@@ -14,6 +14,10 @@ notice was read before that session (on a night before it) (`demerger_notice.exi
   handling: its stop rests, and once the factor is stored it is manage-only
   (`rescale.unhandled_actions`).
 
+A stored notice the night's `bc` file no longer lists before its ex-date is recorded once as
+`corporate_action.demerger_unlisted` (`flag_unlisted`, Q6): it stands, and the owner checks the
+record date.
+
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
 
@@ -37,14 +41,17 @@ from . import shadow
 __all__ = [
     "EVENT_EXIT_DUE",
     "EVENT_LATE",
+    "EVENT_UNLISTED",
     "Due",
     "close_due",
     "due_positions",
     "flag_positions",
+    "flag_unlisted",
 ]
 
 EVENT_EXIT_DUE = "corporate_action.demerger_exit"
 EVENT_LATE = "corporate_action.demerger_late"
+EVENT_UNLISTED = "corporate_action.demerger_unlisted"
 
 
 @dataclass(frozen=True)
@@ -144,3 +151,38 @@ def close_due(session: Session, position: HatPosition, price: Decimal, now: date
     (`shadow.close_position`: the shadow fills' costs and slippage, its trade result). False when
     it was already closed."""
     return shadow.close_position(session, position.id, price, CLOSE_REASON, now)
+
+
+def flag_unlisted(session: Session, notices: Sequence[HatDemergerNotice], now: datetime) -> int:
+    """Record one `corporate_action.demerger_unlisted` per notice (on its instrument) not yet
+    recorded; returns how many were. The notice is not retired (Q6)."""
+    flagged = 0
+    for notice in notices:
+        key = _key(notice)
+        recorded = session.scalars(
+            select(HatEvent.payload).where(
+                HatEvent.aggregate_type == "instrument",
+                HatEvent.aggregate_id == notice.instrument_id,
+                HatEvent.event_type == EVENT_UNLISTED,
+            )
+        )
+        if key in {str(dict(row or {}).get("action")) for row in recorded}:
+            continue
+        symbol = session.scalar(
+            select(HatInstrument.symbol).where(HatInstrument.id == notice.instrument_id)
+        )
+        record(
+            session,
+            aggregate_type="instrument",
+            aggregate_id=notice.instrument_id,
+            event_type=EVENT_UNLISTED,
+            actor="scheduler",
+            payload={
+                "action": key,
+                "symbol": str(symbol or "?"),
+                "announced_on": notice.announced_on.isoformat(),
+            },
+            occurred_at=now,
+        )
+        flagged += 1
+    return flagged

@@ -60,6 +60,8 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         # the nightly store coverage check and the owner's acknowledged index gaps (DB2)
         "coverage.gaps",
         "coverage.acknowledged",
+        # a stored demerger notice the night's bc file no longer lists (Q6)
+        "corporate_action.demerger_unlisted",
     ),
     "Signals": (
         "watchlist.published",

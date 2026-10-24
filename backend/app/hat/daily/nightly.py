@@ -36,7 +36,7 @@ from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
 from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.coverage import JOB_COVERAGE, coverage_body
-from ..data.demerger_notice import announce_stored, store_notices
+from ..data.demerger_notice import announce_stored, store_notices, unlisted_notices
 from ..data.features import features_job
 from ..data.kite_symbols import KiteSymbolData
 from ..data.lineage import refresh_lineage, stored_adjustment
@@ -54,7 +54,7 @@ from ..data.renames import renames_from_bars
 from ..data.store import Adjustment, DataStore, cumulative_segments
 from ..data.symbols import symbol_master
 from ..engine.close_gap import record_close_gaps
-from ..engine.demerger_exit import flag_positions
+from ..engine.demerger_exit import flag_positions, flag_unlisted
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
 from ..engine.portfolio.allocation_service import policy_at
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
@@ -457,13 +457,19 @@ class Nightly:
         return None if source is None else source(day)()
 
     def _demergers(self, day: date, text: str | None) -> None:
-        """The demergers the night's `bc` file lists become notices dated tonight, a stored
-        demerger takes its notice's date, and each open position held into one is alerted
-        (`demerger_exit.flag_positions`, CA8), in one transaction. Without tonight's file the
-        stored notices are still checked, so a position whose exit passed is alerted late."""
+        """The demergers the night's `bc` file lists become notices dated tonight, a stored notice
+        ahead of tonight the file no longer lists is recorded for the owner (`flag_unlisted`,
+        Q6: never retired), a stored demerger takes its notice's date, and each open position
+        held into one is alerted (`demerger_exit.flag_positions`, CA8), in one transaction.
+        Without tonight's file the stored notices are still checked, so a position whose exit
+        passed is alerted late."""
         with self.deps.session_factory() as session:
-            stored = (
-                store_notices(session, ca_dividends.read_bc(text), day) if text is not None else 0
+            rows = ca_dividends.read_bc(text) if text is not None else None
+            stored = store_notices(session, rows, day) if rows is not None else 0
+            unlisted = (
+                flag_unlisted(session, unlisted_notices(session, rows, day), self._now())
+                if rows is not None
+                else 0
             )
             dated = announce_stored(session)
             calendar = session_calendar(session)
@@ -471,9 +477,11 @@ class Nightly:
             due, late = flag_positions(session, day, sessions, self._now())
             session.commit()
         logger.info(
-            "demergers of %s: %d notices stored, %d actions dated, %d exits due, %d late",
+            "demergers of %s: %d notices stored, %d newly unlisted, %d actions dated, "
+            "%d exits due, %d late",
             day,
             stored,
+            unlisted,
             dated,
             due,
             late,

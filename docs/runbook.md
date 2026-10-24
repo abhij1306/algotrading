@@ -175,6 +175,9 @@ Alerts:
   `corporate_action.demerger_late`: the notice came too late or the position is still open; it
   is handled as `unhandled` once the factor is stored. `demerger.unchecked`: tonight's notices
   failed; read the log.
+- `corporate_action.demerger_unlisted` (symbol, `<ex-date>:demerger`): tonight's `bc` file no
+  longer lists a stored notice before its ex-date (a moved or withdrawn record date). The notice
+  stands and its exit still fires; check NSE's announcement and sell or hold by hand.
 - `dividend.trades_stale`: the closed-trade dividend restatement failed; read the log.
 - `lineage.unchecked`, `lineage.review`: see `lineage report`.
 

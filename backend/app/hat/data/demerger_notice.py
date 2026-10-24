@@ -17,6 +17,10 @@ Splits and bonuses keep their rescale and rights their manage-only lock.
   the night it first lists them (`store_notices`), and dates a stored demerger's
   `hat_corporate_action.announced_on` from its notice (`announce_stored`). The positions'
   side is `engine/demerger_exit.py`.
+- A record date NSE moves adds a second notice; the first one is not retired, since no archived
+  `bc` file shows the file lists a pending demerger every night until its ex-date (Q6). Each
+  stored `bc` notice ahead of tonight that the night's file no longer lists is recorded once
+  as `corporate_action.demerger_unlisted` instead (`unlisted_notices`), for the owner.
 - Entries: an instrument with a demerger notice takes no entry from the last session before
   its ex-date until a price-changing action of that ex-date is stored (`entry_blocked`, Q5,
   skip `demerger_pending`): the exit session's buyer would be sold at its close, and after the
@@ -63,6 +67,7 @@ __all__ = [
     "plan_announced",
     "read_announced",
     "store_notices",
+    "unlisted_notices",
 ]
 
 CLOSE_REASON = "demerger"  # the exit reason of a position closed before a demerger
@@ -188,6 +193,24 @@ def store_notices(session: Session, rows: Iterable[FeedRow], day: date) -> int:
             stored += 1
     session.flush()
     return stored
+
+
+def unlisted_notices(
+    session: Session, rows: Iterable[FeedRow], day: date
+) -> list[HatDemergerNotice]:
+    """The stored `bc` notices with an ex-date after `day` that the night's `bc` rows no longer
+    list for their instrument (a moved or withdrawn record date), oldest ex-date first."""
+    listed = {
+        (instrument.id, row.ex_date)
+        for row in demerger_rows(rows)
+        for instrument in _instruments_of(session, row.symbol, day)
+    }
+    notices = session.scalars(
+        select(HatDemergerNotice)
+        .where(HatDemergerNotice.source == SOURCE_BC, HatDemergerNotice.ex_date > day)
+        .order_by(HatDemergerNotice.ex_date, HatDemergerNotice.instrument_id)
+    )
+    return [n for n in notices if (n.instrument_id, n.ex_date) not in listed]
 
 
 def _stored_demergers(session: Session) -> list[HatCorporateAction]:

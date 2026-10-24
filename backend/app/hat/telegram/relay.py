@@ -14,7 +14,9 @@ sends at most one message per event:
   adapter's GTT for delivery reached the account, HAT-BRK-092), `corporate_action.unhandled` (a
   position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT),
   `corporate_action.demerger_exit` and `corporate_action.demerger_late` (a position held into a
-  demerger: sell it by a close, or it was held into one, CA8; URGENT), `position.split_gap` (a
+  demerger: sell it by a close, or it was held into one, CA8; URGENT),
+  `corporate_action.demerger_unlisted` (the `bc` file stopped listing a stored notice before its
+  ex-date, Q6), `position.split_gap` (a
   held name gapped like an unstored split: manage-only, Q3; URGENT), `position.isin_changed` (a
   position held across an ISIN change: manage-only, Q4; URGENT), `order.rejected`
   and `relay.skipped`: a health alert (T15). The `Notifier` leaves these codes to the relay, so
@@ -95,6 +97,7 @@ HEALTH_EVENTS = frozenset(
         "corporate_action.unhandled",
         "corporate_action.demerger_exit",
         "corporate_action.demerger_late",
+        "corporate_action.demerger_unlisted",
         "position.split_gap",
         "position.isin_changed",
         "order.rejected",
