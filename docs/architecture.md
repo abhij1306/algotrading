@@ -52,6 +52,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 
 - **Pure core shared by backtest and live:** `scan.scan_bot`, `exits.evaluate/apply`, the criteria
   and `decide` read no clock, database or file; `backtest/loop.py` calls the same code.
+- **One strategy registry:** `engine/strategy/registry.py:STRATEGIES`, read from the seed files
+  `engine/strategy/seeds/<name>.yaml` (a header with `sleeve` and `persona`, then the config).
+  Adding a strategy is one seed file plus any new criteria; its `p_max` and `base_weight` go into
+  the risk policy as a new policy version.
 - **One risk authority:** `risk/service.py:evaluate_signal` -> `decide`, the only caller of
   `size_position`.
 - **One path to an order:** `execution/submit.py:send_order` is the only way an entry reaches

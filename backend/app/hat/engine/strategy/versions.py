@@ -1,5 +1,5 @@
-"""Strategy versions, the criterion catalogue and the two seeds as database operations
-(HAT-CRIT-021, HAT-BOT-060/061/070/072/080/084).
+"""Strategy versions, the criterion catalogue and the seeds of the registered strategies as
+database operations (HAT-CRIT-021, HAT-BOT-060/061/070/072/080/084).
 
 Every save creates a new `hat_strategy_version` (a draft) numbered 1, 2, 3 without gaps, with
 `parent_version_id` set; `publish_version` freezes a draft by moving it to `backtested`, after
@@ -21,7 +21,6 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from datetime import date, datetime
-from importlib import resources
 from typing import Any
 
 import yaml
@@ -46,12 +45,8 @@ from ..criteria import REGISTRY
 from ..owner import OwnerCommand
 from ..portfolio.lifecycle import LIVE, PROBATION, shadow_gate
 from .config import StrategyConfig, parse_config
+from .registry import STRATEGIES
 
-SEED_NAMES = ("stage2-contraction-breakout", "momentum-breakout-ep")
-PERSONAS = {
-    "stage2-contraction-breakout": "Minervini-style",
-    "momentum-breakout-ep": "Qullamaggie-style",
-}
 DEFAULT_RISK_CLUSTER = "momentum-long"  # S1 and S2 share one cluster (HAT-PORT-011)
 EVENT_CREATED = "strategy.version_created"
 EVENT_PROMOTED = "strategy.promoted"
@@ -344,14 +339,15 @@ def _assigned(
     )
 
 
-# --- the two seeds ----------------------------------------------------------------------------
+# --- the seeds (one per registered strategy) ----------------------------------------------------
 
 
 def seed_text(name: str) -> str:
-    """The shipped YAML of a seed (verbatim)."""
-    if name not in SEED_NAMES:
+    """The shipped config YAML of a seed (verbatim, without its registration header)."""
+    strategy = STRATEGIES.get(name)
+    if strategy is None:
         raise VersionError("unknown_seed")
-    return resources.files(__package__).joinpath("seeds", f"{name}.yaml").read_text("utf-8")
+    return strategy.config_text
 
 
 def seed_config(name: str) -> StrategyConfig:
@@ -359,7 +355,7 @@ def seed_config(name: str) -> StrategyConfig:
 
 
 def seed_default_strategies(session: Session, user_id: uuid.UUID) -> list[HatStrategy]:
-    """Create the two MVP strategies, each with version 1 as a draft, when missing; sync the
+    """Create every registered strategy, each with version 1 as a draft, when missing; sync the
     criterion catalogue. Safe to repeat: an existing strategy is left as it is. Needs the NSE
     `hat_market` row."""
     market = session.scalar(select(HatMarket).where(HatMarket.code == "NSE"))
@@ -367,7 +363,7 @@ def seed_default_strategies(session: Session, user_id: uuid.UUID) -> list[HatStr
         raise VersionError("no_market")
     sync_criterion_types(session)
     strategies = []
-    for name in SEED_NAMES:
+    for name, registered in STRATEGIES.items():
         strategy = session.scalar(
             select(HatStrategy).where(HatStrategy.user_id == user_id, HatStrategy.name == name)
         )
@@ -377,7 +373,7 @@ def seed_default_strategies(session: Session, user_id: uuid.UUID) -> list[HatStr
                 user_id=user_id,
                 market_id=market.id,
                 name=name,
-                persona=PERSONAS[name],
+                persona=registered.persona,
             )
             session.add(strategy)
             session.flush()

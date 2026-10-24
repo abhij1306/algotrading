@@ -1,4 +1,8 @@
-bot: stage2-contraction-breakout      # Minervini-style
+# Registration (engine/strategy/registry.py); the strategy config follows the --- line.
+sleeve: S1
+persona: Minervini-style
+---
+bot: stage2-contraction-breakout
 version: 1
 market: NSE
 # capital allocation: set in the account risk policy

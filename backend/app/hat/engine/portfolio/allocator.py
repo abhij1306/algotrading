@@ -26,11 +26,12 @@ changes a real weight and never reaches a real entry; every other sleeve has non
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import ROUND_DOWN, Decimal, localcontext
 from uuid import UUID
 
+from app.hat.engine.strategy.registry import STRATEGIES
 from app.hat.errors import HatError
 from app.hat.risk.policy import RiskPolicy
 
@@ -42,12 +43,6 @@ VIRTUAL_STATES = frozenset({"shadow", "probation"})  # sized nominally for virtu
 _PRECISION = 120  # wide enough that no product of stored amounts is rounded
 _WEIGHT_PLACES = Decimal("1E-12")
 _MONEY_PLACES = Decimal("0.0001")
-# Sleeve keys of the two MVP strategies in the policy's `base_weight`. A strategy not
-# listed is its own key, so a new sleeve needs a policy entry and no code (HAT-PORT-010).
-SLEEVE_OF_STRATEGY: Mapping[str, str] = {
-    "stage2-contraction-breakout": "S1",
-    "momentum-breakout-ep": "S2",
-}
 
 
 class AllocationError(HatError):
@@ -55,8 +50,10 @@ class AllocationError(HatError):
 
 
 def sleeve_key(strategy_name: str) -> str:
-    """The `base_weight` key of a sleeve's strategy."""
-    return SLEEVE_OF_STRATEGY.get(strategy_name, strategy_name)
+    """The `base_weight` key of a sleeve's strategy: its registered sleeve (`registry`). An
+    unregistered strategy is its own key, so it needs a policy entry and no code (HAT-PORT-010)."""
+    registered = STRATEGIES.get(strategy_name)
+    return strategy_name if registered is None else registered.sleeve
 
 
 def clamp(value: Decimal, lo: Decimal, hi: Decimal) -> Decimal:

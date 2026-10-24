@@ -318,7 +318,8 @@ def _seed_scope_strategies_and_owner() -> None:
     from sqlalchemy import select
     from sqlalchemy.orm import Session
 
-    from app.hat.engine.strategy.versions import SEED_NAMES, seed_default_bots
+    from app.hat.engine.strategy.registry import STRATEGIES
+    from app.hat.engine.strategy.versions import seed_default_bots
     from app.hat.models import HatBot, HatMarket, HatStrategy
     from app.hat.schema import seed_hat_reference
 
@@ -328,14 +329,8 @@ def _seed_scope_strategies_and_owner() -> None:
     with Session(engine) as session:
         seed_default_bots(session, user_id=owner, broker_account_id=uuid.uuid4())
         strategies = session.scalars(select(HatStrategy)).all()
-        assert (
-            {s.name for s in strategies}
-            == set(SEED_NAMES)
-            == {
-                "stage2-contraction-breakout",
-                "momentum-breakout-ep",
-            }
-        )
+        assert {s.name for s in strategies} == set(STRATEGIES)
+        assert {s.persona for s in strategies} == {s.persona for s in STRATEGIES.values()}
         assert [m.code for m in session.scalars(select(HatMarket)).all()] == ["NSE"]
         for model in (HatStrategy, HatBot):
             owners = {row.user_id for row in session.scalars(select(model)).all()}
@@ -377,7 +372,8 @@ def test_exec__default_mode_confirm() -> None:
     seeds = sorted(SEEDS_DIR.glob("*.yaml"))
     assert seeds
     for path in seeds:
-        assert "execution_mode" not in yaml.safe_load(path.read_text(encoding="utf-8")), path
+        for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")):
+            assert "execution_mode" not in doc, path
     assert "execution_mode" not in StrategyConfig.model_fields
     column = HatBot.__table__.c.execution_mode
     assert column.default is not None
