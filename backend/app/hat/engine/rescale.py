@@ -6,7 +6,8 @@ holds prices of the old scale: unchanged, its stop sits above the new price and 
 it on the ex-date open for nothing but the action. So:
 
 - the night before, `ca.adjust` stores the next session's actions of the held and watchlisted
-  instruments (`daily/nightly.py`), and the features read them;
+  instruments (`daily/nightly.py`), and the features read them; after the scan, those of the
+  names new to the next session's watchlist are stored too;
 - before the open, `ca.rescale` (`rescale_open_positions`) rescales each open position of such an
   instrument: quantity ⌊q / f⌋ (a fractional entitlement is the broker's cash, not shares),
   average entry and both stops × f, in one transaction with the event `position.rescaled` that

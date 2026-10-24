@@ -634,7 +634,9 @@ class Nightly:
 
     def scan(self, day: date) -> JobResult:
         """Each active bot's watchlist for the next session from the bars of `day`, without the
-        instruments the quality gate excluded (HAT-DATA-064)."""
+        instruments the quality gate excluded (HAT-DATA-064). Then the next session's actions of
+        the names new to it are looked up and stored (`_new_names_actions`): `ca.adjust` ran
+        before the scan and knew only tonight's held and watchlisted names."""
         rows = 0
         with self.deps.session_factory() as session:
             target = next_session(session, day)
@@ -654,7 +656,39 @@ class Nightly:
                 published = scan_and_publish(session, bot.id, inputs[index], target, self._now())
                 session.commit()
                 rows += published.rows
+        self._new_names_actions(day, target)
         return JobResult(rows=rows)
+
+    def _new_names_actions(self, day: date, target: date) -> None:
+        """Look up and store the `target` session's actions of the instruments on its watchlist
+        that `ca.adjust` did not ask for (held or on the watchlist of `day`). A failed lookup is
+        alerted `corporate_action.unchecked` and never fails the scan."""
+        try:
+            with self.deps.session_factory() as session:
+                asked = set(held_and_watchlisted(session, day).values())
+                new = {
+                    symbol: iid
+                    for symbol, iid in held_and_watchlisted(session, target).items()
+                    if iid not in asked
+                }
+            if not new:
+                return
+            found = lookup_actions(_mcp(self.deps), new, target, target)
+            stored = store_actions(
+                self.deps.session_factory, found.records, (self.deps.notifier, day)
+            )
+        except Exception:
+            logger.exception("post-scan corporate-action lookup failed")
+            self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": "*"})
+            return
+        logger.info(
+            "post-scan actions: %d names, %d stored, %d lookups failed",
+            len(new),
+            stored.created,
+            len(found.failed),
+        )
+        for symbol in found.failed:
+            self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
 
     def watchlist_digest(self, day: date) -> JobResult:
         send = self.deps.digest
