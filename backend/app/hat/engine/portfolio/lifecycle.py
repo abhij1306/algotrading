@@ -9,6 +9,7 @@ cannot change a lifecycle state (HAT-PORT-034). The model is `verification/tla/S
 from __future__ import annotations
 
 import calendar
+import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -208,8 +209,9 @@ class BacktestFacts:
     sleeve_weight: Decimal | None = None
     base_weight: Decimal | None = None
     regime_mult: str | None = None
-    # the playbooks whose trades are not compared with the run (`evidence.unbacktested`, PR 40)
-    unbacktested: frozenset[str] = frozenset()
+    # the (strategy version, playbook) pairs whose trades are not compared with the run
+    # (`evidence.unbacktested_trades`, PR 40)
+    unbacktested: frozenset[tuple[uuid.UUID, str]] = frozenset()
 
 
 def backtest_refusal(facts: BacktestFacts) -> str | None:

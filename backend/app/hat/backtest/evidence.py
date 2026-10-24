@@ -87,6 +87,7 @@ __all__ = [
     "run_playbooks",
     "signal_confidence",
     "unbacktested",
+    "unbacktested_trades",
     "universe_of",
 ]
 
@@ -332,14 +333,27 @@ def run_playbooks(session: Session, run: HatBacktestRun) -> tuple[Playbook, ...]
     return () if config is None else tuple(config.playbooks)
 
 
-def _strategy_playbooks(session: Session, bot: HatBot) -> tuple[Playbook, ...]:
-    """The playbooks of every version of the bot's strategy whose config parses: a trade of the
-    bot may come from any of them."""
+def _strategy_playbooks(session: Session, bot: HatBot) -> dict[uuid.UUID, tuple[Playbook, ...]]:
+    """The playbooks of each version of the bot's strategy whose config parses, by version id: a
+    trade of the bot may come from any of them, and is judged by its own version's."""
     versions = session.scalars(
         select(HatStrategyVersion).where(HatStrategyVersion.strategy_id == bot.strategy_id)
     )
-    configs = (_config_of(v) for v in versions)
-    return tuple(p for config in configs if config is not None for p in config.playbooks)
+    configs = {v.id: _config_of(v) for v in versions}
+    return {vid: tuple(c.playbooks) for vid, c in configs.items() if c is not None}
+
+
+def unbacktested_trades(
+    metrics: RunMetrics | None, versions: Mapping[uuid.UUID, Sequence[Playbook]]
+) -> frozenset[tuple[uuid.UUID, str]]:
+    """The (strategy version, playbook) pairs whose trades are left out when they are compared
+    with a run: `unbacktested` of each version's own playbooks, so a name that is pre-open in one
+    version leaves out only that version's trades of it."""
+    return frozenset(
+        (version_id, name)
+        for version_id, playbooks in versions.items()
+        for name in unbacktested(metrics, playbooks)
+    )
 
 
 def history_holds(metrics: RunMetrics, playbooks: Sequence[Playbook]) -> bool:
@@ -364,13 +378,13 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     and held sessions, the playbooks its known gaps name (`GAP_PLAYBOOKS`) and those the version
     enables, and its sleeve weight and regime rule beside the base weight of the sleeve in the
     policy in force. A fact the run did not record is absent, and fails its condition. No run
-    gives no evidence, so Research -> Backtested stays closed. The playbooks `unbacktested`
-    names are not compared with it (PR 40)."""
+    gives no evidence, so Research -> Backtested stays closed. The trades of the (version,
+    playbook) pairs `unbacktested_trades` names are not compared with it (PR 40)."""
     in_force = effective_version(load_versions(session, bot.user_id), utc_now())
     found = evidence_run(session, bot, _cooldown_of(in_force))
     traded = _strategy_playbooks(session, bot)
     if found is None:
-        return BacktestFacts(unbacktested=unbacktested(None, traded))
+        return BacktestFacts(unbacktested=unbacktested_trades(None, traded))
     run, metrics = found
     deflated, trials, _ = run_dsr(session, run, metrics)
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
@@ -395,7 +409,7 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
         sleeve_weight=metrics.sleeve_weight,
         base_weight=base,
         regime_mult=metrics.regime_mult,
-        unbacktested=unbacktested(metrics, traded),
+        unbacktested=unbacktested_trades(metrics, traded),
     )
 
 
@@ -473,11 +487,11 @@ def gate_evidence(
     in_force = effective_version(load_versions(session, user_id), at)
     weighted = Decimal(0)
     count = 0
-    excluded: dict[uuid.UUID, frozenset[str]] = {}
+    excluded: dict[uuid.UUID, frozenset[tuple[uuid.UUID, str]]] = {}
     for bot in bots:
         found = evidence_run(session, bot, _cooldown_of(in_force), at)
         metrics = None if found is None else found[1]
-        excluded[bot.id] = unbacktested(metrics, _strategy_playbooks(session, bot))
+        excluded[bot.id] = unbacktested_trades(metrics, _strategy_playbooks(session, bot))
         if found is None or metrics is None or metrics.expectancy_r is None:
             continue
         if metrics.trades is None or metrics.trades <= 0:
@@ -493,6 +507,7 @@ def gate_evidence(
             HatTradeResult.r_multiple,
             HatPosition.is_virtual,
             HatPosition.bot_id,
+            HatSignal.strategy_version_id,
             HatSignal.playbook,
         )
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
@@ -506,7 +521,7 @@ def gate_evidence(
     rows = session.execute(query).all()
     outcomes = [
         TradeOutcome(Decimal(r), bool(virtual))
-        for r, virtual, bot_id, playbook in rows
-        if playbook not in excluded.get(bot_id, frozenset())
+        for r, virtual, bot_id, version_id, playbook in rows
+        if (version_id, playbook) not in excluded.get(bot_id, frozenset())
     ]
     return build_gate_evidence(outcomes, discounted_benchmark(weighted / count, discount))

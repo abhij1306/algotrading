@@ -13,7 +13,12 @@ from decimal import Decimal
 import hat_backtest_support as s
 from hat_trigger_support import S1, S2, seed_config
 
-from app.hat.backtest.evidence import RunMetrics, history_holds, unbacktested
+from app.hat.backtest.evidence import (
+    RunMetrics,
+    history_holds,
+    unbacktested,
+    unbacktested_trades,
+)
 from app.hat.backtest.report import TradeRow, compute_metrics
 from app.hat.backtest.spec import KNOWN_GAPS, sleeve_weight
 
@@ -111,6 +116,14 @@ def test_unbacktested() -> None:
     assert unbacktested(RunMetrics.from_json({"known_gaps": []}), S2_BOOKS) == frozenset()  # PR 70
     assert unbacktested(None, (*BREAKOUT, GAP_AND_GO)) == frozenset({"gap_and_go"})
     assert unbacktested(None, seed_config(S1).playbooks) == frozenset()
+
+
+def test_unbacktested_trades_by_version() -> None:
+    """A name pre-open in one version leaves out only that version's trades of it."""
+    v1, v2 = uuid.UUID(int=1), uuid.UUID(int=2)
+    nightly = BREAKOUT[0].model_copy(update={"name": "gap_and_go"})
+    assert unbacktested_trades(None, {v1: (nightly,), v2: (GAP_AND_GO,)}) == {(v2, "gap_and_go")}
+    assert unbacktested_trades(RunMetrics.from_json({"known_gaps": []}), {v2: S2_BOOKS}) == set()
 
 
 def test_history_holds() -> None:
