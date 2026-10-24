@@ -21,7 +21,9 @@ Views, per connection from `DataStore.connect`:
 - `bars_daily_adj`: the total-return series every signal reads (CA3): the price basis times the
   cumulative factor of the dividends as well, each 1 - D / the raw close before its ex-date
   (`dividend_factor`), applied once the bars hold its ex-date (a dividend ahead is not priced
-  in). Volume and `raw_close` are the price basis's: a dividend changes no share count.
+  in); an ex-date's prev_close takes the day's dividend factor too (NSE's PREVCLOSE is the raw
+  close before it). Volume and `raw_close` are the price basis's: a dividend changes no share
+  count.
 - `bars_daily` and `bars_daily_cap`: those views with one row per (instrument_id, date), from the
   latest ingest run (run ids are uuid v7, so byte order is time order).
 - `index_daily`: index levels.
@@ -347,7 +349,8 @@ SELECT COALESCE(l.chain_id, r.instrument_id) AS instrument_id, r.date, r.isin, r
        r.high * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS high,
        r.low * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS low,
        r.close * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS close,
-       r.prev_close * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS prev_close,
+       r.prev_close * CAST(COALESCE(p.factor, CAST(1 AS DECIMAL(20,18)))
+           * COALESCE(x.factor, CAST(1 AS DECIMAL(20,18))) AS DECIMAL(20,18)) AS prev_close,
        CAST(r.volume AS DECIMAL(14,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
        r.traded_value, r.close AS raw_close, r.source, r.ingest_run_id,
        COALESCE(d.factor, CAST(1 AS DECIMAL(20,18))) AS div_factor
@@ -359,11 +362,15 @@ LEFT JOIN div_segment d ON d.instrument_id = COALESCE(l.chain_id, r.instrument_i
      AND r.date >= COALESCE(d.from_date, DATE '0001-01-01') AND r.date < d.to_date
 LEFT JOIN {segment} p ON p.instrument_id = COALESCE(l.chain_id, r.instrument_id)
      AND r.date >= COALESCE(p.from_date, DATE '0001-01-01') AND r.date < p.to_date
+LEFT JOIN {ex_dividends} x ON x.instrument_id = COALESCE(l.chain_id, r.instrument_id)
+     AND x.ex_date = r.date
 """
-# (view, its price segment table, the one-row-per-day view over it)
+# (view, its price segment table, the dividends going ex on a bar's date, the one-row-per-day
+# view over it). NSE's PREVCLOSE on an ex-dividend date is the previous raw close, so on the
+# total-return series it takes that day's dividend factor too, as the previous bar's close has.
 _ADJ_VIEWS = (
-    ("bars_daily_cap_adj", "ca_segment", "bars_daily_cap"),
-    ("bars_daily_adj", "tr_segment", "bars_daily"),
+    ("bars_daily_cap_adj", "ca_segment", "no_dividend", "bars_daily_cap"),
+    ("bars_daily_adj", "tr_segment", "dividend", "bars_daily"),
 )
 _LATEST_VIEW_SQL = """
 CREATE VIEW {latest} AS
@@ -637,8 +644,9 @@ class DataStore:
             _SEGMENT_TABLES, (adjustment.factors, (*adjustment.factors, *paid), paid), strict=True
         ):
             _load(con, table, segment_table(cumulative_segments(actions)))
-        for view, segment, latest in _ADJ_VIEWS:
-            con.execute(_ADJ_VIEW_SQL.format(view=view, segment=segment))
+        con.execute("CREATE TABLE no_dividend AS SELECT * FROM dividend WHERE false")
+        for view, segment, ex_dividends, latest in _ADJ_VIEWS:
+            con.execute(_ADJ_VIEW_SQL.format(view=view, segment=segment, ex_dividends=ex_dividends))
             con.execute(_LATEST_VIEW_SQL.format(latest=latest, view=view))
         return con
 

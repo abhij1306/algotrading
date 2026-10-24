@@ -539,6 +539,7 @@ def _bar_on(bars: Iterable[Bar], day: date, isin: str) -> Bar | None:
 
 NAMED_BEFORE = 7  # NSE's ex-date of a bonus may be this many days before the research date
 NAMED_AFTER = 3  # (a record date) or this many after it
+PREVIOUS_SLACK = 7  # days back from the earliest candidate to the session before it
 
 
 def bonus_ex_date(
@@ -620,9 +621,10 @@ def decide(
     amount = total(p.parts)
     placed = ""
     if p.table == T_BONUS:
-        near = previous_bar(bars, p.ex_date, p.isin)
-        if not isinstance(near, str) and not bonus_counts(amount, near.close):
-            return _below_share(p, amount, near)
+        # below the share on every session the ex-date can be on: price-neutral, not placed
+        lowest = _lowest_candidate_bar(bars, p.ex_date, p.isin)
+        if lowest is not None and not bonus_counts(amount, lowest.close):
+            return _below_share(p, amount, lowest)
         found = bonus_ex_date(p.ex_date, named, bars, p.isin, amount)
         if isinstance(found, str):
             return Outcome(p, REVIEW, found)
@@ -661,6 +663,19 @@ def decide(
     return Outcome(p, STORED, "", detail, record, evidence=evidence)
 
 
+def _lowest_candidate_bar(bars: Sequence[Bar], research_date: date, isin: str) -> Bar | None:
+    """The lowest-closing bar that can be the previous session of a bonus's ex-date: any from
+    `NAMED_BEFORE` + `PREVIOUS_SLACK` days before the research date to `NAMED_AFTER` after it
+    (`bonus_ex_date`'s candidates). A value under `BONUS_MIN_SHARE` of its close is under it on
+    every candidate."""
+    first = research_date - timedelta(days=NAMED_BEFORE + PREVIOUS_SLACK)
+    last = research_date + timedelta(days=NAMED_AFTER)
+    window = [b for b in bars if first <= b.day < last and b.close > 0]
+    if len({b.isin for b in window}) > 1:
+        window = [b for b in window if b.isin == isin]
+    return min(window, key=lambda b: b.close, default=None)
+
+
 def _below_share(p: Proposal, amount: Decimal, before: Bar) -> Outcome:
     ratio = amount / before.close if before.close > 0 else Decimal(0)
     detail = f"Rs {amount.normalize():f} vs prev {before.day} close {before.close} ({ratio:.2%})"
@@ -696,6 +711,13 @@ def merge(outcomes: Sequence[Outcome]) -> None:
         first.evidence["merged"] = [f"{o.proposal.table}:{o.proposal.rowid}" for o in rest]
         for o in rest:
             o.record, o.merged_into = None, first
+        # the sum is held to the limit each part was
+        assert first.record is not None
+        assert first.record.cash_amount is not None
+        close = require_exact(first.evidence["previous_close"], "previous_close")
+        if over_yield(first.record.cash_amount, close):
+            first.status, first.reason, first.record = REVIEW, "amount_vs_price", None
+            first.detail += f"; merged {describe(parts)} over half the close"
 
 
 def settle(
@@ -705,8 +727,9 @@ def settle(
     held: set[tuple],
 ) -> None:
     """Each candidate against the dividends stored on its ex-date for the company (its chain):
-    the same amount is `already`, a missing amount is added (`amount_added`), another is a
-    `conflict`; a key the owner vacated is `skipped`. A merged outcome takes its row's verdict."""
+    the same amount on every copy that has one is `already`, a missing amount is added
+    (`amount_added`), another amount on any copy is a `conflict`; a key the owner vacated is
+    `skipped`. A merged outcome takes its row's verdict."""
     for o in outcomes:
         r = o.record
         if r is None:
@@ -714,14 +737,15 @@ def settle(
         p = o.proposal
         ids = reference.ids(p.symbol, p.isin, r.ex_date) | {str(r.instrument_id)}
         same_day = [s for iid in ids for s in stored.get(iid, ()) if s.ex_date == r.ex_date]
+        amounts = {s.amount for s in same_day if s.amount is not None}
         if r.key in held:
             o.status, o.reason, o.record = SKIPPED, "owner_vacated", None
-        elif any(s.amount is not None and s.amount == r.cash_amount for s in same_day):
-            o.status, o.record = ALREADY, None
-        elif any(s.amount is not None for s in same_day):
-            amounts = ", ".join(sorted({str(s.amount) for s in same_day if s.amount is not None}))
+        elif amounts and amounts != {r.cash_amount}:
+            # any stored copy in the chain with another amount (the series reads the nearest)
             o.status, o.reason, o.record = CONFLICT, "stored_amount_differs", None
-            o.detail += f"; stored {amounts}"
+            o.detail += f"; stored {', '.join(sorted(str(a) for a in amounts))}"
+        elif amounts:
+            o.status, o.record = ALREADY, None
         elif same_day:
             o.fill, o.reason = same_day[0], REASON_AMOUNT_ADDED
     for o in outcomes:
