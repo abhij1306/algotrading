@@ -11,7 +11,6 @@ from app.hat.governance import Mode
 
 NUM = st.floats(0.5, 90, allow_nan=False, allow_infinity=False)
 POS = st.sampled_from([0.5, 1.0, 2.5, 4.0, 10.0, 30.0, 50.0])
-DAYS = st.integers(2, 60)
 SMAS = st.sampled_from([10, 20, 50, 150, 200])
 SIDE = st.sampled_from(["close", 10, 20, 50, 150, 200])
 
@@ -266,6 +265,3 @@ def raw_configs(draw: st.DrawFn) -> dict[str, Any]:
         )
         raw["playbooks"] = [{"name": n, **draw(playbook_body())} for n in names]
     return raw
-
-
-# --- breaking a config ------------------------------------------------------------------------

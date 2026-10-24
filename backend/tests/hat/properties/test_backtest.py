@@ -3,7 +3,6 @@ independently: the fill proxies, the entry-day and circuit inferences, slot orde
 recorded fill conventions and their refusals."""
 
 import dataclasses
-import math
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -37,7 +36,6 @@ from app.hat.backtest.fills import (
     entry_fill,
     stop_fill,
 )
-from app.hat.backtest.report import TradeRow
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.backtest.spec import (
     REGIME_MULT_POLICY,
@@ -180,25 +178,6 @@ def test_upper_circuit_inferred(prev_close: D, band: D, tick: D) -> None:
     assert upper_circuit_locked(upper, upper, prev_close, None) is None
 
 
-def _lock(paths: dict, sessions: set[int], band: float, fade: bool) -> dict:
-    """`paths` with each session in `sessions` opening at the upper band over the previous close
-    and never trading above it: pinned all day, or (`fade`) falling back 3% by the close; the
-    sessions after it move by the same ratio."""
-    locked = {}
-    for iid, path in paths.items():
-        path = [tuple(bar) for bar in path]
-        for n in sorted(sessions):
-            prev = path[n - 1][3]
-            upper = math.floor(prev * (100 + band) + 1e-6) / 100
-            low = round(upper * 0.97, 2) if fade else upper
-            close = round(upper * 0.98, 2) if fade else upper
-            ratio = close / path[n][3]
-            path[n] = (upper, upper, low, close)
-            path[n + 1 :] = [tuple(round(v * ratio, 2) for v in bar) for bar in path[n + 1 :]]
-        locked[iid] = path
-    return locked
-
-
 @given(PRICE, PRICE, PRICE)
 @example(D(10), D(9), D(9))
 @example(D(8), D(7), D(9))
@@ -212,33 +191,6 @@ def test_exit_fill_proxy(open_: D, low: D, stop: D) -> None:
         assert filled <= stop
     else:
         assert filled is None
-
-
-# --- -------------------------------------------------------------------------------
-
-
-_NO_FEES = D(0)
-
-
-def _trade(day: int, r: D, n: int, entry: int = 0, fees: D = _NO_FEES) -> TradeRow:
-    return TradeRow(
-        entry_date=DAYS[entry],
-        exit_date=DAYS[day],
-        playbook="p",
-        instrument_id=s.instrument(n),
-        qty=1,
-        entry_price=D(100),
-        initial_stop=D(90),
-        exit_reason="hard_stop",
-        realized_pnl=r * 10,
-        fees=fees,
-        r_multiple=r,
-        mfe_r=max(r, D(0)),
-        mae_r=min(r, D(0)),
-        holding_days=1,
-        strategy_version_id=s.VERSION,
-        risk_policy_version_id=s.policy_version().version_id,
-    )
 
 
 # --- recorded fill conventions -----------------------------------------
@@ -365,8 +317,6 @@ def test_slot_order_rank(cands: list[tuple], rule: str, day: date, fill: str) ->
 
 
 # --- path pessimism ---------------------------------------------------
-
-_ENTRY, _STOP = D("101.01"), D("95.95")
 
 
 def _band_lower(prev_close: D, band: D, tick: D) -> D:

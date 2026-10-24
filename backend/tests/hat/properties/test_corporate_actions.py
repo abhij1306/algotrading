@@ -3,13 +3,11 @@ cumulative factors, volume is divided by the same factor, raw files never change
 are the distinct keys, and split and bonus text parses to exact factors. Real store, DuckDB views
 and loaders; no network."""
 
-import hashlib
 import tempfile
 import uuid
-from collections.abc import Callable
 from dataclasses import replace
 from datetime import date, timedelta
-from decimal import Decimal, localcontext
+from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 
@@ -95,24 +93,6 @@ def _write(store: DataStore, bars: dict) -> None:
         ]
         if rows:
             store.write_bars(day, rows)
-
-
-def _hashes(root: Path) -> dict[str, str]:
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file()
-    }
-
-
-def _product(actions: list[ActionFactor], iid: uuid.UUID, keep: Callable[[date], bool]) -> Decimal:
-    with localcontext() as ctx:
-        ctx.prec = 80
-        out = Decimal(1)
-        for a in actions:
-            if a.instrument_id == iid and keep(a.ex_date):
-                out *= a.factor
-        return out
 
 
 @given(
@@ -223,9 +203,6 @@ def test_factor_parse_unparseable_is_reported(text: str, word: str) -> None:
     result = from_archive_csv(csv_text, lambda s, d: uuid.UUID(int=1))
     assert result.records == []
     assert len(result.unparsed) == 1
-
-
-KEYS = [(i, d, t) for i in range(3) for d in range(3) for t in ("split", "bonus")]
 
 
 def _mcp_kind(row: dict) -> str:

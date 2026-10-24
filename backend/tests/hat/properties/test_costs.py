@@ -5,7 +5,6 @@ against the rules written out here."""
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
-import hat_backtest_support as s
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
@@ -125,9 +124,6 @@ def test_charges_contract(raw: dict[str, Any], side: str, qty: int, price: D, mo
     assert got.total == sum(got.by_component.values(), D(0)) + got.gst
     assert charges(model, side, qty + more, price).total >= got.total
     assert charges(model, side, qty, price + D(1)).total >= got.total
-
-
-DAYS = s.sessions(34)
 
 
 @given(st.one_of(st.floats(allow_nan=True, allow_infinity=True), st.booleans(), st.none()))

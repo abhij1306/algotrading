@@ -1,20 +1,18 @@
-"""PBT allocator.*: the nightly allocation on the real `app.hat.engine.portfolio.allocator` and
-`allocation_service.run_allocation` (SQLite), against the formula written out independently.
-Money and weights are Decimal."""
+"""The nightly allocation of `app.hat.engine.portfolio.allocator` against the formula written
+out independently: weights, multiplier bounds and smoothing, capital and risk, the cash remainder
+and the cluster cap. Money and weights are Decimal."""
 
 import math
 import uuid
-from datetime import datetime
-from decimal import ROUND_DOWN, Decimal, localcontext
+from decimal import ROUND_DOWN, Decimal
 
 import pytest
 from hat_risk_support import policy_with
 from hypothesis import given
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session
 
 from app.hat.engine.portfolio import allocator
-from app.hat.engine.portfolio.allocator import Allocation, SleeveInput, allocate
+from app.hat.engine.portfolio.allocator import SleeveInput, allocate
 from app.hat.engine.portfolio.health import Health
 from app.hat.risk.policy import RiskPolicy, seed_policy
 
@@ -122,32 +120,6 @@ def test_capital_and_risk(sleeves: list[SleeveInput], policy: RiskPolicy, equity
     assert sum((r.capital for r in rows), D(0)) <= equity
 
 
-def _held(sleeves: list[SleeveInput], products: list[Decimal], cap: Decimal) -> list[Decimal]:
-    """An oracle of the two caps: each cluster's sum, then the book's, scaled down to its limit
-    in proportion and rounded down to 12 places."""
-
-    def down(ws: list[Decimal], limit: Decimal) -> list[Decimal]:
-        total = sum(ws, D(0))
-        if total <= limit:
-            return ws
-        with localcontext() as ctx:
-            ctx.prec = 120
-            return [(w * limit / total).quantize(D("1E-12"), rounding=ROUND_DOWN) for w in ws]
-
-    out = list(products)
-    for c in {s.cluster for s in sleeves}:
-        idx = [i for i, s in enumerate(sleeves) if s.cluster == c]
-        for i, w in zip(idx, down([out[i] for i in idx], cap), strict=True):
-            out[i] = w
-    return down(out, D(1))
-
-
-def _product(rows: list[Allocation], sleeve: SleeveInput) -> Decimal:
-    """A sleeve's uncapped real product, base x regime x health, from its allocation row."""
-    r = next(x for x in rows if x.bot_id == sleeve.bot_id)
-    return r.base_weight * r.regime_mult * r.health_mult
-
-
 @given(
     st.one_of(st.none(), pct(0, 200)),
     pct(0, 200),
@@ -247,17 +219,3 @@ def test_allocation_refuses_a_bad_total(equity: object) -> None:
     policy = seed_policy()
     with pytest.raises(allocator.AllocationError):
         allocate([], policy, equity)  # type: ignore[arg-type]
-
-
-# --- through the database ---------------------------------------------------------------------
-
-
-# --- item 8: virtual entries of a Shadow or Probation sleeve are sized ------------------------
-
-
-class _OpenGates:
-    def gate_on(self, _session: Session, _bot_id: object, _at: datetime) -> bool:
-        return True
-
-    def quality_failed(self, _session: Session, _day: object, _calendar: object) -> bool:
-        return False

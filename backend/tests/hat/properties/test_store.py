@@ -2,7 +2,6 @@
 (instrument, date) in `bars_daily`, and a missing day that stays missing. Real `DataStore` on a
 temporary directory; no network."""
 
-import hashlib
 import random
 import tempfile
 import uuid
@@ -31,15 +30,6 @@ from app.hat.ids import Uuid7Generator, uuid7
 
 DAYS = weekdays(date(2024, 3, 1), date(2024, 4, 30))[:20]
 prices = st.decimals(min_value="0.05", max_value="9999.95", places=2)
-
-
-def _snapshot(root: Path) -> dict[str, str]:
-    """Path to content digest (a failing comparison must not print or diff Parquet bytes)."""
-    return {
-        str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-        for p in sorted(root.rglob("*"))
-        if p.is_file()
-    }
 
 
 @given(

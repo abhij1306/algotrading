@@ -5,13 +5,11 @@ with and the line the owner reads on its card."""
 from __future__ import annotations
 
 import uuid
-from datetime import date
 from decimal import Decimal
 
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from app.hat.backtest.report import TradeRow
 from app.hat.engine import confidence
 from app.hat.engine.confidence import (
     BANDS,
@@ -144,32 +142,7 @@ def test_bucket_stats(rs: list[Decimal], rnd: object) -> None:
     assert bucket_stats([]) is None
 
 
-def _trade(n: int, playbook: str, score: Decimal | None, r: Decimal) -> TradeRow:
-    day = date(2024, 1, 1)
-    return TradeRow(
-        entry_date=day,
-        exit_date=day,
-        playbook=playbook,
-        instrument_id=str(uuid.UUID(int=n)),
-        qty=1,
-        entry_price=Decimal(100),
-        initial_stop=Decimal(95),
-        exit_reason="stop",
-        realized_pnl=r * 5,
-        fees=Decimal(0),
-        r_multiple=r,
-        mfe_r=Decimal(0),
-        mae_r=Decimal(0),
-        holding_days=1,
-        strategy_version_id=uuid.UUID(int=1),
-        risk_policy_version_id=uuid.UUID(int=2),
-        score=score,
-    )
-
-
 # --- the label of a signal ----------------------------------------------------------------------
-
-EVIDENCE = st.sampled_from(("none", "no_bucket", HIGH, MEDIUM, LOW))
 
 
 def test_backtest_label_is_fixed() -> None:

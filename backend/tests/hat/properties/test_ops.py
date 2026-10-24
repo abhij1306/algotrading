@@ -20,8 +20,6 @@ from zoneinfo import ZoneInfo
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
 from app.hat.daily.assembly import ALERT_POOL, subscription_alert
@@ -36,9 +34,6 @@ from app.hat.execution.session import (
     backoff_delay,
 )
 from app.hat.logs import CONTEXT_KEYS, JsonFormatter
-from app.hat.models import (
-    HatEvent,
-)
 from app.hat.notify import RecordingNotifier
 from app.hat.ops.jobs import (
     DEFAULT_ERROR_CODE,
@@ -360,9 +355,6 @@ def test_calendar_skip(
         )
 
 
-CLOSE_AT, CLOSE_UNTIL = time(15, 20), time(15, 25)
-
-
 # ---------------------------------------------------------------------------------------
 # structured logs
 # ---------------------------------------------------------------------------------------
@@ -399,9 +391,6 @@ def test_log_records_structured(msg: str, level: int, extra: dict[str, object]) 
 # ---------------------------------------------------------------------------------------
 # run_job, driven as a state machine on the real code
 # ---------------------------------------------------------------------------------------
-
-SECRET = "password=hunter2 host=10.0.0.7 ORA-00942"
-codes = st.from_regex(r"[a-z][a-z0-9_.]{0,20}", fullmatch=True)
 
 
 @given(code=st.text(max_size=80))
@@ -487,13 +476,6 @@ def test_backoff_delay_is_monotone_and_capped(attempt: int) -> None:
 
 # ---------------------------------------------------------------------------------------
 # the 15:25 live price and the official close of each MA exit evaluation
-# ---------------------------------------------------------------------------------------
-
-prices = st.decimals(min_value=50, max_value=150, places=2)
-
-
-def _events(session: Session, kind: str) -> list[HatEvent]:
-    return list(session.scalars(select(HatEvent).where(HatEvent.event_type == kind)))
 
 
 # ---------------------------------------------------------------------------------------
@@ -663,10 +645,6 @@ def test_deploy_window_guard(now: datetime, listed: bool | None, force: bool) ->
 # ---------------------------------------------------------------------------------------
 # GET /api/hat/status reports what the database holds
 # ---------------------------------------------------------------------------------------
-
-REGIMES = ("bull_quiet", "bull_volatile", "correction", "bear")
-ACCOUNT = "account"
-TRIPPED = "tripped"
 
 
 class ThreadNotifier(RecordingNotifier):

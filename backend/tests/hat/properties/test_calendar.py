@@ -1,7 +1,5 @@
-"""PBT calendar.*: the one trading calendar
-(`SessionCalendar`, loaded by `session_calendar`) closes a holiday at every instant, opens a trading
-day for its own session, gives a day it does not hold no session, and every reader (the feed, the
-scheduler's trading days, Telegram's days held) answers as it does."""
+"""`with_weekdays`: the listed rows of the trading calendar stay as they are and every other
+weekday becomes a default session."""
 
 from datetime import UTC, date, datetime, time, timedelta
 
@@ -50,14 +48,6 @@ def calendars(draw: st.DrawFn) -> CalSpec:
 
 def instant(day: date, wall: time) -> datetime:
     return datetime.combine(day, wall, tzinfo=IST).astimezone(UTC)
-
-
-def _session(row: cal.CalendarDay | None, default: tuple[time, time]) -> tuple[time, time] | None:
-    """The session a stored row gives its day: its own times on a trading day (the market default
-    for a time it lacks), else none."""
-    if row is None or not row.is_trading:
-        return None
-    return row.open_at or default[0], row.close_at or default[1]
 
 
 # --- the next session open ---------------------------------------

@@ -29,15 +29,12 @@ from app.hat.engine.strategy.config import (
 from app.hat.engine.strategy.registry import STRATEGIES, RegistryError, parse_seed
 from app.hat.engine.strategy.versions import (
     VersionError,
-    publish_version,
     save_draft,
     seed_config,
     seed_default_strategies,
     seed_text,
-    start_shadow,
 )
 from app.hat.engine.strategy.yamlio import import_yaml
-from app.hat.models import HatBacktestRun, HatStrategyVersion
 from app.hat.risk.policy import POLICY_FIELDS, SEED_POLICY
 from app.hat.schema import seed_hat_reference
 
@@ -141,7 +138,6 @@ def test_hash_ignores_the_sign_of_zero(config: dict) -> None:
 ENGINE = memory_engine()
 seed_hat_reference(ENGINE)
 USER = uuid.UUID("00000000-0000-7000-8000-0000000000a1")
-ACCOUNT = uuid.UUID("00000000-0000-7000-8000-0000000000c1")
 
 
 def all_instances(config: StrategyConfig) -> list[Instance]:
@@ -315,39 +311,7 @@ def test_yaml_round_trip_seed(name: str) -> None:
     assert import_yaml(seed_text(name)).hash() == config.hash()
 
 
-def add_run(session: Session, version: HatStrategyVersion) -> HatBacktestRun:
-    """A backtest run row for `version` flagged for promotion (what publishing needs as
-    evidence)."""
-    run = HatBacktestRun(
-        id=uuid.uuid4(),
-        strategy_version_id=version.id,
-        risk_policy_version_id=uuid.uuid4(),
-        family_key="probe",
-        period_start=date(2025, 1, 1),
-        period_end=date(2025, 12, 31),
-        data_snapshot={},
-        status="completed",
-        metrics={"for_promotion": True},
-    )
-    session.add(run)
-    session.flush()
-    return run
-
-
 GATE_CALENDAR = calendar_around(date(2026, 12, 1), span=75)
-
-
-def released(session: Session, strategy_id: uuid.UUID, at: datetime) -> HatStrategyVersion:
-    """A new version of the strategy, published on a run and in shadow from `at`."""
-    draft = save_draft(
-        session,
-        strategy_id=strategy_id,
-        config=seed_config(next(iter(STRATEGIES))),
-        calendar=GATE_CALENDAR,
-        now=at,
-    )
-    publish_version(session, draft.id, backtest_run_id=add_run(session, draft).id)
-    return start_shadow(session, draft.id, calendar=GATE_CALENDAR, now=at)
 
 
 SEED = "sleeve: S3\npersona: Test-style\n---\nbot: {name}\nentry_filters:\n{filters}"

@@ -13,7 +13,6 @@ from datetime import date, timedelta
 from fractions import Fraction
 
 import polars as pl
-from hypothesis import strategies as st
 
 from app.hat.engine.criteria import CriterionResult, EvalContext, evaluate
 
@@ -43,9 +42,6 @@ class Lcg:
 
     def chance(self, numerator: int, denominator: int) -> bool:
         return self.randrange(denominator) < numerator
-
-
-RNG = st.integers(0, 2**32).map(Lcg)
 
 
 def rupees(paise: int) -> Fraction:

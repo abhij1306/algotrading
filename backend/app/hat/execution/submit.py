@@ -38,6 +38,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -82,10 +83,12 @@ __all__ = [
     "OrderRefusedError",
     "OrderRequest",
     "OrderSender",
+    "Retry",
     "SendOutcome",
     "TickSource",
     "UnresolvedOrderError",
     "reserve_order",
+    "retry_verdict",
     "send_order",
 ]
 
@@ -238,25 +241,46 @@ def _check_allowed(
         raise OrderRefusedError("exit_must_sell")
 
 
+class Retry(StrEnum):
+    """What a retry of an order of unknown outcome does after the lookup by tag."""
+
+    SEND = "send"  # the book has none: place the same tag again (a stop or a sale)
+    ADOPT = "adopt"  # the book holds it: record what the broker shows
+    AWAIT_FILLS = "await_fills"  # a stop or sale found with shares sold: the fill sync adopts it
+    NEVER = "never"  # an entry or a GTT of unknown outcome is never sent again
+
+
+def retry_verdict(purpose: str, filled_qty: int | None) -> Retry:
+    """The retry of an order of `purpose` whose earlier attempt has no known outcome;
+    `filled_qty` is the shares the broker's book shows sold under its tag, None when the book
+    has no order with the tag. A GTT is settled against the GTT book (`StopDesk.settle_lost`)
+    and an entry left to the fill sync and the session end (HAT-BRK-102): the book may lag an
+    order that landed, so neither is ever sent again."""
+    if purpose == GTT_PURPOSE:
+        return Retry.NEVER
+    if filled_qty is None:
+        return Retry.NEVER if purpose == ENTRY else Retry.SEND
+    # found_verdict, not settle_verdict: nothing found here means send again at once (an entry
+    # never), not a settle wait; the found branch is the one they share
+    if purpose != ENTRY and found_verdict(filled_qty) is Verdict.WAIT:
+        return Retry.AWAIT_FILLS
+    return Retry.ADOPT
+
+
 def _lookup_before_retry(
     session: Session, broker: HatBroker, row: HatOrder, bot_id: uuid.UUID, clock: Clock
 ) -> SendOutcome | None:
-    """An attempt was made before: ask the broker for the tag. An order found is adopted and
-    returned; None means the book has none and the same tag may be placed again (a stop or a
-    sale). An entry is never placed again (HAT-BRK-102): the book may lag an order that landed.
-    A stop or sale found with shares sold is left to the fill sync (`found_verdict`), which
-    adopts it with its fills."""
+    """An attempt was made before: ask the broker for the tag and act on `retry_verdict`. An
+    order found is adopted and returned; None means the same tag may be placed again."""
     if row.purpose == GTT_PURPOSE:
-        # settled against the GTT book once old enough (StopDesk.settle_lost), never sent again
         raise UnresolvedOrderError("a GTT of unknown outcome is settled, never sent again")
     found = resolve_by_tag(broker, row.tag)
-    if found is None:
-        if row.purpose == ENTRY:
-            raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
+    verdict = retry_verdict(row.purpose, None if found is None else found.filled_qty)
+    if verdict is Retry.NEVER:
+        raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
+    if verdict is Retry.SEND or found is None:
         return None
-    # found_verdict, not settle_verdict: nothing found here means send again at once (an entry
-    # never), not a settle wait; the found branch is the one they share, and it is this helper
-    if row.purpose != ENTRY and found_verdict(found.filled_qty) is Verdict.WAIT:
+    if verdict is Retry.AWAIT_FILLS:
         raise AwaitingFillsError("found with shares sold: the fill sync adopts it")
     adopt_broker_order(session, row, found, bot_id, clock=clock)
     session.commit()

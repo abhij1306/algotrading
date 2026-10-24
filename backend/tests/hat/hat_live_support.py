@@ -5,13 +5,11 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Mapping, Sequence
-from datetime import date, datetime
+from datetime import datetime
 from html import escape
 from typing import Any
 
 from app.hat.data.mcp_client import McpTransportError
-
-EPOCH = date(2000, 1, 1)
 
 
 def rss_item(

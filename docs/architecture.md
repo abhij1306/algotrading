@@ -73,7 +73,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 - **One path to an order:** `execution/submit.py:send_order` is the only way an entry reaches
   the broker (stops, sales and reads go through `HatBroker` in `execution/`);
   one adapter serves it, the active broker's (`HAT_BROKER`: `FyersHatBroker` or `KiteHatBroker`,
-  `accounts.active_adapters`), `tests/hat/fakes/broker.py:FakeBroker` the only fake.
+  `accounts.active_adapters`), `tests/hat/fakes/broker.py:FakeBroker` (the Fyers transport
+  beneath `FyersHatBroker`) the only fake.
 - **One position desk per account** (`execution/position_desk.py`): one write lock per position
   for every stop write and sale.
 - **One runtime per database** (`ops/runtime_lock.py`, a session advisory lock); one session owner

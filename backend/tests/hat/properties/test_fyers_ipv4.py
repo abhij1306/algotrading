@@ -7,7 +7,6 @@ installed, over a scripted resolver and socket: nothing reaches the network.
 """
 
 import os
-import socket
 import urllib.request
 from unittest.mock import patch
 
@@ -23,17 +22,6 @@ from app.hat.settings import load_settings
 
 FYERS_HOSTS = ["api-t1.fyers.in", "api.fyers.in", "FYERS.IN", "api-t1.fyers.in.", "myapi.fyers.in"]
 OTHER_HOSTS = ["notfyers.in", "fyers.in.example.com", "www.nseindia.com", "api.telegram.org"]
-V4 = ["10.0.0.1", "10.0.0.2", "192.0.2.7"]
-V6 = ["2001:db8::1", "2001:db8::2"]
-
-
-addresses = st.lists(
-    st.one_of(
-        st.sampled_from(V4).map(lambda ip: (socket.AF_INET, ip)),
-        st.sampled_from(V6).map(lambda ip: (socket.AF_INET6, ip)),
-    ),
-    max_size=5,
-)
 
 
 @given(

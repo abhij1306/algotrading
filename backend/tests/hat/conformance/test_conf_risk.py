@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from hat_conf_model import hat_tables
-from hat_conf_repo import APP_ROOT, REPO_ROOT
+from hat_conf_repo import APP_ROOT
 from sqlalchemy.orm import Session
 
 from app.hat.risk.policy import (
@@ -17,8 +17,6 @@ from app.hat.risk.policy import (
     parse_policy,
     seed_policy,
 )
-
-BACKEND = REPO_ROOT / "backend"
 
 
 def _policy_paths() -> list[str]:

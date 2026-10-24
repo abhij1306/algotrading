@@ -166,7 +166,6 @@ def test_classification_is_monotone(
     assert RANK[regime.classify(close, sma50, sma200, vix_pct, min(breadth, lower_breadth))] >= base
 
 
-HISTORY = 252
 # few distinct values, so a close equal to its average (the edge of `>`) is common
 CLOSES = st.lists(st.integers(1, 6).map(D), min_size=0, max_size=30)
 

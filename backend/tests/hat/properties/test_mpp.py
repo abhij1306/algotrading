@@ -1,54 +1,24 @@
-"""PBT mpp.*: HAT's sales under SEBI market
-price protection, which turns a market sale into a protected limit that can rest unfilled. The
-real fill sync and trade manager on SQLite, through the real Fyers adapter over `FakeBroker`; the
-order-book shape of a protected sale is the assumed fixture `fyers_mpp_sale_assumed.json` (the
-O2(c) live check confirms it). Nothing reaches a real broker."""
+"""The `HAT_MPP_RESEND` flag: the re-send of a market sale that SEBI market price protection
+left resting is on only for a true value."""
 
 from __future__ import annotations
 
-import json
-from decimal import Decimal
-from pathlib import Path
-from typing import Any
-
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 
-from app.hat.models import HatEvent, HatOrder
 from app.hat.settings import load_settings
 from app.utils.env_loader import TRUE_VALUES
 
-D = Decimal
-SHAPES: dict[str, dict[str, Any]] = json.loads(
-    (Path(__file__).parents[1] / "fixtures" / "fyers_mpp_sale_assumed.json").read_text("utf-8")
-)["shapes"]
-WRITES = ("place_order", "modify_order", "cancel_order", "place_gtt", "modify_gtt", "cancel_gtt")
-
-
-def _events(session: Session, rows: list[HatOrder], kind: str) -> int:
-    ids = [row.id for row in rows]
-    return len(
-        session.scalars(
-            select(HatEvent.id).where(HatEvent.aggregate_id.in_(ids), HatEvent.event_type == kind)
-        ).all()
-    )
-
-
 # ---------------------------------------------------------------------------------------
 # step 3: a market sale resting unfilled is sent again fresh
-# ---------------------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------------------
 # (G03 live): a sale at the lower circuit waits in the queue
-# ---------------------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------------------
 # (G22): a sale refused twice goes as a limit at the lower band
-# ---------------------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------------------

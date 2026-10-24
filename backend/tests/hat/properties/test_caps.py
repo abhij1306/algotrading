@@ -1,24 +1,33 @@
-"""PBT caps.* (..076, 100..104; ):
-the caps, invariants, kill thresholds and policy-change rules, on the real
-`app.hat.risk.service.evaluate_signal` and the pure rules it composes. Money is Decimal."""
+"""The risk authority: each cap of `risk/caps.py` at its boundary, one `evaluate_signal` refusal
+per reason over `valid_ctx()`, and the kill thresholds, marks and policy-change rules. Money is
+Decimal."""
 
-from datetime import UTC, datetime, time, timedelta
+import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 from hat_risk_support import (
     AT,
+    BOT,
+    CALENDAR,
     S1,
     S2,
     TRADE_DAY,
     D,
     policy_with,
+    position,
+    valid_ctx,
+    version_of,
 )
 from hypothesis import given
 from hypothesis import strategies as st
 
-from app.hat.risk import kill
-from app.hat.risk.kill import EquityPoint
+from app.hat.engine.strategy.registry import STRATEGIES
+from app.hat.risk import caps, kill
+from app.hat.risk.caps import OpenPosition
+from app.hat.risk.decision import Reason, SignalContext
+from app.hat.risk.kill import EquityPoint, KillState
 from app.hat.risk.policy import (
     MIN_LIVE_TRADES,
     GateError,
@@ -31,17 +40,219 @@ from app.hat.risk.policy import (
     require_increase_gate,
     seed_policy,
 )
-from app.hat.settings import load_settings
-from app.hat.time import IST
+from app.hat.risk.service import evaluate_signal
 
 SEED = seed_policy()
-# --- global open risk ---
 
 
-# --- per-bot caps ---
+# --- the caps (HAT-RISK-030..036, 050, 070..076) ---
 
 
-# --- per-instrument cooldown after a hard stop ---
+def test_global_open_risk_boundary() -> None:
+    """Open risk plus the candidate's at exactly pct x total equity passes; a paisa over fails."""
+    pct, total = D("0.015"), D(2_000_000)
+    assert caps.global_open_risk_ok([D(20_000), D(7_500)], D(2_500), total, pct)
+    assert not caps.global_open_risk_ok([D(20_000), D("7500.01")], D(2_500), total, pct)
+    assert caps.global_open_risk_ok([], D(30_000), total, pct)
+    assert not caps.global_open_risk_ok([], D("30000.01"), total, pct)
+
+
+def test_open_risk_is_zero_once_locked() -> None:
+    """A stop trailed to or above the entry carries no open risk; below it, (entry - stop) x qty."""
+    assert position(qty=10, avg_entry=D(100), stop=D(95)).open_risk == D(50)
+    assert position(qty=10, avg_entry=D(100), stop=D(100)).open_risk == 0
+    assert position(qty=10, avg_entry=D(100), stop=D(104)).open_risk == 0
+
+
+@pytest.mark.parametrize(("level", "limit"), [("L1", 2), ("L2", 4), ("L3", 6)])
+def test_positions_ok_below_the_lesser_limit(level: str, limit: int) -> None:
+    """Fewer open positions than min(policy maximum, the level's maximum); at the limit refuses."""
+    assert caps.positions_ok(limit - 1, level, SEED)
+    assert not caps.positions_ok(limit, level, SEED)
+    tighter = policy_with(max_open_positions=3)
+    assert caps.positions_ok(2, "L3", tighter)
+    assert not caps.positions_ok(3, "L3", tighter)
+
+
+@pytest.mark.parametrize(
+    ("check", "limit"),
+    [
+        (caps.industry_ok, SEED.max_positions_per_industry),
+        (caps.entries_ok, SEED.max_entries_per_day),
+        (caps.stopouts_ok, SEED.max_stopouts_per_day),
+    ],
+)
+def test_count_caps_refuse_at_the_limit(check: object, limit: int) -> None:
+    assert check(limit - 1, SEED)  # type: ignore[operator]
+    assert not check(limit, SEED)  # type: ignore[operator]
+
+
+def test_sessions_since_counts_trading_days_after_the_stop() -> None:
+    """Wednesday 21 Oct: 0 on the stop's own session; the weekend adds nothing."""
+    assert caps.sessions_since(CALENDAR, TRADE_DAY, TRADE_DAY) == 0
+    assert caps.sessions_since(CALENDAR, TRADE_DAY, TRADE_DAY + timedelta(days=1)) == 1
+    assert caps.sessions_since(CALENDAR, TRADE_DAY, TRADE_DAY + timedelta(days=4)) == 2  # Sunday
+    assert caps.sessions_since(CALENDAR, TRADE_DAY, TRADE_DAY + timedelta(days=5)) == 3  # Monday
+    assert caps.sessions_since(CALENDAR, TRADE_DAY, TRADE_DAY - timedelta(days=1)) == 0
+
+
+def test_cooldown_refuses_the_stop_session_and_the_n_after() -> None:
+    """N = 2: refused on Wednesday (the stop), Thursday and Friday; open again on Monday."""
+    policy = policy_with(cooldown_sessions=2)
+    stop = TRADE_DAY
+    refused = [TRADE_DAY + timedelta(days=n) for n in (0, 1, 2, 3, 4)]
+    assert not any(caps.cooldown_ok(CALENDAR, stop, day, policy) for day in refused)
+    assert caps.cooldown_ok(CALENDAR, stop, TRADE_DAY + timedelta(days=5), policy)
+    # no hard stop, a stop after the day, or N = 0 refuses nothing
+    assert caps.cooldown_ok(CALENDAR, None, TRADE_DAY, policy)
+    assert caps.cooldown_ok(CALENDAR, stop + timedelta(days=1), TRADE_DAY, policy)
+    assert caps.cooldown_ok(CALENDAR, stop, TRADE_DAY, SEED)
+
+
+def test_regime_gate_is_only_true() -> None:
+    assert caps.regime_gate_open(True)
+    for value in (False, None, 1, "true"):
+        assert not caps.regime_gate_open(value)  # type: ignore[arg-type]
+
+
+def test_stop_valid_strictly_between_zero_and_entry() -> None:
+    assert caps.stop_valid(D(100), D("99.99"))
+    assert caps.stop_valid(D(100), D("0.01"))
+    assert not caps.stop_valid(D(100), D(100))
+    assert not caps.stop_valid(D(100), D("100.01"))
+    assert not caps.stop_valid(D(100), D(0))
+
+
+def test_effective_max_chase_pct() -> None:
+    """The configured percent, else the strategy's seed value, else the stricter default of 2."""
+    assert caps.effective_max_chase_pct(D(3), S1) == D(3)
+    assert caps.effective_max_chase_pct(D(0), S1) == D(0)
+    assert caps.effective_max_chase_pct(None, S1) == STRATEGIES[S1].max_chase_pct
+    assert caps.effective_max_chase_pct(None, "no-such-strategy") == caps.MAX_CHASE_DEFAULT_PCT
+    assert caps.MAX_CHASE_DEFAULT_PCT == D(2)
+
+
+def test_chase_ok_boundary() -> None:
+    """At most pct percent above the trigger: 102 on 100 at 2% passes, 102.01 fails."""
+    assert caps.chase_ok(D(102), D(100), D(2), locked_upper=False)
+    assert not caps.chase_ok(D("102.01"), D(100), D(2), locked_upper=False)
+    assert caps.chase_ok(D(90), D(100), D(2), locked_upper=False)
+
+
+def test_chase_ok_refuses_locked_upper() -> None:
+    assert not caps.chase_ok(D(100), D(100), D(2), locked_upper=True)
+
+
+def test_is_loser_below_entry_only() -> None:
+    assert caps.is_loser(position(avg_entry=D(100), last_price=D("99.99")))
+    assert not caps.is_loser(position(avg_entry=D(100), last_price=D(100)))
+
+
+# --- evaluate_signal: one refusal per reason ---
+
+
+def _mine(**changes: object) -> OpenPosition:
+    return position(bot=BOT, **changes)  # type: ignore[arg-type]
+
+
+SAME = uuid.UUID("00000000-0000-7000-8000-00000000a001")
+COOLDOWN = policy_with(cooldown_sessions=2)
+# reason -> the one change to valid_ctx() that makes evaluate_signal refuse with it
+REFUSALS = {
+    Reason.MISSING_INPUT: {"entry_price": None},
+    Reason.INVALID_INPUT: {"equity": D(-1)},
+    Reason.KILL_ACCOUNT: {"kill": KillState(account_tripped=True)},
+    Reason.KILL_BOT: {"kill": KillState(bot_tripped=True)},
+    Reason.KILL_HEALTH: {"kill": KillState(health_tripped=True)},
+    Reason.BOT_PAUSED: {"kill": KillState(paused=True)},
+    Reason.MARKET_CLOSED: {"at": AT.replace(hour=9, minute=14)},
+    Reason.STALE_FEED: {"feed_stale": True},
+    Reason.QUALITY_FAILED: {"quality_failed": True},
+    Reason.REGIME_GATE: {"gate_on": False},
+    Reason.STOP_NOT_BELOW_ENTRY: {"stop_price": D(100)},
+    Reason.MAX_CHASE: {"configured_max_chase_pct": D(2), "entry_price": D("102.01")},
+    Reason.ADD_TO_LOSER: {
+        "instrument_id": SAME,
+        "open_positions": [_mine(instrument=SAME, last_price=D(99))],
+    },
+    Reason.POSITION_EXISTS: {"instrument_id": SAME, "open_positions": [_mine(instrument=SAME)]},
+    Reason.MAX_POSITIONS: {"open_positions": [_mine() for _ in range(4)]},
+    Reason.INDUSTRY_CAP: {"open_positions": [_mine(industry="banks") for _ in range(2)]},
+    Reason.ENTRY_CAP: {"entries_today": 3},
+    Reason.STOPOUT_CAP: {"stopouts_today": 3},
+    Reason.COOLDOWN: {"policy_versions": [version_of(COOLDOWN)], "hard_stop_days": [TRADE_DAY]},
+    Reason.NO_ALLOCATION: {"allocation_risk_pct": D(0)},
+    Reason.ALLOCATION_EXCEEDS_POLICY: {"allocation_risk_pct": D("0.0026")},
+    Reason.SIZE_ZERO_RISK: {"equity": D(1000)},
+    Reason.SIZE_ZERO_POSITION: {
+        "entry_price": D(3_000_000),
+        "stop_price": D(2_999_999),
+        "trigger_level": D(3_000_000),
+    },
+    Reason.SIZE_ZERO_LIQUIDITY: {"adv20": D(50)},
+    Reason.SIZE_ZERO_CASH: {"free_cash": D(50)},
+    Reason.GLOBAL_OPEN_RISK: {"open_positions": [position(qty=5501)]},
+}
+
+
+def test_valid_ctx_is_accepted() -> None:
+    """The base signal: E 1,000,000 at 0.25%, entry 100, stop 95 sizes to 500 by risk."""
+    decision = evaluate_signal(valid_ctx())
+    assert decision.accepted
+    assert (decision.quantity, decision.risk_amount, decision.binding) == (500, D(2500), "risk")
+
+
+def test_every_reason_has_a_refusal() -> None:
+    assert set(REFUSALS) == set(Reason)
+
+
+@pytest.mark.parametrize("reason", list(Reason))
+def test_evaluate_signal_refuses_each_reason(reason: Reason) -> None:
+    decision = evaluate_signal(valid_ctx(**REFUSALS[reason]))
+    assert not decision.accepted
+    assert decision.reason == reason.value
+    assert decision.quantity is None
+
+
+def test_global_open_risk_counts_same_mode_only() -> None:
+    """27,500 of another bot's open risk plus the candidate's 2,500 is exactly 1.5% of 2,000,000
+    and passes; a share more fails. A shadow position never counts against a real entry."""
+    assert evaluate_signal(valid_ctx(open_positions=[position(qty=5500)])).accepted
+    shadow = position(qty=100_000, virtual=True)
+    assert evaluate_signal(valid_ctx(open_positions=[shadow])).accepted
+
+
+def test_caps_count_only_this_bot_and_mode() -> None:
+    """Another bot's positions, or this bot's shadow ones, fill none of this bot's real caps."""
+    others = [position(industry="banks") for _ in range(4)]
+    shadow = [_mine(industry="banks", virtual=True) for _ in range(4)]
+    assert evaluate_signal(valid_ctx(open_positions=others + shadow)).accepted
+    assert evaluate_signal(valid_ctx(open_positions=[_mine() for _ in range(3)])).accepted
+
+
+def test_cooldown_reads_no_hard_stop_after_the_day() -> None:
+    later = [TRADE_DAY + timedelta(days=1)]
+    ctx = valid_ctx(policy_versions=[version_of(COOLDOWN)], hard_stop_days=later)
+    assert evaluate_signal(ctx).accepted
+    # with a cooldown in force the hard-stop days are a required input
+    assert evaluate_signal(valid_ctx(policy_versions=[version_of(COOLDOWN)])).reason == (
+        Reason.MISSING_INPUT.value
+    )
+
+
+def test_exits_are_accepted_in_every_state() -> None:
+    """An exit or a stop move is accepted with every kill tripped, the market closed and the
+    inputs missing (D118)."""
+    tripped = KillState(account_tripped=True, bot_tripped=True, health_tripped=True, paused=True)
+    for action in ("exit", "stop_move"):
+        decision = evaluate_signal(
+            SignalContext(action=action, kill=tripped, calendar=CALENDAR, at=AT.replace(hour=20))
+        )
+        assert decision.accepted
+        assert set(decision.warnings) == {"manage_only_exit_allowed", "exit_outside_session"}
+
+
+# --- the cooldown is governed ---
 
 
 @given(st.integers(0, 250), st.integers(0, 250))
@@ -58,8 +269,6 @@ def test_cooldown_shortening_is_increase(current: int, proposed: int) -> None:
             policy_with(cooldown_sessions=bad)
 
 
-# --- exits are never blocked ---
-
 junk = st.one_of(
     st.none(),
     st.floats(),
@@ -69,9 +278,6 @@ junk = st.one_of(
     st.booleans(),
     st.lists(st.integers(), max_size=2),
 )
-# --- the regime gate ---
-
-
 # --- kill thresholds ---
 
 STEPS = st.lists(
@@ -231,40 +437,6 @@ def test_restated_capital() -> None:
     assert kill.restated_capital(None, D("0.5"), D("50000"), D("0.5")) is None
 
 
-# --- no adding to a position ---
-
-
-# --- invariants 3 to 6 ---
-
-
-@st.composite
-def instants(draw: st.DrawFn) -> tuple[datetime, bool]:
-    """An instant on the calendar and whether it lies inside a session (built, not looked up):
-    a weekday inside 09:15 to 15:30 IST is in; a weekend, or a weekday outside those hours is
-    out (holidays are applied to the calendar by the test)."""
-    kind = draw(st.sampled_from(("inside", "before", "after", "weekend")))
-    offset = draw(st.integers(min_value=-6, max_value=6))
-    day = TRADE_DAY + timedelta(days=offset)
-    while day.weekday() >= 5:
-        day += timedelta(days=1)
-    if kind == "weekend":
-        day = day + timedelta(days=(5 - day.weekday()))
-        minutes = draw(st.integers(0, 24 * 60 - 1))
-    elif kind == "inside":
-        minutes = draw(st.integers(9 * 60 + 15, 15 * 60 + 30))
-    elif kind == "before":
-        minutes = draw(st.integers(0, 9 * 60 + 14))
-    else:
-        minutes = draw(st.integers(15 * 60 + 31, 24 * 60 - 1))
-    at = datetime.combine(day, time(minutes // 60, minutes % 60), tzinfo=IST)
-    return at, kind == "inside"
-
-
-# --- HAT's own kill switches are the halt ---
-
-
-# --- total, typed, fail closed ---
-
 # --- increase or decrease ---
 
 # field path -> (a more permissive value, a more restrictive value), written out literally from the
@@ -404,17 +576,7 @@ def test_increase_gate_rejects_junk(evidence: object) -> None:
     assert increase_gate_ok(evidence) is False  # type: ignore[arg-type]
 
 
-# --- changes are events ---
-
-USER = load_settings().user_id
-PASSING = {
-    "live_trades": 60,
-    "expectancy_r": "0.4",
-    "ci90_low": "0.1",
-    "ci90_high": "0.7",
-    "backtest_expectancy_r": "0.3",
-}
-EVENING = time(20, 0)
+# --- kill switches ---
 
 
 @pytest.mark.parametrize(

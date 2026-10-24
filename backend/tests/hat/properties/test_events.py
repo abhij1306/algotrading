@@ -1,15 +1,12 @@
-"""PBT for the event store on the real
-`app/hat/events.record`, over SQLite. The Postgres side (identity ids, partitions, triggers) is
-checked by `tests/hat/db`."""
+"""The event store's monthly partitions: each instant routes to exactly one month, and the
+months created ahead. The Postgres side (identity ids, partitions, triggers) is checked by
+`tests/hat/db`."""
 
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 
-from hat_support import event_engine
 from hypothesis import given
 from hypothesis import strategies as st
 
-from app.hat.models import HatOrder, HatPosition
 from app.hat.ops.partitions import (
     month_of,
     month_start,
@@ -19,22 +16,6 @@ from app.hat.ops.partitions import (
     partition_ddl,
     partition_name,
 )
-
-ENGINE = event_engine(HatPosition, HatOrder)
-money = st.decimals(min_value=Decimal("0.0001"), max_value=Decimal("9999.9999"), places=4)
-# Where an operation fails: never, between its two writes, after both and before the commit, or
-# by an event the catalogue refuses; and whether the caller commits or rolls back what is left.
-failure = st.sampled_from(["none", "before_state", "between", "before_commit", "bad_event"])
-
-
-# --- a state change and its event commit or roll back together ------------------
-
-
-# --- only the catalogue ---------------------------------------------------------
-
-# --- aggregate types and correlation ---------------------------------------------
-
-# --- ids increase ----------------------------------------------------------------
 
 # --- partition routing (the arithmetic behind the DB check) ----------------------
 

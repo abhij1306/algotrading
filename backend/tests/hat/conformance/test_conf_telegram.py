@@ -28,19 +28,18 @@ TEXT_PATH = (
     "app.hat.telegram.client",
 )
 AUTH_BASES = ("/api/hat/auth/fyers/", "/api/hat/auth/zerodha/")  # the only writing routes: logins
-ORDER_MODULES = (
-    "app.hat.execution.router",
-    "app.hat.execution.submit",
-    "app.hat.execution.order_book",
-    "app.hat.execution.manage",
-    "app.hat.execution.protect",
-    "app.hat.execution.fyers_adapter",
-    "app.hat.execution.broker",
+# The only execution modules the text path may reach: the mode gates `/mode` reads and the queue
+# `/auto` writes. Every other execution module (orders, brokers, stops, reconciliation) is
+# forbidden, so a new one is forbidden by default.
+TEXT_PATH_EXECUTION = frozenset({"app.hat.execution.modes", "app.hat.execution.mode_changes"})
+# Outside execution: the risk authority and the engine code that opens, sizes or approves a trade.
+ORDER_ENGINE = (
+    "app.hat.risk.service",
+    "app.hat.risk.decision",
     "app.hat.engine.entries",
     "app.hat.engine.shadow",
     "app.hat.engine.positions",
     "app.hat.engine.approvals",
-    "app.hat.risk.authority",
 )
 LISTENER_IMPORTS = ("socket", "socketserver", "http.server", "aiohttp", "uvicorn", "fastapi")
 LISTENER_CALLS = {"bind", "listen", "serve_forever", "start_server", "setWebhook"}
@@ -204,17 +203,28 @@ def test_telegram__no_webhook_no_listener() -> None:
 # --- no order from free text ---------------------------------------------------
 
 
+def order_modules(graph: dict[str, set[str]]) -> tuple[str, ...]:
+    """Every execution module but the text path's two, plus `ORDER_ENGINE`."""
+    execution = {m for m in graph if m.startswith("app.hat.execution.")} - TEXT_PATH_EXECUTION
+    return (*sorted(execution), *ORDER_ENGINE)
+
+
 def test_telegram__no_order_import_in_text_path() -> None:
-    """No module a text message passes through reaches the router, submission, the
-    trade manager, the adapter, the broker interface, trades, approvals or the risk authority,
-    directly or transitively (the checker is shown to catch a planted import)."""
+    """No module a text message passes through reaches an order, broker or stop module, the
+    risk authority, entries, trades or approvals, directly or transitively (the checker is
+    shown to catch a planted import). Every named module exists, so a rename cannot empty
+    the check."""
     graph = build_graph()
+    forbidden = order_modules(graph)
+    for module in (*ORDER_ENGINE, *TEXT_PATH_EXECUTION):
+        assert module in graph, module
+    assert {"app.hat.execution.submit", "app.hat.execution.fyers_broker"} <= set(forbidden)
     for module in TEXT_PATH:
         assert module in graph, module
-        assert reaches(graph, module, ORDER_MODULES) == [], module
+        assert reaches(graph, module, forbidden) == [], module
     planted = {k: set(v) for k, v in graph.items()}
     planted["app.hat.telegram.reads"].add("app.hat.execution.router")
-    assert reaches(planted, "app.hat.telegram.commands", ORDER_MODULES)
+    assert reaches(planted, "app.hat.telegram.commands", forbidden)
 
 
 # --- auto is the owner's switch -----------------------------------------------

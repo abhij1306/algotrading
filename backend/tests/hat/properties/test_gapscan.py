@@ -1,7 +1,6 @@
-"""PBT gapscan.*: the 09:16 gap scan covers the listing, selects
-by the spec's rule and records its timing, on the real code with a fake cm-market server."""
+"""The 09:16 gap scan evaluates every EQ symbol of the listing exactly once, with its gap or with
+none when the price is missing, on the real code with a fake cm-market server."""
 
-from datetime import date
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any
@@ -16,7 +15,6 @@ from app.hat.data.gapscan import (
 )
 from app.hat.data.mcp_client import McpClient
 
-DAY = date(2026, 10, 21)
 symbol_names = st.from_regex(r"[A-C][A-C0-9&]{0,3}", fullmatch=True)
 price_values = st.integers(1, 10**7).map(lambda c: Decimal(c).scaleb(-2))
 
@@ -71,11 +69,3 @@ def test_covers_universe_unpriced(bad: object, where: str) -> None:
     row[where] = bad  # type: ignore[assignment]
     rows = scan_rows(McpClient(PricedListingServer([row]), sleep=lambda _s: None))
     assert [(r.symbol, r.gap_pct) for r in rows] == [("AAA", None)]
-
-
-# --- the selection rule --------------------------------------------
-
-BANDS = st.sampled_from([None, 2, 5, 10, 20])
-
-
-# --- timing ----------------------------------------------------------------------

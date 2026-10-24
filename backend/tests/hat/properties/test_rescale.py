@@ -1,54 +1,20 @@
-"""PBT rescale.*: an open position spanning a split or bonus is
-rescaled before the ex-date open (quantity ⌊q / f⌋, prices × f, once per action, with its event),
-no exit fires from the action alone, the instrument is manage-only until the rescale is done, the
-broker stop follows it down, and the night before looks the next session's actions up for the held
-and watchlisted instruments. Real engine, SQLite in memory, `FakeBroker`; no network."""
+"""The rescale of a position across a split or bonus: the stored factor read back as an exact
+small ratio, the position scaled by it (quantity ⌊q / f⌋, prices × f, both stops floored), and a
+live price that reads as an unstored split. Pure functions, no database."""
 
 from __future__ import annotations
 
-import uuid
-from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
 
 import pytest
-from hat_risk_support import TRADE_DAY
 from hypothesis import assume, given, settings
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session
 
-from app.hat.data.corporate_actions import (
-    factor_to_decimal,
-)
-from app.hat.engine import exits, rescale
-from app.hat.models import (
-    HatCorporateAction,
-)
-from app.hat.time import IST
+from app.hat.data.corporate_actions import factor_to_decimal
+from app.hat.engine import rescale
 
 D = Decimal
-EX_DAY = TRADE_DAY + timedelta(days=1)  # Thursday: the ex-date after an entry on Wednesday
-OPEN = datetime.combine(EX_DAY, time(9, 16), tzinfo=IST)
-
-
-def _action(session: Session, instrument: uuid.UUID, ex: date, kind: str, f: Fraction) -> None:
-    session.add(
-        HatCorporateAction(
-            instrument_id=instrument,
-            ex_date=ex,
-            action_type=kind,
-            adjustment_factor=factor_to_decimal(f),
-            raw_text="fixture",
-            source="mcp",
-        )
-    )
-    session.commit()
-
-
-# --- the rescale keeps the position -----------------------------------------------
-
-
-# --- each action once, never for a position opened on or after it -----------------
 
 
 @settings(max_examples=200, deadline=None)
@@ -108,29 +74,6 @@ def test_factor_not_rounded_refused(stored: str) -> None:
         rescale.exact_factor(factor)
 
 
-# --- until rescaled, no exit and no entry ---------------------------------------
-
-
-class _Book:
-    """The daily levels of the exits: a fixed view for any instrument."""
-
-    def day(self, _day: date) -> _Book:
-        return self
-
-    def exit_view(
-        self, _iid: uuid.UUID, price: Decimal, _rules: object, held: int
-    ) -> exits.ExitView:
-        return exits.ExitView(price=price, days_held=held, sma={10: price})
-
-
-# --- an action the rescale cannot handle leaves the position manage-only -----------
-
-# --- the broker stop follows the rescale down ---------------------------------------
-
-
-# --- the night before ---------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     ("price", "previous", "split"),
     [
@@ -144,3 +87,56 @@ class _Book:
 def test_split_like(price: str, previous: str, split: bool) -> None:
     """A live price at or below 0.6 of the previous raw close reads as an unstored split (Q3)."""
     assert rescale.split_like(D(price), D(previous)) is split
+
+
+@pytest.mark.parametrize(
+    ("qty", "f", "held"),
+    [
+        (100, Fraction(1, 2), 200),  # a 1:2 split
+        (100, Fraction(1, 5), 500),
+        (100, Fraction(2, 3), 150),  # a 1:2 bonus
+        (101, Fraction(2, 3), 151),  # 151.5: the half share is paid in cash
+        (7, Fraction(10, 11), 7),  # 7.7
+        (0, Fraction(1, 2), 0),
+        (-3, Fraction(1, 2), 0),
+    ],
+)
+def test_scale_qty_floors(qty: int, f: Fraction, held: int) -> None:
+    assert rescale.scale_qty(qty, f) == held
+
+
+@pytest.mark.parametrize(
+    ("before", "f", "after"),
+    [
+        (
+            (100, "100", "90", "95"),
+            Fraction(1, 2),
+            rescale.Scaled(200, D("50.0000"), D("45.0000"), D("47.5000")),
+        ),
+        (
+            (101, "100", "90", "95.0005"),
+            Fraction(2, 3),
+            # 66.66666.. half-even; 60 and 63.333666.. floored, never above the exact stop
+            rescale.Scaled(151, D("66.6667"), D("60.0000"), D("63.3336")),
+        ),
+        (
+            # a current stop one place above the initial: both floor to the same value
+            (10, "100", "90", "90.0001"),
+            Fraction(2, 3),
+            rescale.Scaled(15, D("66.6667"), D("60.0000"), D("60.0000")),
+        ),
+        (
+            (30, "123.4567", "101.0001", "101.0001"),
+            Fraction(10, 11),
+            rescale.Scaled(33, D("112.2334"), D("91.8182"), D("91.8182")),
+        ),
+    ],
+)
+def test_scale_position(before: tuple, f: Fraction, after: rescale.Scaled) -> None:
+    """Quantity ⌊q / f⌋, entry × f to the stored places, both stops × f floored the same way so
+    `current_stop >= initial_stop` still holds (the DB trigger refuses it otherwise)."""
+    qty, entry, initial, current = before
+    scaled = rescale.scale_position(qty, D(entry), D(initial), D(current), f)
+    assert scaled == after
+    assert scaled.current_stop >= scaled.initial_stop
+    assert scaled.current_stop <= D(current) * f.numerator / f.denominator

@@ -30,12 +30,10 @@ from app.hat.clock import FixedClock
 from app.hat.data.provider.ticks import normalize_tick
 from app.hat.data.subscriptions import HAT_OWNER, SubscriptionRegistry
 from app.hat.data.symbols import symbol_master
-from app.hat.execution.fyers_auth import FyersCredentials
 from app.hat.time import IST
 
 OPEN = datetime(2026, 10, 21, 10, 0, tzinfo=IST).astimezone(UTC)  # a Wednesday, mid-session
 SATURDAY = datetime(2026, 10, 24, 10, 0, tzinfo=IST).astimezone(UTC)
-# --- the session ---
 
 
 # --- ticks ---
@@ -223,13 +221,6 @@ def test_registry_model() -> None:
     )
 
 
-# --- the provider follows the registry ---
-
-# --- the Fyers login drives the feed ---
-
-CREDS = FyersCredentials("APP-100", "SECRET", "https://app.example.test/cb")
-
-
 # --- the health monitor and the token check ---
 
 
@@ -304,8 +295,6 @@ def test_token_check_off_loop(valid: bool, is_open: bool, explicit: bool, raises
 
 
 # --- the SDK socket factory and the token source ---
-
-tokens = st.from_regex(r"[A-Z0-9]{3,10}:[A-Za-z0-9._-]{5,30}", fullmatch=True)
 
 
 maybe_text = st.one_of(st.none(), st.just(""), st.text("abcXYZ019:", min_size=1, max_size=12))

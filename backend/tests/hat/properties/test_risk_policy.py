@@ -2,12 +2,10 @@
 
 from datetime import UTC, datetime, timedelta
 
-from hat_support import memory_engine
 from hypothesis import given
 from hypothesis import strategies as st
 
 from app.hat.governance import cooling_off_satisfied
-from app.hat.models import HatRiskPolicyVersion
 from app.hat.risk.policy import DIRECTIONS
 
 SEVEN_DAYS_US = 7 * 24 * 3600 * 1_000_000
@@ -28,6 +26,3 @@ def test_cooling_off(direction: str, asked: datetime, offset_us: int) -> None:
     effective = asked + timedelta(microseconds=offset_us)
     expected = direction != "increase" or offset_us >= SEVEN_DAYS_US
     assert cooling_off_satisfied(direction, asked, effective) is expected
-
-
-ENGINE = memory_engine(HatRiskPolicyVersion)

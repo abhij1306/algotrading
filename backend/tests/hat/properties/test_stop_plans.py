@@ -12,6 +12,7 @@ from app.hat.execution.protect import AlertedToday
 from app.hat.execution.stop_plans import (
     ProtectStep,
     VerifyStep,
+    broker_trigger,
     gtt_child,
     protect_plan,
     raise_only,
@@ -240,3 +241,22 @@ def test_a_stop_alert_is_raised_once_per_position_reason_and_day() -> None:
     assert not alerted.first(day + timedelta(days=1), "stop.not_moved", position, "no_tick")
     alerted.forget(day + timedelta(days=1), "stop.not_moved", position, "no_tick")  # not sent
     assert alerted.first(day + timedelta(days=1), "stop.not_moved", position, "no_tick")
+
+
+@pytest.mark.parametrize(
+    ("stop", "tick", "trigger"),
+    [
+        ("100.07", "0.05", "100.05"),  # down to the tick, never above the stop
+        ("100.05", "0.05", "100.05"),
+        ("100.04", "0.10", "100.00"),
+        ("99.99", "1", "99"),
+        ("100.07", None, "100.07"),  # the tick unknown: the stop itself
+        ("100.07", "0", "100.07"),
+        ("100.07", "-0.05", "100.07"),
+        ("100.07", "NaN", "100.07"),
+    ],
+)
+def test_broker_trigger(stop: str, tick: str | None, trigger: str) -> None:
+    got = broker_trigger(D(stop), None if tick is None else D(tick))
+    assert got == D(trigger)
+    assert got <= D(stop)

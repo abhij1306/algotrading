@@ -1,8 +1,0 @@
-{
-  "_note": "ASSUMED, not recorded live. How the Fyers order book shows a MARKET sale that SEBI market price protection (from 2026-04-01) turned into a protected limit, while it rests unfilled. Each shape is applied to the book row of a resting HAT market sale (fakes/broker.py _book_row: status 6, nothing filled). `type` is the Fyers order type code (1 LIMIT, 2 MARKET); `limit_below_pct` puts `limitPrice` that percentage below the sale's reference price (null: no limitPrice). `market_protected`: still shown as MARKET with the protection price as its limit. `shown_as_limit`: shown as a LIMIT at the protection price. `market_plain`: shown as MARKET with no limit price. HAT recognises a resting market sale by its own row (the type it sent), not the book's type, so each shape is re-sent the same way; the book's type and price are recorded on the `order.cancelled` (code sale_resend) event and the price on the sale's row. The O2(c) live check must confirm: (1) which shape Fyers shows, and the protection band (per price slab); (2) that a cancel of the protected order is accepted and ends it, so a fresh MARKET sale gets a new band at the price then; (3) whether a MARKET modify re-prices the band instead (then a triggered GTT's sale re-asked to go at the market is enough); (4) how a lower-circuit lock shows (last trade at the band with no bid). Until then HAT_MPP_RESEND stays off.",
-  "shapes": {
-    "market_protected": {"type": 2, "limit_below_pct": "2"},
-    "shown_as_limit": {"type": 1, "limit_below_pct": "2"},
-    "market_plain": {"type": 2, "limit_below_pct": null}
-  }
-}
