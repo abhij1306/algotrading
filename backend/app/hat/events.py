@@ -60,6 +60,8 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         # the nightly store coverage check and the owner's acknowledged index gaps (DB2)
         "coverage.gaps",
         "coverage.acknowledged",
+        # a stored demerger notice the night's bc file no longer lists (Q6)
+        "corporate_action.demerger_unlisted",
     ),
     "Signals": (
         "watchlist.published",
@@ -91,6 +93,8 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "corporate_action.resolved",
         "corporate_action.demerger_exit",
         "corporate_action.demerger_late",
+        "position.split_gap",  # a split-like gap with no stored action: manage-only (Q3)
+        "position.isin_changed",  # held across an ISIN change: manage-only (Q4)
     ),
     "Control": (
         "mode.change_requested",

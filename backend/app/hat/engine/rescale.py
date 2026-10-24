@@ -6,7 +6,8 @@ holds prices of the old scale: unchanged, its stop sits above the new price and 
 it on the ex-date open for nothing but the action. So:
 
 - the night before, `ca.adjust` stores the next session's actions of the held and watchlisted
-  instruments (`daily/nightly.py`), and the features read them;
+  instruments (`daily/nightly.py`), and the features read them; after the scan, those of the
+  names new to the next session's watchlist are stored too;
 - before the open, `ca.rescale` (`rescale_open_positions`) rescales each open position of such an
   instrument: quantity ⌊q / f⌋ (a fractional entitlement is the broker's cash, not shares),
   average entry and both stops × f, in one transaction with the event `position.rescaled` that
@@ -27,6 +28,20 @@ holds, or, for a virtual position, the admin command line's `resolve-action` (PR
 `corporate_action.resolved` (`resolve_action`) and closes it virtually at the price the owner
 gives (the ex-date's adjusted price, PR 31 follow-ups 1 and 12).
 
+An action that was never stored leaves no row to see, so a held name whose live price is at or
+below `SPLIT_GAP_RATIO` of the previous session's raw close, with no action stored between the
+two, is taken for an unstored split (Q3): the exits record one URGENT `position.split_gap`
+(`flag_split_gap`) and the position is manage-only (`open_guards`) until the owner stores the
+action (it is then rescaled or flagged unhandled as above) or resolves the gap (`resolve_action`,
+`<day>:split_gap`; a real position is sold by `/flatten`). A real crash of 40% waits for the
+owner too, by decision.
+
+A position held across an ISIN change (an open position on the old side of a `linked` lineage
+row that took effect after it opened) is manage-only the same way (Q4): its old instrument gets
+no ticks and its quantity may be on the old basis. The nightly records one URGENT
+`position.isin_changed` (`flag_isin_changes`), and no instrument of its chain takes an entry
+(`awaits_rescale`), until the owner resolves it (`<new first day>:isin_change`, or `/flatten`).
+
 Everything here works in the caller's transaction and never commits. Nothing reaches a broker.
 """
 
@@ -46,7 +61,14 @@ from sqlalchemy.orm import Session
 from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
 from ..errors import HatError
 from ..events import record
-from ..models import HatCorporateAction, HatEvent, HatInstrument, HatPosition, HatWatchlistEntry
+from ..models import (
+    HatCorporateAction,
+    HatEvent,
+    HatInstrument,
+    HatIsinLineage,
+    HatPosition,
+    HatWatchlistEntry,
+)
 from ..money import require_exact
 from ..notify import Notifier
 from ..time import as_utc, trade_date_of
@@ -56,7 +78,9 @@ from .owner import OwnerCommand
 __all__ = [
     "ALERT_ACTION_PENDING",
     "ALERT_ACTION_UNCHECKED",
+    "EVENT_ISIN_CHANGED",
     "EVENT_RESCALED",
+    "EVENT_SPLIT_GAP",
     "EVENT_RESOLVED",
     "EVENT_UNHANDLED",
     "ResolutionError",
@@ -64,15 +88,20 @@ __all__ = [
     "Scaled",
     "applied_factors",
     "awaits_rescale",
+    "chain_of",
     "exact_factor",
+    "flag_isin_changes",
+    "flag_split_gap",
     "flag_unhandled",
     "held_and_watchlisted",
     "manage_only",
+    "open_guards",
     "pending_actions",
     "rescale_open_positions",
     "resolve_action",
     "scale_position",
     "scale_qty",
+    "split_like",
     "unhandled_actions",
 ]
 
@@ -81,6 +110,14 @@ logger = logging.getLogger(__name__)
 EVENT_RESCALED = "position.rescaled"
 EVENT_UNHANDLED = "corporate_action.unhandled"
 EVENT_RESOLVED = "corporate_action.resolved"
+EVENT_SPLIT_GAP = "position.split_gap"  # a split-like gap with no stored action (Q3)
+GAP_KEY = "split_gap"
+# A live price at or below this share of the previous raw close, with no stored action, reads as
+# an unstored split: NSE's widest band is 20%, and a 1:2 split or a 1:1 bonus halves the price.
+SPLIT_GAP_RATIO = Decimal("0.6")
+EVENT_ISIN_CHANGED = "position.isin_changed"  # held across an ISIN change (Q4)
+ISIN_KEY = "isin_change"
+LINKED = "linked"  # `data/lineage.py`'s status of a link
 CLOSE_REASON = "corporate_action"  # the exit reason of a virtual position closed on resolution
 ALERT_ACTION_PENDING = "corporate_action.pending"
 ALERT_ACTION_UNCHECKED = "corporate_action.unchecked"  # a next-session lookup failed
@@ -89,6 +126,12 @@ MAX_DENOMINATOR = 1000  # split and bonus ratios are small: 2/3 is stored as 0.6
 # Two ratios with denominators up to 1000 differ by at least 1e-6, so a stored factor within 1e-9
 # of one (12 places, or the 10 a SQLite Numeric returns) names it alone.
 FACTOR_TOLERANCE = Fraction(1, 10**9)
+# The MCP sends most factors to 4 places (0.6667 for 2/3, 0.9091 for 10/11). Two ratios with
+# denominators up to 99 differ by more than 1e-4 (1/(99 x 98)), so at most one lies within half a
+# unit of the 4th place of such a factor, and that one is the ratio it was rounded from.
+ROUNDED_PLACES = 4
+ROUNDED_DENOMINATOR = 99
+ROUNDED_TOLERANCE = Fraction(1, 2 * 10**ROUNDED_PLACES)
 RESCALED_TYPES = (TYPE_SPLIT, TYPE_BONUS)
 _MONEY = Decimal("0.0001")  # hat_position prices are Numeric(18, 4)
 
@@ -110,14 +153,20 @@ class Scaled:
 
 
 def exact_factor(stored: Decimal) -> Fraction:
-    """The ratio a stored factor stands for (2/3 from 0.666666666667). A factor no ratio with a
-    denominator up to 1000 rounds to (0.6667, sent to 4 places) raises ValueError: a guessed
-    ratio would size the position wrongly, so it stays manage-only and is alerted instead."""
+    """The ratio a stored factor stands for: 2/3 from 0.666666666667, a ratio with a denominator
+    up to 1000 the factor gives exactly, else, for a factor sent to 4 places or fewer (0.6667),
+    the one ratio with a denominator up to 99 it rounds from. Any other factor raises ValueError:
+    a guessed ratio would size the position wrongly, so it stays manage-only and is alerted
+    instead."""
     value = Fraction(stored)
     ratio = value.limit_denominator(MAX_DENOMINATOR)
-    if abs(ratio - value) > FACTOR_TOLERANCE:
-        raise ValueError("corporate-action factor is not an exact small ratio")
-    return ratio
+    if abs(ratio - value) <= FACTOR_TOLERANCE:
+        return ratio
+    if (value * 10**ROUNDED_PLACES).denominator == 1:
+        near = value.limit_denominator(ROUNDED_DENOMINATOR)
+        if near > 0 and abs(near - value) <= ROUNDED_TOLERANCE:
+            return near
+    raise ValueError("corporate-action factor is not an exact small ratio")
 
 
 def scale_qty(qty: int, factor: Fraction) -> int:
@@ -145,16 +194,7 @@ def scale_position(
 
 
 def _rescale_events(session: Session, position_id: uuid.UUID) -> list[dict]:
-    rows = session.scalars(
-        select(HatEvent.payload)
-        .where(
-            HatEvent.aggregate_type == "position",
-            HatEvent.aggregate_id == position_id,
-            HatEvent.event_type == EVENT_RESCALED,
-        )
-        .order_by(HatEvent.id)
-    )
-    return [dict(row or {}) for row in rows]
+    return _payloads(session, position_id, EVENT_RESCALED)
 
 
 def applied_factors(session: Session, position_id: uuid.UUID) -> list[Fraction]:
@@ -220,12 +260,149 @@ def unhandled_actions(
     return [a for a in actions if not _rescalable(a)]
 
 
-def manage_only(session: Session, position: HatPosition, day: date) -> bool:
-    """True while the position spans an action it was not rescaled for, or one the rescale
-    cannot handle: its exits see no view (HAT-EXEC-142, HAT-EXEC-144)."""
-    return bool(
-        pending_actions(session, position, day) or unhandled_actions(session, position, day)
+def split_like(price: Decimal, previous_close: Decimal) -> bool:
+    """True when `price` is at or below `SPLIT_GAP_RATIO` of a positive `previous_close`."""
+    return previous_close > 0 and price <= SPLIT_GAP_RATIO * previous_close
+
+
+def actions_between(session: Session, instrument_id: uuid.UUID, after: date, through: date) -> bool:
+    """Whether a price-changing action of the instrument is stored with its ex-date after
+    `after` and on or before `through`."""
+    found = session.scalar(
+        select(HatCorporateAction.id)
+        .where(
+            HatCorporateAction.instrument_id == instrument_id,
+            HatCorporateAction.ex_date > after,
+            HatCorporateAction.ex_date <= through,
+            HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES),
+        )
+        .limit(1)
     )
+    return found is not None
+
+
+def _payloads(session: Session, position_id: uuid.UUID, event_type: str) -> list[dict]:
+    rows = session.scalars(
+        select(HatEvent.payload)
+        .where(
+            HatEvent.aggregate_type == "position",
+            HatEvent.aggregate_id == position_id,
+            HatEvent.event_type == event_type,
+        )
+        .order_by(HatEvent.id)
+    )
+    return [dict(row or {}) for row in rows]
+
+
+def isin_successor(session: Session, position: HatPosition) -> HatIsinLineage | None:
+    """The `linked` lineage row whose old side is the position's instrument and whose new ISIN
+    first traded after the position opened: the position is held across that ISIN change."""
+    opened = trade_date_of(as_utc(position.opened_at))
+    return session.scalar(
+        select(HatIsinLineage)
+        .where(
+            HatIsinLineage.old_instrument_id == position.instrument_id,
+            HatIsinLineage.status == LINKED,
+            HatIsinLineage.effective_date > opened,
+        )
+        .order_by(HatIsinLineage.effective_date)
+        .limit(1)
+    )
+
+
+def _isin_key(link: HatIsinLineage) -> str:
+    return f"{link.effective_date.isoformat()}:{ISIN_KEY}"
+
+
+def chain_of(session: Session, instrument_id: uuid.UUID) -> set[uuid.UUID]:
+    """The instrument and every instrument `linked` to it through the lineage, either way."""
+    links = session.execute(
+        select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
+            HatIsinLineage.status == LINKED
+        )
+    ).all()
+    chain, grew = {instrument_id}, True
+    while grew:
+        grew = False
+        for old, new in links:
+            if (old in chain) != (new in chain):
+                chain |= {old, new}
+                grew = True
+    return chain
+
+
+def open_guards(session: Session, position: HatPosition) -> list[str]:
+    """The keys of the position's locks the owner has not resolved (`corporate_action.resolved`):
+    each `position.split_gap` no action stored since explains (a stored action ex in the gap's
+    sessions takes the gap over: rescaled, or unhandled), and an ISIN change it is held across
+    (`isin_successor`). None for a closed position."""
+    if position.closed_at is not None:
+        return []
+    resolved = {str(p.get("action")) for p in _payloads(session, position.id, EVENT_RESOLVED)}
+    keys = [
+        key
+        for p in _payloads(session, position.id, EVENT_SPLIT_GAP)
+        if (key := str(p.get("action"))) not in resolved
+        and not actions_between(
+            session,
+            position.instrument_id,
+            date.fromisoformat(str(p.get("previous_day"))),
+            date.fromisoformat(key.split(":")[0]),
+        )
+    ]
+    link = isin_successor(session, position)
+    if link is not None and _isin_key(link) not in resolved:
+        keys.append(_isin_key(link))
+    return keys
+
+
+def manage_only(session: Session, position: HatPosition, day: date) -> bool:
+    """True while the position spans an action it was not rescaled for, one the rescale cannot
+    handle, a split-like gap no stored action explains or an ISIN change: its exits see no view
+    (HAT-EXEC-142, HAT-EXEC-144, Q3, Q4)."""
+    return bool(
+        pending_actions(session, position, day)
+        or unhandled_actions(session, position, day)
+        or open_guards(session, position)
+    )
+
+
+def flag_split_gap(
+    session: Session,
+    position: HatPosition,
+    day: date,
+    gap: tuple[date, Decimal, Decimal],
+    now: datetime,
+) -> bool:
+    """Record one URGENT `position.split_gap` for the position on `day`, `gap` being (the
+    previous session, its raw close, the live price); False when it is recorded already. Works
+    in the caller's transaction."""
+    key = f"{day.isoformat()}:{GAP_KEY}"
+    if key in {str(p.get("action")) for p in _payloads(session, position.id, EVENT_SPLIT_GAP)}:
+        return False
+    previous_day, previous_close, price = gap
+    symbol = session.scalar(
+        select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+    )
+    record(
+        session,
+        aggregate_type="position",
+        aggregate_id=position.id,
+        event_type=EVENT_SPLIT_GAP,
+        actor="scheduler",
+        payload={
+            "action": key,
+            "symbol": str(symbol or "?"),
+            "previous_day": previous_day.isoformat(),
+            "previous_close": str(previous_close),
+            "price": str(price),
+            "virtual": "true" if position.is_virtual else "false",
+        },
+        correlation_id=position.signal_id,
+        bot_id=position.bot_id,
+        occurred_at=now,
+    )
+    return True
 
 
 def _open_positions(session: Session, instrument_id: uuid.UUID | None = None) -> list[HatPosition]:
@@ -253,10 +430,14 @@ def held_and_watchlisted(session: Session, day: date) -> dict[str, uuid.UUID]:
 
 
 def awaits_rescale(session: Session, instrument_id: uuid.UUID, day: date) -> bool:
-    """True while some open position of the instrument has an action it was not rescaled for,
-    or one the rescale cannot handle: the instrument is manage-only and that position's exits
-    wait (HAT-EXEC-142, HAT-EXEC-144)."""
-    return any(manage_only(session, p, day) for p in _open_positions(session, instrument_id))
+    """True while some open position of the instrument's lineage chain has an action it was not
+    rescaled for, one the rescale cannot handle, or another lock (`open_guards`): the chain is
+    manage-only and that position's exits wait (HAT-EXEC-142, HAT-EXEC-144, Q4)."""
+    return any(
+        manage_only(session, p, day)
+        for iid in chain_of(session, instrument_id)
+        for p in _open_positions(session, iid)
+    )
 
 
 def _apply(
@@ -356,16 +537,26 @@ def flag_unhandled(session: Session, day: date, now: datetime) -> int:
 
 
 def rescale_open_positions(
-    session_factory: Callable[[], Session], day: date, now: datetime, notifier: Notifier
-) -> tuple[int, Sequence[uuid.UUID]]:
+    session_factory: Callable[[], Session],
+    day: date,
+    now: datetime,
+    notifier: Notifier,
+    ready: Callable[[Session, HatPosition], bool],
+) -> tuple[int, Sequence[uuid.UUID], Sequence[uuid.UUID]]:
     """The `ca.rescale` body: every open position with a pending action, each in its own
-    transaction. Returns (actions applied, positions that failed); each failure is alerted
-    `corporate_action.pending` and the position stays manage-only."""
+    transaction, once `ready` says its fills are read (a real position's account read them
+    after the previous session closed, Q8: a fill booked after the rescale on the old scale would
+    size it wrongly). Returns (actions applied, positions that failed, positions waiting for
+    their fills); each failure is alerted `corporate_action.pending`, and a failed or waiting
+    position stays manage-only."""
     with session_factory() as session:
         ids = [p.id for p in _open_positions(session) if pending_actions(session, p, day)]
+        waiting = [p for p in ids if not ready(session, session.get(HatPosition, p))]
     applied = 0
     failed: list[uuid.UUID] = []
     for position_id in ids:
+        if position_id in waiting:
+            continue
         try:
             with session_factory() as session:
                 applied += rescale_position(session, position_id, day, now)
@@ -374,7 +565,51 @@ def rescale_open_positions(
             logger.exception("rescaling position %s failed", position_id)
             failed.append(position_id)
             notifier.alert(ALERT_ACTION_PENDING, day, {"position_id": str(position_id)})
-    return applied, failed
+    return applied, failed, waiting
+
+
+def flag_isin_changes(session: Session, now: datetime) -> int:
+    """Record one URGENT `position.isin_changed` per open position held across an ISIN change
+    not yet recorded (Q4); returns how many were. Works in the caller's transaction."""
+    flagged = 0
+    for position in _open_positions(session):
+        link = isin_successor(session, position)
+        if link is None:
+            continue
+        key = _isin_key(link)
+        if key in {
+            str(p.get("action")) for p in _payloads(session, position.id, EVENT_ISIN_CHANGED)
+        }:
+            continue
+        isins = dict(
+            session.execute(
+                select(HatInstrument.id, HatInstrument.isin).where(
+                    HatInstrument.id.in_((link.old_instrument_id, link.new_instrument_id))
+                )
+            ).all()
+        )
+        symbol = session.scalar(
+            select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
+        )
+        record(
+            session,
+            aggregate_type="position",
+            aggregate_id=position.id,
+            event_type=EVENT_ISIN_CHANGED,
+            actor="scheduler",
+            payload={
+                "action": key,
+                "symbol": str(symbol or "?"),
+                "old_isin": str(isins.get(link.old_instrument_id, "?")),
+                "new_isin": str(isins.get(link.new_instrument_id, "?")),
+                "virtual": "true" if position.is_virtual else "false",
+            },
+            correlation_id=position.signal_id,
+            bot_id=position.bot_id,
+            occurred_at=now,
+        )
+        flagged += 1
+    return flagged
 
 
 class ResolutionError(HatError):
@@ -393,7 +628,9 @@ def resolve_action(
     command: OwnerCommand,
 ) -> HatPosition:
     """The owner resolves one unhandled action (`<ex-date>:<type>`, as its
-    `corporate_action.unhandled` names it) of an open virtual position (PR 73; PR 31 follow-ups
+    `corporate_action.unhandled` names it) or open lock (`<day>:split_gap` or
+    `<day>:isin_change`, as its `position.split_gap` or `position.isin_changed` names it) of an
+    open virtual position (PR 73; PR 31 follow-ups
     1, 12): records `corporate_action.resolved` as the owner's (`actor = user`, the allowlisted
     chat, `via = cli`) at `price` (the ex-date's adjusted price the owner reads), and the caller
     closes the position at it in the same transaction (`shadow.close_position` with
@@ -418,7 +655,7 @@ def resolve_action(
     locking = {
         _key(a.ex_date, a.action_type)
         for a in unhandled_actions(session, position, command.trade_date)
-    }
+    } | set(open_guards(session, position))
     if action not in locking:
         raise ResolutionError("action_not_unhandled")
     if price is None or not price.is_finite() or price <= 0:

@@ -55,22 +55,57 @@ def _action(session: Session, instrument: uuid.UUID, ex: date, kind: str, f: Fra
 @given(
     d=st.integers(2, rescale.MAX_DENOMINATOR),
     n=st.integers(1, rescale.MAX_DENOMINATOR - 1),
-    places=st.integers(2, 5),  # a factor sent short; a non-exact one is then 1e-8 or more off
 )
-def test_factor_exact(d: int, n: int, places: int) -> None:
+def test_factor_exact(d: int, n: int) -> None:
     """For every ratio n/d below 1 with d up to 1000, the stored 12-place factor gives back n/d
-    exactly; and a factor sent to fewer places that is not exactly such a ratio is refused (the
-    position stays manage-only) rather than read as some nearby ratio. Harm: 0.0110 read as
-    11/1000 instead of 1/91 sizes the rescaled position at a tenth of its shares."""
+    exactly; and a factor sent to 5 places that is not exactly such a ratio is refused (the
+    position stays manage-only) rather than read as some nearby ratio. Harm: a guessed ratio
+    sizes the rescaled position wrongly."""
     assume(n < d)
     f = Fraction(n, d)
     assert rescale.exact_factor(factor_to_decimal(f)) == f
-    short = (D(n) / D(d)).quantize(D(1).scaleb(-places))
-    nearest = Fraction(short).limit_denominator(rescale.MAX_DENOMINATOR)
-    if nearest != Fraction(short):
-        stored = factor_to_decimal(Fraction(short))
+    short = Fraction((D(n) / D(d)).quantize(D("0.00001")))
+    five = (short * 10**4).denominator != 1  # not a factor sent to 4 places
+    if five and short.limit_denominator(rescale.MAX_DENOMINATOR) != short:
+        stored = factor_to_decimal(short)
         with pytest.raises(ValueError):
             rescale.exact_factor(stored)
+
+
+@settings(max_examples=200, deadline=None)
+@given(d=st.integers(2, rescale.ROUNDED_DENOMINATOR), n=st.integers(1, 98))
+def test_factor_four_places(d: int, n: int) -> None:
+    """A ratio with a denominator up to 99 sent to 4 places (the MCP's 0.6667 for 2/3) gives back
+    the ratio, unless the 4 places are themselves an exact ratio (0.1250 is 1/8). Harm: 300
+    stored splits and bonuses left every position through them manage-only."""
+    assume(n < d)
+    four = (D(n) / D(d)).quantize(D("0.0001"))
+    assume(Fraction(four).limit_denominator(rescale.MAX_DENOMINATOR) != Fraction(four))
+    assert rescale.exact_factor(factor_to_decimal(Fraction(four))) == Fraction(n, d)
+
+
+@pytest.mark.parametrize(
+    ("stored", "ratio"),
+    [
+        ("0.6667", Fraction(2, 3)),
+        ("0.3333", Fraction(1, 3)),
+        ("0.9091", Fraction(10, 11)),
+        ("0.8333", Fraction(5, 6)),
+        ("0.7143", Fraction(5, 7)),
+        ("0.5", Fraction(1, 2)),
+    ],
+)
+def test_factor_mcp_rounded(stored: str, ratio: Fraction) -> None:
+    """The factors hat_live holds most often, as the MCP stored them."""
+    assert rescale.exact_factor(D(stored)) == ratio
+
+
+@pytest.mark.parametrize("stored", ["0.66667", "0.6668", "0.666670000001"])
+def test_factor_not_rounded_refused(stored: str) -> None:
+    """Past 4 places, or 4 places no small ratio rounds to, the factor is refused."""
+    factor = D(stored)
+    with pytest.raises(ValueError):
+        rescale.exact_factor(factor)
 
 
 # --- until rescaled, no exit and no entry ---------------------------------------
@@ -94,3 +129,18 @@ class _Book:
 
 
 # --- the night before ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("price", "previous", "split"),
+    [
+        ("50", "100", True),  # a 1:2 split
+        ("60", "100", True),
+        ("60.01", "100", False),
+        ("80", "100", False),  # a 20% band move
+        ("1", "0", False),  # no previous close: never a gap
+    ],
+)
+def test_split_like(price: str, previous: str, split: bool) -> None:
+    """A live price at or below 0.6 of the previous raw close reads as an unstored split (Q3)."""
+    assert rescale.split_like(D(price), D(previous)) is split

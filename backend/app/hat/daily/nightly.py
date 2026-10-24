@@ -36,7 +36,7 @@ from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
 from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.coverage import JOB_COVERAGE, coverage_body
-from ..data.demerger_notice import announce_stored, store_notices
+from ..data.demerger_notice import announce_stored, store_notices, unlisted_notices
 from ..data.features import features_job
 from ..data.kite_symbols import KiteSymbolData
 from ..data.lineage import refresh_lineage, stored_adjustment
@@ -54,13 +54,14 @@ from ..data.renames import renames_from_bars
 from ..data.store import Adjustment, DataStore, cumulative_segments
 from ..data.symbols import symbol_master
 from ..engine.close_gap import record_close_gaps
-from ..engine.demerger_exit import flag_positions
+from ..engine.demerger_exit import flag_positions, flag_unlisted
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
 from ..engine.portfolio.allocation_service import policy_at
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
 from ..engine.positions import restate_dividends
 from ..engine.rescale import (
     ALERT_ACTION_UNCHECKED,
+    flag_isin_changes,
     flag_unhandled,
     held_and_watchlisted,
     rescale_open_positions,
@@ -69,7 +70,7 @@ from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
 from ..events import record
-from ..models import HatBot, HatEvent, HatJobRun, HatStrategyVersion
+from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatStrategyVersion
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, OnFinish, SessionFactory
 from ..ops.partitions import events_partitions
@@ -82,7 +83,7 @@ from ..risk.drawdown import (
     snapshot_bots,
 )
 from ..risk.kill_ops import sync_health
-from ..time import utc_now
+from ..time import IST, as_utc, utc_now
 from .market import official_closes, scan_inputs
 
 __all__ = [
@@ -142,6 +143,10 @@ PARTITIONS_AT = time(0, 30)
 PURGE_AT = time(1, 0)
 INGEST_RETRY = timedelta(minutes=10)
 RESCALE_RETRY = timedelta(minutes=5)  # three tries before the 09:00 pre-open
+# A real position's rescale waits for its account's fill sync until this time (Q8), reading again
+# every `RESCALE_POLL`; then the job fails (`fills_not_synced`) before its 09:00 deadline.
+RESCALE_SYNC_UNTIL = time(8, 58)
+RESCALE_POLL = timedelta(seconds=30)
 # The ISIN lineage refresh failed (the stored one stands), or found a succession it would not
 # link: the owner reads `python -m app.hat.data.lineage report`.
 ALERT_LINEAGE_UNCHECKED = "lineage.unchecked"
@@ -182,6 +187,8 @@ class NightlyDeps:
     bhavcopy: Callable[[], Fetcher]  # the 22:00 fallback's downloader
     sources: TextSources
     total_equity: Callable[[date], Decimal]  # the broker funds total (Q1)
+    # an account's last successful fill sync (`Desks.fills_read_at`): `ca.rescale`'s gate (Q8)
+    fills_read_at: Callable[[uuid.UUID], datetime | None]
     sleep: Callable[[float], None]  # the ingest's wait; the runtime's raises when HAT stops
     notifier: Notifier = field(default_factory=LogNotifier)
     digest: Callable[[uuid.UUID, date], None] | None = None  # Reports.send_watchlist_digest
@@ -333,6 +340,8 @@ class Nightly:
         quarantined instrument on its `since` date are asked again (HAT-DATA-062, PR 33): a
         split whose lookup failed on the day releases its quarantine at the next gate once
         stored. A failure there is only logged: the quarantine was alerted already and stands.
+        After the lineage refresh each position held across an ISIN change is flagged
+        (`_isin_changes`, Q4).
         Then the dividends of the day's corporate-action file go in with their amounts
         (`_dividends`, CA4), its demergers become notices and the positions held into them are
         alerted (`_demergers`, CA8), and every closed trade's dividends are brought up to the
@@ -377,6 +386,7 @@ class Nightly:
         except Exception:
             logger.exception("quarantine corporate-action lookup failed")
         self._refresh_lineage(day)
+        self._isin_changes(day)
         with self.deps.session_factory() as session:
             adjustment = stored_adjustment(session)
         cumulative_segments(adjustment.factors)  # raises when a factor cannot load into the view
@@ -410,6 +420,20 @@ class Nightly:
         for pair in report.new_review:
             self.deps.notifier.alert(ALERT_LINEAGE_REVIEW, day, {"isins": pair})
 
+    def _isin_changes(self, day: date) -> None:
+        """Each open position held across an ISIN change of the lineage gets one URGENT
+        `position.isin_changed` (Q4); it is manage-only and its chain takes no entry
+        (`rescale.open_guards`) whether or not this runs. A failure is alerted."""
+        try:
+            with self.deps.session_factory() as session:
+                flagged = flag_isin_changes(session, self._now())
+                session.commit()
+        except Exception:
+            logger.exception("isin change flags failed")
+            self.deps.notifier.alert(ALERT_LINEAGE_UNCHECKED, day, {})
+            return
+        logger.info("positions held across an isin change: %d newly flagged", flagged)
+
     def _next_session_actions(self, day: date) -> None:
         with self.deps.session_factory() as session:
             target = next_session(session, day)
@@ -433,13 +457,19 @@ class Nightly:
         return None if source is None else source(day)()
 
     def _demergers(self, day: date, text: str | None) -> None:
-        """The demergers the night's `bc` file lists become notices dated tonight, a stored
-        demerger takes its notice's date, and each open position held into one is alerted
-        (`demerger_exit.flag_positions`, CA8), in one transaction. Without tonight's file the
-        stored notices are still checked, so a position whose exit passed is alerted late."""
+        """The demergers the night's `bc` file lists become notices dated tonight, a stored notice
+        ahead of tonight the file no longer lists is recorded for the owner (`flag_unlisted`,
+        Q6: never retired), a stored demerger takes its notice's date, and each open position
+        held into one is alerted (`demerger_exit.flag_positions`, CA8), in one transaction.
+        Without tonight's file the stored notices are still checked, so a position whose exit
+        passed is alerted late."""
         with self.deps.session_factory() as session:
-            stored = (
-                store_notices(session, ca_dividends.read_bc(text), day) if text is not None else 0
+            rows = ca_dividends.read_bc(text) if text is not None else None
+            stored = store_notices(session, rows, day) if rows is not None else 0
+            unlisted = (
+                flag_unlisted(session, unlisted_notices(session, rows, day), self._now())
+                if rows is not None
+                else 0
             )
             dated = announce_stored(session)
             calendar = session_calendar(session)
@@ -447,9 +477,11 @@ class Nightly:
             due, late = flag_positions(session, day, sessions, self._now())
             session.commit()
         logger.info(
-            "demergers of %s: %d notices stored, %d actions dated, %d exits due, %d late",
+            "demergers of %s: %d notices stored, %d newly unlisted, %d actions dated, "
+            "%d exits due, %d late",
             day,
             stored,
+            unlisted,
             dated,
             due,
             late,
@@ -512,20 +544,53 @@ class Nightly:
 
     def rescale(self, day: date) -> JobResult:
         """`ca.rescale` (before the open): every open position spanning a stored split or bonus
-        is rescaled (HAT-EXEC-141), then every action the rescale cannot handle is flagged once
-        per position (`corporate_action.unhandled`, HAT-EXEC-144). Fails when a position could
-        not be rescaled or the flags not written, so the job is retried; the position stays
-        manage-only and is alerted meanwhile."""
-        now = self._now()
-        applied, failed = rescale_open_positions(
-            self.deps.session_factory, day, now, self.deps.notifier
+        is rescaled (HAT-EXEC-141), a real one only once its account's fills were read after
+        the previous session's close (Q8: read again every `RESCALE_POLL` until
+        `RESCALE_SYNC_UNTIL`), then every action the rescale cannot handle is flagged once per
+        position (`corporate_action.unhandled`, HAT-EXEC-144). Fails when a position could not
+        be rescaled (`rescale_failed`, retried) or still waits for its fills
+        (`fills_not_synced`, an URGENT `job.failed`), or the flags were not written; the
+        position stays manage-only meanwhile."""
+        ready = self._fills_ready(day)
+        until = datetime.combine(day, RESCALE_SYNC_UNTIL, tzinfo=IST)
+        applied, failed, waiting = rescale_open_positions(
+            self.deps.session_factory, day, self._now(), self.deps.notifier, ready
         )
+        while waiting and not failed and self._now() < until:
+            self.deps.sleep(RESCALE_POLL.total_seconds())
+            more, failed, waiting = rescale_open_positions(
+                self.deps.session_factory, day, self._now(), self.deps.notifier, ready
+            )
+            applied += more
         with self.deps.session_factory() as session:
-            flag_unhandled(session, day, now)
+            flag_unhandled(session, day, self._now())
             session.commit()
         if failed:
             raise JobError("rescale_failed")
+        if waiting:
+            raise JobError("fills_not_synced")
         return JobResult(rows=applied)
+
+    def _fills_ready(self, day: date) -> Callable[[Session, HatPosition], bool]:
+        """Whether a position's fills are read for the rescale of `day`: a virtual one always; a
+        real one when its account's last successful fill sync came after the close of the
+        session before `day` (no calendar row for it: never)."""
+        with self.deps.session_factory() as session:
+            calendar = session_calendar(session)
+        previous = calendar.previous_trading_day(day) if calendar is not None else None
+        row = calendar.days.get(previous) if calendar is not None and previous else None
+        closed = row.close_at if row is not None else None
+
+        def ready(session: Session, position: HatPosition) -> bool:
+            if position.is_virtual:
+                return True
+            bot = session.get(HatBot, position.bot_id)
+            if closed is None or bot is None or bot.broker_account_id is None:
+                return False
+            read = self.deps.fills_read_at(bot.broker_account_id)
+            return read is not None and as_utc(read) >= as_utc(closed)
+
+        return ready
 
     def features(self, day: date) -> JobResult:
         def adjustment() -> Adjustment:
@@ -577,7 +642,9 @@ class Nightly:
 
     def scan(self, day: date) -> JobResult:
         """Each active bot's watchlist for the next session from the bars of `day`, without the
-        instruments the quality gate excluded (HAT-DATA-064)."""
+        instruments the quality gate excluded (HAT-DATA-064). Then the next session's actions of
+        the names new to it are looked up and stored (`_new_names_actions`): `ca.adjust` ran
+        before the scan and knew only tonight's held and watchlisted names."""
         rows = 0
         with self.deps.session_factory() as session:
             target = next_session(session, day)
@@ -597,7 +664,39 @@ class Nightly:
                 published = scan_and_publish(session, bot.id, inputs[index], target, self._now())
                 session.commit()
                 rows += published.rows
+        self._new_names_actions(day, target)
         return JobResult(rows=rows)
+
+    def _new_names_actions(self, day: date, target: date) -> None:
+        """Look up and store the `target` session's actions of the instruments on its watchlist
+        that `ca.adjust` did not ask for (held or on the watchlist of `day`). A failed lookup is
+        alerted `corporate_action.unchecked` and never fails the scan."""
+        try:
+            with self.deps.session_factory() as session:
+                asked = set(held_and_watchlisted(session, day).values())
+                new = {
+                    symbol: iid
+                    for symbol, iid in held_and_watchlisted(session, target).items()
+                    if iid not in asked
+                }
+            if not new:
+                return
+            found = lookup_actions(_mcp(self.deps), new, target, target)
+            stored = store_actions(
+                self.deps.session_factory, found.records, (self.deps.notifier, day)
+            )
+        except Exception:
+            logger.exception("post-scan corporate-action lookup failed")
+            self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": "*"})
+            return
+        logger.info(
+            "post-scan actions: %d names, %d stored, %d lookups failed",
+            len(new),
+            stored.created,
+            len(found.failed),
+        )
+        for symbol in found.failed:
+            self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
 
     def watchlist_digest(self, day: date) -> JobResult:
         send = self.deps.digest

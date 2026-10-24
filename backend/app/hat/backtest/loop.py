@@ -78,7 +78,8 @@ before its ex-date closes at that session's close (`MarketData.demerger_exits`, 
 `demerger`), and nothing trades or marks within a few sessions of an open review jump
 (`MarketData.skipped`, audit H7), without those sessions counting as a suspension. A name
 factor-pending (CA5, `MarketData.pending`) is not scanned that night nor entered that day; a
-position held in it keeps its marks, stops and exits.
+position held in it keeps its marks, stops and exits. Nor is a name entered on its demerger exit
+session (Q5): the factor-pending days then cover it from the ex-date.
 
 Dividends (CA3): the run trades and marks the price basis, the prices a broker shows, and a
 position open at the start of an ex-date session earns its dividends that day, `qty_open` times
@@ -193,6 +194,7 @@ __all__ = ["run_backtest"]
 SKIP_NO_LEVEL = "no_trigger_level"
 SKIP_FACTOR_PENDING = "factor_pending"  # CA5: the day's adjusted history is not point in time
 SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
+SKIP_DEMERGER_PENDING = "demerger_pending"  # the demerger exit session (`data/demerger_notice.py`)
 # The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _ZERO = Decimal(0)
@@ -565,7 +567,6 @@ class _Run:
             entry_price=plan.price,
             stop_price=plan.stop,
             trigger_level=Decimal(row.pivot),
-            ltp=plan.price,
             locked_upper_circuit=plan.locked,
             configured_max_chase_pct=self.chase[row.playbook],
             equity=capital,
@@ -603,6 +604,9 @@ class _Run:
             instrument_id = str(row.instrument_id)
             if instrument_id in self.view.pending_on(day):
                 self._skip(SKIP_FACTOR_PENDING)
+                continue
+            if (instrument_id, day) in self.data.demerger_exits:
+                self._skip(SKIP_DEMERGER_PENDING)  # sold at this close (Q5)
                 continue
             bar = self.view.bar(instrument_id, day)
             if bar is None:

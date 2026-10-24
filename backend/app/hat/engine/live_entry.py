@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..data.bars import Bar
+from ..data.demerger_notice import SKIP_DEMERGER_PENDING, entry_blocked
 from ..data.gapscan import Gapper, is_candidate
 from ..execution.modes import bot_mode
 from ..governance import Mode
@@ -296,7 +297,6 @@ def entry_request(
         entry_price=plan.entry,
         stop_price=plan.stop,
         trigger_level=plan.level,
-        ltp=plan.entry,
         locked_upper_circuit=plan.locked_upper_circuit,
         configured_max_chase_pct=candidate.configured_max_chase_pct,
         adv20=candidate.daily.adv20,
@@ -368,12 +368,23 @@ def submit_trigger(
 ) -> entries.EntryOutcome:
     """Write the signal of a fired trigger through `route` (the default writes in the caller's
     transaction and does not commit; the execution router commits its own steps). An instrument
-    with an open position awaiting a split or bonus rescale is manage-only: its trigger is stored
-    skipped, `corporate_action_pending` (HAT-EXEC-142)."""
+    whose lineage chain holds an open position awaiting a split or bonus rescale, or under
+    another corporate-action lock (an unhandled action, a split-like gap, an ISIN change), is
+    manage-only: its trigger is stored skipped, `corporate_action_pending` (HAT-EXEC-142, Q4).
+    One with a demerger notice is skipped `demerger_pending` from the session before its ex-date
+    until its factor is stored (`demerger_notice.entry_blocked`, Q5)."""
     request = entry_request(trigger, base, feed_stale=feed_stale)
     if awaits_rescale(session, request.instrument_id, request.trade_date):
         request = replace(request, skip_reason=SKIP_ACTION_PENDING)
+    elif _demerger_pending(session, request):
+        request = replace(request, skip_reason=SKIP_DEMERGER_PENDING)
     return route(session, request, decide=decide)
+
+
+def _demerger_pending(session: Session, request: entries.EntryRequest) -> bool:
+    calendar = request.context.calendar
+    sessions = calendar.trading_days() if isinstance(calendar, SessionCalendar) else []
+    return entry_blocked(session, request.instrument_id, request.trade_date, sessions)
 
 
 class ContextSource(Protocol):

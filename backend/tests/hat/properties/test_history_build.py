@@ -19,7 +19,12 @@ from app.hat.data.bhavcopy import (
     DownloadReport,
     weekdays,
 )
-from app.hat.data.corporate_actions import TYPE_DIVIDEND, LoadReport, lookup_actions
+from app.hat.data.corporate_actions import (
+    TYPE_DIVIDEND,
+    ActionRecord,
+    LoadReport,
+    lookup_actions,
+)
 from app.hat.data.history_build import BuildReport
 from app.hat.data.history_validation import mcp_close_source
 from app.hat.data.index_history import mcp_index_source
@@ -177,7 +182,10 @@ def test_archive_unparsed_reported(words: list[str], split: bool) -> None:
         path = Path(tmp) / "actions.csv"
         path.write_text("SYMBOL,PURPOSE,EX-DATE\n" + "\n".join(rows) + "\n", encoding="utf-8")
         sources = history_cli.ActionSources(
-            None, lambda: {"AAA": 1}, lambda sym, _day: 1 if sym == "AAA" else None, str(path)
+            None,
+            lambda: ({"AAA": 1}, set()),
+            lambda sym, _day: 1 if sym == "AAA" else None,
+            str(path),
         )
         hooks = history_cli._action_hooks(
             sources, date(2018, 1, 1), date(2018, 12, 31), lambda _records: LoadReport()
@@ -225,3 +233,25 @@ def test_action_conflict_is_not_a_success() -> None:
     report.actions.conflicts.append((1, date(2018, 6, 14), "split"))
     assert history_cli._exit_code(report) == 1
     assert "actions: created 2, unchanged 1, conflicts 1" in history_cli._summary(report)
+
+
+def test_by_ex_date_places_shared_symbol_actions() -> None:
+    """An action of a symbol two ISINs held goes to the ISIN that held it on its ex-date; one of
+    an unshared symbol, or one the symbol history places nowhere, stays where it was asked.
+    Harm: a split of the old ISIN stored under the new one adjusts the wrong history."""
+
+    def action(iid: object, ex: date) -> ActionRecord:
+        return ActionRecord(iid, ex, "split", Decimal("0.5"), "split", "mcp")
+
+    def holder(symbol: str, on: date) -> object | None:
+        if symbol != "ABC":
+            return None
+        return "old" if on < date(2020, 1, 1) else "new"
+
+    records = [
+        action("new", date(2019, 6, 1)),
+        action("new", date(2021, 6, 1)),
+        action("xyz", date(2019, 6, 1)),
+    ]
+    got = history_cli.by_ex_date(records, {"new": "ABC"}, holder)
+    assert [r.instrument_id for r in got] == ["old", "new", "xyz"]

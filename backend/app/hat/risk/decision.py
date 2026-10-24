@@ -1,7 +1,7 @@
 """The HAT risk decision: every check of 06 composed into one total function (HAT-RISK-100/101/102).
 
-`decide` is what `app.hat.risk.service.evaluate_signal` calls after it has worked out the price-band
-outcome; the session comes from the context's trading calendar. It is the only place that calls
+`decide` is what `app.hat.risk.service.evaluate_signal` calls; the session comes from the
+context's trading calendar. It is the only place that calls
 `size_position`, so no other module sizes a HAT order (CONF `risk.single_sizing_path`). It never
 raises: a missing, non-finite or float input, or any arithmetic failure, is a REJECT, never a
 default (fail closed).
@@ -67,18 +67,9 @@ class Reason(StrEnum):
     SIZE_ZERO_LIQUIDITY = "size_zero_liquidity"
     SIZE_ZERO_CASH = "size_zero_cash"
     GLOBAL_OPEN_RISK = "global_open_risk"
-    PRICE_OUT_OF_BAND = "price_out_of_band"
 
 
 REASON_CODES = frozenset(reason.value for reason in Reason)
-
-
-@dataclass(frozen=True)
-class EntryChecks:
-    """The price-band outcome that the HAT decision composes: True passed, False failed, None could
-    not be evaluated (treated as missing input)."""
-
-    price_band_ok: bool | None
 
 
 @dataclass(frozen=True)
@@ -97,7 +88,6 @@ class SignalContext:
     entry_price: Decimal | None = None
     stop_price: Decimal | None = None
     trigger_level: Decimal | None = None
-    ltp: Decimal | None = None
     locked_upper_circuit: bool | None = None
     # The playbook's last configured max-chase percent; None when none was ever configured (valid).
     configured_max_chase_pct: Decimal | None = None
@@ -251,7 +241,7 @@ def _last_hard_stop(ctx: SignalContext, version: PolicyVersion, at: datetime) ->
     return max((d for d in days if d <= today), default=None)
 
 
-def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
+def _read_entry(ctx: SignalContext) -> _Entry:
     """Every input of an entry, or `MissingInputError` for the first missing or inexact one."""
     at = _require(ctx.at, "at")
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
@@ -263,7 +253,6 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
     entry = exact_input(ctx.entry_price, "entry_price")
     stop = exact_input(ctx.stop_price, "stop_price")
     trigger = exact_input(ctx.trigger_level, "trigger_level")
-    exact_input(ctx.ltp, "ltp")
     equity = exact_input(ctx.equity, "equity")
     total_equity = exact_input(ctx.total_equity, "total_equity")
     alloc = exact_input(ctx.allocation_risk_pct, "allocation_risk_pct")
@@ -290,8 +279,6 @@ def _read_entry(ctx: SignalContext, checks: EntryChecks) -> _Entry:
     stopouts_today = _count(ctx.stopouts_today, "stopouts_today")
     if not isinstance(kill, KillState) or not isinstance(calendar, SessionCalendar):
         raise MissingInputError("kill or calendar: wrong type")
-    if checks.price_band_ok is None:
-        raise MissingInputError("an existing check could not be evaluated")
     session = calendar.state(at)
     if session is SessionState.UNKNOWN:
         raise MissingInputError("calendar: no row for the trade date")
@@ -382,8 +369,8 @@ def _cap_reason(e: _Entry) -> Reason | None:
     return None
 
 
-def _entry_decision(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
-    e = _read_entry(ctx, checks)
+def _entry_decision(ctx: SignalContext) -> RiskDecision:
+    e = _read_entry(ctx)
     policy: RiskPolicy = e.version.policy
     keep = e.version.version_id
 
@@ -418,8 +405,6 @@ def _entry_decision(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
         (p.open_risk for p in same_mode), risk_amount, e.total_equity, policy.global_open_risk_pct
     ):
         return reject(Reason.GLOBAL_OPEN_RISK)
-    if not checks.price_band_ok:
-        return reject(Reason.PRICE_OUT_OF_BAND)
     warnings = () if sized.binding == "risk" else (f"size_bound_by_{sized.binding}",)
     return RiskDecision(
         accepted=True,
@@ -435,12 +420,12 @@ def _entry_decision(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
     )
 
 
-def decide(ctx: SignalContext, checks: EntryChecks) -> RiskDecision:
+def decide(ctx: SignalContext) -> RiskDecision:
     """ACCEPT or REJECT for one signal; total, never raises (HAT-RISK-101)."""
     try:
         if ctx.action in EXIT_ACTIONS:
             return _exit_decision(ctx)
-        return _entry_decision(ctx, checks)
+        return _entry_decision(ctx)
     except (MissingInputError, PolicyError):
         return _reject(Reason.MISSING_INPUT)
     except SizingInputError:

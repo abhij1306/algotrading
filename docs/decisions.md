@@ -64,7 +64,23 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   waits for owner approval.
 - **Exit before a demerger.** HAT learns a demerger's factor only from the gap after the event, so
   a position exits the session before the ex-date (under T+1 it gets no resulting shares, by
-  intent); live sells a real one only through the owner (`/flatten`).
+  intent); live sells a real one only through the owner (`/flatten`). No entry from that session
+  until the factor is stored: a buy that day is sold at its close, and after the ex-date the
+  history waits for the factor, as the backtest's `factor_pending` does. A notice the `bc` file
+  stops listing is alerted, not retired, until archived files show the file lists a demerger
+  every night up to its ex-date (none are kept yet): a wrongly retired notice would hold a
+  position through the demerger.
+- **The rescale waits for the fill sync.** A fill of the previous session booked after the rescale
+  would land on the new scale, so `ca.rescale` waits for each real position's account to read its
+  fills since the last close, until 09:00; then the job fails URGENT and the position stays
+  manage-only rather than rescale on a quantity that may be stale.
+- **An unexplained split-like gap waits for the owner.** A held name that opens 40% down with no
+  stored action is more likely an unstored split than a crash: selling the old quantity at the
+  new price against the old stop is the costly mistake, so it is manage-only plus URGENT until the
+  owner stores the action or resolves it (a real crash then waits for the owner too).
+- **A position across an ISIN change waits for the owner.** The old ISIN gets no ticks and the
+  new one may hold another quantity, so the position is manage-only plus URGENT and its chain takes
+  no entry; HAT never moves a position to the successor instrument by itself.
 - **Point in time, not full as-of rebuild.** The series stays the hindsight view; the backtest
   skips names whose value was not yet knowable (`known_on`, versions) instead of rebuilding the
   series per date.

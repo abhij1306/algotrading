@@ -57,6 +57,7 @@ __all__ = [
 # P5: a job that failed, missed its deadline or hangs; a calendar about to run out; a drawdown
 # kill tripped (bots manage-only). A8: a periodic loop (live exits, housekeeping) stopped.
 # DB4b: the runtime lock was lost and not taken again (no new entry until a restart).
+# Q8: a position `ca.rescale` could not rescale stays manage-only (`corporate_action.pending`).
 URGENT_ALERTS = frozenset(
     {
         "job.failed",
@@ -72,9 +73,12 @@ URGENT_ALERTS = frozenset(
         "fill.excess",
         "fill.off_lifecycle",
         "corporate_action.unhandled",
+        "corporate_action.pending",
         "corporate_action.demerger_exit",
         "corporate_action.demerger_late",
         "position.series_changed",
+        "position.split_gap",
+        "position.isin_changed",
         "sale.unfilled",
     }
 )

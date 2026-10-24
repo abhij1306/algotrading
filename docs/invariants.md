@@ -59,6 +59,16 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   an earlier session is settled from the holdings net of the owner's own shares (the holding
   baseline a reconciliation recorded before the sale); with no baseline the position sells
   nothing until the owner books that sale.
+- **Corporate-action locks.** A position whose prices may be on the wrong scale gets no exit
+  evaluation and its instrument no entry; its broker stop rests and `/flatten` still sells it:
+  a stored split or bonus not yet rescaled, an action the rescale cannot handle, and a held name
+  whose live price is at or below 0.6 of the previous raw close with no action stored since
+  (URGENT `position.split_gap`, until the owner stores the action or resolves it), and a position
+  held across an ISIN change (a `linked` lineage row from its instrument, effective after it
+  opened: URGENT `position.isin_changed`, until the owner resolves it). No instrument of the
+  lineage chain of a locked position takes an entry. A real position is rescaled only once its
+  account's fills were read after the previous session's close; until then (at the latest the
+  09:00 deadline, then URGENT `job.failed`) it stays locked.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
   restarts the peak at the equity then, the drawdown kill's and, for a bot, the health
@@ -110,7 +120,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   NIFTY 500-neutralised gap is applied only with the owner's approval. A position held into a
   demerger whose record date was public (`announced_on`) strictly before the last session before
   the ex-date exits at that session's close (exit reason `demerger`), in backtest and live; a
-  real position is only alerted, never sold by HAT. Undated or late, it holds through.
+  real position is only alerted, never sold by HAT. Undated or late, it holds through. A name
+  with a demerger notice takes no entry from that session until the demerger's factor is stored
+  (`demerger_pending`; the backtest skips that session, and `factor_pending` covers the rest). A
+  stored notice is never retired by a load: one the night's `bc` file stops listing is alerted.
 - **Dividends.** Every cash dividend counts, none guessed: one without an amount is alerted and
   listed until one is stored. Signals read the total-return series (`bars_daily`); fills, marks,
   ticks, bands, the rescale and orders read the price basis (`bars_daily_cap`). A closed trade's
