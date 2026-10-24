@@ -12,12 +12,14 @@ from app.hat.engine.approvals import ApprovalDecision, Placement
 from app.hat.errors import HatConfigError
 from app.hat.risk.kill import ARMED, TRIPPED, KillRow
 from app.hat.risk.sessions import SessionCalendar
+from app.hat.telegram import render
 from app.hat.telegram.callbacks import take_reply
-from app.hat.telegram.client import refusal_retryable
+from app.hat.telegram.client import MAX_TEXT, refusal_retryable
 from app.hat.telegram.commands import (
     AUTO_NOT_OWNER,
     AUTO_UNCONFIRMED,
     KILL_CHANGED,
+    arm_fits,
     arm_refusal,
     auto_refusal,
     tripped_kills,
@@ -149,6 +151,16 @@ def test_arm_rearms_only_the_kills_it_listed() -> None:
     # one of them re-armed elsewhere: the set changed, nothing is re-armed
     assert arm_refusal(listed, [rows[2]]) == KILL_CHANGED
     assert arm_refusal(listed, []) == "nothing_tripped"
+
+
+def test_arm_refuses_a_list_one_message_cannot_hold() -> None:
+    """The `/arm` question is offered only when every kill it lists fits one Telegram message
+    (`MAX_TEXT`). Harm: a cut list keeps its Confirm and re-arms kills the owner never saw."""
+    line = render.kill_line("x" * 40, "drawdown_bot", T0)
+    assert arm_fits([line] * 10, EXPIRES)
+    fit = max(n for n in range(200) if arm_fits([line] * n, EXPIRES))
+    assert len(render.confirm_text("arm", EXPIRES, [line] * fit)) <= MAX_TEXT
+    assert len(render.confirm_text("arm", EXPIRES, [line] * (fit + 1))) > MAX_TEXT
 
 
 SIGNER = ApprovalSigner(b"s" * MIN_SECRET_BYTES)

@@ -37,8 +37,8 @@ from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
 from ..time import as_utc, trade_date_of
 from . import reads, render
-from .client import Button
-from .confirm import Confirmation, PendingConfirmations
+from .client import MAX_TEXT, Button
+from .confirm import CONFIRM_WINDOW, Confirmation, PendingConfirmations
 
 __all__ = [
     "COMMANDS",
@@ -46,6 +46,7 @@ __all__ = [
     "Reply",
     "KILL_CHANGED",
     "addressee",
+    "arm_fits",
     "arm_refusal",
     "for_another_bot",
     "parse",
@@ -74,6 +75,7 @@ _MAX_ARG = 64
 ACCOUNT = "account"
 NOTHING_TRIPPED = "nothing_tripped"
 KILL_CHANGED = "kill_changed"
+TOO_MANY_KILLS = "too_many_kills"
 
 
 @dataclass(frozen=True)
@@ -260,6 +262,13 @@ def arm_refusal(asked: Sequence[kill.KillRow], tripped: Sequence[kill.KillRow]) 
     return None if set(tripped) == set(asked) else KILL_CHANGED
 
 
+def arm_fits(lines: Sequence[str], expires_at: datetime) -> bool:
+    """Whether the `/arm` question listing every kill in `lines` fits one Telegram message. A
+    longer one is cut on sending while its Confirm stays, which would re-arm kills the owner
+    never saw, so it is refused instead (`too_many_kills`)."""
+    return len(render.confirm_text("arm", expires_at, lines)) <= MAX_TEXT
+
+
 def _key_of(row: kill.KillRow) -> str:
     return ACCOUNT if row.bot_id is None else str(row.bot_id)
 
@@ -298,6 +307,10 @@ def _arm(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
         )
         for r in trips
     ]
+    if not arm_fits(lines, as_utc(ctx.now) + CONFIRM_WINDOW):
+        return refused(
+            TOO_MANY_KILLS, "Too many kill switches to list: name one, /arm account or /arm <bot>"
+        )
     return _ask(ctx, "arm", keys, tuple(trips), lines)
 
 
