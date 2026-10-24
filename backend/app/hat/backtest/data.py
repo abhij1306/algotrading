@@ -802,7 +802,7 @@ def load_market(
             found: date = dates.max()  # type: ignore[assignment]
             last_traded[instrument_id] = min(found, last_traded.get(instrument_id, found))
     skipped, jumps = _skipped(store, bars, adjustment, window, end)
-    pending = frozenset(chain_pending(session, adjustment.lineage, window, wanted))
+    pending = frozenset(chain_pending(session, window, wanted))
     market = MarketData(
         days=tuple(window),
         bars=bars,

@@ -117,9 +117,9 @@ class HatCorporateAction(Base):
         # CA5: a known date has its basis and is never before the ex-date; both are NULL when
         # nobody knows (`data/ca_known.py`). `schema.PG_DDL` adds it with the same text.
         CheckConstraint(
-            "(known_on IS NULL AND known_basis IS NULL) OR (known_on >= ex_date AND known_basis"
-            " IN ('ex_open', 'settled_close', 'resulting_first_close', 'research_source_date',"
-            " 'correction'))",
+            "(known_on IS NULL AND known_basis IS NULL) OR (known_on IS NOT NULL AND known_basis"
+            " IS NOT NULL AND known_on >= ex_date AND known_basis IN ('ex_open', 'settled_close',"
+            " 'resulting_first_close', 'research_source_date', 'correction'))",
             name="hat_corporate_action_known_check",
         ),
     )

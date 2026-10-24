@@ -170,9 +170,9 @@ BEGIN
       AND conrelid = to_regclass('hat_corporate_action')
   ) THEN
     ALTER TABLE hat_corporate_action ADD CONSTRAINT hat_corporate_action_known_check
-      CHECK ((known_on IS NULL AND known_basis IS NULL) OR (known_on >= ex_date AND known_basis
-        IN ('ex_open', 'settled_close', 'resulting_first_close', 'research_source_date',
-        'correction')));
+      CHECK ((known_on IS NULL AND known_basis IS NULL) OR (known_on IS NOT NULL AND known_basis
+        IS NOT NULL AND known_on >= ex_date AND known_basis IN ('ex_open', 'settled_close',
+        'resulting_first_close', 'research_source_date', 'correction')));
   END IF;
 END $$
 """

@@ -33,7 +33,7 @@ from app.hat.data.ca_research import (
     research_supplied,
 )
 from app.hat.data.corporate_actions import correction_known, default_known
-from app.hat.data.point_in_time import Row, classify, log_path
+from app.hat.data.point_in_time import Row, classify, log_path, series_windows
 
 EX = date(2024, 9, 20)  # ROSSELLIND's demerger, a Friday
 # the sessions from the Thursday before: Monday 23 to Friday 27 follow the ex-date
@@ -137,6 +137,8 @@ def test_research_supplied_rights_terms() -> None:
     assert research_supplied(
         "Rights 1:8 @ Premium Rs 5/- [research b: terms corrected by research]"
     )
+    cut = "Rights 9:20 @ Premium Rs 10/- [research c: 9:20 @ 20.0000; face val"
+    assert research_supplied(cut)  # a tag cut at TEXT_MAX may have lost its markers
 
 
 def _row(action_type: str, source: str, text: str, factor: str = "0.5") -> Row:
@@ -193,3 +195,19 @@ def test_log_path_stays_under_the_working_directory(
     for name in ("../log.tsv", "/etc/log.tsv", "log.csv"):
         with pytest.raises(SystemExit):
             log_path(name)
+
+
+def test_series_windows_keep_the_copy_the_series_applies() -> None:
+    later = date(2024, 9, 26)
+    heads = {"old": ("new", 1), "new": ("new", 0)}
+    rows = [
+        ("old", EX, "other", None),  # a copy the series ignores: opens no window
+        ("new", EX, "other", later),
+        ("old", EX, "dividend", None),  # the only copy: kept, under the chain's id
+        ("solo", EX, "split", EX),
+    ]
+    assert series_windows(rows, heads) == [
+        Window("new", EX, None),
+        Window("new", EX, later),
+        Window("solo", EX, EX),
+    ]

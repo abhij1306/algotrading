@@ -928,7 +928,9 @@ def decide_demerger(
     factor, reason = market_factor(gap, checks, when, held)
     if factor is None:
         return Outcome(p, REVIEW, reason, detail)
-    known = demerger_known(p.ex_date, gap, checks, distributing, priced, [b.day for b in after])
+    # the fifth-session close dates the gap only when it held it; else a cross-check's date does
+    settle_days = [b.day for b in after] if held is not None and agrees(held, gap) else []
+    known = demerger_known(p.ex_date, gap, checks, distributing, priced, settle_days)
     evidence["derived"] = f"{MARKET_GAP} {reason}"
     evidence["gap"] = fmt4(gap)
     p = replace(p, text=_event_text(legs, checks, gap, note))
@@ -962,7 +964,8 @@ def demerger_known(
     """When a demerger's market gap was knowable (CA5): the first route that accepts it, an
     agreeing `ratio` check (at the latest of its priced closes and the legs' source dates), an
     agreeing `coa` check (at the legs' source dates), or the gap held to the close
-    `SETTLE_SESSIONS` on (`days`: the ex instrument's sessions)."""
+    `SETTLE_SESSIONS` on (`days`: the ex instrument's sessions, empty when the close did not
+    hold the gap)."""
     sources = [leg.source.day for leg in distributing]
     routes = [settle_known(days, ex_date)]
     if "ratio" in checks and agrees(gap, checks["ratio"]):
@@ -1040,9 +1043,10 @@ def decide_rights(
 ) -> Outcome:
     """CA1's decision with the research's terms; the gate's `ambiguous` still stores, tagged
     `price_unconfirmed`."""
-    p = replace(p, text=f"{p.text} [research {research.source.file}: {note}]"[:TEXT_MAX])
+    full = f"{p.text} [research {research.source.file}: {note}]"
+    p = replace(p, text=full[:TEXT_MAX])
     known = None
-    if p.ex_date is not None and research_supplied(p.text):
+    if p.ex_date is not None and research_supplied(full):  # before a cut drops the tag's markers
         known = from_sources(p.ex_date, [research.source.day], RESEARCH_SOURCE_DATE)
     outcome = decide(
         p, ctx, bars, source=SOURCE_RESEARCH, accept=frozenset({"ambiguous"}), known=known
@@ -1068,8 +1072,8 @@ def research_supplied(text: str) -> bool:
     terms do not price the issue (no issue price, non-simple terms)? Then the factor is known at
     the research's source date, not at the ex-date open (CA5)."""
     head, _, tag = text.partition(" [research ")
-    if any(marker in tag for marker in _SUPPLIED):
-        return True
+    if any(marker in tag for marker in _SUPPLIED) or (tag and not tag.endswith("]")):
+        return True  # a stored text cut at `TEXT_MAX` may have lost its markers: never ex_open
     return not isinstance(rights_terms(_PARTLY_PAID.sub(" ", head), "1"), RightsTerms)
 
 

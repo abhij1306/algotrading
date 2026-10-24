@@ -2,7 +2,8 @@
 stored before CA5, the lag report and its command line. The rules are `ca_known`'s.
 
 `stored_windows` gives the window of every stored row the backtest's series applies (each
-price-changing action and each dividend with an amount), under its chain id; the backtest turns
+price-changing action and each dividend with an amount, the copy the series uses), under its chain
+id; the backtest turns
 them into factor-pending (chain, session) pairs (`ca_known.pending_days`).
 
 `backfill` dates the rows whose `known_basis` is NULL from what is stored, never by guess:
@@ -71,8 +72,9 @@ from .corporate_actions import (
     TYPE_BONUS,
     TYPE_DIVIDEND,
     TYPE_SPLIT,
+    lock_reference_data,
 )
-from .lineage import read_spans
+from .lineage import chains, read_spans, stored_links
 from .store import DATASET_BARS, DataStore
 
 _SERIES = or_(
@@ -81,26 +83,45 @@ _SERIES = or_(
 )
 
 
-def stored_windows(session: Session, lineage: Mapping[str, str]) -> list[Window]:
+def series_windows(
+    rows: Iterable[tuple[str, date, str, date | None]], heads: Mapping[str, tuple[str, int]]
+) -> list[Window]:
+    """The windows of the stored rows (instrument, ex-date, type, known_on) a series applies,
+    one per (chain, ex-date, type): the copy of the member nearest the chain's current ISIN, as
+    `lineage.chain_factors` and `chain_dividends` pick it (`heads`: `lineage.chains`), so a copy
+    the series ignores opens no window."""
+    best: dict[tuple[str, date, str], tuple[int, str, date | None]] = {}
+    for instrument_id, ex_date, action_type, known_on in rows:
+        chain, depth = heads.get(instrument_id, (instrument_id, 0))
+        held = best.get((chain, ex_date, action_type))
+        if held is None or (depth, instrument_id) < held[:2]:
+            best[(chain, ex_date, action_type)] = (depth, instrument_id, known_on)
+    return [Window(chain, ex, held[2]) for (chain, ex, _), held in sorted(best.items())]
+
+
+def stored_windows(session: Session) -> list[Window]:
     """The factor-pending window of every stored row a backtest's series applies (a
-    price-changing action, a dividend with an amount), under its chain's id (`lineage`:
-    `Adjustment.lineage`, a linked older ISIN's id to its chain's)."""
+    price-changing action, a dividend with an amount), under its chain's current id."""
     rows = session.execute(
         select(
             HatCorporateAction.instrument_id,
             HatCorporateAction.ex_date,
+            HatCorporateAction.action_type,
             HatCorporateAction.known_on,
         ).where(_SERIES)
     )
-    return [Window(lineage.get(str(iid), str(iid)), ex, known_on) for iid, ex, known_on in rows]
+    return series_windows(
+        ((str(i), ex, kind, known) for i, ex, kind, known in rows), chains(stored_links(session))
+    )
 
 
 def chain_pending(
-    session: Session, lineage: Mapping[str, str], days: Sequence[date], chains: Iterable[str]
+    session: Session, days: Sequence[date], chains_wanted: Iterable[str]
 ) -> set[tuple[str, date]]:
-    """The factor-pending (chain, session) pairs of `chains` over the sorted sessions `days`."""
-    wanted = set(chains)
-    return pending_days((w for w in stored_windows(session, lineage) if w.chain_id in wanted), days)
+    """The factor-pending (chain, session) pairs of `chains_wanted` over the sorted sessions
+    `days`."""
+    wanted = set(chains_wanted)
+    return pending_days((w for w in stored_windows(session) if w.chain_id in wanted), days)
 
 
 # --- the back-fill ------------------------------------------------------------------------------
@@ -453,19 +474,19 @@ def pending_lines(session: Session, store: DataStore, symbols: Sequence[str]) ->
 
     lineage = stored_adjustment(session).lineage
     days = store.days(DATASET_BARS)
-    windows = stored_windows(session, lineage)
+    windows = stored_windows(session)
     lines = []
     for symbol in symbols:
         ids = {
             str(i)
             for i in session.scalars(select(HatInstrument.id).where(HatInstrument.symbol == symbol))
         }
-        chains = {lineage.get(i, i) for i in ids}
-        if not chains:
+        heads = {lineage.get(i, i) for i in ids}
+        if not heads:
             lines.append(f"{symbol}: no instrument")
             continue
         own = sorted(
-            (w for w in windows if w.chain_id in chains and w.lagged), key=lambda w: w.start
+            (w for w in windows if w.chain_id in heads and w.lagged), key=lambda w: w.start
         )
         lines.append(f"{symbol}: {len(own)} lagged window(s)")
         for w in own:
@@ -485,8 +506,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     python -m app.hat.data.point_in_time pending SYMBOL [SYMBOL ...]
 
     `backfill` dates the undated rows and links from what is stored (a dry run without
-    `--apply`; with it, one transaction) and lists the rows that stay undated. `report` counts
-    the lagged and undated actions and links and lists them; `--log` writes the adjustment log.
+    `--apply`; with it, one transaction under the reference-data lock) and lists the rows that
+    stay undated. `report` counts the lagged and undated actions and links and lists them;
+    `--log` writes the adjustment log.
     `pending` lists the sessions a backtest holds a name factor-pending. The bars are read under
     `HAT_DATA_ROOT`."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.point_in_time")
@@ -504,6 +526,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     write: Callable[[str], Any] = lambda s: sys.stdout.write(s + "\n")  # noqa: E731
     with HatSessionLocal() as session:
         if args.command == "backfill":
+            if args.apply:  # no correction or import lands between the plan and its write
+                lock_reference_data(session)
             plan = plan_backfill(session, store)
             for line in backfill_lines(plan):
                 write(line)
