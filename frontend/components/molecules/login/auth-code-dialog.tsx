@@ -1,31 +1,10 @@
-import { AlertCircle, CheckCircle, Key, X } from "lucide-react";
-import { focusOnMount } from "@/lib/focus";
+import { X } from "lucide-react";
+import { Button } from "@/components/atoms/button";
+import { Text } from "@/components/atoms/text";
+import { openModal } from "@/lib/focus";
 import { AuthSteps } from "./auth-steps";
 
 export type AuthOutcome = "idle" | "success" | "error";
-
-const MESSAGE = {
-  success: {
-    Icon: CheckCircle,
-    className:
-      "mt-4 p-3 bg-profit/10 border border-profit/20 rounded flex items-center gap-2 text-profit text-xs font-semibold",
-  },
-  error: {
-    Icon: AlertCircle,
-    className:
-      "mt-4 p-3 bg-loss/10 border border-loss/20 rounded flex items-center gap-2 text-loss text-xs font-semibold",
-  },
-} as const;
-
-function AuthMessage({ outcome, message }: Readonly<{ outcome: AuthOutcome; message: string }>) {
-  if (outcome === "idle") return null;
-  const { Icon, className } = MESSAGE[outcome];
-  return (
-    <div className={className}>
-      <Icon className="w-4 h-4" /> {message}
-    </div>
-  );
-}
 
 /** The modal that takes the code from the broker's redirect and submits it. */
 export function AuthCodeDialog({
@@ -52,51 +31,54 @@ export function AuthCodeDialog({
   onClose: () => void;
 }>) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-void/80 backdrop-blur-sm">
-      <div className="bg-base border border-border-subtle rounded-xl p-6 w-[500px] shadow-2xl relative">
-        <button
-          onClick={onClose}
-          className="absolute top-3 right-3 text-foreground-muted hover:text-foreground"
-        >
-          <X className="w-4 h-4" />
-        </button>
-
-        <h3 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
-          <Key className="w-5 h-5 text-primary" /> Authenticate {name}
-        </h3>
-
-        <AuthSteps name={name} code={code} />
-
-        <div className="space-y-4">
-          <div>
-            <label
-              htmlFor={inputId}
-              className="block text-xs font-semibold text-foreground-muted mb-2"
-            >
-              Authorization Code
-            </label>
-            <input
-              id={inputId}
-              type="text"
-              value={authCode}
-              onChange={(e) => onChange(e.target.value)}
-              placeholder={`Paste ${code} here (without ${code}= prefix)`}
-              className="w-full bg-void/50 border border-border-subtle rounded-lg px-4 py-3 text-sm text-foreground font-mono focus:border-primary/50 outline-none"
-              ref={focusOnMount}
-            />
-          </div>
-
-          <button
-            onClick={onSubmit}
-            disabled={loading || !authCode}
-            className="w-full py-3 bg-gradient-to-r from-primary to-primary-bright rounded-lg text-sm font-semibold text-white hover:from-primary/90 hover:to-primary-bright/90 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-          >
-            {loading ? "Verifying..." : "Authenticate"}
-          </button>
-        </div>
-
-        <AuthMessage outcome={outcome} message={message} />
+    <dialog
+      ref={openModal}
+      onClose={onClose}
+      aria-labelledby={`${inputId}-title`}
+      className="m-auto w-[calc(100%-2rem)] max-w-lg rounded-xl bg-background p-6 text-foreground shadow-xl"
+    >
+      <div className="mb-4 flex items-start justify-between gap-4">
+        <h2 id={`${inputId}-title`} className="text-lg">
+          Log in to {name}
+        </h2>
+        <Button size="icon" onClick={onClose} aria-label="Close">
+          <X className="size-4" />
+        </Button>
       </div>
-    </div>
+
+      <AuthSteps name={name} code={code} />
+
+      <form
+        method="dialog"
+        className="space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+      >
+        <label htmlFor={inputId} className="block text-xs text-foreground-muted">
+          Authorization Code
+        </label>
+        <input
+          id={inputId}
+          type="text"
+          autoComplete="off"
+          autoFocus
+          value={authCode}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={`Paste ${code} here (without ${code}= prefix)`}
+          className="w-full rounded-md bg-subtle px-3 py-2.5 font-mono text-sm text-foreground outline-none placeholder:text-foreground-muted focus-visible:outline-2 focus-visible:outline-accent"
+        />
+        <Button type="submit" variant="primary" className="w-full" disabled={loading || !authCode}>
+          {loading ? "Verifying…" : "Authenticate"}
+        </Button>
+      </form>
+
+      {outcome === "idle" ? null : (
+        <Text role="status" tone={outcome === "error" ? "loss" : "default"} className="mt-4">
+          {message}
+        </Text>
+      )}
+    </dialog>
   );
 }

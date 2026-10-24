@@ -5,9 +5,10 @@ const TONE = {
   default: "",
   muted: "text-foreground-muted",
   loss: "text-loss",
+  warning: "text-warning",
 } as const;
 
-/** A line of body text in one of the page's tones. */
+/** A line of secondary text in one of the page's tones. */
 export function Text({
   tone = "default",
   className,

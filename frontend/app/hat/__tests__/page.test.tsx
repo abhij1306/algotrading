@@ -1,5 +1,5 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { createQueryClient } from "@/lib/queries/query-client";
 
@@ -168,11 +168,13 @@ function stubBackend(routes: Record<string, Route>) {
 }
 
 function renderPage() {
+  const client = createQueryClient();
   render(
-    <QueryClientProvider client={createQueryClient()}>
+    <QueryClientProvider client={client}>
       <HatPage />
     </QueryClientProvider>,
   );
+  return client;
 }
 
 afterEach(() => {
@@ -185,15 +187,17 @@ describe("HatPage", () => {
     const calls = stubBackend(ROUTES);
     renderPage();
 
+    expect(await screen.findByText("11:30:00 IST")).toBeInTheDocument();
     const bots = await screen.findByRole("region", { name: "Bots" });
     expect(await within(bots).findByText("manage-only: bot_kill")).toBeInTheDocument();
     const status = screen.getByRole("region", { name: "Status" });
     expect(within(status).getByText(/bull_quiet \(unconfirmed\)/)).toBeInTheDocument();
     expect(within(status).getByText("fyers XA1234: live")).toBeInTheDocument();
     expect(within(status).getByText("scan: succeeded")).toBeInTheDocument();
+    expect(within(status).getByText("momentum (risk)")).toBeInTheDocument();
     expect(
       within(bots).getByText(
-        "shadow (asked confirm: ddpi_not_confirmed); auto from 2026-10-22T03:45:00Z",
+        "shadow (asked confirm: ddpi_not_confirmed); auto from 22 Oct 2026, 09:15:00 IST",
       ),
     ).toBeInTheDocument();
     const allocations = screen.getByRole("region", { name: "Allocations" });
@@ -203,13 +207,12 @@ describe("HatPage", () => {
     expect(await within(positions).findByText("3,950.25")).toBeInTheDocument();
     expect(within(positions).getByText("virtual")).toBeInTheDocument();
     const watchlist = screen.getByRole("region", { name: "Watchlist" });
-    expect(await within(watchlist).findByText("INFY 0.91")).toBeInTheDocument();
+    expect(await within(watchlist).findByText("0.91")).toBeInTheDocument();
     const events = screen.getByRole("region", { name: "Recent events" });
     expect(await within(events).findByText("signal.triggered")).toBeInTheDocument();
 
     const signals = screen.getByRole("region", { name: "Signals" });
     expect(await within(signals).findByText("medium")).toBeInTheDocument();
-    expect(within(signals).getByText("lower_bound_not_positive · 42 trades")).toBeInTheDocument();
     expect(within(signals).getByText("1,520.00")).toBeInTheDocument();
 
     expect(calls.every((call) => call.startsWith("GET /api/hat/"))).toBe(true);
@@ -247,5 +250,40 @@ describe("HatPage", () => {
     expect(await within(positions).findByRole("alert")).toHaveTextContent(
       "The HAT database could not be read",
     );
+  });
+
+  it("marks the data stale when a refetch fails after a good read", async () => {
+    let up = true;
+    stubBackend({
+      ...ROUTES,
+      "/api/hat/status": () =>
+        up
+          ? Response.json(STATUS)
+          : Response.json({ detail: "The HAT database could not be read" }, { status: 422 }),
+    });
+    const client = renderPage();
+
+    const status = await screen.findByRole("region", { name: "Status" });
+    expect(await within(status).findByText("armed")).toBeInTheDocument();
+    up = false;
+    await client.refetchQueries({ queryKey: ["hat", "status"] });
+
+    // The last good read stays on screen, under a notice that it is stale.
+    expect((await within(status).findByRole("alert")).textContent).toMatch(
+      /^Stale since \d{2}:\d{2}:\d{2} IST: the last refresh failed \(The HAT database could not be read\)/,
+    );
+    expect(within(status).getByText("armed")).toBeInTheDocument();
+    expect(screen.getByText("Stale, last snapshot 11:30:00 IST")).toHaveAttribute("role", "status");
+  });
+
+  it("opens a signal's details in a drawer", async () => {
+    stubBackend(ROUTES);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Details of signal INFY" }));
+
+    const drawer = await screen.findByRole("dialog", { name: "INFY" });
+    expect(within(drawer).getByText("lower_bound_not_positive · 42 trades")).toBeInTheDocument();
+    expect(within(drawer).getByText("240.00")).toBeInTheDocument();
   });
 });

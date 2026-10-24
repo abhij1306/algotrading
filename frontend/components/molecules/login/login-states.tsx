@@ -1,71 +1,85 @@
-import { AlertCircle, LogOut, Wifi, WifiOff } from "lucide-react";
+import { LogOut, RotateCw } from "lucide-react";
+import { Badge } from "@/components/atoms/badge";
+import { Button } from "@/components/atoms/button";
 import { StatusDot } from "@/components/atoms/status-dot";
 
-/** The first status read is in flight. */
-export function LoginChecking() {
+/** The last login or disconnect failure, under the header control. */
+function LoginError({ error }: Readonly<{ error: string }>) {
+  if (!error) return null;
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 bg-base border border-border-subtle rounded-lg">
-      <StatusDot spinning className="w-3 h-3" />
-      <span className="text-xs text-foreground-muted">Checking...</span>
-    </div>
+    <span
+      role="alert"
+      className="absolute top-full right-0 z-50 mt-2 w-72 rounded-md bg-background p-3 text-xs text-loss shadow-lg"
+    >
+      {error}
+    </span>
   );
 }
 
-/** The backend is unreachable; the dot retries the status read. */
+/** The first status read, or a manual retry, is in flight. */
+export function LoginChecking({ name }: Readonly<{ name: string }>) {
+  return (
+    <span className="inline-flex items-center gap-2 text-sm text-foreground-muted">
+      <StatusDot spinning className="size-3" />
+      Checking {name}
+    </span>
+  );
+}
+
+/** The backend is unreachable or failing; the button re-reads the status now. */
 export function LoginOffline({ onRetry }: Readonly<{ onRetry: () => void }>) {
   return (
-    <div
-      className="flex items-center gap-2 px-3 py-1.5 bg-elevated/50 border border-border rounded-lg cursor-not-allowed opacity-75"
-      title="Backend unreachable"
-    >
-      <WifiOff className="w-3.5 h-3.5 text-foreground-disabled" />
-      <span className="text-xs font-semibold text-foreground-disabled">System Offline</span>
-      <button onClick={onRetry} className="ml-1 hover:text-foreground transition-colors">
-        <StatusDot className="w-2 h-2 bg-loss/20 hover:bg-loss" />
-      </button>
-    </div>
+    <span className="inline-flex items-center gap-1 text-sm">
+      <Badge tone="loss" title="The backend did not answer the login status read">
+        Backend offline
+      </Badge>
+      <Button size="icon" onClick={onRetry} aria-label="Retry the login status">
+        <RotateCw className="size-4" />
+      </Button>
+    </span>
+  );
+}
+
+/** The backend answered but could not read the saved login; logging in again will not fix it. */
+export function LoginUnreadable({ name, error }: Readonly<{ name: string; error: string }>) {
+  return (
+    <Badge tone="warning" className="text-sm" title={error}>
+      {name} status unreadable
+    </Badge>
   );
 }
 
 /** The broker session is live: who is logged in, and a disconnect button. */
 export function LoginConnected({
   name,
-  label,
   userId,
   disabled,
+  error,
   onDisconnect,
 }: Readonly<{
   name: string;
-  label: string;
   userId: string;
   disabled: boolean;
+  error: string;
   onDisconnect: () => void;
 }>) {
   return (
-    <div className="flex items-center justify-between w-full px-3 py-2 bg-base border border-profit/30 rounded-lg group hover:border-profit/50 transition-colors">
-      <div className="flex items-center gap-2.5 overflow-hidden">
-        <div className="relative">
-          <Wifi className="w-4 h-4 text-profit" />
-          <div className="absolute inset-0 bg-profit blur-sm opacity-20" />
-        </div>
-        <div className="flex flex-col truncate">
-          <span className="text-xxs font-semibold text-profit uppercase tracking-wider">
-            {label}
-          </span>
-          {userId && (
-            <span className="text-xxs text-foreground-muted font-mono truncate">{userId}</span>
-          )}
-        </div>
-      </div>
-      <button
+    <span className="relative inline-flex items-center gap-1 text-sm">
+      <Badge tone="profit">
+        {name}
+        {userId ? <span className="font-mono text-foreground-secondary">{userId}</span> : null}
+      </Badge>
+      <Button
+        size="icon"
         onClick={onDisconnect}
         disabled={disabled}
-        className="p-1.5 rounded-md hover:bg-loss/10 text-foreground-muted hover:text-loss transition-colors"
+        aria-label={`Disconnect from ${name}`}
         title={`Disconnect from ${name}`}
       >
-        <LogOut className="w-3.5 h-3.5" />
-      </button>
-    </div>
+        <LogOut className="size-4" />
+      </Button>
+      <LoginError error={error} />
+    </span>
   );
 }
 
@@ -77,24 +91,11 @@ export function LoginConnect({
   onConnect,
 }: Readonly<{ name: string; disabled: boolean; error: string; onConnect: () => void }>) {
   return (
-    <div className="relative w-full">
-      <button
-        onClick={onConnect}
-        disabled={disabled}
-        className="w-full flex items-center justify-between px-3 py-2 bg-base border border-border-subtle hover:border-primary/50 rounded-lg text-xs font-semibold text-foreground-muted hover:text-primary transition-all group disabled:opacity-50"
-      >
-        <div className="flex items-center gap-2">
-          <WifiOff className="w-4 h-4 group-hover:scale-110 transition-transform" />
-          <span>Connect {name}</span>
-        </div>
-      </button>
-
-      {error && (
-        <div className="absolute top-full left-0 mt-2 w-64 p-2 bg-loss/10 border border-loss/20 rounded text-xs text-loss z-50">
-          <AlertCircle className="w-3 h-3 inline mr-1" />
-          {error}
-        </div>
-      )}
-    </div>
+    <span className="relative inline-flex">
+      <Button size="sm" variant="primary" onClick={onConnect} disabled={disabled}>
+        Connect {name}
+      </Button>
+      <LoginError error={error} />
+    </span>
   );
 }

@@ -1,15 +1,15 @@
 import type { ReactNode } from "react";
 
-/** One label and its value in a description list; `wide` spans the rest of the row. */
+/** One label over its value inside a `<dl>`. */
 export function LabelledValue({
   label,
-  wide = false,
+  className,
   children,
-}: Readonly<{ label: string; wide?: boolean; children: ReactNode }>) {
+}: Readonly<{ label: string; className?: string; children: ReactNode }>) {
   return (
-    <>
-      <dt className="text-foreground-muted">{label}</dt>
-      <dd className={wide ? "col-span-1 md:col-span-3" : undefined}>{children}</dd>
-    </>
+    <div className={className}>
+      <dt className="text-xs text-foreground-muted">{label}</dt>
+      <dd className="mt-1">{children}</dd>
+    </div>
   );
 }

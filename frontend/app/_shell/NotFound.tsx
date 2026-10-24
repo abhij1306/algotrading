@@ -1,17 +1,14 @@
 import { Link } from "react-router";
-import { Button } from "@/components/atoms/button";
 import { PageLayout } from "@/components/templates/page-layout";
 
 export default function NotFoundPage() {
   return (
     <PageLayout>
-      <div className="flex min-h-[60vh] flex-col items-center justify-center gap-3 text-center">
-        <h1 className="text-xl font-semibold text-foreground">Page Not Found</h1>
-        <p className="text-sm text-foreground-secondary">The page you requested does not exist.</p>
-        <Link to="/hat">
-          <Button size="sm" variant="primary">
-            Go to Dashboard
-          </Button>
+      <div className="max-w-xl space-y-3">
+        <h1 className="text-xl">Page not found</h1>
+        <p className="text-sm text-foreground-secondary">The page you asked for does not exist.</p>
+        <Link to="/hat" className="text-sm text-accent hover:underline">
+          Go to the dashboard
         </Link>
       </div>
     </PageLayout>

@@ -19,7 +19,8 @@ export const router = createBrowserRouter([
     errorElement: <RouteError />,
     children: [
       { index: true, element: <Navigate to="/hat" replace /> },
-      { path: "hat", element: page(() => import("@/app/hat/page")) },
+      // A page error renders in the shell, so the header and login status stay live.
+      { path: "hat", element: page(() => import("@/app/hat/page")), errorElement: <RouteError /> },
       { path: "*", element: <NotFound /> },
     ],
   },

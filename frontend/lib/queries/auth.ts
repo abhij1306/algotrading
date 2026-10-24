@@ -1,38 +1,39 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "@/lib/api/client";
 import { ApiError } from "@/lib/api/errors";
+import type { components } from "@/lib/api/schema";
+import { HAT_REFRESH_MS } from "./hat";
 import { queryKeys } from "./keys";
 
 /** Fyers logs in every day (market data); Zerodha too when it is the active order broker. */
 export type Broker = "fyers" | "zerodha";
 
-/** Re-check a login status at most this often (and on window focus), so an offline badge clears. */
-const STATUS_STALE_MS = 30_000;
+type BrokerStatusBody = components["schemas"]["BrokerStatusResponse"];
 
-export type BrokerStatus = {
-  connected: boolean;
-  userId: string;
-  offline: boolean;
-  /** This broker is the active order broker (`HAT_BROKER`). */
-  active: boolean;
-};
+/**
+ * What the header knows about a broker login. `unreadable` is the backend answering that it could
+ * not read the saved token (or answering with a 4xx), which a re-login will not fix; `offline` is
+ * the backend unreachable or failing (network error or 5xx). `active` marks the order broker.
+ */
+export type BrokerStatus =
+  | { kind: "connected"; userId: string; active: boolean }
+  | { kind: "disconnected"; active: boolean }
+  | { kind: "unreadable"; error: string; active: boolean }
+  | { kind: "offline" };
 
-const DISCONNECTED: BrokerStatus = { connected: false, userId: "", offline: false, active: false };
+/** The header's state from the typed status body. */
+export function toBrokerStatus(body: BrokerStatusBody): BrokerStatus {
+  const active = body.active;
+  if (body.error) return { kind: "unreadable", error: body.error, active };
+  if (body.connected) return { kind: "connected", userId: body.user_id ?? "", active };
+  return { kind: "disconnected", active };
+}
 
-/** Reads the status body defensively: anything but `connected: true` is disconnected. */
-function toBrokerStatus(body: {
-  connected?: unknown;
-  user_id?: unknown;
-  active?: unknown;
-}): BrokerStatus {
-  const active = body.active === true;
-  if (body.connected !== true) return { ...DISCONNECTED, active };
-  return {
-    connected: true,
-    userId: typeof body.user_id === "string" ? body.user_id : "",
-    offline: false,
-    active,
-  };
+/** The header's state when the status read failed: offline for network and 5xx errors only. */
+export function failedBrokerStatus(error: unknown): BrokerStatus {
+  if (!(error instanceof ApiError) || error.code === "NETWORK_ERROR") return { kind: "offline" };
+  if (error.status === null || error.status >= 500) return { kind: "offline" };
+  return { kind: "unreadable", error: error.message, active: false };
 }
 
 // The typed client takes literal paths, so each call names both brokers' routes.
@@ -51,19 +52,23 @@ const postDisconnect = (broker: Broker) =>
     ? api.POST("/api/hat/auth/fyers/disconnect")
     : api.POST("/api/hat/auth/zerodha/disconnect");
 
-/** Any failure to read the status reads as "backend offline" rather than an error. */
+/**
+ * The login status, polled with the dashboard so a token expiring at midnight IST or a backend
+ * going down shows without a reload. A failed read resolves to a state, not a query error.
+ */
 export function useBrokerStatus(broker: Broker) {
   return useQuery({
     queryKey: queryKeys.auth.status(broker),
     queryFn: async (): Promise<BrokerStatus> => {
       try {
         return toBrokerStatus(await unwrap(getStatus(broker)));
-      } catch {
-        return { ...DISCONNECTED, offline: true };
+      } catch (error) {
+        return failedBrokerStatus(error);
       }
     },
     retry: false,
-    staleTime: STATUS_STALE_MS,
+    refetchInterval: HAT_REFRESH_MS,
+    refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
   });
 }
@@ -98,8 +103,8 @@ export function useBrokerDisconnect(broker: Broker) {
     },
     onSuccess: () => {
       queryClient.setQueryData<BrokerStatus>(queryKeys.auth.status(broker), (old) => ({
-        ...DISCONNECTED,
-        active: old?.active ?? false,
+        kind: "disconnected",
+        active: old !== undefined && old.kind !== "offline" && old.active,
       }));
     },
   });

@@ -1,18 +1,27 @@
-import { useEffect } from "react";
-import { useRouteError } from "react-router";
+import { isRouteErrorResponse, useRouteError } from "react-router";
 import { Button } from "@/components/atoms/button";
+import { PageLayout } from "@/components/templates/page-layout";
 
+function errorText(error: unknown): string {
+  if (isRouteErrorResponse(error)) return `${error.status} ${error.statusText}`;
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
+/** The one error screen: a page that failed to load or render, inside the shell when it can be. */
 export default function RouteError() {
   const error = useRouteError();
-
-  useEffect(() => {
-    console.error(error);
-  }, [error]);
-
   return (
-    <div className="flex flex-col items-center justify-center min-h-[400px] gap-4">
-      <h2 className="text-lg font-semibold">Something went wrong</h2>
-      <Button onClick={() => globalThis.location.reload()}>Try again</Button>
-    </div>
+    <PageLayout>
+      <div role="alert" className="max-w-xl space-y-4">
+        <h1 className="text-xl">This page failed to load</h1>
+        <p className="text-sm text-foreground-secondary">
+          Reload to try again. If it keeps failing, check the backend logs.
+        </p>
+        <p className="font-mono text-xs text-foreground-muted">{errorText(error)}</p>
+        <Button variant="primary" onClick={() => globalThis.location.reload()}>
+          Reload
+        </Button>
+      </div>
+    </PageLayout>
   );
 }
