@@ -58,19 +58,16 @@ def _snapshot_instant(trade_date: date) -> datetime:
     return datetime.combine(trade_date, SNAPSHOT_AT, tzinfo=IST)
 
 
-def _last_rearm(session: Session, scope: str, bot_id: uuid.UUID | None) -> HatKillSwitch | None:
-    """The key's latest re-arm row of a drawdown or manual kill; None for never."""
-    return session.scalars(
+def _last_rearms(session: Session) -> dict[tuple[str, uuid.UUID | None], HatKillSwitch]:
+    """Each key's latest re-arm row of a drawdown or manual kill, by (scope, bot), in one query
+    (Postgres `DISTINCT ON`); a key never re-armed is missing."""
+    rows = session.scalars(
         select(HatKillSwitch)
-        .where(
-            HatKillSwitch.scope == scope,
-            HatKillSwitch.bot_id.is_(None) if bot_id is None else HatKillSwitch.bot_id == bot_id,
-            HatKillSwitch.state == kill.ARMED,
-            HatKillSwitch.reason.in_(kill.RISK_REASONS),
-        )
-        .order_by(HatKillSwitch.rearmed_at.desc())
-        .limit(1)
-    ).first()
+        .where(HatKillSwitch.state == kill.ARMED, HatKillSwitch.reason.in_(kill.RISK_REASONS))
+        .order_by(HatKillSwitch.scope, HatKillSwitch.bot_id, HatKillSwitch.rearmed_at.desc())
+        .distinct(HatKillSwitch.scope, HatKillSwitch.bot_id)
+    )
+    return {(row.scope, row.bot_id): row for row in rows}
 
 
 def _capital_by_snapshot(
@@ -138,9 +135,10 @@ def evaluate_drawdown_kills(
         for bot_id in sorted(set(session.scalars(select(HatBot.id))) | set(live))
     ]
     keys.append(("account", None, policy.account_drawdown_pct))
+    rearms = _last_rearms(session)
     tripped: list[str] = []
     for scope, bot_id, threshold in keys:
-        rearm = _last_rearm(session, scope, bot_id)
+        rearm = rearms.get((scope, bot_id))
         if rearm is None:
             breached = kill.tripped_since(history.series(bot_id), threshold)
         else:
