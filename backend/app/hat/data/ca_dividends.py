@@ -134,8 +134,8 @@ class Payout:
 
 
 _DIVIDEND = re.compile(r"dividend")
-_MONEY = re.compile(r"(?:\b(?:rs|re|inr)\b\.?|₹)\s*[-:]?\s*(\d+(?:\.\d+)?)")
-_PERCENT = re.compile(r"\d+(?:\.\d+)?\s*%")
+_MONEY = re.compile(r"(?:\b(?:rs|re|inr)\b\.?|₹)\s*(?:[-:]\s*)?(\d+(?:\.\d+)?)")
+_PERCENT = re.compile(r"(?<![\d.])\d+(?:\.\d+)?\s*%")
 # where one purpose ends and the next begins: "/" (not the "/-" after an amount), "and", "&", ...
 _SEP = re.compile(r"/(?!-)|\band\b|&|\+|;|,")
 # a bonus of debentures or preference shares in a feed purpose (`named_bonus_dates`)
@@ -143,11 +143,30 @@ _BONUS_INSTRUMENT = re.compile(r"bonus\b.*\b(?:debentures?|deb|ncds?|n?c?rps|pre
 _PREFERENCE = re.compile(r"preference|\bpref\b|\bc?n?c?rps\b|\bcps\b")
 
 
-_KINDED = re.compile(
-    r"\b(final|special|interim)\b[^0-9%/]*?(?:\b(?:rs|re|inr)\b\.?|₹)\s*[-:]?\s*(\d+(?:\.\d+)?)"
-)
+_KIND = re.compile(r"\b(final|special|interim)\b")
+_KIND_STOP = re.compile(r"[0-9%/]")
+
+
+def _kinded(body: str) -> list[tuple[str, str]]:
+    """(kind, amount) for each kind word followed by a currency amount with no digit, `%` or `/`
+    between them ("Final Rs 4/- And Special Re 1/-"); a kind word inside an earlier match is
+    part of it. Two plain scans, so the time is linear in the text."""
+    found: list[tuple[str, str]] = []
+    end = 0
+    for kind in _KIND.finditer(body):
+        if kind.start() < end:
+            continue
+        money = _MONEY.search(body, kind.end())
+        stop = _KIND_STOP.search(body, kind.end())
+        if money is None or (stop is not None and stop.start() < money.start()):
+            continue
+        found.append((kind.group(1), money.group(1)))
+        end = money.end()
+    return found
+
+
 # "Interim Dividend 3 Per Share": an amount without the currency, only right before "per share"
-_BARE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:/-)?\s*per\s*(?:equity\s*)?sh")
+_BARE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:/-\s*)?per\s*(?:equity\s*)?sh")
 
 
 def _kind(words: str) -> str:
@@ -174,7 +193,7 @@ def _clause(prefix: str, body: str) -> list[Payout] | str:
     amounts = _MONEY.findall(body)
     if len(amounts) > 1:
         # "Dividend - Final Rs 4/- And Special Re 1/- Per Share": each amount named by its kind
-        kinded = _KINDED.findall(body)
+        kinded = _kinded(body)
         if len(kinded) != len(amounts) or len({k for k, _ in kinded}) != len(kinded):
             return "several_amounts"
         found = [Payout(_kind(k), require_exact(a, "amount")) for k, a in kinded]

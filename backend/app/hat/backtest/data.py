@@ -233,10 +233,8 @@ class _Series:
 
 def rescaled(units: int, ratio: float) -> Decimal:
     """A price of 1/10,000 units times a dividend ratio, rounded half to even to the store's 4
-    places; a ratio of 1 is the price itself."""
-    if ratio == 1.0:
-        return _exact(units)
-    return Decimal(int(round(units * ratio))).scaleb(-4)
+    places; a ratio of 1 is the price itself (a price is far below 2**53 units, so exact)."""
+    return _exact(round(units * ratio))
 
 
 _NO_SERIES = _Series(
