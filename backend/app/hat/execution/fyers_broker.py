@@ -26,8 +26,8 @@ refused as not sent, burning no retry. An HTTP 429 from Fyers is the same refusa
 `Retry-After` (else `THROTTLE_PAUSE`) pauses the whole budget.
 
 The day spent (Q11, C22 A2): once the budget refuses a call for the day cap, or the broker
-answers that the plan's daily requests are spent (Fyers' -360, `GuardedBroker.day_refused`), the
-budget is `day_spent` until the trading day ends. The transport still sends what the cap lets
+answers that the plan's daily requests are spent (`day_refused`: Fyers' -360), the budget is
+`day_spent` until the trading day ends. The transport still sends what the cap lets
 through (stops and sales keep the writes' share); the desks read `day_spent` to refuse new
 entries and skip the reads that can wait (`daily.accounts`).
 
@@ -78,6 +78,7 @@ __all__ = [
     "HungCalls",
     "checked_reply",
     "classify_place_reply",
+    "day_refused",
     "process_budget",
     "rate_limited",
     "profile_data",
@@ -134,6 +135,17 @@ def rate_limited(response: object) -> bool:
         isinstance(response, dict)
         and response.get("s") != "ok"
         and response.get("code") in (FYERS_CODE_RATE_LIMITED, HTTP_TOO_MANY_REQUESTS)
+    )
+
+
+def day_refused(reply: object, code: int | None) -> bool:
+    """Whether `reply` is a refusal with `code`, the broker's "the plan's daily requests are
+    spent" (Fyers' -360); never with no such code."""
+    return (
+        code is not None
+        and isinstance(reply, dict)
+        and reply.get("s") != "ok"
+        and reply.get("code") == code
     )
 
 
@@ -551,6 +563,8 @@ class GuardedBroker:
     """
 
     label = "Fyers"
+    # the reply code saying the plan's daily requests are spent (`day_refused`); None: no such code
+    day_refused_code: int | None = None
 
     def __init__(
         self, *, breaker: CircuitBreaker | None = None, budget: CallBudget | None = None
@@ -583,18 +597,12 @@ class GuardedBroker:
         result = self._run(operation, fn, timeout_sec)
         if result is _NO_ANSWER:
             return fallback
-        if self.budget is not None and self.day_refused(result):
+        if self.budget is not None and day_refused(result, self.day_refused_code):
             logger.warning(
                 "%s operation %s refused: the day's requests are spent", self.label, operation
             )
             self.budget.exhaust_day()
         return result
-
-    @staticmethod
-    def day_refused(_reply: object) -> bool:
-        """Whether `reply` says the plan's daily requests are spent; a broker with such a refusal
-        overrides it (Fyers' -360)."""
-        return False
 
     def _admit(self, operation: str, kind: str) -> object | None:
         """None when the call may go out now; else what answers it instead: `_CIRCUIT_OPEN`, or
@@ -677,6 +685,8 @@ class FyersBroker(GuardedBroker):
     there is no usable session; the default asks the process-wide `FyersSession`.
     """
 
+    day_refused_code = FYERS_CODE_RATE_LIMITED  # -360
+
     def __init__(
         self,
         client: Callable[[], Any] | None = None,
@@ -699,15 +709,6 @@ class FyersBroker(GuardedBroker):
         return model
 
     # --- writes: each takes the SDK payload exactly as it goes out ------------------------
-
-    @staticmethod
-    def day_refused(reply: object) -> bool:
-        """Fyers' -360: the plan's daily requests are spent."""
-        return (
-            isinstance(reply, dict)
-            and reply.get("s") != "ok"
-            and reply.get("code") == FYERS_CODE_RATE_LIMITED
-        )
 
     def place_order(self, data: dict[str, Any]) -> OrderReply:
         """Send the order payload `data`. A lost answer is SUBMIT_UNCONFIRMED, never a

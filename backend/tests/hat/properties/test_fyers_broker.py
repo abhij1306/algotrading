@@ -44,6 +44,7 @@ from app.hat.execution.fyers_broker import (
     HungCalls,
     _with_timeout,
     classify_place_reply,
+    day_refused,
     limits_from,
 )
 from app.hat.execution.fyers_payloads import parse_funds, parse_positions
@@ -680,8 +681,10 @@ def test_a_minus_360_reply_spends_the_day() -> None:
     """Fyers' -360 (the plan's daily requests spent) marks the budget's day spent; a 429 (a
     per-second or per-minute limit) and an ok reply do not."""
     budget = CallBudget(CallLimits(), clock=lambda: 0.0, day=lambda: BUDGET_DAY)
-    assert not FyersBroker.day_refused({"s": "error", "code": 429})
-    assert not FyersBroker.day_refused({"s": "ok", "code": 200})
-    assert FyersBroker.day_refused({"s": "error", "code": -360})
+    code = FyersBroker.day_refused_code
+    assert not day_refused({"s": "error", "code": 429}, code)
+    assert not day_refused({"s": "ok", "code": 200}, code)
+    assert day_refused({"s": "error", "code": -360}, code)
+    assert not day_refused({"s": "error", "code": -360}, None)  # a broker without such a code
     budget.exhaust_day()
     assert budget.day_spent()
