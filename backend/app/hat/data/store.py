@@ -10,15 +10,29 @@ them by cumulative factors computed from corporate actions (HAT-DATA-053, 054).
 
 Views, per connection from `DataStore.connect`:
 - `bars_daily_raw`: every raw row, with the partition's `date`.
-- `bars_daily_adj`: raw x cumulative factor, prev_close by the factor of its own day (NSE's
-  ex-date PREVCLOSE is already the adjusted close, F14); volume is divided by the same factor
-  (multiplied by its reciprocal, rounded to 12 places); `raw_close` keeps the unadjusted close
-  for the rules on an absolute rupee price (`min_price`, the NSE tick slab). A bar of an older
-  ISIN linked by the ISIN lineage (`data/lineage.py`) carries the id of its chain's current
-  ISIN, so a chain reads as one instrument.
-- `bars_daily`: `bars_daily_adj` with one row per (instrument_id, date), from the latest
-  ingest run (run ids are uuid v7, so byte order is time order).
+- `bars_daily_cap_adj`: the price basis: raw x the cumulative factor of the price-changing
+  corporate actions (splits, bonuses, rights, demergers), prev_close by the factor of its own
+  day (NSE's ex-date PREVCLOSE is already the adjusted close, F14); volume is divided by the same
+  factor (multiplied by its reciprocal, rounded to 12 places); `raw_close` keeps the unadjusted
+  close for the rules on an absolute rupee price (`min_price`, the NSE tick slab). A bar of an
+  older ISIN linked by the ISIN lineage (`data/lineage.py`) carries the id of its chain's current
+  ISIN, so a chain reads as one instrument. The backtest fills, marks and pays dividends on it
+  (CA3).
+- `bars_daily_adj`: the total-return series every signal reads (CA3): the price basis times the
+  cumulative factor of the dividends as well, each 1 - D / the raw close before its ex-date
+  (`dividend_factor`), applied once the bars hold its ex-date (a dividend ahead is not priced
+  in); an ex-date's prev_close takes the day's dividend factor too (NSE's PREVCLOSE is the raw
+  close before it). Volume and `raw_close` are the price basis's: a dividend changes no share
+  count.
+- `bars_daily` and `bars_daily_cap`: those views with one row per (instrument_id, date), from the
+  latest ingest run (run ids are uuid v7, so byte order is time order).
 - `index_daily`: index levels.
+- Both adjusted views carry `div_factor`: the cumulative factor of the dividends after the
+  bar's date (the total-return price over the price-basis one), so a reader can rescale a
+  series to any day's scale (`features`, the backtest's `MarketView`).
+- tables `div_segment` (that factor per instrument and date range) and `dividend` (each priced
+  dividend: chain, ex-date, the session before, the cash, that session's raw close and the
+  factor).
 
 Nothing here opens a network connection.
 """
@@ -190,13 +204,37 @@ class ActionFactor:
 
 
 @dataclass(frozen=True)
+class DividendCash:
+    """A stored dividend as the total-return view needs it: the chain it is paid on (keyed as
+    `ActionFactor`), its ex-date and the cash per share in rupees."""
+
+    instrument_id: uuid.UUID | str
+    ex_date: date
+    amount: Decimal
+
+
+@dataclass(frozen=True)
 class Adjustment:
-    """What the adjusted view applies: the price factors and the ISIN lineage. `lineage` maps
-    the id of each linked older ISIN to the id of its chain's current ISIN; the view gives the
-    older bars that id, so the factors of a chain are keyed by it (`lineage.stored_adjustment`)."""
+    """What the adjusted views apply: the price factors, the dividends and the ISIN lineage.
+    `lineage` maps the id of each linked older ISIN to the id of its chain's current ISIN; the
+    view gives the older bars that id, so the factors and dividends of a chain are keyed by it
+    (`lineage.stored_adjustment`)."""
 
     factors: tuple[ActionFactor, ...] = ()
     lineage: Mapping[str, str] = field(default_factory=dict)
+    dividends: tuple[DividendCash, ...] = ()
+
+
+def dividend_factor(amount: Decimal, previous_close: Decimal) -> Decimal | None:
+    """The total-return factor of a cash distribution: 1 - amount / the raw close before the
+    ex-date, applied to every price before it like any other factor. None when it is not in
+    (0, 1): no close, no cash, or cash at or above the price (never a factor)."""
+    if not amount.is_finite() or not previous_close.is_finite() or previous_close <= 0:
+        return None
+    with localcontext() as ctx:
+        ctx.prec = 40
+        factor = 1 - amount / previous_close
+    return factor if 0 < factor < 1 else None
 
 
 NO_ADJUSTMENT = Adjustment()  # raw prices: the views without factors or lineage
@@ -299,23 +337,66 @@ def cumulative_segments(
     return out
 
 
-# The factor columns of ca_segment are DECIMAL(20,18) and DECIMAL(24,12) (FACTOR_PLACES and
-# INVERSE_PLACES); the view is a constant so no text is ever built into SQL. `lineage` maps a
-# linked older ISIN's id to its chain's id.
+# The factor columns of the segment tables are DECIMAL(20,18) and DECIMAL(24,12) (FACTOR_PLACES
+# and INVERSE_PLACES); the views are constants so no text is ever built into SQL. `lineage` maps a
+# linked older ISIN's id to its chain's id. `ca_segment` holds the price basis's factors,
+# `tr_segment` those times the dividends' (its inverse is unused: volume keeps the price basis's).
+_SEGMENT_TABLES = ("ca_segment", "tr_segment", "div_segment")
 _ADJ_VIEW_SQL = """
-CREATE VIEW bars_daily_adj AS
+CREATE VIEW {view} AS
 SELECT COALESCE(l.chain_id, r.instrument_id) AS instrument_id, r.date, r.isin, r.symbol, r.series,
-       r.open * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS open,
-       r.high * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS high,
-       r.low * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS low,
-       r.close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS close,
-       r.prev_close * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS prev_close,
+       r.open * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS open,
+       r.high * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS high,
+       r.low * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS low,
+       r.close * COALESCE(p.factor, CAST(1 AS DECIMAL(20,18))) AS close,
+       r.prev_close * CAST(COALESCE(p.factor, CAST(1 AS DECIMAL(20,18)))
+           * COALESCE(x.factor, CAST(1 AS DECIMAL(20,18))) AS DECIMAL(20,18)) AS prev_close,
        CAST(r.volume AS DECIMAL(14,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
-       r.traded_value, r.close AS raw_close, r.source, r.ingest_run_id
+       r.traded_value, r.close AS raw_close, r.source, r.ingest_run_id,
+       COALESCE(d.factor, CAST(1 AS DECIMAL(20,18))) AS div_factor
 FROM bars_daily_raw r
 LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
 LEFT JOIN ca_segment c ON c.instrument_id = COALESCE(l.chain_id, r.instrument_id)
      AND r.date >= COALESCE(c.from_date, DATE '0001-01-01') AND r.date < c.to_date
+LEFT JOIN div_segment d ON d.instrument_id = COALESCE(l.chain_id, r.instrument_id)
+     AND r.date >= COALESCE(d.from_date, DATE '0001-01-01') AND r.date < d.to_date
+LEFT JOIN {segment} p ON p.instrument_id = COALESCE(l.chain_id, r.instrument_id)
+     AND r.date >= COALESCE(p.from_date, DATE '0001-01-01') AND r.date < p.to_date
+LEFT JOIN {ex_dividends} x ON x.instrument_id = COALESCE(l.chain_id, r.instrument_id)
+     AND x.ex_date = r.date
+"""
+# (view, its price segment table, the dividends going ex on a bar's date, the one-row-per-day
+# view over it). NSE's PREVCLOSE on an ex-dividend date is the previous raw close, so on the
+# total-return series it takes that day's dividend factor too, as the previous bar's close has.
+_ADJ_VIEWS = (
+    ("bars_daily_cap_adj", "ca_segment", "no_dividend", "bars_daily_cap"),
+    ("bars_daily_adj", "tr_segment", "dividend", "bars_daily"),
+)
+_LATEST_VIEW_SQL = """
+CREATE VIEW {latest} AS
+SELECT * FROM {view}
+QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
+"""
+# Each dividend's chain id, the raw close and date of the chain's last session in the 30 days
+# before its ex-date (the latest ingest run's row) and whether the chain has a bar on or after
+# the ex-date (a dividend ahead of the bars is not priced in).
+_DIVIDEND_CLOSE_SQL = """
+WITH chained AS (
+    SELECT COALESCE(l.chain_id, r.instrument_id) AS chain, r.date, r.close, r.ingest_run_id
+    FROM bars_daily_raw r LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
+    WHERE COALESCE(l.chain_id, r.instrument_id) IN (SELECT chain FROM div_in)
+),
+day_close AS (
+    SELECT d.k, c.date, arg_max(c.close, c.ingest_run_id) AS close
+    FROM div_in d JOIN chained c ON c.chain = d.chain AND c.date BETWEEN d.ex - 30 AND d.ex - 1
+    GROUP BY d.k, c.date
+),
+last_day AS (SELECT chain, max(date) AS last_date FROM chained GROUP BY chain)
+SELECT d.k, arg_max(dc.date, dc.date), arg_max(dc.close, dc.date)
+FROM div_in d
+JOIN day_close dc ON dc.k = d.k
+JOIN last_day ld ON ld.chain = d.chain AND ld.last_date >= d.ex
+GROUP BY d.k
 """
 # The open-ended first segment's NULL `from_date` is read as the first day there is rather than
 # with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
@@ -534,7 +615,7 @@ class DataStore:
     # --- DuckDB -----------------------------------------------------------------------------
 
     def connect(self, adjustment: Adjustment = NO_ADJUSTMENT) -> duckdb.DuckDBPyConnection:
-        """An in-memory DuckDB connection with the four views; `adjustment` is what the adjusted
+        """An in-memory DuckDB connection with the views; `adjustment` is what the adjusted
         view applies (`lineage.stored_adjustment`: the corporate actions and the ISIN lineage).
         DuckDB's own default is 80% of RAM; the store's `memory_limit` caps it and a larger query
         spills to `temp_dir`."""
@@ -546,28 +627,27 @@ class DataStore:
         self._dataset_view(con, DATASET_INDEX, "index_daily")
         # Loaded from Arrow tables: row-by-row inserts of ~1,500 segments cost half a second.
         links = sorted(adjustment.lineage.items())
-        tables = {
-            "ca_segment": segment_table(cumulative_segments(adjustment.factors)),
-            "lineage": pa.table(
+        _load(
+            con,
+            "lineage",
+            pa.table(
                 {
                     "instrument_id": pa.array([old for old, _ in links], pa.string()),
                     "chain_id": pa.array([new for _, new in links], pa.string()),
                 }
             ),
-        }
-        for name, table in tables.items():
-            con.register("_load", table)
-            con.execute(f"CREATE TABLE {name} AS SELECT * FROM _load")  # noqa: S608 - constant
-            con.unregister("_load")
-        con.execute(_ADJ_VIEW_SQL)
-        con.execute(
-            """
-            CREATE VIEW bars_daily AS
-            SELECT * FROM bars_daily_adj
-            QUALIFY row_number() OVER (
-                PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-            """
         )
+        priced = _price_dividends(con, adjustment.dividends)
+        _load(con, "dividend", dividend_table(priced))
+        paid = [ActionFactor(row[0], row[1], row[5]) for row in priced]
+        for table, actions in zip(
+            _SEGMENT_TABLES, (adjustment.factors, (*adjustment.factors, *paid), paid), strict=True
+        ):
+            _load(con, table, segment_table(cumulative_segments(actions)))
+        con.execute("CREATE TABLE no_dividend AS SELECT * FROM dividend WHERE false")
+        for view, segment, ex_dividends, latest in _ADJ_VIEWS:
+            con.execute(_ADJ_VIEW_SQL.format(view=view, segment=segment, ex_dividends=ex_dividends))
+            con.execute(_LATEST_VIEW_SQL.format(latest=latest, view=view))
         return con
 
     def _dataset_view(self, con: duckdb.DuckDBPyConnection, dataset: str, view: str) -> None:
@@ -598,6 +678,66 @@ def segment_table(
             "inverse": pa.array([s[4] for s in segments], pa.decimal128(24, INVERSE_PLACES)),
         }
     )
+
+
+def _price_dividends(
+    con: duckdb.DuckDBPyConnection, dividends: Sequence[DividendCash]
+) -> list[tuple[str, date, date, Decimal, Decimal, Decimal]]:
+    """(chain, ex-date, previous session, cash, its raw close, factor) of each dividend the bars
+    can price: one per chain and ex-date (the amounts of two rows of one day add up), with a
+    session of the chain in the 30 days before the ex-date and a bar on or after it."""
+    cash: dict[tuple[str, date], Decimal] = defaultdict(Decimal)
+    for d in dividends:
+        cash[(str(d.instrument_id), d.ex_date)] += d.amount
+    if not cash:
+        return []
+    keys = sorted(cash)
+    _load(
+        con,
+        "div_in",
+        pa.table(
+            {
+                "k": pa.array(range(len(keys)), pa.int32()),
+                "chain": pa.array([c for c, _ in keys], pa.string()),
+                "ex": pa.array([ex for _, ex in keys], pa.date32()),
+            }
+        ),
+    )
+    out = []
+    for k, prev_date, prev_close in con.execute(_DIVIDEND_CLOSE_SQL).fetchall():
+        chain, ex = keys[k]
+        factor = dividend_factor(cash[(chain, ex)], Decimal(prev_close))
+        if factor is not None:
+            out.append((chain, ex, prev_date, cash[(chain, ex)], Decimal(prev_close), factor))
+    con.execute("DROP TABLE div_in")
+    return sorted(out)
+
+
+def dividend_table(rows: Sequence[tuple[str, date, date, Decimal, Decimal, Decimal]]) -> pa.Table:
+    """`_price_dividends`'s rows as the Arrow table of the connection's `dividend` columns."""
+    return pa.table(
+        {
+            "instrument_id": pa.array([r[0] for r in rows], pa.string()),
+            "ex_date": pa.array([r[1] for r in rows], pa.date32()),
+            "prev_date": pa.array([r[2] for r in rows], pa.date32()),
+            "amount": pa.array([_places(r[3], 4) for r in rows], pa.decimal128(18, 4)),
+            "prev_close": pa.array([_places(r[4], 4) for r in rows], pa.decimal128(18, 4)),
+            "factor": pa.array(
+                [_places(r[5], FACTOR_PLACES) for r in rows], pa.decimal128(20, FACTOR_PLACES)
+            ),
+        }
+    )
+
+
+def _places(value: Decimal, places: int) -> Decimal:
+    return value.quantize(Decimal(1).scaleb(-places), ROUND_HALF_EVEN)
+
+
+def _load(con: duckdb.DuckDBPyConnection, name: str, table: pa.Table) -> None:
+    """A table `name` of the connection holding `table`'s rows (`name` is a constant)."""
+    con.register("_load", table)
+    con.execute(f"CREATE TABLE {name} AS SELECT * FROM _load")  # noqa: S608 - constant
+    con.unregister("_load")
 
 
 def latest_rows(frame: pl.DataFrame) -> pl.DataFrame:

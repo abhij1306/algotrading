@@ -70,6 +70,8 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
   applied once per ISIN chain, and two ISINs share a history only through a `linked` lineage
   row. A rule on an absolute rupee price (`min_price`, the NSE tick slab) reads the raw close of
   its date, never an adjusted one, in the scan and the backtest alike; ratio and indicator rules
-  read adjusted bars. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
+  read adjusted bars. A dividend is in the signals' total-return series once per chain and never
+  in the price basis that fills, marks and orders read; a backtest pays its cash once, on the
+  ex-date, to the shares held into it. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
   day, and a day that does not fit the raw daily bar is ledgered (`bars_5m_rejects`), never
   written.

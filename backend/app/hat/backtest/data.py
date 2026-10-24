@@ -1,14 +1,18 @@
 """The market a backtest reads (HAT-BT-011, HAT-BT-012), loaded point in time, and the day loop's
 views of it.
 
-Bars come from the adjusted view of the Parquet store (`bars_daily_adj`: raw bars times the stored
-corporate-action factors, the latest ingest run's row per instrument and day, read for the
-universe's instruments only), features from the `features_daily` partitions the nightly job wrote,
-the regime index from `index_daily`, and membership from the universe's intervals, delisted
-instruments included. Nothing is filtered by what happened later: the day loop reads each input
-only up to the date it decides for (`MarketView`). The features must be the ones the nightly
-job wrote for the corporate actions the bars are adjusted with: the job's stored inputs digest
-must equal the digest of the stored actions over the whole store (HAT-DATA-077, PR 67). A run
+Bars come from the price-basis view of the Parquet store (`bars_daily_cap_adj`: raw bars times the
+stored price-changing corporate-action factors, the latest ingest run's row per instrument and day,
+read for the universe's instruments only), with each bar's `div_factor`, the factor of the dividends
+after it (CA3). The run fills, marks and pays dividends on the price basis; every signal read (the
+scan's window, the SMA, swing low and ATR) is the total-return series rescaled to the day it is read
+for (`MarketView`), as live reads it that day, so an ex-date drop is no signal and a held position
+earns the cash (`MarketData.dividends`). Features come from the `features_daily` partitions the
+nightly job wrote, the regime index from `index_daily`, and membership from the universe's
+intervals, delisted instruments included. Nothing is filtered by what happened later: the day loop
+reads each input only up to the date it decides for (`MarketView`). The features must be the ones
+the nightly job wrote for the corporate actions the bars are adjusted with: the job's stored inputs
+digest must equal the digest of the stored actions over the whole store (HAT-DATA-077, PR 67). A run
 under the `policy` regime rule also reads the regime engine's inputs: the NIFTY 500 and India VIX
 closes and the features job's breadth of each session (PR 68).
 """
@@ -20,6 +24,7 @@ import hashlib
 import math
 import uuid
 from bisect import bisect_left, bisect_right
+from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -67,6 +72,7 @@ __all__ = [
 # the window it is given holds more, so its watchlist equals a scan of the full history.
 LOOKBACK_SESSIONS = 700
 _PRICE_PLACES = Decimal("0.0001")
+_ZERO_CASH = Decimal(0)
 _ALWAYS = date(1900, 1, 1)
 _EPOCH = date(1970, 1, 1)  # polars' Date is days since this day
 # Sessions without a bar, up to the store's last day, after which an instrument that never trades
@@ -88,6 +94,7 @@ _BAR_COLUMNS = (
     "traded_value",
     "raw_close",
     *_EXACT,
+    "div_factor",
 )
 
 
@@ -146,6 +153,10 @@ class MarketData:
     )
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
     skipped: frozenset[tuple[str, date]] = frozenset()
+    # The cash each dividend pays per share of the price basis, (ex-date, rupees) oldest first,
+    # by instrument: the stored amount times the basis factor of the session before the ex-date
+    # (a split after it makes more, cheaper shares; each earns its share of the cash).
+    dividends: Mapping[str, Sequence[tuple[date, Decimal]]] = field(default_factory=dict)
 
 
 def classifications(data: MarketData, instrument_id: str) -> list[tuple[date, str]]:
@@ -203,14 +214,37 @@ class _Series:
     days: np.ndarray
     prices: np.ndarray
     traded: np.ndarray
+    div: np.ndarray  # per row, the factor of the dividends after it (`div_factor`)
 
     def bars(self, start: int, stop: int) -> list[Bar]:
         return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
 
+    def signal_bars(self, start: int, stop: int, anchor: int) -> list[Bar]:
+        """The rows as the total-return series on the scale of row `anchor`: each price times
+        its dividend factor over the anchor's (`rescaled`), exact to the store's 4 places."""
+        if start >= stop:
+            return []
+        scale = self.div[anchor]
+        return [
+            Bar(*(rescaled(int(v), self.div[n] / scale) for v in self.prices[n]))
+            for n in range(start, stop)
+        ]
+
+
+def rescaled(units: int, ratio: float) -> Decimal:
+    """A price of 1/10,000 units times a dividend ratio, rounded half to even to the store's 4
+    places; a ratio of 1 is the price itself (a price is far below 2**53 units, so exact)."""
+    return _exact(round(units * ratio))
+
 
 _NO_SERIES = _Series(
-    np.empty(0, dtype=np.int32), np.empty((0, 4), dtype=np.int64), np.empty(0, dtype=np.int64)
+    np.empty(0, dtype=np.int32),
+    np.empty((0, 4), dtype=np.int64),
+    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.float64),
 )
+_DIV = "div_factor"
+_SCALED = ("open", "high", "low", "close", "prev_close")  # the scan's double prices
 
 
 @dataclass(frozen=True)
@@ -252,10 +286,12 @@ class MarketView:
             key[0]: part for key, part in data.features.partition_by("date", as_dict=True).items()
         }
         self.closes = list(data.index_closes.get(index, ()))
+        self.dividends = data.dividends
 
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
-        frame = self.bars.select("instrument_id", "date", *_EXACT).filter(
+        div = pl.col(_DIV) if _DIV in self.bars.columns else pl.lit(1.0)
+        frame = self.bars.select("instrument_id", "date", *_EXACT, div.alias(_DIV)).filter(
             pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
         )
         # A skipped bar stays in the history: it is a real session, whose close sets the tick and
@@ -272,6 +308,7 @@ class MarketView:
                 part["date"].to_physical().to_numpy(),
                 part.select(_EXACT).to_numpy(),
                 np.maximum.accumulate(kept) if part.height else kept,
+                part[_DIV].cast(pl.Float64).to_numpy(),
             )
         return found
 
@@ -340,9 +377,12 @@ class MarketView:
         self, instrument_id: str, day: date, count: int, *, inclusive: bool = True
     ) -> list[Bar]:
         """The instrument's last `count` bars dated on or before `day` (before it, if not
-        `inclusive`), oldest first."""
+        `inclusive`), oldest first: the total-return series on the scale of its last bar on or
+        before `day`, what a signal reads that day (CA3), so a rule comparing them with the day's
+        close sees no ex-date drop; the price basis where no dividend went ex among them."""
         series, end = self._find(instrument_id, day, inclusive=inclusive)
-        return series.bars(max(0, end - count), end)
+        _, through = self._find(instrument_id, day, inclusive=True)
+        return series.signal_bars(max(0, end - count), end, through - 1)
 
     def tick(self, instrument_id: str, day: date) -> Decimal | None:
         """The instrument's NSE tick on `day` (HAT-EXEC-053) in the units of its adjusted bars.
@@ -381,14 +421,26 @@ class MarketView:
         )
 
     def window(self, as_of: date) -> pl.DataFrame:
-        """The bars of the `LOOKBACK_SESSIONS` sessions up to `as_of`: what the scan reads."""
+        """The bars of the `LOOKBACK_SESSIONS` sessions up to `as_of`: what the scan reads, as
+        the total-return series on each instrument's scale of its last bar by `as_of` (CA3)."""
         first = self.days[max(0, self.index[as_of] - LOOKBACK_SESSIONS)]
-        return self.bars.filter((pl.col("date") >= first) & (pl.col("date") <= as_of))
+        frame = self.bars.filter((pl.col("date") >= first) & (pl.col("date") <= as_of))
+        if _DIV not in frame.columns:
+            return frame
+        ratio = pl.col(_DIV) / pl.col(_DIV).last().over("instrument_id")
+        return frame.with_columns(pl.col(c) * ratio for c in _SCALED)
+
+    def dividends_on(self, instrument_id: str, day: date) -> Decimal:
+        """The cash per price-basis share of the instrument's dividends that go ex on `day`."""
+        return sum(
+            (cash for ex, cash in self.dividends.get(instrument_id, ()) if ex == day), _ZERO_CASH
+        )
 
     def prev_close(self, instrument_id: str, day: date) -> Decimal | None:
-        """The instrument's last close before `day`; None without one."""
-        bars = self.bars_through(instrument_id, day, 1, inclusive=False)
-        return bars[0].close if bars else None
+        """The instrument's last close before `day`, on the price basis (the circuit bands' base);
+        None without one."""
+        series, end = self._find(instrument_id, day, inclusive=False)
+        return _exact(series.prices[end - 1][3]) if end else None
 
 
 _DIGEST_SLICE = 100_000  # rows per CSV slice of the content digest
@@ -409,8 +461,9 @@ SELECT instrument_id, date, series,
        price_e4(high) AS high_e4,
        price_e4(low) AS low_e4,
        price_e4(close) AS close_e4,
+       CAST(div_factor AS DOUBLE) AS div_factor,
        ingest_run_id
-FROM bars_daily_adj
+FROM bars_daily_cap_adj
 WHERE date BETWEEN ? AND ? AND instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
 ORDER BY instrument_id, date
 """
@@ -428,6 +481,17 @@ CREATE TEMP MACRO price_e4(p) AS (
 _LATER_SQL = """
 SELECT DISTINCT instrument_id FROM bars_daily_adj
 WHERE date > ? AND instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
+"""
+# The universe's dividends the store priced (`store.dividend`), each with the price-basis factor
+# of the session before its ex-date, which turns the stored cash into cash per basis share.
+_DIVIDENDS_SQL = """
+SELECT d.instrument_id, d.ex_date, CAST(d.amount AS VARCHAR),
+       CAST(COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS VARCHAR)
+FROM dividend d
+LEFT JOIN ca_segment c ON c.instrument_id = d.instrument_id
+     AND d.prev_date >= COALESCE(c.from_date, DATE '0001-01-01') AND d.prev_date < c.to_date
+WHERE d.ex_date BETWEEN ? AND ? AND d.instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
+ORDER BY d.instrument_id, d.ex_date
 """
 # every index the run reads, in one statement, so a concurrent upsert cannot split them
 _INDEX_SQL = """
@@ -605,9 +669,9 @@ def _breadth(store: DataStore, days: Iterable[date]) -> dict[date, Decimal]:
 
 
 def _content_digest(market: MarketData) -> str:
-    """sha256 of what the run read: the bars, features, index closes, membership intervals and
-    industry history, each in a fixed order. Two snapshots with the same row counts but
-    different prices or members have different digests."""
+    """sha256 of what the run read: the bars, features, index closes, membership intervals,
+    industry history and dividends, each in a fixed order. Two snapshots with the same row counts
+    but different prices or members have different digests."""
     digest = hashlib.sha256()
     for frame in (market.bars, market.features):
         ordered = frame.select(sorted(frame.columns)).sort(["date", "instrument_id"])
@@ -623,6 +687,15 @@ def _content_digest(market: MarketData) -> str:
         ).encode()
     )
     digest.update(repr(sorted(market.industries.items())).encode())
+    if market.dividends:
+        digest.update(
+            repr(
+                sorted(
+                    (k, [(d.isoformat(), str(c)) for d, c in v])
+                    for k, v in market.dividends.items()
+                )
+            ).encode()
+        )
     if market.breadth:
         digest.update(
             repr(sorted((d.isoformat(), str(v)) for d, v in market.breadth.items())).encode()
@@ -669,6 +742,11 @@ def load_market(
             if every_day[-1] > end
             else set()
         )
+        dividends: dict[str, list[tuple[date, Decimal]]] = defaultdict(list)
+        for instrument_id, ex_date, amount, basis in con.execute(
+            _DIVIDENDS_SQL, [window[0], end, wanted]
+        ).fetchall():
+            dividends[str(instrument_id)].append((ex_date, Decimal(amount) * Decimal(basis)))
         names = sorted({index, *((regime.INDEX_NAME, regime.VIX_NAME) if regime_inputs else ())})
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
     # read once DuckDB has let go of the bars' memory
@@ -712,6 +790,7 @@ def load_market(
         last_traded=last_traded,
         breadth=breadth,
         skipped=skipped,
+        dividends=dict(dividends),
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -731,6 +810,7 @@ def load_market(
             else {}
         ),
         "members": len(members),
+        "dividends": sum(len(v) for v in dividends.values()),
         "last_traded": len(last_traded),
         "jump_skip": {
             "rule": f"no trade or mark within {JUMP_SKIP_SESSIONS} sessions of an open jump",

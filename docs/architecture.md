@@ -93,7 +93,9 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
   runtime (watchlist, signal, approval, order, fill, position, trade result), ops (event, job run,
   quality, Telegram, snapshots, backtest runs). The event table is monthly-partitioned on Postgres.
 - Parquet under `HAT_DATA_ROOT`, date-partitioned, read through DuckDB: `bars_daily_raw`
-  (immutable), `index_daily`, `features_daily`, `breadth_daily`, `market_breadth`, 5-minute bars
+  (immutable; the views over it, `data/store.py`: `bars_daily_cap` the price basis, raw times the
+  price-changing factors, and `bars_daily` the total-return series signals read, which also
+  carries each dividend, CA3), `index_daily`, `features_daily`, `breadth_daily`, `market_breadth`, 5-minute bars
   (`bars_5m`, raw basis; the minute-history loader's refusals in `bars_5m_rejects`).
 - `features_daily/_state.json` (`data/features.py:FeaturesState`, version 2): the inputs digest
   (adjustment lines + `FEATURES_RULE`, the ranked universe and formulas), the adjustment as

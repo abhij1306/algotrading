@@ -1,10 +1,11 @@
 """What the daily cycle reads from the Parquet store (PR 17): the scan's inputs, the live
 trigger's daily inputs, the close-phase exit views and the official closes of a day.
 
-Everything is point in time: a read for trade date d uses sessions before d (the nightly scan
-and the live trigger) or the official closes of d itself (the close gap). Prices come from the
-adjusted view (`bars_daily`); ticks from the unadjusted closes, as NSE prices them
-(HAT-EXEC-053). A missing value is None, never a guess, so a rule that needs it fails closed.
+Everything is point in time: a read for trade date d uses sessions before d (the nightly scan and
+the live trigger) or the official closes of d itself (the close gap). Prices come from the
+total-return view (`bars_daily`: the price-changing actions and the stored dividends, CA3, on the
+scale of the latest bar); ticks from the unadjusted closes, as NSE prices them (HAT-EXEC-053). A
+missing value is None, never a guess, so a rule that needs it fails closed.
 """
 
 from __future__ import annotations

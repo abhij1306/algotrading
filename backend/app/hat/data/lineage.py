@@ -69,8 +69,8 @@ from ..errors import HatConfigError, HatError
 from ..events import record
 from ..models import HatCorporateAction, HatInstrument, HatIsinLineage, HatLineageOverride
 from .calendar import recorded_history, session_calendar
-from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_SPLIT
-from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore
+from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_DIVIDEND, TYPE_SPLIT
+from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore, DividendCash
 
 __all__ = [
     "Action",
@@ -586,12 +586,32 @@ def chain_factors(
     return factors, sorted(conflicts)
 
 
-def adjustment(actions: Iterable[Action], links: Iterable[tuple[str, str]]) -> Adjustment:
-    """What the adjusted view applies, from the stored actions and the linked pairs."""
+def chain_dividends(
+    dividends: Iterable[tuple[str, date, Decimal]], heads: Mapping[str, tuple[str, int]]
+) -> list[DividendCash]:
+    """The dividends with a cash amount keyed by chain, one per (chain, ex-date): the copy of the
+    member nearest the chain's current ISIN wins, as for the factors."""
+    best: dict[tuple[str, date], tuple[int, str, Decimal]] = {}
+    for instrument_id, ex_date, amount in dividends:
+        chain, depth = heads.get(instrument_id, (instrument_id, 0))
+        rank = (depth, instrument_id, amount)
+        held = best.get((chain, ex_date))
+        if held is None or rank[:2] < held[:2]:
+            best[(chain, ex_date)] = rank
+    return [DividendCash(key[0], key[1], held[2]) for key, held in sorted(best.items())]
+
+
+def adjustment(
+    actions: Iterable[Action],
+    links: Iterable[tuple[str, str]],
+    dividends: Iterable[tuple[str, date, Decimal]] = (),
+) -> Adjustment:
+    """What the adjusted views apply, from the stored actions, the linked pairs and the
+    dividends with a cash amount (instrument, ex-date, rupees per share)."""
     heads = chains(links)
     factors, _ = chain_factors(actions, heads)
     lineage = {member: head for member, (head, depth) in heads.items() if depth}
-    return Adjustment(tuple(factors), lineage)
+    return Adjustment(tuple(factors), lineage, tuple(chain_dividends(dividends, heads)))
 
 
 # --- the database -------------------------------------------------------------------------------
@@ -622,10 +642,26 @@ def stored_overrides(session: Session) -> dict[tuple[str, str], str]:
     }
 
 
+def stored_dividends(session: Session) -> list[tuple[str, date, Decimal]]:
+    """(instrument, ex-date, cash per share) of every stored dividend with an amount (CA3)."""
+    rows = session.execute(
+        select(
+            HatCorporateAction.instrument_id,
+            HatCorporateAction.ex_date,
+            HatCorporateAction.cash_amount,
+        ).where(
+            HatCorporateAction.action_type == TYPE_DIVIDEND,
+            HatCorporateAction.cash_amount.is_not(None),
+        )
+    )
+    return [(str(i), ex, Decimal(amount)) for i, ex, amount in rows]
+
+
 def stored_adjustment(session: Session) -> Adjustment:
-    """The adjusted view's input: every stored price-changing action, once per chain, and the
-    linked lineage. Every reader of `bars_daily` takes it from here."""
-    return adjustment(stored_actions(session), stored_links(session))
+    """The adjusted views' input: every stored price-changing action and every dividend with an
+    amount, once per chain, and the linked lineage. Every reader of `bars_daily` takes it from
+    here."""
+    return adjustment(stored_actions(session), stored_links(session), stored_dividends(session))
 
 
 # Aggregates only (a window over every bar would hold the whole history in memory); on a day

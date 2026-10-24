@@ -76,6 +76,13 @@ stopped trading closes at its last close on its last session (`MarketData.last_t
 HAT-BT-012), and nothing trades or marks within a few sessions of an open review jump
 (`MarketData.skipped`, audit H7), without those sessions counting as a suspension.
 
+Dividends (CA3): the run trades and marks the price basis, the prices a broker shows, and a
+position open at the start of an ex-date session earns its dividends that day, `qty_open` times
+the cash per share (`MarketData.dividends`, `dividend_credit`), into the account's cash; a buy on
+the ex-date earns nothing. The signals read the total-return series (`MarketView`), so the ex-date
+drop is neither a breakdown nor a loss: it is paid back as cash, once. The credit is cash, not
+part of a trade's R; the metrics count it (`dividend_income`, `dividend_credits`).
+
 The run's one risk-policy version (`RunSpec.policy`) is in force over the whole period, from its
 first session, whenever the stored version took effect: a backtest of years before the policy
 existed sizes under it as if it had always been the policy.
@@ -118,7 +125,7 @@ import uuid
 from bisect import bisect_right
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 
 from sqlalchemy import select
 
@@ -181,6 +188,15 @@ SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
 # The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _ZERO = Decimal(0)
+_PAISE = Decimal("0.01")
+
+
+def dividend_credit(qty: int, cash_per_share: Decimal) -> Decimal:
+    """The cash `qty` shares held into an ex-date earn: the dividend per share times the shares,
+    to the paisa a broker credits."""
+    return (qty * cash_per_share).quantize(_PAISE, rounding=ROUND_HALF_EVEN)
+
+
 _FINEST_TICK = Decimal("0.01")  # the NSE tick below ₹250 (`data.ticks`), the finest slab
 # The instants of a simulated day (IST): a later step of the day has a later instant.
 _AT_NIGHT = time(16, 0)
@@ -341,6 +357,8 @@ class _Run:
         self.closed: date | None = None  # the last session whose close phase has run
         self.ambiguous_days: set[date] = set()
         self.lower_circuit_days: set[date] = set()
+        self.dividend_cash = _ZERO  # the dividends the held positions earned (CA3)
+        self.dividend_credits = 0
         self.equity: list[tuple[date, Decimal]] = []
         self.skips: dict[str, int] = {}
         self.gate: dict[date, bool] = {}
@@ -453,6 +471,11 @@ class _Run:
         )
         for position in self._open_positions():
             held = self.held[position.id]
+            # Held into the ex-date: the shares earn the dividend, a session or not.
+            per_share = self.view.dividends_on(held.instrument_id, day)
+            if per_share and position.qty_open > 0:
+                self.dividend_cash += dividend_credit(position.qty_open, per_share)
+                self.dividend_credits += 1
             bar = self.view.bar(held.instrument_id, day)
             if bar is None:
                 continue  # no session for this instrument today: nothing can fill
@@ -866,7 +889,7 @@ class _Run:
             self.ladder = apply_outcome(self.ladder, is_win(Decimal(r_multiple)), self.policy)
 
     def _cash(self) -> Decimal:
-        cash = self.spec.initial_equity
+        cash = self.spec.initial_equity + self.dividend_cash
         for side, value, fees in exact_flows(self.session):
             cash += value if side == "sell" else -value
             cash -= fees
@@ -922,6 +945,8 @@ class _Run:
             ambiguous_days=len(self.ambiguous_days),
             lower_circuit_days=len(self.lower_circuit_days),
         )
+        metrics["dividend_income"] = str(self.dividend_cash)
+        metrics["dividend_credits"] = self.dividend_credits
         result = BacktestResult(
             trades=trade_rows,
             equity=equity,
