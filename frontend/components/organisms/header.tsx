@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router";
 import { Moon, Sun, Command } from "lucide-react";
-import LoginButton from "@/components/LoginButton";
+import { LoginButton } from "@/components/organisms/login-button";
 import { useBrokerStatus } from "@/lib/queries/auth";
 import { useTheme } from "@/lib/theme";
 
