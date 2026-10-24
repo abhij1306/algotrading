@@ -82,15 +82,21 @@ def trade_results(
     virtual: bool,
     since: datetime | None = None,
     until: datetime | None = None,
-    exclude: Collection[str] = (),
+    exclude: Collection[tuple[uuid.UUID, str]] = (),
 ) -> tuple[Decimal, ...]:
     """The R multiples of the sleeve's closed real (or shadow) trades closed from `since` to
     `until` (both inclusive, either open), oldest first. A replay of an earlier trade date passes
     its own close as `until`, so later trades never change an earlier decision. The veto trades
     of skipped confirm signals (virtual, but not shadow trades) are in neither: they feed the
-    veto score only (HAT-EXEC-130). A trade of a playbook in `exclude` is in neither (PR 40)."""
+    veto score only (HAT-EXEC-130). A trade whose (strategy version, playbook) is in `exclude` is
+    in neither (PR 40)."""
     query = (
-        select(HatTradeResult.r_multiple, HatPosition.closed_at, HatSignal.playbook)
+        select(
+            HatTradeResult.r_multiple,
+            HatPosition.closed_at,
+            HatSignal.strategy_version_id,
+            HatSignal.playbook,
+        )
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(virtual))
@@ -100,8 +106,8 @@ def trade_results(
     rows = session.execute(query).all()
     return tuple(
         Decimal(r)
-        for r, closed, playbook in rows
-        if playbook not in exclude
+        for r, closed, version_id, playbook in rows
+        if (version_id, playbook) not in exclude
         and (since is None or (closed is not None and as_utc(closed) >= as_utc(since)))
         and (until is None or (closed is not None and as_utc(closed) <= as_utc(until)))
     )

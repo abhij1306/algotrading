@@ -406,3 +406,33 @@ def test_save_draft_refuses_another_bot_name() -> None:
             now=saturday,
         )
         assert draft.version == 2
+
+
+def test_playbook_kind_from_data_needs() -> None:
+    """A playbook is pre-open when one of its criteria, enabled or not, declares the pre-open
+    data (`data_needs`), whatever the playbook is called; the seeds' EP is the only one."""
+    kinds = {(name, p.name): p.preopen for name in STRATEGIES for p in seed_config(name).playbooks}
+    assert kinds == {
+        ("stage2-contraction-breakout", "default"): False,
+        ("momentum-breakout-ep", "breakout"): False,
+        ("momentum-breakout-ep", "episodic_pivot"): True,
+    }
+    ep = seed_config("momentum-breakout-ep").playbook("episodic_pivot")
+    assert ep.model_copy(update={"name": "gap_and_go"}).preopen
+    raw = ep.model_dump(mode="json")
+    raw["trigger"] = [i for i in raw["trigger"] if i["type"] != "gap_up"]
+    assert not Playbook.model_validate(raw).preopen
+    gap = next(i for i in ep.model_dump(mode="json")["trigger"] if i["type"] == "gap_up")
+    raw["trigger"].append({**gap, "enabled": False, "order": 9})
+    assert Playbook.model_validate(raw).preopen
+
+
+def test_preopen_playbook_triggers_on_the_opening_range_only() -> None:
+    """A pre-open playbook has no setup levels (its candidates come from the gap scan), so a
+    `price_breaks_level` on any other level is refused when the config is saved."""
+    raw = seed_config("momentum-breakout-ep").playbook("episodic_pivot").model_dump(mode="json")
+    for instance in raw["trigger"]:
+        if instance["type"] == "price_breaks_level":
+            instance["params"]["level"] = "pivot"
+    with pytest.raises(ValueError, match="preopen_level_not_opening_range"):
+        Playbook.model_validate(raw)

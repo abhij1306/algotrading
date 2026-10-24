@@ -5,9 +5,10 @@
   signal (a restart mid-session) is marked fired so it never fires twice, and a restart after the
   gap scan rebuilds the EP candidates it recorded.
 - `modes.apply` (09:15, the session open): the queued execution modes that are now in force.
-- `gapscan` (09:16): the EP gappers whose setup passes become candidates of every EP bot and
-  are subscribed; the gappers and their opens are recorded (`gapscan.completed`) for a restart;
-  the scan alerts when it finished at or after 09:20.
+- `gapscan` (09:16): the gappers whose setup passes become candidates of each active bot's
+  pre-open playbooks (`Playbook.preopen`, such as the episodic pivot) and are subscribed; the
+  gappers and their opens are recorded (`gapscan.completed`) for a restart; the scan alerts when
+  it finished at or after 09:20.
 - `exits.close_shadow` (15:20-15:25): the close-phase exits of the virtual positions no broker
   account's `TradeManager` handles.
 - `watchlist.expire` (15:30, the session close): today's Watchlisted rows that never triggered end
@@ -36,7 +37,6 @@ from ..data.live import LiveData, usable_price
 from ..data.mcp_client import McpClient
 from ..data.subscriptions import LiveSubscriptions, load_inputs
 from ..engine.live_entry import (
-    EP_PLAYBOOK,
     EpInputs,
     TriggerService,
     ep_bot_candidates,
@@ -190,7 +190,7 @@ class Intraday:
             candidates = watchlist_candidates(
                 session,
                 day,
-                lambda iid: data.daily(session, iid),
+                lambda iid, stop: data.daily(session, iid, stop),
                 data.bars,
                 calendar=self._calendar(),
             )
@@ -265,8 +265,8 @@ class Intraday:
     def _add_gappers(
         self, day: date, found: Mapping[str, uuid.UUID], opens: Mapping[str, Decimal]
     ) -> int:
-        """The EP candidates of each EP bot among the gappers: setup passed on the bars before
-        `day`, the day's open, announcements of the last 24 hours."""
+        """The candidates of each bot's pre-open playbooks among the gappers: setup passed on the
+        bars before `day`, the day's open, announcements of the last 24 hours."""
         data = self._book.day(day)
         now = self._now()
         with self._session_factory() as session:
@@ -287,12 +287,11 @@ class Intraday:
                     session,
                     day,
                     items,
-                    lambda iid: data.daily(session, iid),
+                    lambda iid, stop: data.daily(session, iid, stop),
                     data.bars,
                     calendar=self._calendar(),
                 )
-                if c.playbook.name == EP_PLAYBOOK
-                and ep_setup_passes(c.playbook, data.bars(c.instrument_id), day)
+                if ep_setup_passes(c.playbook, data.bars(c.instrument_id), day)
             ]
             self._prices.track_session(session, {c.instrument_id for c in candidates})
         for candidate in candidates:

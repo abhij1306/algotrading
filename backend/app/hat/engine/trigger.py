@@ -56,8 +56,16 @@ from ..risk.caps import effective_max_chase_pct
 from ..time import IST
 from .criteria import CriterionResult, EvalContext, evaluate, evaluate_live, get_type
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE, LEVEL_PIVOT, LiveContext
-from .stops import StopInputs, floor_to_tick, plan_stop
-from .strategy.config import Instance, Playbook, StrategyConfig
+from .stops import (
+    SKIP_BAD_INPUT,
+    SeriesHistory,
+    StopInputs,
+    StopPlan,
+    floor_to_tick,
+    history_inputs,
+    plan_stop,
+)
+from .strategy.config import Instance, Playbook, StopRule, StrategyConfig
 
 __all__ = [
     "TRIGGER_WINDOW",
@@ -70,11 +78,13 @@ __all__ = [
     "TriggerEvaluation",
     "TriggerMonitor",
     "DailyFeeds",
+    "daily_context",
     "daily_inputs",
     "daily_trigger_results",
     "elapsed_fraction",
     "entry_filter_context",
     "entry_limit",
+    "entry_stop",
     "entry_filter_instances",
     "evaluate_entry_filters",
     "evaluate_trigger",
@@ -84,6 +94,7 @@ __all__ = [
     "lower_circuit_price",
     "plan_entry",
     "upper_circuit_price",
+    "watchlist_levels",
 ]
 
 TRIGGER_WINDOW = (time(9, 20), time(15, 20))
@@ -128,36 +139,39 @@ class DailyInputs:
 @dataclass(frozen=True)
 class DailyFeeds:
     """The `DailyInputs` values that do not come from the instrument's daily bars: the tick
-    (`data.ticks` on the unadjusted closes), the `adv20`/`adtr20` features, the price band and
-    the ATR of the stop rule."""
+    (`data.ticks` on the unadjusted closes), the `adv20`/`adtr20` features and the price band."""
 
     tick: Decimal | None
     adv20: Decimal | None = None
     adtr20: Decimal | None = None
     band_known: bool = False
     band_pct: Decimal | None = None
-    atr: Decimal | None = None
 
 
 def daily_inputs(
-    bars: pl.DataFrame, trade_date: date, feeds: DailyFeeds, swing_lookback: int = 0
+    bars: pl.DataFrame, trade_date: date, feeds: DailyFeeds, stop: StopRule | None = None
 ) -> DailyInputs:
-    """`DailyInputs` from one instrument's adjusted daily bars (`date`, `low`, `close`,
+    """`DailyInputs` from one instrument's adjusted daily bars (`date`, `high`, `low`, `close`,
     `volume`) and its `feeds`: the previous close is the last close before `trade_date`
     (HAT-CRIT-115), the average volume the mean of the last 50 sessions' volume before it
-    (HAT-DATA-115; None with fewer than 50), and the swing lows the last `swing_lookback` lows
-    (none with fewer)."""
+    (HAT-DATA-115; None with fewer than 50), and the ATR and swing lows those of the `stop`
+    rule at its own length (`stops.history_inputs`; none without a rule)."""
     prior = bars.filter(pl.col("date") < trade_date).sort("date")
     closes = [exact(v, floats=True) for v in prior["close"].to_list()] if prior.height else []
     volumes = [exact(v, floats=True) for v in prior["volume"].to_list()] if prior.height else []
-    lows = [exact(v, floats=True) for v in prior["low"].to_list()] if prior.height else []
     recent = volumes[-AVG_VOLUME_DAYS:]
     avg50 = (
         sum((v for v in recent if v is not None), Decimal(0)) / AVG_VOLUME_DAYS
         if len(recent) == AVG_VOLUME_DAYS and all(v is not None for v in recent)
         else None
     )
-    swing = lows[-swing_lookback:] if swing_lookback and len(lows) >= swing_lookback else []
+    atr, swing = (
+        (None, ())
+        if stop is None or not prior.height
+        else history_inputs(
+            stop, SeriesHistory.of_floats(*(prior[c].to_list() for c in ("high", "low", "close")))
+        )
+    )
     return DailyInputs(
         prev_close=closes[-1] if closes else None,
         avg50_volume=avg50,
@@ -166,8 +180,8 @@ def daily_inputs(
         tick=feeds.tick,
         band_known=feeds.band_known,
         band_pct=feeds.band_pct,
-        atr=feeds.atr,
-        swing_lows=tuple(v for v in swing if v is not None),
+        atr=atr,
+        swing_lows=tuple(swing),
     )
 
 
@@ -423,58 +437,81 @@ def plan_entry(
         return EntryPlan(price, None, None, locked, SKIP_NO_LEVEL, ())
     entry = entry_limit(level, price, candidate.daily.tick)
     locked = locked_upper_circuit(entry, candidate.daily)
-    daily = candidate.daily
-    stop = None
-    skip = None
-    if daily.tick is None:
-        skip = "stop_input_missing"
-    else:
-        planned = plan_stop(
-            candidate.playbook.stop,
-            StopInputs(
-                entry=entry,
-                tick=daily.tick,
-                final_contraction_low=candidate.final_contraction_low,
-                day_lows=tuple(day_lows),
-                atr=daily.atr,
-                swing_lows=daily.swing_lows,
-            ),
-        )
-        stop, skip = planned.stop, planned.skip
-    # the filters read the LIMIT (max_chase reads `price`), with the trigger's other inputs
-    filter_ctx = replace(ctx, price=entry).for_entry(
-        entry=entry,
-        stop=stop,
-        adtr20=daily.adtr20,
-        trigger_level=level,
-        locked_upper_circuit=locked,
+    planned = entry_stop(
+        candidate.playbook, candidate.daily, entry, day_lows, candidate.final_contraction_low
     )
+    # the filters read the LIMIT (max_chase reads `price`), with the trigger's other inputs
     failed, outcomes = evaluate_entry_filters(
         candidate.playbook,
-        filter_ctx,
+        entry_filter_context(ctx, entry=entry, stop=planned.stop, level=level, locked=locked),
         configured_pct=candidate.configured_max_chase_pct,
         strategy_key=candidate.strategy_key,
     )
-    return EntryPlan(entry, level, stop, locked, skip or failed, outcomes)
+    return EntryPlan(entry, level, planned.stop, locked, planned.skip or failed, outcomes)
+
+
+def watchlist_levels(pivot: object, stored: Mapping[str, object]) -> dict[str, Decimal | None]:
+    """The trigger levels of a watchlist row: its `pivot` and the setup's `consolidation_high`
+    (`criteria_results.levels`), a level that is not a positive price None."""
+    return {
+        LEVEL_PIVOT: exact(pivot, floats=True, positive=True),
+        CONSOLIDATION_HIGH: exact(stored.get(CONSOLIDATION_HIGH), floats=True, positive=True),
+    }
+
+
+def daily_context(
+    at: datetime, daily: DailyInputs, levels: Mapping[str, Decimal | None]
+) -> LiveContext:
+    """What a live criterion reads at `at` from the nightly data: the average volumes, ADTR(20),
+    the previous close and the setup's `levels`. The live trigger adds the bar's own values
+    (`TriggerMonitor.context`); the backtest, on daily bars, has none of them (HAT-BT-025)."""
+    return LiveContext(
+        at=at,
+        levels=levels,
+        avg50_volume=daily.avg50_volume,
+        adv20=daily.adv20,
+        prev_close=daily.prev_close,
+        adtr20=daily.adtr20,
+    )
+
+
+def entry_stop(
+    playbook: Playbook,
+    daily: DailyInputs,
+    entry: Decimal,
+    day_lows: Sequence[Decimal],
+    final_contraction_low: Decimal | None,
+) -> StopPlan:
+    """The initial stop at a trigger (HAT-BOT-062), live and in the backtest: the playbook's rule
+    on the entry, the day's lows up to the trigger, the setup's contraction low and `daily`'s
+    tick, ATR and swing lows; without a tick it skips (`stop_input_missing`)."""
+    if daily.tick is None:
+        return StopPlan(None, SKIP_BAD_INPUT)
+    return plan_stop(
+        playbook.stop,
+        StopInputs(
+            entry=entry,
+            tick=daily.tick,
+            final_contraction_low=final_contraction_low,
+            day_lows=tuple(day_lows),
+            atr=daily.atr,
+            swing_lows=daily.swing_lows,
+        ),
+    )
 
 
 def entry_filter_context(
-    *,
-    at: datetime,
-    entry: Decimal,
-    stop: Decimal | None,
-    adtr20: Decimal | None,
-    level: Decimal,
-    locked_upper_circuit: bool | None,
+    ctx: LiveContext, *, entry: Decimal, stop: Decimal | None, level: Decimal, locked: bool | None
 ) -> LiveContext:
-    """The context the entry filters read at a trigger: the entry price, its stop, ADTR(20) as of
-    the previous session, the trigger level and the upper-circuit state."""
-    return LiveContext(at=at, price=entry).for_entry(
+    """The context the entry filters read at a trigger, live and in the backtest: the trigger's
+    context `ctx` (`daily_context`, plus the bar's values live) at the entry price, with its
+    stop, the trigger level and the upper-circuit state."""
+    return replace(ctx, price=entry).for_entry(
         entry=entry,
         stop=stop,
-        adtr20=adtr20,
+        adtr20=ctx.adtr20,
         trigger_level=level,
-        locked_upper_circuit=locked_upper_circuit,
+        locked_upper_circuit=locked,
     )
 
 
@@ -562,21 +599,15 @@ class TriggerMonitor:
             CONSOLIDATION_HIGH: candidate.levels.get(CONSOLIDATION_HIGH),
             LEVEL_OPENING_RANGE: None if opening is None else opening[0],
         }
-        daily = candidate.daily
-        return LiveContext(
-            at=bar.final_at,
+        return replace(
+            daily_context(bar.final_at, candidate.daily, levels),
             price=bar.close,
             bar_high=bar.high,
             bar_close=bar.close,
-            levels=levels,
             cum_volume=self._view.day_volume(candidate.symbol, day),
             elapsed=elapsed_fraction(bar.final_at),  # the instant the day volume is read
-            avg50_volume=daily.avg50_volume,
-            adv20=daily.adv20,
             open_price=candidate.open_price,
-            prev_close=daily.prev_close,
             announcements=candidate.announcements,
-            adtr20=daily.adtr20,
         )
 
     def on_bar(self, bar: Bar) -> list[Trigger]:

@@ -301,3 +301,30 @@ def test_tick_size_reference_close(
     assert reference_close(dates, closes, trade) == want
     tick = tick_for_date(dates, closes, trade)
     assert tick == (None if want is None else oracle_tick(int(want.scaleb(2))))
+
+
+def test_history_inputs_at_each_rules_own_length() -> None:
+    """Each stop rule reads the ATR or swing lows at its own length (`history_inputs`), so two
+    bots whose ATR or swing lengths differ each get their own input; a swing lookback longer
+    than the known lows gives none, and a rule reading neither gets neither."""
+    highs = [Decimal(110 + n % 7) for n in range(30)]
+    lows = [Decimal(100 + n % 5) for n in range(30)]
+    closes = [Decimal(105 + n % 3) for n in range(30)]
+    history = stops.SeriesHistory(highs, lows, closes)
+    for days in (14, 20):
+        rule = StopAtrMultiple(rule="atr_multiple", days=days, multiple=2.0)
+        want = stops.mean_true_range(highs, lows, closes, days)
+        assert want is not None
+        assert stops.history_inputs(rule, history) == (want, ())
+    assert stops.history_inputs(StopSwingLow(rule="swing_low", lookback_days=10), history) == (
+        None,
+        lows[-10:],
+    )
+    gappy = stops.SeriesHistory(highs, [*lows[:-1], None], closes)
+    assert stops.history_inputs(StopSwingLow(rule="swing_low", lookback_days=10), gappy) == (
+        None,
+        (),
+    )
+    atr = StopAtrMultiple(rule="atr_multiple", days=14, multiple=2.0)
+    assert stops.history_inputs(atr, gappy) == (None, ())
+    assert stops.history_inputs(StopLowOfDay(rule="low_of_day"), history) == (None, ())

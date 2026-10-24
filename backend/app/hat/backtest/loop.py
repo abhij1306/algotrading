@@ -8,8 +8,8 @@ code live trading runs, in the same order:
 2. open positions: the nightly exit rules at d's open, then the live rules along the day's path
    (`shadow.evaluate_position`, which calls `exits.evaluate`);
 3. entries: each watchlist row whose level the day breaks becomes a trigger, the stop comes from
-   `stops.plan_stop`, and `entries.open_entry` decides it with `evaluate_signal` (caps, max chase,
-   sizing) and fills it with the shadow engine's virtual fills;
+   `trigger.entry_stop`, and `entries.open_entry` decides it with `evaluate_signal` (caps, max
+   chase, sizing) and fills it with the shadow engine's virtual fills;
 4. the 15:25 close rules at the official close, then the session-end expiry of the watchlist
    (`shadow.expire_watchlist`).
 
@@ -100,9 +100,10 @@ does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records 
 
 Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-070) and
 measured in shadow: among them, the trigger is the break of the level alone
-(`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the episodic-pivot playbook
-is not backtested, close-based exits fill at the official close, kill switches are not simulated
-(the exposure ladder is), and a sleeve's health multiplier is 1 (its regime multiplier too, unless
+(`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the pre-open playbooks
+(`Playbook.preopen`, the episodic pivot) are not backtested (the scan publishes no row of
+theirs), close-based exits fill at the official close, kill switches are not simulated (the
+exposure ladder is), and a sleeve's health multiplier is 1 (its regime multiplier too, unless
 the run applies the policy's).
 
 Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one sleeve
@@ -143,15 +144,9 @@ from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
 from ..engine.portfolio.health import Health
 from ..engine.regime_gate import regime_allows_longs
-from ..engine.scan import EP_PLAYBOOK, ScanInputs
-from ..engine.stops import SKIP_BAD_INPUT, StopInputs, plan_stop
-from ..engine.strategy.config import (
-    Playbook,
-    StopAtrMultiple,
-    StopBelowFinalContractionLow,
-    StopLowOfDay,
-    StopSwingLow,
-)
+from ..engine.scan import ScanInputs
+from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
+from ..engine.strategy.config import Playbook, StopLowOfDay
 from ..models import (
     HatPosition,
     HatSignal,
@@ -211,6 +206,21 @@ _AT_HIGH = time(10, 0)
 _AT_FALL = time(15, 20)
 _AT_CLOSE = time(15, 25)
 _AT_END = time(15, 29)
+
+
+@dataclass(frozen=True)
+class _History:
+    """The `stops.StopHistory` of one instrument over the sessions through `through`."""
+
+    view: MarketView
+    instrument_id: str
+    through: date
+
+    def atr(self, length: int) -> Decimal | None:
+        return self.view.atr(self.instrument_id, self.through, length)
+
+    def lows(self, count: int) -> list[Decimal]:
+        return [b.low for b in self.view.bars_through(self.instrument_id, self.through, count)]
 
 
 def _at(day: date, moment: time, offset: int = 0) -> datetime:
@@ -512,36 +522,35 @@ class _Run:
     def _skip(self, reason: str) -> None:
         self.skips[reason] = self.skips.get(reason, 0) + 1
 
+    def _daily(
+        self, playbook: Playbook, instrument_id: str, day: date, prev: date
+    ) -> trigger.DailyInputs:
+        """The nightly inputs of an entry on `day` as live reads them (`DailyData.daily`): the
+        previous close, the day's tick, ADV(20) and ADTR(20) as of `prev`, and the ATR and swing
+        lows of the playbook's own stop rule over the sessions through `prev`."""
+        atr, swing = history_inputs(playbook.stop, _History(self.view, instrument_id, prev))
+        return trigger.DailyInputs(
+            prev_close=self.view.prev_close(instrument_id, day),
+            adv20=self.view.feature(prev, instrument_id, "adv20"),
+            adtr20=self.view.feature(prev, instrument_id, "adtr20"),
+            tick=self.view.tick(instrument_id, day),
+            atr=atr,
+            swing_lows=tuple(swing),
+        )
+
     def _stop(
-        self, playbook: Playbook, row: HatWatchlistEntry, entry: Decimal, low: Decimal, prev: date
-    ) -> tuple[Decimal | None, str | None]:
-        """The initial stop for an entry at `entry` (HAT-BOT-062), by the playbook's rule, from
-        what is known when the trigger fires: `low` is the day's low before the entry."""
-        rule = playbook.stop
-        instrument_id = str(row.instrument_id)
-        tick = self.view.tick(instrument_id, row.trade_date)
-        if tick is None:
-            return None, SKIP_BAD_INPUT
-        inputs = StopInputs(entry=entry, tick=tick)
-        if isinstance(rule, StopBelowFinalContractionLow):
-            # priced at the entry from the setup's level, as the live entry does
-            levels = (row.criteria_results or {}).get("levels", {})
-            contraction = exact(levels.get("final_contraction_low"), floats=True, positive=True)
-            inputs = StopInputs(entry=entry, tick=tick, final_contraction_low=contraction)
-        elif isinstance(rule, StopLowOfDay):
-            inputs = StopInputs(entry=entry, tick=tick, day_lows=[low])
-        elif isinstance(rule, StopAtrMultiple):
-            inputs = StopInputs(
-                entry=entry, tick=tick, atr=self.view.atr(instrument_id, prev, rule.days)
-            )
-        elif isinstance(rule, StopSwingLow):
-            older = self.view.bars_through(instrument_id, prev, rule.lookback_days)
-            lows = [b.low for b in older]
-            inputs = StopInputs(
-                entry=entry, tick=tick, swing_lows=lows if len(lows) == rule.lookback_days else []
-            )
-        plan = plan_stop(rule, inputs)
-        return plan.stop, plan.skip
+        self,
+        playbook: Playbook,
+        row: HatWatchlistEntry,
+        daily: trigger.DailyInputs,
+        entry: Decimal,
+        low: Decimal,
+    ) -> StopPlan:
+        """The initial stop for an entry at `entry` (HAT-BOT-062), planned as live plans it
+        (`trigger.entry_stop`): `low` is the day's low before the entry."""
+        levels = (row.criteria_results or {}).get("levels", {})
+        contraction = exact(levels.get("final_contraction_low"), floats=True, positive=True)
+        return trigger.entry_stop(playbook, daily, entry, (low,), contraction)
 
     def _equity_now(self) -> tuple[Decimal, Decimal]:
         """(equity at the last close, free cash now)."""
@@ -599,8 +608,6 @@ class _Run:
 
     def _entries(self, day: date, prev: date) -> None:
         for n, row in enumerate(self._slots(day)):
-            if row.playbook == EP_PLAYBOOK:
-                continue
             instrument_id = str(row.instrument_id)
             if instrument_id in self.view.pending_on(day):
                 self._skip(SKIP_FACTOR_PENDING)
@@ -624,14 +631,16 @@ class _Run:
                 self._skip(lows)
                 continue
             before, dip = lows
-            stop, skip = self._stop(playbook, row, price, before, prev)
+            daily = self._daily(playbook, instrument_id, day, prev)
+            planned = self._stop(playbook, row, daily, price, before)
+            stop = planned.stop
             if stop is None:
-                self._skip(skip or SKIP_BAD_INPUT)
+                self._skip(planned.skip or SKIP_BAD_INPUT)
                 continue
             at = _at(day, _AT_ENTRY, n)
             locked = self._locked(instrument_id, price, bar.high, day)
             failed, filters = self._entry_filters(
-                playbook, instrument_id, (price, stop, level, locked), (at, prev)
+                playbook, row, daily, (price, stop, level, locked), at
             )
             plan = _EntryPlan(price, stop, dip, locked, failed, filters)
             self._enter(row, bar, plan, prev, at)
@@ -669,24 +678,24 @@ class _Run:
     def _entry_filters(
         self,
         playbook: Playbook,
-        instrument_id: str,
+        row: HatWatchlistEntry,
+        daily: trigger.DailyInputs,
         entry: tuple[Decimal, Decimal, Decimal, bool | None],
-        when: tuple[datetime, date],
+        at: datetime,
     ) -> tuple[str | None, tuple[dict[str, object], ...]]:
         """(the type of the first failing entry filter or None, each filter's outcome as live
-        records it on the signal) for the playbook's entry filters (`adtr_filter`, `max_chase`)
-        at the trigger, evaluated as live evaluates them (HAT-BT-025): `entry` is (price, stop,
-        level, locked), with ADTR(20) as of `prev`, the session before the trigger's instant
-        `at`."""
+        records it on the signal) for the playbook's entry filters at the trigger's instant `at`,
+        evaluated as live evaluates them (HAT-BT-025) on the context live builds from the same
+        nightly inputs and setup levels (`trigger.daily_context`, `entry_filter_context`), without
+        the bar's intraday values: `entry` is (price, stop, level, locked)."""
         price, stop, level, locked = entry
-        at, prev = when
+        levels = trigger.watchlist_levels(row.pivot, (row.criteria_results or {}).get("levels", {}))
         ctx = trigger.entry_filter_context(
-            at=at,
+            trigger.daily_context(at, daily, levels),
             entry=price,
             stop=stop,
-            adtr20=self.view.feature(prev, instrument_id, "adtr20"),
             level=level,
-            locked_upper_circuit=locked,
+            locked=locked,
         )
         failed, outcomes = trigger.evaluate_entry_filters(
             playbook, ctx, configured_pct=self.chase[playbook.name], strategy_key=self.config.bot

@@ -29,7 +29,9 @@ SHARED = {
     "app.hat.engine.shadow.evaluate_position": "exit stack",
     "app.hat.engine.shadow.close_position": "exit fills",
     "app.hat.engine.shadow.expire_watchlist": "watchlist expiry",
-    "app.hat.engine.stops.plan_stop": "initial stop",
+    "app.hat.engine.trigger.entry_stop": "initial stop",
+    "app.hat.engine.stops.history_inputs": "stop history",
+    "app.hat.engine.trigger.entry_filter_context": "entry-filter context",
     "app.hat.engine.trigger.evaluate_entry_filters": "entry filters",
 }
 PRIVATE = (

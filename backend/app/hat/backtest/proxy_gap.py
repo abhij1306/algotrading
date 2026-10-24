@@ -10,9 +10,9 @@ reason. A trade on one side only is counted, not matched: paper and the backtest
 trades. A key held by more than one trade on a side is ambiguous and matches nothing, and a
 proxy with no positive entry price is left out. Scores agree only when both sides have one.
 
-Left out of both sides: the playbooks the run cannot have (`evidence.unbacktested`, EP until PR 70)
-and the keys of the run's trades it closed at the end of its period, whose exit is the run's,
-not the setup's.
+Left out of both sides: the playbooks the run cannot have (`evidence.unbacktested`, the pre-open
+ones until PR 70) and the keys of the run's trades it closed at the end of its period, whose exit
+is the run's, not the setup's.
 
 Only shadow trades (a virtual position of a `shadow` signal) of the run's strategy version are
 read; real trades and the veto trades of skipped confirm signals are not paper.
@@ -44,7 +44,14 @@ from ..models import (
     HatWatchlistEntry,
 )
 from ..money import NotExactError, require_exact
-from .evidence import COMPLETED, RunMetrics, family_key, unbacktested, universe_of
+from .evidence import (
+    COMPLETED,
+    RunMetrics,
+    family_key,
+    run_playbooks,
+    unbacktested,
+    universe_of,
+)
 from .report import END_OF_PERIOD
 from .runs import trades_path
 
@@ -304,7 +311,7 @@ def shadow_gap(
         *comparable(
             shadow_legs(session, bot.id, run.strategy_version_id, first, last),
             proxy_legs(root, run.id, first, last),
-            unbacktested(RunMetrics.from_json(run.metrics)),
+            unbacktested(RunMetrics.from_json(run.metrics), run_playbooks(session, run)),
         )
     )
 

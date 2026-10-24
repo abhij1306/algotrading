@@ -21,8 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from ...confighash import config_hash as _hash
 from ...errors import HatError
 from ...risk.policy import POLICY_FIELDS, SEED_POLICY
-from ..criteria import REGISTRY, UnknownCriterionError, get_type
+from ..criteria import PREOPEN, REGISTRY, UnknownCriterionError, get_type
 from ..criteria.base import STAGES
+from ..criteria.live import LEVEL_OPENING_RANGE
+
+PRICE_BREAKS_LEVEL = "price_breaks_level"
 
 DEFAULT_THRESHOLD = 0.6
 DEFAULT_PLAYBOOK = "default"
@@ -334,7 +337,22 @@ class Playbook(Model):
             raise ValueError("bad_name")
         object.__setattr__(self, "trigger", _sorted_unique(self.trigger))
         object.__setattr__(self, "entry_filters", _sorted_unique(self.entry_filters))
+        # A pre-open playbook's candidates come from the gap scan, which has no setup levels:
+        # only the opening range can be its trigger level, else it could never trigger.
+        if self.preopen and any(
+            i.type == PRICE_BREAKS_LEVEL and i.params.get("level") != LEVEL_OPENING_RANGE
+            for i in self.trigger
+        ):
+            raise ValueError("preopen_level_not_opening_range")
         return self
+
+    @property
+    def preopen(self) -> bool:
+        """A pre-open playbook (HAT-BOT-052): one of its criteria, enabled or not, needs the
+        pre-open data (`data_needs`), so its candidates come from the gap scan at the open, never
+        from the nightly watchlist, and the daily-bar backtest cannot have its trades."""
+        instances = (*self.setup.criteria, *self.trigger, *self.entry_filters)
+        return any(PREOPEN in get_type(i.type).data_needs for i in instances)
 
 
 class StrategyConfig(Model):

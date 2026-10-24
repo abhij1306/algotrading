@@ -38,12 +38,11 @@ from ..data.store import DataStore
 from ..data.subscriptions import HAT_OWNER, LiveSubscriptions, SubscriptionRegistry
 from ..engine.live_entry import DataHealthKill, TriggerService
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB
-from ..engine.strategy.config import StrategyConfig, parse_config
 from ..engine.trigger import TriggerMonitor, locked_upper_circuit
 from ..execution.broker import HatBroker
 from ..execution.entry_timeout import EntryWatch
 from ..execution.router import PlacementCheck
-from ..models import HatBot, HatBrokerAccount, HatInstrument, HatSignal, HatStrategyVersion
+from ..models import HatBrokerAccount, HatInstrument, HatSignal
 from ..notify import Notifier
 from ..ops.jobs import SessionFactory
 from ..ops.scheduler import DEFAULT_DEADLINE, HatScheduler, ScheduledJob
@@ -245,15 +244,6 @@ def daily_jobs(
     )
 
 
-def _configs(session: Session) -> list[StrategyConfig]:
-    versions = session.scalars(
-        select(HatStrategyVersion)
-        .join(HatBot, HatBot.live_version_id == HatStrategyVersion.id)
-        .where(HatBot.status == "active")
-    )
-    return [parse_config(v.config) for v in versions]
-
-
 def _instrument_ids(session_factory: SessionFactory) -> Mapping[str, uuid.UUID]:
     with session_factory() as session:
         rows = session.execute(select(HatInstrument.id, HatInstrument.symbol, HatInstrument.active))
@@ -349,7 +339,7 @@ def build(
     client = BotClient(parts.transport, parts.telegram.chat_id)
     signer = ApprovalSigner(parts.telegram.approval_secret)
     notifier = TelegramNotifier(client, sf)
-    book = DailyBook(parts.store, sf, _configs)
+    book = DailyBook(parts.store, sf)
     prices = PriceBook()
     gates = GateBoard(parts.store)
     subscribe, unsubscribe = threadsafe_provider(parts.feed, loop)

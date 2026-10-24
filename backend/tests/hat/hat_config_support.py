@@ -228,9 +228,14 @@ def playbook_body(draw: st.DrawFn) -> dict[str, Any]:
     }
     if draw(st.booleans()):
         setup["threshold"] = draw(st.sampled_from([0.0, 0.3, 0.6, 1.0]))
+    trigger = draw(instance_list(TRIGGER_TYPES, "trigger", scored=False, max_size=3))
+    if any(i["type"] == "gap_up" for i in trigger):  # a pre-open playbook has no setup levels
+        for instance in trigger:
+            if instance["type"] == "price_breaks_level":
+                instance["params"]["level"] = "opening_range_high"
     return {
         "setup": setup,
-        "trigger": draw(instance_list(TRIGGER_TYPES, "trigger", scored=False, max_size=3)),
+        "trigger": trigger,
         "entry_filters": draw(
             instance_list(FILTER_TYPES, "entry_filter", scored=False, max_size=2)
         ),

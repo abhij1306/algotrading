@@ -15,9 +15,9 @@ from hypothesis import strategies as st
 from app.hat.backtest.spec import GAP_PLAYBOOKS, KNOWN_GAPS, REGIME_MULT_POLICY
 from app.hat.engine.portfolio import lifecycle
 from app.hat.engine.portfolio.lifecycle import BacktestFacts, Evidence, LifecycleError
-from app.hat.engine.scan import EP_PLAYBOOK
 
 D = Decimal
+EP_PLAYBOOK = "episodic_pivot"
 START = date(2026, 3, 2)  # a Monday
 DAYS = st.integers(0, 120).map(lambda n: START + timedelta(days=n))
 R = st.integers(-300, 400).map(lambda n: D(n) / 100)
@@ -143,7 +143,6 @@ def test_backtest_refusal(facts: BacktestFacts) -> None:
     # the rule the gate pins is the backtest's, and every gap it maps is a listed one
     assert lifecycle.EVIDENCE_REGIME_RULE == REGIME_MULT_POLICY
     assert set(GAP_PLAYBOOKS) <= set(KNOWN_GAPS)
-    assert GAP_PLAYBOOKS["episodic_pivot_not_backtested"] == (EP_PLAYBOOK,)
 
 
 @given(st.sets(st.integers(0, 120), max_size=120), st.integers(0, 60), st.integers(0, 100))

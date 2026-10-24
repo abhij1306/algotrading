@@ -22,7 +22,7 @@ recorded run (PR 66, G33), always through the family floors of `dsr.family_defla
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -49,7 +49,7 @@ from ..engine.portfolio.lifecycle import (
     discounted_benchmark,
     span_gate,
 )
-from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
+from ..engine.strategy.config import ConfigError, Playbook, StrategyConfig, parse_config
 from ..models import (
     HatBacktestBucket,
     HatBacktestRun,
@@ -76,7 +76,6 @@ from .spec import GAP_PLAYBOOKS, KNOWN_GAPS, BacktestError
 
 __all__ = [
     "COMPLETED",
-    "DAILY_BAR_GAPPED",
     "DSR_DIGITS",
     "RunMetrics",
     "backtest_evidence",
@@ -85,8 +84,10 @@ __all__ = [
     "gate_evidence",
     "history_holds",
     "run_dsr",
+    "run_playbooks",
     "signal_confidence",
     "unbacktested",
+    "unbacktested_trades",
     "universe_of",
 ]
 
@@ -193,24 +194,29 @@ class RunMetrics:
             completed_at=_instant(metrics.get("completed_at")),
         )
 
-    def gapped(self, playbooks: frozenset[str]) -> frozenset[str]:
-        """The playbooks the run's known gaps name (`GAP_PLAYBOOKS`); a run without a readable
-        gap list may have any gap, so every one of `playbooks` counts as named."""
+    def gapped(self, playbooks: Iterable[Playbook]) -> frozenset[str]:
+        """The names of the `playbooks` the run's known gaps name (`GAP_PLAYBOOKS`); a run
+        without a readable gap list may have any gap, so every one of them counts as named."""
         if self.known_gaps is None:
-            return playbooks
-        return frozenset(p for code in self.known_gaps for p in GAP_PLAYBOOKS.get(code, ()))
+            return frozenset(p.name for p in playbooks)
+        return _named(self.known_gaps, playbooks)
 
 
-# The playbooks every daily-bar run's known gaps name (EP until PR 70).
-DAILY_BAR_GAPPED = frozenset(p for code in KNOWN_GAPS for p in GAP_PLAYBOOKS.get(code, ()))
+def _named(codes: Iterable[str], playbooks: Iterable[Playbook]) -> frozenset[str]:
+    """The names of the `playbooks` one of the gap `codes` names (`GAP_PLAYBOOKS`)."""
+    names = [GAP_PLAYBOOKS[code] for code in codes if code in GAP_PLAYBOOKS]
+    return frozenset(p.name for p in playbooks if any(named(p) for named in names))
 
 
-def unbacktested(metrics: RunMetrics | None) -> frozenset[str]:
-    """The playbooks whose live and shadow trades are left out when they are compared with a run
-    (PR 40): those its known gaps name, as a run cannot have their trades; with no run or no
-    readable gap list, those every daily-bar run's gaps name (`DAILY_BAR_GAPPED`). EP drops out
-    once a run no longer names it (PR 70)."""
-    return DAILY_BAR_GAPPED if metrics is None else metrics.gapped(DAILY_BAR_GAPPED)
+def unbacktested(metrics: RunMetrics | None, playbooks: Sequence[Playbook]) -> frozenset[str]:
+    """The names of the `playbooks` whose live and shadow trades are left out when they are
+    compared with a run (PR 40): those its known gaps name, as a run cannot have their trades;
+    with no run or no readable gap list, those every daily-bar run's gaps name (`KNOWN_GAPS`:
+    the pre-open ones, which drop out once a run no longer names them, PR 70)."""
+    daily_bar = _named(KNOWN_GAPS, playbooks)
+    if metrics is None or metrics.known_gaps is None:
+        return daily_bar
+    return daily_bar & _named(metrics.known_gaps, playbooks)
 
 
 # --- the run a sleeve's evidence reads ----------------------------------------------------------
@@ -321,20 +327,43 @@ def _config_of(version: HatStrategyVersion | None) -> StrategyConfig | None:
         return None
 
 
-def _playbooks_of(session: Session, run: HatBacktestRun) -> frozenset[str]:
+def run_playbooks(session: Session, run: HatBacktestRun) -> tuple[Playbook, ...]:
     """The playbooks the run's strategy version enables (none when its config does not parse)."""
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
-    return frozenset(() if config is None else (p.name for p in config.playbooks))
+    return () if config is None else tuple(config.playbooks)
 
 
-def history_holds(metrics: RunMetrics, playbooks: frozenset[str]) -> bool:
+def _strategy_playbooks(session: Session, bot: HatBot) -> dict[uuid.UUID, tuple[Playbook, ...]]:
+    """The playbooks of each version of the bot's strategy whose config parses, by version id: a
+    trade of the bot may come from any of them, and is judged by its own version's."""
+    versions = session.scalars(
+        select(HatStrategyVersion).where(HatStrategyVersion.strategy_id == bot.strategy_id)
+    )
+    configs = {v.id: _config_of(v) for v in versions}
+    return {vid: tuple(c.playbooks) for vid, c in configs.items() if c is not None}
+
+
+def unbacktested_trades(
+    metrics: RunMetrics | None, versions: Mapping[uuid.UUID, Sequence[Playbook]]
+) -> frozenset[tuple[uuid.UUID, str]]:
+    """The (strategy version, playbook) pairs whose trades are left out when they are compared
+    with a run: `unbacktested` of each version's own playbooks, so a name that is pre-open in one
+    version leaves out only that version's trades of it."""
+    return frozenset(
+        (version_id, name)
+        for version_id, playbooks in versions.items()
+        for name in unbacktested(metrics, playbooks)
+    )
+
+
+def history_holds(metrics: RunMetrics, playbooks: Sequence[Playbook]) -> bool:
     """The run's history passes the lifecycle's span, gap and ambiguity conditions
     (HAT-PORT-061, QA8): five years of sessions, no known gap naming one of the version's
     `playbooks` (and the playbooks known), and ambiguous days within the cap."""
     return (
         span_gate(metrics.first_session, metrics.last_session)
         and bool(playbooks)
-        and not metrics.gapped(playbooks) & playbooks
+        and not metrics.gapped(playbooks)
         and ambiguous_gate(metrics.ambiguous_days, metrics.held_sessions or 0)
     )
 
@@ -349,16 +378,17 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     and held sessions, the playbooks its known gaps name (`GAP_PLAYBOOKS`) and those the version
     enables, and its sleeve weight and regime rule beside the base weight of the sleeve in the
     policy in force. A fact the run did not record is absent, and fails its condition. No run
-    gives no evidence, so Research -> Backtested stays closed. The playbooks `unbacktested`
-    names are not compared with it (PR 40)."""
+    gives no evidence, so Research -> Backtested stays closed. The trades of the (version,
+    playbook) pairs `unbacktested_trades` names are not compared with it (PR 40)."""
     in_force = effective_version(load_versions(session, bot.user_id), utc_now())
     found = evidence_run(session, bot, _cooldown_of(in_force))
+    traded = _strategy_playbooks(session, bot)
     if found is None:
-        return BacktestFacts(unbacktested=unbacktested(None))
+        return BacktestFacts(unbacktested=unbacktested_trades(None, traded))
     run, metrics = found
     deflated, trials, _ = run_dsr(session, run, metrics)
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
-    playbooks = _playbooks_of(session, run)
+    playbooks = run_playbooks(session, run)
     base = (
         None
         if in_force is None or config is None
@@ -375,11 +405,11 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
         ambiguous_days=metrics.ambiguous_days,
         held_sessions=metrics.held_sessions or 0,
         gapped_playbooks=metrics.gapped(playbooks),
-        playbooks=playbooks,
+        playbooks=frozenset(p.name for p in playbooks),
         sleeve_weight=metrics.sleeve_weight,
         base_weight=base,
         regime_mult=metrics.regime_mult,
-        unbacktested=unbacktested(metrics),
+        unbacktested=unbacktested_trades(metrics, traded),
     )
 
 
@@ -394,10 +424,10 @@ def signal_confidence(
     """The confidence label of a signal of `bot` (D132, HAT-EXEC-015): the bucket of its playbook
     and its watchlist row's setup-score band in the run `backtest_evidence` reads, among those
     completed by `at`. Low when there is no such run, when the run's known gaps name the
-    playbook (EP until it is backtested on 5-minute bars, PR 70), when the signal has no single
-    score in a band, or when the bucket is empty; otherwise `confidence.label_of` decides. An
-    unreadable policy history gives low too: the run under the cooldown in force cannot be
-    told."""
+    playbook (the pre-open ones until they are backtested on 5-minute bars, PR 70), when the
+    signal has no single score in a band, or when the bucket is empty; otherwise
+    `confidence.label_of` decides. An unreadable policy history gives low too: the run under the
+    cooldown in force cannot be told."""
     try:
         in_force = effective_version(load_versions(session, bot.user_id), at)
     except PolicyError:
@@ -408,9 +438,8 @@ def signal_confidence(
     run, metrics = found
     run_id = str(run.id)
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
-    playbooks = frozenset(() if config is None else (p.name for p in config.playbooks))
     # an unreadable gap list names every playbook, the signal's own included
-    if config is None or playbook in metrics.gapped(playbooks | {playbook}):
+    if config is None or metrics.known_gaps is None or playbook in metrics.gapped(config.playbooks):
         return Confidence.low(NOT_BACKTESTED, run_id=run_id, playbook=playbook)
     scores = set(
         session.scalars(
@@ -451,23 +480,23 @@ def gate_evidence(
     pass the lifecycle's span, gap and ambiguity conditions (QA8, `history_holds`): one that
     fails gives no evidence, and the increase is refused. None when no
     sleeve has one: the increase gate then refuses. A sleeve's trades of a playbook its run
-    cannot have (`unbacktested`: EP until PR 70) are not counted (PR 40)."""
+    cannot have (`unbacktested`: the pre-open ones until PR 70) are not counted (PR 40)."""
     bots = session.scalars(
         select(HatBot).where(HatBot.user_id == user_id).order_by(HatBot.id)
     ).all()
     in_force = effective_version(load_versions(session, user_id), at)
     weighted = Decimal(0)
     count = 0
-    excluded: dict[uuid.UUID, frozenset[str]] = {}
+    excluded: dict[uuid.UUID, frozenset[tuple[uuid.UUID, str]]] = {}
     for bot in bots:
         found = evidence_run(session, bot, _cooldown_of(in_force), at)
         metrics = None if found is None else found[1]
-        excluded[bot.id] = unbacktested(metrics)
+        excluded[bot.id] = unbacktested_trades(metrics, _strategy_playbooks(session, bot))
         if found is None or metrics is None or metrics.expectancy_r is None:
             continue
         if metrics.trades is None or metrics.trades <= 0:
             continue
-        if not history_holds(metrics, _playbooks_of(session, found[0])):
+        if not history_holds(metrics, run_playbooks(session, found[0])):
             return None
         weighted += metrics.expectancy_r * metrics.trades
         count += metrics.trades
@@ -478,6 +507,7 @@ def gate_evidence(
             HatTradeResult.r_multiple,
             HatPosition.is_virtual,
             HatPosition.bot_id,
+            HatSignal.strategy_version_id,
             HatSignal.playbook,
         )
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
@@ -491,7 +521,7 @@ def gate_evidence(
     rows = session.execute(query).all()
     outcomes = [
         TradeOutcome(Decimal(r), bool(virtual))
-        for r, virtual, bot_id, playbook in rows
-        if playbook not in excluded.get(bot_id, frozenset())
+        for r, virtual, bot_id, version_id, playbook in rows
+        if (version_id, playbook) not in excluded.get(bot_id, frozenset())
     ]
     return build_gate_evidence(outcomes, discounted_benchmark(weighted / count, discount))
