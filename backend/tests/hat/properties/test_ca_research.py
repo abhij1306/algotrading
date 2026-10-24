@@ -87,10 +87,20 @@ def test_market_factor_stores_the_gap_never_a_cross_check() -> None:
     factor, why = market_factor(gap, checks, "", None)
     assert factor == gap
     assert why == "agrees with coa"
-    # the gap disagrees with every cross-check: review
-    assert market_factor(gap, {"coa": Fraction("0.95")}, "confirmed", None) == (
+    # VEDL 2026-04-30: the gap disagrees with the CoA, a book-value split; on a confirmed date
+    # with a material drop the price holds, the gap is still the factor
+    vedl, coa = Fraction("0.3742"), {"coa": Fraction("0.5234")}
+    assert market_factor(vedl, coa, "confirmed", Fraction("0.38")) == (
+        vedl,
+        "disagrees with coa, material drop on a confirmed date",
+    )
+    assert market_factor(vedl, coa, "", Fraction("0.38")) == (
         None,
-        "gap_disagrees_with_cross_checks",
+        "gap_disagrees_date_unconfirmed",
+    )
+    assert market_factor(Fraction("0.95"), coa, "confirmed", Fraction("0.95")) == (
+        None,
+        "gap_disagrees_gap_not_material",
     )
     # no cross-check: a material drop on a confirmed date that the price holds
     drop = Fraction("0.62")
@@ -259,5 +269,9 @@ def test_rights_override() -> None:
     assert done.rights.held == 8
     assert "terms corrected" in note
     assert rights_override(p, row, _research(1, 9, 150, conf=0))[0].reason == "low_confidence"
+    ncds = _rights("Rights 1:9 @ Premium Rs 149/- With 1 NCD For 9 Shares", "1", "1:9")[0]
+    assert rights_override(ncds, row, _research(1, 9, 150))[0].reason == (
+        "warrants_or_convertibles_alongside"
+    )
     warrants = _research(1, 9, 150, alongside=True)
     assert rights_override(p, row, warrants)[0].reason == "warrants_or_convertibles_alongside"

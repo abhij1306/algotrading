@@ -23,11 +23,13 @@ priced at a resulting company's close. Those two are cross-checks (`cross_checks
 CoA % / 100 (`coa_factor`) and 1 - sum(r_i * C_i) / P (`ratio_factor`, each resulting company
 priced through a known instrument: its first close, or its close at the ex-date when it already
 traded). The gap is stored (`market_factor`) when a cross-check agrees with it by CA1's gate (within
-20%, and twice as close to it as to 1), or, with no cross-check, when a source confirms the date
-and the drop is beyond `DEMERGER_MIN_DROP` (opens 10% or more below the previous close are 0.28%
-of the 6.8 million sessions in the raw bars, actions included, so on a date a source names such a
-drop is the event). A gap that disagrees with every cross-check goes to review. The stored text
-carries the method (`market_gap`) and the cross-check values. Amalgamation legs are not
+20%, and twice as close to it as to 1), or, with no cross-check or none agreeing (a CoA may well
+differ from the market: VEDL's five-way 2026 demerger), when a source confirms the date, the drop
+is beyond `DEMERGER_MIN_DROP` (opens 10% or more below the previous close are 0.28% of the 6.8
+million sessions in the raw bars, actions included, so on a date a source names such a drop is
+the event) and the price holds it five sessions on. Anything else goes to review. The stored text
+carries the method (`market_gap`) and the cross-check values, each marked `disagrees` when it
+does. Amalgamation legs are not
 cross-checks for the parent. An event that distributes no shares (not a demerger, preference shares
 only, no shares to holders) is reported, never stored; a low-confidence event, or one whose date
 the research disputes, goes to review. The resulting company is never linked into the parent's
@@ -334,24 +336,26 @@ def market_factor(
 ) -> tuple[Fraction | None, str]:
     """A demerger's stored factor is the market gap (ex-date open / previous close, which NSE's
     special pre-open discovers), never a cross-check. (gap, which checks agree) when a cross-check
-    explains it, or, with none to compare, when a source confirms the date, the drop is beyond
-    `DEMERGER_MIN_DROP` and the price holds it: `settled` (the close `SETTLE_SESSIONS` sessions
-    on, over the previous close) agrees with the gap as a cross-check would, so a pre-open
-    discovery the market reverses (TATACOMM 2019-09-17: open 0.62, upper circuits to 0.83 in
-    five sessions) is not stored; else (None, why it goes to review)."""
+    explains it. Otherwise (no cross-check, or every one disagrees: a CoA is a book-value tax
+    split that may well differ) the gap is still the factor when a source confirms the date, the
+    drop is beyond `DEMERGER_MIN_DROP` and the price holds it: `settled` (the close
+    `SETTLE_SESSIONS` sessions on, over the previous close) agrees with the gap as a cross-check
+    would, so a pre-open discovery the market reverses (TATACOMM 2019-09-17: open 0.62, upper
+    circuits to 0.83 in five sessions) is not stored; else (None, why it goes to review)."""
     if not 0 < gap.numerator < gap.denominator:  # 0 < gap < 1, exact
         return None, "no_drop"
-    if checks:
-        agreeing = [k for k, v in checks.items() if agrees(gap, v)]
-        if not agreeing:
-            return None, "gap_disagrees_with_cross_checks"
+    agreeing = [k for k, v in checks.items() if agrees(gap, v)]
+    if agreeing:
         return gap, "agrees with " + "+".join(agreeing)
+    unchecked = "gap_disagrees" if checks else "no_cross_check"
     if when != "confirmed":
-        return None, "no_cross_check_date_unconfirmed"
+        return None, f"{unchecked}_date_unconfirmed"
     if gap > 1 - DEMERGER_MIN_DROP:
-        return None, "no_cross_check_gap_not_material"
+        return None, f"{unchecked}_gap_not_material"
     if settled is None or not agrees(settled, gap):
-        return None, "no_cross_check_gap_not_held"
+        return None, f"{unchecked}_gap_not_held"
+    if checks:
+        return gap, "disagrees with " + "+".join(checks) + ", material drop on a confirmed date"
     return gap, "no cross-check, material drop on a confirmed date"
 
 
@@ -422,7 +426,7 @@ Key = tuple[str, date]  # symbol, ex-date
 
 _NOT_DISTRIBUTING = re.compile(r"no shares to holders|wholly[- ]owned|100% subsidiary", re.I)
 _ALONGSIDE = re.compile(
-    r"\bwarrants?\b|\bccps\b|\bccds?\b|convertible|debenture|\b(?:two|second|2nd)\s+tranches?\b",
+    r"\bwarrants?\b|\bccps\b|\bccds?\b|\bncds?\b|convertible|debenture|\b(?:two|second|2nd)\s+tranches?\b",
     re.I,
 )
 _PREMIUM = re.compile(r"premium\s*(?:of\s*)?(?:rs\.?\s*)?(\d+(?:\.\d+)?)", re.I)
@@ -608,7 +612,7 @@ def read_research(rows: Mapping[str, Sequence[Mapping[str, str]]]) -> Research:
 
     for file, table in rows.items():
         for line, row in enumerate(table, start=2):  # line 1 is the header
-            symbol = _symbol(row.get("parent_symbol") or row["symbol"])
+            symbol = _symbol(row.get("parent_symbol") or row.get("symbol", ""))
             ex = iso_date(row["ex_date"])
             if not symbol or ex is None:
                 unparsed.append((file, line, symbol or row.get("symbol", ""), "bad_key"))
@@ -622,6 +626,8 @@ def read_research(rows: Mapping[str, Sequence[Mapping[str, str]]]) -> Research:
                 add_rights(file, line, key, rights_from_b(line, row))
             elif file == FILE_B and row["table"] == T_DEMERGERS:
                 earlier[key].append(leg_from_b(line, row))
+                if _isin(row["isin"]):
+                    parent_isin.setdefault(key, row["isin"].strip())
             elif file == FILE_C:
                 add_rights(file, line, key, rights_from_c(line, row))
             elif file == FILE_D and row["source_file"] in (FILE_A, FILE_B):
@@ -724,6 +730,7 @@ def resolve_resulting(
             ref.instruments[i]
             for i in sorted(ids - parent_ids)
             if i in ref.instruments
+            and equity_share_isin(ref.instruments[i].isin)
             and (same_company(ref.instruments[i].name, leg.name) or fresh(i))
         ]
         if len(found) == 1:
@@ -758,12 +765,17 @@ def price_resulting(
     return None
 
 
-def _event_text(legs: Sequence[ResultingLeg], checks: Mapping[str, Fraction]) -> str:
+def _event_text(
+    legs: Sequence[ResultingLeg], checks: Mapping[str, Fraction], gap: Fraction, note: str
+) -> str:
+    """The stored text: the event, the method and each cross-check, `disagrees` when the gap
+    does not agree with it (`note`: a CoA the research gives that contradicts itself)."""
     parts = [
         f"{leg.ratio[0]}:{leg.ratio[1]} {leg.name[:60]}" if leg.ratio else leg.name[:60]
         for leg in legs
     ]
-    tag = "; ".join([MARKET_GAP, *(f"{k} {fmt4(v)}" for k, v in checks.items())])
+    marks = [f"{k} {fmt4(v)}{'' if agrees(gap, v) else ' disagrees'}" for k, v in checks.items()]
+    tag = "; ".join([MARKET_GAP, *marks, *([note] if note else [])])
     return f"Demerger {'; '.join(parts)} [research {tag}]"[:TEXT_MAX]
 
 
@@ -789,13 +801,12 @@ def cross_checks(
 ) -> tuple[dict[str, Fraction], str]:
     """The cross-checks a demerger's market gap is compared with: `coa` (the parent's
     cost-of-acquisition %, a book-value tax allocation) and `ratio` (1 - sum(r_i*C_i)/P with
-    each resulting company's price), each where the research and the bars give it; and why the
-    event goes to review instead (the CoA figures contradict themselves)."""
+    each resulting company's price), each where the research and the bars give it; and a note when
+    the CoA figures contradict themselves (then there is no `coa` check)."""
     checks: dict[str, Fraction] = {}
     coa = coa_factor(distributing)
-    if isinstance(coa, str):
-        return checks, coa
-    if coa is not None:
+    note = coa if isinstance(coa, str) else ""
+    if isinstance(coa, Fraction):
         checks["coa"] = coa
     pairs = [
         (leg.ratio, c.close) for leg, c in zip(distributing, priced, strict=True) if leg.ratio and c
@@ -804,7 +815,7 @@ def cross_checks(
         found = ratio_factor(pairs, prev_close)
         if found is not None:
             checks["ratio"] = found
-    return checks, ""
+    return checks, note
 
 
 def decide_demerger(
@@ -864,11 +875,9 @@ def decide_demerger(
         if c
     )
     # with another action between the sessions, the ratio's basis (before or after it) is unknown
-    checks, refused = cross_checks(
-        distributing, priced, prev_close, ratio_basis_known=same_day == 1
-    )
-    if refused:
-        return Outcome(p, REVIEW, refused, detail)
+    checks, note = cross_checks(distributing, priced, prev_close, ratio_basis_known=same_day == 1)
+    if note:
+        detail += f", {note}"
     gap = ex_open / prev_close / same_day
     detail += f", market gap {fmt4(gap)}" + "".join(f", {k} {fmt4(v)}" for k, v in checks.items())
     evidence["cross_checks"] = {k: fmt4(v) for k, v in checks.items()}
@@ -896,7 +905,7 @@ def decide_demerger(
         return Outcome(p, REVIEW, reason, detail)
     evidence["derived"] = f"{MARKET_GAP} {reason}"
     evidence["gap"] = fmt4(gap)
-    p = replace(p, text=_event_text(legs, checks))
+    p = replace(p, text=_event_text(legs, checks, gap, note))
     # the market factor passes the gate by construction; the cross-checks were the test
     verdict = gate(factor * same_day, prev_close, ex_open)
     near_kind = [s for s in near if s.kind == KIND_DEMERGER]
