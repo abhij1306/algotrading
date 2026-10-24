@@ -142,6 +142,19 @@ here.
   sessions of 2012-2014 are recorded sessions, so their bars are fetched like any weekend session.
   The actions CA5 left undated get their `known_on` from a dated public source through the
   correction list: the ex-date when the terms were public before it, else the source's date.
+- **Versioned factors (CA6, owner D282 2026-10-24).** Every value an action had is a version in
+  `hat_corporate_action_version` (`data/ca_versions.py`), appended by each write in its
+  transaction, never changed: accepted, deleted, conflict (a load's other value), cross_check and
+  disputed (demerger estimates), each with its `available_on` (NULL: unknown, never selected as
+  of a date). `hat_corporate_action` stays the hindsight projection (live, nightly and features
+  unchanged). The backtest keeps the one hindsight series and its pending mask now comes from the
+  versions: a day is pending when no version was available or the available one differs from
+  the series'; its snapshot records the versions digest. No per-date series or features.
+  Demergers: the applied value stays the raw market gap; the NIFTY 500-neutralised gap and the
+  ratio priced at the resulting companies' first close are cross-checks, a ratio more than 10%
+  (log) from the applied value is disputed and listed (`ca_demergers`). A ratio never takes
+  precedence. The neutralised gap is applied only once the owner approves it (`--neutral`, then
+  `features --full`).
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with

@@ -1065,6 +1065,9 @@ def _label(instruments: Mapping[str, HatInstrument], instrument_id: str) -> str:
     return f"{found.symbol} {found.isin}" if found is not None else instrument_id
 
 
+HINDSIGHT = "hindsight: every factor and link as stored today, not as of any date (CA6)"
+
+
 def review_report(
     session: Session,
     store: DataStore,
@@ -1082,6 +1085,7 @@ def review_report(
     ).all()
     linked = [r for r in rows if r.status == LINKED]
     review = [r for r in rows if r.status == REVIEW]
+    out(HINDSIGHT)
     out(f"lineage: {len(linked)} linked, {len(review)} for review")
     reasons: dict[str, int] = defaultdict(int)
     for r in review:
@@ -1156,6 +1160,7 @@ def show_chains(
     heads = chains(links)
     actions = stored_actions(session)
     jumps = unexplained_jumps(store, adjustment(actions, links), date.min)
+    out(HINDSIGHT)
     for instrument_id in sorted(ids, key=lambda i: (instruments[i].symbol, instruments[i].isin)):
         head = heads.get(instrument_id, (instrument_id, 0))[0]
         found = instruments[instrument_id]

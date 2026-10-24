@@ -27,6 +27,9 @@ Views, per connection from `DataStore.connect`:
 - `bars_daily` and `bars_daily_cap`: those views with one row per (instrument_id, date), from the
   latest ingest run (run ids are uuid v7, so byte order is time order).
 - `index_daily`: index levels.
+- Both adjusted views are hindsight: every factor and link as stored now, whatever date a bar
+  has (CA6). A backtest reads them and skips the days they are not point in time
+  (`ca_versions.pending_days`).
 - Both adjusted views carry `div_factor`: the cumulative factor of the dividends after the
   bar's date (the total-return price over the price-basis one), so a reader can rescale a
   series to any day's scale (`features`, the backtest's `MarketView`).

@@ -271,6 +271,14 @@ BEGIN
 END $$ LANGUAGE plpgsql
 """
 
+# CA6: a corporate-action version is never changed or removed (`data/ca_versions.py`).
+_ACTION_VERSION_APPEND_ONLY_FN = """
+CREATE OR REPLACE FUNCTION hat_corporate_action_version_is_append_only() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'hat_corporate_action_version is append-only';
+END $$ LANGUAGE plpgsql
+"""
+
 PG_DDL: tuple[str, ...] = (
     _VERSION_IMMUTABLE_FN,
     """
@@ -346,6 +354,13 @@ CREATE OR REPLACE TRIGGER hat_event_no_update
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",
     _KNOWN_CHECK,
     "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
+    # CA6: create_all makes the table; its rows are append-only
+    _ACTION_VERSION_APPEND_ONLY_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_corporate_action_version_no_update
+  BEFORE UPDATE OR DELETE ON hat_corporate_action_version
+  FOR EACH ROW EXECUTE FUNCTION hat_corporate_action_version_is_append_only()
+""",
 )
 
 NSE_MARKET = {

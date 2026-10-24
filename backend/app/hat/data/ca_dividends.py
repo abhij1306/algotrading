@@ -90,6 +90,7 @@ from .ca_import import (
     read_windows,
 )
 from .ca_known import RESEARCH_SOURCE_DATE, UNKNOWN, at_ex_open, from_sources, latest
+from .ca_versions import Ledger
 from .corporate_actions import (
     TYPE_DIVIDEND,
     ActionRecord,
@@ -970,6 +971,7 @@ def apply(
     report = load_actions(session, [o.record for o in new if o.record is not None])
     if report.created != len(new) or report.conflicts or report.held:
         raise CaFileError("ca_import_raced")
+    ledger = Ledger.open(session, {o.fill.instrument_id for o in fills if o.fill is not None})
     for o in fills:
         assert o.fill is not None
         assert o.record is not None
@@ -987,6 +989,7 @@ def apply(
         row.cash_amount = o.record.cash_amount
         known = o.record.known or UNKNOWN
         row.known_on, row.known_basis = known.on, known.basis
+        ledger.add_row(row, source=o.record.source, text=o.record.raw_text)
     for o in [*new, *fills]:
         r = o.record
         assert r is not None

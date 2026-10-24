@@ -4,7 +4,8 @@ uses (HAT-DATA-052, 053, 054, 055, 094; HAT-DEC-B27).
 A factor multiplies prices before the ex-date (a 1:2 split is 0.5). Sources, in the order they
 win on a conflict: the MCP's structured `adjustmentFactor`, then NSE's archive CSV text parsed
 with HAT's own text helpers (`app.hat.data.ratios`). A stored action is never
-changed by a later load: a different factor for a stored key is reported as a conflict.
+changed by a later load: a different factor for a stored key is reported as a conflict, and kept
+as a `conflict` version (`ca_versions`). Every write here appends its version in its transaction.
 
 An MCP action that changes no price (factor 1: a dividend, an AGM) is stored too, as
 `dividend` or `notice` (PR 47, HAT-DATA-052), and so is a bonus of preference shares or
@@ -42,6 +43,7 @@ from ..models import HatCorporateAction, HatEvent, HatInstrument
 from ..money import exact
 from ..notify import Notifier
 from .ca_known import CORRECTION, UNKNOWN, Known, at_ex_open
+from .ca_versions import CONFLICT, SOURCE_OWNER, Ledger
 from .mcp_client import McpClient, McpError
 from .store import FACTOR_MAX, FACTOR_MIN, ActionFactor
 
@@ -248,7 +250,7 @@ class LoadReport:
 def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadReport:
     """Store the records idempotently: one row per (instrument, ex_date, action_type), the first
     source to supply a key wins, and a later different factor (or dividend cash amount) is
-    reported, not written. A key
+    reported, not written (a `conflict` version keeps it, once per value). A key
     the owner vacated (`correct_action`: deleted, or retyped away) is never re-created: the
     owner's correction wins over every later load. Under the reference-data lock, as every
     writer of actions (the nightly lookups, the history build, the imports)."""
@@ -263,6 +265,7 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             )
         )
     }
+    ledger = Ledger.open(session, {r.instrument_id for r in records})
     for record in records:
         if record.factor <= 0:
             report.conflicts.append(record.key)  # a non-positive factor is never stored
@@ -286,6 +289,7 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             )
             session.add(row)
             existing[record.key] = row
+            ledger.add_row(row)
             report.created += 1
         elif Decimal(row.adjustment_factor) == record.factor and (
             record.cash_amount is None
@@ -295,6 +299,19 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
             report.unchanged += 1  # a stored amount is never rewritten, nor a missing one added
         else:
             report.conflicts.append(record.key)
+            key = (str(record.instrument_id), record.ex_date, record.action_type)
+            if not ledger.has_status(key, CONFLICT, record.factor, record.cash_amount):
+                known = record.known or default_known(record.action_type, record.ex_date)
+                ledger.add(
+                    key,
+                    status=CONFLICT,
+                    factor=record.factor,
+                    cash=record.cash_amount,
+                    available=known.on,
+                    basis=known.basis,
+                    source=record.source,
+                    text=record.raw_text,
+                )
     session.flush()
     return report
 
@@ -519,7 +536,12 @@ def correct_action(
         raise ActionCorrectionError("action_not_found")
     before = _state(row)
     after: dict[str, object] = {"deleted": True}
+    ledger = Ledger.open(session, [instrument.id])
+    note = correction.note.strip()
+    # a delete is known on the line's `known_on` (never before the ex-date), else not dated
+    vacated = None if correction.known_on is None else max(correction.ex_date, correction.known_on)
     if replacement is None:
+        ledger.delete(row, available=vacated, text=note)
         session.delete(row)
     else:
         new_type, factor = replacement
@@ -544,11 +566,15 @@ def correct_action(
         if holder is not None and correction.cash is not None:
             raise ActionCorrectionError("action_key_taken")  # the amount is the holder's
         if holder is not None:
+            ledger.delete(row, available=vacated, text=note)
             session.delete(row)
             if correction.known_on is not None:  # else the stored fact keeps its own date
                 holder.known_on, holder.known_basis = known.on, known.basis
+                ledger.add_row(holder, text=note, published_on=correction.known_on)
             after = {**_state(holder), "kept_stored": True}
         else:
+            if new_type != row.action_type:  # the old key is vacated
+                ledger.delete(row, available=vacated, text=note)
             row.action_type, row.adjustment_factor = new_type, factor
             if correction.cash is not None:
                 row.cash_amount = correction.cash
@@ -556,6 +582,7 @@ def correct_action(
                 row.cash_amount = None  # only a dividend pays cash
             if not (correction.known_on is None and correction.cash is None and row.cash_amount):
                 row.known_on, row.known_basis = known.on, known.basis
+            ledger.add_row(row, source=SOURCE_OWNER, text=note, published_on=correction.known_on)
             after = _state(row)
         kept = (holder or row).known_on
         after["known_on"] = kept.isoformat() if kept else None
@@ -566,7 +593,7 @@ def correct_action(
         "ex_date": correction.ex_date.isoformat(),
         "before": before,
         "after": after,
-        "note": correction.note.strip(),
+        "note": note,
     }
     events.record(
         session,

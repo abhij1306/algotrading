@@ -78,6 +78,9 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
   in the price basis that fills, marks and orders read; a backtest, and a shadow sleeve's
   equity, pays its cash once, on the ex-date, to the shares held into it, and a closed trade's
   P&L and R include the dividends it was paid (its `dividends`), in every mode. A dividend without an
-  amount is never given a guessed one: it is alerted and listed until one is stored. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
+  amount is never given a guessed one: it is alerted and listed until one is stored. Every write
+  of a corporate action appends its version in the same transaction (`hat_corporate_action_version`,
+  append-only); `hat_corporate_action` is the hindsight selection of those versions, and a version
+  available after a date never changes what a backtest reads on or before it. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
   day, and a day that does not fit the raw daily bar is ledgered (`bars_5m_rejects`), never
   written.

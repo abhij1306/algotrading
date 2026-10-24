@@ -44,6 +44,7 @@ from .. import events
 from ..errors import HatError
 from ..models import HatCorporateAction, HatInstrument
 from ..money import exact
+from .ca_versions import SOURCE_OWNER, Ledger
 from .corporate_actions import (
     EVENT_CORRECTED,
     PRICE_NEUTRAL_TYPES,
@@ -55,7 +56,6 @@ from .corporate_actions import (
     lock_reference_data,
 )
 
-SOURCE_OWNER = "owner"
 OPS = ("replace", "delete", "move", "add")
 COLUMNS = ("op", "isin", "ex_date", "type", "factor", "new_ex_date", "note")
 CASH_COLUMN = "cash"
@@ -180,19 +180,19 @@ def add_action(
     if taken is not None:
         raise ActionCorrectionError("action_key_taken")
     known = correction_known(ex_date, known_on, price_neutral=False)
-    session.add(
-        HatCorporateAction(
-            instrument_id=instrument.id,
-            ex_date=ex_date,
-            action_type=action_type,
-            adjustment_factor=checked[1],
-            raw_text=note.strip()[:500],
-            source=SOURCE_OWNER,
-            cash_amount=cash,
-            known_on=known.on,
-            known_basis=known.basis,
-        )
+    row = HatCorporateAction(
+        instrument_id=instrument.id,
+        ex_date=ex_date,
+        action_type=action_type,
+        adjustment_factor=checked[1],
+        raw_text=note.strip()[:500],
+        source=SOURCE_OWNER,
+        cash_amount=cash,
+        known_on=known.on,
+        known_basis=known.basis,
     )
+    session.add(row)
+    Ledger.open(session, [instrument.id]).add_row(row, published_on=known_on)
     payload = {
         "chat_id": chat_id,
         "via": "cli",

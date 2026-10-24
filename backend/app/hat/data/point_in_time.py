@@ -1,10 +1,11 @@
-"""Point in time (CA5): the stored factor-pending windows, the back-fill of `known_on` for rows
-stored before CA5, the lag report and its command line. The rules are `ca_known`'s.
+"""Point in time (CA5, CA6): the factor-pending sessions, the back-fills of `known_on` (rows
+stored before CA5) and of the version ledger (CA6), the lag report and its command line. The
+dating rules are `ca_known`'s, the selection's `ca_versions`'.
 
-`stored_windows` gives the window of every stored row the backtest's series applies (each
-price-changing action and each dividend with an amount, the copy the series uses), under its chain
-id; the backtest turns
-them into factor-pending (chain, session) pairs (`ca_known.pending_days`).
+`series` gives every event the backtest's series applies (each price-changing action and each
+dividend with an amount, the copy the series uses) under its chain id, with its versions; the
+backtest turns them into factor-pending (chain, session) pairs (`ca_versions.pending_days`): no
+value available yet, or an as-of value other than the series'.
 
 `backfill` dates the rows whose `known_basis` is NULL from what is stored, never by guess:
 - an owner's value (a row `correct-action`, the correction list or `add_action` wrote, read from
@@ -42,7 +43,6 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..models import HatCorporateAction, HatEvent, HatInstrument, HatIsinLineage
-from .ca_corrections import SOURCE_OWNER
 from .ca_import import (
     EVENT_IMPORTED,
     SOURCE_FILE,
@@ -57,13 +57,28 @@ from .ca_known import (
     RESULTING_FIRST_CLOSE,
     UNKNOWN,
     Known,
-    Window,
     at_ex_open,
     lag_sessions,
-    pending_days,
     settle_known,
 )
 from .ca_research import SOURCE_RESEARCH, research_supplied
+from .ca_versions import (
+    ACCEPTED,
+    CONFLICT,
+    DISPUTED,
+    SELECTED,
+    SOURCE_OWNER,
+    Ledger,
+    Value,
+    Version,
+    journal,
+    pending_days,
+    projection_mismatches,
+    read_versions,
+    stored_rows,
+    versioned_keys,
+)
+from .ca_versions import plan_backfill as plan_versions
 from .corporate_actions import (
     EVENT_CORRECTED,
     PRICE_NEUTRAL_TYPES,
@@ -83,45 +98,80 @@ _SERIES = or_(
 )
 
 
-def series_windows(
-    rows: Iterable[tuple[str, date, str, date | None]], heads: Mapping[str, tuple[str, int]]
-) -> list[Window]:
-    """The windows of the stored rows (instrument, ex-date, type, known_on) a series applies,
-    one per (chain, ex-date, type): the copy of the member nearest the chain's current ISIN, as
-    `lineage.chain_factors` and `chain_dividends` pick it (`heads`: `lineage.chains`), so a copy
-    the series ignores opens no window."""
-    best: dict[tuple[str, date, str], tuple[int, str, date | None]] = {}
-    for instrument_id, ex_date, action_type, known_on in rows:
+def series_events(
+    rows: Iterable[tuple[str, date, str]], heads: Mapping[str, tuple[str, int]]
+) -> dict[tuple[str, date, str], str]:
+    """(chain, ex-date, type) -> the member whose stored row (instrument, ex-date, type) the
+    series applies: the copy nearest the chain's current ISIN, as `lineage.chain_factors` and
+    `chain_dividends` pick it (`heads`: `lineage.chains`), so a copy the series ignores opens no
+    pending span."""
+    best: dict[tuple[str, date, str], tuple[int, str]] = {}
+    for instrument_id, ex_date, action_type in rows:
         chain, depth = heads.get(instrument_id, (instrument_id, 0))
         held = best.get((chain, ex_date, action_type))
-        if held is None or (depth, instrument_id) < held[:2]:
-            best[(chain, ex_date, action_type)] = (depth, instrument_id, known_on)
-    return [Window(chain, ex, held[2]) for (chain, ex, _), held in sorted(best.items())]
+        if held is None or (depth, instrument_id) < held:
+            best[(chain, ex_date, action_type)] = (depth, instrument_id)
+    return {event: held[1] for event, held in sorted(best.items())}
 
 
-def stored_windows(session: Session) -> list[Window]:
-    """The factor-pending window of every stored row a backtest's series applies (a
-    price-changing action, a dividend with an amount), under its chain's current id."""
-    rows = session.execute(
-        select(
-            HatCorporateAction.instrument_id,
-            HatCorporateAction.ex_date,
-            HatCorporateAction.action_type,
-            HatCorporateAction.known_on,
-        ).where(_SERIES)
-    )
-    return series_windows(
-        ((str(i), ex, kind, known) for i, ex, kind, known in rows), chains(stored_links(session))
-    )
+@dataclass(frozen=True)
+class Event:
+    """One event a backtest's series applies, under its chain: the stored value and the
+    versions of the member copy it reads."""
+
+    chain_id: str
+    ex_date: date
+    action_type: str
+    applied: Value
+    versions: tuple[Version, ...]
+
+
+def series(session: Session, chains_wanted: Iterable[str] | None = None) -> list[Event]:
+    """The events of every stored row a backtest's series applies (a price-changing action, a
+    dividend with an amount), under its chain's current id (of `chains_wanted` when given). A row
+    without an accepted version (a database not yet back-filled, `versions`) reads as one, its
+    own value at its `known_on`."""
+    rows = {
+        (str(i), ex, kind): (Decimal(f), None if c is None else Decimal(c), known, basis)
+        for i, ex, kind, f, c, known, basis in session.execute(
+            select(
+                HatCorporateAction.instrument_id,
+                HatCorporateAction.ex_date,
+                HatCorporateAction.action_type,
+                HatCorporateAction.adjustment_factor,
+                HatCorporateAction.cash_amount,
+                HatCorporateAction.known_on,
+                HatCorporateAction.known_basis,
+            ).where(_SERIES)
+        )
+    }
+    events = series_events(rows, chains(stored_links(session)))
+    ids = None
+    if chains_wanted is not None:
+        wanted = set(chains_wanted)
+        events = {e: i for e, i in events.items() if e[0] in wanted}
+        ids = set(events.values())
+    versions = read_versions(session, ids)
+    found = []
+    for (chain, ex, kind), instrument_id in events.items():
+        factor, cash, known, basis = rows[(instrument_id, ex, kind)]
+        own = versions.get((instrument_id, ex, kind), [])
+        if not any(v.status in SELECTED for v in own):
+            own = [Version(0, ACCEPTED, factor, cash, known, basis), *own]
+        found.append(Event(chain, ex, kind, (factor, cash), tuple(own)))
+    return found
 
 
 def chain_pending(
     session: Session, days: Sequence[date], chains_wanted: Iterable[str]
 ) -> set[tuple[str, date]]:
     """The factor-pending (chain, session) pairs of `chains_wanted` over the sorted sessions
-    `days`."""
-    wanted = set(chains_wanted)
-    return pending_days((w for w in stored_windows(session) if w.chain_id in wanted), days)
+    `days`, from the versions (`ca_versions.pending_days`)."""
+    return {
+        (e.chain_id, d)
+        for e in series(session, chains_wanted)
+        for d in pending_days(e.versions, e.ex_date, days, e.applied)
+    }
 
 
 # --- the back-fill ------------------------------------------------------------------------------
@@ -257,12 +307,27 @@ def neighbours(session: Session) -> dict[str, set[str]]:
     return found
 
 
+@dataclass(frozen=True)
+class ExGap:
+    """A row's ex-date gap from the raw bars: the gap, the ex instrument's sessions near it and
+    the two sessions it reads (the previous close's, the ex open's)."""
+
+    gap: Fraction
+    days: Sequence[date]
+    previous: date
+    ex: date
+
+
 def market_gaps(
     store: DataStore, rows: Sequence[Row], session: Session
 ) -> dict[str, tuple[Fraction, Sequence[date]]]:
+    """Each row's ex-date gap and the ex instrument's sessions near it (`ex_gaps`)."""
+    return {k: (g.gap, g.days) for k, g in ex_gaps(store, rows, session).items()}
+
+
+def ex_gaps(store: DataStore, rows: Sequence[Row], session: Session) -> dict[str, ExGap]:
     """Each row's ex-date gap (ex open over the previous close, divided by the other stored
-    factors ex between the two sessions, as CA1's gate reads it) and the ex instrument's
-    sessions near it, from the raw bars."""
+    factors ex between the two sessions, as CA1's gate reads it), by row id."""
     near = neighbours(session)
     wanted = {k: (r.ex_date, {r.instrument_id, *near[r.instrument_id]}) for k, r in enumerate(rows)}
     stored: dict[str, list[tuple[date, str, Decimal]]] = defaultdict(list)
@@ -291,7 +356,8 @@ def market_gaps(
         }
         same_day = math.prod((Fraction(f) for f in others.values()), start=Fraction(1))
         days = sorted(b.day for b in bars if b.instrument_id == on.instrument_id)
-        out[r.id] = (Fraction(on.open) / Fraction(before.close) / same_day, days)
+        gap = Fraction(on.open) / Fraction(before.close) / same_day
+        out[r.id] = ExGap(gap, days, before.day, on.day)
     return out
 
 
@@ -333,6 +399,7 @@ def plan_backfill(session: Session, store: DataStore) -> Backfill:
 def apply_backfill(session: Session, plan: Backfill) -> tuple[int, int]:
     """Write the plan's dated rows and links; returns how many of each were dated."""
     dated = {k: known for k, (_, known) in plan.actions.items() if known.on is not None}
+    ledger = Ledger.open(session, {r.instrument_id for r, _ in plan.actions.values()})
     for row in session.scalars(
         select(HatCorporateAction).where(
             HatCorporateAction.id.in_([uuid.UUID(k) for k in dated]),
@@ -341,6 +408,7 @@ def apply_backfill(session: Session, plan: Backfill) -> tuple[int, int]:
     ):
         known = dated[str(row.id)]
         row.known_on, row.known_basis = known.on, known.basis
+        ledger.add_row(row, text=f"CA5 back-fill: {known.basis}")
     links = {k: v for k, v in plan.links.items() if v is not None}
     for link in session.scalars(
         select(HatIsinLineage).where(HatIsinLineage.id.in_([uuid.UUID(k) for k in links]))
@@ -469,12 +537,13 @@ def write_log(path: Path, log: Sequence[Mapping[str, Any]]) -> None:
 
 
 def pending_lines(session: Session, store: DataStore, symbols: Sequence[str]) -> list[str]:
-    """For each symbol: its chain's lagged windows and the sessions a backtest skips for it."""
+    """For each symbol: its chain's events with pending sessions and the sessions a backtest
+    skips for each."""
     from .lineage import stored_adjustment
 
     lineage = stored_adjustment(session).lineage
     days = store.days(DATASET_BARS)
-    windows = stored_windows(session)
+    events = series(session)
     lines = []
     for symbol in symbols:
         ids = {
@@ -485,18 +554,68 @@ def pending_lines(session: Session, store: DataStore, symbols: Sequence[str]) ->
         if not heads:
             lines.append(f"{symbol}: no instrument")
             continue
-        own = sorted(
-            (w for w in windows if w.chain_id in heads and w.lagged), key=lambda w: w.start
-        )
-        lines.append(f"{symbol}: {len(own)} lagged window(s)")
-        for w in own:
-            skipped = sorted(d for _, d in pending_days([w], days))
-            span = f"{skipped[0]}..{skipped[-1]}" if skipped else "-"
+        own = [
+            (e, pending_days(e.versions, e.ex_date, days, e.applied))
+            for e in events
+            if e.chain_id in heads
+        ]
+        own = sorted(((e, p) for e, p in own if p), key=lambda x: x[0].ex_date)
+        lines.append(f"{symbol}: {len(own)} event(s) with factor-pending sessions")
+        for e, skipped in own:
+            dates = ", ".join(str(v.available_on or "undated") for v in e.versions)
             lines.append(
-                f"  from {w.start} known_on {w.known_on or 'undated'}: {len(skipped)} session(s)"
-                f" factor-pending {span}: {', '.join(d.isoformat() for d in skipped[:12])}"
+                f"  from {e.ex_date} {e.action_type} ({len(e.versions)} version(s), available"
+                f" {dates}): {len(skipped)} session(s) factor-pending {skipped[0]}..{skipped[-1]}:"
+                f" {', '.join(d.isoformat() for d in skipped[:12])}"
                 + (" ..." if len(skipped) > 12 else "")
             )
+    return lines
+
+
+def versions_backfill(session: Session, *, apply: bool) -> list[str]:
+    """CA6's back-fill (`ca_versions.plan_backfill`): the counts, and with `apply` the versions
+    appended in the caller's transaction (committed here) and the projection check."""
+    corrections, imported = journal(session)
+    planned = plan_versions(stored_rows(session), corrections, imported, versioned_keys(session))
+    counts = Counter((p.status, p.origin) for p in planned)
+    lines = [
+        f"versions to append: {len(planned)} over {len({p.key for p in planned})} events, from"
+        f" {len(corrections)} journalled corrections",
+        *(f"  {status} {kind}: {n}" for (status, kind), n in sorted(counts.items())),
+        f"  first_observed_at from the journal {sum(p.observed_at is not None for p in planned)},"
+        f" now {sum(p.observed_at is None for p in planned)}",
+    ]
+    if apply:
+        from .ca_versions import apply_backfill as append_versions
+
+        append_versions(session, planned)
+        session.commit()
+        lines.append(f"applied: {len(planned)} versions appended")
+        lines += version_lines(session)
+    return lines
+
+
+def version_lines(session: Session) -> list[str]:
+    """The ledger: versions per event, by status, the conflicts and disputed demerger values, and
+    the projection check (`hat_corporate_action` against the hindsight selection; expect 0)."""
+    versions = read_versions(session)
+    per_event = Counter(len(v) for v in versions.values())
+    by_status = Counter(v.status for vs in versions.values() for v in vs)
+    mismatches = projection_mismatches(stored_rows(session), versions)
+
+    def with_status(status: str) -> int:
+        return sum(any(v.status == status for v in vs) for vs in versions.values())
+
+    lines = [
+        f"versions {sum(by_status.values())} over {len(versions)} events: "
+        + ", ".join(f"{k} {n}" for k, n in sorted(by_status.items())),
+        "versions per event: " + ", ".join(f"{k}: {n}" for k, n in sorted(per_event.items())),
+        f"events with a conflict {with_status(CONFLICT)}",
+        f"disputed demergers {with_status(DISPUTED)}",
+        f"projection check (stored rows against the hindsight versions): {len(mismatches)}"
+        " mismatch(es)",
+    ]
+    lines += [f"  {k[0]} {k[1]} {k[2]}: {why}" for k, why in mismatches[:50]]
     return lines
 
 
@@ -504,18 +623,22 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     """python -m app.hat.data.point_in_time backfill [--apply]
     python -m app.hat.data.point_in_time report [--log TSV]
     python -m app.hat.data.point_in_time pending SYMBOL [SYMBOL ...]
+    python -m app.hat.data.point_in_time versions [--apply]
 
     `backfill` dates the undated rows and links from what is stored (a dry run without
     `--apply`; with it, one transaction under the reference-data lock) and lists the rows that
     stay undated. `report` counts the lagged and undated actions and links and lists them;
-    `--log` writes the adjustment log.
-    `pending` lists the sessions a backtest holds a name factor-pending. The bars are read under
-    `HAT_DATA_ROOT`."""
+    `--log` writes the adjustment log; then the version ledger and its projection check.
+    `versions` appends a version for every stored row and each journalled correction's `before`
+    state, for the events with none yet (CA6; a dry run without `--apply`), then checks the
+    projection. `pending` lists the sessions a backtest holds a name factor-pending. The bars are
+    read under `HAT_DATA_ROOT`."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.point_in_time")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("backfill").add_argument("--apply", action="store_true")
     sub.add_parser("report").add_argument("--log")
     sub.add_parser("pending").add_argument("symbols", nargs="+")
+    sub.add_parser("versions").add_argument("--apply", action="store_true")
     args = parser.parse_args(argv)
     from ..settings import operator_settings
 
@@ -551,6 +674,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             if target is not None:
                 write_log(target, log)
                 write(f"adjustment log: {len(log)} rows to {args.log}")
+            for line in version_lines(session):
+                write(line)
+        elif args.command == "versions":
+            if args.apply:
+                lock_reference_data(session)
+            for line in versions_backfill(session, apply=args.apply):
+                write(line)
         else:
             for line in pending_lines(session, store, args.symbols):
                 write(line)
