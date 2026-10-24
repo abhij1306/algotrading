@@ -677,11 +677,12 @@ class ThreadNotifier(RecordingNotifier):
         self.fail = fail
         self.threads: list[threading.Thread] = []
 
-    def alert(self, code: str, trade_date: date, detail: dict[str, str | int]) -> None:
+    def alert(self, code: str, trade_date: date, detail: dict[str, str | int]) -> bool:
         self.threads.append(threading.current_thread())
         super().alert(code, trade_date, detail)
         if self.fail:
             raise ConnectionError("transport down")
+        return True
 
 
 @given(

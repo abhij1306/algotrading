@@ -80,6 +80,15 @@ def live_session(env: ExecEnv) -> None:
         def status(self) -> _Status:
             return _Status()
 
+        def token_generation(self) -> int:
+            return 0
+
+        def refuse_token(self, _generation: int) -> None:
+            pass
+
+        def token_refused(self) -> bool:
+            return False
+
     class _Client:
         fyers = object()
 

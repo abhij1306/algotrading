@@ -91,6 +91,43 @@ const POSITIONS = [
   },
 ];
 
+const SIGNALS = [
+  {
+    id: "00000000-0000-0000-0000-000000003000",
+    bot_id: BOT_ID,
+    bot: "momentum",
+    symbol: "INFY",
+    playbook: "breakout",
+    trade_date: "2026-10-21",
+    triggered_at: "2026-10-21T04:30:00Z",
+    trigger_price: "1520.0000",
+    stop_price: "1480.0000",
+    qty: 6,
+    risk_amount: "240.0000",
+    mode: "confirm",
+    state: "AwaitingApproval",
+    confidence: "medium",
+    confidence_basis: { reason: "lower_bound_not_positive", trades: 42 },
+  },
+  {
+    id: "00000000-0000-0000-0000-000000003001",
+    bot_id: BOT_ID,
+    bot: "momentum",
+    symbol: "TCS",
+    playbook: "breakout",
+    trade_date: "2026-10-20",
+    triggered_at: "2026-10-20T04:30:00Z",
+    trigger_price: "4000.0000",
+    stop_price: "3890.0000",
+    qty: 12,
+    risk_amount: "1320.0000",
+    mode: "shadow",
+    state: "Open",
+    confidence: null,
+    confidence_basis: {},
+  },
+];
+
 const EVENTS = [
   {
     id: 7,
@@ -112,6 +149,7 @@ const ROUTES: Record<string, Route> = {
   "/api/hat/watchlist": () => Response.json(WATCHLIST),
   "/api/hat/positions": () => Response.json(POSITIONS),
   "/api/hat/events": () => Response.json(EVENTS),
+  "/api/hat/signals": () => Response.json(SIGNALS),
 };
 
 function stubBackend(routes: Record<string, Route>) {
@@ -169,7 +207,13 @@ describe("HatPage", () => {
     const events = screen.getByRole("region", { name: "Recent events" });
     expect(await within(events).findByText("signal.triggered")).toBeInTheDocument();
 
+    const signals = screen.getByRole("region", { name: "Signals" });
+    expect(await within(signals).findByText("medium")).toBeInTheDocument();
+    expect(within(signals).getByText("lower_bound_not_positive · 42 trades")).toBeInTheDocument();
+    expect(within(signals).getByText("1,520.00")).toBeInTheDocument();
+
     expect(calls.every((call) => call.startsWith("GET /api/hat/"))).toBe(true);
+    expect(calls).toContain("GET /api/hat/signals?limit=25");
     expect(calls).toContain("GET /api/hat/events?limit=25");
   });
 
@@ -180,12 +224,14 @@ describe("HatPage", () => {
       "/api/hat/allocations": () => Response.json({ trade_date: null, rows: [] }),
       "/api/hat/positions": () => Response.json([]),
       "/api/hat/events": () => Response.json([]),
+      "/api/hat/signals": () => Response.json([]),
     });
     renderPage();
 
     expect(await screen.findByText("No open positions.")).toBeInTheDocument();
     expect(await screen.findByText("No allocation yet.")).toBeInTheDocument();
     expect(await screen.findByText("No events.")).toBeInTheDocument();
+    expect(await screen.findByText("No signals.")).toBeInTheDocument();
     expect(await screen.findByText("No bots.")).toBeInTheDocument();
   });
 

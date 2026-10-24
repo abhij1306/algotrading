@@ -158,6 +158,15 @@ class _Auth:
             raise self.connected
         return type("S", (), {"connected": self.connected})()
 
+    def token_generation(self) -> int:
+        return 0
+
+    def refuse_token(self, _generation: int) -> None:
+        pass
+
+    def token_refused(self) -> bool:
+        return False
+
 
 @given(st.one_of(st.booleans(), st.just(RuntimeError("store unreadable"))), st.booleans())
 def test_adapter_session_status_never_raises(

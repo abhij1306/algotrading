@@ -141,6 +141,13 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Failed-break closes survive a restart (Q7).** The day's closes are rebuilt from the stored
   `bars_5m`; the refusal fails open only when no bars are stored, since refusing every Take
   until the next close would block good entries for a data gap.
+- **A spent day stops entries, never exits (Q11).** When the day's broker calls are spent (the
+  budget's day cap or Fyers' `-360`), new entries and the reads that can wait stop, with one
+  URGENT `broker.budget_spent` per account and day; stops and sales keep the calls left, since a
+  refused entry costs a trade while a refused stop costs money.
+- **An illiquid name's exits use its last trade (QA15).** A symbol silent for 30 s while the feed
+  is fresh keeps its last trade of the day (inside the band) for the exit views only; entries
+  still need a fresh print, since a missed entry is safe and an exit that never fires is not.
 - **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
   confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
 

@@ -33,6 +33,7 @@ from app.hat.data.live import (
     PRICE_UNKNOWN,
     LiveData,
     Quote,
+    exit_price,
     tick_from_payload,
     usable_price,
 )
@@ -1755,3 +1756,22 @@ class _OpenGates:
 
     def gate_on(self, *_args: object) -> bool:
         return True
+
+
+def test_exit_price_takes_an_illiquid_names_last_trade() -> None:
+    """QA15: an exit view takes a silent symbol's last trade of the day while the feed itself
+    is fresh, still inside the band; with the feed stale, from an earlier day or stamped ahead,
+    it is refused as stale. An entry's price (`usable_price`) never takes it."""
+    old = Quote(Decimal(100), LIVE_AT - timedelta(minutes=40))
+    assert usable_price(old, LIVE_AT) == (None, PRICE_STALE)
+    assert exit_price(old, LIVE_AT, feed_fresh=True) == (Decimal(100), None)
+    assert exit_price(old, LIVE_AT, feed_fresh=False) == (None, PRICE_STALE)
+    assert exit_price(old, LIVE_AT, lower=Decimal(101), feed_fresh=True) == (
+        None,
+        PRICE_OUT_OF_BAND,
+    )
+    yesterday = Quote(Decimal(100), LIVE_AT - timedelta(days=1))
+    assert exit_price(yesterday, LIVE_AT, feed_fresh=True) == (None, PRICE_STALE)
+    ahead = Quote(Decimal(100), LIVE_AT + timedelta(minutes=1))
+    assert exit_price(ahead, LIVE_AT, feed_fresh=True) == (None, PRICE_STALE)
+    assert exit_price(None, LIVE_AT, feed_fresh=True) == (None, PRICE_UNKNOWN)

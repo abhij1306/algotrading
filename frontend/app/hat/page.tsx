@@ -15,11 +15,13 @@ import {
   useHatAllocations,
   useHatEvents,
   useHatPositions,
+  useHatSignals,
   useHatStatus,
   useHatWatchlist,
   type HatAllocations,
   type HatEvents,
   type HatPositions,
+  type HatSignals,
   type HatStatus,
   type HatWatchlist,
 } from "@/lib/queries/hat";
@@ -253,6 +255,66 @@ function PositionsTable({ positions }: Readonly<{ positions: HatPositions }>) {
   );
 }
 
+type Signal = HatSignals[number];
+
+const CONFIDENCE_VARIANT = { high: "profit", medium: "warning", low: "muted" } as const;
+
+/** Why the signal got its label: the reason code, and the backtest trades of its bucket. */
+function basisText(signal: Signal): string {
+  const { reason, trades } = signal.confidence_basis;
+  const why = typeof reason === "string" ? reason : PLACEHOLDER;
+  return typeof trades === "number" ? `${why} · ${trades} trades` : why;
+}
+
+function ConfidenceBadge({ signal }: Readonly<{ signal: Signal }>) {
+  const label = signal.confidence;
+  if (label == null) return <span className="text-foreground-muted">{PLACEHOLDER}</span>;
+  const variant =
+    label in CONFIDENCE_VARIANT
+      ? CONFIDENCE_VARIANT[label as keyof typeof CONFIDENCE_VARIANT]
+      : "outline";
+  return <Badge variant={variant}>{label}</Badge>;
+}
+
+function SignalsTable({ signals }: Readonly<{ signals: HatSignals }>) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Triggered</TableHead>
+          <TableHead>Bot</TableHead>
+          <TableHead>Symbol</TableHead>
+          <TableHead numeric>Trigger</TableHead>
+          <TableHead numeric>Stop</TableHead>
+          <TableHead numeric>Qty</TableHead>
+          <TableHead>Mode</TableHead>
+          <TableHead>State</TableHead>
+          <TableHead>Confidence</TableHead>
+          <TableHead>Basis</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {signals.map((s) => (
+          <TableRow key={s.id}>
+            <TableCell>{formatIstDateTime(s.triggered_at)}</TableCell>
+            <TableCell>{s.bot}</TableCell>
+            <TableCell>{s.symbol}</TableCell>
+            <TableCell numeric>{decimalText(s.trigger_price)}</TableCell>
+            <TableCell numeric>{decimalText(s.stop_price)}</TableCell>
+            <TableCell numeric>{s.qty}</TableCell>
+            <TableCell>{s.mode}</TableCell>
+            <TableCell>{s.state}</TableCell>
+            <TableCell>
+              <ConfidenceBadge signal={s} />
+            </TableCell>
+            <TableCell className="text-foreground-muted">{basisText(s)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
 function EventsList({ events }: Readonly<{ events: HatEvents }>) {
   return (
     <ul className="space-y-1 text-sm">
@@ -277,6 +339,7 @@ export default function HatPage() {
   const allocations = useHatAllocations();
   const watchlist = useHatWatchlist();
   const positions = useHatPositions();
+  const signals = useHatSignals();
   const events = useHatEvents();
   const bots = { ...status, data: status.data?.bots };
 
@@ -311,6 +374,9 @@ export default function HatPage() {
           empty="No open positions."
         >
           {(data) => <PositionsTable positions={data} />}
+        </Section>
+        <Section title="Signals" query={signals} isEmpty={noRows} empty="No signals.">
+          {(data) => <SignalsTable signals={data} />}
         </Section>
         <Section title="Recent events" query={events} isEmpty={noRows} empty="No events.">
           {(data) => <EventsList events={data} />}

@@ -19,18 +19,20 @@ AlertDetail = Mapping[str, str | int]
 
 
 class Notifier(Protocol):
-    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> None:
-        """Raise one health alert named by `code` for `trade_date`."""
+    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> bool:
+        """Raise one health alert named by `code` for `trade_date`; False when it could not be
+        delivered (so a caller that tells the owner only once can tell again)."""
         ...
 
 
 class LogNotifier:
     """Writes each alert to the log (the sink until Telegram implements `Notifier`)."""
 
-    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> None:
+    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> bool:
         logger.warning(
             "health alert", extra={"code": code, "trade_date": trade_date.isoformat(), **detail}
         )
+        return True
 
 
 class RecordingNotifier:
@@ -40,6 +42,7 @@ class RecordingNotifier:
         self._lock = threading.Lock()
         self.alerts: list[tuple[str, date, dict[str, str | int]]] = []
 
-    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> None:
+    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> bool:
         with self._lock:
             self.alerts.append((code, trade_date, dict(detail)))
+        return True

@@ -27,6 +27,11 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(skip)
 
 
+# A check whose lock wait never ends fails after this instead of hanging the CI job (C26). The
+# lock-wait probes give a waiter up to 5 s before they release the holder: well inside it.
+LOCK_TIMEOUT = "-c lock_timeout=15s"
+
+
 def hat_tables() -> list:
     return [table for name, table in Base.metadata.tables.items() if name.startswith("hat_")]
 
@@ -56,7 +61,7 @@ def pg_engine() -> Generator[Engine, None, None]:
     database = os.getenv("DB_NAME", "")
     if not database.endswith("_test"):
         pytest.fail(f"refusing to drop tables in DB_NAME={database!r}; use a *_test database")
-    engine = create_engine(postgres_url_from_env())
+    engine = create_engine(postgres_url_from_env(), connect_args={"options": LOCK_TIMEOUT})
     drop_hat_objects(engine)
     Base.metadata.create_all(engine, tables=hat_tables())
     ensure_hat_schema(engine)

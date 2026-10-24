@@ -11,7 +11,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 2. No order adds to a position: never to a loser, and a bot never adds to an open position.
 3. No entry without a stop price below the entry price.
 4. No entry when the day's data or the live feed is stale, or the instrument's last price is
-   unknown, 30 s old or outside the day's price band.
+   unknown, 30 s old or outside the day's price band. An exit view may act on an older last
+   trade of the day only while the feed itself is fresh (an illiquid name), never an entry.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
    lacks is no trading day; a special session has only its stored hours, else it is closed.
 6. `max_chase` always applies, even if a config deletes the criterion.
@@ -52,7 +53,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
   entry on a trade date before its first reconciliation succeeded, and the live conditions and
   price are checked again after it, right before the send; a mismatch blocks entries and never
-  auto-closes or adopts a position.
+  auto-closes or adopts a position. Once the broker calls of the day are spent (the budget's day
+  cap, or Fyers' `-360`), no entry goes out and the reads that serve only entries (the
+  reconciliation, the entry funds read) stop until the next trade date; stops and sales still
+  go out on the writes' share.
 - **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
   a lost broker answer is settled against the broker's book, never left frozen. A lost sale of
@@ -90,7 +94,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 - **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
   logged, returned or committed.
 - **Events.** Every state change and its event commit in one transaction; `hat_event` is
-  append-only (trigger); trade state replays from events.
+  append-only (triggers refuse UPDATE, DELETE and TRUNCATE, on every partition too); trade state
+  replays from events.
 - **Schema.** The database holds exactly the models' tables, columns, types, constraints and
   indexes plus `schema.PG_DDL`; HAT refuses to start on any difference and prints the DDL.
   `create_all` never alters a table: a change ships as idempotent `PG_DDL` or a runbook DDL step.
@@ -129,7 +134,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   ticks, bands, the rescale and orders read the price basis (`bars_daily_cap`). A closed trade's
   P&L and R include the dividends its shares earned (ex-date in the holding, shares held at the
   ex-date's open), in backtest, shadow and live alike; the nightly `ca.adjust` restates them from
-  the stored amounts.
+  the stored amounts, each change with a `position.dividends_restated` event of the figures
+  before and after.
 - **Versions and `known_on`.** Every write of a corporate action appends a version in the same
   transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
   hindsight projection. Each action records when its value became knowable (`known_on`; NULL when

@@ -1,18 +1,22 @@
 """PBT telegram.*: the pure parts of `app.hat.telegram`: the weekly veto digest's day, which
-Bot API refusals are permanent, and the reply to a Take."""
+Bot API refusals are permanent, the reply to a Take, and the approval tokens' signer."""
 
 import uuid
-from datetime import date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 
+import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
 from app.hat.engine.approvals import ApprovalDecision, Placement
+from app.hat.errors import HatConfigError
 from app.hat.risk.sessions import SessionCalendar
 from app.hat.telegram.callbacks import take_reply
 from app.hat.telegram.client import refusal_retryable
 from app.hat.telegram.commands import AUTO_NOT_OWNER, AUTO_UNCONFIRMED, auto_refusal
+from app.hat.telegram.config import MIN_SECRET_BYTES
 from app.hat.telegram.reports import is_week_end
+from app.hat.telegram.tokens import SKIP, TAKE, ApprovalSigner, ButtonClaim
 from app.hat.time import IST
 
 
@@ -100,3 +104,39 @@ def test_auto_is_the_owners_switch_after_confirmation() -> None:
     ]
     for users, confirmed, expected in table:
         assert auto_refusal(owner, users, confirmed=confirmed) == expected, (users, confirmed)
+
+
+SIGNER = ApprovalSigner(b"s" * MIN_SECRET_BYTES)
+EXPIRES = datetime(2026, 10, 26, 4, 5, tzinfo=UTC)
+
+
+def test_approval_signer_sign_verify_tamper_expiry() -> None:
+    """A Take or Skip button verifies under the secret that signed it and binds its signal and
+    expiry; a changed character, another secret, another expiry or another card's hash is
+    refused. Harm: a forged or replayed button places a real entry."""
+    signal = uuid.uuid4()
+    stored = SIGNER.card_hash(signal, EXPIRES)
+    for action in (TAKE, SKIP):
+        data = SIGNER.button(action, signal, EXPIRES)
+        assert len(data.encode()) <= 64  # Telegram's callback data limit
+        claim = SIGNER.verify(data)
+        assert claim == ButtonClaim(action, signal, int(EXPIRES.timestamp()))
+        assert SIGNER.matches(claim, EXPIRES, stored)
+        # expiry: the claim binds the approval's own expires_at, never a later one
+        assert not SIGNER.matches(claim, EXPIRES + timedelta(minutes=5), stored)
+        assert not SIGNER.matches(claim, EXPIRES, SIGNER.card_hash(uuid.uuid4(), EXPIRES))
+        # tamper: each body character changed (the last one also carries base64 pad bits, so a
+        # change there may decode to the same bytes: never to another claim), the action
+        # swapped, another secret
+        for at in range(1, len(data)):
+            changed = data[:at] + ("A" if data[at] != "A" else "B") + data[at + 1 :]
+            assert SIGNER.verify(changed) in (None, claim)
+            if at < len(data) - 1:
+                assert SIGNER.verify(changed) is None
+        other = SKIP if action == TAKE else TAKE
+        assert SIGNER.verify(other + data[1:]) is None
+        assert ApprovalSigner(b"x" * MIN_SECRET_BYTES).verify(data) is None
+    assert SIGNER.verify("") is None
+    assert SIGNER.verify("x" + SIGNER.button(TAKE, signal, EXPIRES)[1:]) is None
+    with pytest.raises(HatConfigError):
+        ApprovalSigner(b"short")

@@ -814,5 +814,5 @@ def test_a_terminal_order_never_moves(terminal: str, shown: str) -> None:
     """A stale book row never moves a terminal order (C2): no status change, no session use."""
     row = HatOrder(tag="HT", purpose="entry", status=terminal, qty=10)
     found = replace(_order("HT", "ABC", 10), status=shown)
-    assert record_broker_status(SimpleNamespace(), row, found, None) is False  # type: ignore[arg-type]
+    assert record_broker_status(SimpleNamespace(), row, found, None, datetime.now(UTC)) is False  # type: ignore[arg-type]
     assert row.status == terminal

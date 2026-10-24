@@ -2,7 +2,8 @@
 
 The reconciliation gate is keyed by trade date: a success on one trade date never opens the next
 one's entries. It gates new entries only: a stop or a sale goes out whatever the reconciliation
-state, and a mismatch blocks the entries of the bot or account it is about.
+state, and a mismatch blocks the entries of the bot or account it is about. Nor does an entry go
+out once the broker's calls of the day are spent (Q11): what is left is the stops' and sales'.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ from datetime import date
 
 from ..time import trade_date_of, utc_now
 
-__all__ = ["ExecutionGuard"]
+__all__ = ["BUDGET_SPENT", "ExecutionGuard"]
+
+BUDGET_SPENT = "broker_budget_spent"
 
 
 def _today() -> date:
@@ -30,6 +33,8 @@ class ExecutionGuard:
     blocked_bots: set[uuid.UUID] = field(default_factory=set)
     blocked_accounts: set[uuid.UUID] = field(default_factory=set)
     today: Callable[[], date] = field(default=_today, repr=False)
+    # whether the account's broker calls of the day are spent (`HatBroker.day_budget_spent`)
+    budget_spent: Callable[[], bool] = field(default=lambda: False, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _reads: int = field(default=0, repr=False)  # book reads begun
     _applied: int = field(default=0, repr=False)  # the latest read whose result is in force
@@ -68,10 +73,12 @@ class ExecutionGuard:
 
     def refusal(self, bot_id: uuid.UUID, account_id: uuid.UUID, *, is_entry: bool) -> str | None:
         """Why an order may not go to the broker now (a fixed code), or None. An entry waits for
-        today's reconciliation and stops while the bot or account is blocked; a stop or a sale
-        is never refused here (trading-safety rules 5 and 7)."""
+        today's reconciliation and stops while the bot or account is blocked or the day's broker
+        calls are spent; a stop or a sale is never refused here (trading-safety rules 5 and 7)."""
         if not is_entry:
             return None
+        if self.budget_spent():
+            return BUDGET_SPENT
         with self._lock:
             if self.reconciled_for != self.today():
                 return "not_reconciled"

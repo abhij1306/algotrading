@@ -9,11 +9,13 @@ from unittest import mock
 import pytest
 from hat_fyers_support import (
     token_reply,
+    token_store,
 )
 from hypothesis import given
 from hypothesis import strategies as st
 
 from app.hat.execution.fyers_auth import (
+    FyersAuthService,
     FyersCredentials,
     MissingCredentialsError,
     credentials_from_env,
@@ -83,3 +85,22 @@ def test_credentials_from_env_precedence(env: dict[str, str | None]) -> None:
                 credentials_from_env()
             assert missing in str(caught.value)
             assert all(v not in str(caught.value) for v in clean.values())
+
+
+def test_a_refused_token_reads_not_connected_until_a_new_login() -> None:
+    """C22 A5: once Fyers refuses the saved token (-16 on a profile read) the login status reads
+    not connected though the file is in date, until a login saves another token; a refusal read
+    for an earlier token (a check in flight across a login) changes nothing."""
+    with token_store() as store:
+        service = FyersAuthService(store, account_refs=frozenset, on_token_change=lambda: None)
+        service._save_login(token_reply("TKN0123456789abcdef"), CREDS.client_id, 0)
+        assert service.status().connected
+        refused = service.token_generation()
+        service.refuse_token(refused)
+        assert service.token_refused()
+        assert not service.status().connected
+        service._save_login(token_reply("TKNfedcba9876543210"), CREDS.client_id, 0)
+        assert not service.token_refused()
+        assert service.status().connected
+        service.refuse_token(refused)  # the old token's refusal arrives late
+        assert service.status().connected

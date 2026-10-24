@@ -397,7 +397,10 @@ def build(
             return "stale"
         return "connected" if parts.feed.is_connected else "disconnected"
 
-    live_prices = LivePrices(prices, book, clock)
+    # an exit view takes an illiquid name's last trade while the feed itself is fresh (QA15)
+    live_prices = LivePrices(
+        prices, book, clock, lambda: not stale_feed(live.staleness, utc_now(clock))
+    )
     # PR 49: an unfilled entry is cancelled on a failed break or after the timeout; a failed
     # break also refuses its placement and a Take (Q7), from the closes a restart restores
     entries = EntryWatch(timedelta(minutes=settings.entry_timeout_minutes))
@@ -407,7 +410,7 @@ def build(
     service = TriggerService(TriggerMonitor(live.builder), sf, contexts, feed_stale, route)
     live.add_bar_listener(service.on_bar)
     live.add_bar_listener(entries.on_bar)
-    views = ExitViews(book, live_prices.price, clock, calendar, sf)
+    views = ExitViews(book, live_prices.exit_price, clock, calendar, sf)
     shadow = ShadowExits(sf, views, desks.managed)
     subscriptions = LiveSubscriptions(
         registry, subscribe, unsubscribe, subscription_alert(notifier, clock)

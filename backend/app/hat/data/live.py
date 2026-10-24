@@ -53,6 +53,7 @@ __all__ = [
     "PRICE_OUT_OF_BAND",
     "PRICE_STALE",
     "PRICE_UNKNOWN",
+    "exit_price",
     "EventFeedHealth",
     "LiveData",
     "Quote",
@@ -113,6 +114,30 @@ def usable_price(
     if (lower is not None and quote.price < lower) or (upper is not None and quote.price > upper):
         return None, PRICE_OUT_OF_BAND
     return quote.price, None
+
+
+def exit_price(
+    quote: Quote | None,
+    now: datetime,
+    *,
+    lower: Decimal | None = None,
+    upper: Decimal | None = None,
+    feed_fresh: bool,
+) -> tuple[Decimal | None, str | None]:
+    """The price an exit view may act on at `now` (QA15): `usable_price`, except that a quote
+    stale only because its symbol is silent while the feed itself is fresh (an illiquid name)
+    still gives its last trade of the trade date, inside the band. Never an entry's price: a
+    missed entry is safe, an exit that never fires on a quiet name is not."""
+    price, refusal = usable_price(quote, now, lower=lower, upper=upper)
+    if (
+        refusal != PRICE_STALE
+        or not feed_fresh
+        or quote is None
+        or quote.at > now
+        or trade_date_of(quote.at) != trade_date_of(now)
+    ):
+        return price, refusal
+    return usable_price(quote, now, lower=lower, upper=upper, stale_after=timedelta.max)
 
 
 class TickFeed(Protocol):

@@ -266,7 +266,7 @@ class MarketProtection:
                 return
             if not self._broker.cancel_order(row.broker_order_id).ok:
                 return  # still resting: asked again at the next sync
-            mark_resend(session, row, found, signal.bot_id)
+            mark_resend(session, row, found, signal.bot_id, now)
             session.commit()
         self._page_missed(resends(session, signal.id, row.purpose, now), detail, now)
 

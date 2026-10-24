@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
+from ..events import record
 from ..governance import Mode
 from ..models import (
     HatBot,
@@ -416,11 +417,15 @@ def write_result(
         bots.record_closed_trade(session, signal.bot_id, r, position.is_virtual, policy.policy)
 
 
-def restate_dividends(session: Session) -> int:
+EVENT_DIVIDENDS_RESTATED = "position.dividends_restated"
+
+
+def restate_dividends(session: Session, now: datetime) -> int:
     """Bring every closed trade's dividends up to the stored ones (R-DIV): a dividend is stored
     on its ex-date's night, after a trade closed that day was written, and an amount can be
     stored or corrected later. A changed trade gets the new `dividends`, and its P&L and R move
-    by the difference (`trade_outcome`); its ladder step, taken at the close, stands. Returns how
+    by the difference (`trade_outcome`), with a `position.dividends_restated` journal event of
+    the figures before and after (QA15); its ladder step, taken at the close, stands. Returns how
     many trades changed; nothing is committed."""
     rows = session.execute(
         select(HatPosition, HatTradeResult).join(
@@ -446,6 +451,24 @@ def restate_dividends(session: Session) -> int:
             Decimal(position.avg_entry),
             Decimal(position.initial_stop),
             entry_qty(session, signal, position),
+        )
+        record(
+            session,
+            aggregate_type="position",
+            aggregate_id=position.id,
+            event_type=EVENT_DIVIDENDS_RESTATED,
+            actor="scheduler",
+            payload={
+                "dividends_before": str(before),
+                "dividends": str(dividends),
+                "realized_pnl_before": str(result.realized_pnl),
+                "realized_pnl": str(pnl),
+                "r_multiple_before": str(result.r_multiple),
+                "r_multiple": str(r),
+            },
+            correlation_id=signal.id,
+            bot_id=signal.bot_id,
+            occurred_at=now,
         )
         result.dividends, result.realized_pnl, result.r_multiple = dividends, pnl, r
         changed += 1

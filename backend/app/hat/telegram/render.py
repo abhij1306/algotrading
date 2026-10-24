@@ -58,6 +58,7 @@ __all__ = [
 # kill tripped (bots manage-only). A8: a periodic loop (live exits, housekeeping) stopped.
 # DB4b: the runtime lock was lost and not taken again (no new entry until a restart).
 # Q8: a position `ca.rescale` could not rescale stays manage-only (`corporate_action.pending`).
+# Q11: the broker calls of the day are spent: no new entry until the next trade date.
 URGENT_ALERTS = frozenset(
     {
         "job.failed",
@@ -80,6 +81,7 @@ URGENT_ALERTS = frozenset(
         "position.split_gap",
         "position.isin_changed",
         "sale.unfilled",
+        "broker.budget_spent",
     }
 )
 _SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")

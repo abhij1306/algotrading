@@ -43,16 +43,16 @@ class TelegramNotifier:
         self._client = client
         self._factory = session_factory
 
-    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> None:
+    def alert(self, code: str, trade_date: date, detail: AlertDetail) -> bool:
         if code in RELAYED_CODES:
             logger.info("health alert %s left to the event relay", code)
-            return
+            return True
         text = render.alert_text(code, trade_date, detail)
         try:
             message_id = self._client.send(text)
         except TelegramError as exc:
             logger.warning("telegram alert %s not sent: %s", code, exc.code)
-            return
+            return False
         try:
             with self._factory() as session:
                 store.record_message(
@@ -66,3 +66,4 @@ class TelegramNotifier:
                 session.commit()
         except Exception as exc:  # the alert went out; a lost link row must not raise
             logger.warning("telegram alert %s sent, link not stored: %s", code, type(exc).__name__)
+        return True

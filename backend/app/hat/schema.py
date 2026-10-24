@@ -340,6 +340,13 @@ CREATE OR REPLACE TRIGGER hat_event_no_update
   BEFORE UPDATE OR DELETE ON hat_event
   FOR EACH ROW EXECUTE FUNCTION hat_event_is_append_only()
 """,
+    # C10: nor is it truncated. A statement trigger is not cloned to the partitions:
+    # `ensure_event_partitions` puts the same one on each (`partition_guard_ddl`)
+    """
+CREATE OR REPLACE TRIGGER hat_event_no_truncate
+  BEFORE TRUNCATE ON hat_event
+  FOR EACH STATEMENT EXECUTE FUNCTION hat_event_is_append_only()
+""",
     # DB7: indexes for the runtime's existing predicates (DB audit M7, L1)
     "CREATE INDEX IF NOT EXISTS hat_event_bot_type ON hat_event (bot_id, event_type)",
     "CREATE INDEX IF NOT EXISTS hat_order_signal ON hat_order (signal_id)",

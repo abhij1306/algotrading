@@ -44,6 +44,7 @@ from app.hat.execution.fyers_broker import (
     HungCalls,
     _with_timeout,
     classify_place_reply,
+    day_refused,
     limits_from,
 )
 from app.hat.execution.fyers_payloads import parse_funds, parse_positions
@@ -659,3 +660,42 @@ def test_sdk_requests_get_a_timeout() -> None:
     bounded("GET", "https://example.invalid/orders", timeout=None)
     bounded("GET", "https://example.invalid/orders", timeout=1)
     assert sent == [SDK_HTTP_TIMEOUT, SDK_HTTP_TIMEOUT, 1]
+
+
+def test_the_day_cap_spends_the_day_until_the_next() -> None:
+    """The first call the day cap refuses marks the day spent (Q11), and the next day starts
+    unspent: entries stop for the rest of the day, never for the next."""
+    today = BUDGET_DAY
+    budget = CallBudget(CallLimits(100, 100, 5), clock=lambda: 0.0, day=lambda: today)
+    for _ in range(4):  # the reads' share of 5
+        assert budget.take(READ, 0.0, today) == 0
+    assert not budget.day_spent()
+    assert math.isinf(budget.take(READ, 0.0, today))
+    assert budget.day_spent()
+    assert budget.take(WRITE, 0.0, today) == 0  # the writes' share still goes out
+    today = BUDGET_DAY + timedelta(days=1)
+    assert not budget.day_spent()
+
+
+def test_a_minus_360_reply_spends_the_day() -> None:
+    """Fyers' -360 (the plan's daily requests spent), answered to a real read through the
+    transport, marks the budget's day spent; a 429 (a per-second or per-minute limit) and an
+    ok reply do not."""
+    for reply, spent in (
+        ({"s": "error", "code": -360, "message": "limit"}, True),
+        ({"s": "error", "code": 429, "message": "limit"}, False),
+        (funds_reply(1000), False),
+    ):
+        budget = CallBudget(CallLimits(), day=lambda: BUDGET_DAY)
+        sdk = RecordingSdk(reply)
+        broker = FyersBroker(lambda s=sdk: s, breaker=CircuitBreaker(), budget=budget)
+        try:
+            broker.fetch_funds()
+        except FyersUnavailableError:
+            pass
+        assert budget.day_spent() is spent, reply
+    code = FyersBroker.day_refused_code
+    assert not day_refused({"s": "error", "code": 429}, code)
+    assert not day_refused({"s": "ok", "code": 200}, code)
+    assert day_refused({"s": "error", "code": -360}, code)
+    assert not day_refused({"s": "error", "code": -360}, None)  # a broker without such a code

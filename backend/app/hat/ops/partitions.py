@@ -8,12 +8,19 @@ job reads back which partitions exist: with less than one month ahead (or when t
 fails) it alerts `events.partitions_short` and fails, so the shortage is seen weeks before an
 insert would fail (PR 17, audit money-safety-engine-ops F11).
 
-Every statement here is idempotent (`CREATE TABLE IF NOT EXISTS`) and names only `hat_*` objects.
+Every partition also gets `hat_event_no_truncate` (C10): Postgres clones the parent's row
+triggers to a partition but not its statement ones, so a TRUNCATE of one partition would pass
+the parent's. A trigger stops neither DROP nor DETACH; the runbook's `REVOKE TRUNCATE` step and
+the database owner's discipline do.
+
+Every statement here is idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER`) and
+names only `hat_*` objects.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, date, datetime
 
 from sqlalchemy import Connection, Engine, text
@@ -77,17 +84,35 @@ def partition_ddl(first: date) -> str:
     )
 
 
+_PARTITION_NAME = re.compile(rf"^{PARENT_TABLE}_p[0-9]{{6}}$")
+
+
+def partition_guard_ddl(name: str) -> str:
+    """The TRUNCATE guard of partition `name`, which must be a partition name (never other text
+    in SQL)."""
+    if not _PARTITION_NAME.match(name):
+        raise ValueError("not a hat_event partition name")
+    return (
+        f"CREATE OR REPLACE TRIGGER hat_event_no_truncate BEFORE TRUNCATE ON {name} "
+        "FOR EACH STATEMENT EXECUTE FUNCTION hat_event_is_append_only()"
+    )
+
+
 def ensure_event_partitions(
     connection: Connection, day: date, ahead: int = MONTHS_AHEAD
 ) -> list[str]:
-    """Create the partitions covering `day`'s month and `ahead` months after it. Returns the
-    names that now exist for that range. No-op (empty list) off Postgres."""
+    """Create the partitions covering `day`'s month and `ahead` months after it, and guard every
+    partition against TRUNCATE. Returns the names that now exist for that range. No-op (empty
+    list) off Postgres."""
     if connection.dialect.name != "postgresql":
         return []
     names = []
     for first in months_to_cover(day, ahead):
         connection.execute(text(partition_ddl(first)))
         names.append(partition_name(first))
+    for name in sorted(existing_partitions(connection)):
+        if _PARTITION_NAME.match(name):
+            connection.execute(text(partition_guard_ddl(name)))
     return names
 
 

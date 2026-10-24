@@ -40,6 +40,17 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    (columns `isin ex_date announced_on source_url note`; kept outside the repo), with
    `PYTHONPATH=<repo>/backend`: `python -m app.hat.data.demerger_notice announced
    ca8-announced.tsv`, then the same with `--apply` (fills only NULL `announced_on`).
+7. Take TRUNCATE on the event log away from the backend's role. The `hat_event_no_truncate`
+   triggers (on `hat_event` and each partition, made at start) refuse a TRUNCATE, but a trigger
+   stops neither DROP nor DETACH PARTITION, and a superuser bypasses both triggers and grants: on
+   hat_live the tables belong to `postgres`, so first have the backend connect as a role that is
+   not a superuser and does not own them. Then, for `hat_event` and each `hat_event_pYYYYMM`:
+   ```sql
+   REVOKE TRUNCATE ON hat_event FROM PUBLIC, <db_user>;
+   REVOKE TRUNCATE ON hat_event_p202610 FROM PUBLIC, <db_user>;  -- and so on
+   ```
+   Retention never truncates or drops event partitions (`ops/retention.py` deletes only the two
+   chat tables).
 
 ## Running it
 
@@ -227,7 +238,11 @@ advisory lock; `features` does not take it, so run it after they finish.
 - **Special sessions:** add `{"date": "YYYY-MM-DD", "note": "Muhurat trading", "session":
   "HH:MM-HH:MM"}` to `backend/app/hat/data/nse_holidays_history.json` and deploy before the day.
 - **`broker.session_lost`:** bots manage-only, stops at the broker; recovery is automatic once the
-  session is back (log in if the token expired).
+  session is back (log in if the token expired). A token the broker refused (revoked or expired
+  at the broker) shows not connected in the app header until a new login.
+- **`broker.budget_spent`:** URGENT. The day's broker calls are spent: no new entry and no
+  reconciliation until tomorrow; stops, sales and the fill sync go on. Check the logs for what
+  burned the calls before the next session.
 - **`broker_rate_limited`:** nothing was sent. After a plan change set
   `HAT_BROKER_CALLS_PER_SECOND`/`_PER_MINUTE`/`_PER_DAY` to the plan's limits and restart.
 - **`feed.stale`:** no triggers for those symbols. If it persists, restart with `--force --reason
@@ -236,13 +251,18 @@ advisory lock; `features` does not take it, so run it after they finish.
   hand.
 - **`relay.skipped`:** Telegram refused a message for good; read the event. A skipped card expires.
 - **`reconcile.failed`:** no entry on that account until a pass succeeds; check the session.
+  Raised once a day: before the day's first success, or once passes have failed for 30 minutes
+  after one (the gate stays open then; mismatches go unseen until a pass succeeds).
   **`reconcile.unreadable_row`:** check the Fyers book for a manual order.
   **`reconcile.mismatch`:** that bot's entries are blocked; a broker position HAT does not know is
   not HAT's; a missing fill or quantity difference is a bug. A duplicate order at the broker:
   `/kill`, then the same.
 - **`gtt.missing`, `gtt.unverified`, `gtt.swap_failed`, `stop.not_placed`:** every real position
   needs one GTT at its stop (Fyers GTT page vs `/positions`). A position unprotected overnight is
-  an incident: decide on `/flatten`.
+  an incident: decide on `/flatten`. `stop.not_placed` and `stop.not_moved` come once a day per
+  position and reason while each sync keeps trying. **`stop.would_move_down`:** the position's
+  stop is below its resting broker stop, which only rises, so the broker stop stays where it is
+  (still protective); the stored stop or tick is wrong: a bug to report.
 - **`position.series_changed`:** exits continue under the new symbol; `unmapped` means none run:
   decide whether to sell at Fyers.
 - **`sale.unfilled`:** check the book and band; decide on `/flatten` or a sale at Fyers.

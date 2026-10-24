@@ -1,10 +1,13 @@
-"""Plain table tests for the pure stop planners (`execution/stop_plans.py`)."""
+"""Plain table tests for the pure stop planners (`execution/stop_plans.py`) and the stop desk's
+once-a-day alerts (`protect.AlertedToday`)."""
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from app.hat.execution.protect import AlertedToday
 from app.hat.execution.stop_plans import (
     ProtectStep,
     VerifyStep,
@@ -130,3 +133,21 @@ def test_verify_plan(
     step: VerifyStep,
 ) -> None:
     assert verify_plan(rows, goal, old_series=old_series, wall=NOW, after=after) is step
+
+
+def test_a_stop_alert_is_raised_once_per_position_reason_and_day() -> None:
+    """C22 A4: a stop that cannot be placed or moved is retried at every sync; the owner is told
+    once per (code, position, reason) and trade date, again on the next trade date, and again
+    at the next sync when the alert could not be delivered."""
+    alerted = AlertedToday()
+    day, position, other = NOW.date(), uuid.uuid4(), uuid.uuid4()
+    assert alerted.first(day, "stop.not_moved", position, "no_tick")
+    assert not alerted.first(day, "stop.not_moved", position, "no_tick")
+    assert alerted.first(day, "stop.not_moved", position, "broker_unavailable")
+    assert alerted.first(day, "stop.not_placed", position, "no_tick")
+    assert alerted.first(day, "stop.not_moved", other, "no_tick")
+    assert alerted.first(day + timedelta(days=1), "stop.not_moved", position, "no_tick")
+    alerted.forget(day, "stop.not_moved", position, "no_tick")  # a stale day forgets nothing
+    assert not alerted.first(day + timedelta(days=1), "stop.not_moved", position, "no_tick")
+    alerted.forget(day + timedelta(days=1), "stop.not_moved", position, "no_tick")  # not sent
+    assert alerted.first(day + timedelta(days=1), "stop.not_moved", position, "no_tick")
