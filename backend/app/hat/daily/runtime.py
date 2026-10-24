@@ -9,8 +9,9 @@ task exists, then starts in the restart-safe order of HAT-OPS-003:
    before anything is placed, its fills read (a fill without a working stop is protected) and
    the auto entries left in Triggered noted: the periodic housekeeping places them once the feed
    is fresh (no tick since the start reads as stale) and the account has reconciled;
-3. on a trading day from 08:45, arm the day (watchlist candidates, subscriptions, keys already
-   fired);
+3. on a trading day from 08:45, restore the day's stored bars (`live.restore`, a failure alerted
+   as `job.failed` and shown on the dashboard's job list), then arm the day (watchlist
+   candidates, subscriptions, keys already fired) even when the restore failed (`after_restore`);
 4. attach the live data to the feed and start the feed;
 5. start the scheduler with every job of the daily cycle, the periodic loops (`daily/periodic.py`:
    exits, housekeeping, announcements) and the Telegram poller and relay.
@@ -25,11 +26,20 @@ import asyncio
 import logging
 import threading
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import date, datetime
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..logs import configure_hat_logging
-from ..ops.jobs import JobError, RunStatus, SessionFactory, recover_interrupted, reopen, run_job
+from ..ops.jobs import (
+    JobError,
+    JobResult,
+    RunStatus,
+    SessionFactory,
+    recover_interrupted,
+    reopen,
+    run_job,
+)
 from ..settings import HatSettings, require_postgres
 from ..telegram.service import run_relay
 from ..time import IST, trade_date_of, utc_now
@@ -37,11 +47,30 @@ from .assembly import Assembly, Feed, RuntimeParts, TradingCalendar, build
 from .intraday import LIVE_PREPARE, PREPARE_AT
 from .periodic import Periodic, watch_sessions
 
-__all__ = ["HatRuntime"]
+__all__ = ["LIVE_RESTORE", "HatRuntime", "RestoreDecision", "after_restore"]
 
 logger = logging.getLogger(__name__)
 
 STOPPING = "hat_stopping"
+LIVE_RESTORE = "live.restore"  # a restart's restore of the day's bars, in the job ledger
+RESTORE_FAILED = "restore_failed"
+
+
+@dataclass(frozen=True)
+class RestoreDecision:
+    alert: bool  # send `job.failed` for `live.restore`
+    arm: bool  # arm the day now, before the feed starts
+
+
+def after_restore(status: RunStatus) -> RestoreDecision:
+    """What a restart does after restoring the day's bars. A failed restore is alerted, and
+    the day is armed anyway: without the stored bars the bar builder treats the restart as a
+    late subscription and fails closed (no symbol is watched from the open, so no opening range
+    and no day low, and the day volume counts only from the restart, which can only lower the
+    volume pace), so the arming gives what a morning `live.prepare` gives with fewer triggers,
+    never a trigger on missing prices. Arming here, before the feed starts, also keeps
+    `live.prepare` off the live feed."""
+    return RestoreDecision(alert=status is RunStatus.FAILED, arm=True)
 
 
 class HatRuntime:
@@ -116,28 +145,51 @@ class HatRuntime:
     async def _recover(self, assembly: Assembly) -> None:
         """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh
         feed: `resume_entries`), then arm a day already under way (a restart after 08:45 on a
-        trading day)."""
+        trading day): restore the day's bars, then arm it, even when the restore failed
+        (`after_restore`)."""
         now = self._now()
         await asyncio.to_thread(watch_sessions, assembly, now)
         await asyncio.to_thread(assembly.desks.recover, now)
         today = trade_date_of(now)
         if self.calendar.trading(today) and now.astimezone(IST).time() >= PREPARE_AT:
-            try:
-                # before the feed starts (the bar builder is the loop thread's once it does): the
-                # bars stored before the restart give back the opening ranges and day volumes
-                await asyncio.to_thread(assembly.live.restore, today)
-            except Exception:  # the scheduler's `live.prepare` arms the day without them
-                logger.exception("restoring the day's bars on restart failed")
-                return
-            await asyncio.to_thread(self._arm, assembly, today)
+            # before the feed starts (the bar builder is the loop thread's once it does): the
+            # bars stored before the restart give back the opening ranges and day volumes
+            status, error = await asyncio.to_thread(self._restore, assembly, today)
+            decision = after_restore(status)
+            if decision.alert:
+                await asyncio.to_thread(
+                    assembly.scheduler.alert_failed, LIVE_RESTORE, today, error or RESTORE_FAILED
+                )
+            if decision.arm:
+                await asyncio.to_thread(self._arm, assembly, today)
+
+    def _restore(self, assembly: Assembly, today: date) -> tuple[RunStatus, str | None]:
+        """Restore the day's stored bars into the bar builder, through the job ledger (reopened
+        first: each process restores into its own builder), so a failure is on the dashboard's
+        job list as `live.restore` failed."""
+        sf = self._session_factory
+        try:
+            reopen(LIVE_RESTORE, today, sf)
+            outcome = run_job(
+                LIVE_RESTORE,
+                today,
+                lambda: JobResult(rows=assembly.live.restore(today)),
+                session_factory=sf,
+            )
+        except Exception:  # the ledger itself failed (the database)
+            logger.exception("restoring the day's bars on restart failed")
+            return RunStatus.FAILED, None
+        if outcome.status is RunStatus.FAILED:
+            logger.error("restoring the day's bars on restart failed: %s", outcome.error)
+        return outcome.status, outcome.error
 
     def _arm(self, assembly: Assembly, today: date) -> None:
         """Arm a day under way once, through the job ledger, so the scheduler finds
         `live.prepare` succeeded and does not run it again on the live feed (wiping the prices
         and swapping the trigger monitor). A run an earlier process recorded armed only that
         process, so it is reopened and run again here. A failed run is the scheduler's to
-        retry after the job's `retry_after`, as a scheduled failure is; until then the day stays
-        unarmed (no entries), exits still run."""
+        retry after the job's `retry_after`, as a scheduled failure is, and alerted as one;
+        until then the day stays unarmed (no entries), exits still run."""
         sf = self._session_factory
         try:
             reopen(LIVE_PREPARE, today, sf)
@@ -150,6 +202,7 @@ class HatRuntime:
         if outcome.status is RunStatus.FAILED:
             logger.warning("arming the day on restart failed: %s", outcome.error)
             assembly.scheduler.note_failed(LIVE_PREPARE, today, self._now())
+            assembly.scheduler.alert_failed(LIVE_PREPARE, today, outcome.error)
 
     def _start_tasks(self, assembly: Assembly) -> None:
         assembly.scheduler.start()

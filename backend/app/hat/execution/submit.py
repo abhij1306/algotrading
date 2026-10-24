@@ -254,6 +254,8 @@ def _lookup_before_retry(
         if row.purpose == ENTRY:
             raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
         return None
+    # found_verdict, not settle_verdict: nothing found here means send again at once (an entry
+    # never), not a settle wait; the found branch is the one they share, and it is this helper
     if row.purpose != ENTRY and found_verdict(found.filled_qty) is Verdict.WAIT:
         raise AwaitingFillsError("found with shares sold: the fill sync adopts it")
     adopt_broker_order(session, row, found, bot_id, clock=clock)

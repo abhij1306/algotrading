@@ -116,8 +116,10 @@ Periodic loops beside the jobs (`daily/periodic.py`), each its own task every 5 
 exits of virtual and real positions, the drawdown kills on equity marked to market every minute,
 stale-entry cancels; while the market is open), `housekeeping` (calendar check; session watch,
 fill sync, approval expiry, reconciliation every 5 min, resume of stranded entries) and the
-announcements poll. The scheduler tick raises URGENT `periodic.stalled` when `exits` or
-`housekeeping` has not started a pass for 60 s while the market is open.
+announcements poll. The scheduler tick raises URGENT `periodic.stalled` when a loop has not
+started a pass for 60 s while the market is open. A wedged step is bounded, never killed: broker
+calls have the broker guard's timeout, and the runtime's sessions (`app.database.HatSessionLocal`)
+run every transaction under `SET LOCAL statement_timeout` (120 s).
 
 ## Verification layout
 

@@ -85,11 +85,11 @@ async def _validate_fyers_token(app: FastAPI) -> None:
 def _build_hat_feed() -> Any:  # noqa: ANN401
     """HAT's live feed (the one Fyers data socket of the process, HAT-OVR-006), its login hooks
     hung on the Fyers auth service. The runtime starts it."""
-    from .database import SessionLocal
+    from .database import HatSessionLocal
     from .hat.data.feed import LiveFeed, calendar_source
     from .hat.execution.fyers_auth import get_fyers_auth
 
-    feed = LiveFeed(calendar_source=calendar_source(SessionLocal))
+    feed = LiveFeed(calendar_source=calendar_source(HatSessionLocal))
     feed.install_auth_hooks(get_fyers_auth())
     return feed
 
@@ -106,7 +106,7 @@ async def _start_hat_runtime(app: FastAPI, feed: Any) -> None:  # noqa: ANN401 -
     await _validate_fyers_token(app)
     runtime = HatRuntime(
         settings,
-        database.SessionLocal,
+        database.HatSessionLocal,
         dialect_name=database.engine.dialect.name,
         parts=production_parts(settings, feed, prevalidated_token=app.state.fyers_token_valid),
     )

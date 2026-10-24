@@ -11,9 +11,12 @@ step of one never delays another:
   `FETCH_TIMEOUT_SECONDS` each).
 
 Each loop runs one pass off the event loop, then waits `STEP_SECONDS`; each step fails alone.
-`exits` and `housekeeping` beat a heartbeat at the start of each pass, and the scheduler's tick
-calls `Heartbeats.check`: a loop whose heartbeat is older than `STALL_AFTER` while the market is
-open (a step wedged in a call without a timeout) raises `periodic.stalled` once per session.
+Every loop beats a heartbeat at the start of each pass, and the scheduler's tick calls
+`Heartbeats.check`: a loop whose heartbeat is older than `STALL_AFTER` while the market is open
+raises `periodic.stalled` once per session (a pass of `announcements` takes at most two fetches of
+`FETCH_TIMEOUT_SECONDS`, inside it). A wedged step is bounded, not killed: every broker call has
+the broker guard's timeout and every database statement HAT's `statement_timeout`
+(`app.database.HAT_STATEMENT_TIMEOUT_MS`), so the step fails and the loop beats again.
 
 No step needs another loop's step to have run first. An entry fill the sync has not read yet has
 no open position for the exits to act on; a sale reads the position again under its write lock
@@ -157,25 +160,17 @@ class Periodic:
     def loops(self, stop: asyncio.Event) -> list[Coroutine[object, object, None]]:
         """The loops to run as tasks until `stop` is set."""
         work = [
-            self._loop(EXITS, self.exits, stop, beat=True),
-            self._loop(HOUSEKEEPING, self.housekeeping, stop, beat=True),
+            self._loop(EXITS, self.exits, stop),
+            self._loop(HOUSEKEEPING, self.housekeeping, stop),
         ]
         if self._a.parts.announcements is not None:
-            work.append(self._loop(ANNOUNCEMENTS, self.announcements, stop, beat=False))
+            work.append(self._loop(ANNOUNCEMENTS, self.announcements, stop))
         return work
 
-    async def _loop(
-        self,
-        name: str,
-        step: Callable[[datetime], None],
-        stop: asyncio.Event,
-        *,
-        beat: bool,
-    ) -> None:
+    async def _loop(self, name: str, step: Callable[[datetime], None], stop: asyncio.Event) -> None:
         while not stop.is_set():
             now = utc_now(self._clock)
-            if beat:
-                self._a.heartbeats.beat(name, now)
+            self._a.heartbeats.beat(name, now)
             try:
                 await asyncio.to_thread(step, now)
             except Exception:

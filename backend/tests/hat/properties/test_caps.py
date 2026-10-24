@@ -106,6 +106,31 @@ def test_kill_thresholds(equities: list, rearm_after: int | None) -> None:
         assert kill.tripped_since(series, threshold, since) is expected
 
 
+def test_rearm_restarts_the_peak() -> None:
+    """D232 (Q41): re-armed at 85 after a peak of 100, the kill measures from 85. A fall to 80
+    (20% under the old peak, 5.9% under the base) does not trip; a rise to 90 lifts the peak,
+    and only 81 (10% under 90) trips. A capital cut moves equity and peak together."""
+    base = kill.SnapshotPoint(AT, D("85"), D("100"))
+
+    def tripped(*equities: str) -> bool:
+        points = [
+            kill.SnapshotPoint(AT + timedelta(days=n + 1), D(e), D("100"))
+            for n, e in enumerate(equities)
+        ]
+        return kill.tripped_after_rearm(base, points, SEED.bot_drawdown_pct)
+
+    assert not tripped("80")
+    assert not tripped("90", "81.01")
+    assert tripped("90", "81")
+    assert tripped("76.5")
+    # the base itself, and a point at or before it, are never read
+    old = kill.SnapshotPoint(AT - timedelta(days=1), D("10"), D("100"))
+    assert not kill.tripped_after_rearm(base, [old, base], SEED.bot_drawdown_pct)
+    # capital 100 -> 50 with no trade: equity 85 -> 35 is a reallocation, not a fall
+    cut = kill.SnapshotPoint(AT + timedelta(days=1), D("35"), D("50"))
+    assert not kill.tripped_after_rearm(base, [cut], SEED.bot_drawdown_pct)
+
+
 @given(st.decimals(min_value=D("1"), max_value=D("1000000"), places=2))
 def test_kill_threshold_boundary(peak: Decimal) -> None:
     """Exactly 10% below the peak trips the account kill (D128); a paisa less of a drop does not."""

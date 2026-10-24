@@ -3,8 +3,9 @@
 `snapshot_bots` writes one `hat_daily_bot_snapshot` per bot and day (equity marked to market,
 its restated peak); `live_equity` marks the same equity at a moment of the session;
 `evaluate_drawdown_kills` trips the account and bot kills (`kill_ops.trip_kill`) when a point
-after the last re-arm is at or past its threshold. The rules are the pure ones in `kill.py`.
-Nothing here commits.
+after the last re-arm is at or past its threshold. A re-arm restarts the peak (D232): a re-armed
+key is measured from its equity at the first point after the re-arm (`hat_drawdown_base`) and
+reads nothing older. The rules are the pure ones in `kill.py`. Nothing here commits.
 """
 
 from __future__ import annotations
@@ -17,10 +18,12 @@ from decimal import ROUND_CEILING, Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..events import record
 from ..models import (
     HatAllocationDaily,
     HatBot,
     HatDailyBotSnapshot,
+    HatDrawdownBase,
     HatFill,
     HatKillSwitch,
     HatOrder,
@@ -28,6 +31,7 @@ from ..models import (
     HatTradeResult,
 )
 from ..ops.jobs import JobResult
+from ..settings import load_settings
 from ..time import IST, as_utc, trade_date_of
 from . import kill
 from .bots import ladder_state
@@ -54,16 +58,16 @@ def _snapshot_instant(trade_date: date) -> datetime:
     return datetime.combine(trade_date, SNAPSHOT_AT, tzinfo=IST)
 
 
-def _last_rearm(session: Session, scope: str, bot_id: uuid.UUID | None) -> datetime | None:
-    """When the key's drawdown or manual kill was last re-armed; None for never."""
-    return session.scalar(
-        select(func.max(HatKillSwitch.rearmed_at)).where(
-            HatKillSwitch.scope == scope,
-            HatKillSwitch.bot_id.is_(None) if bot_id is None else HatKillSwitch.bot_id == bot_id,
-            HatKillSwitch.state == kill.ARMED,
-            HatKillSwitch.reason.in_(kill.RISK_REASONS),
-        )
+def _last_rearms(session: Session) -> dict[tuple[str, uuid.UUID | None], HatKillSwitch]:
+    """Each key's latest re-arm row of a drawdown or manual kill, by (scope, bot), in one query
+    (Postgres `DISTINCT ON`); a key never re-armed is missing."""
+    rows = session.scalars(
+        select(HatKillSwitch)
+        .where(HatKillSwitch.state == kill.ARMED, HatKillSwitch.reason.in_(kill.RISK_REASONS))
+        .order_by(HatKillSwitch.scope, HatKillSwitch.bot_id, HatKillSwitch.rearmed_at.desc())
+        .distinct(HatKillSwitch.scope, HatKillSwitch.bot_id)
     )
+    return {(row.scope, row.bot_id): row for row in rows}
 
 
 def _capital_by_snapshot(
@@ -111,31 +115,199 @@ def evaluate_drawdown_kills(
     live: Mapping[uuid.UUID, tuple[Decimal, Decimal]] | None = None,
 ) -> list[str]:
     """Trip the account and bot kills from `hat_daily_bot_snapshot` (HAT-RISK-060/061): a
-    switch trips when a snapshot after its last re-arm is at or past its drawdown threshold.
+    switch trips when a point after its last re-arm is at or past its drawdown threshold.
     `live` (each bot's (equity, capital) marked at `now`, `live_equity`) adds a point at `now`
     to each series, so a drawdown trips during the session on the same thresholds (P5, X9).
     Returns the scopes tripped now (`account`, or a bot id).
 
     Equity is allocation capital plus realised P&L plus the open positions marked to market, so
-    a cut in a sleeve's capital by the allocator is not a loss. The bot series carries peaks that
-    `snapshot_bots` already restated for reallocation; the account series is restated here from
-    the allocation history (`kill.adjusted_series`). A snapshot with zero allocated capital is not
-    measured: nothing was at risk (HAT-RISK-066).
+    a cut in a sleeve's capital by the allocator is not a loss. A key never re-armed reads its
+    whole history: the bot series carries peaks that `snapshot_bots` already restated for
+    reallocation; the account series is restated here from the allocation history
+    (`kill.adjusted_series`). A re-armed key reads only from its re-arm, and its peak restarts
+    at its equity there (D232, `_tripped_after_rearm`). A point with zero allocated capital is
+    not measured: nothing was at risk (HAT-RISK-066).
     """
-    snaps = session.scalars(select(HatDailyBotSnapshot)).all()
-    capital = _capital_by_snapshot(session, snaps)
+    live = live or {}
+    history = _History(session, now, live)
+    keys: list[tuple[str, uuid.UUID | None, Decimal]] = [
+        ("bot", bot_id, policy.bot_drawdown_pct)
+        for bot_id in sorted(set(session.scalars(select(HatBot.id))) | set(live))
+    ]
+    keys.append(("account", None, policy.account_drawdown_pct))
+    rearms = _last_rearms(session)
     tripped: list[str] = []
-    for bot_id, series in _bot_series(snaps, capital, now, live or {}).items():
-        if kill.tripped_since(
-            series, policy.bot_drawdown_pct, _last_rearm(session, "bot", bot_id)
-        ) and trip_kill(session, scope="bot", bot_id=bot_id, reason="drawdown_bot", now=now):
-            tripped.append(str(bot_id))
-    account = _account_series(snaps, capital, now, live or {})
-    if kill.tripped_since(
-        account, policy.account_drawdown_pct, _last_rearm(session, "account", None)
-    ) and trip_kill(session, scope="account", bot_id=None, reason="drawdown_account", now=now):
-        tripped.append("account")
+    for scope, bot_id, threshold in keys:
+        rearm = rearms.get((scope, bot_id))
+        if rearm is None:
+            breached = kill.tripped_since(history.series(bot_id), threshold)
+        else:
+            breached = _tripped_after_rearm(session, rearm, threshold, now, _live_of(live, bot_id))
+        reason = "drawdown_bot" if scope == "bot" else "drawdown_account"
+        if breached and trip_kill(session, scope=scope, bot_id=bot_id, reason=reason, now=now):
+            tripped.append("account" if bot_id is None else str(bot_id))
     return tripped
+
+
+class _History:
+    """The whole snapshot history, read once and only for a key never re-armed."""
+
+    def __init__(
+        self, session: Session, now: datetime, live: Mapping[uuid.UUID, tuple[Decimal, Decimal]]
+    ) -> None:
+        self._session = session
+        self._now = now
+        self._live = live
+        self._read: (
+            tuple[dict[uuid.UUID, list[kill.EquityPoint]], list[kill.EquityPoint]] | None
+        ) = None
+
+    def series(self, bot_id: uuid.UUID | None) -> list[kill.EquityPoint]:
+        """The bot's series, or the account's for None."""
+        if self._read is None:
+            snaps = self._session.scalars(select(HatDailyBotSnapshot)).all()
+            capital = _capital_by_snapshot(self._session, snaps)
+            self._read = (
+                _bot_series(snaps, capital, self._now, self._live),
+                _account_series(snaps, capital, self._now, self._live),
+            )
+        bots, account = self._read
+        return account if bot_id is None else bots.get(bot_id, [])
+
+
+def _live_of(
+    live: Mapping[uuid.UUID, tuple[Decimal, Decimal]], bot_id: uuid.UUID | None
+) -> tuple[Decimal, Decimal] | None:
+    """The scope's (equity, capital) marked now: the bot's, or the sum over the bots for the
+    account; None when there is none or its capital is zero (nothing at risk)."""
+    if bot_id is not None:
+        found = live.get(bot_id)
+        return found if found is not None and found[1] != 0 else None
+    capital = sum((cap for _, cap in live.values()), Decimal(0))
+    if capital == 0:
+        return None
+    return sum((equity for equity, _ in live.values()), Decimal(0)), capital
+
+
+def _closed_pnl(
+    session: Session, bot_id: uuid.UUID | None, after: datetime | None
+) -> list[tuple[datetime, Decimal]]:
+    """(closed at, realised P&L) of the scope's real trades closed after `after` (all for
+    None): the bot's, or every bot's for the account."""
+    query = (
+        select(HatPosition.closed_at, HatTradeResult.realized_pnl)
+        .join(HatTradeResult, HatTradeResult.position_id == HatPosition.id)
+        .where(HatPosition.is_virtual.is_(False), HatPosition.closed_at.is_not(None))
+    )
+    if bot_id is not None:
+        query = query.where(HatPosition.bot_id == bot_id)
+    if after is not None:
+        query = query.where(HatPosition.closed_at > after)
+    return [(as_utc(at), Decimal(pnl)) for at, pnl in session.execute(query)]
+
+
+def _points_since(
+    session: Session,
+    bot_id: uuid.UUID | None,
+    since: datetime,
+    realized_since: Decimal,
+    now: datetime,
+    live: tuple[Decimal, Decimal] | None,
+) -> list[tuple[kill.SnapshotPoint, Decimal]]:
+    """The scope's points after `since`, each with its realised P&L so far: its snapshots (the
+    bots' summed per date for the account), then its point marked at `now`. Reads only the
+    snapshots and closed trades after `since`: a snapshot's capital is its equity less its
+    marked P&L and the realised P&L, which is `realized_since` plus the trades closed since."""
+    query = select(HatDailyBotSnapshot).where(
+        HatDailyBotSnapshot.trade_date >= since.astimezone(IST).date()
+    )
+    if bot_id is not None:
+        query = query.where(HatDailyBotSnapshot.bot_id == bot_id)
+    totals: dict[date, tuple[Decimal, Decimal]] = {}
+    for s in session.scalars(query):
+        if _snapshot_instant(s.trade_date) <= since:
+            continue
+        equity, marked = totals.get(s.trade_date, (Decimal(0), Decimal(0)))
+        totals[s.trade_date] = (equity + Decimal(s.equity), marked + Decimal(s.open_pnl or 0))
+    closed = _closed_pnl(session, bot_id, since)
+
+    def realized_by(cut: datetime) -> Decimal:
+        return realized_since + sum((p for at, p in closed if at <= cut), Decimal(0))
+
+    out = []
+    for day in sorted(totals):
+        cut = _snapshot_instant(day)
+        equity, marked = totals[day]
+        realized = realized_by(cut)
+        out.append((kill.SnapshotPoint(cut, equity, equity - marked - realized), realized))
+    if live is not None and now > since:
+        equity, capital = live
+        out.append((kill.SnapshotPoint(now, equity, capital), realized_by(now)))
+    return out
+
+
+def _tripped_after_rearm(
+    session: Session,
+    rearm: HatKillSwitch,
+    threshold: Decimal,
+    now: datetime,
+    live: tuple[Decimal, Decimal] | None,
+) -> bool:
+    """D232 (Q41): whether the re-armed key has fallen `threshold` from its equity at the
+    re-arm. The first point after the re-arm becomes its base (`hat_drawdown_base`, journalled
+    as `kill.peak_reset`); until there is one nothing is measured. Reads from the base on."""
+    base = session.get(HatDrawdownBase, rearm.id)
+    if base is None:
+        since = as_utc(rearm.rearmed_at)
+        realized = sum(
+            (p for at, p in _closed_pnl(session, rearm.bot_id, None) if at <= since), Decimal(0)
+        )
+    else:
+        since, realized = as_utc(base.taken_at), Decimal(base.realized)
+    found = _points_since(session, rearm.bot_id, since, realized, now, live)
+    if base is None:
+        if not found:
+            return False
+        base = _take_base(session, rearm, *found[0])
+    points = [point for point, _ in found]
+    start = kill.SnapshotPoint(as_utc(base.taken_at), Decimal(base.equity), Decimal(base.capital))
+    return kill.tripped_after_rearm(start, points, threshold)
+
+
+def _take_base(
+    session: Session, rearm: HatKillSwitch, point: kill.SnapshotPoint, realized: Decimal
+) -> HatDrawdownBase:
+    """Record `point` as the re-armed key's base and journal `kill.peak_reset`."""
+    assert point.capital is not None  # a point after a re-arm always knows its capital
+    allocations = select(HatAllocationDaily.currency).order_by(HatAllocationDaily.trade_date.desc())
+    if rearm.bot_id is not None:
+        allocations = allocations.where(HatAllocationDaily.bot_id == rearm.bot_id)
+    base = HatDrawdownBase(
+        rearm_id=rearm.id,
+        taken_at=point.at,
+        equity=point.equity,
+        capital=point.capital,
+        realized=realized,
+        # a point exists only for an allocated bot (or account of them)
+        currency=session.scalar(allocations.limit(1)),
+    )
+    session.add(base)
+    session.flush()
+    record(
+        session,
+        aggregate_type="bot",
+        aggregate_id=rearm.bot_id if rearm.bot_id is not None else load_settings().user_id,
+        event_type="kill.peak_reset",
+        actor="engine",
+        payload={
+            "scope": rearm.scope,
+            "rearmed_at": as_utc(rearm.rearmed_at).isoformat(),
+            "equity": str(point.equity),
+        },
+        bot_id=rearm.bot_id,
+        occurred_at=point.at,
+    )
+    return base
 
 
 def _bot_series(

@@ -26,7 +26,17 @@ from sqlalchemy.orm import Mapper
 from ...base import Base
 from ..risk.modes import Mode
 from ..risk.policy import require_cooling_off
-from ._types import VERSION_STATUSES, JsonB, Timestamptz, fk, in_values, now_utc, uuid_pk
+from ._types import (
+    VERSION_STATUSES,
+    Currency,
+    JsonB,
+    Money,
+    Timestamptz,
+    fk,
+    in_values,
+    now_utc,
+    uuid_pk,
+)
 
 BOT_ID = "hat_bot.id"
 # `hat_broker_account.status` and `.broker` values: the one copy every reader imports, from this
@@ -250,6 +260,23 @@ class HatKillSwitch(Base):
     tripped_at = Column(Timestamptz, nullable=False)
     reason = Column(Text, nullable=False)
     rearmed_at = Column(Timestamptz)
+
+
+class HatDrawdownBase(Base):
+    """D232 (Q41): where a re-armed drawdown kill measures from. One row per re-arm row of a
+    drawdown or manual kill, written at the first equity point after the re-arm: that point's
+    time, its equity, the allocation capital it was measured against and the realised P&L of
+    the scope's real trades closed by then (so later points need only the trades closed after
+    it)."""
+
+    __tablename__ = "hat_drawdown_base"
+
+    rearm_id = fk("hat_kill_switch.id", primary_key=True)
+    taken_at = Column(Timestamptz, nullable=False)
+    equity = Column(Money, nullable=False)
+    capital = Column(Money, nullable=False)
+    realized = Column(Money, nullable=False)
+    currency = Column(Currency, nullable=False)  # the scope's allocation currency
 
 
 class HatExposureState(Base):

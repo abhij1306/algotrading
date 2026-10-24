@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future
 from datetime import datetime
 from types import ModuleType
 from typing import Any
@@ -29,6 +30,42 @@ __all__ = ["FyersSession", "get_fyers_session", "reset_fyers_session", "sdk_mode
 logger = logging.getLogger(__name__)
 
 ModelFactory = Callable[..., Any]
+# The token check's profile read has a timeout, as every broker call has the broker guard's: a
+# hung SDK call fails the check (an invalid token) instead of holding its caller.
+PROFILE_TIMEOUT_SECONDS = 5.0
+MAX_PROFILE_READS = 4  # reads in flight at once; past it a check fails closed without one
+
+
+class _ProfileReads:
+    """Each profile read on a fresh daemon thread, never a pooled one: a read that times out
+    keeps running on its own thread and cannot hold up a later check. At most
+    `MAX_PROFILE_READS` run at once, so hung reads cannot pile up threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running = 0
+
+    def read(self, model: Any) -> Any:  # noqa: ANN401 - the untyped SDK model and its reply
+        with self._lock:
+            if self._running >= MAX_PROFILE_READS:
+                raise TimeoutError("earlier Fyers profile reads are still running")
+            self._running += 1
+        done: Future[Any] = Future()
+
+        def run() -> None:
+            try:
+                done.set_result(model.get_profile())
+            except BaseException as error:  # handed to the waiting check
+                done.set_exception(error)
+            finally:
+                with self._lock:
+                    self._running -= 1
+
+        threading.Thread(target=run, name="fyers-validate", daemon=True).start()
+        return done.result(timeout=PROFILE_TIMEOUT_SECONDS)
+
+
+_PROFILE_READS = _ProfileReads()
 
 
 def sdk_model(**kwargs: str) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
@@ -209,7 +246,7 @@ class FyersSession:
             self._validating_token = False
 
     def _profile_ok(self) -> bool:
-        response = self.fyers.get_profile()
+        response = _PROFILE_READS.read(self.fyers)
         if response.get("s") == "ok":
             return True
         logger.warning("Fyers token invalid (code %s)", response.get("code"))

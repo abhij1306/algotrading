@@ -45,7 +45,9 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
   nightly; the GTT book is read at 08:40 and every few minutes by the fill sync, and a GTT the
   broker dropped is ended and replaced at once (an unreadable book changes nothing); a lost broker answer never freezes a position and is settled against the broker's book.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). A drawdown or
-  manual kill re-arms by hand with a second confirmation; a health kill clears itself. Drawdown
+  manual kill re-arms by hand with a second confirmation; a health kill clears itself. A re-arm
+  restarts the peak: the scope is measured from its equity at the first point after the re-arm
+  (D232). Drawdown
   equity is capital + realised P&L + open positions marked to market (the latest fresh trade in
   the session, the official close at night); before its first trade of the session a holding is
   marked at its previous official close, and a stale price (or no trade and no close) at the lower

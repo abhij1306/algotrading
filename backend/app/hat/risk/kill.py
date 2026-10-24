@@ -236,6 +236,18 @@ def adjusted_series(points: Iterable[SnapshotPoint]) -> list[EquityPoint]:
     return out
 
 
+def tripped_after_rearm(
+    base: SnapshotPoint, points: Iterable[SnapshotPoint], threshold: Decimal
+) -> bool:
+    """D232 (Q41): after a re-arm the drawdown is measured from `base`, the scope's equity at
+    the first point after the re-arm. The peak restarts there and rises with the later points
+    (restated for reallocation, `adjusted_series`), so only a new fall of `threshold` from it
+    trips; `base` itself never does, and a point at or before it is not read."""
+    since = as_utc(base.at)
+    later = [p for p in points if as_utc(p.at) > since]
+    return tripped_since(adjusted_series([base, *later]), threshold, since)
+
+
 # --- Mark-to-market equity (P5, owner decision X9) ---------------------------------------------
 
 

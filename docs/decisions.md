@@ -40,7 +40,9 @@ here.
   ladder L1 2 positions at 0.5x, L2 4 at 1.0x, L3 6 at 1.0x, up after 2 wins, down after 2 losses;
   kill switches at 10% drawdown (account and per bot) make bots manage-only, measured on equity
   marked to market intraday, not only the end-of-day realised P&L (X9, 2026-10-23); before a
-  holding's first trade of the session it is marked at its previous official close (D210). All risk
+  holding's first trade of the session it is marked at its previous official close (D210); a
+  re-arm restarts the peak at the equity then, so the kill trips again only on a new 10% fall
+  (D232, Q41, 2026-10-24). All risk
   numbers live in the versioned risk policy, never in a bot or strategy.
 - **Portfolio (PL1-PL5).** Unit is a sleeve (strategy version x universe version). Regime (rules
   over trend, India VIX, breadth; 4 states, changes after 3 days) scales sleeve weights within
