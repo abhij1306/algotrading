@@ -294,7 +294,8 @@ class _Sleeve:
         self.confirmation = regime_v1.confirm_step(
             self.confirmation, regime_v1.classify_inputs(inputs)
         )
-        return self._allocate(regime_v1.multiplier_for(self.confirmation.confirmed), equity)
+        table = self.spec.regime_table
+        return self._allocate(regime_v1.multiplier_for(self.confirmation.confirmed, table), equity)
 
     def _allocate(self, table_value: Decimal, equity: Decimal) -> Allocation:
         (allocation,) = allocate(

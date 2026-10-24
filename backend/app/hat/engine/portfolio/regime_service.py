@@ -47,6 +47,20 @@ def ensure_regime_model(session: Session, market_id: uuid.UUID) -> HatRegimeMode
     return row
 
 
+def stored_regime_table(session: Session, market_id: uuid.UUID) -> dict[str, Decimal]:
+    """The multiplier table the allocation reads now: the stored rules model's (`regime_table`),
+    or the one `ensure_regime_model` would store when the model is not created yet. Writes
+    nothing."""
+    row = session.scalars(
+        select(HatRegimeModelVersion).where(
+            HatRegimeModelVersion.market_id == market_id,
+            HatRegimeModelVersion.kind == "rules",
+            HatRegimeModelVersion.version == 1,
+        )
+    ).first()
+    return dict(regime.DEFAULT_MULTIPLIERS) if row is None else regime_table(row)
+
+
 def _confirmation_of(row: HatRegimeState) -> regime.Confirmation:
     data = row.inputs
     return regime.Confirmation(

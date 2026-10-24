@@ -14,6 +14,7 @@ conventions live does not trade by. Every run records its conventions and hashes
 from __future__ import annotations
 
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -153,10 +154,13 @@ class RunConventions:
         if self.regime_mult != REGIME_MULT_POLICY:  # live sizes under the regime engine (PR 69)
             raise BacktestError("backtest_promotion_regime_variant")
 
-    def record(self, fills: BacktestFills, weight: Decimal) -> dict[str, Any]:
+    def record(
+        self, fills: BacktestFills, weight: Decimal, table: Mapping[str, Decimal]
+    ) -> dict[str, Any]:
         """The conventions a run used, as recorded in its metrics and hashed into its
-        `config_digest`, with the run's fills and its resolved sleeve weight. The keys and their
-        order are the stored format: a change makes new digests differ from every stored run's."""
+        `config_digest`, with the run's fills, its resolved sleeve weight and the regime table it
+        sized under. The keys and their order are the stored format: a change makes new digests
+        differ from every stored run's."""
         return {
             "fill_path": FILL_PATH,
             "entry_fill_rule": self.entry_fill_rule,
@@ -177,7 +181,7 @@ class RunConventions:
             "regime_mult": self.regime_mult,
             "health_mult": "1",
             **(
-                {"regime_table": {k: str(v) for k, v in regime_v1.DEFAULT_MULTIPLIERS.items()}}
+                {"regime_table": {k: str(table[k]) for k in regime_v1.STATES}}
                 if self.regime_mult == REGIME_MULT_POLICY
                 else {}
             ),
@@ -197,17 +201,27 @@ class RunSpec:
     initial_equity: Decimal = INITIAL_EQUITY
     for_promotion: bool = False  # the run may evidence a version (`publish_version`)
     conventions: RunConventions = field(default_factory=RunConventions)
+    # the regime multiplier table the `policy` rule sizes under: the stored one live allocates
+    # with, read when the run starts (C23 E3, `regime_service.stored_regime_table`)
+    regime_table: Mapping[str, Decimal] = field(
+        default_factory=lambda: dict(regime_v1.DEFAULT_MULTIPLIERS), hash=False
+    )
 
     def __post_init__(self) -> None:
-        """Refuse a run flagged for promotion under conventions it may not use, and a sleeve
-        weight the policy cannot give (`sleeve_weight`): a spec that exists is a valid run."""
+        """Refuse a run flagged for promotion under conventions it may not use, a sleeve weight
+        the policy cannot give (`sleeve_weight`) and a regime table without an exact multiplier
+        for every state: a spec that exists is a valid run."""
         if self.for_promotion:
             self.conventions.check_promotion(self.fills.slippage_bps)
         sleeve_weight(self)
+        if set(self.regime_table) != set(regime_v1.STATES) or not all(
+            isinstance(v, Decimal) and v.is_finite() for v in self.regime_table.values()
+        ):
+            raise BacktestError("backtest_bad_regime_table")
 
     def recorded_conventions(self) -> dict[str, Any]:
         """The conventions block recorded in the run's metrics, which `config_digest` hashes."""
-        return self.conventions.record(self.fills, sleeve_weight(self))
+        return self.conventions.record(self.fills, sleeve_weight(self), self.regime_table)
 
 
 def sleeve_weight(spec: RunSpec) -> Decimal:
