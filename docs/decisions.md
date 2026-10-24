@@ -135,7 +135,7 @@ here.
   NULL); an open position keeps its price-basis handling. Live is unchanged. Not the full as-of
   rebuild of the series per day.
 - **Full-history jumps (CA7, owner 2026-10-24).** Every unexplained jump from 2011 is classified
-  (`/data/workspace/ca-research/ca7_jump_classification.tsv`); `lineage report` reads the
+  (a classification file kept outside the repo); `lineage report` reads the
   total-return series and counts the jumps per year and kind (`tick`, `rights_entitlement`,
   `etf`, `other`). A split NSE lists under the new ISIN whose ex-date traded on the old one is
   stored on the old ISIN (the lineage rules see only the two sides' actions). The Saturday live
