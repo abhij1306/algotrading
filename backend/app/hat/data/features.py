@@ -47,6 +47,7 @@ import polars as pl
 import pyarrow as pa
 
 from ..errors import HatError
+from ..money import require_exact
 from ..ops.jobs import JobResult
 from .store import (
     BREADTH_SCHEMA,
@@ -501,7 +502,11 @@ def adjustment_of(
             continue
         day = date.fromisoformat(ex_date)
         if value.startswith(DIVIDEND_LINE):
-            paid.append(DividendCash(instrument, day, Decimal(value.removeprefix(DIVIDEND_LINE))))
+            paid.append(
+                DividendCash(
+                    instrument, day, require_exact(value.removeprefix(DIVIDEND_LINE), "dividend")
+                )
+            )
         else:
             picked.append(ActionFactor(instrument, day, Decimal(value)))
     links = {}
