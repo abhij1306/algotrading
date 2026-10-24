@@ -42,9 +42,10 @@ codes only, never broker text.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -105,6 +106,7 @@ __all__ = [
     "ALERT_STOP_NOT_MOVED",
     "ALERT_STOP_NOT_PLACED",
     "SWAP_AT",
+    "AlertedToday",
     "StopDesk",
 ]
 
@@ -127,6 +129,9 @@ ALERT_GTT_SWAP_FAILED = "gtt.swap_failed"
 ALERT_GTT_MISSING = "gtt.missing"
 ALERT_GTT_UNVERIFIED = "gtt.unverified"
 ALERT_GTT_UNFILLED = "gtt.unfilled"
+# Raised again at every sync while the cause stands: told once per position, reason and trade
+# date (C22 A4).
+ONCE_A_DAY = frozenset({ALERT_STOP_NOT_PLACED, ALERT_STOP_NOT_MOVED})
 
 # Outcomes (fixed words) the jobs count.
 PROTECTED = "protected"
@@ -153,6 +158,27 @@ class StopTarget:
     unmapped: bool = False
 
 
+class AlertedToday:
+    """The (code, position, reason) alerts already raised on the current trade date; a new
+    trade date starts empty. Thread-safe: the desk's callers hold different positions' locks."""
+
+    def __init__(self) -> None:
+        self._day: date | None = None
+        self._seen: set[tuple[str, uuid.UUID, str]] = set()
+        self._lock = threading.Lock()
+
+    def first(self, day: date, code: str, position_id: uuid.UUID, reason: str) -> bool:
+        """True the first time this alert is asked for on `day` (and records it)."""
+        key = (code, position_id, reason)
+        with self._lock:
+            if day != self._day:
+                self._day, self._seen = day, set()
+            if key in self._seen:
+                return False
+            self._seen.add(key)
+            return True
+
+
 class StopDesk:
     """Broker stops for one broker account's session; `guard` is the account's order gate (it
     never holds a stop back: the reconciliation gates entries only, D118)."""
@@ -176,6 +202,7 @@ class StopDesk:
         self._sender = OrderSender(broker, guard, self._clock, tick_for)
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
+        self._alerted = AlertedToday()  # the ONCE_A_DAY alerts raised
         self.entries = EntryCancel(broker)  # the entry remainders it cancels
 
     @property
@@ -310,9 +337,15 @@ class StopDesk:
         )
 
     def alert(self, code: str, target: StopTarget, now: datetime, reason: str) -> None:
+        """Tell the owner; a `ONCE_A_DAY` alert only the first time on the trade date for its
+        position and reason (the next syncs try again and would raise it each time)."""
+        day = trade_date_of(now)
+        if code in ONCE_A_DAY and not self._alerted.first(day, code, target.position.id, reason):
+            logger.info("%s of position %s (%s) already alerted", code, target.position.id, reason)
+            return
         self._notifier.alert(
             code,
-            trade_date_of(now),
+            day,
             {
                 "bot_id": str(target.signal.bot_id),
                 "signal_id": str(target.signal.id),
