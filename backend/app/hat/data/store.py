@@ -98,6 +98,7 @@ FEATURE_NAMES = (
     "ret63",
     "ret126",
     "ret252",
+    "rs_weighted",  # 0.4 ret63 + 0.2 ret126 + 0.2 ret189 + 0.2 ret252, what rs_pct ranks
     "rs_pct",
     "mom_rank",
 )
@@ -504,17 +505,22 @@ class DataStore:
         return found
 
     def fingerprints(self, dataset: str) -> dict[date, str]:
-        """Per day with data, its part files as `name:size` joined by `;`. A bars file name
-        carries its ingest run id, so a new run, a rewritten run of another size or a removed
-        file changes the day's fingerprint (the features job's invalidation, DB5)."""
+        """Per day with data, its part files as `name:size:mtime_ns` joined by `;`. A bars file
+        name carries its ingest run id and every write replaces the file (a new mtime), so a new
+        run, a rewritten run or a removed file changes the day's fingerprint (the features job's
+        invalidation, DB5). A copy that does not keep mtimes changes every fingerprint."""
         base = self._under_root(self.root / dataset)
         if not base.is_dir():
             return {}
         found = {}
         for child in sorted(base.glob("date=*")):
-            parts = sorted((f.name, f.stat().st_size) for f in child.glob(PART_GLOB))
+            parts = sorted(
+                f"{f.name}:{stat.st_size}:{stat.st_mtime_ns}"
+                for f in child.glob(PART_GLOB)
+                if (stat := f.stat())
+            )
             if parts:
-                found[date.fromisoformat(child.name[5:])] = ";".join(f"{n}:{s}" for n, s in parts)
+                found[date.fromisoformat(child.name[5:])] = ";".join(parts)
         return found
 
     def bar_instruments(self, day: date) -> set[str]:

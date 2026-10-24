@@ -98,7 +98,7 @@ ABOVE_MARGIN = 1e-12
 ORDINARY_EQUITY = r"^IN[E9][0-9A-Z]{4}01[0-9A-Z]{2}[0-9]$"
 # What else besides the adjustment changes every date: the universe rule and the formulas. A
 # change here rebuilds every date (the state records it).
-FEATURES_RULE = f"v2|universe:{ORDINARY_EQUITY}"
+FEATURES_RULE = f"v3|universe:{ORDINARY_EQUITY}"
 
 BAR_COLUMNS = (
     "instrument_id",
@@ -191,7 +191,7 @@ def _per_instrument(frame: pl.DataFrame) -> pl.DataFrame:
         _mean(col("volume"), WINDOW_20).alias("adv20"),
         _mean(traded, WINDOW_20).alias("turnover20"),
         *(_ret(n).alias(f"ret{n}") for n in RET_WINDOWS),
-        weighted.alias("_weighted"),
+        weighted.alias("rs_weighted"),
     ).drop("high", "low", "prev_close", "volume", "traded_value")
 
 
@@ -222,7 +222,7 @@ def compute_features(
     null where unknown). The percentile columns and breadth rank and count the rows of the
     ranked universe (`ordinary_equity` of the row's own ISIN, so a day's members are those of
     that day); other rows get null `rs_pct` and `mom_rank`. `features` has `date`,
-    `instrument_id` and the 17 feature columns; `breadth` has `date` and the `BREADTH_SCHEMA`
+    `instrument_id` and the 18 feature columns; `breadth` has `date` and the `BREADTH_SCHEMA`
     columns. The first rows of an instrument have null windows, so the caller passes the
     lookback rows and `from_date`. `batch` computes the per-instrument columns that many
     instruments at a time to bound memory; it changes no value.
@@ -248,7 +248,7 @@ def compute_features(
     # Returns of the universe members only are ranked; the weighted return is null unless all
     # four horizons exist, as in the pandas `compute_rs_map` (fewer than 253 bars: left out).
     ranked = wide.with_columns(
-        _percentile(pl.when(in_universe).then(col("_weighted"))).alias("rs_pct"),
+        _percentile(pl.when(in_universe).then(col("rs_weighted"))).alias("rs_pct"),
         *(
             _percentile(pl.when(in_universe).then(col(f"ret{n}"))).alias(f"_pct{n}")
             for n in MOM_WINDOWS
@@ -371,55 +371,62 @@ def _write_state(store: DataStore, state: FeaturesState) -> None:
     atomic_replace(_state_path(store), lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
 
-def features_current(store: DataStore, digest: str, days: Iterable[date]) -> bool:
+def features_current(
+    store: DataStore, digest: str, days: Iterable[date], read: Mapping[date, str] | None = None
+) -> bool:
     """True when every one of `days` has features written for the inputs `digest` from the bars
     the store holds now (the backtest's gate; the caller holds the features lock). A rebuild in
-    progress, or bars corrected since, leaves some day unrecorded or with another fingerprint."""
+    progress, or bars corrected since, leaves some day unrecorded or with another fingerprint.
+    `read` is the fingerprints a caller took before reading the bars itself: they must be the
+    recorded ones and still the store's, so features never pair with bars read before a change."""
     state = read_state(store)
     if state is None or state.inputs_digest != digest:
         return False
     prints = store.fingerprints(DATASET_BARS)
+    seen = prints if read is None else read
     return all(
         day in prints
-        and state.days.get(day) == prints[day]
+        and state.days.get(day) == prints[day] == seen.get(day)
         and store.partition_files(DATASET_FEATURES, day)
         for day in days
     )
 
 
 def stale_days(
-    days: Sequence[date], dirty: Collection[date], presence: Callable[[date], Collection[str]]
+    days: Sequence[date],
+    dirty: Collection[date],
+    presence: Callable[[date], Collection[str]],
+    lost: Collection[date] = (),
 ) -> set[date]:
-    """The days to recompute when the bars of `dirty` changed (or were never featured).
+    """The days to recompute when the bars of `dirty` (days of `days`) changed or were never
+    featured, or a recorded part file of `lost` disappeared.
 
     A feature of day x reads the instrument's own last `LOOKBACK_ROWS` rows before x, so a
     changed day d moves, besides d itself, every later day on which an instrument with a row
     on d has one of its next `LOOKBACK_ROWS` rows (counted per instrument: one that trades
     rarely reaches further than `LOOKBACK_ROWS` store days), and with it the percentiles and
-    breadth of those days. The `LOOKBACK_ROWS` store days after d are stale whatever trades on
-    them, since an instrument whose run was removed from d is no longer listed. `dirty` may name
-    days not in `days` (a removed day): they count from the next day. `presence(day)` is the ids
-    with a bar on a day of `days`, as the adjusted view names them."""
+    breadth of those days; the `LOOKBACK_ROWS` store days after d are stale in any case. A lost
+    day (removed, or one of its recorded files removed or rewritten) no longer lists the
+    instruments it had, so every day from it on is stale. `presence(day)` is the ids with a bar
+    on a day of `days`, as the adjusted view names them."""
     stale: set[date] = set()
+    if lost:
+        first_lost = min(lost)
+        stale.update(d for d in days if d >= first_lost)
     if not dirty:
         return stale
-    pending = sorted(dirty)
     remaining: dict[str, int] = {}  # rows still to come that read a dirty day, per instrument
     floor = -1  # the last index stale by the store-day rule
-    k = 0
-    for i in range(bisect_left(days, pending[0]), len(days)):
+    last_dirty = max(dirty)
+    for i in range(bisect_left(days, min(dirty)), len(days)):
         day = days[i]
-        while k < len(pending) and pending[k] <= day:
-            if pending[k] < day:  # a removed day just before this one
-                floor = max(floor, i + LOOKBACK_ROWS - 1)
-            k += 1
         if day in dirty:
             stale.add(day)
             floor = max(floor, i + LOOKBACK_ROWS)
             remaining.update(dict.fromkeys(presence(day), LOOKBACK_ROWS))
             continue
         if not remaining and i > floor:
-            if k == len(pending):
+            if day > last_dirty:
                 break
             continue
         hit = [x for x in presence(day) if x in remaining] if remaining else []
@@ -430,6 +437,11 @@ def stale_days(
             if not remaining[x]:
                 del remaining[x]
     return stale
+
+
+def _parts(fingerprint: str) -> set[str]:
+    """The `name:size` parts of a `DataStore.fingerprints` entry."""
+    return {part for part in fingerprint.split(";") if part}
 
 
 def affected_chains(
@@ -522,9 +534,16 @@ def write_day(store: DataStore, day: date, features: pl.DataFrame, breadth: pl.D
 
 # --- an adjustment change: only the touched chains --------------------------------------------
 
-RANK_INPUTS = ("ret21", "ret63", "ret126", "_weighted")  # what rs_pct and mom_rank rank
+# What rs_pct and mom_rank rank, and the stored percentile that is non-null exactly for the
+# members with a value of it (so the stored rows give each column's ranked multiset).
+RANK_INPUTS = ("ret21", "ret63", "ret126", "rs_weighted")
+RANKED_BY = {
+    "ret21": "mom_rank",
+    "ret63": "mom_rank",
+    "ret126": "mom_rank",
+    "rs_weighted": "rs_pct",
+}
 OWN_FEATURES = tuple(n for n in FEATURE_NAMES if n not in ("rs_pct", "mom_rank"))
-COMPARED = (*OWN_FEATURES, "_weighted")  # every value of a chain row, the rank inputs among them
 # Two computations of one value from inputs scaled by a factor differ in the last bits; a change
 # this small is float noise, not a new value (a split moves a price by percents).
 SAME_TOLERANCE = 1e-12
@@ -550,17 +569,21 @@ def splice_day(
     old: Sequence[Mapping[str, Any]],
     new: Sequence[Mapping[str, Any]],
     ranks: Mapping[str, tuple[float | None, float | None]],
+    others: Mapping[str, Collection[float]],
 ) -> DaySplice | None:
     """The new rows of the touched chains on one day and the breadth deltas, when the change
     leaves every percentile of the day as it was; None when the day must be recomputed whole.
 
     `old` and `new` are the chains' computed rows of the day under the previous and the current
-    adjustment (`instrument_id`, `_member`, `_above`, the `RANK_INPUTS` and `OWN_FEATURES`);
-    `ranks` is the stored (rs_pct, mom_rank) of each old row. A percentile depends only on the
-    value and the multiset of the day's member values, so when the chains' member rank inputs
-    are the same multiset (within float noise) every other row keeps its percentiles and each new
-    row takes those of the old row with the same inputs. A split with a later ex-date scales a
-    whole history, which leaves every return as it was."""
+    adjustment (`instrument_id`, `_member`, `_with`, `_above` and `OWN_FEATURES`); `ranks` is the
+    stored (rs_pct, mom_rank) of each old row; `others` is, per `RANK_INPUTS` column, the stored
+    values the day ranks of every other member. A percentile depends only on the value's place
+    among the day's member values, so the splice needs the chains' member values to pair up old
+    to new (sorted) within float noise and no value to change place: no other member's value,
+    nor another chain row's old or new value, lies between a row's old and new value (ends
+    included, so a tie made or broken also recomputes). Then every other row keeps its
+    percentiles and each new row takes those of its old row. A split with a later ex-date
+    scales a whole history, which leaves every return as it was up to the last bits."""
 
     def key(row: Mapping[str, Any]) -> tuple[tuple[bool, float], ...]:
         return tuple((row[c] is None, row[c] or 0.0) for c in RANK_INPUTS)
@@ -572,11 +595,18 @@ def splice_day(
     before, after = ranked(old), ranked(new)
     if len(before) != len(after) or any(r["instrument_id"] not in ranks for r in before):
         return None
-    if not all(_same(a[c], b[c]) for a, b in zip(before, after, strict=True) for c in RANK_INPUTS):
+    pairs = list(zip(before, after, strict=True))
+    if not all(_same(a[c], b[c]) for a, b in pairs for c in RANK_INPUTS):
         return None
-    taken = {
-        b["instrument_id"]: ranks[a["instrument_id"]] for a, b in zip(before, after, strict=True)
-    }
+    for c in RANK_INPUTS:
+        for i, (a, b) in enumerate(pairs):
+            if a[c] == b[c]:
+                continue  # unchanged: no other value moved past it
+            low, high = min(a[c], b[c]), max(a[c], b[c])
+            chain = [r[c] for j, pair in enumerate(pairs) if j != i for r in pair]
+            if any(v is not None and low <= v <= high for v in (*others[c], *chain)):
+                return None
+    taken = {b["instrument_id"]: ranks[a["instrument_id"]] for a, b in pairs}
     rows = []
     for r in sorted(new, key=lambda r: r["instrument_id"]):
         rs_pct, mom_rank = taken.get(r["instrument_id"], (None, None))
@@ -605,7 +635,7 @@ def _changed(old: Sequence[Mapping[str, Any]], new: Sequence[Mapping[str, Any]])
     return any(
         before[i]["_member"] != after[i]["_member"]
         or before[i]["_above"] != after[i]["_above"]
-        or not all(_same(before[i][c], after[i][c]) for c in COMPARED)
+        or not all(_same(before[i][c], after[i][c]) for c in OWN_FEATURES)
         for i in before
     )
 
@@ -640,7 +670,7 @@ def chain_features(
         col("sma50").is_not_null().alias("_with"),
         _above().fill_null(value=False).alias("_above"),
     )
-    frame = frame.select("date", "instrument_id", "_member", "_with", "_above", *COMPARED)
+    frame = frame.select("date", "instrument_id", "_member", "_with", "_above", *OWN_FEATURES)
     return {
         key[0]: part.drop("date") for key, part in frame.partition_by("date", as_dict=True).items()
     }
@@ -671,12 +701,16 @@ def _splice(
     ranks = {
         r[0]: (r[1], r[2]) for r in mine.select("instrument_id", "rs_pct", "mom_rank").iter_rows()
     }
-    splice = splice_day(old, new, ranks)
+    kept = stored.filter(~pl.col("instrument_id").is_in(list(chains)))
+    others = {
+        c: kept.filter(pl.col(by).is_not_null())[c].drop_nulls().to_list()
+        for c, by in RANKED_BY.items()
+    }
+    splice = splice_day(old, new, ranks, others)
     if splice is None:
         return None
     schema = pl.from_arrow(FEATURES_SCHEMA.empty_table()).schema  # type: ignore[union-attr]
     rows = pl.DataFrame(splice.rows, schema=schema)
-    kept = stored.filter(~pl.col("instrument_id").is_in(list(chains)))
     table = pl.concat([kept, rows]).sort("instrument_id").to_arrow().cast(FEATURES_SCHEMA)
     counts = breadth.row(0, named=True)
     size = counts["universe_size"] + splice.universe_size
@@ -775,7 +809,9 @@ def _update(
     all_days = sorted(prints)
     written = set(store.days(DATASET_FEATURES)) & set(store.days(DATASET_BREADTH))
     dirty = {d for d in all_days if state.days.get(d) != prints[d] or d not in written}
-    dirty |= {d for d in state.days if d not in prints}
+    # A day keeps its instruments only when every recorded file is still there unchanged (a new
+    # run beside them adds rows); a file removed or rewritten took rows nobody lists any more.
+    lost = {d for d, fp in state.days.items() if not _parts(fp) <= _parts(prints.get(d, ""))}
     # an id as either adjustment names it, so a lineage change on the same night is covered
     old_links = dict(line.split(">", 1) for line in state.lineage)
     new_links = dict(line.split(">", 1) for line in lines[1])
@@ -784,7 +820,7 @@ def _update(
         raw = store.bar_instruments(day)
         return {old_links.get(i, i) for i in raw} | {new_links.get(i, i) for i in raw}
 
-    stale = stale_days(all_days, dirty, presence)
+    stale = stale_days(all_days, dirty, presence, lost)
     old: dict[date, pl.DataFrame] = {}
     new: dict[date, pl.DataFrame] = {}
     candidates: list[date] = []

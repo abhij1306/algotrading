@@ -578,15 +578,17 @@ def _current_features(
     days: list[date],
     breadth_days: list[date],
     wanted: Sequence[str],
+    read: Mapping[date, str],
 ) -> tuple[pl.DataFrame, dict[date, Decimal]]:
     """The features of `days` and the breadth of `breadth_days`, read under the features job's
     lock (shared), so a run that is rewriting partitions finishes first and both come from one
     generation; `backtest_features_stale` unless the job recorded every day as written for the
-    inputs `digest` from the bars the store holds now (`features.features_current`)."""
+    inputs `digest` from the bars `read` fingerprints (taken before the bars were read) and the
+    store still holds those bars (`features.features_current`)."""
     store.root.mkdir(parents=True, exist_ok=True)
     with (store.root / FEATURES_LOCK).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)
-        if not features_current(store, digest, days):
+        if not features_current(store, digest, days, read):
             raise BacktestError("backtest_features_stale")
         return _features(store, days, wanted), _breadth(store, breadth_days)
 
@@ -647,7 +649,8 @@ def load_market(
     does. With `regime_inputs` it also reads the regime engine's index and VIX closes
     and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
     of one of them (PR 68)."""
-    every_day = store.days(DATASET_BARS)
+    read = store.fingerprints(DATASET_BARS)  # the bars about to be read, for the features gate
+    every_day = sorted(read)
     days = [d for d in every_day if d <= end]
     first = bisect_left(days, start)
     if first >= len(days):
@@ -670,7 +673,7 @@ def load_market(
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
     # read once DuckDB has let go of the bars' memory
     features, breadth = _current_features(
-        store, expected, days[max(0, first - 1) :], window if regime_inputs else [], wanted
+        store, expected, days[max(0, first - 1) :], window if regime_inputs else [], wanted, read
     )
     index_closes: dict[str, list[tuple[date, Decimal]]] = {name: [] for name in names}
     for name, day, close in rows:
