@@ -239,7 +239,8 @@ directory; run it there with `PYTHONPATH=<repo>/backend`) loads a collected NSE 
 run by default, it prints per table what it would store, what is already stored, the conflicts
 with a stored factor (fix with `correct-action`) and the review list with reasons; `--apply`
 stores the bar-confirmed factors in one transaction (journalled `corporate_action.imported`;
-repeating it stores nothing). Then rebuild the lineage and run `features --full`.
+repeating it stores nothing). Then rebuild the lineage; the next `features` run recomputes the
+chains whose factors or links changed (more than 100 rebuild every date; `features --full` forces it).
 `python -m app.hat.data.ca_research --db FILE --a A.csv --b B.csv --c C.csv --d D.csv [--apply]`
 (same working-directory rule) adds the demergers and rights the research files confirm, the
 same dry-run-then-apply way. `python -m app.hat.admin correct-actions --list NAME.tsv [--apply]`
@@ -248,7 +249,8 @@ factor new_ex_date note`; ops replace, delete, move, add): a dry run reports eac
 writes all of it or nothing.
 `python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
-inputs digest, so the next `features` run rebuilds every date (`features --full` does it now).
+inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`
+does it now).
 
 ### Restart recovery: reconcile, then resume
 
@@ -313,7 +315,8 @@ missing or extra. Print the full lists:
 `python -m app.hat.data.coverage report [--through YYYY-MM-DD]` (default yesterday).
 
 - A missing bar day: `python -m app.hat.data.history_cli --from DAY --to DAY`, then
-  `python -m app.hat.data.features --full`. A bar day on a non-trading day: check the calendar
+  `python -m app.hat.data.features` (the new day and the later days that read it are recomputed;
+  no `--full`). A bar day on a non-trading day: check the calendar
   first (a special session missing from it), then the partition.
 - A missing index day: fetch it if NSE has the file. One that cannot be fetched (the scattered
   archive gaps, a special session without an index file) is acknowledged once:

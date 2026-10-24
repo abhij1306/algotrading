@@ -48,7 +48,7 @@ from ..data.reference_jobs import (
     reference_weekly,
 )
 from ..data.renames import renames_from_bars
-from ..data.store import Adjustment, DataStore
+from ..data.store import Adjustment, DataStore, cumulative_segments
 from ..data.symbols import symbol_master
 from ..engine.close_gap import record_close_gaps
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
@@ -317,8 +317,8 @@ class Nightly:
         quarantined instrument on its `since` date are asked again (HAT-DATA-062, PR 33): a
         split whose lookup failed on the day releases its quarantine at the next gate once
         stored. A failure there is only logged: the quarantine was alerted already and stands.
-        Then the factors are checked to load into the adjusted view before the features read
-        it."""
+        Then the factors are checked to load into the adjusted view (`cumulative_segments`, no
+        connection) before the features read it."""
         try:
             self._next_session_actions(day)
         except Exception:
@@ -333,12 +333,12 @@ class Nightly:
         self._refresh_lineage(day)
         with self.deps.session_factory() as session:
             adjustment = stored_adjustment(session)
-        with self.deps.store.connect(adjustment):
-            logger.info(
-                "adjusted view loads with %d factors and %d linked ISINs",
-                len(adjustment.factors),
-                len(adjustment.lineage),
-            )
+        cumulative_segments(adjustment.factors)  # raises when a factor cannot load into the view
+        logger.info(
+            "adjusted view loads with %d factors and %d linked ISINs",
+            len(adjustment.factors),
+            len(adjustment.lineage),
+        )
         return JobResult(rows=len(adjustment.factors))
 
     def _refresh_lineage(self, day: date) -> None:

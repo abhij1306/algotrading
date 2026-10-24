@@ -1086,8 +1086,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     NSE's list. `report` prints the review list, `show` the chains of some symbols. `link` and
     `unlink` are the owner's verdict on a succession the build found (`override_lineage`; it
     needs `HAT_TELEGRAM_CHAT_ID`, the owner's chat id its event carries). After a
-    build that changed a link, the next features run rebuilds every date (its inputs digest
-    covers the lineage); `python -m app.hat.data.features --full` does it at once."""
+    build that changed a link, the next features run recomputes the chains it touched (the
+    features state keeps the lineage); `python -m app.hat.data.features` does it at once."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.lineage")
     sub = parser.add_subparsers(dest="command", required=True)
     build = sub.add_parser("build")

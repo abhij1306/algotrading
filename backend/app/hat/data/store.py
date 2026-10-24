@@ -98,6 +98,7 @@ FEATURE_NAMES = (
     "ret63",
     "ret126",
     "ret252",
+    "rs_weighted",  # 0.4 ret63 + 0.2 ret126 + 0.2 ret189 + 0.2 ret252, what rs_pct ranks
     "rs_pct",
     "mom_rank",
 )
@@ -503,6 +504,33 @@ class DataStore:
                 found.append(date.fromisoformat(child.name[5:]))
         return found
 
+    def fingerprints(self, dataset: str) -> dict[date, str]:
+        """Per day with data, its part files as `name:size:mtime_ns` joined by `;`. A bars file
+        name carries its ingest run id and every write replaces the file (a new mtime), so a new
+        run, a rewritten run or a removed file changes the day's fingerprint (the features job's
+        invalidation, DB5). A copy that does not keep mtimes changes every fingerprint."""
+        base = self._under_root(self.root / dataset)
+        if not base.is_dir():
+            return {}
+        found = {}
+        for child in sorted(base.glob("date=*")):
+            parts = sorted(
+                f"{f.name}:{stat.st_size}:{stat.st_mtime_ns}"
+                for f in child.glob(PART_GLOB)
+                if (stat := f.stat())
+            )
+            if parts:
+                found[date.fromisoformat(child.name[5:])] = ";".join(parts)
+        return found
+
+    def bar_instruments(self, day: date) -> set[str]:
+        """The instrument ids with a raw bar on `day`, across runs (only that column is read)."""
+        return {
+            str(i)
+            for path in self.partition_files(DATASET_BARS, day)
+            for i in pq.read_table(path, columns=["instrument_id"]).column(0).to_pylist()
+        }
+
     # --- DuckDB -----------------------------------------------------------------------------
 
     def connect(self, adjustment: Adjustment = NO_ADJUSTMENT) -> duckdb.DuckDBPyConnection:
@@ -516,16 +544,21 @@ class DataStore:
         )
         self._dataset_view(con, DATASET_BARS, "bars_daily_raw")
         self._dataset_view(con, DATASET_INDEX, "index_daily")
-        con.execute(
-            "CREATE TABLE ca_segment (instrument_id VARCHAR, from_date DATE, to_date DATE, "
-            "factor DECIMAL(20,18), inverse DECIMAL(24,12))"
-        )
-        segments = cumulative_segments(adjustment.factors)
-        if segments:
-            con.executemany("INSERT INTO ca_segment VALUES (?, ?, ?, ?, ?)", segments)
-        con.execute("CREATE TABLE lineage (instrument_id VARCHAR PRIMARY KEY, chain_id VARCHAR)")
-        if adjustment.lineage:
-            con.executemany("INSERT INTO lineage VALUES (?, ?)", sorted(adjustment.lineage.items()))
+        # Loaded from Arrow tables: row-by-row inserts of ~1,500 segments cost half a second.
+        links = sorted(adjustment.lineage.items())
+        tables = {
+            "ca_segment": segment_table(cumulative_segments(adjustment.factors)),
+            "lineage": pa.table(
+                {
+                    "instrument_id": pa.array([old for old, _ in links], pa.string()),
+                    "chain_id": pa.array([new for _, new in links], pa.string()),
+                }
+            ),
+        }
+        for name, table in tables.items():
+            con.register("_load", table)
+            con.execute(f"CREATE TABLE {name} AS SELECT * FROM _load")  # noqa: S608 - constant
+            con.unregister("_load")
         con.execute(_ADJ_VIEW_SQL)
         con.execute(
             """
@@ -538,17 +571,33 @@ class DataStore:
         return con
 
     def _dataset_view(self, con: duckdb.DuckDBPyConnection, dataset: str, view: str) -> None:
-        pattern = PART_GLOB
-        files = sorted(self._under_root(self.root / dataset).glob(f"date=*/{pattern}"))
-        if files:
-            listed = ", ".join("'" + str(f).replace("'", "''") + "'" for f in files)
+        """A view over the dataset's part files by a glob that DuckDB expands and prunes by the
+        `date=` partition at query time (listing ~7,400 files inline cost most of a connect)."""
+        base = self._under_root(self.root / dataset)
+        if next(base.glob(f"date=*/{PART_GLOB}"), None) is not None:
+            pattern = str(base / "date=*" / PART_GLOB).replace("'", "''")
             con.execute(
-                f"CREATE VIEW {view} AS SELECT * FROM read_parquet([{listed}], "  # noqa: S608
+                f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{pattern}', "  # noqa: S608
                 "hive_partitioning = true, hive_types = {'date': DATE})"
             )
             return
         columns = ", ".join(f"{f.name} {_duck_type(f.type)}" for f in DATASET_SCHEMAS[dataset])
         con.execute(f"CREATE TABLE {view} ({columns}, date DATE)")
+
+
+def segment_table(
+    segments: Sequence[tuple[str, date | None, date | None, Decimal, Decimal]],
+) -> pa.Table:
+    """`cumulative_segments` as the Arrow table of the view's `ca_segment` columns."""
+    return pa.table(
+        {
+            "instrument_id": pa.array([s[0] for s in segments], pa.string()),
+            "from_date": pa.array([s[1] for s in segments], pa.date32()),
+            "to_date": pa.array([s[2] for s in segments], pa.date32()),
+            "factor": pa.array([s[3] for s in segments], pa.decimal128(20, FACTOR_PLACES)),
+            "inverse": pa.array([s[4] for s in segments], pa.decimal128(24, INVERSE_PLACES)),
+        }
+    )
 
 
 def latest_rows(frame: pl.DataFrame) -> pl.DataFrame:
