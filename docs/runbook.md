@@ -40,6 +40,17 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    (columns `isin ex_date announced_on source_url note`; kept outside the repo), with
    `PYTHONPATH=<repo>/backend`: `python -m app.hat.data.demerger_notice announced
    ca8-announced.tsv`, then the same with `--apply` (fills only NULL `announced_on`).
+7. Take TRUNCATE on the event log away from the backend's role. The `hat_event_no_truncate`
+   triggers (on `hat_event` and each partition, made at start) refuse a TRUNCATE, but a trigger
+   stops neither DROP nor DETACH PARTITION, and a superuser bypasses both triggers and grants: on
+   hat_live the tables belong to `postgres`, so first have the backend connect as a role that is
+   not a superuser and does not own them. Then, for `hat_event` and each `hat_event_pYYYYMM`:
+   ```sql
+   REVOKE TRUNCATE ON hat_event FROM PUBLIC, <db_user>;
+   REVOKE TRUNCATE ON hat_event_p202610 FROM PUBLIC, <db_user>;  -- and so on
+   ```
+   Retention never truncates or drops event partitions (`ops/retention.py` deletes only the two
+   chat tables).
 
 ## Running it
 

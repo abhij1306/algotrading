@@ -94,7 +94,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 - **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
   logged, returned or committed.
 - **Events.** Every state change and its event commit in one transaction; `hat_event` is
-  append-only (trigger); trade state replays from events.
+  append-only (triggers refuse UPDATE, DELETE and TRUNCATE, on every partition too); trade state
+  replays from events.
 - **Schema.** The database holds exactly the models' tables, columns, types, constraints and
   indexes plus `schema.PG_DDL`; HAT refuses to start on any difference and prints the DDL.
   `create_all` never alters a table: a change ships as idempotent `PG_DDL` or a runbook DDL step.

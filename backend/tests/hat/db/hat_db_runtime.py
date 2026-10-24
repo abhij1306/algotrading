@@ -24,6 +24,7 @@ from app.hat.ops.partitions import (
     CODE_PARTITIONS_SHORT,
     ensure_event_partitions,
     events_partitions,
+    existing_partitions,
     month_of,
     months_to_cover,
     partition_bounds,
@@ -694,8 +695,15 @@ def _held(engine: Engine, bots: list[uuid.UUID]) -> int:
         ).scalar_one()
 
 
+def truncate_bypassing_guards(connection: Connection) -> None:
+    """Let a test's cleanup TRUNCATE `hat_event` (C10's guard refuses it): triggers do not fire
+    for this transaction (the test database's superuser)."""
+    connection.execute(text("SET LOCAL session_replication_role = replica"))
+
+
 def _empty_runtime(engine: Engine) -> None:
     with engine.begin() as connection:
+        truncate_bypassing_guards(connection)
         connection.execute(
             text(
                 "TRUNCATE hat_event, hat_fill, hat_order, hat_position, hat_signal, hat_bot CASCADE"
@@ -841,6 +849,7 @@ def check_runtime__publish_serialised(conn: Connection) -> None:
         watchlist.scan_bot = real_scan
         release.set()
         with engine.begin() as connection:
+            truncate_bypassing_guards(connection)
             connection.execute(text("TRUNCATE hat_event, hat_watchlist_entry, hat_bot CASCADE"))
 
 
@@ -905,6 +914,15 @@ def check_events__append_only(conn: Connection) -> None:
             lambda i=event_id: conn.execute(delete(table).where(table.c.id == i)),
         )
     rejects_append_only(conn, "deleting every event", lambda: conn.execute(delete(table)))
+    rejects_append_only(
+        conn, "truncating the event log", lambda: conn.execute(text("TRUNCATE hat_event"))
+    )
+    for partition in sorted(existing_partitions(conn)):
+        rejects_append_only(
+            conn,
+            f"truncating the partition {partition}",
+            lambda p=partition: conn.execute(text(f"TRUNCATE {p}")),
+        )
     rejects_append_only(
         conn,
         "updating every event",
