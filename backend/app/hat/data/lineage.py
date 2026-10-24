@@ -90,6 +90,7 @@ __all__ = [
     "build_lineage",
     "candidates",
     "chain_factors",
+    "chain_members",
     "chains",
     "decide",
     "decide_all",
@@ -507,22 +508,43 @@ def _near(actions: Iterable[Action], last: date, first: date) -> list[Action]:
     return [a for a in actions if last - SYMBOL_CHANGE_SLACK <= a.ex_date <= first]
 
 
+def chain_members(links: Iterable[tuple[str, str]]) -> dict[str, frozenset[str]]:
+    """Each instrument of a linked pair -> every instrument of its chain (itself included)."""
+    members: dict[str, frozenset[str]] = {}
+    for old, new in links:
+        group = members.get(old, frozenset({old})) | members.get(new, frozenset({new}))
+        for iid in group:
+            members[iid] = group
+    return members
+
+
 def decide_all(
     found: Sequence[Candidate],
     actions: Mapping[str, Sequence[Action]],
     names: Sequence[NameChange] = (),
+    members: Mapping[str, frozenset[str]] | None = None,
 ) -> list[Decision]:
-    """A verdict per candidate. An instrument in more than one candidate on the same side makes
-    each of them ambiguous, so a chain never forks."""
+    """A verdict per candidate, from the stored actions of every instrument of both sides'
+    chains (`members`, from the stored links: an action the MCP stored under an older ISIN of
+    the chain counts too). An instrument in more than one candidate on the same side makes each
+    of them ambiguous, so a chain never forks."""
+    members = members or {}
     olds = defaultdict(int)
     news = defaultdict(int)
     for c in found:
         olds[c.old.instrument_id] += 1
         news[c.new.instrument_id] += 1
+
+    def chain(c: Candidate) -> list[str]:
+        ids = {c.old.instrument_id, c.new.instrument_id}
+        for iid in (c.old.instrument_id, c.new.instrument_id):
+            ids |= members.get(iid, frozenset())
+        return sorted(ids)
+
     return [
         decide(
             c,
-            [*actions.get(c.old.instrument_id, ()), *actions.get(c.new.instrument_id, ())],
+            [a for iid in chain(c) for a in actions.get(iid, ())],
             names,
             ambiguous=olds[c.old.instrument_id] > 1 or news[c.new.instrument_id] > 1,
         )
@@ -834,10 +856,11 @@ def build_lineage(
     lock_reference_data(session)
     actions = stored_actions(session)
     overrides = stored_overrides(session)
+    members = chain_members(stored_links(session))
     by_instrument: dict[str, list[Action]] = defaultdict(list)
     for action in actions:
         by_instrument[action.instrument_id].append(action)
-    decisions = apply_overrides(decide_all(found, by_instrument, names), overrides)
+    decisions = apply_overrides(decide_all(found, by_instrument, names, members), overrides)
     for d in decisions:
         report.reasons[f"{d.status}:{d.reason}"] = (
             report.reasons.get(f"{d.status}:{d.reason}", 0) + 1

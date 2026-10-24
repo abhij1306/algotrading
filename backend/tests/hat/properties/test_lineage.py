@@ -45,6 +45,7 @@ from app.hat.data.lineage import (
     apply_overrides,
     candidates,
     chain_factors,
+    chain_members,
     chains,
     decide_all,
     exchange_sessions,
@@ -456,3 +457,11 @@ def test_industries_follow_the_chain() -> None:
     assert chain_industries(rows, [head], {}) == {
         str(head): [(date(2020, 1, 1), "Financial Services")]
     }
+
+
+def test_chain_members() -> None:
+    """Each instrument of a link maps to its whole chain, whatever order the links come in."""
+    members = chain_members([("c", "d"), ("a", "b"), ("b", "c"), ("x", "y")])
+    assert members["a"] == members["d"] == frozenset("abcd")
+    assert members["y"] == frozenset("xy")
+    assert "z" not in members
