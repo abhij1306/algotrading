@@ -12,7 +12,9 @@ sends at most one message per event:
   position: price, qty and R so far.
 - `quality.failed`, `feed.stale`, `broker.session_lost`, `broker.capabilities_changed` (the
   adapter's GTT for delivery reached the account, HAT-BRK-092), `corporate_action.unhandled` (a
-  position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT), `order.rejected`
+  position spans an action the rescale cannot handle, HAT-EXEC-144; URGENT),
+  `corporate_action.demerger_exit` and `corporate_action.demerger_late` (a position held into a
+  demerger: sell it by a close, or it was held into one, CA8; URGENT), `order.rejected`
   and `relay.skipped`: a health alert (T15). The `Notifier` leaves these codes to the relay, so
   each failure is one alert.
 
@@ -89,6 +91,8 @@ HEALTH_EVENTS = frozenset(
         "broker.session_lost",
         "broker.capabilities_changed",
         "corporate_action.unhandled",
+        "corporate_action.demerger_exit",
+        "corporate_action.demerger_late",
         "order.rejected",
         SKIPPED,
     }

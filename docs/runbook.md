@@ -154,6 +154,12 @@ refuse inside a session (`market_hours`).
     other than the stored one. The stored factor stays and the ingest counts it in
     `lookups_failed`. Compare both with NSE's corporate-action announcement. HAT has no command to
     replace a stored factor yet; if the stored one is wrong, raise it with the orchestrator.
+11c. A position held into a demerger (CA8). URGENT `corporate_action.demerger_exit` (symbol,
+    `sell_by_close_of`): sell the real position by that session's close with `/flatten`; HAT
+    sells nothing for it (a virtual one closes itself at that close pass, exit reason
+    `demerger`). URGENT `corporate_action.demerger_late`: the notice came after that close, or
+    the position is still open past it; it keeps 11a's handling once the factor is stored.
+    Alert `demerger.unchecked`: tonight's notices failed; read the backend log.
 12. Record each step in the check log.
 
 ### Database role limits (once, on each database)
@@ -212,6 +218,21 @@ correction or nightly job runs on the new code:
    with `--apply` appends the estimates. Rerun it after an import adds demergers (CA7).
 4. `python -m app.hat.data.point_in_time report`: versions per event, conflicts, disputed
    demergers, projection check 0.
+
+### Demerger exits (CA8)
+
+On each live database (hat_live), outside 08:30–15:35 IST, after a `pg_dump`:
+
+1. Restart the backend (or run `init_db()`): `create_all` makes `hat_demerger_notice`.
+2. From the directory holding the reviewed file `ca8-announced.tsv` (columns `isin ex_date
+   announced_on source_url note`: the date a dated public source first named each stored
+   demerger's record date; kept outside the repo), with `PYTHONPATH=<repo>/backend`:
+   `python -m app.hat.data.demerger_notice announced ca8-announced.tsv` (dry run: lines, rows
+   to date, unmatched and differing lines), then the same with `--apply` (writes only rows whose
+   `announced_on` is NULL).
+3. `python -m app.hat.data.demerger_notice exits [SYMBOL ...]` (with `HAT_DATA_ROOT` set): each
+   stored demerger with the session its forced exit falls on, or why it holds through, and the
+   counts.
 
 ### Runtime indexes (DB7)
 

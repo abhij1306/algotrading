@@ -155,6 +155,18 @@ here.
   (log) from the applied value is disputed and listed (`ca_demergers`). A ratio never takes
   precedence. The neutralised gap is applied only once the owner approves it (`--neutral`, then
   `features --full`).
+- **Forced exit before a demerger (CA8, owner 2026-10-24).** A position whose instrument has a
+  demerger with an announced record date exits at the close of the last session before the
+  ex-date, exit reason `demerger` with the normal exit costs, in the backtest and live
+  (`data/demerger_notice.py`, `engine/demerger_exit.py`): under T+1 that sale settles before the
+  record date, so no resulting shares come (intended). Point in time: only when the record date
+  was public (`hat_corporate_action.announced_on`, from a dated source; live, the night NSE's
+  `bc` file first lists it, `hat_demerger_notice`) strictly before that session (live reads the
+  file at night, so a same-day filing is late in both); otherwise, or never dated, the position
+  holds through as before and live alerts it late. Live closes a virtual
+  position at that close pass and only alerts a real one (URGENT), never selling it. Splits,
+  bonuses and rights keep their handling; re-entry follows the normal rules (factor pending
+  until known). The backtest counts these exits and their P&L apart (`demerger_exits`).
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with

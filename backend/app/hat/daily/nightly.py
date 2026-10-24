@@ -36,6 +36,7 @@ from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
 from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.coverage import JOB_COVERAGE, coverage_body
+from ..data.demerger_notice import announce_stored, store_notices
 from ..data.features import features_job
 from ..data.lineage import refresh_lineage, stored_adjustment
 from ..data.mcp_client import McpClient
@@ -52,6 +53,7 @@ from ..data.renames import renames_from_bars
 from ..data.store import Adjustment, DataStore, cumulative_segments
 from ..data.symbols import symbol_master
 from ..engine.close_gap import record_close_gaps
+from ..engine.demerger_exit import flag_positions
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
 from ..engine.portfolio.allocation_service import policy_at
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
@@ -146,6 +148,7 @@ ALERT_LINEAGE_REVIEW = "lineage.review"
 # NSE's daily corporate-action file could not be read or stored: the night's dividends are not
 # in the total-return series until `ca_dividends --bc` imports that day's file (runbook).
 ALERT_DIVIDENDS_UNCHECKED = "dividend.unchecked"
+ALERT_DEMERGERS_UNCHECKED = "demerger.unchecked"  # tonight's demerger notices failed (CA8)
 # the closed trades' dividends could not be restated: their P&L and R lag the stored dividends
 ALERT_TRADE_DIVIDENDS_STALE = "dividend.trades_stale"
 
@@ -327,9 +330,10 @@ class Nightly:
         split whose lookup failed on the day releases its quarantine at the next gate once
         stored. A failure there is only logged: the quarantine was alerted already and stands.
         Then the dividends of the day's corporate-action file go in with their amounts
-        (`_dividends`, CA4), and every closed trade's dividends are brought up to the stored ones
-        (`restate_dividends`, R-DIV: a trade closed on tonight's ex-date was written without
-        it). Then the factors are checked to load into the adjusted view
+        (`_dividends`, CA4), its demergers become notices and the positions held into them are
+        alerted (`_demergers`, CA8), and every closed trade's dividends are brought up to the
+        stored ones (`restate_dividends`, R-DIV: a trade closed on tonight's ex-date was written
+        without it). Then the factors are checked to load into the adjusted view
         (`cumulative_segments`, no connection) before the features read it."""
         try:
             self._next_session_actions(day)
@@ -338,13 +342,22 @@ class Nightly:
             # the alert says the next session's actions are unknown.
             logger.exception("next-session corporate-action lookup failed")
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": "*"})
+        text: str | None = None
         try:
-            self._dividends(day)
+            text = self._corporate_action_file(day)
+            if text is not None:
+                self._dividends(day, text)
         except Exception:
             # The series stays without tonight's dividends (a drop it does not pay back) until
             # the day's file is imported by hand; the chain goes on.
             logger.exception("nightly dividend import failed")
             self.deps.notifier.alert(ALERT_DIVIDENDS_UNCHECKED, day, {})
+        try:
+            self._demergers(day, text)
+        except Exception:
+            # The positions keep today's handling (no forced exit from tonight's file); alerted.
+            logger.exception("nightly demerger notices failed")
+            self.deps.notifier.alert(ALERT_DEMERGERS_UNCHECKED, day, {})
         try:
             with self.deps.session_factory() as session:
                 restated = restate_dividends(session)
@@ -410,15 +423,39 @@ class Nightly:
         for symbol in found.failed:
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
 
-    def _dividends(self, day: date) -> None:
+    def _corporate_action_file(self, day: date) -> str | None:
+        """The night's `bc` file of NSE's PR archive; None when no source is configured."""
+        source = self.deps.sources.corporate_actions
+        return None if source is None else source(day)()
+
+    def _demergers(self, day: date, text: str | None) -> None:
+        """The demergers the night's `bc` file lists become notices dated tonight, a stored
+        demerger takes its notice's date, and each open position held into one is alerted
+        (`demerger_exit.flag_positions`, CA8), in one transaction. Without tonight's file the
+        stored notices are still checked, so a position whose exit passed is alerted late."""
+        with self.deps.session_factory() as session:
+            stored = (
+                store_notices(session, ca_dividends.read_bc(text), day) if text is not None else 0
+            )
+            dated = announce_stored(session)
+            calendar = session_calendar(session)
+            sessions = sorted(calendar.trading_days()) if calendar is not None else []
+            due, late = flag_positions(session, day, sessions, self._now())
+            session.commit()
+        logger.info(
+            "demergers of %s: %d notices stored, %d actions dated, %d exits due, %d late",
+            day,
+            stored,
+            dated,
+            due,
+            late,
+        )
+
+    def _dividends(self, day: date, text: str) -> None:
         """The dividends going ex on `day` (and the catch-up days) from NSE's corporate-action
         file of `day`, stored with their cash in one transaction (`ca_dividends.nightly_import`,
         the CA3 checks). Each review or conflict case is alerted, and so is each stored dividend
         of those days still without an amount: it is never guessed."""
-        source = self.deps.sources.corporate_actions
-        if source is None:
-            return
-        text = source(day)()
         with self.deps.session_factory() as session:
             report = ca_dividends.nightly_import(session, self.deps.store, text, day, self._now())
             session.commit()
