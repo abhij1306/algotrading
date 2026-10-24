@@ -1,6 +1,10 @@
 """HAT settings from environment variables (HAT-OPS-001, HAT-OVR-007, HAT-OVR-052).
 
 `HAT_ENABLED` defaults to false, so a developer machine or a test run never starts a HAT task.
+`HAT_BROKER` names the one active order broker (`models.strategy.BROKERS`, default the first):
+every order, stop and broker read goes to it, and an account of another broker gets no adapter.
+Any other value refuses the start (`HatConfigError`): switching brokers is this setting and a
+login, never two brokers at once. Market data stays on the data socket's broker either way.
 `HAT_GTT_CHECK_MINUTES` (P1) is how often the fill sync reads the broker's GTT book to find a GTT
 the broker cancelled (default 5; HAT-EXEC-145).
 `HAT_BROKER_CALLS_PER_SECOND`, `_PER_MINUTE` and `_PER_DAY` (PR 50, HAT-BRK-082) are the broker
@@ -42,6 +46,7 @@ from app.utils.env_loader import TRUE_VALUES, load_dotenv
 
 from .broker_limits import PLAN_CALLS_PER_DAY
 from .errors import HatConfigError
+from .models.strategy import BROKERS
 from .money import exact
 
 # MVP is single user (decision T1): one fixed tenant id unless HAT_USER_ID overrides it.
@@ -54,6 +59,7 @@ class HatSettings:
     enabled: bool
     user_id: uuid.UUID
     data_root: Path
+    broker: str = BROKERS[0]
     broker_calls_per_second: int = 8
     broker_calls_per_minute: int = 180
     broker_calls_per_day: int | None = PLAN_CALLS_PER_DAY
@@ -117,6 +123,17 @@ def _count(raw: str | None, default: int) -> int:
 _MEMORY_RE = re.compile(r"\d+(\.\d+)?\s*(KB|MB|GB|TB|KIB|MIB|GIB|TIB)", re.IGNORECASE)
 
 
+def _broker(raw: str | None) -> str:
+    """The active broker `HAT_BROKER` names (any case); unset is the default. An unknown name
+    raises: a typo must not route orders to a broker the owner did not pick."""
+    text = (raw or "").strip().lower()
+    if not text:
+        return BROKERS[0]
+    if text not in BROKERS:
+        raise HatConfigError("HAT_BROKER is not a known broker")
+    return text
+
+
 def _memory(raw: str | None) -> str:
     """A DuckDB memory limit such as `1GB` or `768MB`; anything unreadable is the default, so a
     typo never fails every store connection."""
@@ -125,7 +142,8 @@ def _memory(raw: str | None) -> str:
 
 
 def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
-    """Read the HAT settings; `env` defaults to `os.environ`. A bad `HAT_USER_ID` raises."""
+    """Read the HAT settings; `env` defaults to `os.environ`. A bad `HAT_USER_ID` or
+    `HAT_BROKER` raises."""
     source = os.environ if env is None else env
     raw_user = (source.get("HAT_USER_ID") or "").strip()
     try:
@@ -137,6 +155,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         enabled=_is_true(source.get("HAT_ENABLED")),
         user_id=user_id,
         data_root=Path(raw_root) if raw_root else HAT_DATA_ROOT,
+        broker=_broker(source.get("HAT_BROKER")),
         broker_calls_per_second=_count(source.get("HAT_BROKER_CALLS_PER_SECOND"), 8),
         broker_calls_per_minute=_count(source.get("HAT_BROKER_CALLS_PER_MINUTE"), 180),
         broker_calls_per_day=_calls(source.get("HAT_BROKER_CALLS_PER_DAY"), 5000, allow_off=True),
@@ -166,6 +185,12 @@ def operator_settings() -> HatSettings:
     `.env`, so a command passes this `data_root` to its stores instead of their default."""
     load_dotenv(str(ENV_FILE))
     return load_settings()
+
+
+def active_broker(env: Mapping[str, str] | None = None) -> str:
+    """The one active order broker (`HAT_BROKER`); raises `HatConfigError` for an unknown one."""
+    source = os.environ if env is None else env
+    return _broker(source.get("HAT_BROKER"))
 
 
 def process_env() -> Mapping[str, str]:

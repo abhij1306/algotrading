@@ -52,7 +52,7 @@ export interface paths {
     put?: never;
     /**
      * Fyers Disconnect
-     * @description Remove the saved Fyers token and drop the session.
+     * @description Remove the saved token and drop the session.
      */
     post: operations["fyers_disconnect_api_hat_auth_fyers_disconnect_post"];
     delete?: never;
@@ -70,7 +70,8 @@ export interface paths {
     };
     /**
      * Fyers Status
-     * @description Whether a usable Fyers token is saved. Cached for 30 s.
+     * @description Whether a usable token is saved (cached for 30 s), and whether this broker is the
+     *     active order broker.
      */
     get: operations["fyers_status_api_hat_auth_fyers_status_get"];
     put?: never;
@@ -92,7 +93,8 @@ export interface paths {
     put?: never;
     /**
      * Exchange Auth Code
-     * @description Exchange an auth code for an access token and save it. Any failure writes no token.
+     * @description Exchange the pasted code for an access token and save it. Any failure writes no
+     *     token.
      */
     post: operations["exchange_auth_code_api_hat_auth_fyers_token_post"];
     delete?: never;
@@ -110,9 +112,91 @@ export interface paths {
     };
     /**
      * Fyers Login Url
-     * @description The Fyers login link, built from the app credentials in the environment.
+     * @description The broker's login link, built from the app credentials in the environment.
      */
     get: operations["fyers_login_url_api_hat_auth_fyers_url_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/zerodha/disconnect": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Zerodha Disconnect
+     * @description Remove the saved token and drop the session.
+     */
+    post: operations["zerodha_disconnect_api_hat_auth_zerodha_disconnect_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/zerodha/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Zerodha Status
+     * @description Whether a usable token is saved (cached for 30 s), and whether this broker is the
+     *     active order broker.
+     */
+    get: operations["zerodha_status_api_hat_auth_zerodha_status_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/zerodha/token": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Exchange Zerodha Request Token
+     * @description Exchange the pasted code for an access token and save it. Any failure writes no
+     *     token.
+     */
+    post: operations["exchange_zerodha_request_token_api_hat_auth_zerodha_token_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/auth/zerodha/url": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Zerodha Login Url
+     * @description The broker's login link, built from the app credentials in the environment.
+     */
+    get: operations["zerodha_login_url_api_hat_auth_zerodha_url_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -355,6 +439,20 @@ export interface components {
       /** Status */
       status: string;
     };
+    /** BrokerStatusResponse */
+    BrokerStatusResponse: {
+      /**
+       * Active
+       * @default false
+       */
+      active: boolean;
+      /** Connected */
+      connected: boolean;
+      /** Error */
+      error?: string | null;
+      /** User Id */
+      user_id?: string | null;
+    };
     /** EventView */
     EventView: {
       /** Actor */
@@ -388,15 +486,6 @@ export interface components {
        * Format: date-time
        */
       recorded_at: string;
-    };
-    /** FyersStatusResponse */
-    FyersStatusResponse: {
-      /** Connected */
-      connected: boolean;
-      /** Error */
-      error?: string | null;
-      /** User Id */
-      user_id?: string | null;
     };
     /** HTTPValidationError */
     HTTPValidationError: {
@@ -719,7 +808,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["FyersStatusResponse"];
+          "application/json": components["schemas"]["BrokerStatusResponse"];
         };
       };
     };
@@ -746,7 +835,7 @@ export interface operations {
           "application/json": components["schemas"]["MessageResponse"];
         };
       };
-      /** @description Fyers rejected the auth code */
+      /** @description The broker rejected the code */
       400: {
         headers: {
           [name: string]: unknown;
@@ -769,7 +858,7 @@ export interface operations {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
-      /** @description Credentials missing, the exchange failed or the token was not saved */
+      /** @description Credentials missing, the exchange failed or no token was saved */
       500: {
         headers: {
           [name: string]: unknown;
@@ -803,7 +892,149 @@ export interface operations {
           "application/json": components["schemas"]["LoginUrlResponse"];
         };
       };
-      /** @description Fyers credentials missing or the link could not be built */
+      /** @description Credentials missing or the link could not be built */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  zerodha_disconnect_api_hat_auth_zerodha_disconnect_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MessageResponse"];
+        };
+      };
+      /** @description Not from the HAT page */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The token could not be removed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  zerodha_status_api_hat_auth_zerodha_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BrokerStatusResponse"];
+        };
+      };
+    };
+  };
+  exchange_zerodha_request_token_api_hat_auth_zerodha_token_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AuthCodeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MessageResponse"];
+        };
+      };
+      /** @description The broker rejected the code */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Not from the HAT page, or not the HAT broker account's login */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description Credentials missing, the exchange failed or no token was saved */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The broker accounts could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  zerodha_login_url_api_hat_auth_zerodha_url_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LoginUrlResponse"];
+        };
+      };
+      /** @description Credentials missing or the link could not be built */
       500: {
         headers: {
           [name: string]: unknown;

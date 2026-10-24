@@ -53,6 +53,8 @@ credentials/
 fyers/config/access_token.json
 fyers/config/keys.env
 fyers/config/refresh_token.json
+# Kite (Zerodha) login token (kite_tokens.KITE_TOKEN_PATH)
+kite/config/access_token.json
 
 # ============================================
 # Python

@@ -1,11 +1,14 @@
 import { useNavigate } from "react-router";
 import { Moon, Sun, Command } from "lucide-react";
 import LoginButton from "@/components/LoginButton";
+import { useBrokerStatus } from "@/lib/queries/auth";
 import { useTheme } from "@/lib/theme";
 
 export function AppHeader() {
   const navigate = useNavigate();
   const { isDark, toggleTheme } = useTheme();
+  // Fyers always logs in (market data); Zerodha too while it is the active order broker.
+  const zerodhaActive = useBrokerStatus("zerodha").data?.active ?? false;
 
   return (
     <header className="h-14 flex items-center justify-between px-4 sticky top-0 z-50 bg-background border-b border-border-subtle">
@@ -31,6 +34,11 @@ export function AppHeader() {
         <div className="ml-2 pl-2 border-l border-border-subtle">
           <LoginButton />
         </div>
+        {zerodhaActive && (
+          <div className="ml-2 pl-2 border-l border-border-subtle">
+            <LoginButton broker="zerodha" />
+          </div>
+        )}
       </div>
     </header>
   );

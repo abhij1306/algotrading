@@ -27,6 +27,7 @@ TEXT_PATH = (
     "app.hat.telegram.store",
     "app.hat.telegram.client",
 )
+AUTH_BASES = ("/api/hat/auth/fyers/", "/api/hat/auth/zerodha/")  # the only writing routes: logins
 ORDER_MODULES = (
     "app.hat.execution.router",
     "app.hat.execution.submit",
@@ -154,8 +155,9 @@ def test_gov__lever_catalogue() -> None:
     for path, methods in _routes():
         if methods <= READS:
             continue
-        assert path.startswith("/api/hat/auth/fyers"), path
-        assert not RISK_WORDS.search(path.removeprefix("/api/hat/auth/fyers")), path
+        base = next((b for b in AUTH_BASES if path.startswith(b)), None)
+        assert base is not None, path
+        assert not RISK_WORDS.search(path.removeprefix(base)), path
 
 
 def test_no_override_command() -> None:

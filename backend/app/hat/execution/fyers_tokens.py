@@ -23,7 +23,7 @@ import json
 import logging
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -81,10 +81,24 @@ class StoredToken:
 
 
 class TokenStore:
-    """Load, save and clear the token file at ``path``."""
+    """Load, save and clear the token file at ``path``.
 
-    def __init__(self, path: Path | str | None = None) -> None:
+    The defaults are the Fyers file; the Kite store (`kite_tokens`) passes its own path, its
+    token's expiry rule, the reply field that names the user, and the label its log lines and
+    errors carry."""
+
+    def __init__(
+        self,
+        path: Path | str | None = None,
+        *,
+        expiry: Callable[[datetime], datetime] = token_expiry,
+        user_key: str = "fy_id",
+        label: str = "Fyers",
+    ) -> None:
         self.path = Path(path) if path is not None else FYERS_TOKEN_PATH
+        self._expiry = expiry
+        self.user_key = user_key
+        self.label = label
 
     def mtime_ns(self) -> int | None:
         """The file's modification time, or None when there is no file.
@@ -96,7 +110,7 @@ class TokenStore:
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise TokenStoreError("Fyers token file could not be inspected") from exc
+            raise TokenStoreError(f"{self.label} token file could not be inspected") from exc
 
     def load(self) -> StoredToken | None:
         """The stored token; None when there is no file or its content is not a token.
@@ -108,26 +122,26 @@ class TokenStore:
         except FileNotFoundError:
             return None
         except OSError as exc:
-            raise TokenStoreError("Fyers token file could not be read") from exc
+            raise TokenStoreError(f"{self.label} token file could not be read") from exc
 
         try:
             data = json.loads(raw)  # bad UTF-8 raises UnicodeDecodeError, a ValueError
         except ValueError:
-            logger.warning("Fyers token file %s is not valid UTF-8 JSON; ignoring it", self.path)
+            logger.warning("%s token file %s is not valid JSON; ignoring it", self.label, self.path)
             return None
         if not isinstance(data, dict):
-            logger.warning("Fyers token file %s is not a JSON object; ignoring it", self.path)
+            logger.warning("%s token file %s is not an object; ignoring it", self.label, self.path)
             return None
 
         access_token = data.get("access_token")
         if not isinstance(access_token, str) or not access_token:
-            logger.warning("Fyers token file %s has no access token; ignoring it", self.path)
+            logger.warning("%s token file %s has no token; ignoring it", self.label, self.path)
             return None
 
         return StoredToken(
             access_token=access_token,
             client_id=_optional_str(data.get("client_id")),
-            user_id=_optional_str(data.get("fy_id")),
+            user_id=_optional_str(data.get(self.user_key)),
             expires_at=_parse_expiry(data.get("expires_at")),
         )
 
@@ -136,14 +150,15 @@ class TokenStore:
     ) -> StoredToken:
         """Write a token-exchange reply plus ``client_id`` and the expiry, atomically.
 
-        ``payload`` is the Fyers ``generate_token`` reply and must carry ``access_token``.
+        ``payload`` is the token-exchange reply (or the part of it to keep) and must carry
+        ``access_token``; the expiry is the store's rule applied to ``now``.
         Raises TokenStoreError when the file cannot be written; the old file is then untouched.
         """
         access_token = payload.get("access_token")
         if not isinstance(access_token, str) or not access_token:
             raise ValueError("payload has no access_token")
 
-        expires_ist = token_expiry(now or datetime.now(UTC))
+        expires_ist = self._expiry(now or datetime.now(UTC))
         expires_utc = expires_ist.astimezone(UTC)
         document = {
             **payload,
@@ -154,12 +169,12 @@ class TokenStore:
         try:
             self._write_atomic(json.dumps(document, indent=4))
         except OSError as exc:
-            raise TokenStoreError("Fyers token file could not be written") from exc
+            raise TokenStoreError(f"{self.label} token file could not be written") from exc
 
         return StoredToken(
             access_token=access_token,
             client_id=client_id,
-            user_id=_optional_str(payload.get("fy_id")),
+            user_id=_optional_str(payload.get(self.user_key)),
             expires_at=expires_utc,
         )
 
@@ -170,7 +185,7 @@ class TokenStore:
         except FileNotFoundError:
             return False
         except OSError as exc:
-            raise TokenStoreError("Fyers token file could not be removed") from exc
+            raise TokenStoreError(f"{self.label} token file could not be removed") from exc
         return True
 
     def _write_atomic(self, text: str) -> None:
@@ -208,7 +223,7 @@ def _parse_expiry(value: object) -> datetime | None:
         # A year-1 or year-9999 time with an offset parses but overflows on conversion.
         return parsed.astimezone(UTC)
     except (ValueError, OverflowError):
-        logger.warning("Fyers token file has a malformed expiry; treating the token as expired")
+        logger.warning("Token file has a malformed expiry; treating the token as expired")
         return datetime.min.replace(tzinfo=UTC)
 
 

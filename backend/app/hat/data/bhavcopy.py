@@ -307,6 +307,33 @@ def parse_bhavcopy(day: date, data: bytes) -> ParsedDay:
     return out
 
 
+UDIFF_ID_COLUMN = "FinInstrmId"  # NSE's numeric id of the instrument (its exchange token)
+
+
+def nse_tokens(data: bytes) -> dict[tuple[str, str], int]:
+    """(ISIN, series) -> NSE exchange token of every row of a UDiFF bhavcopy zip that has both
+    (a broker's instrument dump names an NSE stock by this token, not its ISIN). A file without
+    the columns raises `BhavcopyError`; a row with an unreadable token is left out, and an
+    (ISIN, series) given two different tokens is left out too: it cannot name one instrument."""
+    reader = csv.DictReader(io.StringIO(_csv_text(data)))
+    header = {(h or "").strip() for h in (reader.fieldnames or [])}
+    if not {UDIFF_ID_COLUMN, "ISIN", "SctySrs"} <= header:
+        raise BhavcopyError("bhavcopy_columns")
+    tokens: dict[tuple[str, str], int] = {}
+    clashes: set[tuple[str, str]] = set()
+    for raw in reader:
+        row = {(k or "").strip(): (v or "").strip() for k, v in raw.items() if k is not None}
+        token = _integer(row.get(UDIFF_ID_COLUMN))
+        key = (row.get("ISIN", "").upper(), row.get("SctySrs", "").upper())
+        if token is None or token <= 0 or not all(key):
+            continue
+        if tokens.setdefault(key, token) != token:
+            clashes.add(key)
+    for key in clashes:
+        del tokens[key]
+    return tokens
+
+
 class InstrumentIds(Protocol):
     def __call__(self, isin: str) -> object | None: ...
 

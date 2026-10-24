@@ -21,7 +21,12 @@ CRITERIA_FORBIDDEN = (
     "app.hat.telegram",
     "fastapi",
 )
-BROKER_FORBIDDEN = ("app.brokers", "app.hat.execution.broker", "app.hat.execution.fyers_adapter")
+BROKER_FORBIDDEN = (
+    "app.brokers",
+    "app.hat.execution.broker",
+    "app.hat.execution.fyers_adapter",
+    "app.hat.execution.kite_adapter",
+)
 
 
 def _graph_violations(

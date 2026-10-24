@@ -27,9 +27,10 @@ from ..models import (
     HatInstrumentSymbolHistory,
     HatPriceBand,
 )
-from ..models.strategy import BROKER_FYERS
+from ..models.strategy import BROKER_FYERS, BROKER_ZERODHA
 from ..time import utc_now
 from .corporate_actions import lock_reference_data
+from .kite_symbols import KiteListing, kite_symbol
 from .reference import BandRow, IndustryRow, Security, one_per_isin
 from .symbols import SymbolMaster
 
@@ -693,18 +694,70 @@ def fyers_symbol(master: SymbolMaster, instrument: HatInstrument) -> str | None:
     return symbol
 
 
+def _broker_instruments(session: Session, broker: str) -> list[tuple[str, str]]:
+    rows = session.execute(
+        select(HatInstrument.symbol, HatBrokerSymbol.broker_symbol)
+        .join(HatBrokerSymbol, HatBrokerSymbol.instrument_id == HatInstrument.id)
+        .where(HatBrokerSymbol.broker == broker, HatInstrument.active.is_(True))
+        .order_by(HatInstrument.symbol, HatBrokerSymbol.broker_symbol)
+    ).all()
+    return [(symbol, broker_symbol) for symbol, broker_symbol in rows]
+
+
 def fyers_instruments(session: Session) -> list[tuple[str, str]]:
     """(database symbol, Fyers symbol) of every active instrument that has a Fyers row, sorted
     by symbol: the instrument list HAT's broker adapter reports. It comes from `hat_instrument`
     and `hat_broker_symbol` only, so an index, a delisted stock or a symbol nobody mapped is never
     in it (HAT-DATA-024)."""
-    rows = session.execute(
-        select(HatInstrument.symbol, HatBrokerSymbol.broker_symbol)
-        .join(HatBrokerSymbol, HatBrokerSymbol.instrument_id == HatInstrument.id)
-        .where(HatBrokerSymbol.broker == BROKER_FYERS, HatInstrument.active.is_(True))
-        .order_by(HatInstrument.symbol, HatBrokerSymbol.broker_symbol)
+    return _broker_instruments(session, BROKER_FYERS)
+
+
+def kite_instruments(session: Session) -> list[tuple[str, str]]:
+    """(database symbol, Kite trading symbol) of every active instrument with a zerodha row, as
+    `fyers_instruments` is for Fyers."""
+    return _broker_instruments(session, BROKER_ZERODHA)
+
+
+Mapped = tuple[str, int | None]  # (broker symbol, the broker's instrument token if it has one)
+
+
+def _active_by_id(session: Session, market_id: uuid.UUID) -> list[HatInstrument]:
+    instruments = session.scalars(
+        select(HatInstrument).where(HatInstrument.market_id == market_id)
     ).all()
-    return [(symbol, broker_symbol) for symbol, broker_symbol in rows]
+    return sorted((i for i in instruments if i.active), key=lambda i: i.id.bytes)
+
+
+def _replace_broker_rows(
+    session: Session, broker: str, wanted: Mapping[uuid.UUID, Mapped], report: BrokerSymbolReport
+) -> BrokerSymbolReport:
+    """Make `broker`'s rows exactly `wanted`. Delete first and flush, so a symbol that moves
+    between instruments never trips the unique key."""
+    rows = {
+        r.instrument_id: r
+        for r in session.scalars(select(HatBrokerSymbol).where(HatBrokerSymbol.broker == broker))
+    }
+    for instrument_id, row in rows.items():
+        if wanted.get(instrument_id) != (row.broker_symbol, row.instrument_token):
+            session.delete(row)
+            report.removed += instrument_id not in wanted
+    session.flush()
+    now = utc_now()
+    for instrument_id, (symbol, token) in wanted.items():
+        row = rows.get(instrument_id)
+        if row is None or (row.broker_symbol, row.instrument_token) != (symbol, token):
+            session.add(
+                HatBrokerSymbol(
+                    instrument_id=instrument_id,
+                    broker=broker,
+                    broker_symbol=symbol,
+                    instrument_token=token,
+                    refreshed_at=now,
+                )
+            )
+            report.written += 1
+    session.flush()
+    return report
 
 
 def refresh_fyers_symbols(
@@ -712,45 +765,44 @@ def refresh_fyers_symbols(
 ) -> BrokerSymbolReport:
     """Make the Fyers rows exactly the mappings of active instruments. Idempotent."""
     report = BrokerSymbolReport()
-    instruments = session.scalars(
-        select(HatInstrument).where(HatInstrument.market_id == market_id)
-    ).all()
-    wanted: dict[uuid.UUID, str] = {}
+    wanted: dict[uuid.UUID, Mapped] = {}
     taken: set[str] = set()
-    for instrument in sorted((i for i in instruments if i.active), key=lambda i: i.id.bytes):
+    for instrument in _active_by_id(session, market_id):
         symbol = fyers_symbol(master, instrument)
         if symbol is None or symbol in taken:
             report.skipped.append(instrument.symbol)
             continue
         taken.add(symbol)
-        wanted[instrument.id] = symbol
-    rows = {
-        r.instrument_id: r
-        for r in session.scalars(
-            select(HatBrokerSymbol).where(HatBrokerSymbol.broker == BROKER_FYERS)
+        wanted[instrument.id] = (symbol, None)
+    return _replace_broker_rows(session, BROKER_FYERS, wanted, report)
+
+
+def refresh_kite_symbols(
+    session: Session,
+    market_id: uuid.UUID,
+    nse_tokens: Mapping[tuple[str, str], int],
+    listings: Mapping[int, KiteListing],
+) -> BrokerSymbolReport:
+    """Make the zerodha rows exactly the Kite listings of active instruments (`kite_symbol`:
+    by ISIN and series to NSE's exchange token, then Kite's row with that token, its trading
+    symbol checked), each with Kite's `instrument_token`. Idempotent. An empty dump or token
+    list maps nothing and is refused (`kite_symbols_empty`), so a failed download never empties
+    the rows."""
+    if not nse_tokens or not listings:
+        raise ReferenceDataError("kite_symbols_empty")
+    report = BrokerSymbolReport()
+    wanted: dict[uuid.UUID, Mapped] = {}
+    taken: set[str] = set()
+    for instrument in _active_by_id(session, market_id):
+        listing = kite_symbol(
+            instrument.isin, instrument.series, instrument.symbol, nse_tokens, listings
         )
-    }
-    # Delete first and flush, so a symbol that moves between instruments never trips the unique key.
-    for instrument_id, row in rows.items():
-        if wanted.get(instrument_id) != row.broker_symbol:
-            session.delete(row)
-            report.removed += instrument_id not in wanted
-    session.flush()
-    now = utc_now()
-    for instrument_id, symbol in wanted.items():
-        row = rows.get(instrument_id)
-        if row is None or row.broker_symbol != symbol:
-            session.add(
-                HatBrokerSymbol(
-                    instrument_id=instrument_id,
-                    broker=BROKER_FYERS,
-                    broker_symbol=symbol,
-                    refreshed_at=now,
-                )
-            )
-            report.written += 1
-    session.flush()
-    return report
+        if listing is None or listing.tradingsymbol in taken:
+            report.skipped.append(instrument.symbol)
+            continue
+        taken.add(listing.tradingsymbol)
+        wanted[instrument.id] = (listing.tradingsymbol, listing.instrument_token)
+    return _replace_broker_rows(session, BROKER_ZERODHA, wanted, report)
 
 
 # --- price bands and industries (HAT-DATA-025, 026) ---------------------------------------------

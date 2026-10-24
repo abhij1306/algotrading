@@ -16,6 +16,10 @@ A proxy would bypass the hook: `requests` (and the data socket's client) would c
 proxy, which may reach Fyers over IPv6. So HAT refuses to start while a proxy variable would
 carry Fyers traffic (`require_direct_fyers`, PR 73, PR 25 follow-up 6), and `sdk` refuses to hand
 out a client, unless every `no_proxy` variable set names the whole Fyers domain or is `*`.
+
+The hook pins every domain in `pinned_domains()`: Fyers' always, and a domain `pin` adds (Kite's,
+from `kite_ipv4`, which whitelists a static IPv4 too). One hook serves both, so the order the two
+SDKs are first used in does not matter.
 """
 
 from __future__ import annotations
@@ -34,9 +38,13 @@ __all__ = [
     "FYERS_DOMAIN",
     "PROXY_VARIABLES",
     "connect_ipv4",
+    "domain_proxy",
     "fyers_proxy",
     "install",
+    "is_domain_host",
     "is_fyers_host",
+    "pin",
+    "pinned_domains",
     "require_direct_fyers",
     "sdk",
 ]
@@ -48,33 +56,51 @@ PROXY_VARIABLES = ("https_proxy", "all_proxy", "http_proxy")
 _NO_PROXY = "no_proxy"
 _lock = threading.Lock()
 _original: Callable[..., socket.socket] | None = None
+_pinned: frozenset[str] = frozenset({FYERS_DOMAIN})
 
 
 class FyersIPv4Error(OSError):
-    """A Fyers host has no IPv4 address: the connection is refused, never made over IPv6."""
+    """A pinned broker host has no IPv4 address: the connection is refused, never made over
+    IPv6."""
 
 
-def is_fyers_host(host: object) -> bool:
-    """Whether `host` is Fyers' domain or one of its subdomains (case and a trailing dot
-    ignored); a look-alike such as `notfyers.in` or `fyers.in.example` is not."""
+def is_domain_host(host: object, domain: str) -> bool:
+    """Whether `host` is `domain` or one of its subdomains (case and a trailing dot ignored); a
+    look-alike such as `notfyers.in` or `fyers.in.example` is not."""
     if not isinstance(host, str):
         return False
     name = host.strip("[]").rstrip(".").lower()
-    return name == FYERS_DOMAIN or name.endswith("." + FYERS_DOMAIN)
+    return name == domain or name.endswith("." + domain)
+
+
+def is_fyers_host(host: object) -> bool:
+    """Whether `host` is Fyers' domain or one of its subdomains."""
+    return is_domain_host(host, FYERS_DOMAIN)
+
+
+def pin(domain: str) -> None:
+    """Connect to `domain` and its subdomains over IPv4 only from now on (idempotent)."""
+    global _pinned
+    with _lock:
+        _pinned = _pinned | {domain.lower()}
+
+
+def pinned_domains() -> frozenset[str]:
+    return _pinned
 
 
 def connect_ipv4(
     connect: Callable[..., socket.socket], address: tuple[str, int], *args: object, **kwargs: object
 ) -> socket.socket:
-    """Open `address` with `connect` (urllib3's `create_connection`), a Fyers host through its
-    IPv4 addresses only, in the resolver's order; the last failure is raised."""
+    """Open `address` with `connect` (urllib3's `create_connection`), a host of a pinned domain
+    through its IPv4 addresses only, in the resolver's order; the last failure is raised."""
     host, port = address
-    if not is_fyers_host(host):
+    if not any(is_domain_host(host, domain) for domain in _pinned):
         return connect(address, *args, **kwargs)
     found = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
     addresses = list(dict.fromkeys(str(sockaddr[0]) for *_, sockaddr in found))
     if not addresses:
-        raise FyersIPv4Error("no IPv4 address for the Fyers host")
+        raise FyersIPv4Error("no IPv4 address for the broker host")
     error: OSError | None = None
     for ip in addresses:
         try:
@@ -90,28 +116,31 @@ def _set(env: Mapping[str, str], name: str) -> str | None:
     return next((env[key] for key in (name, name.upper()) if env.get(key, "").strip()), None)
 
 
-def _bypasses(value: str) -> bool:
-    """Whether one `NO_PROXY` value bypasses the whole Fyers domain for every client: `*` alone
+def _bypasses(value: str, domain: str) -> bool:
+    """Whether one `NO_PROXY` value bypasses the whole `domain` for every client: `*` alone
     (among other entries it bypasses nothing, as urllib reads it), or an entry naming the domain
     or a parent, in lower case (requests and urllib ignore case, but the data socket's client is
     not relied on to). An entry for one host is not enough: the API, login and data socket hosts
     differ."""
     value = value.strip()
     entries = [e.strip().lstrip(".") for e in value.split(",")]
-    return value == "*" or any(
-        e and (e == FYERS_DOMAIN or FYERS_DOMAIN.endswith("." + e)) for e in entries
-    )
+    return value == "*" or any(e and (e == domain or domain.endswith("." + e)) for e in entries)
+
+
+def domain_proxy(env: Mapping[str, str], domain: str) -> str | None:
+    """The name of the first proxy variable that would carry traffic to `domain`, or None: none
+    is set, or every `no_proxy` variable set (either case, an empty one included: clients
+    disagree on which they read and on an empty one) bypasses the whole domain. The value is
+    never returned (it can carry a password)."""
+    no_proxy = [env[key] for key in (_NO_PROXY, _NO_PROXY.upper()) if key in env]
+    if no_proxy and all(_bypasses(value, domain) for value in no_proxy):
+        return None
+    return next((name for name in PROXY_VARIABLES if _set(env, name) is not None), None)
 
 
 def fyers_proxy(env: Mapping[str, str]) -> str | None:
-    """The name of the first proxy variable that would carry Fyers traffic, or None: none is set,
-    or every `no_proxy` variable set (either case, an empty one included: clients disagree on
-    which they read and on an empty one) bypasses the whole Fyers domain. The value is never
-    returned (it can carry a password)."""
-    no_proxy = [env[key] for key in (_NO_PROXY, _NO_PROXY.upper()) if key in env]
-    if no_proxy and all(_bypasses(value) for value in no_proxy):
-        return None
-    return next((name for name in PROXY_VARIABLES if _set(env, name) is not None), None)
+    """`domain_proxy` for the Fyers domain."""
+    return domain_proxy(env, FYERS_DOMAIN)
 
 
 def require_direct_fyers(env: Mapping[str, str]) -> None:

@@ -75,16 +75,25 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   in `.env` (0600).
 - **Manual daily login.** The owner logs in to Fyers each morning from a Telegram link (08:30,
   repeated 09:05); no entries before.
-- **No API auth.** Loopback bind behind the VPN, read-only routes; the two Fyers login writes need
-  the `X-HAT-Request` header and a frontend `Origin` (`api/guard.py`).
+- **One active order broker.** `HAT_BROKER` (`fyers`, the default, or `zerodha`) names the one
+  broker HAT places orders with; an unknown name refuses the start. Zerodha is an alternative to
+  Fyers, never a second broker beside it: no per-account routing and no fund split; only the
+  active broker's adapter is built and only its accounts can be onboarded. Market data stays on
+  Fyers, so Fyers is logged in every day either way; with Zerodha active the owner also logs in to
+  Kite (its token lasts until 06:00 IST) and pastes the `request_token`.
+- **Zerodha stays shadow until checked live.** The Kite adapter reports no GTT delivery
+  (`kite_adapter.KITE_CAPABILITIES`), so a Zerodha account runs shadow until a live check of its
+  GTT stops, order tags and reply shapes (published Kite v3 shapes only so far) sets it.
+- **No API auth.** Loopback bind behind the VPN, read-only routes; the broker login writes (Fyers
+  and Zerodha) need the `X-HAT-Request` header and a frontend `Origin` (`api/guard.py`).
 - **Engine.** In-process scheduler with jobs in Postgres, one async session owner per broker
   account, one engine for backtest and live, so the backtest tests the code that trades.
 - **Verification on real data.** See `CLAUDE.md`.
 
 ## Planned, not built
 
-Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, Zerodha and Kotak
-adapters, multi-user; minute history older than Fyers' 365 days; PDF summaries on cards and a chat
+Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
+adapter, Kite market data, multi-user; minute history older than Fyers' 365 days; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date.
 
 ## Defaults awaiting owner confirmation

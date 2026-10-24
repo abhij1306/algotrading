@@ -38,6 +38,7 @@ from ..data.corporate_actions import lookup_actions, store_actions
 from ..data.coverage import JOB_COVERAGE, coverage_body
 from ..data.demerger_notice import announce_stored, store_notices
 from ..data.features import features_job
+from ..data.kite_symbols import KiteSymbolData
 from ..data.lineage import refresh_lineage, stored_adjustment
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY, GateResult, excluded_for, gate_body
@@ -166,6 +167,9 @@ class TextSources:
     name_changes: TextSource | None = None
     # the `bc` CSV of NSE's PR archive of a trade date: the dividends `ca.adjust` stores (CA4)
     corporate_actions: Callable[[date], TextSource] | None = None
+    # the NSE tokens and Kite's dump for the zerodha symbols, as of a date: set only while Kite
+    # is the active broker (the weekly refresh then fills `hat_broker_symbol` for it)
+    kite_symbols: Callable[[date], KiteSymbolData] | None = None
 
 
 @dataclass
@@ -655,6 +659,7 @@ class Nightly:
 
     def reference(self, day: date) -> JobResult:
         deps = self.deps
+        kite = deps.sources.kite_symbols
         return reference_weekly(
             client=_mcp(deps),
             equity_list=deps.sources.equity_list,
@@ -663,6 +668,7 @@ class Nightly:
             master=symbol_master,
             today=day,
             renames=lambda: renames_from_bars(deps.store),
+            kite_symbols=None if kite is None else partial(kite, day),
         )()
 
     def bands(self, day: date) -> JobResult:

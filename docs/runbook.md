@@ -57,7 +57,10 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
   still running after 25 s are logged `abandoned`: check them after the next start.
 - Logs: `$COMPOSE logs -f backend`. Never `$COMPOSE down -v` (deletes the volumes).
 - `HatConfigError: fyers_proxy_set: <var>`: that proxy would carry Fyers traffic; unset it or add
-  `fyers.in` to `NO_PROXY`/`no_proxy`.
+  `fyers.in` to `NO_PROXY`/`no_proxy` (`kite_proxy_set`: the same for `kite.trade`).
+- `HatConfigError: kite_credentials_missing`: `HAT_BROKER=zerodha` needs `KITE_API_KEY`,
+  `KITE_API_SECRET` and `KITE_REDIRECT_URI` in `.env`; `HAT_BROKER is not a known broker`: use
+  `fyers` or `zerodha`.
 - `RuntimeLockHeldError`: another `HAT_ENABLED=true` process uses the database. Find it with
   `select pid, client_addr, backend_start from pg_stat_activity where application_name =
   'hat_runtime_lock';` and stop it; `pg_terminate_backend(<pid>)` only if the process is gone. A
@@ -80,6 +83,11 @@ has its stop).
 the redirect URL into the app header's dialog (or `POST /api/hat/auth/fyers/token`, header
 `X-HAT-Request: 1`, body `{"auth_code": "<code>"}`). Another Fyers user's token is refused. No
 entries until the session is live; `/login` gives a fresh link.
+
+With `HAT_BROKER=zerodha` the prompt also carries the Kite link (for the Zerodha account): log in
+and paste the `request_token` from the redirect URL into the header's Zerodha dialog (`POST
+/api/hat/auth/zerodha/token`, same header, body `{"auth_code": "<request_token>"}`). Kite's token
+lasts until 06:00 IST. Fyers is still logged in every day: it carries the market data.
 
 Missed: ~08:32 `broker.session_lost`, 09:05 a second prompt (URGENT with real positions). Bots
 stay manage-only and only broker-side stops protect positions (no ticks, trims, MA exits or GTT
@@ -114,6 +122,24 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    On a separate sleeve: `add-sleeve`, `assign-version`, step 5's `promote`s; one Live sleeve per
    strategy.
 8. Recovered Probation sleeve: `promote --bot <bot> --to live`.
+
+### Switching the order broker
+
+HAT places orders with one broker, `HAT_BROKER` (decisions: One active order broker). To make
+Zerodha the order broker, outside market hours:
+
+1. Register the host's static IP with the Kite Connect app; set the app's redirect URL to
+   `http://127.0.0.1:8000/api/hat/auth/zerodha/callback` (no route serves it: copy the
+   `request_token` from the address bar) and put `KITE_*` and `HAT_BROKER=zerodha` in `.env`.
+2. Restart; log in to Kite (Morning login); `onboard-account --account-ref <Kite user id>` (the
+   broker defaults to the active one; another is refused `broker_not_active`).
+3. `refresh-kite-symbols [--dump <instruments.csv>]` maps the instruments to Kite's trading
+   symbols and `instrument_token` (from the latest bhavcopy's NSE tokens; the weekly reference job
+   does it too while Zerodha is active). Without `--dump` it downloads Kite's instrument list.
+4. The account stays shadow until the live check (decisions: Zerodha stays shadow). Moving bots
+   and sleeves from the Fyers account is not built.
+
+Back to Fyers: `HAT_BROKER=fyers` (or unset) and restart.
 
 ### Corporate actions and reference data
 

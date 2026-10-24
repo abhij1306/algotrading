@@ -1,18 +1,29 @@
 import { useState } from "react";
 import { LogOut, Key, CheckCircle, AlertCircle, X, Wifi, WifiOff } from "lucide-react";
 import {
-  useFyersDisconnect,
-  useFyersLoginUrl,
-  useFyersStatus,
-  useFyersToken,
+  type Broker,
+  useBrokerDisconnect,
+  useBrokerLoginUrl,
+  useBrokerStatus,
+  useBrokerToken,
 } from "@/lib/queries/auth";
 import { focusOnMount } from "@/lib/focus";
 
-export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?: boolean }>) {
-  const statusQuery = useFyersStatus();
-  const loginUrl = useFyersLoginUrl();
-  const token = useFyersToken();
-  const disconnect = useFyersDisconnect();
+/** What the login box calls the broker and the code its redirect carries. */
+const LOGIN_TEXT: Record<Broker, { name: string; code: string }> = {
+  fyers: { name: "Fyers", code: "auth_code" },
+  zerodha: { name: "Zerodha", code: "request_token" },
+};
+
+export default function LoginButton({
+  collapsed = false,
+  broker = "fyers",
+}: Readonly<{ collapsed?: boolean; broker?: Broker }>) {
+  const { name, code } = LOGIN_TEXT[broker];
+  const statusQuery = useBrokerStatus(broker);
+  const loginUrl = useBrokerLoginUrl(broker);
+  const token = useBrokerToken(broker);
+  const disconnect = useBrokerDisconnect(broker);
   const connected = statusQuery.data?.connected ?? false;
   const userId = statusQuery.data?.userId ?? "";
   const systemOffline = statusQuery.data?.offline ?? false;
@@ -34,7 +45,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
   };
 
   const handleDisconnect = () => {
-    if (!confirm("Disconnect from Fyers? You will need to re-authenticate.")) return;
+    if (!confirm(`Disconnect from ${name}? You will need to re-authenticate.`)) return;
     disconnect.mutate(undefined, {
       onSuccess: () => {
         setMessage("Disconnected successfully");
@@ -118,7 +129,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
   if (connected) {
     return collapsed ? (
       <div className="flex flex-col items-center gap-2">
-        <div className="flex justify-center w-full py-2" title={`Connected as ${userId}`}>
+        <div className="flex justify-center w-full py-2" title={`${name}: connected as ${userId}`}>
           <Wifi className="w-4 h-4 text-profit" />
         </div>
         <button
@@ -138,7 +149,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
           </div>
           <div className="flex flex-col truncate">
             <span className="text-xxs font-semibold text-profit uppercase tracking-wider">
-              Connected
+              {broker === "fyers" ? "Connected" : `${name} connected`}
             </span>
             {userId && (
               <span className="text-xxs text-foreground-muted font-mono truncate">{userId}</span>
@@ -149,7 +160,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
           onClick={handleDisconnect}
           disabled={loading}
           className="p-1.5 rounded-md hover:bg-loss/10 text-foreground-muted hover:text-loss transition-colors"
-          title="Disconnect from Fyers"
+          title={`Disconnect from ${name}`}
         >
           <LogOut className="w-3.5 h-3.5" />
         </button>
@@ -163,7 +174,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
         <button
           onClick={handleLoginStart}
           disabled={loading}
-          title={collapsed ? "Connect Fyers" : ""}
+          title={collapsed ? `Connect ${name}` : ""}
           className={
             collapsed
               ? "flex items-center justify-center w-full py-3 text-foreground-muted hover:text-primary"
@@ -172,7 +183,7 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
         >
           <div className="flex items-center gap-2">
             <WifiOff className="w-4 h-4 group-hover:scale-110 transition-transform" />
-            {!collapsed && <span>Connect Fyers</span>}
+            {!collapsed && <span>Connect {name}</span>}
           </div>
         </button>
 
@@ -195,12 +206,12 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
             </button>
 
             <h3 className="text-lg font-semibold text-foreground mb-2 flex items-center gap-2">
-              <Key className="w-5 h-5 text-primary" /> Authenticate Fyers
+              <Key className="w-5 h-5 text-primary" /> Authenticate {name}
             </h3>
 
             <div className="bg-primary/5 border border-primary/10 rounded-lg p-4 mb-4 text-xs text-primary leading-relaxed space-y-2">
               <p>
-                <strong>Step 1:</strong> A Fyers login window has opened in your browser
+                <strong>Step 1:</strong> A {name} login window has opened in your browser
               </p>
               <p>
                 <strong>Step 2:</strong> Login with your credentials
@@ -211,15 +222,15 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
                   After login, you&apos;ll be redirected to a page with URL like:
                   <br />
                   <code className="text-xxs bg-void/40 px-2 py-0.5 rounded mt-1 block">
-                    https://example.com/?{"{"}auth_code=
-                    <span className="text-warning font-semibold">XXXXXX...</span>
+                    https://example.com/?{"{"}
+                    {code}=<span className="text-warning font-semibold">XXXXXX...</span>
                     {"}"}
                   </code>
                 </span>
               </p>
               <p>
                 <strong>Step 4:</strong> Copy only the{" "}
-                <code className="bg-warning/10 text-warning px-1 rounded">auth_code</code> value and
+                <code className="bg-warning/10 text-warning px-1 rounded">{code}</code> value and
                 paste below
               </p>
             </div>
@@ -227,17 +238,17 @@ export default function LoginButton({ collapsed = false }: Readonly<{ collapsed?
             <div className="space-y-4">
               <div>
                 <label
-                  htmlFor="fyers-auth-code"
+                  htmlFor={`${broker}-auth-code`}
                   className="block text-xs font-semibold text-foreground-muted mb-2"
                 >
                   Authorization Code
                 </label>
                 <input
-                  id="fyers-auth-code"
+                  id={`${broker}-auth-code`}
                   type="text"
                   value={authCode}
                   onChange={(e) => setAuthCode(e.target.value)}
-                  placeholder="Paste auth_code here (without auth_code= prefix)"
+                  placeholder={`Paste ${code} here (without ${code}= prefix)`}
                   className="w-full bg-void/50 border border-border-subtle rounded-lg px-4 py-3 text-sm text-foreground font-mono focus:border-primary/50 outline-none"
                   ref={focusOnMount}
                 />
