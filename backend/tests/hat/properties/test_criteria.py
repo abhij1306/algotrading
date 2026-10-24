@@ -27,7 +27,7 @@ from app.hat.engine.criteria import CriterionResult, LiveContext, evaluate, eval
 from app.hat.engine.criteria import vcp as vcp_module
 from app.hat.engine.criteria.base import EvalContext
 from app.hat.engine.criteria.darvas import Box, DarvasBoxParams, find_box
-from app.hat.engine.criteria.pullback import ema, pullback_span
+from app.hat.engine.criteria.pullback import ema, pullback_span, volume_ratio
 from app.hat.engine.live_entry import ep_candidates
 
 SLOW = settings(
@@ -118,6 +118,15 @@ def test_pullback_span_counts_from_the_last_session_of_the_high() -> None:
     assert pullback_span([1.0, 5.0, 3.0, 5.0, 4.0, 3.0], 2) == 2
     assert pullback_span([1.0, 5.0, 3.0, 5.0, 4.0], 2) == "no_pullback"
     assert pullback_span([1.0, 2.0, 3.0], 1) == "no_pullback"  # the date is the high
+
+
+def test_volume_ratio_reads_the_whole_pullback_even_past_the_average_window() -> None:
+    # a 55-session pullback: its first 5 sessions are heavy and fall outside the 50-session mean
+    volumes = [1200.0] * 5 + [100.0] * 50
+    assert volume_ratio(volumes, 55) == 2  # (6000 + 5000) / 55 = 200 over a mean of 100
+    assert volume_ratio(volumes, 50) == 1
+    assert volume_ratio(volumes[1:], 55) is None  # the pullback's window is not there
+    assert volume_ratio([0.0] * 50, 2) is None
 
 
 def test_ema_pullback_exposes_the_levels_the_trigger_and_stop_read() -> None:

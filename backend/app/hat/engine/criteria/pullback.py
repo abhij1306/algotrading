@@ -27,6 +27,7 @@ from .indicators import dsum, last
 # the result is then below 0.1% for any length.
 EMA_WARMUP = 6
 EMA_MAX = 60
+AVG_DAYS = 50  # the volume average the pullback's volume is compared with
 
 
 class EmaPullbackParams(ParamModel):
@@ -111,6 +112,16 @@ def held_ema(
     return next((r for r in reasons if r != "no_data"), "no_data")
 
 
+def volume_ratio(volumes: Sequence[float | None], span: int) -> Decimal | None:
+    """The mean volume of the last `span` sessions over the mean of the last `AVG_DAYS`, each
+    over its own window (a pullback may be longer than the average's window); None unless both
+    windows exist without a null and the average is positive."""
+    pulled, average = last(volumes, span), last(volumes, AVG_DAYS)
+    if pulled is None or average is None or dsum(average) <= 0:
+        return None
+    return dsum(pulled) * AVG_DAYS / (dsum(average) * span)
+
+
 def ema_pullback(ctx: EvalContext, params: EmaPullbackParams) -> CriterionResult:
     """HAT-CRIT-125. Passes with `pivot` (the date's high) and `final_contraction_low` (the
     pullback's lowest low) when a pullback of `min_days` to `max_days` sessions, on lighter
@@ -118,17 +129,17 @@ def ema_pullback(ctx: EvalContext, params: EmaPullbackParams) -> CriterionResult
     pullback's volume over the 50-session mean). Without the bars it needs it is `no_data`."""
     bars = ctx.history
     highs, lows = last(bars.high, params.max_days + 1), last(bars.low, params.max_days + 1)
-    volumes, closes = last(bars.volume, 50), last(bars.close, 1)
-    if highs is None or lows is None or volumes is None or closes is None:
+    closes = last(bars.close, 1)
+    if highs is None or lows is None or closes is None:
         return no_data()
     span = pullback_span(highs, params.min_days)
     if isinstance(span, str):
         return verdict(False, None, span)
-    pulled, average = dsum(volumes[-span:]) * 50, dsum(volumes) * span
-    if average <= 0:
+    ratio = volume_ratio(bars.volume, span)
+    if ratio is None:
         return no_data()
-    if pulled >= average * dec(params.volume_vs_avg50):
-        return verdict(False, float(pulled / average), "volume_not_lighter")
+    if ratio >= dec(params.volume_vs_avg50):
+        return verdict(False, float(ratio), "volume_not_lighter")
     held = held_ema(bars.close, dec(lows[-1]), dec(closes[-1]), params)
     if isinstance(held, str):
         return no_data() if held == "no_data" else verdict(False, None, held)
