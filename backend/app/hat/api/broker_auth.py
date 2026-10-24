@@ -84,6 +84,31 @@ def _is_active(broker: str) -> bool:
         return False
 
 
+def _missing(label: str) -> str:
+    return f"{label} credentials not found in environment variables. Please check .env file."
+
+
+def _exchange_failure(error: Exception, label: str) -> HTTPException:
+    """The HTTP answer of a failed login exchange: the service's own message for a refusal,
+    a fixed one otherwise (never the broker's text)."""
+    if isinstance(error, MissingCredentialsError):
+        return HTTPException(status_code=500, detail=_missing(label))
+    if isinstance(error, TokenRejectedError):
+        return HTTPException(status_code=400, detail=error.message)
+    if isinstance(error, WrongAccountError):
+        return HTTPException(status_code=403, detail=error.message)
+    if isinstance(error, AccountsUnreadableError):
+        # the broker accounts could not be read: fail closed, nothing was saved
+        return HTTPException(status_code=503, detail=error.message)
+    if isinstance(error, FyersAuthError):
+        return HTTPException(status_code=500, detail=error.message)
+    if isinstance(error, TokenStoreError):
+        logger.error("%s token could not be stored", label, exc_info=error)
+        return HTTPException(status_code=500, detail=f"The {label} token could not be saved")
+    logger.error("%s token exchange failed", label, exc_info=error)
+    return HTTPException(status_code=500, detail="Token exchange failed")
+
+
 def auth_router(
     *,
     broker: str,
@@ -96,10 +121,8 @@ def auth_router(
     router = APIRouter(prefix=f"/api/hat/auth/{broker}", tags=["HAT auth"])
     auth = Annotated[FyersAuthService, Depends(service)]
     status_error = f"Could not read {label} login status"
-    missing = f"{label} credentials not found in environment variables. Please check .env file."
+    missing = _missing(label)
     url_error = "Failed to generate authentication URL"
-    exchange_error = "Token exchange failed"
-    store_error = f"The {label} token could not be saved"
     disconnect_error = f"Failed to disconnect from {label}"
 
     @router.get("/status", name=names.status)
@@ -145,23 +168,8 @@ def auth_router(
         token."""
         try:
             service.exchange(request.auth_code)
-        except MissingCredentialsError:
-            raise HTTPException(status_code=500, detail=missing) from None
-        except TokenRejectedError as error:
-            raise HTTPException(status_code=400, detail=error.message) from None
-        except WrongAccountError as error:
-            raise HTTPException(status_code=403, detail=error.message) from None
-        except AccountsUnreadableError as error:
-            # the broker accounts could not be read: fail closed, nothing was saved
-            raise HTTPException(status_code=503, detail=error.message) from None
-        except FyersAuthError as error:
-            raise HTTPException(status_code=500, detail=error.message) from None
-        except TokenStoreError:
-            logger.exception("%s token could not be stored", label)
-            raise HTTPException(status_code=500, detail=store_error) from None
-        except Exception:
-            logger.exception("%s token exchange failed", label)
-            raise HTTPException(status_code=500, detail=exchange_error) from None
+        except Exception as error:
+            raise _exchange_failure(error, label) from None
         return MessageResponse(status="success", message="Token generated and saved successfully")
 
     @router.post(

@@ -345,6 +345,41 @@ def _publish_universe(
     }
 
 
+def _onboard(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[str, Any]:
+    """Onboard an account of the active broker (`HAT_BROKER`): one broker at a time."""
+    active = deps.active_broker or active_broker(deps.env)
+    name = args.broker or active
+    if name not in ADAPTER_FACTORIES:
+        raise AdminError("unsupported_broker")
+    if name != active:
+        raise AdminError("broker_not_active")
+    account = onboard_account(
+        session,
+        deps.broker_for(name),
+        user_id=deps.user_id,
+        broker_name=name,
+        account_ref=args.account_ref,
+    )
+    return {"broker_account_id": str(account.id), "status": account.status}
+
+
+def _refresh_kite(
+    session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
+) -> dict[str, Any]:
+    """The zerodha broker symbols, as the weekly refresh writes them."""
+    if deps.kite_symbols is None:
+        raise AdminError("kite_symbols_unavailable")
+    dump = _read(deps.files, args.dump, (".csv",), "dump_unreadable") if args.dump else None
+    try:
+        nse_tokens, listings = deps.kite_symbols(trade_date_of(now), dump)
+    except HatError:
+        raise
+    except Exception:  # a download failure: its text is not kept
+        raise AdminError("kite_symbols_unavailable") from None
+    report = refresh_kite_symbols(session, market_id_of(session), nse_tokens, listings)
+    return {"written": report.written, "removed": report.removed, "skipped": len(report.skipped)}
+
+
 def _setup(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any] | None:
@@ -357,36 +392,9 @@ def _setup(
         row = seed_initial_policy(session, user_id, now)
         return {"risk_policy_version": row.version, "id": str(row.id)}
     if command == "onboard-account":
-        active = deps.active_broker or active_broker(deps.env)
-        name = args.broker or active
-        if name not in ADAPTER_FACTORIES:
-            raise AdminError("unsupported_broker")
-        if name != active:
-            raise AdminError("broker_not_active")  # one broker at a time (`HAT_BROKER`)
-        account = onboard_account(
-            session,
-            deps.broker_for(name),
-            user_id=user_id,
-            broker_name=name,
-            account_ref=args.account_ref,
-        )
-        return {"broker_account_id": str(account.id), "status": account.status}
+        return _onboard(session, args, deps)
     if command == "refresh-kite-symbols":
-        if deps.kite_symbols is None:
-            raise AdminError("kite_symbols_unavailable")
-        dump = _read(deps.files, args.dump, (".csv",), "dump_unreadable") if args.dump else None
-        try:
-            nse_tokens, listings = deps.kite_symbols(trade_date_of(now), dump)
-        except HatError:
-            raise
-        except Exception:  # a download failure: its text is not kept
-            raise AdminError("kite_symbols_unavailable") from None
-        report = refresh_kite_symbols(session, market_id_of(session), nse_tokens, listings)
-        return {
-            "written": report.written,
-            "removed": report.removed,
-            "skipped": len(report.skipped),
-        }
+        return _refresh_kite(session, args, deps, now)
     if command == "seed-strategies":
         rows = versions.seed_default_strategies(session, user_id)
         return {"strategies": {s.name: str(s.id) for s in rows}}

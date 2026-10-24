@@ -138,9 +138,9 @@ def test_order_params_exact(order_type: OrderType, prices: dict, expected: dict)
     ],
 )
 def test_order_params_refuses(bad: dict) -> None:
-    fields = {"order_type": OrderType.MARKET, **bad}
+    intent = _intent(**{"order_type": OrderType.MARKET, **bad})  # type: ignore[arg-type]
     with pytest.raises(InvalidIntentError):
-        order_params(_intent(**fields), same)  # type: ignore[arg-type]
+        order_params(intent, same)
 
 
 def test_order_modify_params() -> None:
@@ -155,8 +155,9 @@ def test_order_modify_params() -> None:
         "market_protection": -1,
     }
     assert order_modify_params("SL", None, None, Decimal("95")) is None  # no limit: not sent
+    one = Decimal("1")
     with pytest.raises(InvalidIntentError):
-        order_modify_params("LIMIT", 0, Decimal("1"), None)
+        order_modify_params("LIMIT", 0, one, None)
 
 
 def test_gtt_params_single_leg_sell_stop() -> None:
@@ -210,8 +211,9 @@ def test_gtt_params_refuses(change: dict, last: str) -> None:
         "tag": GTT_TAG,
         **change,
     }
+    request, last_price = GttRequest(**fields), Decimal(last)  # type: ignore[arg-type]
     with pytest.raises(InvalidIntentError):
-        gtt_params(GttRequest(**fields), same, Decimal(last))  # type: ignore[arg-type]
+        gtt_params(request, same, last_price)
 
 
 def test_ltp() -> None:
@@ -401,8 +403,9 @@ def test_kite_token_expiry(now: datetime, expires: datetime) -> None:
     assert kite_token_expiry(now) == expires
     assert kite_token_expiry(now).astimezone(IST).time() == time(6)
     assert kite_token_expiry(now) - now <= timedelta(days=1)
+    naive = now.replace(tzinfo=None)
     with pytest.raises(ValueError):
-        kite_token_expiry(now.replace(tzinfo=None))
+        kite_token_expiry(naive)
 
 
 def test_active_broker_setting() -> None:

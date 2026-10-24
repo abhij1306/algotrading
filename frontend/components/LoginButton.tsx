@@ -10,16 +10,16 @@ import {
 import { focusOnMount } from "@/lib/focus";
 
 /** What the login box calls the broker and the code its redirect carries. */
-const LOGIN_TEXT: Record<Broker, { name: string; code: string }> = {
-  fyers: { name: "Fyers", code: "auth_code" },
-  zerodha: { name: "Zerodha", code: "request_token" },
+const LOGIN_TEXT: Record<Broker, { name: string; code: string; connectedLabel: string }> = {
+  fyers: { name: "Fyers", code: "auth_code", connectedLabel: "Connected" },
+  zerodha: { name: "Zerodha", code: "request_token", connectedLabel: "Zerodha connected" },
 };
 
 export default function LoginButton({
   collapsed = false,
   broker = "fyers",
 }: Readonly<{ collapsed?: boolean; broker?: Broker }>) {
-  const { name, code } = LOGIN_TEXT[broker];
+  const { name, code, connectedLabel } = LOGIN_TEXT[broker];
   const statusQuery = useBrokerStatus(broker);
   const loginUrl = useBrokerLoginUrl(broker);
   const token = useBrokerToken(broker);
@@ -149,7 +149,7 @@ export default function LoginButton({
           </div>
           <div className="flex flex-col truncate">
             <span className="text-xxs font-semibold text-profit uppercase tracking-wider">
-              {broker === "fyers" ? "Connected" : `${name} connected`}
+              {connectedLabel}
             </span>
             {userId && (
               <span className="text-xxs text-foreground-muted font-mono truncate">{userId}</span>
