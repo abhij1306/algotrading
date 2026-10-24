@@ -313,8 +313,11 @@ SELECT COALESCE(l.chain_id, r.instrument_id) AS instrument_id, r.date, r.isin, r
 FROM bars_daily_raw r
 LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
 LEFT JOIN ca_segment c ON c.instrument_id = COALESCE(l.chain_id, r.instrument_id)
-     AND (c.from_date IS NULL OR r.date >= c.from_date) AND r.date < c.to_date
+     AND r.date >= COALESCE(c.from_date, DATE '0001-01-01') AND r.date < c.to_date
 """
+# The open-ended first segment's NULL `from_date` is read as the first day there is rather than
+# with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
+# (24 s of CPU for five years of bars), the equality as a hash join (DB1).
 _COUNT_SQL = {
     DATASET_BARS: "SELECT date, count(*) FROM bars_daily_raw GROUP BY date ORDER BY date",
     DATASET_INDEX: "SELECT date, count(*) FROM index_daily GROUP BY date ORDER BY date",
@@ -545,6 +548,18 @@ class DataStore:
             return
         columns = ", ".join(f"{f.name} {_duck_type(f.type)}" for f in DATASET_SCHEMAS[dataset])
         con.execute(f"CREATE TABLE {view} ({columns}, date DATE)")
+
+
+def latest_rows(frame: pl.DataFrame) -> pl.DataFrame:
+    """The latest ingest run's row per (`instrument_id`, `date`) of rows read from
+    `bars_daily_adj` with their `ingest_run_id`, as the `bars_daily` view keeps, in the order
+    read; done in polars, as a window over a slice in DuckDB costs several times the memory of
+    the slice, and only when a day was written by more than one run, which is rare."""
+    key = ["instrument_id", "date"]
+    if not frame.select(pl.struct(key).is_duplicated().any()).item():
+        return frame
+    latest = frame.filter(pl.col("ingest_run_id") == pl.col("ingest_run_id").max().over(key))
+    return latest.unique(key, keep="last", maintain_order=True)
 
 
 def _duck_type(arrow_type: pa.DataType) -> str:

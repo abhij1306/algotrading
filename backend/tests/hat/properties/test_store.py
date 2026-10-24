@@ -9,6 +9,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
+import polars as pl
 import pytest
 from hat_bhav_support import bar
 from hypothesis import given, settings
@@ -20,6 +21,7 @@ from app.hat.data.store import (
     BarRow,
     DataStore,
     StoreError,
+    latest_rows,
     partition_report,
 )
 from app.hat.ids import Uuid7Generator, uuid7
@@ -144,3 +146,18 @@ def test_partitions_complete(written: set[date], expected: set[date]) -> None:
         for day in expected - written:
             assert store.read_bars(day).height == 0
         assert sorted(store.days(DATASET_BARS)) == sorted(written)
+
+
+def test_latest_rows_keeps_the_latest_run_per_day_in_read_order() -> None:
+    d1, d2 = date(2024, 1, 1), date(2024, 1, 2)
+    frame = pl.DataFrame(
+        {
+            "instrument_id": ["b", "a", "a", "a", "b"],
+            "date": [d1, d1, d2, d1, d2],
+            "ingest_run_id": ["r1", "r1", "r1", "r2", "r1"],
+            "close": [1.0, 2.0, 3.0, 4.0, 5.0],
+        }
+    )
+    assert latest_rows(frame)["close"].to_list() == [1.0, 3.0, 4.0, 5.0]
+    unique = frame.filter(pl.col("ingest_run_id") == "r1")
+    assert latest_rows(unique) is unique

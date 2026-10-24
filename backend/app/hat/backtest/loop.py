@@ -71,7 +71,10 @@ price, `lower_circuit_locked`) sells nothing: its stop and exits wait for the ne
 is not pinned, which fills the stop at min(open, stop) (`lower_circuit_days` counts them). A
 position whose instrument has no bar (suspended, not delisted) is carried at its last close for
 `suspension_sessions` sessions, then marked 5% lower per further session, in the equity curve
-and at the period end. All three rules are in the run's conventions.
+and at the period end. All three rules are in the run's conventions. A position in a stock that
+stopped trading closes at its last close on its last session (`MarketData.last_traded`,
+HAT-BT-012), and nothing trades or marks within a few sessions of an open review jump
+(`MarketData.skipped`, audit H7), without those sessions counting as a suspension.
 
 The run's one risk-policy version (`RunSpec.policy`) is in force over the whole period, from its
 first session, whenever the stored version took effect: a backtest of years before the policy
@@ -319,7 +322,7 @@ class _Run:
             for b in self.config.playbooks
         }
         self.view = MarketView(data, self.config.regime.index)
-        self.days, self.index, self.bar = self.view.days, self.view.index, self.view.bar
+        self.days, self.index = self.view.days, self.view.index
         self.period = tuple(d for d in self.days if spec.start <= d <= spec.end)
         if not self.period:
             raise BacktestError("backtest_empty_period")
@@ -335,8 +338,7 @@ class _Run:
         self.ladder = LadderState()
         self.held: dict[uuid.UUID, _Held] = {}
         self.seen_results: set[uuid.UUID] = set()
-        self.last_close: dict[str, Decimal] = {}
-        self.last_bar: dict[str, date] = {}  # each instrument's last session with a bar
+        self.closed: date | None = None  # the last session whose close phase has run
         self.ambiguous_days: set[date] = set()
         self.lower_circuit_days: set[date] = set()
         self.equity: list[tuple[date, Decimal]] = []
@@ -451,7 +453,7 @@ class _Run:
         )
         for position in self._open_positions():
             held = self.held[position.id]
-            bar = self.bar.get((held.instrument_id, day))
+            bar = self.view.bar(held.instrument_id, day)
             if bar is None:
                 continue  # no session for this instrument today: nothing can fill
             held.high, held.low = max(held.high, bar.open), min(held.low, bar.open)
@@ -505,8 +507,8 @@ class _Run:
                 entry=entry, tick=tick, atr=self.view.atr(instrument_id, prev, rule.days)
             )
         elif isinstance(rule, StopSwingLow):
-            older = self.view.bars_through(instrument_id, prev)
-            lows = [b.low for b in older[-rule.lookback_days :]]
+            older = self.view.bars_through(instrument_id, prev, rule.lookback_days)
+            lows = [b.low for b in older]
             inputs = StopInputs(
                 entry=entry, tick=tick, swing_lows=lows if len(lows) == rule.lookback_days else []
             )
@@ -560,7 +562,7 @@ class _Run:
         """The day's watchlist in the order its triggers take the open slots (HAT-BT-026)."""
 
         def rank(row: HatWatchlistEntry) -> tuple[int, Decimal]:
-            bar = self.bar.get((str(row.instrument_id), day))
+            bar = self.view.bar(str(row.instrument_id), day)
             pivot = None if row.pivot is None else Decimal(row.pivot)
             return trigger_rank(
                 None if bar is None else bar.open, pivot, self.spec.conventions.entry_fill_rule
@@ -573,7 +575,7 @@ class _Run:
             if row.playbook == EP_PLAYBOOK:
                 continue
             instrument_id = str(row.instrument_id)
-            bar = self.bar.get((instrument_id, day))
+            bar = self.view.bar(instrument_id, day)
             if bar is None:
                 continue  # no session today: the level cannot break
             price = self._fill(row, bar, day)
@@ -704,11 +706,9 @@ class _Run:
         price, dip = plan.price, plan.dip
         held_prices = {
             # marked down as the equity is, after sessions without a bar (PR 64)
-            uuid.UUID(h.instrument_id): self._mark_price(
-                h.instrument_id, row.trade_date, self.last_close[h.instrument_id]
-            )
+            uuid.UUID(h.instrument_id): self._mark_price(h.instrument_id, row.trade_date, last[1])
             for h in self.held.values()
-            if h.instrument_id in self.last_close
+            if (last := self._last_close(h.instrument_id)) is not None
         }
         request = entries.EntryRequest(
             bot_id=self.bot_id,
@@ -773,7 +773,7 @@ class _Run:
     def _close_phase(self, day: date) -> None:
         for position in self._open_positions():
             held = self.held[position.id]
-            bar = self.bar.get((held.instrument_id, day))
+            bar = self.view.bar(held.instrument_id, day)
             if bar is None:
                 continue
             held.low = min(held.low, bar.close)
@@ -791,9 +791,15 @@ class _Run:
                 self._evaluate(
                     position, self._close_view(position, bar, day), "close", _at(day, _AT_CLOSE)
                 )
-        for instrument_id, bar in self.view.by_day.get(day, ()):
-            self.last_close[instrument_id] = bar.close
-            self.last_bar[instrument_id] = day
+        self.closed = day
+
+    def _last_close(self, instrument_id: str) -> tuple[date, Decimal] | None:
+        """The instrument's last session with a bar in the period, up to the last close phase,
+        and its close; None before one."""
+        if self.closed is None:
+            return None
+        found = self.view.last_close(instrument_id, self.closed)
+        return found if found is not None and found[0] >= self.period[0] else None
 
     def _ambiguous_dip(self, position: HatPosition, bar: Bar, day: date) -> bool:
         """Whether the position's day is ambiguous (`raised_stop_dip`: the way up raised its
@@ -827,8 +833,9 @@ class _Run:
             held = self.held[position.id]
             if self.data.last_traded.get(held.instrument_id) != day:
                 continue
-            bar = self.bar.get((held.instrument_id, day))
-            price = bar.close if bar is not None else self.last_close.get(held.instrument_id)
+            bar = self.view.bar(held.instrument_id, day)
+            last = self._last_close(held.instrument_id)
+            price = bar.close if bar is not None else (last[1] if last is not None else None)
             if price is not None:
                 self._close(position, price, DELISTED, _at(day, _AT_END))
 
@@ -868,12 +875,15 @@ class _Run:
     def _mark_price(self, instrument_id: str, day: date, fallback: Decimal) -> Decimal:
         """The instrument's mark on `day`: its last close, marked down one band per session
         after `suspension_sessions` sessions without a bar (`suspended_mark`, PR 64); `fallback`
-        before its first close."""
-        last = self.last_close.get(instrument_id)
-        seen = self.last_bar.get(instrument_id)
-        if last is None or seen is None:
+        before its first close. A session skipped near a jump (`MarketData.skipped`) is not one
+        without a bar."""
+        found = self._last_close(instrument_id)
+        if found is None:
             return fallback
-        sessions = self.index[day] - self.index[seen]
+        seen, last = found
+        sessions = (
+            self.index[day] - self.index[seen] - self.view.skipped_after(instrument_id, seen, day)
+        )
         after = self.spec.conventions.suspension_sessions
         if sessions <= after:
             return last

@@ -1,8 +1,9 @@
 """The market a backtest reads (HAT-BT-011, HAT-BT-012), loaded point in time, and the day loop's
 views of it.
 
-Bars come from the adjusted view of the Parquet store (`bars_daily`: raw bars times the stored
-corporate-action factors), features from the `features_daily` partitions the nightly job wrote,
+Bars come from the adjusted view of the Parquet store (`bars_daily_adj`: raw bars times the stored
+corporate-action factors, the latest ingest run's row per instrument and day, read for the
+universe's instruments only), features from the `features_daily` partitions the nightly job wrote,
 the regime index from `index_daily`, and membership from the universe's intervals, delisted
 instruments included. Nothing is filtered by what happened later: the day loop reads each input
 only up to the date it decides for (`MarketView`). The features must be the ones the nightly
@@ -20,20 +21,28 @@ import json
 import math
 import uuid
 from bisect import bisect_left, bisect_right
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
 
+import numpy as np
 import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.features import STATE_FILE, inputs_digest
 from ..data.identity import series_changes
-from ..data.lineage import stored_adjustment
-from ..data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataStore
+from ..data.lineage import stored_adjustment, unexplained_jumps
+from ..data.store import (
+    DATASET_BARS,
+    DATASET_BREADTH,
+    DATASET_FEATURES,
+    Adjustment,
+    DataStore,
+    latest_rows,
+)
 from ..data.ticks import tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
@@ -42,13 +51,17 @@ from ..models import HatIndustry, HatInstrument, HatUniverseMember
 from .spec import BacktestError
 
 __all__ = [
+    "JUMP_SKIP_SESSIONS",
     "LOOKBACK_SESSIONS",
+    "STOPPED_SLACK_SESSIONS",
     "Bar",
     "MarketData",
     "MarketView",
     "classifications",
     "industry_on",
+    "jump_skips",
     "load_market",
+    "stopped_trading",
 ]
 
 # The scan reads at most 652 sessions back (a 400-session SMA compared 252 sessions earlier);
@@ -56,23 +69,63 @@ __all__ = [
 LOOKBACK_SESSIONS = 700
 _PRICE_PLACES = Decimal("0.0001")
 _ALWAYS = date(1900, 1, 1)
+_EPOCH = date(1970, 1, 1)  # polars' Date is days since this day
+# Sessions without a bar, up to the store's last day, after which an instrument that never trades
+# again counts as delisted (`MarketData.last_traded`).
+STOPPED_SLACK_SESSIONS = 20
+# Sessions either side of an open review jump whose bars are not traded (`MarketData.skipped`).
+JUMP_SKIP_SESSIONS = 10
+# The exact prices in 1/10,000 of a rupee (the store's 4 places), beside the scan's doubles.
+_EXACT = ("open_e4", "high_e4", "low_e4", "close_e4")
+_BAR_COLUMNS = (
+    "instrument_id",
+    "date",
+    "open",
+    "high",
+    "low",
+    "close",
+    "prev_close",
+    "volume",
+    "traded_value",
+    *_EXACT,
+)
 
 
 @dataclass(frozen=True)
 class MarketData:
     """Everything a run reads, point in time.
 
-    `days`: every session of the store, sorted. `bars`: adjusted daily bars (`instrument_id`
-    text, `date`, `open`, `high`, `low`, `close`, `volume`, `traded_value`, as doubles).
+    `days`: every session of the store, sorted. `bars`: the universe's adjusted daily bars,
+    sorted by instrument and date (`instrument_id` text, `date`, `open`, `high`, `low`, `close`,
+    `prev_close`, `volume`, `traded_value`, as doubles, for the scan, and `open_e4` ..
+    `close_e4`, the exact 4-place prices as integers of 1/10,000, for the day loop's Decimals).
     `features`: the daily features (`date`, `instrument_id`, columns). `index_closes`:
     per index name, (date, close) oldest first. `members`: the universe's membership intervals,
     delisted instruments included. `industries`: each instrument's industry, either one name
     or its classifications as (effective_from, industry), read point in time. `series`: each
     instrument's series as change points (first day, series) from its bars, so a scan reads
-    the series of its own day (`identity.series_on`), not today's. `last_traded`: the
-    last session of each instrument delisted by the period's end. `breadth`: the features job's
+    the series of its own day (`identity.series_on`), not today's. `breadth`: the features job's
     `breadth_pct` per session, read with the `regime.INDEX_NAME` and `regime.VIX_NAME` closes of
     `index_closes` only by a run under the `policy` regime rule (PR 68).
+
+    `last_traded`: the last session of each instrument delisted by the period's end, where the
+    day loop closes a position in it (HAT-BT-012). It is read from the bars (`stopped_trading`),
+    by chain id, so a linked older ISIN is not a delisting: an instrument whose last bar is on or
+    before the period's end, which has no bar after it anywhere in the store, and whose last bar
+    is more than `STOPPED_SLACK_SESSIONS` sessions before the store's last day, has stopped
+    trading. A gap of up to the slack before the store's end may be a suspension that resumes,
+    so it is not called a delisting (the position is carried and marked down, `fills`); a
+    suspension that resumes later in the store is never one. `delisted_on`, set by the live
+    listing refresh, wins when it is set and gives an earlier last session.
+
+    `skipped`: the instrument-days with a bar within `JUMP_SKIP_SESSIONS` sessions (either side,
+    the jump day included) of an open jump of the lineage review list
+    (`lineage.unexplained_jumps`: a price-changing action with no stored factor, such as a
+    demerger whose ratio the owner has not set; a reviewed one has its factor and is no longer a
+    jump). Their bars stay in `bars` for the scan, but the day loop does not trade or mark on
+    them (`MarketView.bar`), and they do not count as sessions without a bar for the suspension
+    mark. An interim rule (audit H7) until the review list's actions are loaded; the run's
+    snapshot reports how many instrument-days it skipped.
     """
 
     days: tuple[date, ...]
@@ -90,6 +143,7 @@ class MarketData:
         default_factory=dict
     )
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
+    skipped: frozenset[tuple[str, date]] = frozenset()
 
 
 def classifications(data: MarketData, instrument_id: str) -> list[tuple[date, str]]:
@@ -129,48 +183,96 @@ class Bar:
     close: Decimal
 
 
+def _ordinal(day: date) -> int:
+    return (day - _EPOCH).days
+
+
+def _exact(units: object) -> Decimal:
+    """A price held in 1/10,000 as the Decimal of the store's 4 places."""
+    return Decimal(int(units)).scaleb(-4)  # type: ignore[call-overload]
+
+
+@dataclass(frozen=True)
+class _Series:
+    """One instrument's tradeable bars, columnar: the dates as days since `_EPOCH`, ascending,
+    and (open, high, low, close) in 1/10,000 per row."""
+
+    days: np.ndarray
+    prices: np.ndarray
+
+    def bars(self, start: int, stop: int) -> list[Bar]:
+        return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
+
+
+_NO_SERIES = _Series(np.empty(0, dtype=np.int32), np.empty((0, 4), dtype=np.int64))
+
+
 class MarketView:
     """The point-in-time reads the day loop makes of `MarketData` (HAT-BT-011): each session's
     tradeable bars as exact Decimals, an instrument's bars up to a day and the SMA, swing low,
     ATR and NSE tick live computes from them, the features of a session and the closes of the
     strategy's regime index (`index`). A bar without four positive prices is not tradeable and
-    is left out."""
+    is left out, as is a skipped one (`MarketData.skipped`). The bars are held per instrument as
+    arrays; a `Bar` of Decimals is built only for the bars a read returns."""
 
     def __init__(self, data: MarketData, index: str) -> None:
         self.days = tuple(sorted(set(data.days)))
         self.index = {d: n for n, d in enumerate(self.days)}
-        self.bars = data.bars.sort("instrument_id", "date")
-        self.bar = self._bars_by_day()
-        self.history = self._history_by_instrument()
-        self.by_day = self._bars_by_session()
+        self.bars = data.bars
+        self.series = self._series(data.skipped)
+        self.skipped: dict[str, list[date]] = {}
+        for instrument_id, day in sorted(data.skipped):
+            self.skipped.setdefault(instrument_id, []).append(day)
         self.feature_rows: dict[date, dict[str, dict[str, Any]]] = {}
         self.features = {
             key[0]: part for key, part in data.features.partition_by("date", as_dict=True).items()
         }
         self.closes = list(data.index_closes.get(index, ()))
 
-    def _bars_by_day(self) -> dict[tuple[str, date], Bar]:
-        found: dict[tuple[str, date], Bar] = {}
-        for row in self.bars.select("instrument_id", "date", "open", "high", "low", "close").rows():
-            prices = [_price(v) for v in row[2:]]
-            if any(p is None or p <= 0 for p in prices):
-                continue  # a bar without four positive prices cannot be traded on
-            found[(str(row[0]), row[1])] = Bar(*prices)  # type: ignore[arg-type]
-        return found
+    def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
+        # a bar without four positive prices cannot be traded on
+        frame = self.bars.select("instrument_id", "date", *_EXACT).filter(
+            pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
+        )
+        if skipped:
+            left_out = pl.DataFrame(
+                sorted(skipped), schema={"instrument_id": pl.String, "date": pl.Date}, orient="row"
+            )
+            frame = frame.join(left_out, on=["instrument_id", "date"], how="anti")
+        return {
+            str(key[0]): _Series(
+                part["date"].to_physical().to_numpy(), part.select(_EXACT).to_numpy()
+            )
+            for key, part in frame.partition_by("instrument_id", as_dict=True).items()
+        }
 
-    def _history_by_instrument(self) -> dict[str, tuple[list[date], list[Bar]]]:
-        found: dict[str, tuple[list[date], list[Bar]]] = {}
-        for (instrument_id, day), bar in sorted(self.bar.items(), key=lambda item: item[0]):
-            dates, bars = found.setdefault(instrument_id, ([], []))
-            dates.append(day)
-            bars.append(bar)
-        return found
+    def _find(self, instrument_id: str, day: date, *, inclusive: bool) -> tuple[_Series, int]:
+        """The instrument's bars and the count of them dated on or before `day` (before it, if
+        not `inclusive`)."""
+        series = self.series.get(instrument_id, _NO_SERIES)
+        side = "right" if inclusive else "left"
+        return series, int(np.searchsorted(series.days, _ordinal(day), side=side))
 
-    def _bars_by_session(self) -> dict[date, list[tuple[str, Bar]]]:
-        found: dict[date, list[tuple[str, Bar]]] = {}
-        for (instrument_id, day), bar in sorted(self.bar.items(), key=lambda item: item[0]):
-            found.setdefault(day, []).append((instrument_id, bar))
-        return found
+    def bar(self, instrument_id: str, day: date) -> Bar | None:
+        """The instrument's tradeable bar of `day`; None without one."""
+        series, at = self._find(instrument_id, day, inclusive=False)
+        if at < len(series.days) and series.days[at] == _ordinal(day):
+            return series.bars(at, at + 1)[0]
+        return None
+
+    def last_close(self, instrument_id: str, day: date) -> tuple[date, Decimal] | None:
+        """The instrument's last tradeable session on or before `day` and its close; None
+        without one."""
+        series, end = self._find(instrument_id, day, inclusive=True)
+        if not end:
+            return None
+        return _EPOCH + timedelta(days=int(series.days[end - 1])), _exact(series.prices[end - 1][3])
+
+    def skipped_after(self, instrument_id: str, after: date, through: date) -> int:
+        """The count of the instrument's skipped sessions (`MarketData.skipped`) after `after`, up
+        to `through`."""
+        days = self.skipped.get(instrument_id, [])
+        return bisect_right(days, through) - bisect_right(days, after)
 
     def prev(self, day: date) -> date | None:
         n = self.index[day]
@@ -187,32 +289,37 @@ class MarketView:
             self.feature_rows[day] = rows
         return _price(rows.get(instrument_id, {}).get(name))
 
-    def bars_through(self, instrument_id: str, day: date, *, inclusive: bool = True) -> list[Bar]:
-        """The instrument's bars dated on or before `day` (before it, if not `inclusive`)."""
-        dates, bars = self.history.get(instrument_id, ([], []))
-        end = bisect_right(dates, day) if inclusive else bisect_left(dates, day)
-        return bars[:end]
+    def bars_through(
+        self, instrument_id: str, day: date, count: int, *, inclusive: bool = True
+    ) -> list[Bar]:
+        """The instrument's last `count` bars dated on or before `day` (before it, if not
+        `inclusive`), oldest first."""
+        series, end = self._find(instrument_id, day, inclusive=inclusive)
+        return series.bars(max(0, end - count), end)
 
     def tick(self, instrument_id: str, day: date) -> Decimal | None:
         """The instrument's NSE tick on `day` (HAT-EXEC-053), from its closes before `day`, as
         the live trigger prices it; None without an earlier close."""
-        bars = self.bars_through(instrument_id, day, inclusive=False)
-        dates = self.history.get(instrument_id, ([], []))[0][: len(bars)]
-        return tick_for_date(dates, [b.close for b in bars], day)
+        series, end = self._find(instrument_id, day, inclusive=False)
+        month = int(np.searchsorted(series.days[:end], _ordinal(day.replace(day=1)), side="left"))
+        # the only closes the tick reads: the last before the month, and the last before `day`
+        rows = sorted({n for n in (month - 1, end - 1) if n >= 0})
+        dates = [_EPOCH + timedelta(days=int(series.days[n])) for n in rows]
+        return tick_for_date(dates, [_exact(series.prices[n][3]) for n in rows], day)
 
     def sma_through(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The `length`-session SMA of the closes up to `day`."""
-        bars = self.bars_through(instrument_id, day)[-length:]
+        bars = self.bars_through(instrument_id, day, length)
         return sma([b.close for b in bars], length)
 
     def lowest_low_before(self, instrument_id: str, before: date, lookback: int) -> Decimal | None:
         """The lowest low of the `lookback` sessions the instrument traded before `before`."""
-        bars = self.bars_through(instrument_id, before, inclusive=False)[-lookback:]
+        bars = self.bars_through(instrument_id, before, lookback, inclusive=False)
         return lowest([b.low for b in bars], lookback)
 
     def atr(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The mean true range of the `length` sessions up to `day`."""
-        window = self.bars_through(instrument_id, day)[-(length + 1) :]
+        window = self.bars_through(instrument_id, day, length + 1)
         return mean_true_range(
             [b.high for b in window], [b.low for b in window], [b.close for b in window], length
         )
@@ -224,23 +331,46 @@ class MarketView:
 
     def prev_close(self, instrument_id: str, day: date) -> Decimal | None:
         """The instrument's last close before `day`; None without one."""
-        dates, bars = self.history.get(instrument_id, ([], []))
-        at = bisect_left(dates, day)
-        return bars[at - 1].close if at > 0 else None
+        bars = self.bars_through(instrument_id, day, 1, inclusive=False)
+        return bars[0].close if bars else None
 
 
+_DIGEST_SLICE = 100_000  # rows per CSV slice of the content digest
 FEATURES_LOCK = ".features.lock"  # the lock `data.features.run_features` holds while it writes
 
+# The universe's adjusted rows of every ingest run, deduped in polars (`latest_rows`, as
+# `features.load_bars` does: a window in SQL costs several times the memory of the rows), with
+# the series each bar traded under (a dated attribute, audit D5), sorted by DuckDB within its
+# memory limit (a sort in polars would copy the rows). The prices come as doubles for
+# the scan, as live reads them, and exactly, as integers of 1/10,000 (`_PRICE_E4_SQL`).
 _BARS_SQL = """
-SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
+SELECT instrument_id, date, series,
        CAST(open AS DOUBLE) AS open, CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
        CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
-       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value
-FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
+       CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value,
+       price_e4(open) AS open_e4,
+       price_e4(high) AS high_e4,
+       price_e4(low) AS low_e4,
+       price_e4(close) AS close_e4,
+       ingest_run_id
+FROM bars_daily_adj
+WHERE date BETWEEN ? AND ? AND instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
+ORDER BY instrument_id, date
 """
-# the series each bar traded under (one id per ISIN: the series is a dated attribute, audit D5)
-_SERIES_SQL = """
-SELECT CAST(instrument_id AS VARCHAR), date, series FROM bars_daily WHERE date BETWEEN ? AND ?
+# An adjusted price rounded to the store's 4 places half to even, as `Decimal.quantize` (and so
+# `_price`) rounds, in exact decimal arithmetic, as an integer of 1/10,000. A cast to DECIMAL(18,4)
+# would round a half away from zero.
+_PRICE_E4_SQL = """
+CREATE TEMP MACRO price_e4(p) AS (
+    CAST(floor(p * 10000) AS BIGINT) + CASE
+        WHEN p * 10000 - floor(p * 10000) > 0.5 THEN 1
+        WHEN p * 10000 - floor(p * 10000) = 0.5 THEN CAST(floor(p * 10000) AS BIGINT) % 2
+        ELSE 0 END)
+"""
+# the universe's instruments that still trade after the run's end
+_LATER_SQL = """
+SELECT DISTINCT instrument_id FROM bars_daily_adj
+WHERE date > ? AND instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
 """
 # every index the run reads, in one statement, so a concurrent upsert cannot split them
 _INDEX_SQL = """
@@ -307,17 +437,82 @@ def _delisted(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, d
     }
 
 
-def _features(store: DataStore, days: Iterable[date]) -> pl.DataFrame:
+def stopped_trading(
+    last_bar: Mapping[str, date], later: Collection[str], days: Sequence[date], slack: int
+) -> dict[str, date]:
+    """Each instrument that stopped trading, at its last bar (`MarketData.last_traded`):
+    `last_bar` is each instrument's last bar up to the run's end, `later` the instruments with a
+    bar after the end, `days` every session of the store. One with a later bar, or whose last
+    bar is no more than `slack` sessions before the store's last day, has not stopped."""
+    if not days:
+        return {}
+    last = len(days) - 1
+    return {
+        instrument_id: day
+        for instrument_id, day in last_bar.items()
+        if instrument_id not in later and last - bisect_left(days, day) > slack
+    }
+
+
+def jump_skips(
+    jumps: Iterable[tuple[str, date]], days: Sequence[date], sessions: int
+) -> set[tuple[str, date]]:
+    """The (instrument, session) pairs within `sessions` sessions of a jump of (instrument, day),
+    either side, the jump day included (`MarketData.skipped`); `days` are the store's sessions."""
+    found: set[tuple[str, date]] = set()
+    for instrument_id, day in jumps:
+        at = bisect_left(days, day)
+        found.update((instrument_id, d) for d in days[max(0, at - sessions) : at + sessions + 1])
+    return found
+
+
+def _series_points(frame: pl.DataFrame) -> dict[str, list[tuple[date, str]]]:
+    """`identity.series_changes` of the bars, fed only each instrument's first row and the rows
+    whose series differs from the row before (`frame` sorted by instrument and date)."""
+    by = pl.col("series").shift(1).over("instrument_id")
+    first = pl.int_range(pl.len()).over("instrument_id") == 0
+    changed = frame.select("instrument_id", "date", "series").filter(
+        first | pl.col("series").ne_missing(by)
+    )
+    return series_changes(changed.iter_rows())
+
+
+def _skipped(
+    store: DataStore, frame: pl.DataFrame, adjustment: Adjustment, window: Sequence[date], end: date
+) -> tuple[frozenset[tuple[str, date]], int]:
+    """The universe's instrument-days with a bar near an open review jump (`MarketData.skipped`),
+    and the count of those jumps."""
+    wanted = set(frame["instrument_id"].unique().to_list())
+    jumps = [
+        (j.instrument_id, j.day)
+        for j in unexplained_jumps(store, adjustment, window[0], until=end)
+        if j.instrument_id in wanted
+    ]
+    near = jump_skips(jumps, window, JUMP_SKIP_SESSIONS)
+    if not near:
+        return frozenset(), len(jumps)
+    pairs = pl.DataFrame(
+        sorted(near), schema={"instrument_id": pl.String, "date": pl.Date}, orient="row"
+    )
+    found = frame.select("instrument_id", "date").join(pairs, on=["instrument_id", "date"])
+    return frozenset(found.iter_rows()), len(jumps)
+
+
+def _features(store: DataStore, days: Iterable[date], wanted: Sequence[str]) -> pl.DataFrame:
+    """The features of `days` of the `wanted` instruments (the scan ranks within the universe, so
+    no other row is read)."""
     frames = [
-        frame.with_columns(pl.lit(day).alias("date"))
+        part.with_columns(pl.lit(day).alias("date"))
         for day in days
-        if (frame := store.read_partition(DATASET_FEATURES, day)).height
+        if (
+            part := store.read_partition(DATASET_FEATURES, day)
+            .with_columns(pl.col("instrument_id").cast(pl.String))
+            .filter(pl.col("instrument_id").is_in(wanted))
+        ).height
     ]
     if not frames:
         raise BacktestError("backtest_no_features")
-    return pl.concat(frames, how="diagonal_relaxed").with_columns(
-        pl.col("instrument_id").cast(pl.String)
-    )
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def _features_digest(store: DataStore) -> str | None:
@@ -331,7 +526,11 @@ def _features_digest(store: DataStore) -> str | None:
 
 
 def _current_features(
-    store: DataStore, digest: str, days: list[date], breadth_days: list[date]
+    store: DataStore,
+    digest: str,
+    days: list[date],
+    breadth_days: list[date],
+    wanted: Sequence[str],
 ) -> tuple[pl.DataFrame, dict[date, Decimal]]:
     """The features of `days` and the breadth of `breadth_days`, read under the features job's
     lock (shared), so a run that is rewriting partitions finishes first and both come from one
@@ -344,7 +543,7 @@ def _current_features(
             store.partition_files(DATASET_FEATURES, day) for day in days
         ):
             raise BacktestError("backtest_features_stale")
-        return _features(store, days), _breadth(store, breadth_days)
+        return _features(store, days, wanted), _breadth(store, breadth_days)
 
 
 def _breadth(store: DataStore, days: Iterable[date]) -> dict[date, Decimal]:
@@ -365,7 +564,10 @@ def _content_digest(market: MarketData) -> str:
     digest = hashlib.sha256()
     for frame in (market.bars, market.features):
         ordered = frame.select(sorted(frame.columns)).sort(["date", "instrument_id"])
-        digest.update(ordered.write_csv().encode())
+        # the CSV of the whole frame, written a slice at a time
+        for at in range(0, max(1, ordered.height), _DIGEST_SLICE):
+            part = ordered.slice(at, _DIGEST_SLICE)
+            digest.update(part.write_csv(include_header=at == 0).encode())
     for name, points in sorted(market.index_closes.items()):
         digest.update(repr((name, [(d.isoformat(), str(c)) for d, c in points])).encode())
     digest.update(
@@ -400,23 +602,31 @@ def load_market(
     job never does. With `regime_inputs` it also reads the regime engine's index and VIX closes
     and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
     of one of them (PR 68)."""
-    days = [d for d in store.days(DATASET_BARS) if d <= end]
+    every_day = store.days(DATASET_BARS)
+    days = [d for d in every_day if d <= end]
     first = bisect_left(days, start)
     if first >= len(days):
         raise BacktestError("backtest_no_data")
     window = days[max(0, first - LOOKBACK_SESSIONS) :]
     adjustment = stored_adjustment(session)
     expected = inputs_digest(adjustment, None)
-    features, breadth = _current_features(
-        store, expected, days[max(0, first - 1) :], window if regime_inputs else []
-    )
     members = _members(session, universe_id, adjustment.lineage)
     instruments = {m.instrument_id for m in members}
+    wanted = sorted(str(i) for i in instruments)
     with store.connect(adjustment) as con:
-        bars = con.execute(_BARS_SQL, [window[0], end]).pl()
-        traded = con.execute(_SERIES_SQL, [window[0], end]).fetchall()
+        con.execute(_PRICE_E4_SQL)
+        frame = con.execute(_BARS_SQL, [window[0], end, wanted]).pl()
+        later = (
+            {r[0] for r in con.execute(_LATER_SQL, [end, wanted]).fetchall()}
+            if every_day[-1] > end
+            else set()
+        )
         names = sorted({index, *((regime.INDEX_NAME, regime.VIX_NAME) if regime_inputs else ())})
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
+    # read once DuckDB has let go of the bars' memory
+    features, breadth = _current_features(
+        store, expected, days[max(0, first - 1) :], window if regime_inputs else [], wanted
+    )
     index_closes: dict[str, list[tuple[date, Decimal]]] = {name: [] for name in names}
     for name, day, close in rows:
         index_closes[name].append((day, Decimal(close)))
@@ -425,21 +635,24 @@ def load_market(
         breadth and all(index_closes[n] for n in (regime.INDEX_NAME, regime.VIX_NAME))
     ):
         raise BacktestError("backtest_no_regime_inputs")
-    wanted = {str(i) for i in instruments}
-    bars = bars.filter(pl.col("instrument_id").is_in(sorted(wanted)))
-    series = series_changes(r for r in traded if r[0] in wanted)
-    delisted = _delisted(session, instruments)
+    frame = latest_rows(frame)
+    series = _series_points(frame)
+    bars = frame.select(_BAR_COLUMNS)
+    del frame
+    last_bar = dict(bars.group_by("instrument_id").agg(pl.col("date").max()).iter_rows())
+    last_traded = stopped_trading(last_bar, later, every_day, STOPPED_SLACK_SESSIONS)
     # Only an instrument delisted by the period's end has a last traded session in the run; one
     # delisted later simply has no more bars after `end`, which is not a delisting.
-    last_traded: dict[str, date] = {}
-    for instrument_id, delisted_on in delisted.items():
+    for instrument_id, delisted_on in _delisted(session, instruments).items():
         if delisted_on > end:
             continue
         dates = bars.filter(
             (pl.col("instrument_id") == instrument_id) & (pl.col("date") <= delisted_on)
         )["date"]
         if dates.len():
-            last_traded[instrument_id] = dates.max()  # type: ignore[assignment]
+            found: date = dates.max()  # type: ignore[assignment]
+            last_traded[instrument_id] = min(found, last_traded.get(instrument_id, found))
+    skipped, jumps = _skipped(store, bars, adjustment, window, end)
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -450,6 +663,7 @@ def load_market(
         series=series,
         last_traded=last_traded,
         breadth=breadth,
+        skipped=skipped,
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -469,6 +683,12 @@ def load_market(
             else {}
         ),
         "members": len(members),
+        "last_traded": len(last_traded),
+        "jump_skip": {
+            "rule": f"no trade or mark within {JUMP_SKIP_SESSIONS} sessions of an open jump",
+            "jumps": jumps,
+            "instrument_days": len(skipped),
+        },
         "actions_digest": expected,
         "content_digest": _content_digest(market),
     }
