@@ -164,11 +164,16 @@ def _end_adopted_entry(
 
 
 def _entry_ended(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+    session: Session,
+    row: HatOrder,
+    found: BrokerOrder,
+    bot_id: uuid.UUID | None,
+    reason: str | None = None,
 ) -> None:
-    """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled."""
+    """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled; a
+    cancel HAT asked carries its `reason`."""
     if found.status in ("cancelled", "expired"):
-        order_event(session, row, bot_id, EVENT_ORDER_CANCELLED)
+        order_event(session, row, bot_id, EVENT_ORDER_CANCELLED, reason=reason)
     elif found.status == "rejected":
         order_event(
             session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True
@@ -176,11 +181,16 @@ def _entry_ended(
 
 
 def record_broker_status(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+    session: Session,
+    row: HatOrder,
+    found: BrokerOrder,
+    bot_id: uuid.UUID | None,
+    reason: str | None = None,
 ) -> bool:
     """Move a placed order to the status the broker now shows (no commit); False when unchanged.
-    An entry that ended with nothing filled records `order.cancelled` when it was cancelled or a
-    DAY limit expired at the close (its signal ends Cancelled), and a final `order.rejected` when
+    An entry that ended with nothing filled records `order.cancelled` when it was cancelled (with
+    `reason`, why HAT cancelled it, when known) or a DAY limit expired at the close (its signal
+    ends Cancelled), and a final `order.rejected` when
     the exchange rejected it after the broker took it (its signal ends Rejected); any other
     change is the order's own bookkeeping (fills are recorded from the trade book, stops have no
     lifecycle step). An order already terminal keeps its status: a book showing it otherwise
@@ -194,7 +204,7 @@ def record_broker_status(
         return False
     row.status = found.status
     if row.purpose == ENTRY and found.filled_qty == 0:
-        _entry_ended(session, row, found, bot_id)
+        _entry_ended(session, row, found, bot_id, reason)
     elif _sale_ended_short(row, found):
         _sale_not_sold(session, row, found, bot_id)
     return True
@@ -353,6 +363,7 @@ def order_event(
     code: str = CODE_OK,
     rule: str | None = None,
     final: bool = False,
+    reason: str | None = None,
 ) -> None:
     """Append the order's `event_type` (no commit): through the journal when it is a lifecycle
     step of the order's signal, else as the order's own event. Never refused: it records a
@@ -367,6 +378,8 @@ def order_event(
         payload["final"] = True  # no retry follows: the lifecycle step to Rejected
     if rule is not None:
         payload["rule"] = rule  # the exit rule a sale is for (its trade result's exit reason)
+    if reason is not None:
+        payload["reason"] = reason  # why HAT cancelled an entry (`entry_timeout`)
     step = lifecycle.step_of(event_type, payload)
     signal = session.get(HatSignal, row.signal_id) if step is not None else None
     if signal is None:  # no step, or no trade to move: the event is kept, never refused

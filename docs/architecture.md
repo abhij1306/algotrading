@@ -74,7 +74,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 - PostgreSQL `hat_*` tables (created by `init_db`; `hat_event` monthly-partitioned): reference
   (instruments one per ISIN, symbol history, calendar, bands, corporate actions and their
   versions, lineage), strategy, risk and bots, portfolio, runtime (watchlist, signal, approval,
-  order, fill, position, trade result), ops (events, job runs, Telegram, snapshots, backtest runs).
+  order, fill, position, trade result, holding baseline), ops (events, job runs, Telegram, snapshots, backtest runs).
 - Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
   `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily`,
   `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`.

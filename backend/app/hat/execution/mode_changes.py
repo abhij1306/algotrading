@@ -16,7 +16,13 @@ from ..risk import controls
 from ..risk.modes import plan_mode_change
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc
-from .modes import account_gates, gate_refusal, request_mode
+from .modes import (
+    ModeRefusedError,
+    account_gates,
+    gate_refusal,
+    request_mode,
+    sleeve_refusal,
+)
 
 __all__ = ["apply_mode_changes", "request_mode_change"]
 
@@ -33,14 +39,18 @@ def request_mode_change(
     chat_id: int | None = None,
 ) -> HatModeChange:
     """Queue a mode change for the next session open. Refused with ModeRefusedError when a gate
-    would keep the mode from running at that open (`gate_refusal`), and with `ModeChangeError`
-    inside market hours; nothing is written when refused."""
+    would keep the mode from running at that open (`gate_refusal`) or the bot's sleeve is not
+    Live (`sleeve_refusal`, Q9), and with `ModeChangeError` inside market hours; nothing is
+    written when refused."""
     bot = session.get(HatBot, bot_id)
     if bot is None:
         raise controls.ControlError("unknown bot")
     account = session.get(HatBrokerAccount, bot.broker_account_id)
     opens = plan_mode_change(to_mode, requested_at, calendar).effective_from
     request_mode(to_mode, account_gates(session, account, opens))
+    refusal = sleeve_refusal(to_mode, bot.lifecycle_state)
+    if refusal is not None:
+        raise ModeRefusedError(refusal)
     return controls.queue_mode_change(
         session,
         bot_id=bot_id,
@@ -67,7 +77,8 @@ def _due(session: Session, bot_id: uuid.UUID, now: datetime) -> list[HatModeChan
 
 def apply_mode_changes(session: Session, now: datetime) -> int:
     """At a session open, settle every queued change now due (in the caller's transaction), in
-    the order queued: one whose mode passes the gates as they stand at `now` is written to
+    the order queued: one whose mode passes the gates as they stand at `now` (and whose sleeve
+    is Live, for confirm and auto) is written to
     `hat_bot.execution_mode` (`mode.applied`); one that does not is refused with the gate's code
     and never takes effect (`mode.apply_refused`), so the bot keeps its mode. Idempotent: a
     settled change is not read again. Returns how many bots changed mode."""
@@ -77,7 +88,9 @@ def apply_mode_changes(session: Session, now: datetime) -> int:
         account = session.get(HatBrokerAccount, bot.broker_account_id)
         gates = account_gates(session, account, now)
         for row in _due(session, bot.id, now):
-            refusal = gate_refusal(row.to_mode, gates)
+            refusal = gate_refusal(row.to_mode, gates) or sleeve_refusal(
+                row.to_mode, bot.lifecycle_state
+            )
             payload = {"from_mode": bot.execution_mode, "to_mode": row.to_mode}
             if refusal is None:
                 row.applied_at = as_utc(now)

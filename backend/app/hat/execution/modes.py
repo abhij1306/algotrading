@@ -50,6 +50,7 @@ __all__ = [
     "HIGH",
     "NO_GTT_DELIVERY",
     "NOT_HIGH_CONFIDENCE",
+    "SLEEVE_NOT_LIVE",
     "WEIGHTS_NOT_CONFIRMED",
     "Gates",
     "ModeRefusedError",
@@ -58,6 +59,7 @@ __all__ = [
     "bot_mode",
     "capability_gated",
     "gate_refusal",
+    "sleeve_refusal",
     "ModeView",
     "mode_anchor",
     "mode_view",
@@ -71,6 +73,7 @@ UNKNOWN_MODE = "unknown_mode"
 NO_GTT_DELIVERY = "no_gtt_delivery"
 DDPI_NOT_CONFIRMED = "ddpi_not_confirmed"
 WEIGHTS_NOT_CONFIRMED = "weights_not_confirmed"
+SLEEVE_NOT_LIVE = "sleeve_not_live"  # confirm or auto asked for a sleeve that is not Live (Q9)
 HIGH = "high"  # the confidence label auto places (D132, D149)
 NOT_HIGH_CONFIDENCE = "not_high_confidence"  # an auto signal stored without a high label
 
@@ -176,6 +179,16 @@ def capability_gated(requested: str, gates: Gates) -> str:
     if requested not in MODE_VALUES or gate_refusal(requested, gates) is not None:
         return Mode.SHADOW
     return requested
+
+
+def sleeve_refusal(requested: str, lifecycle_state: str) -> str | None:
+    """`SLEEVE_NOT_LIVE` when confirm or auto is asked for a bot whose sleeve routes as shadow
+    (Q9): such a mode would lie dormant and go live on promotion without a fresh request, so the
+    owner asks again once the sleeve is Live. None otherwise."""
+    if requested in MODE_VALUES and requested != Mode.SHADOW:
+        if lifecycle.routes_as_shadow(lifecycle_state):
+            return SLEEVE_NOT_LIVE
+    return None
 
 
 def request_mode(requested: str, gates: Gates) -> str:

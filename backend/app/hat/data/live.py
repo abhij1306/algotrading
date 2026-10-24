@@ -281,6 +281,7 @@ class LiveData:
         self._instrument_ids = instrument_ids
         self._last_volume: dict[str, tuple[date, int]] = {}
         self._bar_listeners: list[BarListener] = []
+        self._restore_listeners: list[Callable[[list[Bar]], None]] = []
         self._tick_listeners: list[Callable[[Tick], None]] = []
         self._unsaved: list[Bar] = []
         # per day, the builder's coverage at the last step, taken on the loop thread for
@@ -304,10 +305,15 @@ class LiveData:
         """Called with each final bar, in order (the trigger monitor of PR 15)."""
         self._bar_listeners.append(listener)
 
+    def add_restore_listener(self, listener: Callable[[list[Bar]], None]) -> None:
+        """Called with the day's stored final bars when `restore` reads them (a restart)."""
+        self._restore_listeners.append(listener)
+
     def restore(self, day: date) -> int:
         """A restart mid-session: the day's final bars and coverage already stored give the bar
         builder back its day volumes and, for the symbols watched from the open, its opening
-        ranges (blocking: reads the store). Returns the bars read."""
+        ranges (blocking: reads the store), and go to each restore listener. Returns the bars
+        read."""
         if self._store is None:
             return 0
         symbols = {str(i): s for s, i in self._instrument_ids().items()}
@@ -316,6 +322,8 @@ class LiveData:
             for row in self._store.read(day)
             if (symbol := symbols.get(row.instrument_id)) is not None
         ]
+        for listener in self._restore_listeners:
+            listener(bars)
         coverage = self._store.read_coverage(day)
         from_open = [symbols[i] for i in coverage.from_open if i in symbols]
         return self.builder.restore(bars, from_open, coverage.gap_from, coverage.seen_until)

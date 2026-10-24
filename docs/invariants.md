@@ -15,6 +15,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
    lacks is no trading day; a special session has only its stored hours, else it is closed.
 6. `max_chase` always applies, even if a config deletes the criterion.
+7. No entry is placed, and no Take passes, once its break failed: a final 5-minute bar after the
+   trigger bar closed below the level. An unfilled entry whose break failed is cancelled, and its
+   `order.cancelled` carries the reason.
 
 ## Money safety
 
@@ -23,15 +26,20 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   from `decide` only.
 - **Shadow never reaches the broker.** Confirm and auto need an active account with GTT delivery,
   DDPI confirmed by the owner and policy weights confirmed; otherwise the bot runs shadow. A mode
-  change takes effect at the next session open.
+  change takes effect at the next session open; confirm or auto is refused for a sleeve that is
+  not Live (`sleeve_not_live`), at the request and at the open.
 - **Orders are idempotent.** Every order has an `HT` tag (signal id + purpose + sequence)
   committed `pending` before the broker is called; an order of unknown outcome is looked up by tag
   before any retry, and an unknown entry is never re-sent. A filled, cancelled, rejected or
   expired order never moves again: a book showing it otherwise is logged and ignored.
+- **A broker fill is a fact.** Every fill is recorded, never refused by the lifecycle: a late
+  entry fill on an ended trade opens or reopens its position so the stop covers the shares, and
+  raises URGENT `fill.off_lifecycle`.
 - **Exact math.** `Decimal` for prices, notional, P&L and size; floats and non-finite numbers are
   refused. Product CNC, a finite positive price, the stored broker symbol.
 - **Risk never raises.** A missing input is a REJECT with a typed reason. Size is
-  `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`; zero skips.
+  `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`; zero skips. The
+  caps count a position's unfilled entry remainder while that entry still works.
 - **Exits are never blocked** by a cap, kill switch, data failure, reconciliation state or mode.
   Kill switches, pause and a failed gate stop new entries only (manage-only). A held instrument
   that changes series keeps its exits under the new symbol. An account holding an open real
@@ -42,11 +50,15 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   the start is refused (`inactive_broker_holds_positions`), never left without a desk.
 - **Fail closed on the broker.** A missing client, open circuit or failed read raises
   `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
-  entry on a trade date before its first reconciliation succeeded; a mismatch blocks entries and
-  never auto-closes or adopts a position.
+  entry on a trade date before its first reconciliation succeeded, and the live conditions and
+  price are checked again after it, right before the send; a mismatch blocks entries and never
+  auto-closes or adopts a position.
 - **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
-  a lost broker answer is settled against the broker's book, never left frozen.
+  a lost broker answer is settled against the broker's book, never left frozen. A lost sale of
+  an earlier session is settled from the holdings net of the owner's own shares (the holding
+  baseline a reconciliation recorded before the sale); with no baseline the position sells
+  nothing until the owner books that sale.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
   restarts the peak at the equity then. Drawdown equity is capital + realised P&L + open positions
@@ -54,7 +66,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   trade the previous close; a stale price at the lower of last trade and stop).
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored as hashes;
   expiry 5 minutes; Take re-checks `max_chase`; unknown chats are ignored. Free text never makes
-  an order; auto, `/arm` and `/flatten` need a second confirmation.
+  an order; auto, `/arm` and `/flatten` need a second confirmation. An entry fill landing after
+  a flatten sold its position is sold under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
   evidence gate; policy and strategy versions are immutable.
 - **One owner per resource.** One live socket, one session owner per broker account, one token

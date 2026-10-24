@@ -5,7 +5,8 @@ lock (and, for an entry, the owner's): the slots of the owner's bots, the bot's 
 stop-outs today, the latest hard stop of an instrument for the cooldown, and the kill, ladder and
 risk-policy inputs. A slot is an open position, or a signal whose entry is triggered, placed or
 awaiting approval and has no position yet; a veto trade (HAT-EXEC-032) is scored only and holds
-none. Nothing here writes.
+none. A real position whose entry still works at the broker (a part-filled DAY limit) counts its
+unfilled remainder too, since it may still fill. Nothing here writes.
 """
 
 from __future__ import annotations
@@ -19,7 +20,16 @@ from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..governance import Mode
-from ..models import HatBot, HatEvent, HatIndustry, HatPosition, HatSignal, HatTradeResult
+from ..models import (
+    HatBot,
+    HatEvent,
+    HatFill,
+    HatIndustry,
+    HatOrder,
+    HatPosition,
+    HatSignal,
+    HatTradeResult,
+)
 from ..money import require_exact
 from ..risk.caps import OpenPosition
 from ..time import as_utc, day_bounds, trade_date_of
@@ -34,6 +44,8 @@ __all__ = [
 ]
 
 HARD_STOP = "hard_stop"
+# A real entry order the broker may still fill (`live_trades` reads the same statuses).
+ENTRY_WORKING = ("pending", "unconfirmed", "placed", "partially_filled")
 # An accepted auto signal rests in Triggered until the router places its order: it holds a slot.
 _SLOT_PENDING_STATES = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL, lifecycle.ENTRY_PLACED)
 
@@ -73,7 +85,8 @@ def _slots(
     A slot is an open position, or a signal whose entry is triggered, placed or awaiting
     approval and has no position yet. A veto trade (the virtual trade of a skipped or expired
     confirm signal, HAT-EXEC-032) is scored only and holds no slot. A position with no price in
-    `last_prices` is valued at its entry.
+    `last_prices` is valued at its entry. A real position counts, besides its open shares, the
+    unfilled remainder of its entry while that still works (`_remainders`).
 
     The pending signals are read before the positions: another bot's fill (under that bot's
     lock only) can turn a pending signal into a position between the two reads, and in this
@@ -85,18 +98,22 @@ def _slots(
         )
     ).all()
     slots: list[OpenPosition] = []
-    for position in session.scalars(
+    positions = session.scalars(
         select(HatPosition)
         .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(HatPosition.bot_id.in_(bot_ids), HatPosition.closed_at.is_(None), _NOT_VETO)
-    ):
+    ).all()
+    remainders = _remainders(
+        session, [p.signal_id for p in positions if not p.is_virtual], trade_date
+    )
+    for position in positions:
         entry = Decimal(position.avg_entry)
         slots.append(
             OpenPosition(
                 bot_id=position.bot_id,
                 instrument_id=position.instrument_id,
                 industry=_industry_of(session, position.instrument_id, trade_date),
-                qty=position.qty_open,
+                qty=position.qty_open + remainders.get(position.signal_id, 0),
                 avg_entry=entry,
                 last_price=prices.get(position.instrument_id, entry),
                 current_stop=Decimal(position.current_stop),
@@ -118,6 +135,36 @@ def _slots(
             )
         )
     return slots
+
+
+def _remainders(
+    session: Session, signal_ids: Sequence[uuid.UUID], trade_date: date
+) -> dict[uuid.UUID, int]:
+    """The shares the real entry orders of these signals may still buy: per signal, each entry
+    order placed on `trade_date` and still working, less what of it filled (a DAY limit of an
+    earlier date expired at its close)."""
+    if not signal_ids:
+        return {}
+    start, end = day_bounds(trade_date)
+    filled = (
+        select(func.coalesce(func.sum(HatFill.qty), 0))
+        .where(HatFill.order_id == HatOrder.id)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(HatOrder.signal_id, HatOrder.qty - filled).where(
+            HatOrder.signal_id.in_(signal_ids),
+            HatOrder.purpose == "entry",
+            HatOrder.is_virtual.is_(False),
+            HatOrder.status.in_(ENTRY_WORKING),
+            HatOrder.placed_at >= start,
+            HatOrder.placed_at < end,
+        )
+    ).all()
+    found: dict[uuid.UUID, int] = {}
+    for signal_id, rest in rows:
+        found[signal_id] = found.get(signal_id, 0) + max(0, int(rest))
+    return found
 
 
 def owner_slots(

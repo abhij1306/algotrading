@@ -90,6 +90,27 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   account, one engine for backtest and live, so the backtest tests the code that trades.
 - **Verification on real data.** See `CLAUDE.md`.
 
+## Execution safety
+
+- **A refused fill is booked (Q2).** A fill the lifecycle has no step for is stored as a broker
+  fact and alerted URGENT: shares the broker holds must be tracked and under a stop, never left
+  unbooked. A reopened trade's result is rewritten at its second close; the ladder step of its
+  first close stands.
+- **Lost earlier-session sales (Q12).** Reconciliation records the owner's own shares per symbol
+  (the holding baseline) and the settle nets them out, so HAT never sells the owner's shares;
+  the owner books the missing fill from the contract note (`admin resolve-sale`), since no
+  broker read gives an earlier session's trades.
+- **No dormant real mode (Q9).** Confirm or auto for a sleeve that is not Live is refused; the
+  owner asks again after promotion, so a promotion never turns on real orders by itself.
+- **A strategy holds no mode (Q10).** The mode is the bot's alone (`hat_bot.execution_mode`, by
+  `/mode`); the strategy config's `execution_mode`, never read, is removed so no file suggests
+  otherwise.
+- **Failed-break closes survive a restart (Q7).** The day's closes are rebuilt from the stored
+  `bars_5m`; the refusal fails open only when no bars are stored, since refusing every Take
+  until the next close would block good entries for a data gap.
+- **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
+  confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
+
 ## Planned, not built
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak

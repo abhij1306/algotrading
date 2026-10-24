@@ -101,6 +101,7 @@ ADMIN_IMPORTS = {
     "app.hat.data.renames",
     "app.hat.data.store",
     "app.hat.engine.portfolio",
+    "app.hat.engine.live_trades",
     "app.hat.engine.owner",
     "app.hat.engine.portfolio.common",
     "app.hat.engine.portfolio.sleeve_service",

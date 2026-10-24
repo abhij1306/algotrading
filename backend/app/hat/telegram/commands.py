@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from ..data.calendar import session_calendar
 from ..errors import HatError
 from ..execution.mode_changes import request_mode_change
-from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal
+from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal, sleeve_refusal
 from ..governance import MODE_VALUES, Mode
 from ..models import HatBot, HatBrokerAccount
 from ..read import bots as read_bots
@@ -286,6 +286,7 @@ _REFUSAL_TEXT = {
     "mode_needs_gtt": "the account is not active or has no GTT for delivery",
     "ddpi_not_confirmed": "DDPI is not confirmed on the account (admin confirm-ddpi)",
     "weights_not_confirmed": "the owner has not confirmed the base weights and cluster cap",
+    "sleeve_not_live": "the bot's sleeve is not Live; ask again once it is promoted",
 }
 
 
@@ -325,7 +326,9 @@ def _mode_refusal(
     except ModeChangeError:
         return "no_next_session"
     for bot in bots:
-        refusal = gate_refusal(to_mode, account_gates(session, _account(session, bot), opens))
+        refusal = gate_refusal(
+            to_mode, account_gates(session, _account(session, bot), opens)
+        ) or sleeve_refusal(to_mode, bot.lifecycle_state)
         if refusal is not None:
             return _GATE_REASONS.get(refusal, refusal)
     return auto

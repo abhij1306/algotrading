@@ -256,7 +256,13 @@ def record_sale(
         session,
         signal,
         journal.on_order(
-            order, "order.filled", payload, now=at, position=position, veto=trade.veto
+            order,
+            "order.filled",
+            payload,
+            now=at,
+            position=position,
+            veto=trade.veto,
+            broker_fact=not order.is_virtual,
         ),
     )
     position.qty_open = remaining
@@ -266,7 +272,14 @@ def record_sale(
             journal.record(
                 session,
                 signal,
-                journal.on_position(position, "exit.partial", partial, now=at, veto=trade.veto),
+                journal.on_position(
+                    position,
+                    "exit.partial",
+                    partial,
+                    now=at,
+                    veto=trade.veto,
+                    broker_fact=not order.is_virtual,
+                ),
             )
         session.flush()
         return False
@@ -294,7 +307,14 @@ def close_trade(
     journal.record(
         session,
         signal,
-        journal.on_position(position, "position.closed", closed, now=at, veto=trade.veto),
+        journal.on_position(
+            position,
+            "position.closed",
+            closed,
+            now=at,
+            veto=trade.veto,
+            broker_fact=not position.is_virtual,  # a real close follows a broker fill
+        ),
     )
     write_result(session, signal, position, rule, at, high=high, low=low)
     session.flush()
@@ -349,7 +369,11 @@ def write_result(
     (`trade_outcome`, `trade_dividends`), stored apart in `dividends` too. MFE and MAE are
     measured on a virtual trade from `high` and `low`, the extremes since its entry (none given
     counts as the entry price). A real trade has no record of its extremes since entry, so its
-    MFE and MAE are stored NULL, never a made-up zero."""
+    MFE and MAE are stored NULL, never a made-up zero.
+
+    A real position a late entry fill reopened (Q2, `live_trades.apply_entry_fill`) already has
+    its row: closing it again rewrites that row from every fill, and the ladder step its first
+    close took stands."""
     fills = session.execute(
         select(HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
         .join(HatOrder, HatOrder.id == HatFill.order_id)
@@ -368,6 +392,12 @@ def write_result(
     dividends = trade_dividends(session, position, trade_date_of(now))
     pnl, r = trade_outcome(pnl, dividends, entry, stop, qty)
     mfe, mae = _excursions(entry, risk, high, low) if position.is_virtual else (None, None)
+    earlier = session.get(HatTradeResult, position.id)
+    if earlier is not None:
+        earlier.realized_pnl, earlier.fees, earlier.dividends = pnl, fees, dividends
+        earlier.r_multiple, earlier.exit_reason = r, reason
+        earlier.holding_days = max(0, (trade_date_of(now) - signal.trade_date).days)
+        return
     session.add(
         HatTradeResult(
             position_id=position.id,

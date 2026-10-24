@@ -16,8 +16,12 @@ unfilled. An entry with any fill keeps its remainder working (the partial-entry 
 entries fill at once, so only real ones are watched.
 
 The closes come from the same final bars the trigger monitor reads (`LiveData` bar listener),
-so they share the feed's one dated tick input (PR 51). They are kept in memory: a restart forgets
-the bars before it, and only the timeout and later bars end such an entry.
+so they share the feed's one dated tick input (PR 51). They are kept in memory; after a restart
+the day's stored `bars_5m` give them back (`restore`, Q7), and only a day with no stored bars
+starts empty.
+
+A failed break also refuses the entry's placement and a Take of its card (`break_failed`, read
+by `router.placement_refusal`), and the cancel's reason goes into the entry's `order.cancelled`.
 """
 
 from __future__ import annotations
@@ -42,6 +46,7 @@ __all__ = [
     "BREAK_FAILED",
     "TIMED_OUT",
     "EntryWatch",
+    "break_failed",
     "cancel_reason",
 ]
 
@@ -50,6 +55,14 @@ logger = logging.getLogger(__name__)
 BREAK_FAILED = "break_failed"
 TIMED_OUT = "entry_timeout"
 WORKING = "placed"  # at the broker with nothing filled (a part fill is `partially_filled`)
+
+
+def break_failed(
+    level: Decimal, triggered_at: datetime, closes: Iterable[tuple[datetime, Decimal]]
+) -> bool:
+    """A final bar after the trigger bar (final instant after `triggered_at`) closed below
+    `level`: the break failed. `closes` are the (final instant, close) pairs seen so far."""
+    return any(triggered_at < at and close < level for at, close in closes)
 
 
 def cancel_reason(
@@ -64,7 +77,7 @@ def cancel_reason(
     """Why an unfilled entry is cancelled at `now`, or None while it may rest: a final bar after
     the trigger bar (final instant after `triggered_at`) closed below `level`, or `timeout` has
     passed since `placed_at`. `closes` are the (final instant, close) pairs seen so far."""
-    if any(triggered_at < at and close < level for at, close in closes):
+    if break_failed(level, triggered_at, closes):
         return BREAK_FAILED
     if now - placed_at >= timeout:
         return TIMED_OUT
@@ -89,6 +102,23 @@ class EntryWatch:
                 self._closes.clear()
                 self._day = day
             self._closes.setdefault(bar.symbol, []).append((bar.final_at, bar.close))
+
+    def restore(self, bars: Iterable[Bar]) -> None:
+        """A restart mid-session (Q7): the day's final bars stored before it (`bars_5m`), merged
+        with any the feed gave since, each final instant once, in order."""
+        with self._lock:
+            for bar in bars:
+                day = trade_date_of(bar.final_at)
+                if day != self._day:
+                    if self._day is not None and day < self._day:
+                        continue  # an older day's bar: the live day's closes stand
+                    self._closes.clear()
+                    self._day = day
+                seen = self._closes.setdefault(bar.symbol, [])
+                if all(at != bar.final_at for at, _ in seen):
+                    seen.append((bar.final_at, bar.close))
+            for seen in self._closes.values():
+                seen.sort()
 
     def closes(self, symbol: str) -> list[tuple[datetime, Decimal]]:
         with self._lock:
