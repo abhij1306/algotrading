@@ -126,29 +126,30 @@ def adopt_broker_order(
 ) -> None:
     """Record a broker order found by tag on its row (no commit). An entry first found already
     ended with nothing filled ends its signal at once. `clock` stamps a first-known attempt and
-    the entry's rejection."""
+    the entry's rejection, and the events it records."""
     first_knowledge = row.status in ("pending", "unconfirmed")
+    now = utc_now(clock)
     row.broker_order_id = found.order_id
     row.status = found.status
     if row.placed_at is None:
-        row.placed_at = utc_now(clock)
+        row.placed_at = now
     if not first_knowledge:
         return
     if found.status in _PLACED_STATES or (row.purpose == ENTRY and found.filled_qty > 0):
         # An entry that filled in part before it ended was placed: its fills open the position.
-        order_event(session, row, bot_id, placed_event(row))
+        order_event(session, row, bot_id, placed_event(row), now)
     elif row.purpose == ENTRY and found.status in _ENTRY_ENDINGS:
-        _end_adopted_entry(session, row, found, bot_id, clock)
+        _end_adopted_entry(session, row, found, bot_id, now)
     elif _sale_ended_short(row, found):
-        _sale_not_sold(session, row, found, bot_id)
+        _sale_not_sold(session, row, found, bot_id, now)
     elif found.status == "rejected":
-        order_event(session, row, bot_id, EVENT_ORDER_REJECTED)
+        order_event(session, row, bot_id, EVENT_ORDER_REJECTED, now)
     elif found.status == "cancelled":
-        order_event(session, row, bot_id, EVENT_ORDER_CANCELLED)
+        order_event(session, row, bot_id, EVENT_ORDER_CANCELLED, now)
 
 
 def _end_adopted_entry(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None, clock: Clock
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None, now: datetime
 ) -> None:
     """An entry first found already cancelled, expired or rejected, nothing filled. In
     EntryPlaced its signal ends as a broker update would end it; before that (the send's answer
@@ -156,11 +157,11 @@ def _end_adopted_entry(
     the broker status (no lifecycle step) and the signal ends Rejected `entry_not_filled`."""
     signal = session.get(HatSignal, row.signal_id)
     if signal is not None and signal.state == lifecycle.ENTRY_PLACED:
-        _entry_ended(session, row, found, bot_id)
+        _entry_ended(session, row, found, bot_id, now)
         return
-    order_event(session, row, bot_id, EVENT_ORDER_REJECTED, code=found.status)
+    order_event(session, row, bot_id, EVENT_ORDER_REJECTED, now, code=found.status)
     if row.signal_id is not None:
-        entries.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, utc_now(clock))
+        entries.reject_signal(session, row.signal_id, ENTRY_NOT_FILLED, now)
 
 
 def _entry_ended(
@@ -168,15 +169,16 @@ def _entry_ended(
     row: HatOrder,
     found: BrokerOrder,
     bot_id: uuid.UUID | None,
+    now: datetime,
     reason: str | None = None,
 ) -> None:
     """The lifecycle event of an entry in EntryPlaced that the broker ended, nothing filled; a
     cancel HAT asked carries its `reason`."""
     if found.status in ("cancelled", "expired"):
-        order_event(session, row, bot_id, EVENT_ORDER_CANCELLED, reason=reason)
+        order_event(session, row, bot_id, EVENT_ORDER_CANCELLED, now, reason=reason)
     elif found.status == "rejected":
         order_event(
-            session, row, bot_id, EVENT_ORDER_REJECTED, code="exchange_rejected", final=True
+            session, row, bot_id, EVENT_ORDER_REJECTED, now, code="exchange_rejected", final=True
         )
 
 
@@ -185,6 +187,7 @@ def record_broker_status(
     row: HatOrder,
     found: BrokerOrder,
     bot_id: uuid.UUID | None,
+    now: datetime,
     reason: str | None = None,
 ) -> bool:
     """Move a placed order to the status the broker now shows (no commit); False when unchanged.
@@ -204,9 +207,9 @@ def record_broker_status(
         return False
     row.status = found.status
     if row.purpose == ENTRY and found.filled_qty == 0:
-        _entry_ended(session, row, found, bot_id, reason)
+        _entry_ended(session, row, found, bot_id, now, reason)
     elif _sale_ended_short(row, found):
-        _sale_not_sold(session, row, found, bot_id)
+        _sale_not_sold(session, row, found, bot_id, now)
     return True
 
 
@@ -217,7 +220,7 @@ def _sale_ended_short(row: HatOrder, found: BrokerOrder) -> bool:
 
 
 def _sale_not_sold(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None, now: datetime
 ) -> None:
     """A sale the broker took and then ended short (HAT-EXEC-075): `order.rejected` carrying the
     broker status (relayed as the health alert), and its rules fired again so the next evaluation
@@ -226,7 +229,7 @@ def _sale_not_sold(
     resent = found.status == "cancelled" and resend_requested(session, row)
     if not resent:  # HAT cancelled it to send it again (PR 48): not a rejection
         code = "exchange_rejected" if found.status == "rejected" else found.status
-        order_event(session, row, bot_id, EVENT_ORDER_REJECTED, code=code)
+        order_event(session, row, bot_id, EVENT_ORDER_REJECTED, now, code=code)
     if row.purpose != "exit_partial" or found.filled_qty == 0:
         _fire_again(session, row)
 
@@ -270,10 +273,12 @@ def find_gtt(
     )
 
 
-def adopt_gtt(session: Session, row: HatOrder, gtt: BrokerGtt, bot_id: uuid.UUID | None) -> None:
+def adopt_gtt(
+    session: Session, row: HatOrder, gtt: BrokerGtt, bot_id: uuid.UUID | None, now: datetime
+) -> None:
     """Record the broker GTT found for a row whose answer was lost (no commit): placed."""
     row.broker_order_id, row.status = gtt.gtt_id, "placed"
-    order_event(session, row, bot_id, placed_event(row))
+    order_event(session, row, bot_id, placed_event(row), now)
 
 
 def resend_event() -> Exists:
@@ -326,7 +331,7 @@ def resend_requested(session: Session, row: HatOrder) -> bool:
 
 
 def mark_resend(
-    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None
+    session: Session, row: HatOrder, found: BrokerOrder, bot_id: uuid.UUID | None, now: datetime
 ) -> None:
     """Record (no commit) that HAT asked the broker to cancel the resting market sale `row` to
     send it again (PR 48): `order.cancelled` with code `sale_resend` and the order type and price
@@ -348,6 +353,7 @@ def mark_resend(
         },
         correlation_id=row.signal_id,
         bot_id=bot_id,
+        occurred_at=now,
     )
 
 
@@ -360,14 +366,15 @@ def order_event(
     row: HatOrder,
     bot_id: uuid.UUID | None,
     event_type: str,
+    now: datetime,
     code: str = CODE_OK,
     rule: str | None = None,
     final: bool = False,
     reason: str | None = None,
 ) -> None:
-    """Append the order's `event_type` (no commit): through the journal when it is a lifecycle
-    step of the order's signal, else as the order's own event. Never refused: it records a
-    broker fact."""
+    """Append the order's `event_type` at `now`, the run's clock (no commit): through the journal
+    when it is a lifecycle step of the order's signal, else as the order's own event. Never
+    refused: it records a broker fact."""
     payload: dict[str, object] = {
         "tag": row.tag,
         "purpose": row.purpose,
@@ -395,6 +402,7 @@ def order_event(
             payload=payload,
             correlation_id=row.signal_id,
             bot_id=bot_id,
+            occurred_at=now,
         )
         return
     position = session.get(HatPosition, row.position_id) if row.position_id else None
@@ -405,6 +413,6 @@ def order_event(
         session,
         signal,
         journal.on_order(
-            row, event_type, payload, position=position, broker_fact=True, bot_id=bot_id
+            row, event_type, payload, position=position, broker_fact=True, bot_id=bot_id, now=now
         ),
     )

@@ -403,10 +403,10 @@ def _attempt(
         raise BrokerUnavailableError(code)
     if status == "placed":
         row.status, row.broker_order_id = "placed", broker_id
-        order_event(session, row, bot_id, placed_event(row), rule=rule)
+        order_event(session, row, bot_id, placed_event(row), utc_now(sender.clock), rule=rule)
     elif status == "rejected":
         row.status = "rejected"
-        order_event(session, row, bot_id, EVENT_ORDER_REJECTED, code)
+        order_event(session, row, bot_id, EVENT_ORDER_REJECTED, utc_now(sender.clock), code)
     else:
         row.status, code = "unconfirmed", CODE_UNCONFIRMED
     session.commit()

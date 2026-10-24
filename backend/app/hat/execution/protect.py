@@ -57,7 +57,7 @@ from ..events import record
 from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState
-from ..time import IST, day_bounds, trade_date_of
+from ..time import IST, day_bounds, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import (
     AckResult,
@@ -488,7 +488,7 @@ class StopDesk:
             found = find_gtt(book, row, target.symbol, claimed)
             verdict = self._positions.verdict(row.placed_at, found is not None)
             if found is not None and verdict is Verdict.ADOPT:
-                adopt_gtt(session, row, found, target.signal.bot_id)
+                adopt_gtt(session, row, found, target.signal.bot_id, utc_now(self._clock))
                 claimed.add(found.gtt_id)
             elif verdict is Verdict.EXPIRE:
                 end_lost_order(session, row)
