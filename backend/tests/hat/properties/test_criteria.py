@@ -1,4 +1,4 @@
-"""PBT criteria.* (..114, 120, 123): the library's pure criteria against exact
+"""PBT criteria.* (..114, 120, 123, 124): the library's pure criteria against exact
 oracles.
 
 Every test checks the common contract (repeated calls agree, a row dated after the
@@ -29,6 +29,7 @@ from app.hat.data.gapscan import Gapper, GapRow
 from app.hat.engine.criteria import evaluate
 from app.hat.engine.criteria import vcp as vcp_module
 from app.hat.engine.criteria.base import EvalContext
+from app.hat.engine.criteria.darvas import Box, DarvasBoxParams, find_box
 from app.hat.engine.live_entry import ep_candidates
 
 SLOW = settings(
@@ -65,6 +66,54 @@ def test_min_price_reads_the_raw_close_not_the_adjusted_one() -> None:
     # without the raw close the rule fails closed, whatever the adjusted close says
     blind = evaluate("min_price", {"inr": 5.0}, EvalContext(day, "x", bars.drop("raw_close")))
     assert (blind.passed, blind.reason) == (False, "no_data")
+
+
+# --- darvas_box -------------------------------------------------------------------
+
+# A box: the top 110 on session 2, the bottom 100 on session 4, three quiet sessions after each.
+BOX_HIGHS = [100.0, 104.0, 110.0, 108.0, 105.0, 106.0, 107.0, 106.5]
+BOX_LOWS = [95.0, 99.0, 104.0, 103.0, 100.0, 101.0, 102.0, 101.5]
+
+
+def test_darvas_box_top_and_bottom_each_need_confirm_sessions() -> None:
+    assert find_box(BOX_HIGHS, BOX_LOWS, 3) == Box(Decimal(110), Decimal(100), 6)
+    # one session fewer after the bottom: not yet a box
+    assert find_box(BOX_HIGHS[:-1], BOX_LOWS[:-1], 3) == "box_bottom_unconfirmed"
+    # a new high two sessions ago: the top is not confirmed
+    assert find_box([*BOX_HIGHS, 111.0, 109.0], [*BOX_LOWS, 105.0, 104.0], 3) == (
+        "box_top_unconfirmed"
+    )
+
+
+def test_darvas_box_ties_take_the_first_session() -> None:
+    # an equal high later does not exceed the top; an equal low later does not undercut the bottom
+    highs = [*BOX_HIGHS[:6], 110.0, 106.0]
+    lows = [*BOX_LOWS[:6], 100.0, 101.0]
+    assert find_box(highs, lows, 3) == Box(Decimal(110), Decimal(100), 6)
+
+
+def test_darvas_box_params_need_room_for_a_box() -> None:
+    assert DarvasBoxParams().confirm_days == 3
+    for bad in ({"confirm_days": 3, "max_box_days": 4}, {"lookback_days": 50, "max_box_days": 60}):
+        try:
+            DarvasBoxParams.model_validate(bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_darvas_box_exposes_the_levels_the_trigger_and_stop_read() -> None:
+    days = [EPOCH + timedelta(days=i) for i in range(len(BOX_HIGHS))]
+    bars = pl.DataFrame({"date": days, "high": BOX_HIGHS, "low": BOX_LOWS, "close": BOX_LOWS})
+    ctx = EvalContext(days[-1], "x", bars)
+    params = {"lookback_days": 20, "max_box_days": 10, "max_depth_pct": 10.0}
+    assert evaluate("darvas_box", params, ctx).reason == "no_data"  # under 20 sessions
+    short = {**params, "lookback_days": len(days), "max_box_days": len(days)}
+    result = evaluate("darvas_box", short, ctx)
+    assert result.passed
+    assert result.extras == {"pivot": 110.0, "final_contraction_low": 100.0}
+    assert not evaluate("darvas_box", {**short, "max_depth_pct": 9.0}, ctx).passed
+    assert evaluate("darvas_box", {**short, "max_box_days": 5}, ctx).reason == "box_too_old"
 
 
 # --- price_band_allowed ---------------------------------------------------------

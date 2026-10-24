@@ -15,11 +15,13 @@ with the broker.
 
 ## Why HAT
 
-- **Rules, not moods.** Two well-known swing styles, written down as code:
+- **Rules, not moods.** Well-known swing styles, written down as code:
   - **S1 `stage2-contraction-breakout`**: Minervini-style. Stage-2 uptrends that tighten into a
     volatility contraction, bought on the breakout.
   - **S2 `momentum-breakout-ep`**: Qullamaggie-style. Momentum leaders breaking out, plus episodic
     pivots (gap-ups on news, with the NSE announcement attached).
+  - **S3 `darvas-box-breakout`** (Research): Darvas-style. Names at a new 52-week high that settle
+    into a box, bought on the break of the box top with volume, stop under the box bottom.
 - **You stay in charge.** Every bot runs in one of three modes, switched per bot:
   - `shadow` (paper trading, virtual fills, never at the broker)
   - `confirm` (a Telegram card per entry; you approve each one)

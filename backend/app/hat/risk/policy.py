@@ -166,7 +166,13 @@ OPTIONAL_FIELDS: Mapping[str, object] = {"weights_confirmed": False, "cooldown_s
 # The initial seed (version 1, direction "initial"): seed column.
 SEED_POLICY: dict[str, Any] = {
     "risk_pct": "0.0025",
-    "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},
+    "p_max": {
+        "stage2-contraction-breakout": "0.20",
+        "momentum-breakout-ep": "0.25",
+        # Research only: the strictest existing cap, and no capital (base weight 0) until the
+        # owner sets a policy version for it.
+        "darvas-box-breakout": "0.20",
+    },
     "adv_cap_pct": "0.01",
     "global_open_risk_pct": "0.015",
     "max_open_positions": 6,
@@ -182,7 +188,7 @@ SEED_POLICY: dict[str, Any] = {
         "down_after_losses": 2,
     },
     "kill": {"account_drawdown_pct": "0.10", "bot_drawdown_pct": "0.10"},
-    "base_weight": {"S1": "0.50", "S2": "0.50"},
+    "base_weight": {"S1": "0.50", "S2": "0.50", "S3": "0"},
     "cluster_cap": "1.00",
     "multiplier_bounds": {"lo": "0.25", "hi": "1.0"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.10", "full_mult": "1.0", "half_mult": "0.5"},
@@ -193,9 +199,11 @@ SEED_POLICY: dict[str, Any] = {
 # The PR 10 seed, which D128 withdrew (account kill 15%, global open risk 3%, Probation band
 # 12%) and which left the weights unconfirmed. A policy in force equal to it is replaced at
 # startup by the seed above (`policy_service.supersede_old_seed`, HAT-RISK-011). It predates
-# `cooldown_sessions`, which a stored copy lacks and reads as 0.
+# `cooldown_sessions`, which a stored copy lacks and reads as 0, and names only S1 and S2.
 OLD_SEED_POLICY: dict[str, Any] = {
     **{k: v for k, v in SEED_POLICY.items() if k != "cooldown_sessions"},
+    "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},
+    "base_weight": {"S1": "0.50", "S2": "0.50"},
     "global_open_risk_pct": "0.03",
     "kill": {"account_drawdown_pct": "0.15", "bot_drawdown_pct": "0.10"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.12", "full_mult": "1.0", "half_mult": "0.5"},
