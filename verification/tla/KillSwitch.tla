@@ -9,8 +9,9 @@
 (* second, confirmed step; the health kill clears by itself, each source  *)
 (* (the nightly quality gate, the live feed) clearing only its own trip    *)
 (* (PR 17: the feed recovering never clears a failed gate). /flatten only  *)
-(* asks; the confirmed flatten sells every open position through the exit  *)
-(* path (purpose flatten), whatever the kill or pause state (PR 16).       *)
+(* asks; the confirmed flatten trips the account kill, then sells every    *)
+(* open position through the exit path (purpose flatten), whatever the     *)
+(* kill or pause state (PR 16).                                            *)
 (*                                                                         *)
 (* Bounds: NBots = 2 bots; each bot has one position cycle (none, open,    *)
 (*   closed) and one approval in flight; kills, health flips, pauses and   *)
@@ -282,17 +283,21 @@ RequestFlatten ==
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
                    askedAcct, askedBot, badEntry, badRearm, badFlat, flatOpen, badClear>>
 
-\* code: backend/app/hat/execution/manage.py:flatten  (the confirmed step: every open position
-\* is sold through the exit path, never gated by a kill or pause, and nothing is bought)
+\* code: backend/app/hat/telegram/callbacks.py:_flatten  (the confirmed step: the account kill
+\* trips first and every undecided approval ends, as ManualKill),
+\* backend/app/hat/execution/manage.py:flatten  (then every open position is sold through the
+\* exit path, never gated by a kill or pause, and nothing is bought)
 ConfirmFlatten ==
     /\ askedFlat
     /\ badFlat' = (badFlat \/ ~askedFlat)
     /\ askedFlat' = FALSE
+    /\ acct' = "tripped"
+    /\ appr' = [b \in Bots |-> IF appr[b] = "pending" THEN "cancelled" ELSE appr[b]]
     /\ pos' = [k \in Bots |->
                  IF pos[k] = "open" THEN "closed" ELSE pos[k]]
     /\ flatOpen' = (flatOpen \/ \E k \in Bots : pos[k] # "open" /\ pos'[k] = "open")
     /\ exitDue' = [k \in Bots |-> FALSE]
-    /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, acctSeen, botSeen, askedAcct,
+    /\ UNCHANGED <<bot, health, unhealthy, paused, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry, badRearm, badClear>>
 
 Next ==

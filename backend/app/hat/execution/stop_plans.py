@@ -8,6 +8,9 @@ functions over the position's stop rows:
   nightly refresh can only raise it, and only a split or bonus rescale (`rescaled`) lowers it.
 - `protect_plan`: after a fill, the one next step that keeps a stop under the open quantity.
 - `verify_plan`: at night, the one next step for the position's GTT.
+- `stop_covers`, `stops_cover`, `retry_due`, `gtt_child`: whether resting stops are the hard
+  stop, whether a rejected stop may be placed again, and whether an untagged broker sale is a
+  GTT's own.
 
 A step that needs the broker (a settle, a resend, a cancel) may not settle the question; the desk
 then plans again with `after` set to the step it tried, and the plan goes on from there.
@@ -15,7 +18,7 @@ then plans again with `after` set to the step it tried, and the plan goes on fro
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
@@ -24,6 +27,7 @@ from typing import overload
 
 from ..models import HatOrder
 from ..time import as_utc
+from .broker import BrokerOrder, Side
 from .position_desk import LOST_ANSWER_SETTLE
 
 __all__ = [
@@ -31,17 +35,22 @@ __all__ = [
     "LIVE",
     "STOP_DAY",
     "STOP_GTT",
+    "STOP_RETRY_EVERY",
     "UNSURE",
     "WORKING",
     "ProtectPlan",
     "ProtectStep",
     "VerifyStep",
     "broker_trigger",
+    "gtt_child",
     "live_gtts",
     "lost",
     "protect_plan",
     "raise_only",
+    "retry_due",
     "stop_confirmed",
+    "stop_covers",
+    "stops_cover",
     "verify_plan",
 ]
 
@@ -53,6 +62,9 @@ UNSURE = ("pending", "unconfirmed")
 # A GTT this old is placed again by the nightly verify: Fyers expires a GTT a year after it was
 # placed, and a modify may not reset that clock (research G24; [verify on a live account]).
 GTT_RENEW_AFTER = timedelta(days=300)
+# A stop of a purpose the broker rejected is placed again at most this often: each placement
+# spends one of the signal's 36 tags of the purpose, and the fill sync may run every 5 s.
+STOP_RETRY_EVERY = timedelta(minutes=1)
 
 
 def broker_trigger(stop: Decimal, tick: Decimal | None) -> Decimal:
@@ -61,6 +73,46 @@ def broker_trigger(stop: Decimal, tick: Decimal | None) -> Decimal:
     if tick is None or not tick.is_finite() or tick <= 0:
         return stop
     return (stop / tick).to_integral_value(rounding=ROUND_FLOOR) * tick
+
+
+def stop_covers(trigger: Decimal | None, current_stop: Decimal, tick: Decimal | None) -> bool:
+    """A resting stop at `trigger` is the position's hard stop: at or above the broker trigger of
+    its current stop. A raise the broker refused leaves it below, and then it is not."""
+    return trigger is not None and trigger >= broker_trigger(current_stop, tick)
+
+
+def stops_cover(
+    stops: Iterable[tuple[Decimal | None, int]],
+    current_stop: Decimal,
+    tick: Decimal | None,
+    qty_open: int,
+) -> bool:
+    """The resting stops (trigger, quantity) are the position's hard stop: those at its current
+    stop (`stop_covers`) hold every open share. A stop left low, or one sized for fewer shares
+    (a refused resize), is not, and then HAT sells."""
+    held = sum(qty for trigger, qty in stops if stop_covers(trigger, current_stop, tick))
+    return held >= qty_open
+
+
+def retry_due(last_rejected_at: datetime | None, now: datetime) -> bool:
+    """A stop may be placed now: none of its purpose was rejected in the last
+    `STOP_RETRY_EVERY`."""
+    return last_rejected_at is None or as_utc(now) - as_utc(last_rejected_at) >= STOP_RETRY_EVERY
+
+
+def gtt_child(order: BrokerOrder, gtt: HatOrder, *, trigger_seen: bool) -> bool:
+    """`order` is the sale `gtt` triggered into: a SELL under the GTT's tag, or an untagged CNC
+    SELL of the GTT's quantity at the GTT's limit price, or the one its trigger was recorded for
+    (`trigger_seen`: HAT turned it into a market sale, which has no limit price). Any other
+    untagged sale on the symbol (the owner's own) is not HAT's (trading-safety rule 3)."""
+    if order.side is not Side.SELL:
+        return False
+    if order.gtt_tag is not None:
+        return True  # matched to this GTT by its tag
+    if order.tag is not None or order.product != "CNC" or order.qty != gtt.qty:
+        return False
+    limit = Decimal(gtt.price) if gtt.price is not None else None
+    return (limit is not None and order.price == limit) or trigger_seen
 
 
 @overload

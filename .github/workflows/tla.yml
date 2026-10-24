@@ -48,6 +48,7 @@ on:
       - backend/app/hat/risk/kill_ops.py
       - backend/app/hat/risk/service.py
       - backend/app/hat/risk/sessions.py
+      - backend/app/hat/telegram/callbacks.py
       - backend/app/hat/telegram/commands.py
       - backend/app/hat/telegram/confirm.py
       - backend/app/hat/telegram/relay.py

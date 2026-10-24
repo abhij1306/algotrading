@@ -99,16 +99,18 @@ from .protect import (
 )
 from .reconcile import baseline_at, broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
-from .stop_plans import LIVE, UNSURE
+from .stop_plans import LIVE, UNSURE, stops_cover
 from .submit import (
     OrderRefusedError,
     OrderRequest,
     OrderSender,
     SendOutcome,
     UnresolvedOrderError,
+    next_sequence,
     reserve_order,
     send_order,
 )
+from .tags import MAX_SEQUENCE, TagError
 
 __all__ = [
     "ALERT_EXIT_NOT_PLACED",
@@ -144,6 +146,7 @@ ORDERS_UNTIL = time(15, 30)
 ALERT_SALE_REJECTED = "order.rejected"
 ENTRY_NOT_FOUND = "entry_not_found"
 BAND_LIMIT = "band_limit"  # alert code: a sale refused twice sent as a limit at the lower band
+TAG_EXHAUSTED = "tag_exhausted"  # the signal's 36 tags of the sale's purpose are spent
 FLATTEN = "flatten"
 # What settling a position's sales of unknown outcome found (`_settle_sales`).
 SETTLED = "settled"
@@ -228,13 +231,15 @@ def sale_gate(
     open_now: bool,
     rejected: int,
     floor: Decimal | None,
+    tags_left: int,
 ) -> SaleGate:
     """Whether a sale of `qty` shares goes out, and how: the one place the sale rules are decided
     (HAT-OPS-032, HAT-EXEC-065, -066, -074, PR 48). `settled`: what settling the position's lost
     sales found (`SETTLED`, `WAIT`, `UNREADABLE`); `busy`: another sale of it works at the
     broker (a triggered GTT's sale is one); `open_now`: the session takes orders at the moment of
     sending; `rejected`: the purpose's sales the broker refused this session; `floor`: the day's
-    lower circuit price, None when unknown.
+    lower circuit price, None when unknown; `tags_left`: the purpose's tags the signal has not
+    spent (none left: refused before any stop makes room for it, so the stop keeps resting).
 
     The market sale goes `MAX_SALE_REJECTIONS - rejected` times; refused that often, once more as
     a limit at `floor`. A budget spent before this sale was told then: HOLD."""
@@ -244,6 +249,8 @@ def sale_gate(
         return SaleGate(SaleStep.HOLD)  # one sale at a time; the next evaluation sees what it left
     if not open_now:
         return SaleGate(SaleStep.REFUSE, code="market_closed")
+    if tags_left <= 0:
+        return SaleGate(SaleStep.REFUSE, code=TAG_EXHAUSTED)
     if rejected > MAX_SALE_REJECTIONS or (rejected == MAX_SALE_REJECTIONS and floor is None):
         return SaleGate(SaleStep.HOLD)
     return SaleGate(SaleStep.SEND, attempts=MAX_SALE_REJECTIONS - rejected, floor=floor)
@@ -405,6 +412,11 @@ class TradeManager:
         it."""
         return self._desk.entries.cancel_unfilled(session, signal_id, now, reason)
 
+    def withdraw_entries(self, session: Session, account_id: uuid.UUID, now: datetime) -> int:
+        """Cancel the working entries of the account's bots a kill or a pause made manage-only
+        (`EntryCancel.withdraw`); the cancels the broker took."""
+        return self._desk.entries.withdraw(session, account_id, now)
+
     # --- flatten (HAT-TG-035, HAT-GOV-082) ----------------------------------------------------
 
     def flatten(self, session: Session, account_id: uuid.UUID, now: datetime) -> FlattenReport:
@@ -419,8 +431,17 @@ class TradeManager:
         quantity of the old scale, so its sale is capped at the shares the broker holds of the
         symbol (a consolidation leaves fewer), less what the flatten already sized for other
         positions of that symbol; an unreadable holdings book leaves the cap off, since the
-        broker refuses an oversell anyway and a flatten is never blocked."""
+        broker refuses an oversell anyway and a flatten is never blocked.
+
+        The caller trips the account kill first, so the account's working entries are withdrawn
+        before anything is sold (`withdraw_entries`); a failed withdraw never holds a sale back,
+        and the periodic entries step asks again."""
         report = FlattenReport()
+        try:
+            self.withdraw_entries(session, account_id, now)
+        except Exception:
+            session.rollback()
+            logger.exception("flatten of account %s: entries not withdrawn", account_id)
         sending = self._sending_clock(now)
         held: list[dict[str, int] | None] = []  # read once, spent as capped sales are sized
         for position in self.open_positions(session, account_id):
@@ -485,18 +506,32 @@ class TradeManager:
         purpose = EXIT_FULL if action.kind == "full" else EXIT_PARTIAL
         qty = position.qty_open if action.kind == "full" else min(action.qty, position.qty_open)
         order = SaleOrder(position, purpose, qty, tuple(action.rule_ids))
-        if order.rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position.id):
-            # The stop resting at the broker is the hard stop; HAT sells at market only when no
-            # stop the broker confirmed rests (HAT-EXEC-065).
-            return None
         return self._sell_qty(session, order, now, sending)
 
-    def _broker_stop_rests(self, session: Session, position_id: uuid.UUID) -> bool:
-        """A stop the broker confirmed rests under the position, once any stop whose answer was
-        lost is settled. One still unknown does not count: should it rest after all, the broker
-        refuses the market sale (the shares are held for it), the safe way round."""
-        self._desk.settle_lost(session, position_id)
-        return any(row.broker_order_id for row in self._desk.stops_of(session, position_id, *LIVE))
+    def _broker_stop_rests(self, session: Session, position: HatPosition, now: datetime) -> bool:
+        """Under the position lock: the stops the broker confirmed rest at the position's current
+        stop for every open share (`stops_cover`), once any stop whose answer was lost is
+        settled; one left low by a raise the broker refused is raised now (`follow`), and if
+        they still do not cover the position HAT sells. One still unknown does not count: should
+        it rest after all, the broker refuses the market sale (the shares are held for it), the
+        safe way round."""
+        self._desk.settle_lost(session, position.id)
+        return self._stops_cover(session, position) or (
+            self._desk.follow(session, position.id, now) and self._stops_cover(session, position)
+        )
+
+    def _stops_cover(self, session: Session, position: HatPosition) -> bool:
+        rows = self._desk.stops_of(session, position.id, *LIVE)
+        return stops_cover(
+            (
+                (Decimal(row.trigger_price) if row.trigger_price is not None else None, row.qty)
+                for row in rows
+                if row.broker_order_id is not None
+            ),
+            Decimal(position.current_stop),
+            self._desk.tick(session, position),
+            position.qty_open,
+        )
 
     def _sell_qty(
         self, session: Session, order: SaleOrder, now: datetime, sending: Clock
@@ -510,6 +545,11 @@ class TradeManager:
         with self._positions.lock(position.id, "sale"):
             session.refresh(position)
             if min(order.qty, position.qty_open) <= 0 or position.closed_at is not None:
+                return None
+            if order.rule == snapshot.HARD_STOP and self._broker_stop_rests(session, position, now):
+                # The stops resting at the broker are the hard stop; HAT sells at market only
+                # when they do not cover the position at its stop (HAT-EXEC-065). Decided under
+                # the lock, so no stop path cancels or shrinks them after the sale was skipped.
                 return None
             return self._sell_locked(session, order, now, sending)
 
@@ -572,8 +612,15 @@ class TradeManager:
         open_now = through and self._orders_allowed(sending.now())
         rejected = rejected_sales(session, signal.id, order.purpose, now) if open_now else 0
         floor = self._floor(session, position, now) if open_now else None
+        spent = next_sequence(session, signal.id, order.purpose) if open_now else 0
         return sale_gate(
-            settled, order.qty, busy=busy, open_now=open_now, rejected=rejected, floor=floor
+            settled,
+            order.qty,
+            busy=busy,
+            open_now=open_now,
+            rejected=rejected,
+            floor=floor,
+            tags_left=MAX_SEQUENCE + 1 - spent,
         )
 
     def _floor(self, session: Session, position: HatPosition, now: datetime) -> Decimal | None:
@@ -798,9 +845,10 @@ class TradeManager:
         try:
             tag = reserve_order(session, request)
             sent = send_order(session, self._sender, tag, rule=sale.order.rule)
-        except (OrderRefusedError, BrokerUnavailableError) as exc:
+        except (OrderRefusedError, BrokerUnavailableError, TagError) as exc:
+            # nothing was sent (a TagError: the purpose's tags are spent)
             session.rollback()
-            code = getattr(exc, "code", "broker_unavailable")
+            code = TAG_EXHAUSTED if isinstance(exc, TagError) else exc.code
             self._release(session, signal.id, request.purpose)
             self._not_placed(signal, position, code, now)
             self._desk.protect(session, position.id, now)  # the stop made room for it

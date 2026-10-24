@@ -415,3 +415,19 @@ PASSING = {
     "backtest_expectancy_r": "0.3",
 }
 EVENING = time(20, 0)
+
+
+@pytest.mark.parametrize(
+    ("state", "withdraws"),
+    [
+        (kill.KillState(), False),
+        (kill.KillState(account_tripped=True), True),  # drawdown, manual or a flatten
+        (kill.KillState(bot_tripped=True), True),
+        (kill.KillState(paused=True), True),
+        (kill.KillState(health_tripped=True), False),  # clears itself; placement re-checks
+    ],
+)
+def test_withdraws_entries(state: kill.KillState, withdraws: bool) -> None:
+    """A risk-channel kill or a pause withdraws the bot's working entries; each is manage-only."""
+    assert state.withdraws_entries is withdraws
+    assert state.manage_only or not withdraws

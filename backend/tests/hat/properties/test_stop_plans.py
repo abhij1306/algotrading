@@ -7,12 +7,17 @@ from decimal import Decimal
 
 import pytest
 
+from app.hat.execution.broker import BrokerOrder, Side
 from app.hat.execution.protect import AlertedToday
 from app.hat.execution.stop_plans import (
     ProtectStep,
     VerifyStep,
+    gtt_child,
     protect_plan,
     raise_only,
+    retry_due,
+    stop_covers,
+    stops_cover,
     verify_plan,
 )
 from app.hat.models import HatOrder
@@ -48,6 +53,90 @@ def test_raise_only(
     current: Decimal | None, goal: Decimal, rescaled: bool, moved: Decimal | None
 ) -> None:
     assert raise_only(current, goal, rescaled=rescaled) == moved
+
+
+@pytest.mark.parametrize(
+    ("trigger", "current_stop", "tick", "covers"),
+    [
+        (D("100"), D("100"), D("0.05"), True),  # at the stop
+        (D("92"), D("100"), D("0.05"), False),  # a refused breakeven raise left it low
+        (D("100.05"), D("100.07"), D("0.05"), True),  # the stop's trigger is rounded down
+        (D("100.05"), D("100.10"), D("0.05"), False),
+        (D("100"), D("100.01"), None, False),  # no tick: the stop itself
+        (None, D("100"), D("0.05"), False),  # no trigger known
+    ],
+)
+def test_stop_covers(
+    trigger: Decimal | None, current_stop: Decimal, tick: Decimal | None, covers: bool
+) -> None:
+    assert stop_covers(trigger, current_stop, tick) is covers
+
+
+@pytest.mark.parametrize(
+    ("stops", "covered"),
+    [
+        ([(D("100"), 10)], True),
+        ([(D("100"), 6)], False),  # a refused resize left it short of the open shares
+        ([(D("100"), 6), (D("100"), 4)], True),  # two stops at the stop hold every share
+        ([(D("100"), 6), (D("92"), 4)], False),  # one of them left low
+        ([(D("92"), 10)], False),
+        ([], False),
+    ],
+)
+def test_stops_cover(stops: list[tuple[Decimal, int]], covered: bool) -> None:
+    assert stops_cover(stops, D("100"), D("0.05"), 10) is covered
+
+
+@pytest.mark.parametrize(
+    ("rejected_ago", "due"),
+    [
+        (None, True),  # never rejected
+        (timedelta(seconds=5), False),  # the next 5 s sync spends no tag
+        (timedelta(seconds=59), False),
+        (timedelta(minutes=1), True),
+        (timedelta(hours=3), True),
+    ],
+)
+def test_retry_due(rejected_ago: timedelta | None, due: bool) -> None:
+    assert retry_due(None if rejected_ago is None else NOW - rejected_ago, NOW) is due
+
+
+GTT_50 = stop("stop_gtt", qty=50, price=D("990.10"), trigger_price=D("1000.10"))
+
+
+def sale(**kw: object) -> BrokerOrder:
+    fields: dict[str, object] = {
+        "order_id": "O-1",
+        "tag": None,
+        "symbol": "X",
+        "side": Side.SELL,
+        "qty": 50,
+        "filled_qty": 0,
+        "status": "placed",
+        "product": "CNC",
+        "price": D("990.10"),
+    }
+    fields.update(kw)
+    return BrokerOrder(**fields)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("order", "seen", "child"),
+    [
+        (sale(), False, True),  # untagged CNC limit at the GTT's quantity and limit
+        (sale(price=None), False, False),  # the owner's market sale on the symbol
+        (sale(price=None), True, True),  # HAT made the GTT's sale a market one
+        (sale(price=D("1012")), False, False),  # same quantity at another price
+        (sale(qty=100), False, False),  # another quantity
+        (sale(product="INTRADAY"), False, False),
+        (sale(side=Side.BUY), False, False),
+        (sale(tag="HTB0ABCDEFGHIJKLMNOP"), False, False),  # an order HAT placed
+        (sale(gtt_tag="HTG0ABCDEFGHIJKLMNOP", price=None, qty=7), False, True),  # by its tag
+        (sale(gtt_tag="HTG0ABCDEFGHIJKLMNOP", side=Side.BUY), False, False),
+    ],
+)
+def test_gtt_child(order: BrokerOrder, seen: bool, child: bool) -> None:
+    assert gtt_child(order, GTT_50, trigger_seen=seen) is child
 
 
 def young(placed_at: datetime | None) -> bool:

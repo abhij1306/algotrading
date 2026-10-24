@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..engine.rescale import applied_factors, pending_actions
@@ -84,6 +84,7 @@ from .stop_plans import (
     lost,
     protect_plan,
     raise_only,
+    retry_due,
 )
 from .submit import (
     AwaitingFillsError,
@@ -120,6 +121,7 @@ EVENT_GTT_TRIGGERED = "gtt.triggered"
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
 SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
 CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
+NO_TICK = "no_tick"  # the instrument's tick is unknown: a GTT has no limit price
 # a lost stop found in the book with shares sold: the fill sync records its fills
 CODE_AWAITING_FILLS = "awaiting_fills"
 
@@ -427,11 +429,17 @@ class StopDesk:
         """Place a new stop of `purpose` for the open quantity; a rejection is retried once with
         the next tag. True once the broker confirmed it; an unconfirmed send is left to the next
         sync (a day stop is looked up by its tag; a GTT waits for the nightly verify). A failure
-        raises `alert`."""
+        raises `alert`. What is refused without the broker spends no tag, and a purpose the
+        broker rejected is placed again at most once a minute (`retry_due`)."""
         if target.unmapped:
             self.alert(alert, target, now, CODE_SERIES_UNMAPPED)  # no tag spent
             return False
         tick = self._tick_for(session, target.position)
+        if purpose == STOP_GTT and tick is None:
+            self.alert(alert, target, now, NO_TICK)  # no limit price: no tag spent
+            return False
+        if not retry_due(self._last_rejected(session, target.position.id, purpose), now):
+            return False  # alerted at the rejection
         reason = "broker_rejected"
         for _ in range(MAX_STOP_REJECTIONS):
             try:
@@ -452,6 +460,17 @@ class StopDesk:
             reason = sent.code
         self.alert(alert, target, now, reason)
         return False
+
+    @staticmethod
+    def _last_rejected(session: Session, position_id: uuid.UUID, purpose: str) -> datetime | None:
+        """When the position's latest stop of `purpose` the broker rejected was sent."""
+        return session.scalar(
+            select(func.max(HatOrder.placed_at)).where(
+                HatOrder.position_id == position_id,
+                HatOrder.purpose == purpose,
+                HatOrder.status == "rejected",
+            )
+        )
 
     def resend(self, session: Session, target: StopTarget, row: HatOrder) -> bool:
         """Send a stop reserved earlier whose outcome is not known yet (by its own tag)."""
@@ -626,7 +645,7 @@ class StopDesk:
         else:
             tick = self._tick_for(session, target.position)
             if tick is None:
-                self.alert(ALERT_STOP_NOT_MOVED, target, now, "no_tick")
+                self.alert(ALERT_STOP_NOT_MOVED, target, now, NO_TICK)
                 return False
             ack = self._broker.modify_gtt(
                 GttModify(row.broker_order_id, qty, trigger, gtt_limit_price(trigger, tick))
@@ -816,7 +835,7 @@ class StopDesk:
         it covers); its limit and quantity are recorded once the broker took it. The code of a
         refusal; None when the broker took it."""
         if tick is None:
-            return "no_tick"
+            return NO_TICK
         limit = gtt_limit_price(trigger, tick)
         size = row.qty if rescaled else target.position.qty_open
         ack = self._broker.modify_gtt(GttModify(str(row.broker_order_id), size, trigger, limit))

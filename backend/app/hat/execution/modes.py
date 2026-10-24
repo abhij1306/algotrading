@@ -48,6 +48,7 @@ from ..time import as_utc, trade_date_of
 __all__ = [
     "DDPI_NOT_CONFIRMED",
     "HIGH",
+    "MODE_GATE_CLOSED",
     "NO_GTT_DELIVERY",
     "NOT_HIGH_CONFIDENCE",
     "SLEEVE_NOT_LIVE",
@@ -62,6 +63,7 @@ __all__ = [
     "sleeve_refusal",
     "ModeView",
     "mode_anchor",
+    "mode_refusal",
     "mode_view",
     "real_orders_allowed",
     "request_mode",
@@ -76,6 +78,7 @@ WEIGHTS_NOT_CONFIRMED = "weights_not_confirmed"
 SLEEVE_NOT_LIVE = "sleeve_not_live"  # confirm or auto asked for a sleeve that is not Live (Q9)
 HIGH = "high"  # the confidence label auto places (D132, D149)
 NOT_HIGH_CONFIDENCE = "not_high_confidence"  # an auto signal stored without a high label
+MODE_GATE_CLOSED = "mode_gate_closed"  # the bot no longer runs the mode its entry was routed in
 
 
 class ModeRefusedError(HatError):
@@ -209,6 +212,18 @@ def route_mode(mode: str, confidence: str | None) -> str:
     if mode == Mode.AUTO and confidence != HIGH:
         return Mode.CONFIRM
     return mode
+
+
+def mode_refusal(signal_mode: str, effective: str) -> str | None:
+    """At placement: None while the bot's `effective` mode still places a real entry routed in
+    `signal_mode` (the same mode, or auto for an entry routed to confirm); `MODE_GATE_CLOSED`
+    once a gate closed since the routing (DDPI revoked, the sleeve left Live, the weights no
+    longer confirmed, GTT lost) and the bot runs shadow."""
+    if effective == Mode.SHADOW:
+        return MODE_GATE_CLOSED
+    if effective == signal_mode or (signal_mode == Mode.CONFIRM and effective == Mode.AUTO):
+        return None
+    return MODE_GATE_CLOSED
 
 
 def mode_anchor(calendar: SessionCalendar | None, at: datetime) -> datetime:

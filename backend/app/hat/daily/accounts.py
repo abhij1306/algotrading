@@ -577,11 +577,17 @@ class Desks:
             return desk.router.expire(session, now)
 
     def cancel_stale_entries(self, now: datetime, watch: EntryWatch) -> int:
-        """Cancel each account's real entries nothing of which filled whose break failed or that
-        waited too long (PR 49, HAT-EXEC-046); one account's failure never holds up another's.
-        Returns the cancels asked."""
+        """Cancel each account's working entries of bots a kill or a pause made manage-only
+        (`TradeManager.withdraw_entries`), and its real entries nothing of which filled whose
+        break failed or that waited too long (PR 49, HAT-EXEC-046); one account's failure never
+        holds up another's. Returns the cancels asked."""
         asked = 0
         for account_id, desk in self.by_account.items():
+            try:
+                with self._session_factory() as session:
+                    asked += desk.manager.withdraw_entries(session, account_id, now)
+            except Exception:
+                logger.exception("entries of manage-only bots of account %s not read", account_id)
             try:
                 with self._session_factory() as session:
                     for signal_id, reason in watch.due(session, account_id, now):
