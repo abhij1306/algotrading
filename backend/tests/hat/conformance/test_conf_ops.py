@@ -93,6 +93,7 @@ ADMIN_IMPORTS = {
     "app.hat.clock",  # the Clock seam: reads no table (PR 75e)
     "app.hat.backtest.runs",
     "app.hat.data.calendar",
+    "app.hat.data.ca_corrections",
     "app.hat.data.corporate_actions",
     "app.hat.data.reference",
     "app.hat.engine.portfolio",

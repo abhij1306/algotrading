@@ -18,8 +18,8 @@ from app.hat.data.ca_import import (
     Proposal,
     RightsTerms,
     Stored,
-    _dedupe,
     _split_bonus,
+    dedupe,
     demerger_factor,
     equity_share_isin,
     gate,
@@ -212,16 +212,16 @@ def test_dedupe_per_key() -> None:
         _outcome((TYPE_SPLIT, "0.2")),
         _outcome((TYPE_BONUS, "0.5"), (TYPE_SPLIT, "0.2")),
     )
-    _dedupe([first, second])
+    dedupe([first, second])
     assert [r.action_type for r in first.records] == [TYPE_SPLIT]
     assert [r.action_type for r in second.records] == [TYPE_BONUS]
     assert second.status == STORED
     # the same split with different bonus legs elsewhere is no disagreement
     a, b = _outcome((TYPE_SPLIT, "0.2"), (TYPE_BONUS, "0.5")), _outcome((TYPE_SPLIT, "0.2"))
-    _dedupe([a, b])
+    dedupe([a, b])
     assert (b.status, b.reason, b.records) == (ALREADY, "duplicate_in_file", [])
     assert len(a.records) == 2
     # two factors for one key: both rows go to review
     c, d = _outcome((TYPE_SPLIT, "0.2")), _outcome((TYPE_SPLIT, "0.5"))
-    _dedupe([c, d])
+    dedupe([c, d])
     assert {(o.status, o.reason) for o in (c, d)} == {(REVIEW, "file_disagrees_with_itself")}
