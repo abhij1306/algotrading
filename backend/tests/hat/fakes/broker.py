@@ -122,6 +122,7 @@ class FakeBroker:
         self.modify_reply: object = {"s": "ok", "message": "Modified"}
         self.cancel_reply: object = {"s": "ok"}
         self.circuit_open = False
+        self.budget: Any = None  # a `CallBudget` the adapter reads `day_spent` from, or none
         self._scripts: dict[str, deque[object]] = {}
         for name, value in config.items():
             if name not in vars(self) or name.startswith("_") or name == "calls":

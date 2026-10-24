@@ -52,7 +52,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
   entry on a trade date before its first reconciliation succeeded, and the live conditions and
   price are checked again after it, right before the send; a mismatch blocks entries and never
-  auto-closes or adopts a position.
+  auto-closes or adopts a position. Once the broker calls of the day are spent (the budget's day
+  cap, or Fyers' `-360`), no entry goes out and the reads that serve only entries (the
+  reconciliation, the entry funds read) stop until the next trade date; stops and sales still
+  go out on the writes' share.
 - **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
   a lost broker answer is settled against the broker's book, never left frozen. A lost sale of

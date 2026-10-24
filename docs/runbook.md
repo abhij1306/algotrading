@@ -228,6 +228,9 @@ advisory lock; `features` does not take it, so run it after they finish.
   "HH:MM-HH:MM"}` to `backend/app/hat/data/nse_holidays_history.json` and deploy before the day.
 - **`broker.session_lost`:** bots manage-only, stops at the broker; recovery is automatic once the
   session is back (log in if the token expired).
+- **`broker.budget_spent`:** URGENT. The day's broker calls are spent: no new entry and no
+  reconciliation until tomorrow; stops, sales and the fill sync go on. Check the logs for what
+  burned the calls before the next session.
 - **`broker_rate_limited`:** nothing was sent. After a plan change set
   `HAT_BROKER_CALLS_PER_SECOND`/`_PER_MINUTE`/`_PER_DAY` to the plan's limits and restart.
 - **`feed.stale`:** no triggers for those symbols. If it persists, restart with `--force --reason

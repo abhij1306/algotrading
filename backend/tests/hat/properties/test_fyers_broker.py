@@ -659,3 +659,29 @@ def test_sdk_requests_get_a_timeout() -> None:
     bounded("GET", "https://example.invalid/orders", timeout=None)
     bounded("GET", "https://example.invalid/orders", timeout=1)
     assert sent == [SDK_HTTP_TIMEOUT, SDK_HTTP_TIMEOUT, 1]
+
+
+def test_the_day_cap_spends_the_day_until_the_next() -> None:
+    """The first call the day cap refuses marks the day spent (Q11), and the next trading day
+    starts unspent: entries stop for the rest of the day, never for the next."""
+    today = BUDGET_DAY
+    budget = CallBudget(CallLimits(100, 100, 5), clock=lambda: 0.0, day=lambda: today)
+    for _ in range(4):  # the reads' share of 5
+        assert budget.take(READ, 0.0, today) == 0
+    assert not budget.day_spent()
+    assert math.isinf(budget.take(READ, 0.0, today))
+    assert budget.day_spent()
+    assert budget.take(WRITE, 0.0, today) == 0  # the writes' share still goes out
+    today = BUDGET_DAY + timedelta(days=1)
+    assert not budget.day_spent()
+
+
+def test_a_minus_360_reply_spends_the_day() -> None:
+    """Fyers' -360 (the plan's daily requests spent) marks the budget's day spent; a 429 (a
+    per-second or per-minute limit) and an ok reply do not."""
+    budget = CallBudget(CallLimits(), clock=lambda: 0.0, day=lambda: BUDGET_DAY)
+    assert not FyersBroker.day_refused({"s": "error", "code": 429})
+    assert not FyersBroker.day_refused({"s": "ok", "code": 200})
+    assert FyersBroker.day_refused({"s": "error", "code": -360})
+    budget.exhaust_day()
+    assert budget.day_spent()

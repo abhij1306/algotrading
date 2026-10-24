@@ -166,6 +166,10 @@ class KiteHatBroker:
     def capabilities(self) -> Capabilities:
         return self._capabilities
 
+    def day_budget_spent(self) -> bool:
+        budget = self._broker.budget
+        return budget is not None and budget.day_spent()
+
     def session_status(self) -> SessionStatus:
         try:
             connected = self._auth().status().connected

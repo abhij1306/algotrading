@@ -70,6 +70,7 @@ from ..risk.sessions import SessionCalendar
 from ..time import trade_date_of, utc_now
 
 __all__ = [
+    "BUDGET_SPENT",
     "END_SESSION",
     "END_SESSION_AT",
     "RECONCILE_DOWN_AFTER",
@@ -85,6 +86,7 @@ logger = logging.getLogger(__name__)
 END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
 RECONCILE_FAILED = "reconcile.failed"
+BUDGET_SPENT = "broker.budget_spent"
 BROKER_HEALTH = "broker_health"
 # The fill sync's cadence when nothing is watched closely; the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
@@ -112,6 +114,10 @@ class OwnedBroker:
         up a placement's capability check (HAT-EXEC-012)."""
         return self._broker.capabilities()
 
+    def day_budget_spent(self) -> bool:
+        """A local value, no broker call: not serialised, like `capabilities`."""
+        return self._broker.day_budget_spent()
+
     def __getattr__(self, name: str) -> object:
         attribute = getattr(self._broker, name)
         if not callable(attribute):
@@ -137,6 +143,7 @@ class AccountDesk:
     watch: SessionWatch = field(default_factory=SessionWatch)
     failed_alerted_on: date | None = None  # the trade date `reconcile.failed` was raised for
     reconciled_at: datetime | None = None  # the last successful reconciliation
+    budget_alerted_on: date | None = None  # the trade date `broker.budget_spent` was raised for
     synced_at: datetime | None = None  # the last fill sync that read the broker's books
     fills_read_at: datetime | None = None  # the last fill sync that succeeded (ca.rescale's gate)
 
@@ -199,7 +206,11 @@ class AccountDesk:
         placed). Until the first success of a trade date its entries wait (HAT-BRK-110); a failure
         raises one `reconcile.failed` health alert for the date while the date has no success, or
         once the last success is `RECONCILE_DOWN_AFTER` old (`reconcile_down`). A failed re-run
-        after a success leaves the gate open. Stops and sales never wait (D118)."""
+        after a success leaves the gate open. Stops and sales never wait (D118). Once the day's
+        broker calls are spent it reads nothing (`budget_spent`): it only gates entries, which
+        wait for the next day then (Q11)."""
+        if self.budget_spent(now):
+            return self.guard.reconciled_today()
         try:
             self.reconciler.run(session, self.account_id)
         except Exception:
@@ -212,6 +223,19 @@ class AccountDesk:
             return False
         self.reconciled_at = now
         return self.guard.reconciled_today()
+
+    def budget_spent(self, now: datetime) -> bool:
+        """Whether the broker calls of the day are spent (Q11, C22 A2), raising the day's one
+        URGENT `broker.budget_spent` the first time: new entries and the reads that can wait stop
+        until the next trade date; stops and sales go out on the calls left."""
+        if not self.broker.day_budget_spent():
+            return False
+        day = trade_date_of(now)
+        if self.budget_alerted_on != day:
+            self.budget_alerted_on = day
+            logger.error("account %s: the broker calls of the day are spent", self.account_id)
+            self.notifier.alert(BUDGET_SPENT, day, {"account_id": str(self.account_id)})
+        return True
 
 
 def reconcile_down(reconciled_today: bool, last_success: datetime | None, now: datetime) -> bool:
@@ -364,7 +388,9 @@ class Desks:
         owner = self._registry.acquire(account_id)
         broker = cast(HatBroker, OwnedBroker(owner, broker))
         clock = self._clock
-        guard = ExecutionGuard(today=lambda: trade_date_of(clock.now()))
+        guard = ExecutionGuard(
+            today=lambda: trade_date_of(clock.now()), budget_spent=broker.day_budget_spent
+        )
         reconciler = ReconciliationService(
             broker, guard, notifier_sink(notifier, clock), notifier, clock=clock
         )
@@ -440,9 +466,10 @@ class Desks:
             desk.owner.release()
 
     def funds(self, account_id: uuid.UUID) -> Decimal | None:
-        """The account's available broker funds (the entry context's); None when unreadable."""
+        """The account's available broker funds (the entry context's); None when unreadable, and
+        unread once the day's broker calls are spent (no entry may go out then, Q11)."""
         desk = self.by_account.get(account_id)
-        if desk is None:
+        if desk is None or desk.broker.day_budget_spent():
             return None
         try:
             return desk.broker.funds().available

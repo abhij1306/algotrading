@@ -25,6 +25,12 @@ fails closed with `broker_rate_limited` (the fill sync tries again at its next s
 refused as not sent, burning no retry. An HTTP 429 from Fyers is the same refusal; its
 `Retry-After` (else `THROTTLE_PAUSE`) pauses the whole budget.
 
+The day spent (Q11, C22 A2): once the budget refuses a call for the day cap, or the broker
+answers that the plan's daily requests are spent (Fyers' -360, `GuardedBroker.day_refused`), the
+budget is `day_spent` until the trading day ends. The transport still sends what the cap lets
+through (stops and sales keep the writes' share); the desks read `day_spent` to refuse new
+entries and skip the reads that can wait (`daily.accounts`).
+
 A guard timeout cannot stop the SDK call it gave up on: the thread keeps waiting on its socket.
 Every SDK HTTP request therefore carries `SDK_HTTP_TIMEOUT` (the SDK sets none), and the worker
 pool (`BrokerPool`) counts the calls that timed out and still hold a thread: at `HUNG_LIMIT` it
@@ -292,6 +298,7 @@ class CallBudget:
         self._sent: deque[float] = deque()  # when each call of the last minute was granted
         self._day_of: date | None = None
         self._day_count = 0
+        self._spent_on: date | None = None  # the trading day whose calls are spent
         self._paused_until = 0.0
         self._writers = 0
 
@@ -308,6 +315,7 @@ class CallBudget:
         if limits.per_day is not None:
             day_limit = limits.per_day if write else _read_day_limit(limits.per_day)
             if self._day_count >= day_limit:
+                self._spent_on = today
                 return math.inf
         while self._sent and self._sent[0] <= now - 60.0:
             self._sent.popleft()
@@ -352,6 +360,18 @@ class CallBudget:
                 if kind == WRITE:
                     self._writers -= 1
                     self._cond.notify_all()
+
+    def exhaust_day(self) -> None:
+        """The broker refused a call because the plan's daily requests are spent: the day is
+        spent whatever the budget's own count says."""
+        with self._cond:
+            self._spent_on = self._day()
+
+    def day_spent(self) -> bool:
+        """Whether the trading day's calls are spent (the day cap refused a call, or the broker
+        said so): new entries and the reads that can wait stop until the next day (Q11)."""
+        with self._cond:
+            return self._spent_on is not None and self._spent_on == self._day()
 
     def pause(self, seconds: float) -> None:
         """Send nothing for `seconds` (a broker 429), at most `MAX_PAUSE`."""
@@ -561,7 +581,20 @@ class GuardedBroker:
         if refused is not None:
             return refused
         result = self._run(operation, fn, timeout_sec)
-        return fallback if result is _NO_ANSWER else result
+        if result is _NO_ANSWER:
+            return fallback
+        if self.budget is not None and self.day_refused(result):
+            logger.warning(
+                "%s operation %s refused: the day's requests are spent", self.label, operation
+            )
+            self.budget.exhaust_day()
+        return result
+
+    @staticmethod
+    def day_refused(_reply: object) -> bool:
+        """Whether `reply` says the plan's daily requests are spent; a broker with such a refusal
+        overrides it (Fyers' -360)."""
+        return False
 
     def _admit(self, operation: str, kind: str) -> object | None:
         """None when the call may go out now; else what answers it instead: `_CIRCUIT_OPEN`, or
@@ -666,6 +699,15 @@ class FyersBroker(GuardedBroker):
         return model
 
     # --- writes: each takes the SDK payload exactly as it goes out ------------------------
+
+    @staticmethod
+    def day_refused(reply: object) -> bool:
+        """Fyers' -360: the plan's daily requests are spent."""
+        return (
+            isinstance(reply, dict)
+            and reply.get("s") != "ok"
+            and reply.get("code") == FYERS_CODE_RATE_LIMITED
+        )
 
     def place_order(self, data: dict[str, Any]) -> OrderReply:
         """Send the order payload `data`. A lost answer is SUBMIT_UNCONFIRMED, never a

@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from app.hat.daily.accounts import RECONCILE_DOWN_AFTER, desk_accounts, reconcile_down
+from app.hat.execution.guard import BUDGET_SPENT, ExecutionGuard
 from app.hat.models import HatBrokerAccount
 
 
@@ -47,3 +48,15 @@ def test_a_failure_after_a_success_is_down_only_once_it_is_old() -> None:
     assert not reconcile_down(True, NOW - timedelta(minutes=5), NOW)
     assert not reconcile_down(True, NOW - RECONCILE_DOWN_AFTER + timedelta(seconds=1), NOW)
     assert reconcile_down(True, NOW - RECONCILE_DOWN_AFTER, NOW)
+
+
+def test_a_spent_day_refuses_entries_never_stops_or_sales() -> None:
+    """Q11: once the broker calls of the day are spent an entry is refused; a stop or a sale
+    never is."""
+    spent = ExecutionGuard(today=lambda: NOW.date(), budget_spent=lambda: True)
+    spent.reconciled_for = NOW.date()
+    bot, account = uuid.uuid4(), uuid.uuid4()
+    assert spent.refusal(bot, account, is_entry=True) == BUDGET_SPENT
+    assert spent.refusal(bot, account, is_entry=False) is None
+    spent.budget_spent = lambda: False
+    assert spent.refusal(bot, account, is_entry=True) is None
