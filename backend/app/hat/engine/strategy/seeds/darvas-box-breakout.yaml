@@ -1,0 +1,45 @@
+# Registration (engine/strategy/registry.py); the strategy config follows the --- line.
+sleeve: S3
+persona: Darvas-style
+---
+# Source: N. Darvas, "How I Made $2,000,000 in the Stock Market" (1960): buy a stock at new highs
+# when it breaks out of its box on rising volume, stop just under the box bottom, and trail the
+# stop up under each new box. The 3-session box confirmation is the usual codification of his
+# rules (e.g. the Darvas box entries of Investopedia and StockCharts ChartSchool).
+bot: darvas-box-breakout
+version: 1
+market: NSE
+# capital allocation: set in the account risk policy
+
+universe:
+  - {type: series_in, params: {series: [EQ, BE]}}
+  - {type: min_turnover, params: {days: 20, inr_cr: 10}}
+  - {type: min_price, params: {inr: 50}}
+
+regime:
+  index: NIFTY 500
+  rule: close_above_sma_and_rising    # assumption; Darvas sat out falling markets, no fixed rule
+  params: {sma: 50, rising_days: 10}
+
+setup:
+  criteria:
+    # box top = the 52-week high, unexceeded for 3 sessions; bottom = the low after it, unbroken
+    # for 3 sessions; the high at most 60 sessions old, the box at most 8% deep
+    - {type: darvas_box, mode: hard, params: {lookback_days: 252, confirm_days: 3, max_box_days: 60,
+        max_depth_pct: 8}}
+    - {type: earnings_growth, mode: hard, enabled: false, params: {eps_yoy: 20, sales_yoy: 20}}
+
+trigger:
+  - {type: price_breaks_level, params: {level: pivot, bar: 5m}}    # the box top
+  - {type: volume_pace, params: {vs_avg50: 1.5}}
+
+entry_filters:
+  - {type: max_chase, params: {pct: 2}}
+
+stop: {rule: below_final_contraction_low, buffer_pct: 0.5, max_pct: 10}   # under the box bottom
+
+# sizing: from the account risk policy
+
+exits:                                  # evaluated top to bottom
+  - {rule: hard_stop}
+  - {rule: trailing_swing_low, lookback_days: 10, sell_fraction: 1.0}   # under the latest box

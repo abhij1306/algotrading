@@ -72,6 +72,9 @@ KNOWN_GAPS = (
     # the NIFTY 500 membership is today's list over the whole period, not point in time: a
     # survivorship bias accepted until a constituents history exists (QA5)
     "universe_from_current_constituents",
+    # one `momentum` regime multiplier table scales every sleeve, the Darvas box sleeve (S3)
+    # too, rather than a table fitted to each style (audit A5 F5)
+    "regime_table_shared_momentum",
 )
 
 

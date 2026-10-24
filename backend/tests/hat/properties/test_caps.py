@@ -274,7 +274,7 @@ PATHS = {
     ("p_max", S1): ("0.25", "0.15"),
     ("p_max", S2): ("0.30", "0.20"),
     ("adv_cap_pct",): ("0.02", "0.005"),
-    ("global_open_risk_pct",): ("0.04", "0.02"),
+    ("global_open_risk_pct",): ("0.04", "0.01"),
     ("max_open_positions",): (7, 5),
     ("max_positions_per_industry",): (3, 1),
     ("max_entries_per_day",): (4, 2),

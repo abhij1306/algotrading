@@ -1,4 +1,4 @@
-"""The criteria library: a registry of the 25 catalogue types.
+"""The criteria library: a registry of the 26 catalogue types.
 
 Pure by construction: nothing here imports the database, a router, a broker or the network
 (CONF `import_graph_boundaries`). Parameter models validate a config on save; `evaluate`
@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ...errors import HatError
-from . import live, setup, universe, vcp
+from . import darvas, live, setup, universe, vcp
 from .base import (
     STAGES,
     CriterionResult,
@@ -90,6 +90,7 @@ _TYPES = (
         setup.earnings_growth,
     ),
     _t("close_vs_pivot", "setup", setup.CloseVsPivotParams, (BARS,), setup.close_vs_pivot),
+    _t("darvas_box", "setup", darvas.DarvasBoxParams, (BARS,), darvas.darvas_box),
     _live("gap_up", "trigger", live.GapUpParams, (PREOPEN, "live_bars"), live.gap_up),
     _live("volume_pace", "trigger", live.VolumePaceParams, ("live_bars", BARS), live.volume_pace),
     _live(
