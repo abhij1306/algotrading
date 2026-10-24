@@ -28,14 +28,7 @@ import pyarrow.parquet as pq
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.store import DataStore, atomic_replace
-from ..engine.confidence import buckets
-from ..engine.strategy.config import parse_config
-from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
-from ..risk.policy import effective_version
-from ..risk.policy_upkeep import load_versions
-from ..time import utc_now
-from .costs import (
+from ..costs import (
     DEFAULT_COST_MODEL,
     DEFAULT_SLIPPAGE_BPS,
     BacktestFills,
@@ -43,6 +36,13 @@ from .costs import (
     check_slippage,
     load_cost_model,
 )
+from ..data.store import DataStore, atomic_replace
+from ..engine.confidence import buckets
+from ..engine.strategy.config import parse_config
+from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
+from ..risk.policy import effective_version
+from ..risk.policy_upkeep import load_versions
+from ..time import utc_now
 from .data import MarketData, load_market
 from .dsr import MIN_TRIALS, PBO_BLOCKS, VARIANCE_FLOOR, Deflated, pbo
 from .evidence import COMPLETED, DSR_DIGITS, RunMetrics, family_key, run_dsr, universe_of

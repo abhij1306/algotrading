@@ -13,7 +13,6 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.backtest.data import (
     Bar,
     MarketData,
@@ -47,6 +46,7 @@ from app.hat.backtest.spec import (
     RunConventions,
 )
 from app.hat.confighash import config_hash
+from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.stops import floor_to_tick
 

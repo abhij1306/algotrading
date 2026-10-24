@@ -70,7 +70,7 @@ class _ShadowFills:
         return price, _ZERO
 
 
-# The backtest passes its own model (slippage and charges, `app.hat.backtest.costs`); the shadow
+# The backtest passes its own model (slippage and charges, `app.hat.costs`); the shadow
 # engine and the backtest otherwise fill through the same functions (HAT-BT-010).
 SHADOW_FILLS: FillModel = _ShadowFills()
 

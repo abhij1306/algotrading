@@ -21,9 +21,9 @@ from typing import Any, Literal
 
 import yaml
 
-from ..confighash import config_hash
-from ..errors import HatError
-from ..money import exact, to_money
+from .confighash import config_hash
+from .errors import HatError
+from .money import exact, to_money
 
 __all__ = [
     "DEFAULT_COST_MODEL",

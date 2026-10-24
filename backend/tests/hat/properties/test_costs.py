@@ -1,5 +1,5 @@
 """PBT costs.*: slippage and statutory charges of
-`app.hat.backtest.costs` on generated cost models and fills, in Decimal and compared exactly,
+`app.hat.costs` on generated cost models and fills, in Decimal and compared exactly,
 against the rules written out here."""
 
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
@@ -10,7 +10,7 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from app.hat.backtest.costs import (
+from app.hat.costs import (
     MAX_SLIPPAGE_BPS,
     BacktestFills,
     CashBoundFills,

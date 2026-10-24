@@ -23,7 +23,7 @@ show where in a day a level broke, so a day is read as the path open -> low -> h
 adverse move first, `app.hat.backtest.fills`): an entry breaks its level on the way up, a stop is
 hit on the way down, a profit rule fires at the first tick price on the way up at which
 `exits.evaluate` acts, and the close rules see the official close. Fills go through the cost
-model (`app.hat.backtest.costs`): slippage against the trade, then statutory charges.
+model (`app.hat.costs`): slippage against the trade, then statutory charges.
 
 Fill conventions (PR 62, HAT-BT-020..022, O5): pessimistic by default. An entry needs the high to
 clear the level by one tick and fills at that price (`penetration_1_tick`; `touch` is a variant a
