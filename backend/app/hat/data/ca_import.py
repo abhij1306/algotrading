@@ -889,9 +889,6 @@ def apply(session: Session, outcomes: Sequence[Outcome], *, digest: str, now: da
     return report.created
 
 
-SUMMARY_LINES = len(COLUMNS) + 3  # the header, a line per table, the rows and the reasons
-
-
 def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool) -> list[str]:
     """Counts per table and status, then the stored, conflict and review rows with their
     reasons (every row when `everything`)."""
@@ -941,27 +938,37 @@ def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool
 # --- command line -------------------------------------------------------------------------------
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
-    """python -m app.hat.data.ca_import --db PATH [--apply] [--report FILE] [--all]
+def input_file(name: str) -> Path:
+    """The file named on the command line, under the working directory with a `.db` suffix:
+    anything resolving outside it, or with another suffix, is refused before it is opened."""
+    base = Path.cwd().resolve()
+    target = (base / name).resolve()
+    if not target.is_relative_to(base) or target.suffix.lower() != ".db":
+        raise CaFileError("ca_file_outside_cwd")
+    if not target.is_file():
+        raise CaFileError("ca_file_missing")
+    return target
 
-    Reads the corporate-action file at PATH (read-only) and the raw bars under `HAT_DATA_ROOT`,
-    and prints what it would store (a dry run) or, with `--apply`, stores it in one transaction.
-    `--report` writes the full list to FILE (outside the repo); `--all` lists every row, not
-    only the stored, conflict and review ones. After an apply, rebuild the lineage
-    (`python -m app.hat.data.lineage build`) and the features (`features --full`)."""
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
+    """python -m app.hat.data.ca_import --db FILE [--apply] [--all]
+
+    Reads the corporate-action file FILE (a `.db` under the working directory, opened
+    read-only) and the raw bars under `HAT_DATA_ROOT`, and prints what it would store (a dry
+    run) or, with `--apply`, stores it in one transaction. The report goes to stdout (redirect
+    it to a file outside the repo); `--all` lists every row, not only the stored, conflict and
+    review ones. After an apply, rebuild the lineage (`python -m app.hat.data.lineage build`)
+    and the features (`features --full`)."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.ca_import")
-    parser.add_argument("--db", required=True, type=Path)
+    parser.add_argument("--db", required=True)
     parser.add_argument("--apply", action="store_true")
-    parser.add_argument("--report", type=Path)
     parser.add_argument("--all", action="store_true")
     args = parser.parse_args(argv)
-    from app.paths import PROJECT_ROOT
-
-    if args.report is not None and args.report.resolve().is_relative_to(PROJECT_ROOT.resolve()):
-        sys.stderr.write("refused: report_inside_repo\n")
-        return 2
-    if not args.db.is_file():
-        sys.stderr.write("refused: no_such_file\n")
+    try:
+        path = input_file(args.db)
+        tables = read_file(path)
+    except CaFileError as exc:
+        sys.stderr.write(f"refused: {exc.code}\n")
         return 2
     from ..settings import operator_settings
 
@@ -970,26 +977,17 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     from ..time import utc_now
 
-    try:
-        tables = read_file(args.db)
-    except CaFileError as exc:
-        sys.stderr.write(f"refused: {exc.code}\n")
-        return 2
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     with SessionLocal() as session:
         outcomes = evaluate(session, store, tables)
         if args.apply:
-            created = apply(session, outcomes, digest=file_digest(args.db), now=utc_now())
+            created = apply(session, outcomes, digest=file_digest(path), now=utc_now())
             session.commit()
             sys.stdout.write(f"applied: {created} rows\n")
         else:
             session.rollback()
-    lines = report_lines(outcomes, applied=args.apply, everything=args.all)
-    sys.stdout.write("\n".join(lines[:SUMMARY_LINES]) + "\n")
-    if args.report is not None:
-        args.report.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    else:
-        sys.stdout.write("\n".join(lines[SUMMARY_LINES:]) + "\n")
+    sys.stdout.write("\n".join(report_lines(outcomes, applied=args.apply, everything=args.all)))
+    sys.stdout.write("\n")
     return 0
 
 
