@@ -3,13 +3,15 @@ gate shows wrong (a misparsed ratio, a missing leg, a demerger stored from a res
 company's price where the market gap is the factor), applied as one batch.
 
 The list is a TSV file in the admin folder, one correction per line, with columns
-`op isin ex_date type factor new_ex_date note`:
+`op isin ex_date type factor new_ex_date note`, and optionally `cash` after them (CA4): a
+dividend's rupees per share, on a `replace` or `add` line of type `dividend` with factor 1:
 
-- `replace`: the stored (isin, ex_date, type) row takes `factor` (`correct_action`);
+- `replace`: the stored (isin, ex_date, type) row takes `factor` (and `cash`; `correct_action`);
 - `delete`: the row is deleted (`correct_action`), e.g. a bonus of preference shares;
 - `move`: the row is deleted at `ex_date` and stored again at `new_ex_date`, with `factor` when
   given, else its own (`correct_action`, then `add_action`);
-- `add`: a missing leg is stored (`add_action`), e.g. the bonus of a bonus-and-split day.
+- `add`: a missing leg is stored (`add_action`), e.g. the bonus of a bonus-and-split day, or a
+  dividend with its `cash` the imports could not read (a review case).
 
 `note` carries the reason and the bar evidence; it goes into the journal entry of each change
 (`corporate_action.corrected`, actor user, via cli). A dry run (`apply_list(..., apply=False)`)
@@ -48,6 +50,7 @@ from .corporate_actions import (
 SOURCE_OWNER = "owner"
 OPS = ("replace", "delete", "move", "add")
 COLUMNS = ("op", "isin", "ex_date", "type", "factor", "new_ex_date", "note")
+CASH_COLUMN = "cash"
 MAX_LINES = 500
 
 
@@ -71,6 +74,7 @@ class Item:
     factor: Decimal | None
     new_ex_date: date | None
     note: str
+    cash: Decimal | None = None
 
 
 def _date(raw: str, line: int) -> date:
@@ -83,18 +87,21 @@ def _date(raw: str, line: int) -> date:
 def parse_list(text: str) -> list[Item]:
     """The list's lines (a header line first, `#` lines ignored). A line that does not read
     refuses the list: a factor where the op takes none or none where it needs one, a move
-    without a new date, a bad date or op."""
+    without a new date, a bad date or op, a cash amount that is not positive or on an op other
+    than `replace` or `add`."""
     reader = csv.reader(io.StringIO(text), delimiter="\t")
     rows = [(n, r) for n, r in enumerate(reader, start=1) if r and not r[0].startswith("#")]
-    if not rows or tuple(c.strip() for c in rows[0][1]) != COLUMNS:
+    header = tuple(c.strip() for c in rows[0][1]) if rows else ()
+    if header not in (COLUMNS, (*COLUMNS, CASH_COLUMN)):
         raise CorrectionListError("bad_header")
     if len(rows) - 1 > MAX_LINES:
         raise CorrectionListError("too_many_lines")
     items = []
     for line, row in rows[1:]:
-        if len(row) != len(COLUMNS):
+        if len(row) != len(header):
             raise CorrectionListError("bad_columns", line)
-        op, isin, ex, kind, factor_raw, new_ex, note = (c.strip() for c in row)
+        op, isin, ex, kind, factor_raw, new_ex, note, *rest = (c.strip() for c in row)
+        cash_raw = rest[0] if rest else ""
         if op not in OPS:
             raise CorrectionListError("bad_op", line)
         factor = exact(factor_raw, positive=True) if factor_raw else None
@@ -105,6 +112,9 @@ def parse_list(text: str) -> list[Item]:
             raise CorrectionListError("bad_factor", line)
         if (op == "move") != bool(new_ex):
             raise CorrectionListError("bad_new_ex_date", line)
+        cash = exact(cash_raw, positive=True) if cash_raw else None
+        if cash_raw and (cash is None or op not in ("replace", "add")):
+            raise CorrectionListError("bad_cash", line)
         items.append(
             Item(
                 line,
@@ -115,6 +125,7 @@ def parse_list(text: str) -> list[Item]:
                 factor,
                 _date(new_ex, line) if new_ex else None,
                 note,
+                cash,
             )
         )
     return items
@@ -131,13 +142,15 @@ def add_action(
     chat_id: int,
     user_id: uuid.UUID,
     now: datetime,
+    cash: Decimal | None = None,
 ) -> dict[str, object]:
     """Store one price-changing action the owner adds (a missing leg, the new date of a moved
-    one) and journal it as `corporate_action.corrected` (before: absent). Refused like
-    `correct_action`: `instrument_not_found`, `action_key_taken` (the key is stored), or
-    `check_correction`'s codes (a price-neutral type is not added: it changes no price)."""
-    checked = check_correction(Correction(isin, ex_date, action_type, factor, note=note))
-    if checked is None or action_type in PRICE_NEUTRAL_TYPES:
+    one), or a dividend with its `cash` (CA4), and journal it as `corporate_action.corrected`
+    (before: absent). Refused like `correct_action`: `instrument_not_found`, `action_key_taken`
+    (the key is stored), or `check_correction`'s codes (another price-neutral type, or a
+    dividend without cash, is not added: it changes nothing)."""
+    checked = check_correction(Correction(isin, ex_date, action_type, factor, note=note, cash=cash))
+    if checked is None or (action_type in PRICE_NEUTRAL_TYPES and cash is None):
         raise ActionCorrectionError("bad_action_type")
     lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == isin))
@@ -160,6 +173,7 @@ def add_action(
             adjustment_factor=checked[1],
             raw_text=note.strip()[:500],
             source=SOURCE_OWNER,
+            cash_amount=cash,
         )
     )
     payload = {
@@ -168,7 +182,12 @@ def add_action(
         "isin": isin,
         "ex_date": ex_date.isoformat(),
         "before": {"type": action_type, "absent": True},
-        "after": {"type": action_type, "factor": str(checked[1]), "added": True},
+        "after": {
+            "type": action_type,
+            "factor": str(checked[1]),
+            **({"cash": str(cash)} if cash is not None else {}),
+            "added": True,
+        },
         "note": note.strip(),
     }
     events.record(
@@ -214,10 +233,14 @@ def _one(
             chat_id=chat_id,
             user_id=user_id,
             now=now,
+            cash=item.cash if item.op == "add" else None,
         )
 
     def correct(factor: Decimal | None) -> dict[str, object]:
-        fix = Correction(item.isin, item.ex_date, item.action_type, factor, note=item.note)
+        cash = item.cash if item.op == "replace" else None
+        fix = Correction(
+            item.isin, item.ex_date, item.action_type, factor, note=item.note, cash=cash
+        )
         return correct_action(session, fix, chat_id=chat_id, user_id=user_id, now=now)
 
     if item.op == "add" and item.factor is not None:

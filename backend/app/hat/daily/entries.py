@@ -25,6 +25,7 @@ from ..clock import Clock
 from ..data.instruments import current_industry
 from ..engine import entries
 from ..engine.live_entry import route_by_mode
+from ..engine.paper_dividends import shadow_dividend_cash
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
@@ -79,7 +80,9 @@ def _open_notional(session: Session, bot_id: uuid.UUID, virtual: bool) -> Decima
 
 class LiveContexts:
     """The `ContextSource` of live entries. Equity is the sleeve's allocation capital plus its
-    realised P&L in the bot's mode; free cash is the broker's available funds for a real
+    realised P&L in the bot's mode, and for a shadow sleeve the dividends its virtual positions
+    earned (`paper_dividends`, the backtest's rule: a real account's come in the broker's
+    funds); free cash is the broker's available funds for a real
     entry and the sleeve's equity less its open virtual positions for a shadow one. A virtual
     entry of a Shadow or Probation sleeve (weight 0) is sized from its nominal allocation
     (`virtual_capital`, `virtual_risk_pct`, health 1; HAT-PORT-050); a real entry never is."""
@@ -121,6 +124,8 @@ class LiveContexts:
         capital = Decimal(allocation.virtual_capital if nominal else allocation.capital)
         risk_pct = Decimal(allocation.virtual_risk_pct if nominal else allocation.risk_pct)
         equity = capital + _realised(session, bot_id, virtual)
+        if virtual:
+            equity += shadow_dividend_cash(session, bot_id, day)
         book = (
             func.coalesce(HatAllocationDaily.virtual_capital, HatAllocationDaily.capital)
             if virtual

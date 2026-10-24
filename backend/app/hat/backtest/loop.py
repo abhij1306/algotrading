@@ -125,7 +125,7 @@ import uuid
 from bisect import bisect_right
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time
-from decimal import ROUND_HALF_EVEN, Decimal
+from decimal import Decimal
 
 from sqlalchemy import select
 
@@ -151,7 +151,7 @@ from ..models import (
     HatTradeResult,
     HatWatchlistEntry,
 )
-from ..money import exact
+from ..money import dividend_credit, exact
 from ..risk.decision import SignalContext
 from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
@@ -188,13 +188,6 @@ SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
 # The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _ZERO = Decimal(0)
-_PAISE = Decimal("0.01")
-
-
-def dividend_credit(qty: int, cash_per_share: Decimal) -> Decimal:
-    """The cash `qty` shares held into an ex-date earn: the dividend per share times the shares,
-    to the paisa a broker credits."""
-    return (qty * cash_per_share).quantize(_PAISE, rounding=ROUND_HALF_EVEN)
 
 
 _FINEST_TICK = Decimal("0.01")  # the NSE tick below ₹250 (`data.ticks`), the finest slab

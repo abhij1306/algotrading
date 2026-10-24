@@ -30,6 +30,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..data import ca_dividends
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
@@ -141,6 +142,9 @@ RESCALE_RETRY = timedelta(minutes=5)  # three tries before the 09:00 pre-open
 # link: the owner reads `python -m app.hat.data.lineage report`.
 ALERT_LINEAGE_UNCHECKED = "lineage.unchecked"
 ALERT_LINEAGE_REVIEW = "lineage.review"
+# NSE's daily corporate-action file could not be read or stored: the night's dividends are not
+# in the total-return series until `ca_dividends --bc` imports that day's file (runbook).
+ALERT_DIVIDENDS_UNCHECKED = "dividend.unchecked"
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,8 @@ class TextSources:
     circuit_limits: CircuitSource | None = None
     symbol_changes: TextSource | None = None  # NSE symbolchange.csv: the ISIN lineage
     name_changes: TextSource | None = None
+    # the `bc` CSV of NSE's PR archive of a trade date: the dividends `ca.adjust` stores (CA4)
+    corporate_actions: Callable[[date], TextSource] | None = None
 
 
 @dataclass
@@ -317,8 +323,9 @@ class Nightly:
         quarantined instrument on its `since` date are asked again (HAT-DATA-062, PR 33): a
         split whose lookup failed on the day releases its quarantine at the next gate once
         stored. A failure there is only logged: the quarantine was alerted already and stands.
-        Then the factors are checked to load into the adjusted view (`cumulative_segments`, no
-        connection) before the features read it."""
+        Then the dividends of the day's corporate-action file go in with their amounts
+        (`_dividends`, CA4). Then the factors are checked to load into the adjusted view
+        (`cumulative_segments`, no connection) before the features read it."""
         try:
             self._next_session_actions(day)
         except Exception:
@@ -326,6 +333,13 @@ class Nightly:
             # the alert says the next session's actions are unknown.
             logger.exception("next-session corporate-action lookup failed")
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": "*"})
+        try:
+            self._dividends(day)
+        except Exception:
+            # The series stays without tonight's dividends (a drop it does not pay back) until
+            # the day's file is imported by hand; the chain goes on.
+            logger.exception("nightly dividend import failed")
+            self.deps.notifier.alert(ALERT_DIVIDENDS_UNCHECKED, day, {})
         try:
             self._quarantine_actions()
         except Exception:
@@ -380,6 +394,45 @@ class Nightly:
         )
         for symbol in found.failed:
             self.deps.notifier.alert(ALERT_ACTION_UNCHECKED, day, {"symbol": symbol})
+
+    def _dividends(self, day: date) -> None:
+        """The dividends going ex on `day` (and the catch-up days) from NSE's corporate-action
+        file of `day`, stored with their cash in one transaction (`ca_dividends.nightly_import`,
+        the CA3 checks). Each review or conflict case is alerted, and so is each stored dividend
+        of those days still without an amount: it is never guessed."""
+        source = self.deps.sources.corporate_actions
+        if source is None:
+            return
+        text = source(day)()
+        with self.deps.session_factory() as session:
+            report = ca_dividends.nightly_import(session, self.deps.store, text, day, self._now())
+            session.commit()
+        logger.info(
+            "dividends of %s: %d stored, %d amounts added, %d for review, %d without an amount",
+            day,
+            report.created,
+            report.added,
+            len(report.flagged),
+            len(report.missing),
+        )
+        for o in report.flagged:
+            p = o.proposal
+            self.deps.notifier.alert(
+                ca_dividends.ALERT_DIVIDEND_REVIEW,
+                day,
+                {
+                    "symbol": p.symbol,
+                    "ex_date": p.ex_date.isoformat() if p.ex_date else "-",
+                    "status": o.status,
+                    "reason": o.reason,
+                },
+            )
+        for m in report.missing:
+            self.deps.notifier.alert(
+                ca_dividends.ALERT_DIVIDEND_NO_AMOUNT,
+                day,
+                {"symbol": m.symbol, "isin": m.isin, "ex_date": m.ex_date.isoformat()},
+            )
 
     def _quarantine_actions(self) -> None:
         with self.deps.session_factory() as session:

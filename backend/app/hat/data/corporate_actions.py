@@ -415,7 +415,8 @@ class ActionCorrectionError(HatError):
 @dataclass(frozen=True)
 class Correction:
     """What the owner asks of one stored action: `factor` (and `new_type`, default the stored
-    type) replaces it, or `factor` None deletes it."""
+    type) replaces it, or `factor` None deletes it. `cash` sets a dividend's rupees per share
+    (CA4): its factor stays 1."""
 
     isin: str
     ex_date: date
@@ -423,17 +424,24 @@ class Correction:
     factor: Decimal | None
     new_type: str | None = None
     note: str = ""
+    cash: Decimal | None = None
 
 
 def check_correction(correction: Correction) -> tuple[str, Decimal] | None:
     """The (type, factor) a replacement stores, None for a delete. A price-neutral type takes
-    factor 1 and a price-changing type any other factor the view can hold; else
-    `ActionCorrectionError` (`bad_action_type`, `bad_factor`, `note_required`)."""
+    factor 1 and a price-changing type any other factor the view can hold, and only a dividend
+    takes a cash amount, a positive one; else `ActionCorrectionError` (`bad_action_type`,
+    `bad_factor`, `bad_cash`, `note_required`)."""
     if not correction.note.strip() or len(correction.note) > NOTE_MAX:
         raise ActionCorrectionError("note_required")
     target = correction.new_type or correction.action_type
     if correction.action_type not in ACTION_TYPES or target not in ACTION_TYPES:
         raise ActionCorrectionError("bad_action_type")
+    cash = correction.cash
+    if cash is not None and (
+        target != TYPE_DIVIDEND or correction.factor is None or not cash.is_finite() or cash <= 0
+    ):
+        raise ActionCorrectionError("bad_cash")
     if correction.factor is None:
         return None
     factor = correction.factor
@@ -442,6 +450,14 @@ def check_correction(correction: Correction) -> tuple[str, Decimal] | None:
     if not factor.is_finite() or not FACTOR_MIN <= factor < FACTOR_MAX or (factor == 1) != neutral:
         raise ActionCorrectionError("bad_factor")
     return target, factor
+
+
+def _state(row: HatCorporateAction) -> dict[str, object]:
+    """A stored row as its correction journals it (`before`, `after`)."""
+    state: dict[str, object] = {"type": row.action_type, "factor": str(row.adjustment_factor)}
+    if row.cash_amount is not None:
+        state["cash"] = str(row.cash_amount)
+    return state
 
 
 def correct_action(
@@ -456,7 +472,9 @@ def correct_action(
     another factor it is refused (`action_key_taken`). Refused too: an unknown ISIN
     (`instrument_not_found`), no such action (`action_not_found`) or `check_correction`'s codes.
     The adjusted view reads the change at the next features run (its digest covers the
-    factors)."""
+    factors). A `cash` correction sets a dividend's amount, which the total-return series and the
+    backtest and shadow credits read; a later import never rewrites it (its key is the owner's,
+    `owner_vacated`)."""
     replacement = check_correction(correction)
     lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == correction.isin))
@@ -473,7 +491,7 @@ def correct_action(
     )
     if row is None:
         raise ActionCorrectionError("action_not_found")
-    before = {"type": row.action_type, "factor": str(row.adjustment_factor)}
+    before = _state(row)
     after: dict[str, object] = {"deleted": True}
     if replacement is None:
         session.delete(row)
@@ -492,12 +510,18 @@ def correct_action(
         )
         if holder is not None and Decimal(holder.adjustment_factor) != factor:
             raise ActionCorrectionError("action_key_taken")
+        if holder is not None and correction.cash is not None:
+            raise ActionCorrectionError("action_key_taken")  # the amount is the holder's
         if holder is not None:
             session.delete(row)
-            after = {"type": new_type, "factor": str(factor), "kept_stored": True}
+            after = {**_state(holder), "kept_stored": True}
         else:
             row.action_type, row.adjustment_factor = new_type, factor
-            after = {"type": new_type, "factor": str(factor)}
+            if correction.cash is not None:
+                row.cash_amount = correction.cash
+            elif new_type != TYPE_DIVIDEND:
+                row.cash_amount = None  # only a dividend pays cash
+            after = _state(row)
     payload = {
         "chat_id": chat_id,
         "via": "cli",
