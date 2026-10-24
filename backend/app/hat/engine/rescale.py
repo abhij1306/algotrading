@@ -89,6 +89,12 @@ MAX_DENOMINATOR = 1000  # split and bonus ratios are small: 2/3 is stored as 0.6
 # Two ratios with denominators up to 1000 differ by at least 1e-6, so a stored factor within 1e-9
 # of one (12 places, or the 10 a SQLite Numeric returns) names it alone.
 FACTOR_TOLERANCE = Fraction(1, 10**9)
+# The MCP sends most factors to 4 places (0.6667 for 2/3, 0.9091 for 10/11). Two ratios with
+# denominators up to 99 differ by more than 1e-4 (1/(99 x 98)), so at most one lies within half a
+# unit of the 4th place of such a factor, and that one is the ratio it was rounded from.
+ROUNDED_PLACES = 4
+ROUNDED_DENOMINATOR = 99
+ROUNDED_TOLERANCE = Fraction(1, 2 * 10**ROUNDED_PLACES)
 RESCALED_TYPES = (TYPE_SPLIT, TYPE_BONUS)
 _MONEY = Decimal("0.0001")  # hat_position prices are Numeric(18, 4)
 
@@ -110,14 +116,20 @@ class Scaled:
 
 
 def exact_factor(stored: Decimal) -> Fraction:
-    """The ratio a stored factor stands for (2/3 from 0.666666666667). A factor no ratio with a
-    denominator up to 1000 rounds to (0.6667, sent to 4 places) raises ValueError: a guessed
-    ratio would size the position wrongly, so it stays manage-only and is alerted instead."""
+    """The ratio a stored factor stands for: 2/3 from 0.666666666667, a ratio with a denominator
+    up to 1000 the factor gives exactly, else, for a factor sent to 4 places or fewer (0.6667),
+    the one ratio with a denominator up to 99 it rounds from. Any other factor raises ValueError:
+    a guessed ratio would size the position wrongly, so it stays manage-only and is alerted
+    instead."""
     value = Fraction(stored)
     ratio = value.limit_denominator(MAX_DENOMINATOR)
-    if abs(ratio - value) > FACTOR_TOLERANCE:
-        raise ValueError("corporate-action factor is not an exact small ratio")
-    return ratio
+    if abs(ratio - value) <= FACTOR_TOLERANCE:
+        return ratio
+    if (value * 10**ROUNDED_PLACES).denominator == 1:
+        near = value.limit_denominator(ROUNDED_DENOMINATOR)
+        if near > 0 and abs(near - value) <= ROUNDED_TOLERANCE:
+            return near
+    raise ValueError("corporate-action factor is not an exact small ratio")
 
 
 def scale_qty(qty: int, factor: Fraction) -> int:
