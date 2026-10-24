@@ -67,7 +67,6 @@ from .broker import (
     OrderType,
     PlaceResult,
     SessionStatus,
-    write_refusal,
 )
 from .fyers_adapter import CODE_INVALID_RESPONSE, TOKEN_CHECK_SECONDS, map_session
 from .kite_auth import KiteAuthService, get_kite_auth, kite_credentials_from_env
@@ -172,9 +171,7 @@ class KiteHatBroker:
         return budget is not None and budget.day_spent()
 
     def write_refusal(self) -> str | None:
-        budget = self._broker.budget
-        spent = budget is not None and budget.writes_spent()
-        return write_refusal(self._broker.breaker.is_open(), spent)
+        return self._broker.write_refusal()
 
     def session_status(self) -> SessionStatus:
         try:

@@ -46,7 +46,6 @@ from .broker import (
     OrderType,
     PlaceResult,
     SessionStatus,
-    write_refusal,
 )
 from .fyers_auth import (
     FyersAuthService,
@@ -155,9 +154,7 @@ class FyersHatBroker:
         return budget is not None and budget.day_spent()
 
     def write_refusal(self) -> str | None:
-        budget = self._broker.budget
-        spent = budget is not None and budget.writes_spent()
-        return write_refusal(self._broker.breaker.is_open(), spent)
+        return self._broker.write_refusal()
 
     def session_status(self) -> SessionStatus:
         try:

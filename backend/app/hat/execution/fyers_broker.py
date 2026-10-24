@@ -56,6 +56,7 @@ from typing import Any, TypedDict
 from ..broker_limits import FYERS_CODE_RATE_LIMITED
 from ..settings import load_settings
 from ..time import trade_date_of, utc_now
+from .broker import write_refusal
 from .fyers_session import get_fyers_session
 
 __all__ = [
@@ -581,6 +582,11 @@ class GuardedBroker:
         self.breaker = breaker if breaker is not None else CircuitBreaker()
         # None sends without a budget (a test double); production passes the process budget
         self.budget = budget
+
+    def write_refusal(self) -> str | None:
+        """The code a write would be refused with now, unsent (`broker.write_refusal`)."""
+        spent = self.budget is not None and self.budget.writes_spent()
+        return write_refusal(self.breaker.is_open(), spent)
 
     def _call_with_guard(
         self,
