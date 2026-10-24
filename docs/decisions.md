@@ -140,6 +140,8 @@ here.
   `etf`, `other`). A split NSE lists under the new ISIN whose ex-date traded on the old one is
   stored on the old ISIN (the lineage rules see only the two sides' actions). The Saturday live
   sessions of 2012-2014 are recorded sessions, so their bars are fetched like any weekend session.
+  The actions CA5 left undated get their `known_on` from a dated public source through the
+  correction list: the ex-date when the terms were public before it, else the source's date.
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with
