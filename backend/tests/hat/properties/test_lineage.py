@@ -18,6 +18,10 @@ from app.hat.data.lineage import (
     AMBIGUOUS,
     FACE_VALUE_CHANGE,
     ISIN_REISSUE,
+    JUMP_ETF,
+    JUMP_OTHER,
+    JUMP_RIGHTS,
+    JUMP_TICK,
     LINK,
     LINKED,
     LONG_GAP,
@@ -33,6 +37,7 @@ from app.hat.data.lineage import (
     Action,
     Bar,
     Decision,
+    Jump,
     LineageError,
     Span,
     SymbolChange,
@@ -43,6 +48,8 @@ from app.hat.data.lineage import (
     chains,
     decide_all,
     exchange_sessions,
+    jump_counts,
+    jump_kind,
     parse_name_changes,
     parse_symbol_changes,
     sessions_between,
@@ -366,6 +373,34 @@ def test_owner_overrides_win_over_the_rules() -> None:
     # applied again (to the stored rows), the rules' verdict is the first one's
     again = apply_overrides(out, {("a", "b"): UNLINK})
     assert (again[0].reason, again[0].evidence["rules"]) == (OWNER_UNLINK, "review:price_jump")
+
+
+def test_jump_kinds() -> None:
+    # a one-tick move on a penny stock (VISESHINFO 2019), past 25% and no action
+    assert jump_kind("INE861A01058", D("0.10"), D("0.05")) == JUMP_TICK
+    assert jump_kind("INE861A01058", D("0.15"), D("0.25")) == JUMP_TICK  # two ticks
+    assert jump_kind("INE861A01058", D("0.15"), D("0.30")) == JUMP_OTHER
+    assert jump_kind("INE885A01024", D("424.90"), D("213.30")) == JUMP_OTHER  # a split
+    assert jump_kind("INE281A20018", D("0.10"), D("0.05")) == JUMP_RIGHTS  # -RE, type 20
+    assert jump_kind("INF846K01347", D("4303.20"), D("43.65")) == JUMP_ETF
+    assert jump_kind("INE861A01058", None, D("0.05")) == JUMP_OTHER  # raw price unknown
+
+
+def test_jump_counts_per_year_and_kind() -> None:
+    def jump(day: date, isin: str, before: str, after: str) -> Jump:
+        return Jump(
+            "i", day - timedelta(days=1), day, D(before), D(after), isin, D(before), D(after)
+        )
+
+    years, kinds = jump_counts(
+        [
+            jump(date(2019, 5, 10), "INE861A01058", "0.10", "0.05"),
+            jump(date(2012, 9, 25), "INE885A01024", "424.90", "213.30"),
+            jump(date(2019, 5, 13), "INE861A01058", "0.05", "0.10"),
+        ]
+    )
+    assert years == {2012: 1, 2019: 2}
+    assert kinds == {JUMP_OTHER: 1, JUMP_TICK: 2, JUMP_RIGHTS: 0, JUMP_ETF: 0}
 
 
 def test_nse_lists_parse() -> None:
