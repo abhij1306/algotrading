@@ -34,6 +34,7 @@ from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
 from ..data.corporate_actions import lookup_actions, store_actions
+from ..data.coverage import JOB_COVERAGE, coverage_body
 from ..data.features import features_job
 from ..data.lineage import refresh_lineage, stored_adjustment
 from ..data.mcp_client import McpClient
@@ -85,6 +86,7 @@ __all__ = [
     "CA_ADJUST",
     "CA_RESCALE",
     "CLOSE_GAPS",
+    "COVERAGE_CHECK",
     "EVENTS_PARTITIONS",
     "FEATURES",
     "INGEST_NIGHTLY",
@@ -109,6 +111,7 @@ SCAN = "scan"
 WATCHLIST_DIGEST = "watchlist.digest"
 SNAPSHOT_BOTS = "snapshot.bots"
 CLOSE_GAPS = "exits.close_gaps"
+COVERAGE_CHECK = JOB_COVERAGE
 CALENDAR_REFRESH = "calendar.refresh"
 REFERENCE_WEEKLY = "reference.weekly"
 BANDS_NIGHTLY = "bands.nightly"
@@ -499,6 +502,18 @@ class Nightly:
                 send(bot_id, target)
         return JobResult(rows=len(bots))
 
+    def coverage(self, day: date) -> JobResult:
+        """`coverage.check` (DB audit H3): the stored bar and index days against the calendar's
+        trading days through `day`, after the ingest stored the day's."""
+        deps = self.deps
+        return coverage_body(
+            session_factory=deps.session_factory,
+            store=deps.store,
+            notifier=deps.notifier,
+            trade_date=day,
+            now=self._now,
+        )()
+
     def close_gaps(self, day: date) -> JobResult:
         closes = official_closes(self.deps.store, day)
         with self.deps.session_factory() as session:
@@ -631,6 +646,7 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
         *pipeline,
         ScheduledJob(SNAPSHOT_BOTS, SNAPSHOT_AT, n.snapshot, carry=True),
         ScheduledJob(CLOSE_GAPS, INGEST_AT, n.close_gaps, after=(INGEST_NIGHTLY,)),
+        ScheduledJob(COVERAGE_CHECK, INGEST_AT, n.coverage, after=(INGEST_NIGHTLY,)),
         ScheduledJob(JOURNAL_CHECK, JOURNAL_AT, n.journal_check),
         ScheduledJob(
             CALENDAR_REFRESH,

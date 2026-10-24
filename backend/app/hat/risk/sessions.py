@@ -21,7 +21,7 @@ from ..time import as_utc, trade_date_of
 class SessionState(StrEnum):
     OPEN = "open"
     CLOSED = "closed"
-    UNKNOWN = "unknown"  # the calendar has no row for this trade date
+    UNKNOWN = "unknown"  # no row for this trade date, or a trading row without its hours
 
 
 @dataclass(frozen=True)

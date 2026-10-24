@@ -37,6 +37,7 @@ ingest.nightly (NSE MCP from 18:00, bhavcopy fallback 22:00) -> raw bars (Parque
   -> quality.gate -> ca.adjust (corporate actions, ISIN lineage, adjusted view)
   -> features -> regime (3-day confirm) -> allocate (sleeve multipliers)
   -> scan (universe -> regime gate -> setup score) -> hat_watchlist_entry -> Telegram digest
+ingest.nightly -> coverage.check (stored bar and index days against the calendar, data/coverage.py)
 ```
 
 Intraday (one `LiveFeed`, one Fyers data socket, owned by HAT):

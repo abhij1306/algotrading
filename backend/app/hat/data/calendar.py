@@ -112,13 +112,31 @@ def with_weekdays(
     return sorted(out.values(), key=lambda d: d.day)
 
 
+def _recorded_session(entry: dict[str, object]) -> CalendarDay:
+    """One recorded special session: a trading day with its note and, when the entry carries
+    `"session": "HH:MM-HH:MM"` (IST), its own hours. Without hours it is stored without times
+    and `session_calendar` gives it none (UNKNOWN, closed for orders). Raises on a missing note
+    (it is what marks the row as special) or an unreadable session."""
+    day = date.fromisoformat(str(entry["date"]))
+    note = str(entry.get("note") or "").strip()[:200]
+    if not note:
+        raise ValueError(f"recorded session {day} has no note")
+    if "session" not in entry:
+        return CalendarDay(day, True, None, None, note)
+    hours = _parse_session(entry["session"])
+    if hours is None:
+        raise ValueError(f"recorded session {day} has an unreadable session")
+    return CalendarDay(day, True, hours[0], hours[1], note)
+
+
 def parse_recorded_history(text: str) -> list[CalendarDay]:
     """The recorded past years (`{"holidays": {year: [ISO dates]}, "sessions": [{"date",
-    "note"}]}`): every listed holiday closed, every special session (Budget Saturday, Muhurat)
-    a trading day without its own hours (none were recorded, so a reader takes the market's
-    default session). A date that is both is a session. A session may fall in a year with no
-    recorded holidays: one NSE's live holiday list leaves out (the 2026 Sunday Budget session).
-    Raises on an unreadable file: it is checked in, so a bad one is a bug, not a bad answer."""
+    "note", "session"?}]}`): every listed holiday closed, every special session (Budget
+    Saturday, Muhurat) a trading day, with its hours only where they were recorded
+    (`_recorded_session`). A date that is both is a session. A session may fall in a year with
+    no recorded holidays: one NSE's live holiday list leaves out (the 2026 Sunday Budget
+    session). Raises on an unreadable file: it is checked in, so a bad one is a bug, not a bad
+    answer."""
     payload = json.loads(text)
     days = {
         date.fromisoformat(raw): CalendarDay(date.fromisoformat(raw), False)
@@ -126,8 +144,8 @@ def parse_recorded_history(text: str) -> list[CalendarDay]:
         for raw in year
     }
     for entry in payload["sessions"]:
-        day = date.fromisoformat(entry["date"])
-        days[day] = CalendarDay(day, True, None, None, str(entry["note"])[:200] or None)
+        session = _recorded_session(entry)
+        days[session.day] = session
     return sorted(days.values(), key=lambda d: d.day)
 
 
@@ -138,15 +156,24 @@ def recorded_history() -> list[CalendarDay]:
     )
 
 
-def with_recorded_sessions(days: Iterable[CalendarDay]) -> list[CalendarDay]:
-    """`days` (the live holiday list) plus every recorded special session of the years it covers
-    that it does not name itself: NSE's list leaves out a session announced by circular (the
-    Sunday Budget session of 2026-02-01), and without its row the build never fetches the day."""
+def with_recorded_sessions(
+    days: Iterable[CalendarDay], recorded: Iterable[CalendarDay] | None = None
+) -> list[CalendarDay]:
+    """`days` (the live holiday list) with every recorded special session of the years it
+    covers (`recorded`, default the shipped file), which wins on its own day: NSE's list leaves
+    out a session announced by circular (the Sunday Budget session of 2026-02-01) and names the
+    Muhurat day as a holiday until its hours come by circular (2026-11-08 'Diwali Laxmi
+    Pujan*'). A recorded session without hours keeps the live list's hours when the list holds
+    the day as a session with its own; otherwise it stays without (UNKNOWN to every reader)."""
     listed = {d.day: d for d in days}
     years = {d.year for d in listed}
-    for extra in recorded_history():
-        if extra.is_trading and extra.day.year in years and extra.day not in listed:
-            listed[extra.day] = extra
+    for extra in recorded_history() if recorded is None else recorded:
+        if not extra.is_trading or extra.day.year not in years:
+            continue
+        live = listed.get(extra.day)
+        if extra.open_at is None and live is not None and live.is_trading and live.open_at:
+            extra = CalendarDay(extra.day, True, live.open_at, live.close_at, extra.note)
+        listed[extra.day] = extra
     return sorted(listed.values(), key=lambda d: d.day)
 
 
@@ -247,22 +274,33 @@ def upsert_calendar(
     return changed
 
 
+def session_window(
+    row: HatTradingCalendar, default: tuple[time, time]
+) -> tuple[datetime | None, datetime | None]:
+    """The open and close a stored row gives its readers. A row with its own times keeps them; a
+    holiday has none. A trading row without times takes the market's `default` session only when
+    it is an ordinary weekday (a weekday without a note: the live list's format, HAT-OVR-001).
+    A special session without hours (a weekend session, or a weekday one the recorded file
+    stores, which always carries its note) gets none, so `SessionCalendar.state` answers UNKNOWN
+    and every order check fails closed on it instead of trading 09:15-15:30 on a shut market."""
+    if row.open_at is not None and row.close_at is not None:
+        return row.open_at, row.close_at
+    if not row.is_trading or row.day.weekday() >= 5 or row.note:
+        return None, None
+    return _to_instant(row.day, default[0]), _to_instant(row.day, default[1])
+
+
 def session_calendar(session: Session, market_code: str = "NSE") -> SessionCalendar | None:
-    """The market's `hat_trading_calendar` rows as the one session calendar every reader takes; None
-    when the market is not set up. A trading row without its own times takes the `hat_market`
-    default session (HAT-OVR-001), so every reader that counts the day as a session can open it."""
+    """The market's `hat_trading_calendar` rows as the one session calendar every reader takes;
+    None when the market is not set up. Which trading rows take the market's default session and
+    which stay without times (UNKNOWN): `session_window`."""
     market = session.scalar(select(HatMarket).where(HatMarket.code == market_code))
     if market is None:
         return None
     rows = session.scalars(
         select(HatTradingCalendar).where(HatTradingCalendar.market_id == market.id)
     )
+    default = (market.session_open, market.session_close)
     return SessionCalendar.from_rows(
-        (
-            r.day,
-            r.is_trading,
-            r.open_at or (_to_instant(r.day, market.session_open) if r.is_trading else None),
-            r.close_at or (_to_instant(r.day, market.session_close) if r.is_trading else None),
-        )
-        for r in rows
+        (r.day, r.is_trading, *session_window(r, default)) for r in rows
     )

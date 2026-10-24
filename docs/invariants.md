@@ -15,7 +15,9 @@ orders are in `.claude/skills/trading-safety/SKILL.md`.
 4. No entry when the day's data or the live feed is stale, or the instrument's own last price is
    unknown, 30 s old or outside the day's price band.
 5. No order outside the exchange session from `hat_trading_calendar` (09:15-15:30 IST); a date the
-   calendar does not hold is no trading day for any reader.
+   calendar does not hold is no trading day for any reader. A special session (a weekend one, or
+   one the recorded file names) has only the hours stored for it, never the default: without
+   them it is UNKNOWN, closed for orders.
 6. `max_chase` always applies, even if a config deletes the criterion.
 
 ## Money safety

@@ -272,6 +272,34 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    does not wait for the gate.
 4. Do not re-arm by hand: a data-health kill re-arms automatically when the check passes.
 
+### Alert: `coverage.gaps`
+
+The nightly `coverage.check` (after the ingest) compares the stored bar and index days with the
+calendar's trading days. The alert counts `bars_missing`, `bars_extra` and `index_missing` and
+names the first ten of each; it comes when the lists change, and every night while a bar day is
+missing or extra. Print the full lists:
+`python -m app.hat.data.coverage report [--through YYYY-MM-DD]` (default yesterday).
+
+- A missing bar day: `python -m app.hat.data.history_cli --from DAY --to DAY`, then
+  `python -m app.hat.data.features --full`. A bar day on a non-trading day: check the calendar
+  first (a special session missing from it), then the partition.
+- A missing index day: fetch it if NSE has the file. One that cannot be fetched (the scattered
+  archive gaps, a special session without an index file) is acknowledged once:
+  `python -m app.hat.data.coverage ack --note TEXT [--through DAY]` acknowledges every index day
+  `report` lists (journalled `coverage.acknowledged` with the owner's chat id from
+  `HAT_TELEGRAM_CHAT_ID`); no later check lists it again. Bar gaps cannot be acknowledged.
+
+### Special sessions (Muhurat, Budget weekends)
+
+NSE's live holiday list names the Muhurat day as a holiday (`*` on its description) until the
+circular gives its hours. Once it is out, add the session to
+`backend/app/hat/data/nse_holidays_history.json` with its hours and deploy before the day:
+`{"date": "YYYY-MM-DD", "note": "Muhurat trading", "session": "HH:MM-HH:MM"}` (IST, from the
+circular). The next `calendar.refresh` (07:00) stores it as a trading day with those hours: a
+recorded session wins over the live list on its day. A session recorded without `session`
+stays without hours and reads as UNKNOWN to every reader: closed for orders. Check: `select date, is_trading, open_at, close_at, note from
+hat_trading_calendar where date = 'DAY';`.
+
 ### Alert: `quality.quarantined`
 
 1. One stock moved more than 20% with no stored corporate action. The gate passed; the stock is

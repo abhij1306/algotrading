@@ -55,6 +55,9 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "corporate_action.corrected",
         "lineage.overridden",
         "corporate_action.imported",  # the corporate-action file import (CA1)
+        # the nightly store coverage check and the owner's acknowledged index gaps (DB2)
+        "coverage.gaps",
+        "coverage.acknowledged",
     ),
     "Signals": (
         "watchlist.published",

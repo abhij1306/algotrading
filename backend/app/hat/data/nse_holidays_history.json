@@ -1,5 +1,5 @@
 {
- "source": "NSE equity (CM) holidays 2010-2025 as recorded in exchange_calendars 4.13.2 (XBOM precomputed list, Apache-2.0), checked against the NSE bhavcopy archive on 2026-10-23: 2013-11-15 (NSE) replaces 2013-11-14 (BSE). Special sessions: no hours recorded; a reader takes the market's default session. A session of a year the live list covers (2026-02-01, NSE circular of the Budget session) is merged into that list.",
+ "source": "NSE equity (CM) holidays 2010-2025 as recorded in exchange_calendars 4.13.2 (XBOM precomputed list, Apache-2.0), checked against the NSE bhavcopy archive on 2026-10-23: 2013-11-15 (NSE) replaces 2013-11-14 (BSE). Special sessions: a session carries \"session\": \"HH:MM-HH:MM\" (IST) only where its hours have a source (none recorded yet); one without hours is stored without times and reads as UNKNOWN, closed for orders. A session of a year the live list covers (2026-02-01, NSE circular of the Budget session) wins over that list on its day.",
  "holidays": {
   "2010": ["2010-01-01", "2010-01-26", "2010-02-12", "2010-03-01", "2010-03-24", "2010-04-02", "2010-04-14", "2010-09-10", "2010-11-17", "2010-12-17"],
   "2011": ["2011-01-26", "2011-03-02", "2011-04-12", "2011-04-14", "2011-04-22", "2011-08-15", "2011-08-31", "2011-09-01", "2011-10-06", "2011-10-27", "2011-11-07", "2011-11-10", "2011-12-06"],
