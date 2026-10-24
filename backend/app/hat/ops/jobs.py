@@ -75,9 +75,9 @@ class JobOutcome:
 
 
 def _default_session_factory() -> SessionFactory:
-    from app.database import SessionLocal  # deferred: importing it connects the engine
+    from app.database import HatSessionLocal  # deferred: importing it connects the engine
 
-    return SessionLocal
+    return HatSessionLocal
 
 
 def error_code(exc: BaseException) -> str:

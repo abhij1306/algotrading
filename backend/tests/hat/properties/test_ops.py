@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.hat.clock import FixedClock
 from app.hat.daily.assembly import ALERT_POOL, subscription_alert
 from app.hat.daily.periodic import PERIODIC_STALLED, STALL_AFTER, Heartbeats, stalled
-from app.hat.daily.runtime import HatRuntime
+from app.hat.daily.runtime import HatRuntime, after_restore
 from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
 from app.hat.errors import HatConfigError
 from app.hat.execution.session import (
@@ -43,6 +43,7 @@ from app.hat.notify import RecordingNotifier
 from app.hat.ops.jobs import (
     DEFAULT_ERROR_CODE,
     JobError,
+    RunStatus,
 )
 from app.hat.ops.scheduler import (
     JOB_MISSED,
@@ -598,6 +599,16 @@ def test_heartbeats_alert_once_per_stall_while_open() -> None:
     market["open"] = False
     assert beats.check(late + timedelta(seconds=900)) == []
     assert len(notifier.alerts) == 3
+
+
+def test_a_failed_restore_is_alerted_and_the_day_still_armed() -> None:
+    """A restart's failed `live.restore` sends `job.failed`; every outcome arms the day before
+    the feed starts (the bar builder fails closed without the stored bars)."""
+    failed = after_restore(RunStatus.FAILED)
+    assert (failed.alert, failed.arm) == (True, True)
+    for status in (RunStatus.SUCCEEDED, RunStatus.RUNNING):
+        decision = after_restore(status)
+        assert (decision.alert, decision.arm) == (False, True)
 
 
 def test_a_failure_noted_outside_the_scheduler_waits_its_retry() -> None:

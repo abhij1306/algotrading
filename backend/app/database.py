@@ -10,9 +10,9 @@ import os
 from collections.abc import Generator
 from contextlib import contextmanager
 
-from sqlalchemy import Engine, create_engine
+from sqlalchemy import Connection, Engine, create_engine, event
 from sqlalchemy.engine import URL
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session, SessionTransaction, sessionmaker
 from sqlalchemy.pool import QueuePool
 
 from .base import Base
@@ -65,6 +65,30 @@ def create_engine_from_env() -> Engine:
 
 engine = create_engine_from_env()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# The longest one statement of the HAT runtime may run (lock waits included). Every runtime
+# statement reads or writes a few thousand rows at most (bars and features live in Parquet), so
+# a statement still running after two minutes is wedged: it fails, and the periodic loop or job
+# that sent it moves on instead of holding its thread.
+HAT_STATEMENT_TIMEOUT_MS = 120_000
+
+
+def bounded_sessionmaker(
+    bind: Engine, timeout_ms: int = HAT_STATEMENT_TIMEOUT_MS
+) -> sessionmaker[Session]:
+    """Sessions whose every transaction runs under `SET LOCAL statement_timeout`: it ends with
+    the transaction, so a pooled connection the routes reuse keeps the server default."""
+    factory = sessionmaker(autocommit=False, autoflush=False, bind=bind)
+
+    def bound(_session: Session, _transaction: SessionTransaction, connection: Connection) -> None:
+        connection.exec_driver_sql(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+
+    event.listen(factory, "after_begin", bound)
+    return factory
+
+
+# The HAT runtime's sessions (`HatRuntime`, its jobs, loops and feed calendar).
+HatSessionLocal = bounded_sessionmaker(engine)
 
 
 def describe_database_target(url: URL | None = None) -> str:

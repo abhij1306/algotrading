@@ -216,8 +216,12 @@ Covers every restart: planned, a crash, or the machine coming back after being d
    (an auto signal in Triggered, a Take whose order never went out) are placed once the
    feed is fresh, and only on their own trade date (the next date's sweep ends them Rejected
    `signal_expired`); a restart after 08:45
-   re-arms the day once from the stored 5-minute bars and the recorded gap scan (recorded as
-   `live.prepare`, so the scheduler does not arm it again on the live feed).
+   restores the stored 5-minute bars (`live.restore`) and re-arms the day once with the recorded
+   gap scan (recorded as `live.prepare`, so the scheduler does not arm it again on the live feed).
+   A failed restore sends URGENT `job.failed` (`live.restore`) and shows failed in the dashboard's
+   job list; the day is armed anyway, as a late subscription: no opening range or day low the
+   feed did not see, and volume pace counted from the restart (fewer triggers, never one on
+   missing prices). Find the cause in the log; exits are unaffected.
 3. Check on Telegram: `/status` (session live, kill switches, feed), `/positions` (every open real
    position shows its stop). If the session is not live, follow "Morning login".
 4. If a `reconcile.mismatch` alert arrives, follow "Reconciliation mismatch".
@@ -345,7 +349,9 @@ Covers every restart: planned, a crash, or the machine coming back after being d
 2. Before re-arming: find why it tripped (`/status`, the `kill.tripped` event), fix it, and check
    `/positions` shows every open position with its stop.
 3. Re-arm: send `/arm`, then press Confirm on the confirmation card (second confirmation,
-   ). `kill.rearmed` is recorded. `/resume` does not lift a kill switch.
+   ). `kill.rearmed` is recorded. `/resume` does not lift a kill switch. A re-armed drawdown
+   kill measures from the equity at the first point after the re-arm (`kill.peak_reset`, D232):
+   it trips again only on a new 10% fall from there.
 4. A data-health kill re-arms automatically once the data check passes; do not `/arm` it.
 
 ### Flatten

@@ -217,9 +217,9 @@ class HatScheduler:
 
     def _factory(self) -> SessionFactory:
         if self._session_factory is None:
-            from app.database import SessionLocal  # deferred: importing it connects the engine
+            from app.database import HatSessionLocal  # deferred: importing it connects the engine
 
-            self._session_factory = SessionLocal
+            self._session_factory = HatSessionLocal
         return self._session_factory
 
     def due_jobs(
@@ -300,6 +300,11 @@ class HatScheduler:
         """A run of `name` for `day` failed outside the scheduler at `ended` (the restart's
         arming of the day): its retry waits the job's `retry_after`, as a scheduled failure's."""
         self._attempted[(name, day)] = ended
+
+    def alert_failed(self, name: str, day: date, error: str | None) -> None:
+        """`job.failed` for a run of `name` that failed outside the scheduler (the restart's
+        restore of the day's bars, or its arming of the day), once, as for a scheduled run."""
+        self._alert(name, day, JOB_FAILED, error)
 
     def _sweep(self, now: datetime, succeeded: Mapping[date, Collection[str]]) -> None:
         """One alert for each job past its deadline today or for the night before (`overdue`)."""

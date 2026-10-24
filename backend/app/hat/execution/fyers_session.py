@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import ModuleType
 from typing import Any
@@ -29,6 +30,10 @@ __all__ = ["FyersSession", "get_fyers_session", "reset_fyers_session", "sdk_mode
 logger = logging.getLogger(__name__)
 
 ModelFactory = Callable[..., Any]
+# The token check's profile read runs here with a timeout, as every broker call has the broker
+# guard's: a hung SDK call fails the check (an invalid token) instead of holding its caller.
+PROFILE_TIMEOUT_SECONDS = 5.0
+_PROFILE_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fyers-validate")
 
 
 def sdk_model(**kwargs: str) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
@@ -209,7 +214,9 @@ class FyersSession:
             self._validating_token = False
 
     def _profile_ok(self) -> bool:
-        response = self.fyers.get_profile()
+        response = _PROFILE_POOL.submit(self.fyers.get_profile).result(
+            timeout=PROFILE_TIMEOUT_SECONDS
+        )
         if response.get("s") == "ok":
             return True
         logger.warning("Fyers token invalid (code %s)", response.get("code"))
