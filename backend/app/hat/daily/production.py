@@ -21,6 +21,7 @@ from datetime import date
 from ..data.announcements import HttpFeedFetcher
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher, http_fetcher
+from ..data.lineage import NAME_CHANGES_URL, SYMBOL_CHANGES_URL
 from ..data.mcp_client import client_from_env
 from ..data.reference_jobs import TextSource
 from ..data.store import DataStore
@@ -121,6 +122,8 @@ def production_parts(
                 holidays=url_source(HOLIDAYS_URL, fetch),
                 price_bands=price_bands,
                 industry_list=url_source(INDUSTRY_LIST_URL, fetch),
+                symbol_changes=url_source(SYMBOL_CHANGES_URL, fetch),
+                name_changes=url_source(NAME_CHANGES_URL, fetch),
             ),
             bar_store=BarStore(settings.data_root),
             announcements=HttpFeedFetcher(),

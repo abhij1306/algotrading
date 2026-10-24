@@ -12,9 +12,9 @@ partition (or every date, with `full=True`) and writes each partition atomically
 Incremental equals full (HAT-DATA-077): both load the same way (the target dates plus, for every
 instrument, the 252 rows before the first target), so a date has the same inputs either way. Two
 things change old dates and so force a full rebuild even without the flag: a change in the
-corporate actions or the universe (adjusted history and the percentiles move; a digest of both
-is kept in `features_daily/_state.json`) and a correction of already-featured bars (the caller
-passes `full=True`; the ingest does so).
+corporate actions, the ISIN lineage or the universe (adjusted history and the percentiles move; a
+digest of them is kept in `features_daily/_state.json`) and a correction of already-featured bars
+(the caller passes `full=True`; the ingest does so).
 
 Full-history rebuild: about 4,150 dates x about 3,000 instruments. The rebuild runs in chunks of
 `CHUNK_DAYS` target dates, so memory stays at about (CHUNK_DAYS + 252) x instruments rows.
@@ -29,7 +29,7 @@ import json
 import logging
 import sys
 from bisect import bisect_left
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -46,7 +46,8 @@ from .store import (
     DATASET_FEATURES,
     FEATURE_NAMES,
     FEATURES_SCHEMA,
-    ActionFactor,
+    NO_ADJUSTMENT,
+    Adjustment,
     DataStore,
     atomic_replace,
 )
@@ -250,11 +251,14 @@ class FeaturesReport:
     rows: int = 0
 
 
-def inputs_digest(actions: Iterable[ActionFactor], universe: Collection[str] | None) -> str:
+def inputs_digest(adjustment: Adjustment, universe: Collection[str] | None) -> str:
     """Order-independent sha256 of what changes old dates without changing their bars: the
-    (instrument, ex-date, factor) set the adjusted view uses and the universe the percentiles
-    and breadth rank over."""
-    lines = sorted(f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in actions)
+    (instrument, ex-date, factor) set the adjusted view uses, its ISIN lineage and the universe
+    the percentiles and breadth rank over. No lineage leaves the digest of the factors alone."""
+    lines = sorted(
+        f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in adjustment.factors
+    )
+    lines += sorted(f"lineage:{old}>{new}" for old, new in adjustment.lineage.items())
     scope = "*" if universe is None else ",".join(sorted(universe))
     return hashlib.sha256(("\n".join(lines) + "\nuniverse:" + scope).encode()).hexdigest()
 
@@ -336,7 +340,7 @@ def _has_partitions(store: DataStore, day: date) -> bool:
 
 def run_features(
     store: DataStore,
-    actions: Iterable[ActionFactor] = (),
+    adjustment: Adjustment = NO_ADJUSTMENT,
     *,
     through: date | None = None,
     full: bool = False,
@@ -344,27 +348,26 @@ def run_features(
     chunk_days: int = CHUNK_DAYS,
 ) -> FeaturesReport:
     """Compute and write the features of every date up to `through` that lacks a partition (all
-    dates when `full` or when the corporate actions or the universe changed since the last run).
+    dates when `full` or when the adjustment or the universe changed since the last run).
     Safe to repeat and to resume after a crash: a partition is replaced whole, and the inputs
     digest is recorded only after the last date is written."""
     if chunk_days < 1:
         raise FeaturesError("features_bad_chunk")
-    actions = list(actions)
     store.root.mkdir(parents=True, exist_ok=True)
     with (store.root / ".features.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time: runs must not interleave writes
-        return _run_locked(store, actions, through, full, universe, chunk_days)
+        return _run_locked(store, adjustment, through, full, universe, chunk_days)
 
 
 def _run_locked(
     store: DataStore,
-    actions: list[ActionFactor],
+    adjustment: Adjustment,
     through: date | None,
     full: bool,
     universe: Collection[str] | None,
     chunk_days: int,
 ) -> FeaturesReport:
-    digest = inputs_digest(actions, universe)
+    digest = inputs_digest(adjustment, universe)
     all_days = store.days(DATASET_BARS)
     days = [d for d in all_days if through is None or d <= through]
     report = FeaturesReport()
@@ -374,7 +377,7 @@ def _run_locked(
         report.full, report.reason = True, "inputs_changed" if previous else "first_run"
     targets = days if report.full else [d for d in days if not _has_partitions(store, d)]
     if targets:
-        con = store.connect(actions)
+        con = store.connect(adjustment)
         con.execute(f"SET threads={DUCKDB_THREADS}")
         try:
             for start in range(0, len(targets), chunk_days):
@@ -401,7 +404,7 @@ def _run_locked(
 
 def features_job(
     store: DataStore,
-    actions: Callable[[], Iterable[ActionFactor]],
+    adjustment: Callable[[], Adjustment],
     *,
     through: date | None = None,
     full: bool = False,
@@ -411,7 +414,7 @@ def features_job(
     return and the success record finds every partition present and writes nothing new."""
 
     def body() -> JobResult:
-        report = run_features(store, actions(), through=through, full=full, universe=universe)
+        report = run_features(store, adjustment(), through=through, full=full, universe=universe)
         return JobResult(rows=report.rows)
 
     return body
@@ -424,9 +427,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     """python -m app.hat.data.features [--full] [--through YYYY-MM-DD] [--chunk-days N]
 
     Computes the features of every date that lacks them (every date with --full) from the bars
-    under `HAT_DATA_ROOT` and the stored corporate actions. The scheduled `features` job calls
-    `features_job` instead; this is for the first full-history build and for a rebuild after
-    bars were corrected.
+    under `HAT_DATA_ROOT`, the stored corporate actions and the ISIN lineage. The scheduled
+    `features` job calls `features_job` instead; this is for the first full-history build and
+    for a rebuild after bars were corrected or the lineage changed.
     """
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.features")
     parser.add_argument("--full", action="store_true", help="recompute every date")
@@ -438,14 +441,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     settings = operator_settings()  # before the database module, which reads .env too
     from app.database import SessionLocal
 
-    from .corporate_actions import stored_factors
+    from .lineage import stored_adjustment
 
     logging.basicConfig(level=logging.INFO)
     with SessionLocal() as session:
-        actions = stored_factors(session)
+        adjustment = stored_adjustment(session)
     report = run_features(
         DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
-        actions,
+        adjustment,
         through=args.through,
         full=args.full,
         chunk_days=args.chunk_days,

@@ -12,7 +12,9 @@ Views, per connection from `DataStore.connect`:
 - `bars_daily_raw`: every raw row, with the partition's `date`.
 - `bars_daily_adj`: raw x cumulative factor, prev_close by the factor of its own day (NSE's
   ex-date PREVCLOSE is already the adjusted close, F14); volume is divided by the same factor
-  (multiplied by its reciprocal, rounded to 12 places).
+  (multiplied by its reciprocal, rounded to 12 places). A bar of an older ISIN linked by the
+  ISIN lineage (`data/lineage.py`) carries the id of its chain's current ISIN, so a chain reads
+  as one instrument.
 - `bars_daily`: `bars_daily_adj` with one row per (instrument_id, date), from the latest
   ingest run (run ids are uuid v7, so byte order is time order).
 - `index_daily`: index levels.
@@ -27,7 +29,7 @@ import fcntl
 import os
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
@@ -185,6 +187,19 @@ class ActionFactor:
     factor: Decimal
 
 
+@dataclass(frozen=True)
+class Adjustment:
+    """What the adjusted view applies: the price factors and the ISIN lineage. `lineage` maps
+    the id of each linked older ISIN to the id of its chain's current ISIN; the view gives the
+    older bars that id, so the factors of a chain are keyed by it (`lineage.stored_adjustment`)."""
+
+    factors: tuple[ActionFactor, ...] = ()
+    lineage: Mapping[str, str] = field(default_factory=dict)
+
+
+NO_ADJUSTMENT = Adjustment()  # raw prices: the views without factors or lineage
+
+
 @dataclass
 class PartitionReport:
     """Which expected days have data (HAT-DATA-091, 096). A missing day stays missing."""
@@ -283,10 +298,11 @@ def cumulative_segments(
 
 
 # The factor columns of ca_segment are DECIMAL(20,18) and DECIMAL(24,12) (FACTOR_PLACES and
-# INVERSE_PLACES); the view is a constant so no text is ever built into SQL.
+# INVERSE_PLACES); the view is a constant so no text is ever built into SQL. `lineage` maps a
+# linked older ISIN's id to its chain's id.
 _ADJ_VIEW_SQL = """
 CREATE VIEW bars_daily_adj AS
-SELECT r.instrument_id, r.date, r.isin, r.symbol, r.series,
+SELECT COALESCE(l.chain_id, r.instrument_id) AS instrument_id, r.date, r.isin, r.symbol, r.series,
        r.open * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS open,
        r.high * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS high,
        r.low * COALESCE(c.factor, CAST(1 AS DECIMAL(20,18))) AS low,
@@ -295,7 +311,8 @@ SELECT r.instrument_id, r.date, r.isin, r.symbol, r.series,
        CAST(r.volume AS DECIMAL(14,0)) * COALESCE(c.inverse, CAST(1 AS DECIMAL(24,12))) AS volume,
        r.traded_value, r.source, r.ingest_run_id
 FROM bars_daily_raw r
-LEFT JOIN ca_segment c ON c.instrument_id = r.instrument_id
+LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
+LEFT JOIN ca_segment c ON c.instrument_id = COALESCE(l.chain_id, r.instrument_id)
      AND (c.from_date IS NULL OR r.date >= c.from_date) AND r.date < c.to_date
 """
 _COUNT_SQL = {
@@ -484,10 +501,11 @@ class DataStore:
 
     # --- DuckDB -----------------------------------------------------------------------------
 
-    def connect(self, actions: Iterable[ActionFactor] = ()) -> duckdb.DuckDBPyConnection:
-        """An in-memory DuckDB connection with the four views; `actions` are the corporate actions
-        the adjusted view applies (from `hat_corporate_action`). DuckDB's own default is 80% of
-        RAM; the store's `memory_limit` caps it and a larger query spills to `temp_dir`."""
+    def connect(self, adjustment: Adjustment = NO_ADJUSTMENT) -> duckdb.DuckDBPyConnection:
+        """An in-memory DuckDB connection with the four views; `adjustment` is what the adjusted
+        view applies (`lineage.stored_adjustment`: the corporate actions and the ISIN lineage).
+        DuckDB's own default is 80% of RAM; the store's `memory_limit` caps it and a larger query
+        spills to `temp_dir`."""
         con = duckdb.connect(
             ":memory:",
             config={"memory_limit": self.memory_limit, "temp_directory": str(self.temp_dir)},
@@ -498,9 +516,12 @@ class DataStore:
             "CREATE TABLE ca_segment (instrument_id VARCHAR, from_date DATE, to_date DATE, "
             "factor DECIMAL(20,18), inverse DECIMAL(24,12))"
         )
-        segments = cumulative_segments(actions)
+        segments = cumulative_segments(adjustment.factors)
         if segments:
             con.executemany("INSERT INTO ca_segment VALUES (?, ?, ?, ?, ?)", segments)
+        con.execute("CREATE TABLE lineage (instrument_id VARCHAR PRIMARY KEY, chain_id VARCHAR)")
+        if adjustment.lineage:
+            con.executemany("INSERT INTO lineage VALUES (?, ?)", sorted(adjustment.lineage.items()))
         con.execute(_ADJ_VIEW_SQL)
         con.execute(
             """

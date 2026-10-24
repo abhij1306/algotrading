@@ -47,7 +47,7 @@ def test_features__schema() -> None:
                 for k in range(4)
             ]
             store.write_bars(day, rows)
-        report = run_features(store, [])
+        report = run_features(store)
         assert len(report.dates) == 3
         files = sorted(Path(tmp, DATASET_FEATURES).rglob("*.parquet"))
         assert len(files) == 3

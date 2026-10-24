@@ -183,6 +183,26 @@ in the stack):
    Point `HAT_DATA_ROOT` at the new root and keep the old one until the next backup drill.
 5. `python -m app.hat.data.features --full` on the new root, then start HAT.
 
+### ISIN lineage: one history across ISIN changes (PR 74)
+
+`hat_isin_lineage` links an old ISIN's instrument to the new ISIN of the same shares (a
+face-value split, a reissue, a symbol change); the adjusted view reads a linked chain as one
+series under its current ISIN's id. `ca.adjust` refreshes it every night from the bars and NSE's
+`symbolchange.csv`; a failed refresh keeps the stored lineage (`lineage.unchecked`), a succession
+it will not link is alerted once (`lineage.review`). From `backend/`:
+
+- `python -m app.hat.data.lineage build`: decide every succession and store the verdicts (one
+  transaction; downloads NSE's lists unless `--symbol-changes`/`--name-changes` give CSV files under the working directory).
+  Repeating it changes nothing.
+- `python -m app.hat.data.lineage report [--since D] [--limit N]`: the review list: successions
+  not linked (and why), action copies that disagree within a chain, and the unexplained jumps of
+  the adjusted series (a missing or wrong split/bonus factor, a demerger's parent).
+- `python -m app.hat.data.lineage show SYMBOL...`: the chains and jumps of some symbols.
+
+A review case is fixed at its source (store the missing factor in `hat_corporate_action`); the
+next build links it if the rules then hold. A build that changes a link changes the features'
+inputs digest, so the next `features` run rebuilds every date (`features --full` does it now).
+
 ### Restart recovery: reconcile, then resume
 
 Covers every restart: planned, a crash, or the machine coming back after being down.
