@@ -279,9 +279,12 @@ it will not link is alerted once (`lineage.review`). From `backend/`:
 - `python -m app.hat.data.lineage build`: decide every succession and store the verdicts (one
   transaction; downloads NSE's lists unless `--symbol-changes`/`--name-changes` give CSV files under the working directory).
   Repeating it changes nothing.
-- `python -m app.hat.data.lineage report [--since D] [--limit N]`: the review list: successions
-  not linked (and why), action copies that disagree within a chain, and the unexplained jumps of
-  the adjusted series (a missing or wrong split/bonus factor, a demerger's parent).
+- `python -m app.hat.data.lineage report [--since D] [--limit N] [--kind K]`: the review list:
+  successions not linked (and why), action copies that disagree within a chain, and the
+  unexplained jumps of the total-return series (a missing or wrong split/bonus factor, a
+  demerger's parent, a dividend without its cash), counted per year and per kind: `tick` (a raw
+  move of at most Rs 0.10 on a penny stock), `rights_entitlement` (`-RE`), `etf` and `other`, the
+  ones that need a reason. `--kind other` lists only those.
 - `python -m app.hat.data.lineage show SYMBOL...`: the chains and jumps of some symbols.
 - `python -m app.hat.data.lineage link|unlink OLD_ISIN NEW_ISIN --note TEXT`: the owner's verdict
   on a succession a build found (`hat_lineage_override`, journalled `lineage.overridden`); every

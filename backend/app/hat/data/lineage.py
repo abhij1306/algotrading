@@ -117,6 +117,13 @@ RESTRUCTURING = re.compile(
 JUMP_TOL = Decimal("0.25")
 EDGE_DAYS = 10  # the days each side of a change whose every session move is checked
 JUMP_MAX_DAYS = 14  # a relisting after a longer suspension may jump on its own
+# What a jump is, from its ISIN and raw prices (`jump_kind`, CA7): a rights entitlement (security
+# type `20`, the `-RE` symbols) and an ETF or fund unit (`INF`) trade on their own terms; a raw
+# move of at most two Rs 0.05 ticks passes `JUMP_TOL` only at a price of Rs 0.40 or less, where
+# one tick is the move (2,505 of the 2,835 jumps 2011-2026). `other` is what needs a reason.
+JUMP_RIGHTS, JUMP_ETF, JUMP_TICK, JUMP_OTHER = "rights_entitlement", "etf", "tick", "other"
+JUMP_KINDS = (JUMP_OTHER, JUMP_TICK, JUMP_RIGHTS, JUMP_ETF)
+TICK_MOVE = Decimal("0.10")
 
 LINKED, REVIEW = "linked", "review"
 VIA_SYMBOL, VIA_SYMBOL_CHANGE = "same_symbol", "symbol_change"
@@ -957,26 +964,63 @@ class Jump:
     day: date
     previous_close: Decimal
     open: Decimal
+    isin: str = ""  # the day's own ISIN
+    previous_raw_close: Decimal | None = None
+    raw_open: Decimal | None = None
 
     @property
     def ratio(self) -> Decimal:
         return self.open / self.previous_close
 
+    @property
+    def kind(self) -> str:
+        return jump_kind(self.isin, self.previous_raw_close, self.raw_open)
+
+
+def jump_kind(isin: str, previous_raw_close: Decimal | None, raw_open: Decimal | None) -> str:
+    """What a jump is (`JUMP_KINDS`): a rights entitlement or an ETF unit by its ISIN, else a
+    tick when the raw open is within `TICK_MOVE` of the raw previous close, else `other`."""
+    if isin[7:9] == "20":
+        return JUMP_RIGHTS
+    if isin.startswith("INF"):
+        return JUMP_ETF
+    if (
+        previous_raw_close is not None
+        and raw_open is not None
+        and abs(raw_open - previous_raw_close) <= TICK_MOVE
+    ):
+        return JUMP_TICK
+    return JUMP_OTHER
+
+
+def jump_counts(jumps: Iterable[Jump]) -> tuple[dict[int, int], dict[str, int]]:
+    """The jumps per year of their day and per kind, each in order."""
+    years: dict[int, int] = defaultdict(int)
+    kinds: dict[str, int] = dict.fromkeys(JUMP_KINDS, 0)
+    for j in jumps:
+        years[j.day.year] += 1
+        kinds[j.kind] += 1
+    return dict(sorted(years.items())), kinds
+
 
 # One year at a time, from the latest run's rows filtered by date first (a window over the
 # whole view holds every bar in memory); the lookback gives the year's first day its previous
-# close.
+# close. The raw open is the adjusted one over the day's factor (close / raw close).
 _JUMPS_SQL = """
 WITH latest AS (
-    SELECT instrument_id, date, open, close FROM bars_daily_adj WHERE date BETWEEN ? AND ?
+    SELECT instrument_id, date, isin, open, close, raw_close FROM bars_daily_adj
+    WHERE date BETWEEN ? AND ?
     QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
 ),
 s AS (
-    SELECT instrument_id, date, open,
-           lag(close) OVER w AS previous_close, lag(date) OVER w AS previous_day
+    SELECT instrument_id, date, isin, open, close, raw_close,
+           lag(close) OVER w AS previous_close, lag(date) OVER w AS previous_day,
+           lag(raw_close) OVER w AS previous_raw_close
     FROM latest WINDOW w AS (PARTITION BY instrument_id ORDER BY date)
 )
-SELECT instrument_id, previous_day, date, previous_close, open FROM s
+SELECT instrument_id, previous_day, date, previous_close, open, isin, previous_raw_close,
+       CASE WHEN close > 0 THEN CAST(open * raw_close / close AS DECIMAL(18, 4)) END AS raw_open
+FROM s
 WHERE date >= ? AND previous_close > 0 AND date - previous_day <= ?
   AND abs(open - previous_close) > ? * previous_close
 """
@@ -997,7 +1041,16 @@ def unexplained_jumps(
             lookback = first - timedelta(days=JUMP_MAX_DAYS)
             params = [lookback, min(date(year, 12, 31), days[-1]), first, JUMP_MAX_DAYS, JUMP_TOL]
             found += [
-                Jump(str(r[0]), r[1], r[2], r[3], r[4])
+                Jump(
+                    str(r[0]),
+                    r[1],
+                    r[2],
+                    r[3],
+                    r[4],
+                    r[5] or "",
+                    r[6],
+                    r[7],
+                )
                 for r in con.execute(_JUMPS_SQL, params).fetchall()
             ]
     return sorted(found, key=lambda j: (j.day, j.instrument_id), reverse=True)
@@ -1013,10 +1066,16 @@ def _label(instruments: Mapping[str, HatInstrument], instrument_id: str) -> str:
 
 
 def review_report(
-    session: Session, store: DataStore, since: date, limit: int, out: Callable[[str], Any]
+    session: Session,
+    store: DataStore,
+    since: date,
+    limit: int,
+    out: Callable[[str], Any],
+    kinds: Collection[str] = JUMP_KINDS,
 ) -> None:
     """Print the review list: the successions not linked, the chains whose action copies
-    disagree and the unexplained jumps since `since` (the newest `limit` of each)."""
+    disagree and the unexplained jumps since `since` (the newest `limit` of each, of `kinds`),
+    with their count per year and per kind."""
     instruments = _instruments(session)
     rows = session.scalars(
         select(HatIsinLineage).order_by(HatIsinLineage.effective_date.desc())
@@ -1050,15 +1109,23 @@ def review_report(
     out(f"dividends without an amount (price-neutral in the total-return series): {len(missing)}")
     for m in missing[:limit]:
         out(f"  NO_AMOUNT {m.symbol} {m.isin} {m.ex_date} ({m.source})")
-    jumps = unexplained_jumps(store, adjustment(actions, links), since)
+    # the series the signals read: a dividend with its cash explains its ex-date drop (CA7)
+    jumps = unexplained_jumps(store, adjustment(actions, links, stored_dividends(session)), since)
     out(
-        f"unexplained jumps since {since} (adjusted open vs previous close beyond "
-        f"{JUMP_TOL:.0%}, no factor; demerger ex-dates show here): {len(jumps)}"
+        f"unexplained jumps since {since} (total-return open vs previous close beyond "
+        f"{JUMP_TOL:.0%}, no factor or dividend; demerger ex-dates show here): {len(jumps)}"
     )
-    for j in jumps[:limit]:
+    years, by_kind = jump_counts(jumps)
+    out("  by year: " + ", ".join(f"{y} {n}" for y, n in years.items()))
+    out(
+        "  by kind: "
+        + ", ".join(f"{k} {n}" for k, n in by_kind.items())
+        + f" (tick: a raw move of at most Rs {TICK_MOVE}, past {JUMP_TOL:.0%} only below Rs 0.40)"
+    )
+    for j in [j for j in jumps if j.kind in kinds][:limit]:
         out(
             f"  JUMP {_label(instruments, j.instrument_id)} {j.previous_day} close "
-            f"{j.previous_close:.2f} -> {j.day} open {j.open:.2f} (x{j.ratio:.3f})"
+            f"{j.previous_close:.2f} -> {j.day} open {j.open:.2f} (x{j.ratio:.3f}) {j.kind}"
         )
 
 
@@ -1137,7 +1204,7 @@ def _text(path: str | None, url: str) -> str:  # pragma: no cover - a file or th
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.data.lineage build [--symbol-changes CSV] [--name-changes CSV]
-    python -m app.hat.data.lineage report [--since YYYY-MM-DD] [--limit N]
+    python -m app.hat.data.lineage report [--since YYYY-MM-DD] [--limit N] [--kind K ...]
     python -m app.hat.data.lineage show SYMBOL [SYMBOL ...]
     python -m app.hat.data.lineage link|unlink OLD_ISIN NEW_ISIN --note TEXT
 
@@ -1156,6 +1223,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     report = sub.add_parser("report")
     report.add_argument("--since", type=date.fromisoformat, default=date(1990, 1, 1))
     report.add_argument("--limit", type=int, default=50)
+    report.add_argument("--kind", action="append", choices=JUMP_KINDS, help="list only these jumps")
     show = sub.add_parser("show")
     show.add_argument("symbols", nargs="+")
     for verdict in (LINK, UNLINK):
@@ -1196,7 +1264,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             session.commit()
             write(json.dumps(result, sort_keys=True) + "\n")
         elif args.command == "report":
-            review_report(session, store, args.since, args.limit, lambda s: write(s + "\n"))
+            review_report(
+                session,
+                store,
+                args.since,
+                args.limit,
+                lambda s: write(s + "\n"),
+                kinds=args.kind or JUMP_KINDS,
+            )
         else:
             show_chains(session, store, args.symbols, lambda s: write(s + "\n"))
     return 0
