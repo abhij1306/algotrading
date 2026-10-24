@@ -61,7 +61,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   nothing until the owner books that sale.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
-  restarts the peak at the equity then. Drawdown equity is capital (weight x the broker funds
+  restarts the peak at the equity then, the drawdown kill's and, for a bot, the health
+  multiplier's (QA10). Drawdown equity is capital (weight x the broker funds
   total, which carries the realised P&L) + the realised P&L of trades closed since that funds
   read + open positions marked to market (latest fresh trade, official close at night; before the session's first
   trade the previous close; a stale price at the lower of last trade and stop).

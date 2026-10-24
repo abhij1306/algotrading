@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..events import record
@@ -382,11 +382,30 @@ def live_equity(
     return out, fallbacks
 
 
+def _rearmed_between(session: Session, bot_id: uuid.UUID, after: datetime, by: datetime) -> bool:
+    """Whether the bot's drawdown or manual kill was re-armed after `after` and by `by`."""
+    found = session.scalar(
+        select(func.count())
+        .select_from(HatKillSwitch)
+        .where(
+            HatKillSwitch.scope == "bot",
+            HatKillSwitch.bot_id == bot_id,
+            HatKillSwitch.state == kill.ARMED,
+            HatKillSwitch.reason.in_(kill.RISK_REASONS),
+            HatKillSwitch.rearmed_at > after,
+            HatKillSwitch.rearmed_at <= by,
+        )
+    )
+    return bool(found)
+
+
 def _snapshot_peak(session: Session, bot_id: uuid.UUID, point: kill.SnapshotPoint) -> Decimal:
     """The running peak at `point`: the previous snapshot's peak restated for any change of
     weight since (`kill.live_point`), or, when the bot has no earlier snapshot, its capital (a
-    new sleeve starts there, so a first day's loss is measured). Rounded up to the stored 4
-    places, so rounding never hides a drawdown.
+    new sleeve starts there, so a first day's loss is measured). A re-arm of the bot's drawdown
+    or manual kill since the previous snapshot restarts the peak at the equity (QA10), so the
+    health multiplier, which reads this peak, restarts with the kill (D232). Rounded up to the
+    stored 4 places, so rounding never hides a drawdown.
 
     The previous allocation is the one that snapshot stored, not an allocation row read now:
     the snapshot runs on its own time (PR 33), so an `allocate` that committed after it, or a
@@ -402,6 +421,8 @@ def _snapshot_peak(session: Session, bot_id: uuid.UUID, point: kill.SnapshotPoin
     ).first()
     if previous is None:
         peak = kill.live_point(None, Decimal(0), point).peak
+    elif _rearmed_between(session, bot_id, _snapshot_instant(previous.trade_date), point.at):
+        peak = point.equity
     else:
         peak = kill.live_point(_point(previous), Decimal(previous.equity_peak), point).peak
     return peak.quantize(Decimal("0.0001"), rounding=ROUND_CEILING)
