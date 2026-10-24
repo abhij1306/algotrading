@@ -105,6 +105,7 @@ __all__ = [
     "ALERT_GTT_UNVERIFIED",
     "ALERT_STOP_NOT_MOVED",
     "ALERT_STOP_NOT_PLACED",
+    "ALERT_STOP_WOULD_MOVE_DOWN",
     "SWAP_AT",
     "AlertedToday",
     "StopDesk",
@@ -125,13 +126,15 @@ CODE_AWAITING_FILLS = "awaiting_fills"
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
 ALERT_STOP_NOT_MOVED = "stop.not_moved"
+# the position's stop is below the resting broker stop, which only rises: left where it is (QA15)
+ALERT_STOP_WOULD_MOVE_DOWN = "stop.would_move_down"
 ALERT_GTT_SWAP_FAILED = "gtt.swap_failed"
 ALERT_GTT_MISSING = "gtt.missing"
 ALERT_GTT_UNVERIFIED = "gtt.unverified"
 ALERT_GTT_UNFILLED = "gtt.unfilled"
 # Raised again at every sync while the cause stands: told once per position, reason and trade
 # date (C22 A4).
-ONCE_A_DAY = frozenset({ALERT_STOP_NOT_PLACED, ALERT_STOP_NOT_MOVED})
+ONCE_A_DAY = frozenset({ALERT_STOP_NOT_PLACED, ALERT_STOP_NOT_MOVED, ALERT_STOP_WOULD_MOVE_DOWN})
 
 # Outcomes (fixed words) the jobs count.
 PROTECTED = "protected"
@@ -762,6 +765,7 @@ class StopDesk:
         if trigger is None or trigger == current:
             if not rescaled and current is not None and goal < current:
                 logger.error("stop %s would move down; left where it is", row.tag)
+                self.alert(ALERT_STOP_WOULD_MOVE_DOWN, target, now, "raise_only")
             return True
         if row.broker_order_id is None:
             return False

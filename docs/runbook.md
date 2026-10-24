@@ -248,7 +248,9 @@ advisory lock; `features` does not take it, so run it after they finish.
 - **`gtt.missing`, `gtt.unverified`, `gtt.swap_failed`, `stop.not_placed`:** every real position
   needs one GTT at its stop (Fyers GTT page vs `/positions`). A position unprotected overnight is
   an incident: decide on `/flatten`. `stop.not_placed` and `stop.not_moved` come once a day per
-  position and reason while each sync keeps trying.
+  position and reason while each sync keeps trying. **`stop.would_move_down`:** the position's
+  stop is below its resting broker stop, which only rises, so the broker stop stays where it is
+  (still protective); the stored stop or tick is wrong: a bug to report.
 - **`position.series_changed`:** exits continue under the new symbol; `unmapped` means none run:
   decide whether to sell at Fyers.
 - **`sale.unfilled`:** check the book and band; decide on `/flatten` or a sale at Fyers.
