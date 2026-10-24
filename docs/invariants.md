@@ -120,7 +120,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   NIFTY 500-neutralised gap is applied only with the owner's approval. A position held into a
   demerger whose record date was public (`announced_on`) strictly before the last session before
   the ex-date exits at that session's close (exit reason `demerger`), in backtest and live; a
-  real position is only alerted, never sold by HAT. Undated or late, it holds through.
+  real position is only alerted, never sold by HAT. Undated or late, it holds through. A name
+  with a demerger notice takes no entry from that session until the demerger's factor is stored
+  (`demerger_pending`; the backtest skips that session, and `factor_pending` covers the rest).
 - **Dividends.** Every cash dividend counts, none guessed: one without an amount is alerted and
   listed until one is stored. Signals read the total-return series (`bars_daily`); fills, marks,
   ticks, bands, the rescale and orders read the price basis (`bars_daily_cap`). A closed trade's

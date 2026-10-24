@@ -45,6 +45,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..backtest.evidence import signal_confidence
+from ..data.demerger_notice import SKIP_DEMERGER_PENDING
 from ..execution.modes import route_mode
 from ..governance import MODE_VALUES, Mode
 from ..ids import uuid7
@@ -94,6 +95,7 @@ ENTRY_SKIP_REASONS = frozenset(
         "level_undefined",
         "no_live_price",
         rescale.SKIP_ACTION_PENDING,
+        SKIP_DEMERGER_PENDING,
     }
 )
 _ZERO = Decimal(0)

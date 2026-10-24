@@ -17,6 +17,10 @@ Splits and bonuses keep their rescale and rights their manage-only lock.
   the night it first lists them (`store_notices`), and dates a stored demerger's
   `hat_corporate_action.announced_on` from its notice (`announce_stored`). The positions'
   side is `engine/demerger_exit.py`.
+- Entries: an instrument with a demerger notice takes no entry from the last session before
+  its ex-date until a price-changing action of that ex-date is stored (`entry_blocked`, Q5,
+  skip `demerger_pending`): the exit session's buyer would be sold at its close, and after the
+  ex-date the history waits for the factor (the backtest's `factor_pending`).
 - History: the stored demergers' `announced_on` comes from a dated public source (a record-date
   intimation), given as a reviewed file (`read_announced`, `plan_announced`): never guessed, and
   an unknown date stays NULL.
@@ -49,9 +53,11 @@ from .point_in_time import demerger_text
 
 __all__ = [
     "CLOSE_REASON",
+    "SKIP_DEMERGER_PENDING",
     "AnnouncedRow",
     "Demerger",
     "demerger_rows",
+    "entry_blocked",
     "exit_day",
     "last_session_before",
     "plan_announced",
@@ -60,6 +66,7 @@ __all__ = [
 ]
 
 CLOSE_REASON = "demerger"  # the exit reason of a position closed before a demerger
+SKIP_DEMERGER_PENDING = "demerger_pending"  # an entry skipped from the exit session (Q5)
 ANNOUNCED_COLUMNS = ("isin", "ex_date", "announced_on", "source_url", "note")
 MAX_FILE_BYTES = 2_000_000
 
@@ -81,6 +88,32 @@ def last_session_before(sessions: Sequence[date], ex_date: date) -> date | None:
     """The last of the sorted `sessions` before `ex_date`; None without one."""
     at = bisect_left(sessions, ex_date)
     return sessions[at - 1] if at else None
+
+
+def entry_blocked(
+    session: Session, instrument_id: object, trade_date: date, sessions: Sequence[date]
+) -> bool:
+    """Whether a demerger notice of the instrument blocks its entries on `trade_date` (Q5): on
+    and after the last of the sorted `sessions` before its ex-date (the ex-date itself without
+    one), until a price-changing action of the instrument ex that date is stored."""
+    for notice in session.scalars(
+        select(HatDemergerNotice).where(HatDemergerNotice.instrument_id == instrument_id)
+    ):
+        start = last_session_before(sessions, notice.ex_date) or notice.ex_date
+        if trade_date < start:
+            continue
+        stored = session.scalar(
+            select(HatCorporateAction.id)
+            .where(
+                HatCorporateAction.instrument_id == instrument_id,
+                HatCorporateAction.ex_date == notice.ex_date,
+                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES),
+            )
+            .limit(1)
+        )
+        if stored is None:
+            return True
+    return False
 
 
 def demerger_rows(rows: Iterable[FeedRow]) -> list[FeedRow]:
