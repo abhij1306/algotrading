@@ -3,9 +3,11 @@ split, the not-found memo, the stop reason of a partial report and the series a 
 bar carries. The build and the ingest themselves are verified on real data, never here."""
 
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from app.hat.data import calendar as hat_calendar
 from app.hat.data.bhavcopy import BhavRow, ParsedDay
@@ -46,15 +48,51 @@ def test_recorded_history_session_wins_over_holiday() -> None:
     ]
 
 
-def test_live_list_takes_the_recorded_sessions_of_its_years() -> None:
+def test_recorded_session_reads_its_hours() -> None:
+    text = (
+        '{"holidays": {}, "sessions": [{"date": "2024-11-01", "note": "Muhurat",'
+        ' "session": "18:00-19:00"}, {"date": "2025-02-01", "note": "Budget"}]}'
+    )
+    muhurat, budget = hat_calendar.parse_recorded_history(text)
+    assert (muhurat.is_trading, muhurat.open_at, muhurat.close_at) == (True, time(18), time(19))
+    assert (budget.is_trading, budget.open_at, budget.close_at) == (True, None, None)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        '{"date": "2024-11-01", "note": "Muhurat", "session": "19:00-18:00"}',
+        '{"date": "2024-11-01", "note": "Muhurat", "session": "18:00"}',
+        '{"date": "2024-11-01", "note": "Muhurat", "session": null}',
+        '{"date": "2024-11-01", "note": ""}',
+    ],
+)
+def test_recorded_session_refuses_bad_entries(entry: str) -> None:
+    with pytest.raises(ValueError, match="2024-11-01"):
+        hat_calendar.parse_recorded_history(f'{{"holidays": {{}}, "sessions": [{entry}]}}')
+
+
+def test_recorded_session_wins_over_the_live_list_on_its_day() -> None:
     live = [
         hat_calendar.CalendarDay(date(2026, 2, 15), False, note="Mahashivratri"),
-        hat_calendar.CalendarDay(date(2025, 10, 21), False, note="the live list wins"),
+        hat_calendar.CalendarDay(date(2026, 11, 8), False, note="Diwali Laxmi Pujan*"),
+        hat_calendar.CalendarDay(date(2026, 3, 7), True, time(10), time(11), note="live"),
     ]
-    days = {d.day: d for d in hat_calendar.with_recorded_sessions(live)}
-    assert days[date(2026, 2, 1)].is_trading
-    assert not days[date(2025, 10, 21)].is_trading  # a day the live list names stays its own
-    assert date(2024, 11, 1) not in days  # a year the live list does not cover is not added
+    recorded = [
+        hat_calendar.CalendarDay(date(2026, 11, 8), True, time(18), time(19), "Muhurat"),
+        hat_calendar.CalendarDay(date(2026, 3, 7), True, None, None, "Special"),
+        hat_calendar.CalendarDay(date(2026, 2, 1), True, None, None, "Budget"),
+        hat_calendar.CalendarDay(date(2025, 10, 21), True, None, None, "Muhurat"),
+    ]
+    days = {d.day: d for d in hat_calendar.with_recorded_sessions(live, recorded)}
+    assert days[date(2026, 11, 8)] == recorded[0]  # the recorded session wins over a holiday
+    assert days[date(2026, 2, 1)] == recorded[2]  # a session the list leaves out is added
+    # a recorded session without hours keeps the hours the live list gives the day
+    assert days[date(2026, 3, 7)] == hat_calendar.CalendarDay(
+        date(2026, 3, 7), True, time(10), time(11), "Special"
+    )
+    assert not days[date(2026, 2, 15)].is_trading
+    assert date(2025, 10, 21) not in days  # a year the live list does not cover is not added
 
 
 def test_calendar_holidays_is_a_set() -> None:

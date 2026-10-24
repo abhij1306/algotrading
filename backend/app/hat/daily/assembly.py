@@ -79,6 +79,7 @@ from .nightly import (
     CA_RESCALE,
     CALENDAR_REFRESH,
     CLOSE_GAPS,
+    COVERAGE_CHECK,
     EVENTS_PARTITIONS,
     FEATURES,
     INGEST_NIGHTLY,
@@ -189,6 +190,7 @@ JOB_DEADLINES: Mapping[str, timedelta] = {
     SCAN: _NIGHTLY_DONE,
     WATCHLIST_DIGEST: _NIGHTLY_DONE,
     CLOSE_GAPS: _NIGHTLY_DONE,
+    COVERAGE_CHECK: _NIGHTLY_DONE,
     SNAPSHOT_BOTS: timedelta(hours=1),  # 23:30: the drawdown kills of the day
     JOURNAL_CHECK: timedelta(hours=1),
     GTT_VERIFY: timedelta(hours=1),  # 23:00
