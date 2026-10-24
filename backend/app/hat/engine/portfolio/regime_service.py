@@ -15,6 +15,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hat.engine.strategy.registry import STRATEGIES
 from app.hat.events import record
 from app.hat.models import HatRegimeModelVersion, HatRegimeState
 from app.hat.money import require_exact
@@ -47,10 +48,19 @@ def ensure_regime_model(session: Session, market_id: uuid.UUID) -> HatRegimeMode
     return row
 
 
-def stored_regime_table(session: Session, market_id: uuid.UUID) -> dict[str, Decimal]:
-    """The multiplier table the allocation reads now: the stored rules model's (`regime_table`),
-    or the one `ensure_regime_model` would store when the model is not created yet. Writes
-    nothing."""
+def regime_profile(strategy_name: str) -> str | None:
+    """The regime profile a strategy registers (`registry.Strategy.regime`); None when the
+    strategy is not registered."""
+    registered = STRATEGIES.get(strategy_name)
+    return None if registered is None else registered.regime
+
+
+def stored_regime_table(
+    session: Session, market_id: uuid.UUID, profile: str | None
+) -> dict[str, Decimal]:
+    """The multiplier table the allocation reads now for `profile`: the stored rules model's
+    (`regime_table`), or the one `ensure_regime_model` would store when the model is not created
+    yet. Writes nothing."""
     row = session.scalars(
         select(HatRegimeModelVersion).where(
             HatRegimeModelVersion.market_id == market_id,
@@ -58,7 +68,9 @@ def stored_regime_table(session: Session, market_id: uuid.UUID) -> dict[str, Dec
             HatRegimeModelVersion.version == 1,
         )
     ).first()
-    return dict(regime.DEFAULT_MULTIPLIERS) if row is None else regime_table(row)
+    if row is None:
+        return regime.profile_table({regime.MOMENTUM: regime.DEFAULT_MULTIPLIERS}, profile)
+    return regime_table(row, profile)
 
 
 def _confirmation_of(row: HatRegimeState) -> regime.Confirmation:
@@ -141,13 +153,17 @@ def confirmed_state(
     return None if row is None else _confirmation_of(row).confirmed
 
 
-def regime_table(model: HatRegimeModelVersion) -> dict[str, Decimal]:
-    """The momentum-sleeve multiplier table of the model version (stored with it); the defaults
-    when the version holds none."""
-    stored = (model.config or {}).get("multipliers", {}).get("momentum")
-    if not stored:
-        return dict(regime.DEFAULT_MULTIPLIERS)
-    return {
-        state: require_exact(stored[state], f"multipliers.momentum.{state}", floats=True)
-        for state in regime.STATES
+def regime_table(model: HatRegimeModelVersion, profile: str | None) -> dict[str, Decimal]:
+    """The multiplier table of the regime `profile` in the model version (stored with it,
+    `regime.profile_table`); the defaults, as the momentum table, when the version holds none."""
+    stored = (model.config or {}).get("multipliers") or {
+        regime.MOMENTUM: regime.DEFAULT_MULTIPLIERS
     }
+    tables = {
+        name: {
+            state: require_exact(rows[state], f"multipliers.{name}.{state}", floats=True)
+            for state in regime.STATES
+        }
+        for name, rows in stored.items()
+    }
+    return regime.profile_table(tables, profile)

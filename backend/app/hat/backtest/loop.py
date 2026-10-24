@@ -103,8 +103,9 @@ measured in shadow: among them, the trigger is the break of the level alone
 (`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the pre-open playbooks
 (`Playbook.preopen`, the episodic pivot) are not backtested (the scan publishes no row of
 theirs), close-based exits fill at the official close, kill switches are not simulated (the
-exposure ladder is), and a sleeve's health multiplier is 1 (its regime multiplier too, unless
-the run applies the policy's).
+exposure ladder is), a sleeve's health multiplier is 1 (its regime multiplier too, unless
+the run applies the policy's), and the run is one sleeve, so the account-level caps never bind
+across sleeves.
 
 Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one sleeve
 with the live allocator (`portfolio.allocator.allocate`) over the account's equity at the night's

@@ -1,6 +1,7 @@
 # Registration (engine/strategy/registry.py); the strategy config follows the --- line.
 sleeve: S2
 persona: Qullamaggie-style
+regime: momentum
 ---
 bot: momentum-breakout-ep
 version: 1

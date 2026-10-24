@@ -1,7 +1,8 @@
 """The strategy registry: the one source of strategy identity.
 
 Each file `seeds/<name>.yaml` registers one strategy. It holds two YAML documents: a header with
-the strategy's `sleeve` (its key in the risk policy's `base_weight`) and `persona`, then, after a
+the strategy's `sleeve` (its key in the risk policy's `base_weight`), `persona` and `regime` (its
+row in the regime model's multiplier table, `regime_service.regime_table`), then, after a
 `---` line, the strategy config itself, whose `bot` must be `<name>`. The registry also reads the
 strategy's documented max-chase default (HAT-CRIT-122) from the `max_chase` filters of that config.
 
@@ -27,7 +28,7 @@ from ...money import require_exact
 
 SEPARATOR = "\n---\n"
 SLEEVE = re.compile(r"S[1-9]\d*")
-HEADER_FIELDS = frozenset({"sleeve", "persona"})
+HEADER_FIELDS = frozenset({"sleeve", "persona", "regime"})
 
 
 class RegistryError(HatError):
@@ -41,6 +42,7 @@ class Strategy:
     name: str
     sleeve: str
     persona: str
+    regime: str
     max_chase_pct: Decimal | None
     config_text: str
 
@@ -62,17 +64,19 @@ def parse_seed(name: str, text: str) -> Strategy:
     header = yaml.safe_load(head)
     if not sep or not isinstance(header, Mapping) or set(header) != HEADER_FIELDS:
         raise RegistryError(f"{name}: needs a header of exactly {sorted(HEADER_FIELDS)}")
-    sleeve, persona = header["sleeve"], header["persona"]
+    sleeve, persona, regime = header["sleeve"], header["persona"], header["regime"]
     if not isinstance(sleeve, str) or not SLEEVE.fullmatch(sleeve):
         raise RegistryError(f"{name}: sleeve must look like S1")
     if not isinstance(persona, str) or not persona.strip():
         raise RegistryError(f"{name}: persona must be text")
+    if not isinstance(regime, str) or not regime.strip():
+        raise RegistryError(f"{name}: regime must name a multiplier table")
     config = yaml.safe_load(body)
     if not isinstance(config, Mapping) or config.get("bot") != name:
         raise RegistryError(f"{name}: the config's bot must be the file name")
     # The strictest when playbooks differ.
     max_chase = min(_max_chase_pcts(config), default=None)
-    return Strategy(name, sleeve, persona, max_chase, body)
+    return Strategy(name, sleeve, persona, regime, max_chase, body)
 
 
 def _load() -> Mapping[str, Strategy]:

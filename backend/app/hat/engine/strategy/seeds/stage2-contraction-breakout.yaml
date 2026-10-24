@@ -1,6 +1,7 @@
 # Registration (engine/strategy/registry.py); the strategy config follows the --- line.
 sleeve: S1
 persona: Minervini-style
+regime: momentum
 ---
 bot: stage2-contraction-breakout
 version: 1

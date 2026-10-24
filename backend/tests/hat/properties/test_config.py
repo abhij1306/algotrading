@@ -314,14 +314,16 @@ def test_yaml_round_trip_seed(name: str) -> None:
 GATE_CALENDAR = calendar_around(date(2026, 12, 1), span=75)
 
 
-SEED = "sleeve: S3\npersona: Test-style\n---\nbot: {name}\nentry_filters:\n{filters}"
+SEED = (
+    "sleeve: S3\npersona: Test-style\nregime: momentum\n---\nbot: {name}\nentry_filters:\n{filters}"
+)
 CHASE = "  - {{type: max_chase, params: {{pct: {pct}}}}}\n"
 
 
 def test_registry_reads_a_seed() -> None:
     text = SEED.format(name="new-bot", filters=CHASE.format(pct=3) + CHASE.format(pct=1.5))
     strategy = parse_seed("new-bot", text)
-    assert (strategy.sleeve, strategy.persona) == ("S3", "Test-style")
+    assert (strategy.sleeve, strategy.persona, strategy.regime) == ("S3", "Test-style", "momentum")
     assert strategy.max_chase_pct == Decimal("1.5")  # the strictest
     assert strategy.config_text == text.partition("\n---\n")[2]
     assert parse_seed("new-bot", SEED.format(name="new-bot", filters="")).max_chase_pct is None
@@ -331,11 +333,13 @@ def test_registry_reads_a_seed() -> None:
     "text",
     [
         "bot: new-bot\n",  # no header
-        "sleeve: S3\n---\nbot: new-bot\n",  # no persona
-        "sleeve: X3\npersona: P\n---\nbot: new-bot\n",
-        'sleeve: "S3\\n"\npersona: P\n---\nbot: new-bot\n',  # a trailing newline
-        "sleeve: S3\npersona: P\nrisk_pct: 1\n---\nbot: new-bot\n",
-        "sleeve: S3\npersona: P\n---\nbot: other-bot\n",
+        "sleeve: S3\nregime: momentum\n---\nbot: new-bot\n",  # no persona
+        "sleeve: S3\npersona: P\n---\nbot: new-bot\n",  # no regime profile
+        "sleeve: S3\npersona: P\nregime: ' '\n---\nbot: new-bot\n",
+        "sleeve: X3\npersona: P\nregime: momentum\n---\nbot: new-bot\n",
+        'sleeve: "S3\\n"\npersona: P\nregime: momentum\n---\nbot: new-bot\n',  # a trailing newline
+        "sleeve: S3\npersona: P\nregime: momentum\nrisk_pct: 1\n---\nbot: new-bot\n",
+        "sleeve: S3\npersona: P\nregime: momentum\n---\nbot: other-bot\n",
     ],
 )
 def test_registry_refuses_a_bad_seed(text: str) -> None:

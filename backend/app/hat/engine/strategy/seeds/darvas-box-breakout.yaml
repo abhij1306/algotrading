@@ -1,6 +1,7 @@
 # Registration (engine/strategy/registry.py); the strategy config follows the --- line.
 sleeve: S3
 persona: Darvas-style
+regime: momentum
 ---
 # Source: N. Darvas, "How I Made $2,000,000 in the Stock Market" (1960): buy a stock at new highs
 # when it breaks out of its box on rising volume, stop just under the box bottom, and trail the

@@ -170,6 +170,9 @@ class KiteHatBroker:
         budget = self._broker.budget
         return budget is not None and budget.day_spent()
 
+    def write_refusal(self) -> str | None:
+        return self._broker.write_refusal()
+
     def session_status(self) -> SessionStatus:
         try:
             auth = self._auth()

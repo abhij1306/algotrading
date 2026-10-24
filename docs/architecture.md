@@ -55,7 +55,9 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 - **Pure core shared by backtest and live:** `scan.scan_bot`, `exits.evaluate/apply`, the criteria
   and `decide` read no clock, database or file; `backtest/loop.py` calls the same code.
 - **One strategy registry:** `engine/strategy/registry.py:STRATEGIES`, read from the seed files
-  `engine/strategy/seeds/<name>.yaml` (a header with `sleeve` and `persona`, then the config).
+  `engine/strategy/seeds/<name>.yaml` (a header with `sleeve`, `persona` and `regime`, then the
+  config). `regime` names the strategy's row in the regime model's multiplier table; a strategy
+  whose row is missing, or one not registered, gets each state's least multiplier.
   A strategy has one name: the file name, its config's `bot` and `hat_strategy.name`
   (`save_draft` refuses a config whose `bot` is another name), and every key reads it.
   Adding a strategy is one seed file plus any new criteria; its `p_max` and `base_weight` go into

@@ -672,9 +672,13 @@ def test_the_day_cap_spends_the_day_until_the_next() -> None:
     assert not budget.day_spent()
     assert math.isinf(budget.take(READ, 0.0, today))
     assert budget.day_spent()
+    assert not budget.writes_spent()  # a sale is not held back while writes remain
     assert budget.take(WRITE, 0.0, today) == 0  # the writes' share still goes out
+    assert budget.writes_spent()  # the day's last write
+    assert math.isinf(budget.take(WRITE, 0.0, today))
     today = BUDGET_DAY + timedelta(days=1)
     assert not budget.day_spent()
+    assert not budget.writes_spent()
 
 
 def test_a_minus_360_reply_spends_the_day() -> None:
@@ -694,6 +698,7 @@ def test_a_minus_360_reply_spends_the_day() -> None:
         except FyersUnavailableError:
             pass
         assert budget.day_spent() is spent, reply
+        assert budget.writes_spent() is spent, reply  # Fyers refuses the writes too
     code = FyersBroker.day_refused_code
     assert not day_refused({"s": "error", "code": 429}, code)
     assert not day_refused({"s": "ok", "code": 200}, code)
