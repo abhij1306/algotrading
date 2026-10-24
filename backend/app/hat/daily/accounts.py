@@ -1,5 +1,6 @@
 """One trading desk per active broker account and per other account holding open real positions
-(PR 17, HAT-OPS-003).
+or working real orders (PR 17, HAT-OPS-003). Such an account of a broker that is not the active
+one (`HAT_BROKER`) has no adapter: the start is refused (`refuse_stranded`).
 
 A desk holds the account's one broker session (`SessionRegistry`: one owner per account, and
 every broker call of the desk goes through it), its `ExecutionGuard` (no entry is placed before
@@ -37,6 +38,7 @@ from sqlalchemy.sql.expression import Exists
 
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.entries import TokenIssuer
+from ..errors import HatConfigError
 from ..execution.broker import Capabilities, HatBroker, SessionStatus
 from ..execution.entry_timeout import EntryWatch
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
@@ -44,6 +46,7 @@ from ..execution.gtt_upkeep import GttUpkeep
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import ManagerConfig, TradeManager, ViewSource
 from ..execution.mpp import MarketProtection
+from ..execution.order_book import TERMINAL_STATUSES
 from ..execution.position_desk import PositionDesk
 from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
@@ -56,7 +59,7 @@ from ..execution.session import (
     record_session,
     refresh_capabilities,
 )
-from ..models import HatApproval, HatBot, HatBrokerAccount, HatPosition, HatSignal
+from ..models import HatApproval, HatBot, HatBrokerAccount, HatOrder, HatPosition, HatSignal
 from ..models.strategy import ACCOUNT_ACTIVE
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
@@ -219,6 +222,40 @@ def _holds_real_positions() -> Exists:
     )
 
 
+def _has_working_orders() -> Exists:
+    """The account has a real order that can still move (not filled, cancelled, expired or
+    rejected): an entry, sale or GTT stop working at its broker."""
+    return (
+        select(HatOrder.id)
+        .where(
+            HatOrder.broker_account_id == HatBrokerAccount.id,
+            HatOrder.is_virtual.is_(False),
+            HatOrder.status.not_in(TERMINAL_STATUSES),
+        )
+        .exists()
+    )
+
+
+def refuse_stranded(session: Session, account: HatBrokerAccount) -> None:
+    """Refuse the start (`HatConfigError`) when `account`, which has no adapter (its broker is
+    not the active one, `HAT_BROKER`), holds real open positions or working orders: no desk
+    would reconcile, protect or sell them. Only one broker is active at a time, so the owner
+    closes them at the old broker (or switches back) before switching."""
+    held = session.scalar(
+        select(HatBrokerAccount.id).where(
+            HatBrokerAccount.id == account.id, or_(_holds_real_positions(), _has_working_orders())
+        )
+    )
+    if held is not None:
+        raise HatConfigError(
+            f"inactive_broker_holds_positions: account {account.id} ({account.broker}) has real "
+            "open positions or working orders; close them or set HAT_BROKER to its broker"
+        )
+    logger.warning(
+        "account %s (%s): its broker is not the active one, no desk", account.id, account.broker
+    )
+
+
 def desk_accounts(accounts: list[HatBrokerAccount]) -> list[HatBrokerAccount]:
     """The accounts that get a desk, active ones first: every active account (a second active
     account of one broker still refuses the start in `broker_for`), and an account that is not
@@ -276,13 +313,20 @@ class Desks:
             accounts = list(
                 session.scalars(
                     select(HatBrokerAccount)
-                    .where(or_(HatBrokerAccount.status == ACCOUNT_ACTIVE, _holds_real_positions()))
+                    .where(
+                        or_(
+                            HatBrokerAccount.status == ACCOUNT_ACTIVE,
+                            _holds_real_positions(),
+                            _has_working_orders(),
+                        )
+                    )
                     .order_by(HatBrokerAccount.id)
                 )
             )
             for account in desk_accounts(accounts):
                 broker = broker_for(account)
                 if broker is None:
+                    refuse_stranded(session, account)
                     continue
                 # HAT-BRK-092: the stored capabilities are the adapter's from the start, before
                 # any routing reads them (the session checks keep them so)

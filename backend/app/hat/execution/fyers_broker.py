@@ -65,6 +65,7 @@ __all__ = [
     "SUBMIT_UNCONFIRMED",
     "CircuitBreaker",
     "FyersBroker",
+    "GuardedBroker",
     "FyersRateLimitedError",
     "FyersSessionExpiredError",
     "FyersUnavailableError",
@@ -75,6 +76,7 @@ __all__ = [
     "rate_limited",
     "profile_data",
     "OrderReply",
+    "watch_responses",
 ]
 
 logger = logging.getLogger(__name__)
@@ -418,11 +420,14 @@ def _with_timeout(request: Callable[..., Any]) -> Callable[..., Any]:
     return bounded
 
 
-def _watch_responses(model: Any) -> None:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
-    """Hook `_note_response` into the model's requests session and bound its requests with
-    `SDK_HTTP_TIMEOUT`, once (best effort: a model without one, such as a test double, is left as
-    it is)."""
+def watch_responses(model: Any) -> None:  # noqa: ANN401 - an untyped SDK client
+    """Hook `_note_response` into the client's requests session (the Fyers model's
+    `service.session`, a `KiteConnect`'s `reqsession`) and bound its requests with
+    `SDK_HTTP_TIMEOUT`, once (best effort: a client without one, such as a test double, is left
+    as it is)."""
     session = getattr(getattr(model, "service", None), "session", None)
+    if session is None:
+        session = getattr(model, "reqsession", None)
     hooks = getattr(session, "hooks", None)
     if not isinstance(hooks, dict):
         return
@@ -519,35 +524,20 @@ class _Throttled:
     """A call Fyers answered with HTTP 429 (the budget is already paused)."""
 
 
-class FyersBroker:
-    """Order writes, GTT writes and fail-closed reads over the Fyers SDK model.
-
-    `client` returns the SDK model (resolved on each use, so a re-login is picked up) or None when
-    there is no usable session; the default asks the process-wide `FyersSession`.
+class GuardedBroker:
+    """The guard every broker transport's SDK calls go through (`_call_with_guard`): the circuit
+    breaker, the call budget, the worker pool with its timeout and the HTTP 429 watch. The Fyers
+    transport below and the Kite one (`kite_broker`) extend it; `label` names the broker in logs.
     """
 
-    def __init__(
-        self,
-        client: Callable[[], Any] | None = None,
-        *,
-        breaker: CircuitBreaker | None = None,
-        budget: CallBudget | None = None,
-    ) -> None:
-        self._client_source = client if client is not None else lambda: get_fyers_session().fyers
-        self.breaker = breaker if breaker is not None else CircuitBreaker()
-        # None sends without a budget (a test double); production passes `process_budget()`
-        self.budget = budget
+    label = "Fyers"
 
-    @property
-    def client(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
-        """Current Fyers SDK model, or None when there is no usable session."""
-        try:
-            model = self._client_source()
-        except Exception as error:
-            logger.warning("Fyers broker not connected (%s)", type(error).__name__)
-            return None
-        _watch_responses(model)  # every model a call resolves sees its 429s
-        return model
+    def __init__(
+        self, *, breaker: CircuitBreaker | None = None, budget: CallBudget | None = None
+    ) -> None:
+        self.breaker = breaker if breaker is not None else CircuitBreaker()
+        # None sends without a budget (a test double); production passes the process budget
+        self.budget = budget
 
     def _call_with_guard(
         self,
@@ -615,31 +605,65 @@ class FyersBroker:
         try:
             result = future.result(timeout=timeout_sec)
             if isinstance(result, _Throttled):
-                logger.warning("Fyers operation %s rate limited (HTTP 429)", operation)
+                logger.warning("%s operation %s rate limited (HTTP 429)", self.label, operation)
                 return _throttled(operation)
             self.breaker.record_success()
             return result
         except FutureTimeoutError:
             self.breaker.record_failure()
-            logger.warning("Fyers operation %s timed out after %.2fs", operation, timeout_sec)
+            logger.warning(
+                "%s operation %s timed out after %.2fs", self.label, operation, timeout_sec
+            )
             if _POOL.timed_out(future, generation):
                 self.breaker.trip()
                 logger.error(
-                    "Fyers broker: %d timed-out calls still hold workers; circuit opened and the "
+                    "%s broker: %d timed-out calls still hold workers; circuit opened and the "
                     "worker pool replaced",
+                    self.label,
                     HUNG_LIMIT,
                 )
             return _NO_ANSWER
         except CancelledError:
             # queued on a pool replaced before it ran: never sent
             self.breaker.record_failure()
-            logger.warning("Fyers operation %s dropped with a replaced worker pool", operation)
+            logger.warning(
+                "%s operation %s dropped with a replaced worker pool", self.label, operation
+            )
             return _NO_ANSWER
         except Exception as error:
             self.breaker.record_failure()
             future.cancel()
-            logger.exception("Fyers operation %s failed", operation, exc_info=error)
+            logger.exception("%s operation %s failed", self.label, operation, exc_info=error)
             return _NO_ANSWER
+
+
+class FyersBroker(GuardedBroker):
+    """Order writes, GTT writes and fail-closed reads over the Fyers SDK model.
+
+    `client` returns the SDK model (resolved on each use, so a re-login is picked up) or None when
+    there is no usable session; the default asks the process-wide `FyersSession`.
+    """
+
+    def __init__(
+        self,
+        client: Callable[[], Any] | None = None,
+        *,
+        breaker: CircuitBreaker | None = None,
+        budget: CallBudget | None = None,
+    ) -> None:
+        super().__init__(breaker=breaker, budget=budget)
+        self._client_source = client if client is not None else lambda: get_fyers_session().fyers
+
+    @property
+    def client(self) -> Any:  # noqa: ANN401 - the untyped fyers_apiv3 FyersModel
+        """Current Fyers SDK model, or None when there is no usable session."""
+        try:
+            model = self._client_source()
+        except Exception as error:
+            logger.warning("Fyers broker not connected (%s)", type(error).__name__)
+            return None
+        watch_responses(model)  # every model a call resolves sees its 429s
+        return model
 
     # --- writes: each takes the SDK payload exactly as it goes out ------------------------
 

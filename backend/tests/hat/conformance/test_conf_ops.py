@@ -96,6 +96,7 @@ ADMIN_IMPORTS = {
     "app.hat.data.ca_corrections",
     "app.hat.data.corporate_actions",
     "app.hat.data.instruments",  # the symbol history repair (DB6)
+    "app.hat.data.kite_symbols",  # the zerodha symbol refresh's inputs
     "app.hat.data.reference",
     "app.hat.data.renames",
     "app.hat.data.store",
@@ -112,6 +113,7 @@ ADMIN_IMPORTS = {
     "app.hat.errors",
     "app.hat.execution.accounts",
     "app.hat.execution.broker",
+    "app.hat.execution.kite_adapter",  # the zerodha symbol source
     "app.hat.money",  # the Decimal boundary: reads no table (PR 75c)
     "app.hat.risk.policy",
     "app.hat.risk.policy_service",

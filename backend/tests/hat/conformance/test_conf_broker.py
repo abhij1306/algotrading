@@ -23,13 +23,20 @@ from app.hat.execution import accounts, modes
 from app.hat.execution.broker import GttRequest, HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
 from app.hat.execution.fyers_payloads import gtt_payload, parse_gtt_row, parse_order_book
+from app.hat.execution.kite_adapter import KiteHatBroker
 from app.hat.execution.tags import encode_tag
 from app.hat.governance import Mode
 from app.hat.models import HatBot
 
 HAT_ROOT = APP_ROOT / "hat"
 DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
-BROKER_FORBIDDEN = ("app.brokers", "fyers_apiv3", "app.hat.execution.fyers_adapter")
+BROKER_FORBIDDEN = (
+    "app.brokers",
+    "fyers_apiv3",
+    "kiteconnect",
+    "app.hat.execution.fyers_adapter",
+    "app.hat.execution.kite_adapter",
+)
 
 
 def _protocol_methods() -> set[str]:
@@ -41,15 +48,16 @@ def _protocol_methods() -> set[str]:
     }
 
 
-def test_broker_interface_methods() -> None:
-    """The Fyers adapter implements every method of the protocol with its signature."""
+@pytest.mark.parametrize("adapter", [FyersHatBroker, KiteHatBroker])
+def test_broker_interface_methods(adapter: type) -> None:
+    """Each adapter implements every method of the protocol with its signature."""
     for name in _protocol_methods():
-        assert callable(getattr(FyersHatBroker, name, None)), name
+        assert callable(getattr(adapter, name, None)), name
     for name in _protocol_methods():
         proto = inspect.signature(getattr(HatBroker, name))
-        impl = inspect.signature(getattr(FyersHatBroker, name))
+        impl = inspect.signature(getattr(adapter, name))
         assert list(proto.parameters) == list(impl.parameters), name
-    assert isinstance(FyersHatBroker(broker=object()), HatBroker)  # type: ignore[arg-type]
+    assert isinstance(adapter(broker=object()), HatBroker)
 
 
 def _violations(graph: dict[str, set[str]], prefixes: tuple[str, ...]) -> dict[str, list[str]]:
@@ -120,6 +128,7 @@ SDK_IMPORTERS = {
     "execution/fyers_ipv4.py": "fyersModel",
     "data/provider/fyers_websocket.py": "FyersWebsocket",
 }
+KITE_SDK_IMPORTER = "execution/kite_ipv4.py"  # imports kiteconnect after its IPv4 pin
 GTT_CALLERS = {"execution/fyers_broker.py"}
 SDK_GTT_CALLS = ("place_gtt_order", "modify_gtt_order", "cancel_gtt_order", "gtt_orderbook")
 
@@ -135,6 +144,10 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
             offenders.append(f"{rel}: imports the SDK")
         if rel not in GTT_CALLERS:
             offenders.extend(f"{rel}: {call}" for call in SDK_GTT_CALLS if call in text)
+        if rel != KITE_SDK_IMPORTER and re.search(
+            r"^\s*(?:import|from)\s+kiteconnect\b", text, re.MULTILINE
+        ):
+            offenders.append(f"{rel}: imports the Kite SDK")
         if re.search(r"^\s*(import|from)\s+app\.brokers", text, re.MULTILINE):
             offenders.append(f"{rel}: imports app.brokers")
     return offenders
@@ -181,11 +194,11 @@ def test_fyers_adapter_wraps_existing() -> None:
 
 FYERS_SECRET_WORDS = re.compile(
     r"[\"']FYERS_(APP_ID|SECRET_KEY|CLIENT_ID|TOKEN)|fyers_token|access_token|secret_key"
-    r"|client_secret|app_secret|os\.environ|getenv",
+    r"|client_secret|app_secret|api_secret|[\"']KITE_API_(KEY|SECRET)|os\.environ|getenv",
     re.IGNORECASE,
 )
 # Secret-shaped column names that are not secrets: the approval token's hash.
-NOT_SECRETS = {("hat_approval", "token_hash")}
+NOT_SECRETS = {("hat_approval", "token_hash"), ("hat_broker_symbol", "instrument_token")}
 
 
 # The only modules that read a Fyers credential, the token file or an environment variable (K2: the
@@ -196,6 +209,9 @@ SECRET_MODULES = {
     "execution/fyers_tokens.py",
     "execution/fyers_session.py",
     "data/provider/fyers_websocket.py",  # builds the data socket from the session's token
+    "execution/kite_auth.py",  # the same three for Kite
+    "execution/kite_tokens.py",
+    "execution/kite_session.py",
 }
 
 
@@ -258,7 +274,15 @@ def test_ops__one_login_one_token_store() -> None:
     re-export, broker package and login router are gone (no second implementation); the HAT
     router has exactly the four login routes."""
     from app.hat.api import fyers_auth as routes
-    from app.hat.execution import fyers_auth, fyers_session, fyers_tokens
+    from app.hat.api import kite_auth as kite_routes
+    from app.hat.execution import (
+        fyers_auth,
+        fyers_session,
+        fyers_tokens,
+        kite_auth,
+        kite_session,
+        kite_tokens,
+    )
 
     assert fyers_auth.fyers_auth.store is fyers_tokens.token_store
     assert fyers_session.FyersSession.__init__.__kwdefaults__ is not None
@@ -270,14 +294,20 @@ def test_ops__one_login_one_token_store() -> None:
     assert not (APP_ROOT / "services" / "fyers").exists()
     assert not (APP_ROOT / "brokers").exists()
     assert not (APP_ROOT / "routers" / "auth.py").exists()
-    found = {(m, r.path) for r in routes.router.routes for m in getattr(r, "methods", set())}
-    base = "/api/hat/auth/fyers"
-    assert found == {
-        ("GET", f"{base}/status"),
-        ("GET", f"{base}/url"),
-        ("POST", f"{base}/token"),
-        ("POST", f"{base}/disconnect"),
-    }
+    # the Kite login has the same shape over its own token store
+    assert kite_auth.kite_auth.store is kite_tokens.kite_token_store
+    assert "kite_token_store" in inspect.getsource(kite_session.KiteSession.__init__)
+    for router, base in (
+        (routes.router, "/api/hat/auth/fyers"),
+        (kite_routes.router, "/api/hat/auth/zerodha"),
+    ):
+        found = {(m, r.path) for r in router.routes for m in getattr(r, "methods", set())}
+        assert found == {
+            ("GET", f"{base}/status"),
+            ("GET", f"{base}/url"),
+            ("POST", f"{base}/token"),
+            ("POST", f"{base}/disconnect"),
+        }
 
 
 def _seed_scope_strategies_and_owner() -> None:
@@ -316,7 +346,10 @@ def test_mvp_seed_scope() -> None:
     """(the broker half of the seed scope): every adapter registered in the MVP is the
     Fyers adapter, and onboarding accepts no other broker. PR 8 extends this check to the seeded
     strategies, markets and `HAT_USER_ID` ownership."""
-    assert set(accounts.ADAPTER_FACTORIES) == {"fyers"}
+    assert set(accounts.ADAPTER_FACTORIES) == {"fyers", "zerodha"}
+    # one broker is active at a time: only its adapter is used
+    assert set(accounts.active_adapters("zerodha")) == {"zerodha"}
+    assert set(accounts.active_adapters("fyers")) == {"fyers"}
     _seed_scope_strategies_and_owner()
     assert Path(accounts.__file__).exists()
 
@@ -459,7 +492,13 @@ def test_brk__recorded_writes() -> None:
 
 # The broker-account status and broker-name values live once, in the models leaf; every reader
 # imports them from there.
-ACCOUNT_CONSTANTS = {"ACCOUNT_ACTIVE", "ACCOUNT_FAILED", "ACCOUNT_PENDING", "BROKER_FYERS"}
+ACCOUNT_CONSTANTS = {
+    "ACCOUNT_ACTIVE",
+    "ACCOUNT_FAILED",
+    "ACCOUNT_PENDING",
+    "BROKER_FYERS",
+    "BROKER_ZERODHA",
+}
 CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
 # the model, and any name for an account a reader uses (`account`, `acct`, `broker_account`...)
 ACCOUNT_OWNER = re.compile(r"^HatBrokerAccount$|acc(oun)?t", re.IGNORECASE)

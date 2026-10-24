@@ -2,7 +2,7 @@
 export const queryKeys = {
   auth: {
     all: ["auth"] as const,
-    fyersStatus: () => ["auth", "fyers", "status"] as const,
+    status: (broker: "fyers" | "zerodha") => ["auth", broker, "status"] as const,
   },
   hat: {
     all: ["hat"] as const,

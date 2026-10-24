@@ -3,7 +3,9 @@ HAT-EXEC-012).
 
 A broker account becomes usable only after the capability check (funds, positions and holdings
 fetched without error) and is recorded in `hat_broker_account` with the adapter's capabilities.
-The only adapter registered in the MVP is Fyers. Confirm and auto mode place real orders, so
+Fyers and Kite (Zerodha) have adapters, and one of them is active (`settings.broker`,
+`active_adapters`): an account of the other broker gets no adapter, so nothing reaches two brokers
+at once and switching is a setting and a login. Confirm and auto mode place real orders, so
 both need an active account whose capabilities report GTT for delivery (every real fill needs an
 overnight broker-side stop) and the owner's confirmation that DDPI is registered
 (`confirm_ddpi`, HAT-GOV-085). The gates live in `modes.py` (which imports no broker, so the
@@ -26,7 +28,13 @@ from ..engine.owner import OwnerCommand
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount
-from ..models.strategy import ACCOUNT_ACTIVE, ACCOUNT_FAILED, ACCOUNT_PENDING, BROKER_FYERS
+from ..models.strategy import (
+    ACCOUNT_ACTIVE,
+    ACCOUNT_FAILED,
+    ACCOUNT_PENDING,
+    BROKER_FYERS,
+    BROKER_ZERODHA,
+)
 from ..time import as_utc, trade_date_of
 from .broker import (
     CODE_RATE_LIMITED,
@@ -37,9 +45,11 @@ from .broker import (
     HatBroker,
 )
 from .fyers_adapter import build_fyers_broker
+from .kite_adapter import build_kite_broker
 
 __all__ = [
     "ADAPTER_FACTORIES",
+    "active_adapters",
     "OnboardingError",
     "onboarding_status",
     "confirm_ddpi",
@@ -48,8 +58,19 @@ __all__ = [
 ]
 
 
-# Every adapter registered in the MVP is the Fyers adapter (HAT-DEC-I8).
-ADAPTER_FACTORIES: dict[str, Callable[[], HatBroker]] = {BROKER_FYERS: build_fyers_broker}
+# Every broker HAT has an adapter for (HAT-DEC-I8); only the active one is ever built.
+ADAPTER_FACTORIES: dict[str, Callable[[], HatBroker]] = {
+    BROKER_FYERS: build_fyers_broker,
+    BROKER_ZERODHA: build_kite_broker,
+}
+
+
+def active_adapters(broker: str) -> dict[str, Callable[[], HatBroker]]:
+    """The adapter registry with only the active broker's (`settings.broker`): what the runtime
+    and the admin commands build from, so an account of another broker gets none."""
+    if broker not in ADAPTER_FACTORIES:
+        raise OnboardingError("unsupported broker")
+    return {broker: ADAPTER_FACTORIES[broker]}
 
 
 class OnboardingError(HatError):

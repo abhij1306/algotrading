@@ -227,7 +227,9 @@ class FyersAuthService:
             try:
                 hook()
             except Exception as error:  # a hook never blocks the login or the logout
-                logger.warning("Fyers %s hook failed: %s", event, type(error).__name__)
+                logger.warning(
+                    "%s %s hook failed: %s", self.store.label, event, type(error).__name__
+                )
 
     def login_url(self) -> str:
         creds = self._credentials()
@@ -291,7 +293,7 @@ class FyersAuthService:
         try:
             refs = self._account_refs()
         except Exception as error:
-            logger.warning("Fyers login: broker accounts unreadable: %s", type(error).__name__)
+            logger.warning("Login: broker accounts unreadable: %s", type(error).__name__)
             raise AccountsUnreadableError(ACCOUNTS_UNREADABLE) from None
         return not refs or user_id in refs
 
@@ -307,8 +309,7 @@ class FyersAuthService:
         in each case no token was written.
         """
         creds = self._credentials()
-        with self._lock:
-            logouts_at_start = self._logouts
+        logouts_at_start = self._logouts_now()
         reply = self._generate_token(creds, auth_code)
         logger.info("Fyers token exchange reply status: %s", reply.get("s", "unknown"))
 
@@ -327,19 +328,28 @@ class FyersAuthService:
             raise WrongAccountError(WRONG_ACCOUNT)
         if user_id is not None:
             reply = {**reply, "fy_id": user_id}
+        return self._save_login(reply, creds.client_id, logouts_at_start)
 
-        # Save and logout are serialised: a logout that ran while Fyers was answering wins, so
-        # this login cannot write the token back after the user logged out.
+    def _save_login(
+        self, reply: Mapping[str, Any], client_id: str, logouts_at_start: int
+    ) -> FyersStatus:
+        """Save an accepted login's token and point the process at it. Save and logout are
+        serialised: a logout that ran while the broker was answering wins, so this login cannot
+        write the token back after the user logged out (LoginCancelledError)."""
         with self._lock:
             if self._logouts != logouts_at_start:
                 logger.info("Logout during login; the new token was discarded")
                 raise LoginCancelledError(LOGIN_CANCELLED)
-            saved = self.store.save(reply, client_id=creds.client_id)
-        logger.info("Fyers access token saved; expires at %s", saved.expires_at)
+            saved = self.store.save(reply, client_id=client_id)
+        logger.info("%s access token saved; expires at %s", self.store.label, saved.expires_at)
         self.invalidate_status()
         self._run_hooks("token_change")
         self._run_hooks("login")
         return FyersStatus(connected=True, user_id=saved.user_id)
+
+    def _logouts_now(self) -> int:
+        with self._lock:
+            return self._logouts
 
     def status(self) -> FyersStatus:
         """Whether a usable token is saved (`StoredToken.is_usable`, the same check the session
@@ -371,7 +381,7 @@ class FyersAuthService:
         with self._lock:
             removed = self.store.clear()
         if removed:
-            logger.info("Fyers access token removed")
+            logger.info("%s access token removed", self.store.label)
         self.invalidate_status()
         self._run_hooks("token_change")
 

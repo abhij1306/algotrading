@@ -26,6 +26,7 @@ load_dotenv()
 # E402 is suppressed below: the modules read the environment at import, so load_dotenv() runs first.
 from .hat.api import dashboard as hat_dashboard  # noqa: E402
 from .hat.api import fyers_auth as hat_fyers_auth  # noqa: E402
+from .hat.api import kite_auth as hat_kite_auth  # noqa: E402
 from .hat.settings import is_enabled  # noqa: E402
 from .utils.origins import ALLOWED_ORIGINS, FrontendCORSMiddleware, is_frontend_origin  # noqa: E402
 
@@ -225,8 +226,9 @@ app.add_middleware(
 # same rule as CORS. Unset, the guard refuses every write that carries an Origin.
 app.state.frontend_origin = is_frontend_origin
 
-# HAT routes: the Fyers login and the read-only dashboard (`/api/hat/*`).
+# HAT routes: the Fyers and Kite logins and the read-only dashboard (`/api/hat/*`).
 app.include_router(hat_fyers_auth.router)
+app.include_router(hat_kite_auth.router)
 app.include_router(hat_dashboard.router)
 
 

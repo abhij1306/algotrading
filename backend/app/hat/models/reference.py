@@ -1,6 +1,7 @@
 """Reference tables: the instrument row anchors everything else."""
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
@@ -87,6 +88,8 @@ class HatBrokerSymbol(Base):
     instrument_id = fk(INSTRUMENT_ID, primary_key=True)
     broker = Column(Text, primary_key=True)
     broker_symbol = Column(Text, nullable=False)
+    # the broker's own numeric id of the instrument where it has one (Kite's `instrument_token`)
+    instrument_token = Column(BigInteger)
     refreshed_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 

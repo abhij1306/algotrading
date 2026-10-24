@@ -44,12 +44,17 @@ ACCOUNT_PENDING = "pending"
 ACCOUNT_ACTIVE = "active"  # passed its capability check (HAT-BRK-092)
 ACCOUNT_FAILED = "failed"
 BROKER_FYERS = "fyers"
+BROKER_ZERODHA = "zerodha"
+# the brokers HAT has an adapter for; `HAT_BROKER` names the one active broker among them
+BROKERS = (BROKER_FYERS, BROKER_ZERODHA)
 
 __all__ = [
     "ACCOUNT_ACTIVE",
     "ACCOUNT_FAILED",
     "ACCOUNT_PENDING",
+    "BROKERS",
     "BROKER_FYERS",
+    "BROKER_ZERODHA",
     "HatBot",
     "HatBrokerAccount",
     "HatCriterionType",

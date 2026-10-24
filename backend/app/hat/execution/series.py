@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import HatBrokerSymbol, HatInstrument, HatPosition
-from ..models.strategy import BROKER_FYERS
+from ..settings import active_broker
 from ..time import as_utc, trade_date_of
 
 __all__ = ["ALERT_SERIES_CHANGED", "broker_symbol", "series_changed"]
@@ -45,10 +45,14 @@ def series_changed(session: Session, position: HatPosition) -> HatInstrument | N
     return instrument
 
 
-def broker_symbol(session: Session, instrument_id: uuid.UUID) -> str | None:
-    """The stored Fyers symbol of the instrument, if any."""
+def broker_symbol(
+    session: Session, instrument_id: uuid.UUID, broker: str | None = None
+) -> str | None:
+    """The stored symbol of the instrument at `broker` (default the active broker,
+    `settings.active_broker`: the one its orders go to), if any."""
     return session.scalar(
         select(HatBrokerSymbol.broker_symbol).where(
-            HatBrokerSymbol.instrument_id == instrument_id, HatBrokerSymbol.broker == BROKER_FYERS
+            HatBrokerSymbol.instrument_id == instrument_id,
+            HatBrokerSymbol.broker == (broker or active_broker()),
         )
     )

@@ -36,6 +36,8 @@ from app.hat.api import guard
 WRITE_ROUTES = {
     ("POST", "/api/hat/auth/fyers/token"),
     ("POST", "/api/hat/auth/fyers/disconnect"),
+    ("POST", "/api/hat/auth/zerodha/token"),
+    ("POST", "/api/hat/auth/zerodha/disconnect"),
 }
 READ_METHODS = {"GET", "HEAD"}
 # Session methods that write, and statement builders and helpers that write.

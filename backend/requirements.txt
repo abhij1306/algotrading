@@ -23,6 +23,9 @@ aws-lambda-powertools==3.36.0
 setuptools==80.10.2  # <81: fyers 3.2.0 data_ws/tbt_ws still import pkg_resources
 protobuf==7.36.2  # fyers 3.2.0 imports google.protobuf without declaring it
 
+# Zerodha (Kite Connect) SDK: imported only by app/hat/execution/kite_ipv4.py
+kiteconnect==5.2.2
+
 # Code quality tools
 ruff==0.17.1
 hypothesis==6.170.5

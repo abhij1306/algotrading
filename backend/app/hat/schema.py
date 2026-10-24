@@ -332,6 +332,8 @@ CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
     # `positions.restate_dividends` brings them up to the stored dividends
     "ALTER TABLE hat_trade_result ADD COLUMN IF NOT EXISTS dividends numeric(18,4)"
     " NOT NULL DEFAULT 0",
+    # Kite's numeric instrument id of a zerodha row (None for the other brokers' rows)
+    "ALTER TABLE hat_broker_symbol ADD COLUMN IF NOT EXISTS instrument_token bigint",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update

@@ -57,6 +57,8 @@ __all__ = [
     "ack_result",
     "gtt_modify_fields",
     "gtt_payload",
+    "intent_price",
+    "is_positive_qty",
     "map_fyers_status",
     "order_modify_fields",
     "order_payload",
@@ -68,6 +70,9 @@ __all__ = [
     "parse_positions",
     "parse_trade",
     "place_result",
+    "reply_count",
+    "reply_id",
+    "whole_number",
 ]
 
 logger = logging.getLogger(__name__)
@@ -111,7 +116,7 @@ _GTT_OCO = 2  # `gtt_oco_ind`: 1 a single GTT, 2 an OCO
 _INTEGER_TEXT = re.compile(r"-?\d+", re.ASCII)  # ASCII: "¹" is a str digit, not an int
 
 
-def _whole_number(value: object) -> int | None:
+def whole_number(value: object) -> int | None:
     """`value` as an int when it is an int, an integral float or an ASCII integer string
     (`-?[0-9]+`, surrounding spaces ignored); else None (never a truncated fraction, never a bool,
     never a Unicode digit `int` refuses such as "¹")."""
@@ -128,7 +133,7 @@ def _whole_number(value: object) -> int | None:
 
 def map_fyers_status(code: object, filled_qty: object = 0, qty: object = 0) -> str:
     """A Fyers orderbook status as one of `hat_order.status`. Total: every input maps."""
-    status = _whole_number(code)
+    status = whole_number(code)
     if status is None:
         return "unconfirmed"
     mapped = _FYERS_STATUS.get(status, "unconfirmed")
@@ -144,7 +149,7 @@ def map_fyers_status(code: object, filled_qty: object = 0, qty: object = 0) -> s
     return mapped
 
 
-def _intent_price(value: object) -> Decimal:
+def intent_price(value: object) -> Decimal:
     """An order's price as HAT sends it: an exact positive Decimal; a float, text or anything
     else is refused (rule 8)."""
     if not isinstance(value, Decimal):
@@ -152,14 +157,14 @@ def _intent_price(value: object) -> Decimal:
     return require_exact(value, "price", positive=True)
 
 
-def _is_positive_qty(qty: object) -> bool:
+def is_positive_qty(qty: object) -> bool:
     return isinstance(qty, int) and not isinstance(qty, bool) and qty >= 1
 
 
 def _sdk_price(value: object) -> float:
     """The one place an order price leaves Decimal: the float the SDK's JSON carries, of an exact
-    positive Decimal (`_intent_price` refuses anything else)."""
-    return float(_intent_price(value))
+    positive Decimal (`intent_price` refuses anything else)."""
+    return float(intent_price(value))
 
 
 # --- payloads: one intent, one exact SDK dict ---------------------------------------------------
@@ -171,7 +176,7 @@ def order_payload(intent: OrderIntent, fyers_symbol: Callable[[str], str]) -> di
     trigger only for SL and SL-M (0 otherwise). Raises InvalidIntentError for anything HAT will
     not send."""
     try:
-        if not _is_positive_qty(intent.qty) or intent.product != "CNC":
+        if not is_positive_qty(intent.qty) or intent.product != "CNC":
             raise InvalidOperation
         if not is_hat_tag(intent.tag):
             raise InvalidOperation
@@ -207,7 +212,7 @@ def order_modify_fields(
     quantity or price HAT will not send."""
     try:
         kind = OrderType(order_type)  # type: ignore[arg-type]
-        if qty is not None and not _is_positive_qty(qty):
+        if qty is not None and not is_positive_qty(qty):
             raise InvalidOperation
         limit = None if price is None else _sdk_price(price)
         trigger = None if trigger_price is None else _sdk_price(trigger_price)
@@ -227,8 +232,8 @@ def order_modify_fields(
 
 def _gtt_leg(qty: object, trigger: object, limit: object) -> dict[str, Any]:
     """The single leg of a sell stop GTT: a positive quantity, and a limit below its trigger."""
-    trigger_price, limit_price = _intent_price(trigger), _intent_price(limit)
-    if not _is_positive_qty(qty) or limit_price >= trigger_price:
+    trigger_price, limit_price = intent_price(trigger), intent_price(limit)
+    if not is_positive_qty(qty) or limit_price >= trigger_price:
         raise InvalidOperation  # a sell stop's limit sits below its trigger
     return {"price": float(limit_price), "triggerPrice": float(trigger_price), "qty": qty}
 
@@ -268,16 +273,16 @@ def gtt_modify_fields(request: GttModify) -> dict[str, Any]:
 # --- replies: each raw Fyers reply parsed once ---------------------------------------------------
 
 
-def _count(value: object, name: str, minimum: int | None = 0) -> int:
+def reply_count(value: object, name: str, minimum: int | None = 0) -> int:
     """A share count from a reply: a whole number of at least `minimum` (None: any sign, as a
     net position's), never a truncated fraction."""
-    whole = _whole_number(value)
+    whole = whole_number(value)
     if whole is None or (minimum is not None and whole < minimum):
         raise ValueError(f"{name}: not a count")
     return whole
 
 
-def _id(value: object, name: str) -> str:
+def reply_id(value: object, name: str) -> str:
     """A broker id from a reply: text or a whole number, never missing (a null id read as "None"
     would make every such row the same order, trade or GTT)."""
     if isinstance(value, bool) or not isinstance(value, str | int) or str(value).strip() == "":
@@ -299,7 +304,7 @@ def parse_positions(rows: Iterable[dict[str, Any]]) -> list[BrokerPosition]:
     INTRADAY product)."""
     positions = []
     for row in rows:
-        qty = _count(row["netQty"], "netQty", minimum=None)
+        qty = reply_count(row["netQty"], "netQty", minimum=None)
         if qty == 0:
             continue
         average = "buyAvg" if qty > 0 else "sellAvg"
@@ -325,7 +330,7 @@ def parse_holdings(rows: Iterable[dict[str, Any]]) -> list[BrokerHolding]:
         holdings.append(
             BrokerHolding(
                 symbol=symbol_master.to_db(str(row["symbol"])),
-                qty=_count(row["quantity"], "quantity"),
+                qty=reply_count(row["quantity"], "quantity"),
                 avg_price=cost,
             )
         )
@@ -357,12 +362,12 @@ def parse_trade(row: dict[str, Any]) -> BrokerTrade:
     """One `tradeBook` row: its traded quantity a whole number, its price exact and positive."""
     tag, gtt_tag = _row_tags(row.get("orderTag"))
     return BrokerTrade(
-        trade_id=_id(row["tradeNumber"], "tradeNumber"),
-        order_id=_id(row["orderNumber"], "orderNumber"),
+        trade_id=reply_id(row["tradeNumber"], "tradeNumber"),
+        order_id=reply_id(row["orderNumber"], "orderNumber"),
         tag=tag,
         symbol=symbol_master.to_db(str(row["symbol"])),
         side=_side(row["side"]),
-        qty=_count(row["tradedQty"], "tradedQty", minimum=1),
+        qty=reply_count(row["tradedQty"], "tradedQty", minimum=1),
         price=require_exact(row["tradePrice"], "tradePrice", floats=True, positive=True),
         traded_at=None,
         gtt_tag=gtt_tag,
@@ -370,7 +375,7 @@ def parse_trade(row: dict[str, Any]) -> BrokerTrade:
 
 
 def _side(value: object) -> Side:
-    return {1: Side.BUY, -1: Side.SELL}[_count(value, "side", minimum=None)]
+    return {1: Side.BUY, -1: Side.SELL}[reply_count(value, "side", minimum=None)]
 
 
 def _clean_tag(tag: object) -> str | None:
@@ -451,7 +456,7 @@ def parse_gtt_row(row: dict[str, Any]) -> BrokerGtt | None:
     A single-leg CNC row with a status code it does not know, or whose side, trigger or
     quantity cannot be read, raises, so the read fails instead of missing a GTT."""
     info = row.get("orderInfo") or {}
-    oco = _whole_number(row.get("gtt_oco_ind")) == _GTT_OCO
+    oco = whole_number(row.get("gtt_oco_ind")) == _GTT_OCO
     if oco or row.get("leg2") or info.get("leg2"):
         return None
     product = row.get("product_type", row.get("productType"))
@@ -459,20 +464,20 @@ def parse_gtt_row(row: dict[str, Any]) -> BrokerGtt | None:
         return None
     status = row.get("ord_status", row.get("status"))
     if status is not None:
-        code = _whole_number(status)
+        code = whole_number(status)
         if code in _GTT_ENDED:
             return None
         if code not in _GTT_KNOWN:
             raise ValueError("gtt status")
     leg = info.get("leg1") or row.get("leg1")
     trigger, qty = (leg["triggerPrice"], leg["qty"]) if leg else (row["price_trigger"], row["qty"])
-    whole = _whole_number(qty)
+    whole = whole_number(qty)
     if whole is None:
         raise ValueError("gtt qty")
     tag = _gtt_tag(row.get("ordertag"))
     shown = _clean_tag(row.get("ordertag"))
     return BrokerGtt(
-        gtt_id=_id(row["id"], "id"),
+        gtt_id=reply_id(row["id"], "id"),
         symbol=symbol_master.to_db(str(row["symbol"])),
         side=_side(row["tran_side"] if "tran_side" in row else row["side"]),
         qty=whole,
@@ -483,11 +488,11 @@ def parse_gtt_row(row: dict[str, Any]) -> BrokerGtt | None:
 
 
 def parse_order_row(row: dict[str, Any]) -> BrokerOrder:
-    qty = _count(row["qty"], "qty")
-    filled = _count(row.get("filledQty") or 0, "filledQty")
+    qty = reply_count(row["qty"], "qty")
+    filled = reply_count(row.get("filledQty") or 0, "filledQty")
     tag, gtt_tag = _row_tags(row.get("orderTag"))
     return BrokerOrder(
-        order_id=_id(row["id"], "id"),
+        order_id=reply_id(row["id"], "id"),
         tag=tag,
         symbol=symbol_master.to_db(str(row["symbol"])),
         side=_side(row["side"]),

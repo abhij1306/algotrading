@@ -12,7 +12,12 @@ Commands, in first-deploy order:
 
     show                                      strategies, versions and sleeves, with their ids
     seed-policy                               risk-policy version 1
-    onboard-account --account-ref REF         capability check of the broker account (HAT-BRK-092)
+    onboard-account --account-ref REF [--broker B]
+                                              capability check of the broker account (HAT-BRK-092);
+                                              only the active broker's (`HAT_BROKER`, the default)
+    refresh-kite-symbols [--dump CSV]         the zerodha broker symbols from NSE's latest
+                                              bhavcopy and Kite's instrument dump (downloaded, or
+                                              the dump CSV given), as the weekly refresh does
     seed-strategies                           the two strategies, version 1 as a draft
     seed-bots --account ID                    one sleeve per strategy on an active account
     add-sleeve --strategy ID --account ID     a further sleeve of a strategy, in Research: a new
@@ -52,9 +57,9 @@ Commands, in first-deploy order:
                                               raw bars' first days (audit M3, one-off);
                                               without --apply a dry run that writes nothing
 
-Input files (`--constituents`, `--config`, `--list`) are names inside `<HAT_DATA_ROOT>/admin/`:
-a path that leaves that folder, or a file without the expected suffix, is refused
-(`file_outside_admin`).
+Input files (`--constituents`, `--config`, `--list`, `--dump`) are names inside
+`<HAT_DATA_ROOT>/admin/`: a path that leaves that folder, or a file without the expected suffix, is
+refused (`file_outside_admin`).
 
 `assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version`, `resolve-action`,
 `correct-action`, `correct-actions` and `repair-symbol-history` are the owner's acts: their
@@ -82,7 +87,8 @@ from .clock import SYSTEM_CLOCK, Clock
 from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
 from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
-from .data.instruments import repair_symbol_history
+from .data.instruments import refresh_kite_symbols, repair_symbol_history
+from .data.kite_symbols import KiteSymbolData
 from .data.reference import parse_industry_csv
 from .data.renames import symbol_first_bars
 from .data.store import DataStore
@@ -98,18 +104,21 @@ from .errors import HatConfigError, HatError
 from .execution.accounts import (
     ADAPTER_FACTORIES,
     OnboardingError,
+    active_adapters,
     confirm_ddpi,
     onboard_account,
     require_active_account,
     revoke_ddpi,
 )
 from .execution.broker import HatBroker
+from .execution.kite_adapter import kite_symbol_source
 from .money import exact
 from .risk.policy import RiskPolicy, effective_version
 from .risk.policy_service import load_versions, seed_initial_policy
 from .risk.sessions import SessionCalendar
+from .settings import active_broker
 from .telegram.config import owner_chat_id
-from .time import utc_now
+from .time import trade_date_of, utc_now
 
 __all__ = ["AdminDeps", "AdminError", "main"]
 
@@ -137,6 +146,9 @@ class AdminDeps:
     env: Mapping[str, str]
     clock: Clock
     store: Callable[[], DataStore]
+    active_broker: str | None = None  # None: the settings' (`HAT_BROKER`)
+    # the NSE tokens and Kite's listings as of a date, from a dump CSV's text or (None) downloaded
+    kite_symbols: Callable[[date, str | None], KiteSymbolData] | None = None
 
     @staticmethod
     def production() -> AdminDeps:  # pragma: no cover - needs the database and .env
@@ -145,14 +157,17 @@ class AdminDeps:
         from .settings import operator_settings, process_env  # noqa: PLC0415
 
         settings = operator_settings()  # loads .env first, as every command line does
+        store = lambda: DataStore(settings.data_root, memory_limit=settings.duckdb_memory)  # noqa: E731
         return AdminDeps(
             user_id=settings.user_id,
             files=settings.data_root / "admin",
             scope=db_session_scope,
-            broker_for=lambda name: ADAPTER_FACTORIES[name](),
+            broker_for=lambda name: active_adapters(settings.broker)[name](),
             env=process_env(),
             clock=SYSTEM_CLOCK,
-            store=lambda: DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
+            store=store,
+            active_broker=settings.broker,
+            kite_symbols=lambda day, dump: kite_symbol_source(store())(day, dump),
         )
 
 
@@ -163,7 +178,9 @@ def _parser() -> argparse.ArgumentParser:
     commands.add_parser("seed-policy")
     onboard = commands.add_parser("onboard-account")
     onboard.add_argument("--account-ref", required=True)
-    onboard.add_argument("--broker", default="fyers")
+    onboard.add_argument("--broker")
+    kite = commands.add_parser("refresh-kite-symbols")
+    kite.add_argument("--dump")
     commands.add_parser("seed-strategies")
     bots = commands.add_parser("seed-bots")
     bots.add_argument("--account", type=uuid.UUID, required=True)
@@ -328,6 +345,41 @@ def _publish_universe(
     }
 
 
+def _onboard(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[str, Any]:
+    """Onboard an account of the active broker (`HAT_BROKER`): one broker at a time."""
+    active = deps.active_broker or active_broker(deps.env)
+    name = args.broker or active
+    if name not in ADAPTER_FACTORIES:
+        raise AdminError("unsupported_broker")
+    if name != active:
+        raise AdminError("broker_not_active")
+    account = onboard_account(
+        session,
+        deps.broker_for(name),
+        user_id=deps.user_id,
+        broker_name=name,
+        account_ref=args.account_ref,
+    )
+    return {"broker_account_id": str(account.id), "status": account.status}
+
+
+def _refresh_kite(
+    session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
+) -> dict[str, Any]:
+    """The zerodha broker symbols, as the weekly refresh writes them."""
+    if deps.kite_symbols is None:
+        raise AdminError("kite_symbols_unavailable")
+    dump = _read(deps.files, args.dump, (".csv",), "dump_unreadable") if args.dump else None
+    try:
+        nse_tokens, listings = deps.kite_symbols(trade_date_of(now), dump)
+    except HatError:
+        raise
+    except Exception:  # a download failure: its text is not kept
+        raise AdminError("kite_symbols_unavailable") from None
+    report = refresh_kite_symbols(session, market_id_of(session), nse_tokens, listings)
+    return {"written": report.written, "removed": report.removed, "skipped": len(report.skipped)}
+
+
 def _setup(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any] | None:
@@ -340,13 +392,9 @@ def _setup(
         row = seed_initial_policy(session, user_id, now)
         return {"risk_policy_version": row.version, "id": str(row.id)}
     if command == "onboard-account":
-        broker = deps.broker_for(args.broker) if args.broker in ADAPTER_FACTORIES else None
-        if broker is None:
-            raise AdminError("unsupported_broker")
-        account = onboard_account(
-            session, broker, user_id=user_id, broker_name=args.broker, account_ref=args.account_ref
-        )
-        return {"broker_account_id": str(account.id), "status": account.status}
+        return _onboard(session, args, deps)
+    if command == "refresh-kite-symbols":
+        return _refresh_kite(session, args, deps, now)
     if command == "seed-strategies":
         rows = versions.seed_default_strategies(session, user_id)
         return {"strategies": {s.name: str(s.id) for s in rows}}

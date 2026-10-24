@@ -16,12 +16,12 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 `demerger_notice`), ISIN lineage (`lineage`), history build, features, Parquet store (`store`), live feed and 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library, strategy config, scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
-| `execution` | `HatBroker` and the Fyers adapter, session and tokens, router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
+| `execution` | `HatBroker` and its adapters (Fyers `fyers_*`, Zerodha `kite_*`: payloads, transport, session, tokens, login, IPv4 pin), router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock |
 | `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies |
 | `backtest` | Day loop, evidence for the gates (`RunMetrics`), costs, fills, deflated Sharpe, run records. `engine` and `risk` import only `spec` and `evidence` |
-| `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and Fyers login routes; the read model the dashboard and Telegram share (no writer import) |
+| `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
 
 Top level: `events.py` (event log), `money.py`, `clock.py`, `ids.py` (uuid v7), `settings.py`,
 `schema.py` (`init_db` upkeep, `PG_DDL`, drift check), `admin.py`.
@@ -55,11 +55,13 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `size_position`.
 - **One path to an order:** `execution/submit.py:send_order` is the only way an entry reaches
   the broker (stops, sales and reads go through `HatBroker` in `execution/`);
-  `FyersHatBroker` is its only implementation, `tests/hat/fakes/broker.py:FakeBroker` the only fake.
+  one adapter serves it, the active broker's (`HAT_BROKER`: `FyersHatBroker` or `KiteHatBroker`,
+  `accounts.active_adapters`), `tests/hat/fakes/broker.py:FakeBroker` the only fake.
 - **One position desk per account** (`execution/position_desk.py`): one write lock per position
   for every stop write and sale.
 - **One runtime per database** (`ops/runtime_lock.py`, a session advisory lock); one session owner
-  per account (`SessionRegistry`), one token store (`fyers_tokens`), one live socket.
+  per account (`SessionRegistry`), one token store per broker (`fyers_tokens`, `kite_tokens`), one
+  live socket (Fyers: market data stays on Fyers whichever broker takes orders).
 - **One clock:** code that needs "now" takes a `clock.Clock`. `governance.py:Mode` is the only
   spelling of shadow/confirm/auto; `execution/modes.py` holds the gates.
 - **Events:** `events.record` writes each state change's event in its transaction; trade state
@@ -115,15 +117,18 @@ changes, weekly and on demand.
 Startup (`main.py` lifespan): `init_db` (a database that is down stops the app), then
 `check_schema_drift` refuses any difference from the models and logs the DDL. With
 `HAT_ENABLED=true` it then checks the Fyers token, and `daily/runtime.py` refuses a non-Postgres
-database, a proxy variable that would carry Fyers traffic and a bad Telegram setup, reconciles
+database, a proxy variable that would carry Fyers (or, with `HAT_BROKER=zerodha`, Kite) traffic,
+missing Kite credentials when Zerodha is the active broker and a bad Telegram setup, reconciles
 every account, and starts the scheduler, live feed, periodic loops and Telegram. Shutdown stops
 the runtime, then the engine.
 
 Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET /status`, `GET
-/url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`); the read-only
+/url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`), and the same four
+under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
 dashboard under `/api/hat` (`/status`, `/bots`, `/watchlist`, `/signals`, `/positions`,
 `/allocations`, `/regime`, `/events`), polled every 15 s by `frontend/app/hat/page.tsx`.
 
 Environment: `.env.example` lists every variable: `DB_*`; the Fyers app `CLIENT_ID`,
-`SECRET_KEY`, `REDIRECT_URI`; `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, the MCP URLs and
+`SECRET_KEY`, `REDIRECT_URI`; `HAT_BROKER` and the Kite app `KITE_API_KEY`, `KITE_API_SECRET`,
+`KITE_REDIRECT_URI`; `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, the MCP URLs and
 Telegram secrets; `BACKEND_HOST`/`BACKEND_PORT` and logging for `backend/start_server.py`.

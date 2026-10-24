@@ -21,6 +21,7 @@ from ..models import HatMarket
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from . import calendar as hat_calendar
 from . import instruments
+from .kite_symbols import KiteSymbolData
 from .mcp_client import McpClient, McpError
 from .reference import (
     BandRow,
@@ -76,10 +77,15 @@ def reference_weekly(
     master: SymbolMaster,
     today: date,
     renames: Callable[[], Iterable[instruments.SymbolRename]] | None = None,
+    kite_symbols: Callable[[], KiteSymbolData] | None = None,
 ) -> Callable[[], JobResult]:
-    """Weekly: instrument master, symbol history, Fyers symbols and industries.
+    """Weekly: instrument master, symbol history, Fyers symbols and industries; and the Kite
+    symbols when `kite_symbols` is given (Kite is the active broker).
 
-    `renames` is an optional source of recorded symbol renames (HAT reads no legacy table)."""
+    `renames` is an optional source of recorded symbol renames (HAT reads no legacy table). The
+    Kite symbols are refreshed in a transaction of their own after the rest is committed, so a
+    failed Kite dump or bhavcopy (`kite_symbols_unavailable`) fails the job without losing the
+    instrument master, and keeps the zerodha rows as they were."""
 
     def body() -> JobResult:
         csv_rows = parse_equity_list_csv(_read(equity_list, "reference_csv_unavailable"))
@@ -113,9 +119,30 @@ def reference_weekly(
                 written, _ = instruments.load_industries(session, market_id, parsed, today)
                 rows += written
             session.commit()
+        if kite_symbols is not None:
+            rows += refresh_kite(session_factory, kite_symbols)
         return JobResult(calls=client.log.calls, rows=rows)
 
     return body
+
+
+def refresh_kite(session_factory: SessionFactory, source: Callable[[], KiteSymbolData]) -> int:
+    """Refresh the zerodha broker symbols from `source` in a transaction of its own; the rows
+    written. A source that fails, or maps nothing, raises `JobError` and changes no row."""
+    try:
+        nse_tokens, listings = source()
+    except Exception as exc:  # a download failure becomes a stable code; its text is not kept
+        raise JobError("kite_symbols_unavailable") from exc
+    with session_factory() as session:
+        try:
+            report = instruments.refresh_kite_symbols(
+                session, _market_id(session), nse_tokens, listings
+            )
+        except instruments.ReferenceDataError as exc:
+            raise JobError(exc.code) from exc
+        session.commit()
+    logger.info("kite symbols: %d written, %d skipped", report.written, len(report.skipped))
+    return report.written
 
 
 def bands_nightly(
