@@ -54,6 +54,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         # the owner's corrections of stored reference data (D1)
         "corporate_action.corrected",
         "lineage.overridden",
+        "corporate_action.imported",  # the corporate-action file import (CA1)
     ),
     "Signals": (
         "watchlist.published",

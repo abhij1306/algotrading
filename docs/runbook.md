@@ -208,7 +208,13 @@ next build links it if the rules then hold. A wrong stored factor (a `corporate_
 alert, a misparsed bonus) is replaced or deleted with
 `python -m app.hat.admin correct-action --isin ISIN --ex-date D --type T (--factor F [--as T2] |
 --delete) --note TEXT` (journalled `corporate_action.corrected`; a nightly load never rewrites a
-stored key). `python -m app.hat.data.renames` seeds the symbol history from the renames in the
+stored key). `python -m app.hat.data.ca_import --db FILE [--apply]` (FILE a `.db` under the working
+directory; run it there with `PYTHONPATH=<repo>/backend`) loads a collected NSE corporate-action file (splits/bonuses, rights, demergers, ETF unit splits): a dry
+run by default, it prints per table what it would store, what is already stored, the conflicts
+with a stored factor (fix with `correct-action`) and the review list with reasons; `--apply`
+stores the bar-confirmed factors in one transaction (journalled `corporate_action.imported`;
+repeating it stores nothing). Then rebuild the lineage and run `features --full`.
+`python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs digest, so the next `features` run rebuilds every date (`features --full` does it now).
 

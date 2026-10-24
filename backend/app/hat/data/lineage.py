@@ -37,10 +37,10 @@ verdict is kept in `hat_lineage_override` and every build applies it over the ru
 A demerger is never a succession: the parent keeps its ISIN (TATAMOTORS became TMPV on
 INE155A01022) and the resulting company is a new listing with its own history (TMCV,
 INE1TAE01010). A merged-away company's history just ends (HDFC Ltd, July 2023). The parent's
-price drop on a demerger ex-date has no stored factor yet: the parent stays unadjusted and the
-drop shows in the report's unexplained jumps (`show TMPV` lists its chain's). A demerger or
-rights factor stored later as a `hat_corporate_action` row of a price-changing type (`other`) is
-applied by the view with no schema change.
+price drop on a demerger ex-date is adjusted only by a factor the corporate-action file import
+stored (`ca_import.py`, type `other`, its text naming the demerger, so a succession near it is
+reviewed); without one the drop shows in the report's unexplained jumps (`show TMPV` lists its
+chain's).
 """
 
 from __future__ import annotations
