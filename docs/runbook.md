@@ -227,7 +227,8 @@ advisory lock; `features` does not take it, so run it after they finish.
 - **Special sessions:** add `{"date": "YYYY-MM-DD", "note": "Muhurat trading", "session":
   "HH:MM-HH:MM"}` to `backend/app/hat/data/nse_holidays_history.json` and deploy before the day.
 - **`broker.session_lost`:** bots manage-only, stops at the broker; recovery is automatic once the
-  session is back (log in if the token expired).
+  session is back (log in if the token expired). A token the broker refused (revoked or expired
+  at the broker) shows not connected in the app header until a new login.
 - **`broker.budget_spent`:** URGENT. The day's broker calls are spent: no new entry and no
   reconciliation until tomorrow; stops, sales and the fill sync go on. Check the logs for what
   burned the calls before the next session.

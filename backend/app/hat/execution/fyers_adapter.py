@@ -155,7 +155,10 @@ class FyersHatBroker:
 
     def session_status(self) -> SessionStatus:
         try:
-            connected = self._auth().status().connected
+            auth = self._auth()
+            if auth.token_refused():
+                return SessionStatus.EXPIRED  # until a new login (C22 A5)
+            connected = auth.status().connected
             model = self._client().fyers
             has_client = model is not None
         except Exception:
@@ -180,10 +183,13 @@ class FyersHatBroker:
                 return check[1]
             refused = False
             try:
+                auth = self._auth()
+                generation = auth.token_generation()
                 self._broker.get_profile()
             except FyersSessionExpiredError:
                 logger.warning("Fyers refused the saved token; log in again")
                 refused = True
+                auth.refuse_token(generation)  # the login status reads not connected (C22 A5)
             except Exception:
                 logger.debug("Fyers session check unavailable", exc_info=True)
             self._token_check = (model, refused, now)

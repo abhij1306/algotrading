@@ -215,6 +215,8 @@ class FyersAuthService:
         self._cached_at = 0.0
         self._lock = threading.Lock()
         self._logouts = 0
+        self._tokens = 0  # the tokens saved or removed so far: the current token's generation
+        self._refused: int | None = None  # the generation the broker refused (C22 A5)
 
     def add_hook(self, event: Event, hook: Callable[[], None]) -> None:
         """Run `hook` on `event` from now on (`token_change`, `login` or `disconnect`); a hook added
@@ -341,6 +343,7 @@ class FyersAuthService:
                 logger.info("Logout during login; the new token was discarded")
                 raise LoginCancelledError(LOGIN_CANCELLED)
             saved = self.store.save(reply, client_id=client_id)
+            self._tokens += 1
         logger.info("%s access token saved; expires at %s", self.store.label, saved.expires_at)
         self.invalidate_status()
         self._run_hooks("token_change")
@@ -351,12 +354,35 @@ class FyersAuthService:
         with self._lock:
             return self._logouts
 
+    def token_generation(self) -> int:
+        """The current token's generation: a refusal read under it names it (`refuse_token`)."""
+        with self._lock:
+            return self._tokens
+
+    def refuse_token(self, generation: int) -> None:
+        """The broker refused the token of `generation` (Fyers' -16 on a profile read): the status
+        reads not connected until a login saves another (C22 A5). A refusal of an earlier token
+        (a check in flight across a login or a logout) changes nothing."""
+        with self._lock:
+            if generation != self._tokens:
+                return
+            self._refused = generation
+        self.invalidate_status()
+
+    def token_refused(self) -> bool:
+        """Whether the broker refused the token saved now."""
+        with self._lock:
+            return self._refused == self._tokens
+
     def status(self) -> FyersStatus:
         """Whether a usable token is saved (`StoredToken.is_usable`, the same check the session
-        applies), cached for STATUS_CACHE_SECONDS.
+        applies) that the broker has not refused (`refuse_token`), cached for
+        STATUS_CACHE_SECONDS.
 
         Raises TokenStoreError when the file exists but cannot be read (not cached).
         """
+        if self.token_refused():
+            return FyersStatus(connected=False, user_id=None)
         now = self._clock()
         if self._cached_status is not None and now - self._cached_at < STATUS_CACHE_SECONDS:
             return self._cached_status
@@ -380,6 +406,7 @@ class FyersAuthService:
         self._run_hooks("disconnect")
         with self._lock:
             removed = self.store.clear()
+            self._tokens += 1
         if removed:
             logger.info("%s access token removed", self.store.label)
         self.invalidate_status()

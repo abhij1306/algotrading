@@ -172,7 +172,10 @@ class KiteHatBroker:
 
     def session_status(self) -> SessionStatus:
         try:
-            connected = self._auth().status().connected
+            auth = self._auth()
+            if auth.token_refused():
+                return SessionStatus.EXPIRED  # until a new login (C22 A5)
+            connected = auth.status().connected
             model = self._client().kite
         except Exception:
             logger.exception("Kite session status unreadable")
@@ -193,10 +196,13 @@ class KiteHatBroker:
                 return check[1]
             refused = False
             try:
+                auth = self._auth()
+                generation = auth.token_generation()
                 self._broker.get_profile()
             except KiteSessionExpiredError:
                 logger.warning("Kite refused the saved token; log in again")
                 refused = True
+                auth.refuse_token(generation)  # the login status reads not connected (C22 A5)
             except Exception:
                 logger.debug("Kite session check unavailable", exc_info=True)
             self._token_check = (model, refused, now)
