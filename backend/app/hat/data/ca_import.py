@@ -88,8 +88,9 @@ EVENT_IMPORTED = "corporate_action.imported"
 GATE_TOL = 0.20
 NEAR_DAYS = 5  # a stored action this close to the ex-date is the same event (sources differ)
 BAR_DAYS = 14  # the previous session and the ex session must fall this close to the ex-date
-CHILD_DAYS = 365  # a resulting company lists within a year of the demerger's ex-date
+CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
 DEMERGER_MIN_DROP = Fraction(1, 10)  # a gap-only demerger factor needs a drop beyond 10%
+KIND_DEMERGER = "demerger"  # a stored `other` row whose text begins "Demerger" (`Stored.kind`)
 SAME_FACTOR_TOL = Fraction(1, 20000)  # half a unit in the 4th place
 TEXT_MAX = 2000  # cells are cut to this length
 
@@ -365,7 +366,12 @@ def _split_bonus(row: Mapping[str, str]) -> Proposal:
     if p.ex_date is None:
         return p.ends(REVIEW, "bad_ex_date")
     if non_equity_bonus(text) or _BONUS_DEBENTURE.search(text.lower()):
-        return p.ends(SKIPPED, "non_equity_text")
+        # the bonus is price-neutral (D1); a split named in the same purpose still counts
+        cut = _SPLIT_START.search(text.lower())
+        split = split_bonus_legs(text[cut.start() :]) if cut is not None else None
+        if split is None or "split" not in row["action_type"]:
+            return p.ends(SKIPPED, "non_equity_text")
+        return replace(p, legs=split, hint=f"{p.hint}; non-equity bonus leg not a factor")
     legs = split_bonus_legs(text)
     if legs is None:
         return p.ends(REVIEW, "unparsed")
@@ -585,6 +591,14 @@ class Stored:
     ex_date: date
     action_type: str
     factor: Decimal
+    text: str = ""
+
+    @property
+    def kind(self) -> str:
+        """The type, with a demerger told apart from the other `other` rows (rights) by the
+        text this import gives it."""
+        demerger = self.action_type == TYPE_OTHER and self.text.lower().startswith("demerger")
+        return KIND_DEMERGER if demerger else self.action_type
 
 
 @dataclass
@@ -709,13 +723,14 @@ def decide(p: Proposal, ctx: Context, bars: Sequence[Bar]) -> Outcome:
         if factor == 1:
             return Outcome(p, SKIPPED, "rights_at_or_above_price", detail)
         legs = [Leg(TYPE_OTHER, factor)]
-    kinds = {leg.action_type for leg in legs} | ({TYPE_OTHER} if p.demerger else set())
-    # a stored factor of another type ex between the two sessions moves the open too
+    kinds = {KIND_DEMERGER} if p.demerger else {leg.action_type for leg in legs}
+    # a stored factor of another kind ex between the two sessions moves the open too (a rights
+    # factor is not the demerger's, nor a demerger the rights issue's)
     same_day = math.prod(
         (
             Fraction(s.factor)
             for s in near
-            if before.day < s.ex_date <= on.day and s.action_type not in kinds
+            if before.day < s.ex_date <= on.day and s.kind not in kinds
         ),
         start=Fraction(1),
     )
@@ -735,7 +750,7 @@ def decide(p: Proposal, ctx: Context, bars: Sequence[Bar]) -> Outcome:
     verdict = gate(expected, prev_close, ex_open)
     detail += f", gap {_f(verdict.gap)} vs factor {_f(expected)}"
     evidence["gap"] = _f(verdict.gap)
-    new, already, conflicts = plan_legs(legs, near)
+    new, already, conflicts = plan_legs(legs, [s for s in near if s.kind in kinds])
     if conflicts:
         text = "; ".join(
             f"{leg.action_type} file {_f(leg.factor)} vs stored {s.factor} on {s.ex_date}"
@@ -797,22 +812,24 @@ def _demerger_leg(
 
 def _dedupe(outcomes: list[Outcome]) -> None:
     """Two rows of the file (NSE keeps revisions as separate rows) that store the same key: the
-    same factor is stored once; different factors are both reviewed."""
-    by_key: dict[tuple, list[Outcome]] = defaultdict(list)
+    same factor is stored once, by the first row (a later row keeps its other legs); different
+    factors for the key put every row naming it in review, since the file contradicts itself."""
+    by_key: dict[tuple, list[tuple[Outcome, ActionRecord]]] = defaultdict(list)
     for o in outcomes:
         for r in o.records:
-            by_key[r.key].append(o)
+            by_key[r.key].append((o, r))
+    disagree: set[int] = set()
     for group in by_key.values():
-        if len(group) < 2:
-            continue
-        factors = {r.factor for o in group for r in o.records}
-        rest = group[1:] if len(factors) == 1 else group
-        for o in rest:
-            o.status, o.reason, o.records = (
-                (ALREADY, "duplicate_in_file", [])
-                if len(factors) == 1
-                else (REVIEW, "file_disagrees_with_itself", [])
-            )
+        if len({r.factor for _, r in group}) > 1:
+            disagree.update(id(o) for o, _ in group)
+        else:
+            for o, r in group[1:]:
+                o.records = [kept for kept in o.records if kept is not r]
+    for o in outcomes:
+        if id(o) in disagree:
+            o.status, o.reason, o.records = REVIEW, "file_disagrees_with_itself", []
+        elif o.status == STORED and not o.records:
+            o.status, o.reason = ALREADY, "duplicate_in_file"
 
 
 def stored_price_actions(session: Session) -> dict[str, list[Stored]]:
@@ -821,7 +838,9 @@ def stored_price_actions(session: Session) -> dict[str, list[Stored]]:
         select(HatCorporateAction).where(HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES))
     ):
         iid = str(row.instrument_id)
-        out[iid].append(Stored(iid, row.ex_date, row.action_type, Decimal(row.adjustment_factor)))
+        out[iid].append(
+            Stored(iid, row.ex_date, row.action_type, Decimal(row.adjustment_factor), row.raw_text)
+        )
     return out
 
 

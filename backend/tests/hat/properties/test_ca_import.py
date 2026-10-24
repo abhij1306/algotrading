@@ -9,9 +9,17 @@ from fractions import Fraction
 import pytest
 
 from app.hat.data.ca_import import (
+    ALREADY,
+    REVIEW,
+    SKIPPED,
+    STORED,
     Leg,
+    Outcome,
+    Proposal,
     RightsTerms,
     Stored,
+    _dedupe,
+    _split_bonus,
     demerger_factor,
     equity_share_isin,
     gate,
@@ -24,7 +32,7 @@ from app.hat.data.ca_import import (
     same_factor,
     split_bonus_legs,
 )
-from app.hat.data.corporate_actions import TYPE_BONUS, TYPE_OTHER, TYPE_SPLIT
+from app.hat.data.corporate_actions import TYPE_BONUS, TYPE_OTHER, TYPE_SPLIT, ActionRecord
 
 
 def test_nse_date() -> None:
@@ -158,3 +166,62 @@ def test_equity_share_isin_and_name_key() -> None:
     assert name_key("The Tata Power Company Limited") == "TATA"
     assert name_key("GMR Power and Urban Infra Limited") == "GMR"
     assert name_key("") == ""
+
+
+def _row(subject: str, action_type: str) -> dict[str, str]:
+    return {
+        "rowid": "1",
+        "symbol": "X",
+        "isin": "INE000X01010",
+        "action_type": action_type,
+        "subject_raw": subject,
+        "instrument_class": "",
+        "exDate": "08-Sep-2016",
+    }
+
+
+def test_a_non_equity_bonus_keeps_the_split_beside_it() -> None:
+    p = _split_bonus(
+        _row("Bonus Debentures 1:1 / Face Value Split From Rs 10/- To Rs 2/-", "bonus+split")
+    )
+    assert p.legs == (Leg(TYPE_SPLIT, Fraction(1, 5)),)
+    assert not p.status
+    alone = _split_bonus(_row("Scheme Of Arrangement - Bonus Ncrps 4:1", "bonus"))
+    assert (alone.status, alone.reason) == (SKIPPED, "non_equity_text")
+
+
+def test_stored_kind_tells_a_demerger_from_rights() -> None:
+    day = date(2025, 1, 6)
+    assert Stored("i", day, TYPE_OTHER, Decimal("0.96"), "Demerger 1:10").kind == "demerger"
+    assert Stored("i", day, TYPE_OTHER, Decimal("0.96"), "Rights 1:10 @ Premium").kind == TYPE_OTHER
+    assert Stored("i", day, TYPE_SPLIT, Decimal("0.5"), "Demerger").kind == TYPE_SPLIT
+
+
+def _outcome(*legs: tuple[str, str]) -> Outcome:
+    p = Proposal("splits_bonus", "1", "X", "", date(2016, 9, 8), "t")
+    records = [
+        ActionRecord("i", date(2016, 9, 8), kind, Decimal(f), "t", "nse_ca_file")
+        for kind, f in legs
+    ]
+    return Outcome(p, STORED, "", "", records)
+
+
+def test_dedupe_per_key() -> None:
+    # the same split twice: the later row keeps its bonus leg, its split is dropped
+    first, second = (
+        _outcome((TYPE_SPLIT, "0.2")),
+        _outcome((TYPE_BONUS, "0.5"), (TYPE_SPLIT, "0.2")),
+    )
+    _dedupe([first, second])
+    assert [r.action_type for r in first.records] == [TYPE_SPLIT]
+    assert [r.action_type for r in second.records] == [TYPE_BONUS]
+    assert second.status == STORED
+    # the same split with different bonus legs elsewhere is no disagreement
+    a, b = _outcome((TYPE_SPLIT, "0.2"), (TYPE_BONUS, "0.5")), _outcome((TYPE_SPLIT, "0.2"))
+    _dedupe([a, b])
+    assert (b.status, b.reason, b.records) == (ALREADY, "duplicate_in_file", [])
+    assert len(a.records) == 2
+    # two factors for one key: both rows go to review
+    c, d = _outcome((TYPE_SPLIT, "0.2")), _outcome((TYPE_SPLIT, "0.5"))
+    _dedupe([c, d])
+    assert {(o.status, o.reason) for o in (c, d)} == {(REVIEW, "file_disagrees_with_itself")}
