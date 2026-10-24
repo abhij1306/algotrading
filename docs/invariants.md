@@ -42,8 +42,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`; zero skips. The
   caps count a position's unfilled entry remainder while that entry still works.
 - **Exits are never blocked** by a cap, kill switch, data failure, reconciliation state or mode.
-  Kill switches, pause and a failed gate stop new entries only (manage-only). A held instrument
-  that changes series keeps its exits under the new symbol. An account holding an open real
+  Kill switches, pause and a failed gate stop new entries only (manage-only); a drawdown or
+  manual kill or a pause also cancels the bot's entries still working at the broker, and a
+  placement re-reads the mode gates, so an entry routed before a gate closed is refused. A held
+  instrument that changes series keeps its exits under the new symbol. An account holding an open real
   position gets a desk at start whatever its status, so its fill sync, stops, exits and flatten
   keep running, unless another account's desk holds its broker login (then it is logged); the
   mode gates keep real entries to active accounts. An account of a broker other than the active
@@ -82,8 +84,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   trade the previous close; a stale price at the lower of last trade and stop).
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored as hashes;
   expiry 5 minutes; Take re-checks `max_chase`; unknown chats are ignored. Free text never makes
-  an order; auto, `/arm` and `/flatten` need a second confirmation. An entry fill landing after
-  a flatten sold its position is sold under that same confirmation.
+  an order; auto, `/arm` and `/flatten` need a second confirmation. A confirmed flatten trips the
+  account kill before it sells. An entry fill landing after a flatten sold its position is sold
+  under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
   evidence gate; policy and strategy versions are immutable. The gate counts the live trades
   closed since the version in force took effect, so any change, a decrease too, restarts that

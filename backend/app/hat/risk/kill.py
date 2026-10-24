@@ -117,6 +117,13 @@ class KillState:
     def manage_only(self) -> bool:
         return self.account_tripped or self.bot_tripped or self.health_tripped or self.paused
 
+    @property
+    def withdraws_entries(self) -> bool:
+        """A risk-channel kill or a pause also withdraws the bot's entries still working at the
+        broker (`EntryCancel.withdraw`); a health kill clears itself, so its entries keep working
+        and the placement re-check holds back new ones."""
+        return self.account_tripped or self.bot_tripped or self.paused
+
 
 def kill_state_of(rows: Sequence[KillRow], bot_id: UUID, *, paused: bool) -> KillState:
     """The `KillState` of one bot: the account key, the bot's key and its health channel."""

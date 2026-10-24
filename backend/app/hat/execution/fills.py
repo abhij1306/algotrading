@@ -3,7 +3,7 @@
 `FillSync.run` reads the broker's order book and trade book (both fail closed: an unreadable
 book raises and nothing is written) and then, for one broker account, runs its phases in order:
 **settle** (steps 1-5: HAT's book only, no broker call, no position lock), **commit**, **market**
-(6b) and **protect** (6, 6c, 7). The phases after the commit start from what it returns, so no
+(6b) and **protect** (6, 6c, 7, 8). The phases after the commit start from what it returns, so no
 position lock is ever taken over an uncommitted fill (`PositionDesk`).
 
 1. adopts a pending or unconfirmed HAT order the broker shows under its tag
@@ -15,8 +15,10 @@ position lock is ever taken over an uncommitted fill (`PositionDesk`).
 3. attributes the SELL trade of a triggered GTT to that GTT: one under the GTT's own tag
    (`gtt_tag`: the adapter reads a row under one of HAT's GTT tags as that GTT's sale; whether
    Fyers puts the tag on the sale is [verify on a live account]) to the working GTT with that
-   tag, and an untagged one to the GTT of the one open position on its symbol; a broker trade id
-   is recorded once across all orders, so an old trade never closes a newer position. Each
+   tag, and an untagged one only through its order, when that is the GTT's own sale by shape
+   (`stop_plans.gtt_child`: a CNC SELL of the GTT's quantity at its limit price, or the order its
+   trigger was recorded for), so the owner's own sale on the symbol is never HAT's; a broker
+   trade id is recorded once across all orders, so an old trade never closes a newer position. Each
    position a fill moved is protected in the protect phase, before anything else is done to it:
    an entry fill gets its broker stop (HAT-EXEC-060), a sale resizes the stop, and the last sale
    cancels it;
@@ -24,7 +26,7 @@ position lock is ever taken over an uncommitted fill (`PositionDesk`).
    signal Cancelled; a day stop that expired leaves its position to be protected again; a sale
    the broker took and then ended short records `order.rejected` and fires its rules again, so the
    next evaluation retries it once; its second rejection raises `exit.not_placed` (HAT-EXEC-075);
-5. raises `gtt.unfilled` for such a GTT's SELL order (by its tag, or untagged on its symbol) that
+5. raises `gtt.unfilled` for such a GTT's SELL order (by its tag, or `gtt_child` by shape) that
    ended (cancelled, rejected, expired) short of its quantity: the GTT triggered and did not fill
    .
    The GTT is ended and the position protected again. The broker order id is kept on the
@@ -52,7 +54,9 @@ position lock is ever taken over an uncommitted fill (`PositionDesk`).
 7. closes each position its sales emptied while its entry still worked, once the broker's book
    shows the entry ended or its trade date passed (`live_trades.close_if_emptied`); while it
    still works, the cancel of its remainder is asked unless it was already (F2). A late fill of
-   the remainder lands on the open position in step 2 and is protected like any entry fill.
+   the remainder lands on the open position in step 2 and is protected like any entry fill;
+8. raises each confirmed live stop resting below its position's stop (a raise the broker refused,
+   F3) to the stop again (`StopDesk.follow`), every sync until it is there.
 
 Each fill and its stop work commit as separate steps (the model's atomic steps, StopPlacement).
 Several fills of one position in one sync get one protect, after all of them are recorded.
@@ -110,7 +114,7 @@ from .protect import (
     UNVERIFIED,
     StopDesk,
 )
-from .stop_plans import LIVE, STOP_DAY, STOP_GTT, UNSURE, WORKING, stop_confirmed
+from .stop_plans import LIVE, STOP_DAY, STOP_GTT, UNSURE, WORKING, gtt_child, stop_confirmed
 
 if TYPE_CHECKING:
     from .mpp import MarketProtection
@@ -202,9 +206,9 @@ class _WorkingGtts:
     by_symbol: dict[str, HatOrder]
 
     def of(self, item: BrokerOrder | BrokerTrade) -> HatOrder | None:
-        """The GTT a broker sale is the child of: the one under its `gtt_tag` on its symbol;
-        for an untagged sale, the one GTT on its symbol; None for anything else (an order HAT
-        placed, a foreign one, a GTT tag HAT has no working GTT under)."""
+        """The GTT a broker sale may be the child of: the one under its `gtt_tag` on its symbol;
+        for an untagged sale, the one GTT on its symbol (`gtt_child` then checks its shape);
+        None for anything else (an order HAT placed, a GTT tag HAT has no working GTT under)."""
         if item.gtt_tag is not None:
             found = self.by_tag.get(item.gtt_tag)
             return found[0] if found is not None and found[1] == item.symbol else None
@@ -294,7 +298,7 @@ class FillSync:
         self, session: Session, account_id: uuid.UUID, now: datetime, *, check_gtts: bool = False
     ) -> SyncReport:
         """One pass over the broker's books, in phases: read, settle (steps 1-5: database
-        writes only), commit, market (6b), protect (6, 6c, 7). Raises BrokerUnavailableError
+        writes only), commit, market (6b), protect (6, 6c, 7, 8). Raises BrokerUnavailableError
         when the order or the trade book cannot be read (nothing is written then); an unreadable
         GTT book only skips step 6c. `check_gtts` reads the GTT book whether or not it is due."""
         sync = self._read(session, account_id, now, check_gtts=check_gtts)
@@ -387,6 +391,8 @@ class FillSync:
             self._desk.cancel_all(session, position_id, now)
         for position_id in self._emptied(session, account_id):
             self._close_emptied(session, position_id, now)
+        for position_id in self._low_stops(session, account_id):
+            self._desk.follow(session, position_id, now)  # a raise the broker refused earlier
 
     def _trades(self, session: Session, sync: _SyncPass) -> None:
         """Steps 2 and 3: each trade of an HT-tagged order, then each sale of a triggered GTT."""
@@ -395,21 +401,40 @@ class FillSync:
             if row is not None:
                 self._apply(session, row, trade, sync)
         gtts = self._working_gtts(session, sync.account_id)
+        children = self._gtt_children(session, sync.orders, gtts)
         for trade in sync.trades:
-            gtt = gtts.of(trade)
+            # an untagged trade is a GTT's only through its order (`gtt_child`): the owner's own
+            # sale on the symbol is not HAT's
+            gtt = gtts.of(trade) if trade.gtt_tag is not None else None
+            gtt = gtt or children.get(trade.order_id)
             if gtt is not None and trade.side is Side.SELL:
                 self._apply_gtt_trade(session, gtt, trade, sync)
 
+    def _gtt_children(
+        self, session: Session, orders: Iterable[BrokerOrder], gtts: _WorkingGtts
+    ) -> dict[str, HatOrder]:
+        """The book's orders that are a working GTT's sale (`gtt_child`), by broker order id."""
+        children: dict[str, HatOrder] = {}
+        for order in orders:
+            gtt = gtts.of(order)
+            if gtt is not None and gtt_child(
+                order, gtt, trigger_seen=self._trigger_seen(session, gtt.id, order.order_id)
+            ):
+                children[order.order_id] = gtt
+        return children
+
     def _gtt_sales(self, session: Session, sync: _SyncPass) -> None:
         """Step 5 over the order book: each triggered GTT's sale that ended short or rests."""
-        gtts = self._working_gtts(session, sync.account_id)
+        children = self._gtt_children(
+            session, sync.orders, self._working_gtts(session, sync.account_id)
+        )
         for order in sync.orders:
-            gtt = gtts.of(order)
+            gtt = children.get(order.order_id)
             if gtt is None:
                 continue
-            if self._unfilled_trigger(order, gtt):
+            if self._unfilled_trigger(order):
                 self._gtt_unfilled(session, gtt, order, sync)
-            elif self._resting_trigger(session, order, gtt):
+            elif self._resting_trigger(order):
                 self._gtt_resting(session, gtt, order, sync)
         # a sale that filled or left the book before it counted as resting is forgotten
         working = {order.order_id for order in sync.orders}
@@ -630,7 +655,7 @@ class FillSync:
         and no sale of it in the order book is checked and protected again by the desk."""
         report = sync.report
         gtts = self._working_gtts(session, sync.account_id)
-        triggered = {gtt.id for order in sync.orders if (gtt := gtts.of(order)) is not None}
+        triggered = {gtt.id for gtt in self._gtt_children(session, sync.orders, gtts).values()}
         gone = {
             row.position_id
             for row, _symbol in gtts.by_tag.values()
@@ -666,16 +691,9 @@ class FillSync:
     # --- 5. a GTT that triggered without a fill -------------------------------------------------
 
     @staticmethod
-    def _unfilled_trigger(order: BrokerOrder, gtt: HatOrder) -> bool:
-        """A GTT's sale (`_WorkingGtts.of` found its GTT) that ended short of its quantity; an
-        untagged one only at the GTT's quantity, so another sale on the symbol that ended never
-        ends the GTT."""
-        return (
-            order.side is Side.SELL
-            and (order.gtt_tag is not None or order.qty == gtt.qty)
-            and order.status in _ENDED_SHORT
-            and order.filled_qty < order.qty
-        )
+    def _unfilled_trigger(order: BrokerOrder) -> bool:
+        """A GTT's sale (`gtt_child`) that ended short of its quantity."""
+        return order.status in _ENDED_SHORT and order.filled_qty < order.qty
 
     @staticmethod
     def _already_alerted(session: Session, order_id: str, gtt_ids: Iterable[uuid.UUID]) -> bool:
@@ -735,26 +753,10 @@ class FillSync:
 
     # --- 5b. a GTT that triggered and whose sale rests unfilled ----------------------------------
 
-    def _resting_trigger(self, session: Session, order: BrokerOrder, gtt: HatOrder) -> bool:
-        """The GTT's own sale, still working short of its quantity: a CNC SELL under the GTT's
-        tag, or an untagged CNC SELL of the GTT's quantity at the GTT's limit price (once marked,
-        by its broker order id: a market sale has no limit price). Any other untagged order is
-        not HAT's and is left alone."""
-        if (
-            order.side is not Side.SELL
-            or order.product != "CNC"
-            or order.status not in LIVE
-            or order.filled_qty >= order.qty
-        ):
-            return False
-        if order.gtt_tag is not None:
-            return True  # `_WorkingGtts.of` matched it to this GTT by its tag
-        if order.qty != gtt.qty:
-            return False
-        limit = Decimal(gtt.price) if gtt.price is not None else None
-        return (limit is not None and order.price == limit) or self._trigger_seen(
-            session, gtt.id, order.order_id
-        )
+    @staticmethod
+    def _resting_trigger(order: BrokerOrder) -> bool:
+        """A GTT's sale (`gtt_child`) still working short of its quantity, as a CNC order."""
+        return order.product == "CNC" and order.status in LIVE and order.filled_qty < order.qty
 
     @staticmethod
     def _trigger_seen(session: Session, gtt_id: uuid.UUID, order_id: str) -> bool:
@@ -866,6 +868,30 @@ class FillSync:
                     HatPosition.closed_at.is_(None),
                     HatPosition.qty_open <= 0,
                 )
+            )
+        )
+
+    @staticmethod
+    def _low_stops(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
+        """The open real positions with a confirmed live stop below the position's stop: `follow`
+        raises it to the stop's broker trigger (a no-op once there: the trigger is rounded down
+        to the tick)."""
+        return list(
+            session.scalars(
+                select(HatPosition.id)
+                .join(HatOrder, HatOrder.position_id == HatPosition.id)
+                .where(
+                    HatOrder.broker_account_id == account_id,
+                    HatOrder.purpose.in_(STOPS),
+                    HatOrder.status.in_(LIVE),
+                    HatOrder.broker_order_id.is_not(None),
+                    HatOrder.trigger_price < HatPosition.current_stop,
+                    HatPosition.is_virtual.is_(False),
+                    HatPosition.closed_at.is_(None),
+                    HatPosition.qty_open > 0,
+                )
+                .distinct()
+                .order_by(HatPosition.id)
             )
         )
 

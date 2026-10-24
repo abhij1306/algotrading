@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from ..engine.owner import OwnerCommand
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerAccount
+from ..models import HatBot, HatBrokerAccount
 from ..models.strategy import (
     ACCOUNT_ACTIVE,
     ACCOUNT_FAILED,
@@ -35,6 +35,7 @@ from ..models.strategy import (
     BROKER_FYERS,
     BROKER_ZERODHA,
 )
+from ..risk.kill_ops import cancel_pending_approvals
 from ..time import as_utc, trade_date_of
 from .broker import (
     CODE_RATE_LIMITED,
@@ -220,7 +221,9 @@ def revoke_ddpi(
     `ddpi_confirmed` and its time, keeps the dated reason in `ddpi_note` and writes
     `broker.ddpi_revoked` (actor user, via cli). Allowed at any time, inside market hours too: it
     only narrows, and every gate read sees it at once, so the account's bots run shadow from
-    their next routing decision (HAT-GOV-085). Refused, writing nothing: an account that is not
+    their next routing decision (HAT-GOV-085), a placement refuses an entry routed before it
+    (`router._mode_refusal`), and the account's undecided approval cards are expired in the same
+    transaction (`ddpi_revoked`). Refused, writing nothing: an account that is not
     the user's (`account_unknown`), one not confirmed (`ddpi_not_confirmed`), or an empty or
     overlong note (`ddpi_note_required`)."""
     account = session.get(HatBrokerAccount, account_id, with_for_update=True)
@@ -244,5 +247,7 @@ def revoke_ddpi(
         user_id=account.user_id,
         occurred_at=now,
     )
+    for bot_id in session.scalars(select(HatBot.id).where(HatBot.broker_account_id == account.id)):
+        cancel_pending_approvals(session, bot_id, now, "ddpi_revoked")
     session.flush()
     return account

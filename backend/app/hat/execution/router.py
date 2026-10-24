@@ -18,8 +18,10 @@ writes what the mode needs in one transaction:
 no entry outside the calendar session, on a stale or unknown feed, on a day whose data failed
 the quality gate, or while the regime gate is off (HAT-EXEC-022, HAT-RISK-074, -075, -050),
 none without a live price that is fresh and inside the day's band, or at or below the entry's
-stop (PR 51: a failed breakout Taken late must not buy under its own stop), and none once the
-account no longer reports GTT for delivery (HAT-EXEC-012). The risk check ran
+stop (PR 51: a failed breakout Taken late must not buy under its own stop), none once the
+account no longer reports GTT for delivery (HAT-EXEC-012), and none once the bot no longer runs
+the mode the entry was routed in (`modes.mode_refusal`: DDPI revoked, the sleeve not Live, the
+weights not confirmed). The risk check ran
 them at the trigger; a Take minutes later, or an auto entry resumed after a crash, reads them
 again. The entry then goes only through `submit.reserve_order` and
 `submit.send_order` (the one path to the broker, trading-safety rule 1). Before the session's
@@ -79,7 +81,16 @@ from ..time import as_utc, trade_date_of
 from .broker import BrokerUnavailableError, HatBroker, OrderType, SessionStatus, Side
 from .entry_timeout import BREAK_FAILED, break_failed
 from .guard import ExecutionGuard
-from .modes import HIGH, NO_GTT_DELIVERY, NOT_HIGH_CONFIDENCE, bot_mode, real_orders_allowed
+from .modes import (
+    HIGH,
+    MODE_GATE_CLOSED,
+    NO_GTT_DELIVERY,
+    NOT_HIGH_CONFIDENCE,
+    bot_mode,
+    mode_refusal,
+    mode_view,
+    real_orders_allowed,
+)
 from .reconcile import ReconciliationService
 from .submit import (
     OrderRefusedError,
@@ -207,6 +218,21 @@ def _gtt_refusal(session: Session, account_id: uuid.UUID, broker: HatBroker) -> 
     ):
         return NO_GTT_DELIVERY
     return None
+
+
+def _mode_refusal(
+    session: Session, signal: HatSignal, now: datetime, calendar: SessionCalendar | None
+) -> str | None:
+    """HAT-EXEC-012 and HAT-GOV-085 at placement: the bot must still run the mode its entry was
+    routed in. A gate that closed after the routing (`revoke-ddpi`, the sleeve leaving Live, the
+    weights no longer confirmed) refuses a Take, an auto entry and a resumed one, with the gate's
+    code where it is known."""
+    bot = session.get(HatBot, signal.bot_id)
+    if bot is None:
+        return MODE_GATE_CLOSED
+    view = mode_view(session, bot, now, calendar)
+    refusal = mode_refusal(signal.mode, view.effective)
+    return None if refusal is None else view.why or refusal
 
 
 def _session_refusal(session: Session, account_id: uuid.UUID, now: datetime) -> str | None:
@@ -479,6 +505,7 @@ class ExecutionRouter:
         return (
             placement_refusal(check, now, signal)
             or _kill_refusal(session, signal.bot_id)
+            or _mode_refusal(session, signal, now, check.calendar)
             or _gtt_refusal(session, account_id, self._broker)
             or _session_refusal(session, account_id, now)
         )

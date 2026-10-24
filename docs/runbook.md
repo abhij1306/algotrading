@@ -276,9 +276,11 @@ advisory lock; `features` does not take it, so run it after they finish.
 - **`fill.off_lifecycle`:** URGENT. A fill landed after its trade ended (an entry seen cancelled
   or closed, or a sale on a closed position); it is booked and the stop covers the shares.
   Check the position and decide on `/flatten`.
-- **Kill and flatten:** `/kill` makes every bot manage-only. Re-arm after fixing the cause with
-  `/arm` and Confirm (`/resume` does not lift a kill; data-health kills clear themselves).
-  `/flatten` and Confirm sells every real position.
+- **Kill and flatten:** `/kill` makes every bot manage-only and cancels its entries still working
+  at the broker (so does `/pause`). Re-arm after fixing the cause with `/arm` and Confirm
+  (`/resume` does not lift a kill; data-health kills clear themselves). `/flatten` and Confirm
+  trips the account kill, cancels the working entries and sells every real position; `/arm`
+  lifts the kill.
 - **`exit.close_gap`:** weekly in shadow, `select payload from hat_event where event_type =
   'exit.close_gap' order by created_at desc limit 50;`; change the exit rule if biased.
 - **`gapscan.latency_observed`:** `select started_at, finished_at from hat_job_run where job =

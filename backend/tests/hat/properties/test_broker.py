@@ -35,6 +35,7 @@ from app.hat.execution.manage import (
     NEVER_SOLD,
     SETTLED,
     SOLD,
+    TAG_EXHAUSTED,
     UNKNOWN,
     UNREADABLE,
     WAIT,
@@ -48,6 +49,7 @@ from app.hat.execution.modes import (
     ModeRefusedError,
     UnknownModeError,
     capability_gated,
+    mode_refusal,
     request_mode,
     sleeve_refusal,
 )
@@ -112,6 +114,22 @@ def test_sleeve_refusal(mode: str, state: str) -> None:
     """Q9: confirm and auto are refused for a sleeve that is not Live; shadow never is."""
     refused = mode in (Mode.CONFIRM, Mode.AUTO) and state != "live"
     assert sleeve_refusal(mode, state) == ("sleeve_not_live" if refused else None)
+
+
+@pytest.mark.parametrize(
+    ("routed", "effective", "refusal"),
+    [
+        (Mode.CONFIRM, Mode.CONFIRM, None),
+        (Mode.AUTO, Mode.AUTO, None),
+        (Mode.CONFIRM, Mode.AUTO, None),  # an auto bot's card for a signal not labelled high
+        (Mode.CONFIRM, Mode.SHADOW, "mode_gate_closed"),  # DDPI revoked before the Take
+        (Mode.AUTO, Mode.SHADOW, "mode_gate_closed"),  # sleeve left Live before the resume
+        (Mode.AUTO, Mode.CONFIRM, "mode_gate_closed"),  # never placed without a card
+        (Mode.SHADOW, Mode.SHADOW, "mode_gate_closed"),
+    ],
+)
+def test_mode_refusal(routed: str, effective: str, refusal: str | None) -> None:
+    assert mode_refusal(routed, effective) == refusal
 
 
 @given(status=st.sampled_from(["active", "pending", "failed", "suspended"]))
@@ -435,7 +453,25 @@ def test_sale_gate(
     floor: Decimal | None,
     gate: SaleGate,
 ) -> None:
-    got = sale_gate(settled, qty, busy=busy, open_now=open_now, rejected=rejected, floor=floor)
+    got = sale_gate(
+        settled, qty, busy=busy, open_now=open_now, rejected=rejected, floor=floor, tags_left=36
+    )
+    assert got == gate
+
+
+@pytest.mark.parametrize(
+    ("tags_left", "open_now", "gate"),
+    [
+        (0, True, SaleGate(SaleStep.REFUSE, TAG_EXHAUSTED)),  # refused before make_room
+        (-1, True, SaleGate(SaleStep.REFUSE, TAG_EXHAUSTED)),
+        (1, True, SaleGate(SEND, attempts=2)),  # a second attempt's TagError is a refusal
+        (0, False, SaleGate(SaleStep.REFUSE, "market_closed")),
+    ],
+)
+def test_sale_gate_tags_spent(tags_left: int, open_now: bool, gate: SaleGate) -> None:
+    got = sale_gate(
+        SETTLED, 10, busy=False, open_now=open_now, rejected=0, floor=None, tags_left=tags_left
+    )
     assert got == gate
 
 
