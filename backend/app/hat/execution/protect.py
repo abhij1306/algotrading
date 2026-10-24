@@ -181,6 +181,12 @@ class AlertedToday:
             self._seen.add(key)
             return True
 
+    def forget(self, day: date, code: str, position_id: uuid.UUID, reason: str) -> None:
+        """Ask for the alert again on `day`: its delivery failed."""
+        with self._lock:
+            if day == self._day:
+                self._seen.discard((code, position_id, reason))
+
 
 class StopDesk:
     """Broker stops for one broker account's session; `guard` is the account's order gate (it
@@ -341,21 +347,27 @@ class StopDesk:
 
     def alert(self, code: str, target: StopTarget, now: datetime, reason: str) -> None:
         """Tell the owner; a `ONCE_A_DAY` alert only the first time on the trade date for its
-        position and reason (the next syncs try again and would raise it each time)."""
+        position and reason (the next syncs try again and would raise it each time); one that
+        could not be delivered is told again at the next sync."""
         day = trade_date_of(now)
         if code in ONCE_A_DAY and not self._alerted.first(day, code, target.position.id, reason):
             logger.info("%s of position %s (%s) already alerted", code, target.position.id, reason)
             return
-        self._notifier.alert(
-            code,
-            day,
-            {
-                "bot_id": str(target.signal.bot_id),
-                "signal_id": str(target.signal.id),
-                "position_id": str(target.position.id),
-                "code": reason,
-            },
-        )
+        delivered = False
+        try:
+            delivered = self._notifier.alert(
+                code,
+                day,
+                {
+                    "bot_id": str(target.signal.bot_id),
+                    "signal_id": str(target.signal.id),
+                    "position_id": str(target.position.id),
+                    "code": reason,
+                },
+            )
+        finally:
+            if not delivered and code in ONCE_A_DAY:
+                self._alerted.forget(day, code, target.position.id, reason)
 
     # --- placing ------------------------------------------------------------------------------
 
