@@ -4,7 +4,9 @@ act on while the market is open.
 - `PriceBook`: the feed's last trade per instrument with its exchange time (a `LiveData` tick
   listener, loop thread).
 - `LivePrices`: the price a Take, a placement or an exit acts on: the last trade, refused when
-  the stale threshold old or outside the day's price band (`data.live.usable_price`, PR 51).
+  the stale threshold old or outside the day's price band (`data.live.usable_price`, PR 51); an
+  exit view also takes an illiquid name's older last trade while the feed is fresh
+  (`exit_price`, QA15).
 - `SaleBands`: the day's lower band of an instrument for its sales (PR 48).
 - `stale_feed`: whether the feed is stale now; before a first tick in an open session it is.
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 
@@ -23,7 +26,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import Clock
 from ..data.bars import Tick
-from ..data.live import Quote, usable_price
+from ..data.live import Quote, exit_price, usable_price
 from ..data.staleness import StalenessMonitor
 from ..engine.trigger import (
     DailyInputs,
@@ -118,22 +121,35 @@ class SaleBands:
 class LivePrices:
     """The live price a Take, a placement or an exit acts on (PR 51): the instrument's last
     trade from the feed, refused when it is the stale threshold old (HAT-DATA-116) or outside
-    the day's price band. `checked` gives the price or None and the refusal's fixed code."""
+    the day's price band. `checked` gives the price or None and the refusal's fixed code.
+    `exit_price` is the exit views' (QA15): while `feed_fresh` says the feed is, a silent
+    symbol's last trade of the day still counts."""
 
-    def __init__(self, quotes: PriceBook, book: DailyBook, clock: Clock) -> None:
+    def __init__(
+        self,
+        quotes: PriceBook,
+        book: DailyBook,
+        clock: Clock,
+        feed_fresh: Callable[[], bool] = lambda: False,
+    ) -> None:
         self._quotes = quotes
         self._book = book
         self._clock = clock
+        self._feed_fresh = feed_fresh
+
+    def _bounds(
+        self, session: Session, instrument_id: uuid.UUID, at: datetime, quote: Quote | None
+    ) -> tuple[Decimal | None, Decimal | None]:
+        if quote is None:
+            return None, None
+        return band_bounds(self._book.day(trade_date_of(at)).daily(session, instrument_id))
 
     def checked(
         self, session: Session, instrument_id: uuid.UUID, now: datetime | None = None
     ) -> tuple[Decimal | None, str | None]:
         at = utc_now(self._clock) if now is None else now
         quote = self._quotes.quote(instrument_id)
-        lower = upper = None
-        if quote is not None:
-            daily = self._book.day(trade_date_of(at)).daily(session, instrument_id)
-            lower, upper = band_bounds(daily)
+        lower, upper = self._bounds(session, instrument_id, at, quote)
         price, refusal = usable_price(quote, at, lower=lower, upper=upper)
         if refusal is not None:
             logger.debug("live price of %s refused: %s", instrument_id, refusal)
@@ -141,6 +157,18 @@ class LivePrices:
 
     def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
         return self.checked(session, instrument_id)[0]
+
+    def exit_price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
+        """The price an exit view acts on (`data.live.exit_price`); None when unknown."""
+        at = utc_now(self._clock)
+        quote = self._quotes.quote(instrument_id)
+        lower, upper = self._bounds(session, instrument_id, at, quote)
+        price, refusal = exit_price(
+            quote, at, lower=lower, upper=upper, feed_fresh=self._feed_fresh()
+        )
+        if refusal is not None:
+            logger.debug("exit price of %s refused: %s", instrument_id, refusal)
+        return price
 
 
 def stale_feed(staleness: StalenessMonitor, now: datetime) -> bool:

@@ -11,7 +11,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 2. No order adds to a position: never to a loser, and a bot never adds to an open position.
 3. No entry without a stop price below the entry price.
 4. No entry when the day's data or the live feed is stale, or the instrument's last price is
-   unknown, 30 s old or outside the day's price band.
+   unknown, 30 s old or outside the day's price band. An exit view may act on an older last
+   trade of the day only while the feed itself is fresh (an illiquid name), never an entry.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
    lacks is no trading day; a special session has only its stored hours, else it is closed.
 6. `max_chase` always applies, even if a config deletes the criterion.

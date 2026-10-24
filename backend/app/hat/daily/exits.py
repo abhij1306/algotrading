@@ -54,8 +54,9 @@ class ExitViews:
     previous raw close with no action stored since is an unstored split (Q3): the position
     gets one URGENT `position.split_gap`, in its own transaction, and no view until the owner
     stores the action or resolves the gap (`rescale.open_guards`). The price is
-    `LivePrices.price`: one the stale threshold old or outside the day's band gives no view, so
-    no exit fires on it (PR 51; the broker stop still rests)."""
+    `LivePrices.exit_price`: one outside the day's band gives no view, nor one the stale threshold
+    old unless the feed itself is fresh (an illiquid name keeps its last trade of the day, QA15),
+    so no exit fires on it (PR 51; the broker stop still rests)."""
 
     def __init__(
         self,
@@ -73,7 +74,7 @@ class ExitViews:
         self._flag_lock = threading.Lock()  # the shadow and account exits share the views
 
     def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
-        """The instrument's checked live price (`LivePrices.price`); None when unknown."""
+        """The instrument's checked exit price (`LivePrices.exit_price`); None when unknown."""
         return self._prices(session, instrument_id)
 
     def trading_days(self) -> list[date]:
