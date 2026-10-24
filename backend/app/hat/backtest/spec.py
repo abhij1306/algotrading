@@ -70,6 +70,9 @@ KNOWN_GAPS = (
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)
     "multipliers_fixed_at_one",  # health is 1; regime too unless `regime_mult` is `policy`
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
+    # the NIFTY 500 membership is today's list over the whole period, not point in time: a
+    # survivorship bias accepted until a constituents history exists (QA5)
+    "universe_from_current_constituents",
 )
 # The playbooks a known gap names: the lifecycle gate refuses a version that enables one of them
 # on this evidence (PR 69, HAT-PORT-061). A gap not listed here names no playbook: it holds for
