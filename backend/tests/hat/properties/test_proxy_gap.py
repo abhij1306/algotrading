@@ -11,9 +11,9 @@ import pytest
 
 from app.hat.backtest.proxy_gap import GapError, Leg, columns_to_read, comparable, compare, window
 from app.hat.backtest.report import END_OF_PERIOD
-from app.hat.engine.scan import EP_PLAYBOOK
 
 D = Decimal
+EP_PLAYBOOK = "episodic_pivot"
 DAY = date(2026, 3, 2)
 A, B = "instrument-a", "instrument-b"
 

@@ -60,6 +60,13 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   (`save_draft` refuses a config whose `bot` is another name), and every key reads it.
   Adding a strategy is one seed file plus any new criteria; its `p_max` and `base_weight` go into
   the risk policy as a new policy version.
+- **A playbook's handling comes from its criteria, not its name:** a playbook is pre-open
+  (`Playbook.preopen`) when one of its criteria declares `preopen` in its `data_needs`; the gap
+  scan builds its candidates, the nightly scan skips it, and the known gap
+  `episodic_pivot_not_backtested` names it. The trigger inputs are built by one function each,
+  for live, the backtest and the scan: the stop history at each rule's own length
+  (`stops.history_inputs`), the entry stop (`trigger.entry_stop`) and the entry-filter context
+  (`trigger.daily_context`, `entry_filter_context`).
 - **One risk authority:** `risk/service.py:evaluate_signal` -> `decide`, the only caller of
   `size_position`.
 - **One path to an order:** `execution/submit.py:send_order` is the only way an entry reaches

@@ -27,6 +27,8 @@ from .base import (
 from .live import LiveContext
 
 BARS = "bars_daily"
+# A type that needs the pre-open data makes its playbook a pre-open one (`Playbook.preopen`).
+PREOPEN = "preopen"
 NOT_EVALUABLE = "not_evaluable"
 FEATURES = "features_daily"
 
@@ -88,7 +90,7 @@ _TYPES = (
         setup.earnings_growth,
     ),
     _t("close_vs_pivot", "setup", setup.CloseVsPivotParams, (BARS,), setup.close_vs_pivot),
-    _live("gap_up", "trigger", live.GapUpParams, ("preopen", "live_bars"), live.gap_up),
+    _live("gap_up", "trigger", live.GapUpParams, (PREOPEN, "live_bars"), live.gap_up),
     _live("volume_pace", "trigger", live.VolumePaceParams, ("live_bars", BARS), live.volume_pace),
     _live(
         "early_volume", "trigger", live.EarlyVolumeParams, ("live_bars", BARS), live.early_volume
@@ -152,6 +154,7 @@ def evaluate_live(
 
 
 __all__ = [
+    "PREOPEN",
     "REGISTRY",
     "STAGES",
     "CriterionResult",

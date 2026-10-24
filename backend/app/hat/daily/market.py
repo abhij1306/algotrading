@@ -30,13 +30,8 @@ from ..data.store import (
 from ..data.ticks import tick_for_date
 from ..engine.exits import ExitView, view_from_rules
 from ..engine.scan import ScanInputs
-from ..engine.stops import lowest, mean_true_range, sma
-from ..engine.strategy.config import (
-    ExitRule,
-    StopAtrMultiple,
-    StopSwingLow,
-    StrategyConfig,
-)
+from ..engine.stops import lowest, sma
+from ..engine.strategy.config import ExitRule, StopRule
 from ..engine.trigger import DailyFeeds, DailyInputs, daily_inputs
 from ..models import HatInstrument
 from ..money import exact, require_exact
@@ -138,20 +133,6 @@ def official_closes(store: DataStore, day: date) -> dict[uuid.UUID, Decimal]:
     return out
 
 
-def stop_lengths(configs: Iterable[StrategyConfig]) -> tuple[int | None, int | None]:
-    """(ATR days, swing-low lookback) the playbooks' stops need. One `DailyInputs` serves every
-    bot, so when bots disagree on a length that stop gets no input and fails closed."""
-    atr: set[int] = set()
-    swing: set[int] = set()
-    for config in configs:
-        for playbook in config.playbooks:
-            if isinstance(playbook.stop, StopAtrMultiple):
-                atr.add(playbook.stop.days)
-            elif isinstance(playbook.stop, StopSwingLow):
-                swing.add(playbook.stop.lookback_days)
-    return (atr.pop() if len(atr) == 1 else None, swing.pop() if len(swing) == 1 else None)
-
-
 class DailyData:
     """The daily view of trade date `trade_date`: adjusted bars of the sessions before it, the
     unadjusted closes for the tick, and the previous session's features. Loaded once per trade
@@ -162,12 +143,9 @@ class DailyData:
         store: DataStore,
         session: Session,
         trade_date: date,
-        *,
-        configs: Sequence[StrategyConfig] = (),
     ) -> None:
         self.trade_date = trade_date
         window = sessions_before(store, trade_date, DAILY_SESSIONS)
-        self._atr_days, self._swing_days = stop_lengths(configs)
         adjustment = stored_adjustment(session)
         # a position bought under a linked older ISIN reads its chain's bars, features and tick
         self._chain: dict[str, str] = dict(adjustment.lineage)
@@ -234,20 +212,11 @@ class DailyData:
             else []
         )
 
-    def _atr(self, instrument_id: uuid.UUID) -> Decimal | None:
-        if self._atr_days is None:
-            return None
-        frame = self.bars(instrument_id).tail(self._atr_days + 1)
-        if frame.height == 0:
-            return None
-        highs, lows, closes = (
-            [require_exact(v, name, floats=True) for v in frame[name].to_list()]
-            for name in ("high", "low", "close")
-        )
-        return mean_true_range(highs, lows, closes, self._atr_days)
-
-    def daily(self, session: Session, instrument_id: uuid.UUID) -> DailyInputs:
-        """The trigger's `DailyInputs` of one instrument (HAT-CRIT-115, HAT-DATA-115)."""
+    def daily(
+        self, session: Session, instrument_id: uuid.UUID, stop: StopRule | None = None
+    ) -> DailyInputs:
+        """The trigger's `DailyInputs` of one instrument (HAT-CRIT-115, HAT-DATA-115), with the
+        ATR and swing lows of the candidate's own `stop` rule at its own length."""
         found, band = current_band(session, instrument_id, self.trade_date)
         frame = self.bars(instrument_id)
         if frame.height == 0:
@@ -258,9 +227,8 @@ class DailyData:
             adtr20=self.feature(instrument_id, "adtr20"),
             band_known=found,
             band_pct=band,
-            atr=self._atr(instrument_id),
         )
-        return daily_inputs(frame, self.trade_date, feeds, self._swing_days or 0)
+        return daily_inputs(frame, self.trade_date, feeds, stop)
 
     def sma(self, instrument_id: uuid.UUID, length: int, live: Decimal) -> Decimal | None:
         """The `length`-session SMA with the live price standing in for today's close (the
@@ -300,15 +268,9 @@ class DailyBook:
     """One `DailyData` per trade date, loaded on first use and shared by the trigger, stop and
     exit code of that day. `reset` drops the cache (after the nightly load writes new bars)."""
 
-    def __init__(
-        self,
-        store: DataStore,
-        session_factory: Callable[[], Session],
-        configs: Callable[[Session], Sequence[StrategyConfig]],
-    ) -> None:
+    def __init__(self, store: DataStore, session_factory: Callable[[], Session]) -> None:
         self._store = store
         self._session_factory = session_factory
-        self._configs = configs
         self._days: dict[date, DailyData] = {}
         self._lock = threading.Lock()
 
@@ -317,9 +279,7 @@ class DailyBook:
             found = self._days.get(trade_date)
             if found is None:
                 with self._session_factory() as session:
-                    found = DailyData(
-                        self._store, session, trade_date, configs=self._configs(session)
-                    )
+                    found = DailyData(self._store, session, trade_date)
                 self._days = {trade_date: found}  # only the current day is kept
             return found
 

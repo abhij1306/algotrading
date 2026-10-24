@@ -11,13 +11,17 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import hat_backtest_support as s
+from hat_trigger_support import S1, S2, seed_config
 
 from app.hat.backtest.evidence import RunMetrics, history_holds, unbacktested
 from app.hat.backtest.report import TradeRow, compute_metrics
 from app.hat.backtest.spec import KNOWN_GAPS, sleeve_weight
-from app.hat.engine.scan import EP_PLAYBOOK
 
 D = Decimal
+S2_BOOKS = tuple(seed_config(S2).playbooks)  # breakout, episodic_pivot
+BREAKOUT = S2_BOOKS[:1]
+# a pre-open playbook under another name: named by what it uses, not by its name
+GAP_AND_GO = S2_BOOKS[1].model_copy(update={"name": "gap_and_go"})
 
 
 def _trade(entry: date, exit_: date, r: str) -> TradeRow:
@@ -99,12 +103,14 @@ def test_run_metrics_fail_closed() -> None:
 
 
 def test_unbacktested() -> None:
-    ep = frozenset({EP_PLAYBOOK})
-    assert unbacktested(None) == ep
-    assert unbacktested(RunMetrics.from_json({})) == ep  # no gap list
-    assert unbacktested(RunMetrics.from_json({"known_gaps": "garbled"})) == ep
-    assert unbacktested(RunMetrics.from_json({"known_gaps": [KNOWN_GAPS[1]]})) == ep
-    assert unbacktested(RunMetrics.from_json({"known_gaps": []})) == frozenset()  # PR 70
+    ep = frozenset({"episodic_pivot"})
+    assert unbacktested(None, S2_BOOKS) == ep
+    assert unbacktested(RunMetrics.from_json({}), S2_BOOKS) == ep  # no gap list
+    assert unbacktested(RunMetrics.from_json({"known_gaps": "garbled"}), S2_BOOKS) == ep
+    assert unbacktested(RunMetrics.from_json({"known_gaps": [KNOWN_GAPS[1]]}), S2_BOOKS) == ep
+    assert unbacktested(RunMetrics.from_json({"known_gaps": []}), S2_BOOKS) == frozenset()  # PR 70
+    assert unbacktested(None, (*BREAKOUT, GAP_AND_GO)) == frozenset({"gap_and_go"})
+    assert unbacktested(None, seed_config(S1).playbooks) == frozenset()
 
 
 def test_history_holds() -> None:
@@ -118,10 +124,12 @@ def test_history_holds() -> None:
         ambiguous_days=10,
         known_gaps=KNOWN_GAPS,
     )
-    breakout = frozenset({"breakout"})
+    breakout = BREAKOUT
     assert history_holds(good, breakout)
     assert not history_holds(dataclasses.replace(good, last_session=date(2022, 6, 1)), breakout)
-    assert not history_holds(good, frozenset({"breakout", EP_PLAYBOOK}))
-    assert not history_holds(good, frozenset())
+    assert not history_holds(good, S2_BOOKS)
+    assert not history_holds(good, (*BREAKOUT, GAP_AND_GO))
+    assert not history_holds(dataclasses.replace(good, known_gaps=None), breakout)
+    assert not history_holds(good, ())
     assert not history_holds(dataclasses.replace(good, ambiguous_days=11), breakout)
     assert not history_holds(dataclasses.replace(good, ambiguous_days=None), breakout)

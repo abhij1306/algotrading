@@ -8,8 +8,8 @@ live job call the same function and get the same watchlist for the same inputs (
 A symbol reaches a later stage only after passing every earlier one, and the stages recorded in
 `criteria_results` stop at the first one that failed. A symbol outside the universe on the date
 is never evaluated, so a stock removed from the universe produces no watchlist row from its
-effective date (HAT-PORT-023). The episodic-pivot playbook is not scanned here: its setup is
-built live from the pre-open scan (HAT-BOT-052).
+effective date (HAT-PORT-023). A pre-open playbook (`Playbook.preopen`, such as the episodic
+pivot) is not scanned here: its setup is built live from the gap scan (HAT-BOT-052).
 """
 
 from __future__ import annotations
@@ -26,12 +26,11 @@ from ..data.ticks import scaled_tick, tick_for_date
 from ..money import exact
 from .criteria import EvalContext
 from .regime_gate import regime_allows_longs
-from .stops import StopInputs, plan_stop_at_pivot
+from .stops import SeriesHistory, StopInputs, history_inputs, plan_stop_at_pivot
 from .strategy.config import Playbook, StopBelowFinalContractionLow, StrategyConfig
 from .strategy.scoring import PlaybookEvaluation, StageOutcome, evaluate_playbook
 
 __all__ = [
-    "EP_PLAYBOOK",
     "ScanInputs",
     "ScanResult",
     "WatchRow",
@@ -39,7 +38,6 @@ __all__ = [
     "scan_bot",
 ]
 
-EP_PLAYBOOK = "episodic_pivot"
 # The setup levels stored with a watchlist row for the live trigger and stop.
 LEVEL_KEYS = ("pivot", "consolidation_high", "final_contraction_low")
 
@@ -125,23 +123,29 @@ def _planned_stop(
     playbook: Playbook,
     evaluation: PlaybookEvaluation,
     pivot: Decimal | None,
-    lows: Sequence[float | None],
-    tick: Decimal | None,
+    ctx: EvalContext,
 ) -> Decimal | None:
     """The stop the setup implies at the pivot, for the rules that can be priced overnight, on
-    the instrument's tick grid (HAT-EXEC-053). A skip (too wide, no pivot, no tick) leaves it
-    empty; the live entry recomputes it from the real entry price (HAT-BOT-062), and only there
-    is a contraction stop's `min_pct` applied (`plan_stop_at_pivot`)."""
+    the next session's tick grid (HAT-EXEC-053), from the bars through the scan date
+    (`history_inputs`). A skip (too wide, no pivot, no tick) leaves it empty; the live entry
+    recomputes it from the real entry price (HAT-BOT-062), and only there is a contraction
+    stop's `min_pct` applied (`plan_stop_at_pivot`)."""
+    tick = next_session_tick(ctx)
     if pivot is None or tick is None:
         return None
     rule = playbook.stop
     contraction_low = _extra(evaluation, "final_contraction_low")
     if isinstance(rule, StopBelowFinalContractionLow) and contraction_low is None:
         return None
-    swing = [d for v in lows if v is not None and (d := exact(v, floats=True)) is not None]
+    history = ctx.history
+    atr, swing = history_inputs(
+        rule, SeriesHistory.of_floats(history.high, history.low, history.close)
+    )
     plan = plan_stop_at_pivot(
         rule,
-        StopInputs(entry=pivot, tick=tick, final_contraction_low=contraction_low, swing_lows=swing),
+        StopInputs(
+            entry=pivot, tick=tick, final_contraction_low=contraction_low, atr=atr, swing_lows=swing
+        ),
     )
     return plan.stop
 
@@ -164,14 +168,6 @@ def next_session_tick(ctx: EvalContext) -> Decimal | None:
         None if adjusted is None else exact(adjusted, floats=True),
         None if raw is None else exact(raw, floats=True),
     )
-
-
-def _lookback_lows(playbook: Playbook, ctx: EvalContext) -> list[float | None]:
-    """The lows a `swing_low` stop reads: the last `lookback_days` bars, none for other rules and
-    none when the history is shorter (a stop is never priced from a partial lookback)."""
-    days = getattr(playbook.stop, "lookback_days", 0)
-    lows = ctx.history.low
-    return lows[-days:] if days and len(lows) >= days else []
 
 
 def _scan_playbook(
@@ -201,7 +197,6 @@ def _scan_playbook(
         if not evaluation.passed:
             continue
         pivot = _extra(evaluation, "pivot") or _extra(evaluation, "consolidation_high")
-        lows = _lookback_lows(playbook, ctx)
         rows.append(
             WatchRow(
                 playbook=playbook.name,
@@ -209,9 +204,7 @@ def _scan_playbook(
                 score=evaluation.stages[-1].score,
                 criteria_results=criteria_results(evaluation),
                 pivot=pivot,
-                planned_stop=_planned_stop(
-                    playbook, evaluation, pivot, lows, next_session_tick(ctx)
-                ),
+                planned_stop=_planned_stop(playbook, evaluation, pivot, ctx),
                 adtr=exact(adtr.get(instrument_id), floats=True),
             )
         )
@@ -249,7 +242,7 @@ def scan_bot(config: StrategyConfig, inputs: ScanInputs) -> ScanResult:
         features = features.filter(pl.col("instrument_id").cast(pl.String).is_in(members))
     rows: list[WatchRow] = []
     for playbook in config.playbooks:
-        if playbook.name == EP_PLAYBOOK:
+        if playbook.preopen:
             continue
         rows.extend(_scan_playbook(config, playbook, inputs, features, per_instrument))
     rows.sort(key=lambda r: (-r.score, r.playbook, r.instrument_id))

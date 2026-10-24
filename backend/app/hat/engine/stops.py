@@ -12,9 +12,9 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_FLOOR, Decimal
-from typing import Any
+from typing import Any, Protocol
 
-from ..money import require_exact
+from ..money import exact, require_exact
 from .strategy.config import (
     StopAtrMultiple,
     StopBelowFinalContractionLow,
@@ -29,12 +29,15 @@ __all__ = [
     "SKIP_NOT_BELOW_ENTRY",
     "SKIP_TOO_NARROW",
     "SKIP_TOO_WIDE",
+    "SeriesHistory",
+    "StopHistory",
     "StopInputs",
     "StopPlan",
     "atr_multiple",
     "check_width",
     "final_contraction_low",
     "floor_to_tick",
+    "history_inputs",
     "low_of_day",
     "lowest",
     "mean_true_range",
@@ -192,6 +195,64 @@ class StopInputs:
     day_lows: Sequence[Decimal] = ()
     atr: Decimal | None = None
     swing_lows: Sequence[Decimal] = ()
+
+
+class StopHistory(Protocol):
+    """One instrument's daily bars before the entry session, as a stop rule reads them: live
+    (`daily.market.DailyData`), in the backtest (its market view) and in the scan."""
+
+    def atr(self, length: int) -> Decimal | None:
+        """The mean true range of the last `length` sessions (`mean_true_range`)."""
+        ...
+
+    def lows(self, count: int) -> Sequence[Decimal]:
+        """The known lows of the last `count` sessions, oldest first (fewer when short)."""
+        ...
+
+
+@dataclass(frozen=True)
+class SeriesHistory:
+    """A `StopHistory` over daily highs, lows and closes, oldest first. A missing value is None:
+    an ATR window holding one is unknown, and a missing low is not counted."""
+
+    high: Sequence[Decimal | None]
+    low: Sequence[Decimal | None]
+    close: Sequence[Decimal | None]
+
+    @staticmethod
+    def of_floats(
+        high: Sequence[object], low: Sequence[object], close: Sequence[object]
+    ) -> SeriesHistory:
+        """From float columns (a bar frame's, an `EvalContext` history's), each value exact."""
+        return SeriesHistory(*([exact(v, floats=True) for v in col] for col in (high, low, close)))
+
+    def atr(self, length: int) -> Decimal | None:
+        rows = list(zip(self.high, self.low, self.close, strict=True))[-(length + 1) :]
+        known = [
+            (h, lo, c) for h, lo, c in rows if h is not None and lo is not None and c is not None
+        ]
+        if len(known) < len(rows):
+            return None
+        highs, lows, closes = ([row[n] for row in known] for n in range(3))
+        return mean_true_range(highs, lows, closes, length)
+
+    def lows(self, count: int) -> Sequence[Decimal]:
+        return [v for v in self.low[-count:] if v is not None]
+
+
+def history_inputs(
+    rule: StopRule, history: StopHistory
+) -> tuple[Decimal | None, Sequence[Decimal]]:
+    """(ATR, swing lows) the stop rule reads from the sessions before the entry, each at the
+    rule's own length: the ATR of `atr_multiple.days`, the lows of `swing_low.lookback_days`
+    (none unless every one of them is known, so a stop is never priced from a partial
+    lookback). The live trigger, the backtest and the scan all take them from here."""
+    if isinstance(rule, StopAtrMultiple):
+        return history.atr(rule.days), ()
+    if isinstance(rule, StopSwingLow):
+        lows = history.lows(rule.lookback_days)
+        return None, lows if len(lows) == rule.lookback_days else ()
+    return None, ()
 
 
 def plan_stop_at_pivot(rule: StopRule, inputs: StopInputs) -> StopPlan:

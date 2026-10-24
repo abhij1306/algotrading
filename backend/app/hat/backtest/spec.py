@@ -14,7 +14,7 @@ conventions live does not trade by. Every run records its conventions and hashes
 from __future__ import annotations
 
 import uuid
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -23,8 +23,7 @@ from typing import Any
 from ..costs import BacktestFills
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import sleeve_key
-from ..engine.scan import EP_PLAYBOOK
-from ..engine.strategy.config import StrategyConfig
+from ..engine.strategy.config import Playbook, StrategyConfig
 from ..errors import HatError
 from ..risk.policy import PolicyError, PolicyVersion, parse_policy
 from .fills import (
@@ -63,7 +62,7 @@ INITIAL_EQUITY = Decimal(1_000_000)
 # What the daily-bar loop does not model, by fixed code (HAT-BT-070); measured in shadow.
 KNOWN_GAPS = (
     "trigger_is_level_break_only",  # volume_pace and the opening range need intraday bars
-    "episodic_pivot_not_backtested",
+    "episodic_pivot_not_backtested",  # every pre-open playbook (`GAP_PLAYBOOKS`)
     "close_exits_at_official_close",
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",  # live fills at the first tick after the open
@@ -74,10 +73,18 @@ KNOWN_GAPS = (
     # survivorship bias accepted until a constituents history exists (QA5)
     "universe_from_current_constituents",
 )
-# The playbooks a known gap names: the lifecycle gate refuses a version that enables one of them
-# on this evidence (PR 69, HAT-PORT-061). A gap not listed here names no playbook: it holds for
-# all of them alike, a measured approximation of the daily-bar loop, and blocks none.
-GAP_PLAYBOOKS: dict[str, tuple[str, ...]] = {"episodic_pivot_not_backtested": (EP_PLAYBOOK,)}
+
+
+def _preopen(playbook: Playbook) -> bool:
+    return playbook.preopen
+
+
+# The playbooks a known gap names, by what they use rather than by name: the lifecycle gate
+# refuses a version that enables one of them on this evidence (PR 69, HAT-PORT-061). The stored
+# code `episodic_pivot_not_backtested` names every pre-open playbook (`Playbook.preopen`), whatever
+# it is called. A gap not listed here names no playbook: it holds for all of them alike, a
+# measured approximation of the daily-bar loop, and blocks none.
+GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {"episodic_pivot_not_backtested": _preopen}
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.

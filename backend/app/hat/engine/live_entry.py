@@ -6,9 +6,10 @@
   `Candidate` (setup levels from the row, the playbook from the strategy version the row was
   scanned under, the last configured max-chase percentage from the bot's versions, and the bot's
   effective mode for the session, which decides where `catalyst_attached` blocks);
-- `ep_candidates` builds the episodic-pivot candidates from the 09:16 gap scan: only gap-scan
-  candidates (10%/20% band or F&O, gapped at least 10%, in the universe) whose EP setup passes
-  on the daily bars up to the previous session;
+- `ep_candidates` builds the candidates of the pre-open playbooks (`Playbook.preopen`, such as
+  the episodic pivot) from the 09:16 gap scan: only gap-scan candidates (10%/20% band or F&O,
+  gapped at least 10%, in the universe) whose setup passes on the daily bars up to the previous
+  session;
 - `submit_trigger` turns a fired trigger into a signal through a `Route`: the execution router
   (`execution/router.py`), or by default `entries.open_entry` under the bot's effective mode, so
   every entry still passes `evaluate_signal` under the bot's and the owner's lock (a skipped
@@ -58,10 +59,8 @@ from ..risk.sessions import SessionCalendar
 from ..time import IST, utc_now
 from . import entries, lifecycle, positions
 from .criteria import CriterionResult, EvalContext
-from .criteria.live import CONSOLIDATION_HIGH, LEVEL_PIVOT
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
-from .scan import EP_PLAYBOOK
-from .strategy.config import Playbook, StrategyConfig, parse_config
+from .strategy.config import Playbook, StopRule, StrategyConfig, parse_config
 from .strategy.scoring import evaluate_stage
 from .trigger import (
     Candidate,
@@ -70,6 +69,7 @@ from .trigger import (
     TriggerMonitor,
     daily_trigger_results,
     last_configured_chase,
+    watchlist_levels,
 )
 
 __all__ = [
@@ -90,7 +90,8 @@ ACTIVE = "active"
 FEED_HEALTH = "feed_health"  # the feed's own health reason: its recovery never clears the gate
 _INSTANT = timedelta(microseconds=1)
 
-DailySource = Callable[[uuid.UUID], DailyInputs]
+# one instrument's `DailyInputs`, with the stop history of the candidate's own rule
+DailySource = Callable[[uuid.UUID, StopRule], DailyInputs]
 BarsSource = Callable[[uuid.UUID], pl.DataFrame]  # adjusted daily bars of one instrument
 
 
@@ -177,7 +178,6 @@ def watchlist_candidates(
             if playbook is None:
                 continue
             levels = (row.criteria_results or {}).get("levels", {})
-            pivot = exact(row.pivot, floats=True, positive=True)
             out.append(
                 Candidate(
                     bot_id=bot.id,
@@ -187,13 +187,8 @@ def watchlist_candidates(
                     instrument_id=row.instrument_id,
                     symbol=symbols[row.instrument_id],
                     trade_date=trade_date,
-                    daily=daily(row.instrument_id),
-                    levels={
-                        LEVEL_PIVOT: pivot,
-                        CONSOLIDATION_HIGH: exact(
-                            levels.get(CONSOLIDATION_HIGH), floats=True, positive=True
-                        ),
-                    },
+                    daily=daily(row.instrument_id, playbook.stop),
+                    levels=watchlist_levels(row.pivot, levels),
                     final_contraction_low=exact(
                         levels.get("final_contraction_low"), floats=True, positive=True
                     ),
@@ -209,7 +204,7 @@ def _playbook(config: StrategyConfig, name: str) -> Playbook | None:
 
 
 def ep_setup_passes(playbook: Playbook, bars: pl.DataFrame, trade_date: date) -> bool:
-    """The EP playbook's setup on the daily bars up to the previous session: every enabled hard
+    """A pre-open playbook's setup on the daily bars up to the previous session: every enabled hard
     setup criterion passes (`neglect` reads the bars before `trade_date` itself). No bars, or a
     setup with no enabled criterion, does not pass (fail closed)."""
     enabled = [c for c in playbook.setup.criteria if c.enabled and c.mode == "hard"]
@@ -249,17 +244,18 @@ def ep_bot_candidates(
     *,
     calendar: SessionCalendar | None = None,
 ) -> list[Candidate]:
-    """The EP candidates of every active bot with an `episodic_pivot` playbook, for the
-    instruments the gap scan selected (already filtered by `ep_candidates`), under the bot's
-    effective mode for the session. `bars` feeds the playbook's daily-bar trigger criteria."""
+    """The candidates of every pre-open playbook (`Playbook.preopen`) of each active bot's live
+    version, for the instruments the gap scan selected (already filtered by `ep_candidates`),
+    under the bot's effective mode for the session. `bars` feeds the playbook's daily-bar
+    trigger criteria."""
     out: list[Candidate] = []
     for bot in _active_bots(session):
         version = session.get(HatStrategyVersion, bot.live_version_id)
         if version is None:
             continue
         config = parse_config(version.config)
-        playbook = _playbook(config, EP_PLAYBOOK)
-        if playbook is None:
+        preopen = [p for p in config.playbooks if p.preopen]
+        if not preopen:
             continue
         configs = _versions_newest_first(session, bot.strategy_id)
         mode = _session_mode(session, bot, trade_date, calendar)
@@ -272,12 +268,13 @@ def ep_bot_candidates(
                 instrument_id=item.instrument_id,
                 symbol=item.symbol,
                 trade_date=trade_date,
-                daily=daily(item.instrument_id),
+                daily=daily(item.instrument_id, playbook.stop),
                 open_price=item.open_price,
                 announcements=item.announcements,
                 configured_max_chase_pct=last_configured_chase(configs, playbook.name),
                 daily_results=_daily_results(playbook, bars, item.instrument_id, trade_date),
             )
+            for playbook in preopen
             for item in instruments
         )
     return out
