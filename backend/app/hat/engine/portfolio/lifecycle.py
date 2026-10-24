@@ -40,11 +40,12 @@ EDGES: frozenset[tuple[str, str]] = frozenset(
 
 DSR_MIN = Decimal("0.95")  # [A] HAT-PORT-061
 MIN_BACKTEST_TRADES = 200  # [A] HAT-PORT-061
+MAX_PBO = Decimal("0.5")  # QA6: the family's probability of backtest overfitting stays below
 MIN_SPAN_YEARS = 5  # D150: the evidence run's sessions span at least five years
 # A run asked for whole years ends on the last session, which year-end holidays and a weekend
 # can put a few days before the anniversary of the first.
 SPAN_SLACK = timedelta(days=7)
-MAX_AMBIGUOUS_SHARE = Decimal("0.10")  # [OWNER-PENDING] of the sessions a trade was held
+MAX_AMBIGUOUS_SHARE = Decimal("0.10")  # QA7: of the sessions a trade was held
 # The regime rule the evidence run sizes under: the live regime engine's, as live sizes
 # (`backtest.spec.REGIME_MULT_POLICY`, PR 69).
 EVIDENCE_REGIME_RULE = "policy"
@@ -197,6 +198,7 @@ class BacktestFacts:
     trades: int = 0
     expectancy: Decimal | None = None
     trials: int = 0
+    pbo: Decimal | None = None  # the family's PBO at the run's completion (None: unscored)
     first_session: date | None = None
     last_session: date | None = None
     ambiguous_days: int | None = None
@@ -213,7 +215,8 @@ class BacktestFacts:
 def backtest_refusal(facts: BacktestFacts) -> str | None:
     """Research -> Backtested (HAT-PORT-061): why the evidence run fails the gate, the first failing
     condition's code, or None when it passes. The run needs a deflated Sharpe probability of at
-    least 0.95 and 200 trades (`backtest_gate`), sessions spanning five years
+    least 0.95 and 200 trades (`backtest_gate`), the family's probability of backtest overfitting
+    below 0.5 (`backtest_pbo`: unscored, under two variants, fails), sessions spanning five years
     (`backtest_span_short`), the version's playbooks known (`backtest_no_playbooks`: its config does
     not parse) and no known gap naming one of them (`backtest_gap_in_playbook`), ambiguous days
     within the cap (`backtest_ambiguous_days`), and sizing as live: the policy's base weight of the
@@ -221,6 +224,8 @@ def backtest_refusal(facts: BacktestFacts) -> str | None:
     absent fact fails its condition."""
     if not backtest_gate(facts.dsr_prob, facts.trades):
         return "backtest_gate"
+    if facts.pbo is None or facts.pbo >= MAX_PBO:
+        return "backtest_pbo"
     if not span_gate(facts.first_session, facts.last_session):
         return "backtest_span_short"
     if not facts.playbooks:

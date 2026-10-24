@@ -429,8 +429,9 @@ class Desks:
             return None
 
     def total_equity(self, _day: date) -> Decimal:
-        """[OWNER-PENDING] HAT-PORT-052: the broker funds of every active account, read when the
-        allocation runs. Fails the job when there is no account or one cannot be read."""
+        """The broker funds total of every active account, read when the evening allocation runs:
+        the real books' equity, which carries their realised P&L (Q1). Fails the job when there
+        is no account or one cannot be read."""
         desks = list(self.by_account.values())
         if not desks:
             raise JobError("equity_unavailable")

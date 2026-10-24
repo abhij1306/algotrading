@@ -20,10 +20,11 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock |
 | `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies |
-| `backtest` | Day loop, evidence for the gates (`RunMetrics`), costs, fills, deflated Sharpe, run records. `engine` and `risk` import only `spec` and `evidence` |
+| `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run records. `engine` and `risk` import only `spec` and `evidence` |
 | `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
 
-Top level: `events.py` (event log), `money.py`, `clock.py`, `ids.py` (uuid v7), `settings.py`,
+Top level: `events.py` (event log), `money.py`, `costs.py` (slippage and the versioned cost
+models in `cost_models/`), `clock.py`, `ids.py` (uuid v7), `settings.py`,
 `schema.py` (`init_db` upkeep, `PG_DDL`, drift check), `admin.py`.
 
 ## Data flow

@@ -28,14 +28,7 @@ import pyarrow.parquet as pq
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.store import DataStore, atomic_replace
-from ..engine.confidence import buckets
-from ..engine.strategy.config import parse_config
-from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
-from ..risk.policy import effective_version
-from ..risk.policy_upkeep import load_versions
-from ..time import utc_now
-from .costs import (
+from ..costs import (
     DEFAULT_COST_MODEL,
     DEFAULT_SLIPPAGE_BPS,
     BacktestFills,
@@ -43,6 +36,15 @@ from .costs import (
     check_slippage,
     load_cost_model,
 )
+from ..data.store import DataStore, atomic_replace
+from ..engine.confidence import buckets
+from ..engine.portfolio.common import market_id_of
+from ..engine.portfolio.regime_service import stored_regime_table
+from ..engine.strategy.config import parse_config
+from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
+from ..risk.policy import effective_version
+from ..risk.policy_upkeep import load_versions
+from ..time import utc_now
 from .data import MarketData, load_market
 from .dsr import MIN_TRIALS, PBO_BLOCKS, VARIANCE_FLOOR, Deflated, pbo
 from .evidence import COMPLETED, DSR_DIGITS, RunMetrics, family_key, run_dsr, universe_of
@@ -346,9 +348,10 @@ def backtest_bot(
 ) -> HatBacktestRun:
     """Backtest a sleeve's strategy version on the sleeve's universe under the risk policy in
     force now, over the Parquet store; the `policy` regime rule also reads the regime engine's
-    index, VIX and breadth. The command line's body. Refusals before the run is recorded (an
-    unknown bot or version, conventions a promotion run may not use, ...) raise `BacktestError`
-    and record nothing; a refusal of the engine is a failed trial."""
+    index, VIX and breadth, and sizes with the stored regime table live allocates with. The
+    command line's body. Refusals before the run is recorded (an unknown bot or version,
+    conventions a promotion run may not use, ...) raise `BacktestError` and record nothing; a
+    refusal of the engine is a failed trial."""
     bot = session.get(HatBot, request.bot_id)
     if bot is None:
         raise BacktestError("backtest_unknown_bot")
@@ -379,6 +382,7 @@ def backtest_bot(
         fills=fills,
         for_promotion=request.for_promotion,
         conventions=request.conventions,
+        regime_table=stored_regime_table(session, market_id_of(session)),
     )
     data, snapshot = load_market(
         store,

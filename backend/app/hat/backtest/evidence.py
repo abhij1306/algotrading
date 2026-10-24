@@ -42,7 +42,13 @@ from ..engine.confidence import (
     confidence_of,
 )
 from ..engine.portfolio.allocator import sleeve_key
-from ..engine.portfolio.lifecycle import DEFAULT_DISCOUNT, BacktestFacts, discounted_benchmark
+from ..engine.portfolio.lifecycle import (
+    DEFAULT_DISCOUNT,
+    BacktestFacts,
+    ambiguous_gate,
+    discounted_benchmark,
+    span_gate,
+)
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
 from ..models import (
     HatBacktestBucket,
@@ -77,6 +83,7 @@ __all__ = [
     "evidence_run",
     "family_key",
     "gate_evidence",
+    "history_holds",
     "run_dsr",
     "signal_confidence",
     "unbacktested",
@@ -119,6 +126,11 @@ def _gaps(raw: object) -> tuple[str, ...] | None:
     return None
 
 
+def _pbo(raw: object) -> Decimal | None:
+    """The probability of a stored PBO block (`runs.family_pbo`); None when it has none."""
+    return _decimal(raw.get("prob")) if isinstance(raw, Mapping) else None
+
+
 def _returns(raw: object) -> ReturnStats | None:
     if not isinstance(raw, Mapping):
         return None
@@ -154,6 +166,7 @@ class RunMetrics:
     for_promotion: bool = False
     returns: ReturnStats | None = None
     initial_equity: Decimal | None = None
+    pbo: Decimal | None = None  # the family's PBO at the run's completion (None: unscored)
     completed_at: datetime | None = None
 
     @staticmethod
@@ -176,6 +189,7 @@ class RunMetrics:
             for_promotion=metrics.get("for_promotion") is True,
             returns=_returns(metrics.get("returns")),
             initial_equity=_decimal(metrics.get("initial_equity")),
+            pbo=_pbo(metrics.get("pbo")),
             completed_at=_instant(metrics.get("completed_at")),
         )
 
@@ -307,6 +321,24 @@ def _config_of(version: HatStrategyVersion | None) -> StrategyConfig | None:
         return None
 
 
+def _playbooks_of(session: Session, run: HatBacktestRun) -> frozenset[str]:
+    """The playbooks the run's strategy version enables (none when its config does not parse)."""
+    config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
+    return frozenset(() if config is None else (p.name for p in config.playbooks))
+
+
+def history_holds(metrics: RunMetrics, playbooks: frozenset[str]) -> bool:
+    """The run's history passes the lifecycle's span, gap and ambiguity conditions
+    (HAT-PORT-061, QA8): five years of sessions, no known gap naming one of the version's
+    `playbooks` (and the playbooks known), and ambiguous days within the cap."""
+    return (
+        span_gate(metrics.first_session, metrics.last_session)
+        and bool(playbooks)
+        and not metrics.gapped(playbooks) & playbooks
+        and ambiguous_gate(metrics.ambiguous_days, metrics.held_sessions or 0)
+    )
+
+
 # --- what the gates read ----------------------------------------------------------------------
 
 
@@ -326,7 +358,7 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
     run, metrics = found
     deflated, trials, _ = run_dsr(session, run, metrics)
     config = _config_of(session.get(HatStrategyVersion, run.strategy_version_id))
-    playbooks = frozenset(() if config is None else (p.name for p in config.playbooks))
+    playbooks = _playbooks_of(session, run)
     base = (
         None
         if in_force is None or config is None
@@ -337,6 +369,7 @@ def backtest_evidence(session: Session, bot: HatBot) -> BacktestFacts:
         trades=metrics.trades or 0,
         expectancy=metrics.expectancy_r,
         trials=trials,
+        pbo=metrics.pbo,
         first_session=metrics.first_session,
         last_session=metrics.last_session,
         ambiguous_days=metrics.ambiguous_days,
@@ -412,7 +445,11 @@ def gate_evidence(
     trades of the user's sleeves closed since the policy version in force at `at` took effect
     (every closed trade when none is in force; shadow ones are ignored by
     `build_gate_evidence`), so each step up needs its own evidence, against the discounted
-    backtest expectancy, the trade-weighted mean over the sleeves' evidence runs. None when no
+    backtest expectancy, the trade-weighted mean over the sleeves' evidence runs. Only what
+    existed at `at` is read (C23): the evidence runs completed and the trades closed by then, so
+    a gate replayed later sees what the request saw. Every evidence run with trades must also
+    pass the lifecycle's span, gap and ambiguity conditions (QA8, `history_holds`): one that
+    fails gives no evidence, and the increase is refused. None when no
     sleeve has one: the increase gate then refuses. A sleeve's trades of a playbook its run
     cannot have (`unbacktested`: EP until PR 70) are not counted (PR 40)."""
     bots = session.scalars(
@@ -423,13 +460,15 @@ def gate_evidence(
     count = 0
     excluded: dict[uuid.UUID, frozenset[str]] = {}
     for bot in bots:
-        found = evidence_run(session, bot, _cooldown_of(in_force))
+        found = evidence_run(session, bot, _cooldown_of(in_force), at)
         metrics = None if found is None else found[1]
         excluded[bot.id] = unbacktested(metrics)
-        if metrics is None or metrics.expectancy_r is None:
+        if found is None or metrics is None or metrics.expectancy_r is None:
             continue
         if metrics.trades is None or metrics.trades <= 0:
             continue
+        if not history_holds(metrics, _playbooks_of(session, found[0])):
+            return None
         weighted += metrics.expectancy_r * metrics.trades
         count += metrics.trades
     if count == 0:
@@ -444,7 +483,7 @@ def gate_evidence(
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .join(HatBot, HatBot.id == HatPosition.bot_id)
         .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
-        .where(HatBot.user_id == user_id)
+        .where(HatBot.user_id == user_id, HatPosition.closed_at <= as_utc(at))
         .order_by(HatPosition.closed_at, HatPosition.id)
     )
     if in_force is not None:

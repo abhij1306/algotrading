@@ -14,9 +14,9 @@ from typing import Any
 
 from app.database import db_session_scope
 
+from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS
 from ..data.store import DataStore
 from ..settings import operator_settings
-from .costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS
 from .fills import (
     AMBIGUOUS_OPTIMISTIC,
     AMBIGUOUS_RULES,

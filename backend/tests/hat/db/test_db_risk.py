@@ -127,9 +127,10 @@ def test_risk__kill_rows_pass_the_scope_check(conn: Connection) -> None:
 
 def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -> None:
     """`snapshot.bots` writes one row per bot and day however often it runs; equity is allocation
-    capital plus realised P&L, so a cut of capital with no trade is a reallocation and trips
-    nothing, while a realised loss 10% under the restated peak trips the bot kill
-    and, the world holding this one bot, the account kill with it (both 10%, D128)."""
+    capital plus the realised P&L the funds read has not yet carried (Q1), so a cut of weight
+    with no trade is a reallocation and trips nothing, while a realised loss after the last
+    allocation, 10% under the restated peak, trips the bot kill and, the world holding this one
+    bot, the account kill with it (both 10%, D128)."""
     w = b.world(conn)
     day = date(2026, 10, 19)
     sig = b.signal(conn, w)
@@ -144,7 +145,7 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
     )
     b.trade_result(conn, pos, realized_pnl=Decimal("-9000"), r_multiple=Decimal("-1"))
     with session_on(conn) as session:
-        for offset, capital in ((0, "100000"), (1, "89000"), (2, "89000")):
+        for offset, weight, capital in ((0, "0.5", "100000"), (1, "0.445", "89000")):
             session.add(
                 HatAllocationDaily(
                     trade_date=day + timedelta(days=offset),
@@ -152,7 +153,7 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
                     base_weight=Decimal("0.5"),
                     regime_mult=Decimal(1),
                     health_mult=Decimal(1),
-                    final_weight=Decimal("0.5"),
+                    final_weight=Decimal(weight),
                     capital=Decimal(capital),
                     risk_pct=Decimal("0.0025"),
                     currency="INR",
@@ -176,3 +177,37 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
         assert (loss.equity, loss.equity_peak) == (Decimal("80000"), Decimal("89000"))
         tripped = evaluate_drawdown_kills(session, seed_policy(), b.later(6))
         assert sorted(tripped) == sorted([str(w["bot"]), "account"])
+
+
+def test_risk__rearm_restarts_the_health_peak(conn: Connection) -> None:
+    """A re-arm of the bot's kill restarts the snapshot peak the health multiplier reads at the
+    next snapshot's equity (QA10); without one, a fall of the funds total at the same weight
+    stays a drawdown under the old peak (Q1)."""
+    w = b.world(conn)
+    day = date(2026, 10, 19)
+    with session_on(conn) as session:
+        for offset, capital in ((0, "100000"), (1, "90000"), (2, "90000")):
+            session.add(
+                HatAllocationDaily(
+                    trade_date=day + timedelta(days=offset),
+                    bot_id=w["bot"],
+                    base_weight=Decimal("0.5"),
+                    regime_mult=Decimal(1),
+                    health_mult=Decimal(1),
+                    final_weight=Decimal("0.5"),
+                    capital=Decimal(capital),
+                    risk_pct=Decimal("0.0025"),
+                    currency="INR",
+                )
+            )
+        session.flush()
+        snapshot_bots(session, day)
+        snapshot_bots(session, day + timedelta(days=1))
+        held = session.get(HatDailyBotSnapshot, (w["bot"], day + timedelta(days=1)))
+        assert (held.equity, held.equity_peak) == (Decimal("90000"), Decimal("100000"))
+        evening = datetime.combine(day + timedelta(days=1), time(20, 0), tzinfo=IST)
+        trip_kill(session, scope="bot", bot_id=w["bot"], reason="drawdown_bot", now=evening)
+        rearm_kill(session, scope="bot", bot_id=w["bot"], confirmed=True, now=evening, chat_id=1)
+        snapshot_bots(session, day + timedelta(days=2))
+        after = session.get(HatDailyBotSnapshot, (w["bot"], day + timedelta(days=2)))
+        assert (after.equity, after.equity_peak) == (Decimal("90000"), Decimal("90000"))

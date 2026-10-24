@@ -30,6 +30,7 @@ from ._types import (
     Currency,
     JsonB,
     Money,
+    Ratio,
     Timestamptz,
     fk,
     in_values,
@@ -269,9 +270,7 @@ class HatKillSwitch(Base):
 class HatDrawdownBase(Base):
     """D232 (Q41): where a re-armed drawdown kill measures from. One row per re-arm row of a
     drawdown or manual kill, written at the first equity point after the re-arm: that point's
-    time, its equity, the allocation capital it was measured against and the realised P&L of
-    the scope's real trades closed by then (so later points need only the trades closed after
-    it)."""
+    time, its equity and the allocation capital and weight it was measured against."""
 
     __tablename__ = "hat_drawdown_base"
 
@@ -279,7 +278,7 @@ class HatDrawdownBase(Base):
     taken_at = Column(Timestamptz, nullable=False)
     equity = Column(Money, nullable=False)
     capital = Column(Money, nullable=False)
-    realized = Column(Money, nullable=False)
+    weight = Column(Ratio)  # None on rows before Q1 (unknown)
     currency = Column(Currency, nullable=False)  # the scope's allocation currency
 
 

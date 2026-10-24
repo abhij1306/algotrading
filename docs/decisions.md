@@ -20,7 +20,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   lower bound on mean R. Labels must come from measured results, not opinion.
 - **Earn real money in stages.** At least five years of backtest on real data, 20 sessions of
   shadow, then owner-approved trades; promotion needs deflated-Sharpe probability ≥ 0.95 and 200
-  trades, and every backtest run counts as a trial.
+  trades, and every backtest run counts as a trial. Research -> Backtested also needs the family's
+  probability of backtest overfitting (PBO, stored at the run's completion) below 0.5 (QA6); an
+  unscored PBO (fewer than two distinct variants) fails.
 
 ## Strategy and risk
 
@@ -31,12 +33,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   industry, 3 entries and 3 stop-outs a day; an exposure ladder stepping on wins and losses;
   10% drawdown kills (account and bot) on equity marked to market intraday. Bots hold no risk
   numbers, so no strategy can loosen risk.
+- **The risk-increase gate (QA8).** Besides live expectancy against the discounted backtest
+  expectancy, each sleeve's evidence run needs five years of sessions, no known gap naming an
+  enabled playbook and ambiguous days within the cap, the Research -> Backtested conditions. A
+  decrease restarting the trade window is intended: each step up earns its own evidence.
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
   50/50. A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.
 - **Exits.** Intraday stop on fill, swapped to a GTT around 15:25; MA exits 15:20-15:25 on the
   live price (a known gap to the official close, logged nightly); an ordered exit stack where
   stops only tighten.
+- **Shadow fills pay costs (QA4).** A virtual fill carries the backtest's default model: 20 bps
+  slippage against the trade, then the versioned statutory charges (`costs.py`), so shadow
+  results are net of what real trading pays.
 
 ## Data
 
@@ -65,6 +74,14 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Storage.** Postgres is the system of record (fresh database, no migration tool, uuid v7 keys,
   `Numeric(18,4)`); price history is date-partitioned Parquet read through DuckDB; indicators are
   own polars code.
+- **Evidence defaults (QA7).** The DSR family floors N ≥ 5 trials and trial-Sharpe variance
+  V ≥ 0.25/252 (`dsr.py`); ambiguous days at most 10% of the sessions a trade was held
+  (`lifecycle.py`); `max_chase` 2% by default, 5% for stage2-contraction-breakout and 2% for
+  momentum-breakout-ep (`caps.py`).
+- **Backtest max-chase and regime table (Q14).** A run reads `max_chase` from its pinned strategy
+  version, while live reads the newest version holding it: a version's evidence stays its own.
+  The regime multipliers are the stored table live allocates with, read when the run starts and
+  recorded in its hashed conventions.
 - **Backtest gaps are listed.** Behaviours the backtest does not model are in `KNOWN_GAPS`
   (`backtest/spec.py`) and reported by every run; no fixture pins a result.
 
@@ -111,6 +128,13 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
   confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
 
+- **Equity is the broker funds total (Q1).** Read at the evening allocate; a sleeve's capital is
+  its weight x that total, which already carries the real books' realised P&L, so sizing adds
+  none; only a virtual (shadow) book adds its own. The drawdown adds the realised P&L of trades
+  closed after that read, and restates its peak only for a change of weight: a change of the
+  funds total (a result, a deposit or a withdrawal) moves the drawdown, and a sleeve's realised
+  result reaches its capital shared by weight.
+
 ## Planned, not built
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
@@ -121,8 +145,9 @@ MCP server (advisory only); a CLI to re-run one job for a past trade date.
 
 Chosen where the owner has not ruled; the code implements them.
 
-- Universe: NIFTY 500 point-in-time plus liquidity criteria; equity read from broker funds at
-  session start.
+- Universe: NIFTY 500 plus liquidity criteria. The membership is today's list, not point in time:
+  the backtest reports the survivorship bias as the known gap `universe_from_current_constituents`
+  until a constituents history exists (QA5).
 - Confidence: the 30 trades, the band edges (0.60/0.75/0.90) and the raw (undiscounted) mean.
 - Regime: first day bootstraps confirmed; percentile over the trailing 252 values; precedence
   Bear > Correction > Bull volatile > Bull quiet.

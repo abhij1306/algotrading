@@ -13,7 +13,6 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.backtest.data import (
     Bar,
     MarketData,
@@ -47,6 +46,7 @@ from app.hat.backtest.spec import (
     RunConventions,
 )
 from app.hat.confighash import config_hash
+from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.stops import floor_to_tick
 
@@ -439,6 +439,25 @@ def test_path_rules_refused(rule: str, after: int) -> None:
 
 
 PROMOTED = RunConventions(regime_mult=REGIME_MULT_POLICY)  # the conventions a promotion uses
+
+
+def test_regime_table_is_recorded_and_checked() -> None:
+    """A run sizes under the regime table it was given (the stored one, C23 E3), records it in
+    the hashed conventions, and refuses a table without an exact multiplier for every state."""
+    cfg = s.config()
+    days = s.sessions(3)
+    table = {
+        "bull_quiet": D("1.0"),
+        "bull_volatile": D("0.6"),
+        "correction": D("0.4"),
+        "bear": D("0.25"),
+    }
+    run = dataclasses.replace(s.spec(cfg, days, conventions=PROMOTED), regime_table=table)
+    assert run.recorded_conventions()["regime_table"] == {k: str(v) for k, v in table.items()}
+    with pytest.raises(BacktestError, match="backtest_bad_regime_table"):
+        dataclasses.replace(run, regime_table={**table, "bear": 0.25})
+    with pytest.raises(BacktestError, match="backtest_bad_regime_table"):
+        dataclasses.replace(run, regime_table={k: v for k, v in table.items() if k != "bear"})
 
 
 @pytest.mark.parametrize(

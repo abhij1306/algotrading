@@ -52,6 +52,7 @@ def backtest_facts(draw: st.DrawFn) -> BacktestFacts:
     return BacktestFacts(
         dsr_prob=draw(st.sampled_from([None, D("0.9499"), D("0.95"), D("0.99")])),
         trades=draw(st.sampled_from([199, 200, 1000])),
+        pbo=draw(st.sampled_from([None, D("0.1"), D("0.4999"), D("0.5")])),
         expectancy=draw(st.one_of(st.none(), R)),
         first_session=draw(st.one_of(st.just(first), st.none())),
         last_session=draw(st.one_of(st.just(last), st.none())),
@@ -69,6 +70,8 @@ def model_refusal(f: BacktestFacts) -> str | None:
     """And D150 as a list of conditions, written without the module's helpers."""
     if f.dsr_prob is None or f.dsr_prob < D("0.95") or f.trades < 200:
         return "backtest_gate"
+    if f.pbo is None or f.pbo >= D("0.5"):
+        return "backtest_pbo"
     if f.first_session is None or f.last_session is None:
         return "backtest_span_short"
     try:
@@ -93,6 +96,7 @@ def model_refusal(f: BacktestFacts) -> str | None:
 PASSING = BacktestFacts(
     dsr_prob=D("0.95"),
     trades=200,
+    pbo=D("0.4999"),
     first_session=date(2018, 1, 1),
     last_session=date(2022, 12, 25),  # 7 days short of five years
     ambiguous_days=10,
@@ -118,9 +122,12 @@ PASSING = BacktestFacts(
 @example(replace(PASSING, base_weight=None))
 @example(replace(PASSING, regime_mult="1"))
 @example(replace(PASSING, dsr_prob=D("0.9499")))
+@example(replace(PASSING, pbo=D("0.5")))
+@example(replace(PASSING, pbo=None))
 def test_backtest_refusal(facts: BacktestFacts) -> None:
     """Research to Backtested passes only on evidence whose DSR probability is
-    at least 0.95 with 200 trades (`backtest_gate`), whose sessions span five years, the last no
+    at least 0.95 with 200 trades (`backtest_gate`), whose family's PBO is below 0.5
+    (`backtest_pbo`, QA6), whose sessions span five years, the last no
     more than 7 days short of the first's fifth anniversary (`backtest_span_short`), whose version's
     playbooks are known (`backtest_no_playbooks`) and whose known gaps name none of them
     (`backtest_gap_in_playbook`), whose ambiguous days are at most 10% of the sessions a trade was

@@ -61,15 +61,20 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   nothing until the owner books that sale.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
-  restarts the peak at the equity then. Drawdown equity is capital + realised P&L + open positions
-  marked to market (latest fresh trade, official close at night; before the session's first
+  restarts the peak at the equity then, the drawdown kill's and, for a bot, the health
+  multiplier's (QA10). Drawdown equity is capital (weight x the broker funds
+  total, which carries the realised P&L) + the realised P&L of trades closed since that funds
+  read + open positions marked to market (latest fresh trade, official close at night; before the session's first
   trade the previous close; a stale price at the lower of last trade and stop).
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored as hashes;
   expiry 5 minutes; Take re-checks `max_chase`; unknown chats are ignored. Free text never makes
   an order; auto, `/arm` and `/flatten` need a second confirmation. An entry fill landing after
   a flatten sold its position is sold under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
-  evidence gate; policy and strategy versions are immutable.
+  evidence gate; policy and strategy versions are immutable. The gate counts the live trades
+  closed since the version in force took effect, so any change, a decrease too, restarts that
+  window; every sleeve's evidence run must pass the lifecycle's span, gap and ambiguity
+  conditions (QA8), and the gate reads only the runs and trades that existed when it was asked.
 - **One owner per resource.** One live socket, one session owner per broker account, one token
   store, one fake broker, one risk authority, one HAT runtime per database.
 - **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
@@ -117,7 +122,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   hindsight projection. Each action records when its value became knowable (`known_on`; NULL when
   unknown, never guessed). A backtest neither scans nor enters a name on a session where no
   version was available or the available one differs from the series' (`factor_pending`); a
-  version available later never changes what a backtest reads before it.
+  version available later never changes what a backtest reads before it. A correction that
+  re-dates `known_on` later appends a version available from the later date and withdraws
+  nothing: the earlier version stays what is read before then (accepted, QA1).
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
   InvITs and REITs get features but no rank.
