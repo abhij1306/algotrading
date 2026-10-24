@@ -1,6 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
+import { useSyncExternalStore } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "@/lib/api/client";
 import type { components } from "@/lib/api/schema";
+import { sharedStale, type SharedStale } from "./freshness";
 import { queryKeys } from "./keys";
 
 /** The dashboard is read-only and polls: Telegram is where anything is changed. */
@@ -65,4 +67,24 @@ export function useHatEvents(limit: number = HAT_EVENT_LIMIT) {
     queryFn: () => unwrap(api.GET("/api/hat/events", { params: { query: { limit } } })),
     ...polling,
   });
+}
+
+/**
+ * The dashboard's shared stale state (see `sharedStale`), read from the query cache so the page
+ * shows one banner instead of one notice per section. Snapshots are compared as strings.
+ */
+export function useSharedStale(): SharedStale | null {
+  const cache = useQueryClient().getQueryCache();
+  const snapshot = useSyncExternalStore(
+    (onChange) => cache.subscribe(onChange),
+    () => {
+      const states = cache.findAll({ queryKey: queryKeys.hat.all }).map(({ state }) => ({
+        data: state.data,
+        error: state.error,
+        dataUpdatedAt: state.dataUpdatedAt,
+      }));
+      return JSON.stringify(sharedStale(states));
+    },
+  );
+  return JSON.parse(snapshot) as SharedStale | null;
 }

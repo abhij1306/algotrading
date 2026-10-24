@@ -1,44 +1,37 @@
-import { useNavigate } from "react-router";
-import { Moon, Sun, Command } from "lucide-react";
+import { Link } from "react-router";
+import { Moon, Sun } from "lucide-react";
+import { Button } from "@/components/atoms/button";
 import { LoginButton } from "@/components/organisms/login-button";
 import { useBrokerStatus } from "@/lib/queries/auth";
 import { useTheme } from "@/lib/theme";
 
 export function AppHeader() {
-  const navigate = useNavigate();
   const { isDark, toggleTheme } = useTheme();
   // Fyers always logs in (market data); Zerodha too while it is the active order broker.
-  const zerodhaActive = useBrokerStatus("zerodha").data?.active ?? false;
+  const zerodha = useBrokerStatus("zerodha").data;
+  const zerodhaActive = zerodha !== undefined && zerodha.kind !== "offline" && zerodha.active;
 
   return (
-    <header className="h-14 flex items-center justify-between px-4 sticky top-0 z-50 bg-background border-b border-border-subtle">
-      <button
-        onClick={() => void navigate("/hat")}
-        aria-label="Hire a Trader home"
-        className="flex items-center gap-2 hover:opacity-80 transition-opacity"
-      >
-        <div className="w-8 h-8 flex items-center justify-center rounded-md bg-gradient-to-br from-primary to-primary-hover shadow-sm">
-          <Command className="w-5 h-5 text-primary-fg" />
-        </div>
-        <span className="font-semibold text-lg hidden sm:block text-foreground">Hire a Trader</span>
-      </button>
-
-      <div className="flex items-center gap-1">
-        <button
-          onClick={toggleTheme}
-          className="p-2 rounded-lg transition-all text-foreground-secondary hover:bg-background-tertiary"
-          title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+    <header className="sticky top-0 z-40 bg-background/90 backdrop-blur">
+      <div className="mx-auto flex h-16 w-full max-w-[1440px] items-center justify-between gap-4 px-4 md:px-10">
+        <Link
+          to="/hat"
+          className="text-base font-medium tracking-tight text-foreground hover:text-accent"
         >
-          {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-        </button>
-        <div className="ml-2 pl-2 border-l border-border-subtle">
+          HAT
+        </Link>
+        <div className="flex items-center gap-3 md:gap-5">
           <LoginButton />
+          {zerodhaActive ? <LoginButton broker="zerodha" /> : null}
+          <Button
+            size="icon"
+            onClick={toggleTheme}
+            aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
+            title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+          >
+            {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+          </Button>
         </div>
-        {zerodhaActive && (
-          <div className="ml-2 pl-2 border-l border-border-subtle">
-            <LoginButton broker="zerodha" />
-          </div>
-        )}
       </div>
     </header>
   );

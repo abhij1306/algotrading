@@ -5,6 +5,7 @@ import {
   LoginConnect,
   LoginConnected,
   LoginOffline,
+  LoginUnreadable,
 } from "@/components/molecules/login/login-states";
 import {
   type Broker,
@@ -15,10 +16,12 @@ import {
 } from "@/lib/queries/auth";
 
 /** What the login box calls the broker and the code its redirect carries. */
-const LOGIN_TEXT: Record<Broker, { name: string; code: string; connectedLabel: string }> = {
-  fyers: { name: "Fyers", code: "auth_code", connectedLabel: "Connected" },
-  zerodha: { name: "Zerodha", code: "request_token", connectedLabel: "Zerodha connected" },
+const LOGIN_TEXT: Record<Broker, { name: string; code: string }> = {
+  fyers: { name: "Fyers", code: "auth_code" },
+  zerodha: { name: "Zerodha", code: "request_token" },
 };
+
+const POPUP_FEATURES = "width=800,height=600";
 
 /** The login flow's local state and handlers: start, paste the code, disconnect. */
 function useLoginFlow(broker: Broker, name: string) {
@@ -47,25 +50,26 @@ function useLoginFlow(broker: Broker, name: string) {
     });
   };
 
-  const openLoginPage = (url: string) => {
-    if (typeof globalThis.window?.open !== "function") {
-      fail("Login URL generated but no browser window is available to open it.");
-      return;
-    }
-    const popup = globalThis.window.open(url, "_blank", "width=800,height=600");
-    if (popup === null) {
-      fail("Popup blocked; please allow popups to continue login.");
-      return;
-    }
-    setShowModal(true);
-  };
-
+  // The window opens inside the click, where popup blockers allow it, and is sent to the
+  // broker's login page once the backend returns the URL.
   const handleLoginStart = () => {
     setOutcome("idle");
     setMessage("");
+    const popup = globalThis.open("", "_blank", POPUP_FEATURES);
+    if (!popup) {
+      fail("Popup blocked; allow popups for this site to log in.");
+      return;
+    }
+    popup.opener = null;
     loginUrl.mutate(undefined, {
-      onSuccess: openLoginPage,
-      onError: (error) => fail(error.message),
+      onSuccess: (url) => {
+        popup.location.href = url;
+        setShowModal(true);
+      },
+      onError: (error) => {
+        popup.close();
+        fail(error.message);
+      },
     });
   };
 
@@ -99,35 +103,57 @@ function useLoginFlow(broker: Broker, name: string) {
   };
 }
 
+/** The broker's header state while the login modal is closed. */
+function LoginStatus({
+  broker,
+  name,
+  flow,
+}: Readonly<{ broker: Broker; name: string; flow: ReturnType<typeof useLoginFlow> }>) {
+  const statusQuery = useBrokerStatus(broker);
+  const [retrying, setRetrying] = useState(false);
+  const status = statusQuery.data;
+  const error = flow.outcome === "error" && !flow.showModal ? flow.message : "";
+
+  if (status === undefined || retrying) return <LoginChecking name={name} />;
+  switch (status.kind) {
+    case "offline": {
+      const retry = () => {
+        setRetrying(true);
+        void statusQuery.refetch().finally(() => setRetrying(false));
+      };
+      return <LoginOffline onRetry={retry} />;
+    }
+    case "unreadable":
+      return <LoginUnreadable name={name} error={status.error} />;
+    case "connected":
+      return (
+        <LoginConnected
+          name={name}
+          userId={status.userId}
+          disabled={flow.loading}
+          error={error}
+          onDisconnect={flow.handleDisconnect}
+        />
+      );
+    case "disconnected":
+      return (
+        <LoginConnect
+          name={name}
+          disabled={flow.loading}
+          error={error}
+          onConnect={flow.handleLoginStart}
+        />
+      );
+  }
+}
+
 /** The header's broker login: connection state, and the login and disconnect flows. */
 export function LoginButton({ broker = "fyers" }: Readonly<{ broker?: Broker }>) {
-  const { name, code, connectedLabel } = LOGIN_TEXT[broker];
-  const statusQuery = useBrokerStatus(broker);
+  const { name, code } = LOGIN_TEXT[broker];
   const flow = useLoginFlow(broker, name);
-  const systemOffline = statusQuery.data?.offline ?? false;
-
-  // Spinner on first load and on a manual retry from the offline badge, not on background refetches.
-  if (statusQuery.isPending || (statusQuery.isFetching && systemOffline)) return <LoginChecking />;
-  if (systemOffline) return <LoginOffline onRetry={() => void statusQuery.refetch()} />;
-  if (statusQuery.data?.connected) {
-    return (
-      <LoginConnected
-        name={name}
-        label={connectedLabel}
-        userId={statusQuery.data.userId}
-        disabled={flow.loading}
-        onDisconnect={flow.handleDisconnect}
-      />
-    );
-  }
   return (
     <>
-      <LoginConnect
-        name={name}
-        disabled={flow.loading}
-        error={flow.outcome === "error" && !flow.showModal ? flow.message : ""}
-        onConnect={flow.handleLoginStart}
-      />
+      <LoginStatus broker={broker} name={name} flow={flow} />
       {flow.showModal && (
         <AuthCodeDialog
           inputId={`${broker}-auth-code`}

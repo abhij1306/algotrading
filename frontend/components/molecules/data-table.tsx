@@ -23,3 +23,21 @@ export function DataTable({
     </Table>
   );
 }
+
+/** A row's first cell text as a button that opens the row's details. */
+export function RowOpener({
+  label,
+  onOpen,
+  children,
+}: Readonly<{ label: string; onOpen: () => void; children: ReactNode }>) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={label}
+      className="-mx-1 rounded px-1 text-left hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
+    >
+      {children}
+    </button>
+  );
+}

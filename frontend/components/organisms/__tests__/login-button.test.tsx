@@ -32,6 +32,13 @@ function renderButton(broker?: "fyers" | "zerodha") {
   );
 }
 
+/** A stand-in login window: what the flow reads and writes on the window it opens. */
+function stubPopup() {
+  const popup = { location: { href: "" }, opener: {} as unknown, close: vi.fn() };
+  vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+  return popup;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -48,14 +55,25 @@ describe("LoginButton", () => {
     expect(calls).toEqual(["GET /api/hat/auth/fyers/status"]);
   });
 
-  it("reads an unreachable backend as System Offline", async () => {
+  it("reads an unreachable backend as offline", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.reject(new TypeError("Failed to fetch"))),
     );
     renderButton();
 
-    expect(await screen.findByText("System Offline")).toBeInTheDocument();
+    expect(await screen.findByText("Backend offline")).toBeInTheDocument();
+  });
+
+  it("shows an unreadable login status instead of inviting a new login", async () => {
+    stubBackend({
+      "/api/hat/auth/fyers/status": () =>
+        Response.json({ connected: false, error: "Could not read Fyers login status" }),
+    });
+    renderButton();
+
+    expect(await screen.findByText("Fyers status unreadable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /connect fyers/i })).not.toBeInTheDocument();
   });
 
   it("shows the broker outage message when the login URL cannot be built", async () => {
@@ -64,10 +82,12 @@ describe("LoginButton", () => {
       "/api/hat/auth/fyers/url": () =>
         Response.json({ error: { code: "BROKER_UNAVAILABLE" } }, { status: 503 }),
     });
+    const popup = stubPopup();
     renderButton();
 
     fireEvent.click(await screen.findByRole("button", { name: /connect fyers/i }));
 
+    await waitFor(() => expect(popup.close).toHaveBeenCalled());
     expect(
       await screen.findByText(
         "Broker unavailable: Fyers could not be reached. Retry once it is back.",
@@ -86,10 +106,12 @@ describe("LoginButton", () => {
         return Response.json({ status: "ok" });
       },
     });
-    const open = vi.spyOn(window, "open").mockReturnValue(window);
+    const popup = stubPopup();
     renderButton();
 
     fireEvent.click(await screen.findByRole("button", { name: /connect fyers/i }));
+    // The window opens inside the click, before the URL fetch, so popup blockers allow it.
+    expect(window.open).toHaveBeenCalledWith("", "_blank", "width=800,height=600");
     fireEvent.change(await screen.findByLabelText("Authorization Code"), {
       target: { value: "abc123" },
     });
@@ -97,7 +119,8 @@ describe("LoginButton", () => {
 
     // The re-read status switches the button to the connected badge.
     expect(await screen.findByText("XA1234")).toBeInTheDocument();
-    expect(open).toHaveBeenCalledWith("https://fyers.test/login", "_blank", "width=800,height=600");
+    expect(popup.location.href).toBe("https://fyers.test/login");
+    expect(popup.opener).toBeNull();
     await waitFor(() =>
       expect(calls).toEqual([
         "GET /api/hat/auth/fyers/status",
@@ -106,6 +129,19 @@ describe("LoginButton", () => {
         "GET /api/hat/auth/fyers/status",
       ]),
     );
+  });
+
+  it("says the popup was blocked without asking the backend for a URL", async () => {
+    const calls = stubBackend({
+      "/api/hat/auth/fyers/status": () => Response.json({ connected: false }),
+    });
+    vi.spyOn(window, "open").mockReturnValue(null);
+    renderButton();
+
+    fireEvent.click(await screen.findByRole("button", { name: /connect fyers/i }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/popup blocked/i);
+    expect(calls).toEqual(["GET /api/hat/auth/fyers/status"]);
   });
 
   it("logs in to Zerodha through its own routes with the request_token", async () => {
@@ -123,7 +159,7 @@ describe("LoginButton", () => {
         return Response.json({ status: "ok" });
       },
     });
-    vi.spyOn(window, "open").mockReturnValue(window);
+    stubPopup();
     renderButton("zerodha");
 
     fireEvent.click(await screen.findByRole("button", { name: /connect zerodha/i }));
@@ -133,7 +169,7 @@ describe("LoginButton", () => {
     fireEvent.click(screen.getByRole("button", { name: "Authenticate" }));
 
     expect(await screen.findByText("AB1234")).toBeInTheDocument();
-    expect(screen.getByText("Zerodha connected")).toBeInTheDocument();
+    expect(screen.getByText("Zerodha")).toBeInTheDocument();
     await waitFor(() =>
       expect(calls).toEqual([
         "GET /api/hat/auth/zerodha/status",

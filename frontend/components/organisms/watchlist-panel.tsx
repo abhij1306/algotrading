@@ -1,9 +1,7 @@
-import { Badge } from "@/components/atoms/badge";
 import { Decimal } from "@/components/atoms/number";
-import { Text } from "@/components/atoms/text";
 import { noRows, QuerySection } from "@/components/molecules/query-section";
 import { PLACEHOLDER } from "@/lib/format";
-import { useHatWatchlist, type HatWatchlist } from "@/lib/queries/hat";
+import { useHatWatchlist, useSharedStale, type HatWatchlist } from "@/lib/queries/hat";
 import { formatIstDate } from "@/lib/time";
 
 const WATCHLIST_TOP = 10;
@@ -11,18 +9,22 @@ const WATCHLIST_TOP = 10;
 function BotWatchlist({ bot }: Readonly<{ bot: HatWatchlist[number] }>) {
   return (
     <div>
-      <Text className="mb-1 font-medium">
-        {bot.bot} · {bot.trade_date ? formatIstDate(bot.trade_date) : PLACEHOLDER}
-      </Text>
+      <p className="mb-2 flex items-baseline justify-between gap-4 text-sm">
+        <span>{bot.bot}</span>
+        <span className="text-xs text-foreground-muted">
+          {bot.trade_date ? formatIstDate(bot.trade_date) : PLACEHOLDER}
+        </span>
+      </p>
       {bot.entries.length === 0 ? (
-        <Text tone="muted">No candidates.</Text>
+        <p className="text-sm text-foreground-muted">No candidates.</p>
       ) : (
-        <ol className="flex flex-wrap gap-2 text-sm">
+        <ol className="flex flex-wrap gap-x-5 gap-y-1.5 text-sm">
           {bot.entries.slice(0, WATCHLIST_TOP).map((entry) => (
-            <li key={entry.symbol}>
-              <Badge variant="outline">
-                {entry.symbol} <Decimal value={entry.score} />
-              </Badge>
+            <li key={entry.symbol} className="whitespace-nowrap">
+              {entry.symbol}{" "}
+              <span className="font-mono tabular-nums text-foreground-muted">
+                <Decimal value={entry.score} />
+              </span>
             </li>
           ))}
         </ol>
@@ -32,12 +34,21 @@ function BotWatchlist({ bot }: Readonly<{ bot: HatWatchlist[number] }>) {
 }
 
 /** Each bot's top watchlist candidates with their scores. */
-export function WatchlistPanel() {
+export function WatchlistPanel({ className }: Readonly<{ className?: string }>) {
   const watchlist = useHatWatchlist();
+  const sharedStale = useSharedStale() !== null;
   return (
-    <QuerySection title="Watchlist" query={watchlist} isEmpty={noRows} empty="No bots.">
+    <QuerySection
+      sharedStale={sharedStale}
+      title="Watchlist"
+      query={watchlist}
+      isEmpty={noRows}
+      empty="No bots."
+      meta={() => `top ${WATCHLIST_TOP} per bot`}
+      className={className}
+    >
       {(data) => (
-        <div className="space-y-4">
+        <div className="space-y-6">
           {data.map((bot) => (
             <BotWatchlist key={bot.bot_id} bot={bot} />
           ))}
