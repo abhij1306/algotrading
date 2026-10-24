@@ -412,7 +412,9 @@ def gate_evidence(
     trades of the user's sleeves closed since the policy version in force at `at` took effect
     (every closed trade when none is in force; shadow ones are ignored by
     `build_gate_evidence`), so each step up needs its own evidence, against the discounted
-    backtest expectancy, the trade-weighted mean over the sleeves' evidence runs. None when no
+    backtest expectancy, the trade-weighted mean over the sleeves' evidence runs. Only what
+    existed at `at` is read (C23): the evidence runs completed and the trades closed by then, so
+    a gate replayed later sees what the request saw. None when no
     sleeve has one: the increase gate then refuses. A sleeve's trades of a playbook its run
     cannot have (`unbacktested`: EP until PR 70) are not counted (PR 40)."""
     bots = session.scalars(
@@ -423,7 +425,7 @@ def gate_evidence(
     count = 0
     excluded: dict[uuid.UUID, frozenset[str]] = {}
     for bot in bots:
-        found = evidence_run(session, bot, _cooldown_of(in_force))
+        found = evidence_run(session, bot, _cooldown_of(in_force), at)
         metrics = None if found is None else found[1]
         excluded[bot.id] = unbacktested(metrics)
         if metrics is None or metrics.expectancy_r is None:
@@ -444,7 +446,7 @@ def gate_evidence(
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .join(HatBot, HatBot.id == HatPosition.bot_id)
         .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
-        .where(HatBot.user_id == user_id)
+        .where(HatBot.user_id == user_id, HatPosition.closed_at <= as_utc(at))
         .order_by(HatPosition.closed_at, HatPosition.id)
     )
     if in_force is not None:
