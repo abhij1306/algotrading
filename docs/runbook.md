@@ -200,7 +200,8 @@ Owner corrections (journalled; no load rewrites them):
   value is undated and a backtest skips the name from its ex-date.
 - `$ADMIN correct-actions --list NAME.tsv [--apply]`: columns `op isin ex_date type factor
   new_ex_date note`, optional `cash` and `known_on`; ops replace, delete, move, add. All or
-  nothing.
+  nothing. A demerger is added as type `demerger` (stored as an `other` flagged one); a move
+  keeps the row's own text and flag.
 
 Tools, `python -m app.hat.data.<tool>`: imports are dry runs until `--apply` and idempotent;
 input files sit under the working directory (run there with `PYTHONPATH=<repo>/backend`).

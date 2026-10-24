@@ -940,7 +940,7 @@ def decide_demerger(
     outcome = settle(
         p,
         before,
-        [Leg(TYPE_OTHER, factor)],
+        [Leg(TYPE_OTHER, factor, True)],
         near_kind,
         verdict,
         detail,

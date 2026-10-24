@@ -14,6 +14,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 
 from ...base import Base
@@ -129,6 +130,10 @@ class HatCorporateAction(Base):
             " 'resulting_first_close', 'research_source_date', 'correction'))",
             name="hat_corporate_action_known_check",
         ),
+        # Only an `other` row is a demerger; `schema.PG_DDL` adds it with the same text.
+        CheckConstraint(
+            "NOT demerger OR action_type = 'other'", name="hat_corporate_action_demerger_check"
+        ),
     )
 
     id = uuid_pk()
@@ -149,6 +154,9 @@ class HatCorporateAction(Base):
     announced_on = Column(Date)
     known_on = Column(Date)
     known_basis = Column(Text)
+    # The `other` row is a demerger, not a rights issue: set by the writer that knows it (the
+    # imports' demerger legs, the owner's `demerger` line), never read from the text.
+    demerger = Column(Boolean, nullable=False, default=False, server_default=text("false"))
 
 
 class HatDemergerNotice(Base):

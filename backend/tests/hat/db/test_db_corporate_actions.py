@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.data import corporate_actions as ca
 from app.hat.data import instruments as inst
+from app.hat.data.ca_corrections import add_action, apply_list, parse_list
 from app.hat.models import (
     HatCorporateAction,
     HatCorporateActionVersion,
@@ -24,8 +25,7 @@ from app.hat.models import (
 pytestmark = pytest.mark.postgres
 
 
-def test_corporate_action_load_on_postgres(conn: Connection) -> None:
-    session = Session(bind=conn)
+def _instrument(session: Session, isin: str, symbol: str) -> uuid.UUID:
     market = session.scalar(select(HatMarket).where(HatMarket.code == "NSE"))
     if market is None:
         market = HatMarket(
@@ -38,9 +38,16 @@ def test_corporate_action_load_on_postgres(conn: Connection) -> None:
         session.add(market)
         session.flush()
     inst.upsert_instruments(
-        session, market.id, [security("INE000000771", "EQ", "SPLT")], today=date(2026, 1, 5)
+        session, market.id, [security(isin, "EQ", symbol)], today=date(2026, 1, 5)
     )
-    iid = session.scalar(select(HatInstrument.id).where(HatInstrument.isin == "INE000000771"))
+    iid = session.scalar(select(HatInstrument.id).where(HatInstrument.isin == isin))
+    assert iid is not None
+    return iid
+
+
+def test_corporate_action_load_on_postgres(conn: Connection) -> None:
+    session = Session(bind=conn)
+    iid = _instrument(session, "INE000000771", "SPLT")
     ex = date(2018, 6, 14)
     mcp = ca.ActionRecord(iid, ex, "split", Decimal("0.2"), "mcp text", "mcp")
     archive = ca.ActionRecord(iid, ex, "split", Decimal("0.5"), "archive text", "archive")
@@ -78,3 +85,42 @@ def test_corporate_action_load_on_postgres(conn: Connection) -> None:
     with pytest.raises(DBAPIError, match="append-only"), session.begin_nested():
         session.execute(update(HatCorporateActionVersion).values(text="x"))
     session.rollback()
+
+
+def test_a_moved_demerger_keeps_its_text_and_flag(conn: Connection) -> None:
+    """F1: `correct-actions move` carries the row's own text and demerger flag to the new date;
+    the note goes to the journal and the version only."""
+    session = Session(bind=conn)
+    iid = _instrument(session, "INE000000772", "DMRG")
+    owner = {"chat_id": 1, "user_id": uuid.uuid4(), "now": datetime.now(UTC)}
+    header = "op\tisin\tex_date\ttype\tfactor\tnew_ex_date\tnote\n"
+    added = "add\tINE000000772\t2024-09-20\tdemerger\t0.7108\t\tDemerger 1:1 X [market gap]\n"
+    moved = "move\tINE000000772\t2024-09-20\tother\t\t2024-09-23\tex-date per bars\n"
+    for line in (added, moved):
+        apply_list(session, parse_list(header + line), apply=True, **owner)
+    row = session.scalars(
+        select(HatCorporateAction).where(HatCorporateAction.instrument_id == iid)
+    ).one()
+    assert (row.ex_date, row.demerger, row.raw_text) == (
+        date(2024, 9, 23),
+        True,
+        "Demerger 1:1 X [market gap]",
+    )
+    version = session.scalars(
+        select(HatCorporateActionVersion.text).where(
+            HatCorporateActionVersion.instrument_id == iid,
+            HatCorporateActionVersion.ex_date == date(2024, 9, 23),
+        )
+    ).one()
+    assert version == "ex-date per bars"
+    with pytest.raises(ca.ActionCorrectionError, match="bad_action_type"):
+        add_action(
+            session,
+            isin="INE000000772",
+            ex_date=date(2024, 9, 30),
+            action_type="split",
+            factor=Decimal("0.5"),
+            note="n",
+            demerger=True,
+            **owner,
+        )

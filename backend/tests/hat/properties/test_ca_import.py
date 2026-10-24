@@ -201,9 +201,9 @@ def test_a_non_equity_bonus_keeps_the_split_beside_it() -> None:
 
 def test_stored_kind_tells_a_demerger_from_rights() -> None:
     day = date(2025, 1, 6)
-    assert Stored("i", day, TYPE_OTHER, Decimal("0.96"), "Demerger 1:10").kind == "demerger"
-    assert Stored("i", day, TYPE_OTHER, Decimal("0.96"), "Rights 1:10 @ Premium").kind == TYPE_OTHER
-    assert Stored("i", day, TYPE_SPLIT, Decimal("0.5"), "Demerger").kind == TYPE_SPLIT
+    assert Stored("i", day, TYPE_OTHER, Decimal("0.96"), demerger=True).kind == "demerger"
+    assert Stored("i", day, TYPE_OTHER, Decimal("0.96")).kind == TYPE_OTHER
+    assert Stored("i", day, TYPE_SPLIT, Decimal("0.5")).kind == TYPE_SPLIT
 
 
 def _outcome(*legs: tuple[str, str]) -> Outcome:

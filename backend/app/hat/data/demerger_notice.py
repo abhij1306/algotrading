@@ -53,7 +53,6 @@ from ..models import (
 )
 from .ca_dividends import SOURCE_BC, FeedRow, input_path
 from .corporate_actions import PRICE_NEUTRAL_TYPES, lock_reference_data
-from .point_in_time import demerger_text
 
 __all__ = [
     "CLOSE_REASON",
@@ -214,15 +213,7 @@ def unlisted_notices(
 
 
 def _stored_demergers(session: Session) -> list[HatCorporateAction]:
-    return [
-        a
-        for a in session.scalars(
-            select(HatCorporateAction).where(
-                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES)
-            )
-        )
-        if demerger_text(a.raw_text)
-    ]
+    return list(session.scalars(select(HatCorporateAction).where(HatCorporateAction.demerger)))
 
 
 def announce_stored(session: Session) -> int:
@@ -311,7 +302,7 @@ class Demerger:
 
 
 def stored_demergers(session: Session) -> list[Demerger]:
-    """Every stored demerger (a price-changing row whose text names one), oldest first."""
+    """Every stored demerger (`hat_corporate_action.demerger`), oldest first."""
     ids = {a.id: a for a in _stored_demergers(session)}
     names = {
         i.id: (i.symbol, i.isin)

@@ -25,6 +25,15 @@ def test_parse_list() -> None:
     assert items[2].factor is None
     assert items[3].new_ex_date == date(2020, 1, 3)
     assert items[3].factor is None
+    assert not any(i.demerger for i in items)
+
+
+def test_parse_list_reads_a_demerger_add_as_a_flagged_other() -> None:
+    line = "add\tINE000X01010\t2024-09-20\tdemerger\t0.7108\t\tmarket gap\n"
+    (item,) = parse_list(HEADER + line)
+    assert (item.action_type, item.demerger) == ("other", True)
+    other = parse_list(HEADER + line.replace("demerger", "other"))[0]
+    assert (other.action_type, other.demerger) == ("other", False)
 
 
 @pytest.mark.parametrize(
@@ -38,6 +47,7 @@ def test_parse_list() -> None:
         ("rewrite\tINE1\t2020-01-01\tsplit\t0.5\t\tn\n", "bad_op@2"),
         ("replace\tINE1\t2020-13-01\tsplit\t0.5\t\tn\n", "bad_date@2"),
         ("replace\tINE1\t2020-01-01\tsplit\t0.5\n", "bad_columns@2"),
+        ("replace\tINE1\t2020-01-01\tdemerger\t0.5\t\tn\n", "bad_type@2"),
     ],
 )
 def test_parse_list_refuses(line: str, code: str) -> None:

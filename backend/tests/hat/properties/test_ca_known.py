@@ -128,8 +128,12 @@ def test_research_supplied_rights_terms() -> None:
     assert research_supplied(cut)  # a tag cut at TEXT_MAX may have lost its markers
 
 
-def _row(action_type: str, source: str, text: str, factor: str = "0.5") -> Row:
-    return Row("r", "i", "INE000A01010", EX, action_type, Decimal(factor), text, source, None)
+def _row(
+    action_type: str, source: str, text: str, factor: str = "0.5", *, demerger: bool = False
+) -> Row:
+    return Row(
+        "r", "i", "INE000A01010", EX, action_type, Decimal(factor), text, source, None, demerger
+    )
 
 
 def test_classify_backfills_from_what_is_stored() -> None:
@@ -142,20 +146,23 @@ def test_classify_backfills_from_what_is_stored() -> None:
     rights = _row("other", "nse_ca_file", "Rights 1:10 @ Premium Rs 95/-")
     assert classify(rights, owner=False, derived="", market=None) == Known(EX, EX_OPEN)
     child = "resulting X INE1 first close 66.45 on 2024-12-09 -> factor 0.8445"
-    demerger = _row("other", "nse_ca_file", "Demerger 1:1")
+    demerger = _row("other", "nse_ca_file", "Demerger 1:1", demerger=True)
     assert classify(demerger, owner=False, derived=child, market=gap) == Known(
         date(2024, 12, 9), RESULTING_FIRST_CLOSE
     )
     gap_only = "no resulting listing found: the ex-date gap is the factor"
     assert classify(demerger, owner=False, derived=gap_only, market=gap) == settle
-    research = _row("other", "ca_research", "Demerger 1:1 X [research market_gap]")
+    research = _row("other", "ca_research", "Demerger 1:1 X [research market_gap]", demerger=True)
     assert classify(research, owner=False, derived="", market=gap) == settle
     # the owner's market-gap demerger, and an owner value that is not the gap
-    owner = _row("other", "owner", "ROSSELLIND Demerger [market gap]", "0.2892")
+    owner = _row("other", "owner", "ex-date per bars", "0.2892", demerger=True)
     assert classify(owner, owner=True, derived="", market=gap) == settle
     assert classify(
-        _row("other", "owner", "Demerger", "0.5"), owner=True, derived="", market=gap
+        _row("other", "owner", "Demerger", "0.5", demerger=True), owner=True, derived="", market=gap
     ) == (UNKNOWN)
+    # the flag, not the text, makes a demerger: a rights note naming one is still rights
+    named = _row("other", "nse_ca_file", "Rights 1:10, after the demerger")
+    assert classify(named, owner=False, derived=gap_only, market=gap) == Known(EX, EX_OPEN)
     # an owner's split the ex-date gap confirms, and a public-only bonus it cannot
     split = (Fraction(1046, 10000), DAYS)
     assert classify(

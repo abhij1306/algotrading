@@ -2,7 +2,7 @@
 one, its band and the owner's review list. Rerunnable: a version already stored is not appended
 again, so a demerger CA7 adds is picked up by the next run.
 
-For each stored demerger (a price-changing row whose text names one, `point_in_time.demerger_text`):
+For each stored demerger (`hat_corporate_action.demerger`):
 
 - the raw gap: the ex open over the previous close, divided by any other factor ex between the two
   sessions (`point_in_time.ex_gaps`);
@@ -23,8 +23,9 @@ estimates and the applied value. A ratio value never takes precedence (it is a c
 
 The applied value stays the raw market gap. Only when the owner approved the neutralised gap
 (`--neutral`, with `--apply`) does each demerger whose applied value is the raw gap take the
-neutralised gap as a new accepted version (its date and basis kept), `hat_corporate_action`
-following it; the features then need `features --full`.
+neutralised gap, as the owner's correction (`correct_action`: journalled
+`corporate_action.corrected` under the owner's chat, a new accepted version, known on the gap's
+date with basis `correction`); the features then need `features --full`.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any
@@ -45,6 +46,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..errors import HatConfigError
 from ..models import HatCorporateAction, HatEvent, HatInstrument
 from .ca_import import CHILD_DAYS, EVENT_IMPORTED, read_first_closes, same_factor
 from .ca_known import settle_known
@@ -59,13 +61,14 @@ from .ca_versions import (
     band,
     log_apart,
 )
-from .corporate_actions import PRICE_NEUTRAL_TYPES, factor_to_decimal, lock_reference_data
-from .point_in_time import ExGap, Row, demerger_text, ex_gaps
+from .corporate_actions import Correction, correct_action, factor_to_decimal, lock_reference_data
+from .point_in_time import ExGap, Row, ex_gaps
 from .store import DataStore
 
 NEUTRAL_INDEX = "NIFTY 500"
 DISPUTE_TOL = 0.10  # a ratio value further from the applied one than this (log) is disputed
 SOURCE = "ca_demergers"
+NEUTRAL_NOTE = f"{INDEX_NEUTRAL_GAP}, owner approved"
 
 _CA1 = re.compile(r"resulting \S+ \S+ first close [\d.]+ on (\d{4}-\d{2}-\d{2}) -> factor")
 _LEG = re.compile(r"^Demerger (\d+):(\d+) [^;\[]+\[research")
@@ -160,7 +163,7 @@ def _rows(session: Session) -> list[tuple[str, Row, date | None]]:
     query = (
         select(HatCorporateAction, HatInstrument.symbol, HatInstrument.isin)
         .join(HatInstrument, HatInstrument.id == HatCorporateAction.instrument_id)
-        .where(HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES))
+        .where(HatCorporateAction.demerger)
         .order_by(HatCorporateAction.ex_date, HatInstrument.symbol)
     )
     return [
@@ -176,11 +179,11 @@ def _rows(session: Session) -> list[tuple[str, Row, date | None]]:
                 a.raw_text,
                 a.source,
                 None,
+                True,
             ),
             a.known_on,
         )
         for a, symbol, isin in session.execute(query)
-        if demerger_text(a.raw_text)
     ]
 
 
@@ -234,12 +237,18 @@ def plan(session: Session, store: DataStore) -> list[Demerger]:
     return out
 
 
-def apply(session: Session, demergers: Sequence[Demerger], *, neutral: bool) -> tuple[int, int]:
+def apply(
+    session: Session,
+    demergers: Sequence[Demerger],
+    *,
+    owner: tuple[int, uuid.UUID, datetime] | None = None,
+) -> tuple[int, int]:
     """Append each demerger's estimates not stored yet (the caller holds the reference-data
-    lock); with `neutral`, the owner-approved neutralised gap becomes the accepted value of each
-    demerger applying the raw gap. Returns (versions appended, rows changed)."""
+    lock); with `owner` (chat id, user, now: the owner approved `--neutral`), the neutralised gap
+    becomes the value of each demerger applying the raw gap (`neutralise`). Returns (versions
+    appended, rows changed)."""
     ledger = Ledger.open(session, {d.row.instrument_id for d in demergers})
-    appended = changed = 0
+    appended = 0
     for d in demergers:
         key = (d.row.instrument_id, d.row.ex_date, d.row.action_type)
         span = d.band
@@ -267,15 +276,31 @@ def apply(session: Session, demergers: Sequence[Demerger], *, neutral: bool) -> 
                 band_range=span,
             )
             appended += 1
-        if neutral and d.neutral is not None and d.applies_gap:
-            row = session.get(HatCorporateAction, uuid.UUID(d.row.id))
-            factor = factor_to_decimal(d.neutral)
-            if row is not None and Decimal(row.adjustment_factor) != factor:
-                row.adjustment_factor = factor
-                ledger.add_row(row, source=SOURCE, text=f"{INDEX_NEUTRAL_GAP} (owner approved)")
-                changed += 1
+    changed = 0 if owner is None else sum(neutralise(session, d, owner) for d in demergers)
     session.flush()
     return appended, changed
+
+
+def neutralise(session: Session, d: Demerger, owner: tuple[int, uuid.UUID, datetime]) -> bool:
+    """Store the owner-approved neutralised gap of a demerger applying the raw gap, through the
+    owner's `correct_action`, known when the gap settled (`gap_available`, as its cross-check
+    version; undated without it); False when nothing changes."""
+    if d.neutral is None or not d.applies_gap:
+        return False
+    factor = factor_to_decimal(d.neutral)
+    if factor == d.row.factor:
+        return False
+    chat_id, user_id, now = owner
+    fix = Correction(
+        d.row.isin,
+        d.row.ex_date,
+        d.row.action_type,
+        factor,
+        note=NEUTRAL_NOTE,
+        known_on=d.gap_available,
+    )
+    correct_action(session, fix, chat_id=chat_id, user_id=user_id, now=now)
+    return True
 
 
 def _f(value: Fraction | None) -> str:
@@ -329,9 +354,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     Lists every stored demerger's estimates, band and review list (a dry run); `--apply` appends
     the versions not stored yet in one transaction under the reference-data lock; `--neutral`
-    (with `--apply`, only once the owner approved it) makes the neutralised gap the applied value,
-    after which `python -m app.hat.data.features --full` must run. Bars and index under
-    `HAT_DATA_ROOT`."""
+    (with `--apply`, only once the owner approved it) makes the neutralised gap the applied value
+    as the owner's correction (the owner's chat id), after which
+    `python -m app.hat.data.features --full` must run. Bars and index under `HAT_DATA_ROOT`."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.ca_demergers")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--neutral", action="store_true")
@@ -345,6 +370,16 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     write: Callable[[str], Any] = lambda s: sys.stdout.write(s + "\n")  # noqa: E731
+    owner = None
+    if args.neutral:
+        from ..telegram.config import owner_chat_id
+        from ..time import utc_now
+
+        try:
+            owner = (owner_chat_id(), settings.user_id, utc_now())
+        except HatConfigError:
+            sys.stderr.write("refused: no_owner_chat\n")
+            return 2
     with HatSessionLocal() as session:
         if args.apply:
             lock_reference_data(session)
@@ -352,7 +387,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         for line in table_lines(demergers):
             write(line)
         if args.apply:
-            appended, changed = apply(session, demergers, neutral=args.neutral)
+            appended, changed = apply(session, demergers, owner=owner)
             session.commit()
             write(f"applied: {appended} versions appended, {changed} factors changed")
             if changed:
