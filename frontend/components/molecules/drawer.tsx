@@ -3,7 +3,7 @@ import { X } from "lucide-react";
 import { Button } from "@/components/atoms/button";
 import { openModal } from "@/lib/focus";
 
-/** A modal sheet from the right edge for one row's details; Esc, the scrim or ✕ closes it. */
+/** A modal sheet from the right edge for one row's details; Esc or ✕ closes it. */
 export function Drawer({
   title,
   subtitle,
@@ -14,9 +14,6 @@ export function Drawer({
     <dialog
       ref={openModal}
       onClose={onClose}
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
       aria-label={title}
       className="my-0 mr-0 ml-auto h-dvh max-h-none w-full max-w-md bg-background text-foreground shadow-xl"
     >

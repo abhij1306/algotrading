@@ -273,7 +273,7 @@ describe("HatPage", () => {
       /^Stale since \d{2}:\d{2}:\d{2} IST: the last refresh failed \(The HAT database could not be read\)/,
     );
     expect(within(status).getByText("armed")).toBeInTheDocument();
-    expect(screen.getByText("Stale, last snapshot 11:30:00 IST")).toHaveAttribute("role", "status");
+    expect(screen.getByText("Stale, last snapshot 11:30:00 IST").closest("output")).not.toBeNull();
   });
 
   it("opens a signal's details in a drawer", async () => {

@@ -19,11 +19,14 @@ function modeLabel(bot: Bot): string {
   if (bot.effective_mode !== bot.execution_mode) {
     label += ` (asked ${bot.execution_mode}: ${bot.mode_reason ?? "?"})`;
   }
-  if (bot.pending_mode !== null) {
-    const from = bot.pending_from ? `${formatIstDateTime(bot.pending_from)} IST` : "?";
-    label += `; ${bot.pending_mode} from ${from}`;
-  }
+  if (bot.pending_mode !== null) label += `; ${queuedText(bot)}`;
   return label;
+}
+
+/** The queued mode change and when it takes effect, in IST. */
+function queuedText(bot: Bot): string {
+  const from = bot.pending_from ? `${formatIstDateTime(bot.pending_from)} IST` : "?";
+  return `${bot.pending_mode} from ${from}`;
 }
 
 function BotState({ bot }: Readonly<{ bot: Bot }>) {
@@ -51,9 +54,7 @@ function BotDetails({
           {bot.mode_reason ?? PLACEHOLDER}
         </LabelledValue>
         <LabelledValue label="Queued change" className="col-span-2">
-          {bot.pending_mode === null
-            ? PLACEHOLDER
-            : `${bot.pending_mode} from ${bot.pending_from ? formatIstDateTime(bot.pending_from) : "?"} IST`}
+          {bot.pending_mode === null ? PLACEHOLDER : queuedText(bot)}
         </LabelledValue>
         <LabelledValue label="Status">{bot.status}</LabelledValue>
         <LabelledValue label="Lifecycle">{bot.lifecycle_state}</LabelledValue>
