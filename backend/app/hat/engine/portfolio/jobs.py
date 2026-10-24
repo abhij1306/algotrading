@@ -93,7 +93,7 @@ def allocate_job(
     total_equity: Callable[[], Decimal],
 ) -> JobResult:
     """`allocate`: one `hat_allocation_daily` row per sleeve for `trade_date`. `total_equity` is
-    the account equity source (broker funds at session start, [OWNER-PENDING] HAT-PORT-052).
+    the account equity source (the broker funds total, read now at the evening allocate, Q1).
     The lifecycle reads each sleeve's backtest evidence from its recorded runs (HAT-BT-060)."""
     try:
         report = run_allocation(

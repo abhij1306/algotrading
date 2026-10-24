@@ -126,9 +126,10 @@ def test_rearm_restarts_the_peak() -> None:
     # the base itself, and a point at or before it, are never read
     old = kill.SnapshotPoint(AT - timedelta(days=1), D("10"), D("100"))
     assert not kill.tripped_after_rearm(base, [old, base], SEED.bot_drawdown_pct)
-    # capital 100 -> 50 with no trade: equity 85 -> 35 is a reallocation, not a fall
-    cut = kill.SnapshotPoint(AT + timedelta(days=1), D("35"), D("50"))
-    assert not kill.tripped_after_rearm(base, [cut], SEED.bot_drawdown_pct)
+    # weight 0.5 -> 0.25 with no trade: equity 85 -> 35 is a reallocation, not a fall
+    weighted = kill.SnapshotPoint(AT, D("85"), D("100"), D("0.5"))
+    cut = kill.SnapshotPoint(AT + timedelta(days=1), D("35"), D("50"), D("0.25"))
+    assert not kill.tripped_after_rearm(weighted, [cut], SEED.bot_drawdown_pct)
 
 
 @given(st.decimals(min_value=D("1"), max_value=D("1000000"), places=2))
@@ -187,15 +188,37 @@ def test_mark_stale_or_missing_never_higher() -> None:
 
 def test_live_point_peak() -> None:
     """Before any snapshot the peak is the capital; after one, its peak restated for a change of
-    capital; never below the equity."""
+    weight, while a change of the funds total (a realised result, Q1) is measured; never below
+    the equity."""
     at = datetime(2026, 10, 23, 6, 0, tzinfo=UTC)
-    assert kill.live_point(None, None, at, D("95000"), D("100000")).peak == D("100000")
-    last = EquityPoint(at, D("100000"), D("110000"))
-    assert kill.live_point(last, D("100000"), at, D("99000"), D("100000")).peak == D("110000")
-    halved = kill.live_point(last, D("100000"), at, D("49000"), D("50000"))
+    now = kill.SnapshotPoint(at, D("95000"), D("100000"), D("0.5"))
+    assert kill.live_point(None, D(0), now).peak == D("100000")
+    last = kill.SnapshotPoint(at, D("100000"), D("100000"), D("0.5"))
+    same = kill.SnapshotPoint(at, D("99000"), D("100000"), D("0.5"))
+    assert kill.live_point(last, D("110000"), same).peak == D("110000")
+    halved = kill.live_point(
+        last, D("110000"), kill.SnapshotPoint(at, D("49000"), D("50000"), D("0.25"))
+    )
     assert halved.peak == D("55000")
     assert kill.drawdown_breached(halved.equity, halved.peak, D("0.10"))
-    assert kill.live_point(last, D("100000"), at, D("120000"), D("100000")).peak == D("120000")
+    # the same weight on a funds total cut by a realised loss: the peak stays, the loss counts
+    lost = kill.live_point(
+        last, D("100000"), kill.SnapshotPoint(at, D("90000"), D("90000"), D("0.5"))
+    )
+    assert lost.peak == D("100000")
+    assert kill.drawdown_breached(lost.equity, lost.peak, D("0.10"))
+    risen = kill.SnapshotPoint(at, D("120000"), D("100000"), D("0.5"))
+    assert kill.live_point(last, D("110000"), risen).peak == D("120000")
+
+
+def test_restated_capital() -> None:
+    """The previous capital at the new funds total: capital x previous weight / weight; a new
+    weight of 0 keeps the previous capital; anything unknown is None."""
+    assert kill.restated_capital(D("100000"), D("0.5"), D("45000"), D("0.25")) == D("90000")
+    assert kill.restated_capital(D("100000"), D("0.5"), D("0"), D("0")) == D("100000")
+    assert kill.restated_capital(D("0"), D("0"), D("50000"), D("0.5")) == D("0")
+    assert kill.restated_capital(D("100000"), None, D("50000"), D("0.5")) is None
+    assert kill.restated_capital(None, D("0.5"), D("50000"), D("0.5")) is None
 
 
 # --- no adding to a position ---

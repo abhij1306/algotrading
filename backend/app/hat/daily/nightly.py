@@ -181,7 +181,7 @@ class NightlyDeps:
     mcp: Callable[[], McpClient | None]  # a fresh client per run, so its call count is the run's
     bhavcopy: Callable[[], Fetcher]  # the 22:00 fallback's downloader
     sources: TextSources
-    total_equity: Callable[[date], Decimal]  # [OWNER-PENDING] HAT-PORT-052: broker funds
+    total_equity: Callable[[date], Decimal]  # the broker funds total (Q1)
     sleep: Callable[[float], None]  # the ingest's wait; the runtime's raises when HAT stops
     notifier: Notifier = field(default_factory=LogNotifier)
     digest: Callable[[uuid.UUID, date], None] | None = None  # Reports.send_watchlist_digest

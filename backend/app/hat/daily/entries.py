@@ -58,11 +58,13 @@ def _allocation(
     return session.get(HatAllocationDaily, (made, bot_id))
 
 
-def _realised(session: Session, bot_id: uuid.UUID, virtual: bool) -> Decimal:
+def _virtual_realised(session: Session, bot_id: uuid.UUID) -> Decimal:
+    """The bot's realised P&L of virtual trades: a real book's is in the broker funds its
+    capital was read from, so only a virtual book adds it (Q1)."""
     rows = session.scalars(
         select(HatTradeResult.realized_pnl)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
-        .where(HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(virtual))
+        .where(HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(True))
     )
     return sum((Decimal(r) for r in rows), Decimal(0))
 
@@ -124,9 +126,13 @@ class LiveContexts:
         nominal = virtual and allocation.virtual_capital is not None
         capital = Decimal(allocation.virtual_capital if nominal else allocation.capital)
         risk_pct = Decimal(allocation.virtual_risk_pct if nominal else allocation.risk_pct)
-        equity = capital + _realised(session, bot_id, virtual)
+        # a real book's equity is its share of the broker funds total read at the evening
+        # allocate, which already carries its realised P&L (Q1)
+        equity = capital
         if virtual:
-            equity += shadow_dividend_cash(session, bot_id, day)
+            equity += _virtual_realised(session, bot_id) + shadow_dividend_cash(
+                session, bot_id, day
+            )
         book = (
             func.coalesce(HatAllocationDaily.virtual_capital, HatAllocationDaily.capital)
             if virtual

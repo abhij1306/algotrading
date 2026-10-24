@@ -111,6 +111,13 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
   confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
 
+- **Equity is the broker funds total (Q1).** Read at the evening allocate; a sleeve's capital is
+  its weight x that total, which already carries the real books' realised P&L, so sizing adds
+  none; only a virtual (shadow) book adds its own. The drawdown adds the realised P&L of trades
+  closed after that read, and restates its peak only for a change of weight: a change of the
+  funds total (a result, a deposit or a withdrawal) moves the drawdown, and a sleeve's realised
+  result reaches its capital shared by weight.
+
 ## Planned, not built
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
@@ -121,8 +128,7 @@ MCP server (advisory only); a CLI to re-run one job for a past trade date.
 
 Chosen where the owner has not ruled; the code implements them.
 
-- Universe: NIFTY 500 point-in-time plus liquidity criteria; equity read from broker funds at
-  session start.
+- Universe: NIFTY 500 point-in-time plus liquidity criteria.
 - Confidence: the 30 trades, the band edges (0.60/0.75/0.90) and the raw (undiscounted) mean.
 - Regime: first day bootstraps confirmed; percentile over the trailing 252 values; precedence
   Bear > Correction > Bull volatile > Bull quiet.

@@ -356,6 +356,12 @@ CREATE OR REPLACE TRIGGER hat_event_no_update
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",
     _KNOWN_CHECK,
     "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
+    # Q1: drawdown points keep the allocation they were measured against; the realised P&L
+    # of a re-arm base is gone (equity carries it through the broker funds)
+    "ALTER TABLE hat_daily_bot_snapshot ADD COLUMN IF NOT EXISTS capital numeric(18,4)",
+    "ALTER TABLE hat_daily_bot_snapshot ADD COLUMN IF NOT EXISTS final_weight numeric",
+    "ALTER TABLE hat_drawdown_base ADD COLUMN IF NOT EXISTS weight numeric",
+    "ALTER TABLE hat_drawdown_base DROP COLUMN IF EXISTS realized",
     # CA6: create_all makes the table; its rows are append-only
     _ACTION_VERSION_APPEND_ONLY_FN,
     """

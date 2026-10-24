@@ -179,14 +179,15 @@ def rebase_peak(
 ) -> Decimal:
     """The previous peak restated at a new allocation, so a planned reallocation is not a loss.
 
-    Snapshot equity is allocation capital plus realised P&L, so cutting a sleeve's
-    capital (a regime or health change, HAT-PORT-050) lowers equity without any trade losing
-    money. The previous equity moves to `prev_equity + (capital - prev_capital)` and the peak
-    scales by the same ratio, which keeps (peak - equity) / peak exactly as it was before the
-    reallocation: only trading results move the drawdown (HAT-RISK-066). Unknown capital on
-    either side (no allocation row) or no change leaves the peak as it is; a base that is not
-    positive after the move (nothing left to measure against) restarts the peak at zero, so the
-    next equity becomes the peak.
+    Equity is allocation capital plus the result not yet in it, so cutting a sleeve's weight (a
+    regime or health change, HAT-PORT-050) lowers equity without any trade losing money.
+    `prev_capital` is the previous capital restated at the new funds total
+    (`restated_capital`). The previous equity moves to `prev_equity + (capital - prev_capital)`
+    and the peak scales by the same ratio, which keeps (peak - equity) / peak exactly as it was
+    before the reallocation: only trading results move the drawdown (HAT-RISK-066). Unknown
+    capital on either side (no allocation row) or no change leaves the peak as it is; a base that
+    is not positive after the move (nothing left to measure against) restarts the peak at zero,
+    so the next equity becomes the peak.
     """
     try:
         equity = exact_input(prev_equity, "equity")
@@ -205,13 +206,35 @@ def rebase_peak(
         return peak * moved / equity
 
 
+def restated_capital(
+    prev_capital: Decimal | None,
+    prev_weight: Decimal | None,
+    capital: Decimal | None,
+    weight: Decimal | None,
+) -> Decimal | None:
+    """The previous allocation capital restated at the new funds total (Q1): `capital x
+    prev_weight / weight`. Capital is weight x the broker funds total, which carries the realised
+    P&L, so only a change of weight is a planned reallocation; a change of the funds total is a
+    result and moves the drawdown. A new weight of 0 has no funds total to restate at: the
+    previous capital stands, so the whole cut is planned. None when any input is unknown."""
+    if prev_capital is None or capital is None or prev_weight is None or weight is None:
+        return None
+    if weight == 0:
+        return prev_capital
+    with localcontext() as ctx:
+        ctx.prec = 60  # wide enough that the ratio of two stored amounts is exact
+        return capital * prev_weight / weight
+
+
 @dataclass(frozen=True)
 class SnapshotPoint:
-    """One time's equity and the allocation capital it was measured against (None: unknown)."""
+    """One time's equity and the allocation capital and weight it was measured against (None:
+    unknown)."""
 
     at: datetime
     equity: Decimal
     capital: Decimal | None = None
+    weight: Decimal | None = None
 
 
 def adjusted_series(points: Iterable[SnapshotPoint]) -> list[EquityPoint]:
@@ -223,14 +246,13 @@ def adjusted_series(points: Iterable[SnapshotPoint]) -> list[EquityPoint]:
     maximum of the equity.
     """
     out: list[EquityPoint] = []
-    previous: tuple[Decimal, Decimal, Decimal | None] | None = None  # equity, peak, capital
+    previous: tuple[SnapshotPoint, Decimal] | None = None  # the point and its peak
     for point in sorted(points, key=lambda p: as_utc(p.at)):
         if previous is None:
             peak = point.equity
         else:
-            base = rebase_peak(previous[0], previous[1], previous[2], point.capital)
-            peak = max(point.equity, base)
-        previous = (point.equity, peak, point.capital)
+            peak = max(point.equity, _rebased(previous[0], previous[1], point))
+        previous = (point, peak)
         if point.capital is None or point.capital != 0:
             out.append(EquityPoint(point.at, point.equity, peak))
     return out
@@ -313,17 +335,17 @@ def open_pnl(holdings: Iterable[Holding]) -> tuple[Decimal, dict[str, int]]:
     return total, bases
 
 
-def live_point(
-    previous: EquityPoint | None,
-    previous_capital: Decimal | None,
-    at: datetime,
-    equity: Decimal,
-    capital: Decimal,
-) -> EquityPoint:
-    """The equity marked at `at` against its running peak: the last snapshot's peak restated
-    for any change of capital since (`rebase_peak`), or the capital itself before the first
-    snapshot (a new sleeve starts at its capital), and never below the equity."""
+def _rebased(previous: SnapshotPoint, peak: Decimal, point: SnapshotPoint) -> Decimal:
+    """`previous`'s peak restated at `point`'s allocation (`rebase_peak`, `restated_capital`)."""
+    old = restated_capital(previous.capital, previous.weight, point.capital, point.weight)
+    return rebase_peak(previous.equity, peak, old, point.capital)
+
+
+def live_point(previous: SnapshotPoint | None, peak: Decimal, point: SnapshotPoint) -> EquityPoint:
+    """`point` (the equity marked now, with its capital and weight) against its running peak:
+    the last snapshot's `peak` restated for any change of weight since (`rebase_peak`), or the
+    capital itself before the first snapshot (a new sleeve starts at its capital), and never
+    below the equity."""
     if previous is None:
-        return EquityPoint(at, equity, max(equity, capital))
-    base = rebase_peak(previous.equity, previous.peak, previous_capital, capital)
-    return EquityPoint(at, equity, max(equity, base))
+        return EquityPoint(point.at, point.equity, max(point.equity, point.capital or Decimal(0)))
+    return EquityPoint(point.at, point.equity, max(point.equity, _rebased(previous, peak, point)))

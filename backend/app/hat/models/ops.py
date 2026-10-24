@@ -156,7 +156,8 @@ class HatDailyBotSnapshot(Base):
 
     bot_id = fk("hat_bot.id", primary_key=True)
     trade_date = Column(Date, primary_key=True)
-    # allocation capital + realised P&L + `open_pnl` (P5: marked to market at the close)
+    # allocation capital + the realised P&L not yet in it + `open_pnl` (Q1; P5: marked to market
+    # at the close)
     equity = Column(Money, nullable=False)
     equity_peak = Column(Money, nullable=False)
     # the marked P&L of the positions open at the snapshot (0 on rows before P5)
@@ -165,3 +166,7 @@ class HatDailyBotSnapshot(Base):
     realized_r = Column(Ratio, nullable=False)
     exposure_level = Column(Text, nullable=False)
     currency = Column(Currency, nullable=False)
+    # the allocation the equity was measured against: its capital and final weight (None on
+    # rows before Q1: unknown, so a change of allocation across them restates no peak)
+    capital = Column(Money)
+    final_weight = Column(Ratio)
