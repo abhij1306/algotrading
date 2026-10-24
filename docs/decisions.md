@@ -33,6 +33,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   industry, 3 entries and 3 stop-outs a day; an exposure ladder stepping on wins and losses;
   10% drawdown kills (account and bot) on equity marked to market intraday. Bots hold no risk
   numbers, so no strategy can loosen risk.
+- **The risk-increase gate (QA8).** Besides live expectancy against the discounted backtest
+  expectancy, each sleeve's evidence run needs five years of sessions, no known gap naming an
+  enabled playbook and ambiguous days within the cap, the Research -> Backtested conditions. A
+  decrease restarting the trade window is intended: each step up earns its own evidence.
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
   50/50. A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.

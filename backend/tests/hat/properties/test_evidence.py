@@ -4,6 +4,7 @@ missing or malformed as absent (fail closed). No run, market or database is buil
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from datetime import UTC, date, datetime
@@ -11,7 +12,7 @@ from decimal import Decimal
 
 import hat_backtest_support as s
 
-from app.hat.backtest.evidence import RunMetrics, unbacktested
+from app.hat.backtest.evidence import RunMetrics, history_holds, unbacktested
 from app.hat.backtest.report import TradeRow, compute_metrics
 from app.hat.backtest.spec import KNOWN_GAPS, sleeve_weight
 from app.hat.engine.scan import EP_PLAYBOOK
@@ -104,3 +105,23 @@ def test_unbacktested() -> None:
     assert unbacktested(RunMetrics.from_json({"known_gaps": "garbled"})) == ep
     assert unbacktested(RunMetrics.from_json({"known_gaps": [KNOWN_GAPS[1]]})) == ep
     assert unbacktested(RunMetrics.from_json({"known_gaps": []})) == frozenset()  # PR 70
+
+
+def test_history_holds() -> None:
+    """The risk-increase gate's run passes the lifecycle's span, gap and ambiguity conditions
+    (QA8): five years of sessions, no known gap naming an enabled playbook, ambiguous days at
+    most 10% of the held sessions; an absent fact fails."""
+    good = RunMetrics(
+        first_session=date(2018, 1, 1),
+        last_session=date(2023, 1, 1),
+        held_sessions=100,
+        ambiguous_days=10,
+        known_gaps=KNOWN_GAPS,
+    )
+    breakout = frozenset({"breakout"})
+    assert history_holds(good, breakout)
+    assert not history_holds(dataclasses.replace(good, last_session=date(2022, 6, 1)), breakout)
+    assert not history_holds(good, frozenset({"breakout", EP_PLAYBOOK}))
+    assert not history_holds(good, frozenset())
+    assert not history_holds(dataclasses.replace(good, ambiguous_days=11), breakout)
+    assert not history_holds(dataclasses.replace(good, ambiguous_days=None), breakout)

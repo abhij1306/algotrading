@@ -70,7 +70,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   an order; auto, `/arm` and `/flatten` need a second confirmation. An entry fill landing after
   a flatten sold its position is sold under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
-  evidence gate; policy and strategy versions are immutable.
+  evidence gate; policy and strategy versions are immutable. The gate counts the live trades
+  closed since the version in force took effect, so any change, a decrease too, restarts that
+  window; every sleeve's evidence run must pass the lifecycle's span, gap and ambiguity
+  conditions (QA8), and the gate reads only the runs and trades that existed when it was asked.
 - **One owner per resource.** One live socket, one session owner per broker account, one token
   store, one fake broker, one risk authority, one HAT runtime per database.
 - **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
