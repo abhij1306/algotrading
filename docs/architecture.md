@@ -95,6 +95,13 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 - Parquet under `HAT_DATA_ROOT`, date-partitioned, read through DuckDB: `bars_daily_raw`
   (immutable), `index_daily`, `features_daily`, `breadth_daily`, `market_breadth`, 5-minute bars
   (`bars_5m`, raw basis; the minute-history loader's refusals in `bars_5m_rejects`).
+- `features_daily/_state.json` (`data/features.py:FeaturesState`, version 2): the inputs digest
+  (adjustment lines + `FEATURES_RULE`, the ranked universe and formulas), the adjustment as
+  lines (`instrument|ex_date|factor`, `old>chain`) and, per featured day, the fingerprint of its
+  bars (part file names with run ids and sizes). A day unrecorded or with another fingerprint is
+  recomputed with the later days that read it; an adjustment change recomputes the touched chains
+  only; a run unrecords the days it will rewrite first, so a crash resumes. The backtest refuses
+  a window with an unrecorded or changed day (`backtest_features_stale`).
 
 ## Daily cycle (IST, trading days; `daily/assembly.py:daily_jobs`)
 

@@ -7,6 +7,7 @@ import random
 import tempfile
 import uuid
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import polars as pl
@@ -18,6 +19,8 @@ from hypothesis import strategies as st
 from app.hat.data.bhavcopy import weekdays
 from app.hat.data.store import (
     DATASET_BARS,
+    ActionFactor,
+    Adjustment,
     BarRow,
     DataStore,
     StoreError,
@@ -161,3 +164,33 @@ def test_latest_rows_keeps_the_latest_run_per_day_in_read_order() -> None:
     assert latest_rows(frame)["close"].to_list() == [1.0, 3.0, 4.0, 5.0]
     unique = frame.filter(pl.col("ingest_run_id") == "r1")
     assert latest_rows(unique) is unique
+
+
+def test_fingerprints_change_with_a_new_run_and_the_view_reads_by_glob() -> None:
+    """A day's fingerprint names its part files and sizes: a second run on the day changes it,
+    another day's stays. The adjusted view loads the factors and reads every part file."""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = DataStore(Path(tmp))
+        assert store.fingerprints(DATASET_BARS) == {}
+        first, second = uuid7(), uuid7()
+        store.write_bars(DAYS[0], [bar("i1", first)])
+        store.write_bars(DAYS[1], [bar("i1", first), bar("i2", first)])
+        before = store.fingerprints(DATASET_BARS)
+        assert sorted(before) == DAYS[:2]
+        assert before[DAYS[0]].startswith(f"part-{first}.parquet:")
+        store.write_bars(DAYS[0], [bar("i3", second)])
+        after = store.fingerprints(DATASET_BARS)
+        assert after[DAYS[0]] != before[DAYS[0]]
+        assert after[DAYS[1]] == before[DAYS[1]]
+        assert store.bar_instruments(DAYS[0]) == {"i1", "i3"}
+        factor = ActionFactor("i1", DAYS[1], Decimal("0.5"))
+        with store.connect(Adjustment((factor,), {"i3": "i1"})) as con:
+            rows = con.execute(
+                "SELECT instrument_id, date, close FROM bars_daily_adj ORDER BY date, instrument_id"
+            ).fetchall()
+        assert [(r[0], r[1], r[2]) for r in rows] == [
+            ("i1", DAYS[0], Decimal("50.00")),
+            ("i1", DAYS[0], Decimal("50.00")),
+            ("i1", DAYS[1], Decimal("100.00")),
+            ("i2", DAYS[1], Decimal("100.00")),
+        ]

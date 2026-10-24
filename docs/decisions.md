@@ -104,6 +104,11 @@ here.
   else is a review case, never a link: demergers, mergers, schemes and relistings keep separate
   histories, and a demerger parent stays unadjusted until its factor is stored. The owner's
   `lineage link/unlink` of a found succession overrules the rules and holds across rebuilds (D1).
+- **Ranked universe (D257, DB5).** `rs_pct`, `mom_rank` and breadth rank only ordinary equity:
+  a row whose own ISIN is `IN` + `E` or `9` + issuer + security type `01`. ETF and fund units
+  (`INF`), rights entitlements (type `20`, `-RE`), InvIT and REIT units get features but no
+  percentile and are not counted. Read from the bar's ISIN, so it is point in time; part of the
+  features' inputs digest.
 - **Storage (T5, T6, T10, T11).** Postgres is the system of record; price history is date-partitioned
   Parquet read through DuckDB; strategy configs are versioned JSONB with YAML import/export;
   indicators are own polars code on adjusted bars.

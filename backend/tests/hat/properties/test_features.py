@@ -19,7 +19,14 @@ from hypothesis import strategies as st
 from app.hat.data.features import (
     ABOVE_MARGIN,
     BAR_COLUMNS,
+    LOOKBACK_ROWS,
+    adjustment_of,
+    affected_chains,
+    chunks,
     compute_features,
+    ordinary_equity,
+    splice_day,
+    stale_days,
 )
 from app.hat.data.store import (
     DATASET_BARS,
@@ -148,6 +155,7 @@ def frame(world: list[Series]) -> pl.DataFrame:
     for s in world:
         for r in s.rows:
             cols["instrument_id"].append(s.iid)
+            cols["isin"].append(r.get("isin", "INE000A01011"))
             cols["date"].append(r["date"])
             for name in ("high", "low", "close", "prev_close"):
                 cols[name].append(float(r[name]))
@@ -156,7 +164,7 @@ def frame(world: list[Series]) -> pl.DataFrame:
                 None if r["traded_value"] is None else float(r["traded_value"])
             )
     schema = dict.fromkeys(BAR_COLUMNS, pl.Float64)
-    schema.update(instrument_id=pl.Utf8, date=pl.Date)
+    schema.update(instrument_id=pl.Utf8, isin=pl.Utf8, date=pl.Date)
     return pl.DataFrame(cols, schema=schema)
 
 
@@ -279,3 +287,156 @@ def _hashes(root: Path) -> dict[str, str]:
 
 
 # --- equivalence with the legacy pandas implementation (frozen oracle) -----------------------
+
+
+# --- the ranked universe (D257) --------------------------------------------------------------
+
+
+def test_ordinary_equity_is_an_equity_share_isin() -> None:
+    """Equity shares of a company (`INE`, type `01`) and DVR shares (`IN9`) are ranked; fund and
+    ETF units, rights entitlements, InvIT and REIT units are not."""
+    assert ordinary_equity("INE002A01018")  # RELIANCE
+    assert ordinary_equity("IN9155A01020")  # TATAMTRDVR
+    assert not ordinary_equity("INF204KB14I2")  # an ETF
+    assert not ordinary_equity("INE002A20018")  # a rights entitlement (RIL-RE)
+    assert not ordinary_equity("INE183W23014")  # an InvIT
+    assert not ordinary_equity("INE041025011")  # a REIT
+    assert not ordinary_equity(None)
+    assert not ordinary_equity("INE002A0101")
+
+
+def test_only_ordinary_equity_is_ranked_and_counted() -> None:
+    """A fund row on the same day gets no percentile and is not in the breadth counts."""
+    rows = [
+        {
+            "date": EPOCH + timedelta(days=i),
+            "high": Decimal(11 + i),
+            "low": Decimal(9 + i),
+            "close": Decimal(10 + i),
+            "prev_close": Decimal(10 + i),
+            "volume": 10,
+            "traded_value": None,
+        }
+        for i in range(LONG)
+    ]
+    world = [
+        Series("eq", rows),
+        Series("etf", [{**r, "isin": "INF204KB14I2"} for r in rows]),
+    ]
+    features, breadth = compute_features(frame(world))
+    last = features.filter(pl.col("date") == rows[-1]["date"]).sort("instrument_id")
+    assert last["instrument_id"].to_list() == ["eq", "etf"]
+    assert last["rs_pct"].to_list() == [100.0, None]
+    assert last["mom_rank"].to_list() == [100.0, None]
+    assert breadth.filter(pl.col("date") == rows[-1]["date"])["universe_size"].to_list() == [1]
+
+
+# --- what a run recomputes (DB5) -------------------------------------------------------------
+
+DAYS = [EPOCH + timedelta(days=i) for i in range(600)]
+
+
+def test_stale_days_cover_each_instruments_next_rows() -> None:
+    """A changed day is stale with every later day on which an instrument it holds has one of
+    its next LOOKBACK_ROWS rows (one that trades every other day reaches twice as far), and with
+    at least the LOOKBACK_ROWS store days after it."""
+    rare = set(DAYS[10::2])
+
+    def presence(day: date) -> set[str]:
+        return {"daily"} | ({"rare"} if day in rare else set())
+
+    stale = stale_days(DAYS, {DAYS[10]}, presence)
+    rare_end = sorted(rare)[LOOKBACK_ROWS]
+    assert min(stale) == DAYS[10]
+    assert max(stale) == rare_end
+    assert DAYS[10 + LOOKBACK_ROWS] in stale
+    # past the daily window only the rare instrument's days are stale
+    assert DAYS[10 + LOOKBACK_ROWS + 1] not in stale
+    assert DAYS[10 + LOOKBACK_ROWS + 2] in stale
+
+
+def test_stale_days_floor_and_removed_days() -> None:
+    """With nothing listed on a changed day the LOOKBACK_ROWS store days after it are still
+    stale; a removed day (not in `days`) counts from the next day; nothing dirty, nothing stale."""
+    assert stale_days(DAYS, set(), lambda _: {"x"}) == set()
+    assert stale_days(DAYS, {DAYS[5]}, lambda _: set()) == set(DAYS[5 : 5 + LOOKBACK_ROWS + 1])
+    removed = EPOCH - timedelta(days=1)
+    assert stale_days(DAYS, {removed}, lambda _: set()) == set(DAYS[:LOOKBACK_ROWS])
+    last = stale_days(DAYS, {DAYS[-1]}, lambda _: {"x"})
+    assert last == {DAYS[-1]}
+
+
+def test_affected_chains_and_their_adjustment() -> None:
+    """A factor change touches its chain; a link change touches the old ISIN and both chains;
+    the chains' part of the adjustment keeps every link into or out of them."""
+    old = (["a|2024-01-05|0.5", "b|2024-02-01|0.2"], ["x>a"])
+    assert affected_chains(old, old) == set()
+    assert affected_chains(old, (["a|2024-01-05|0.5", "b|2024-02-02|0.2"], ["x>a"])) == {"b"}
+    assert affected_chains(old, (old[0], ["x>c"])) == {"x", "a", "c"}
+    assert affected_chains(old, (old[0], [])) == {"x", "a"}
+    part = adjustment_of(old[0], ["x>a", "y>z"], {"a"})
+    assert [(str(f.instrument_id), f.ex_date, f.factor) for f in part.factors] == [
+        ("a", date(2024, 1, 5), Decimal("0.5"))
+    ]
+    assert dict(part.lineage) == {"x": "a"}
+
+
+def test_chunks_bound_the_span_of_scattered_targets() -> None:
+    targets = [DAYS[0], DAYS[1], DAYS[62], DAYS[63], DAYS[400]]
+    assert chunks(targets, DAYS, 63) == [[DAYS[0], DAYS[1], DAYS[62]], [DAYS[63]], [DAYS[400]]]
+    assert chunks([], DAYS, 63) == []
+
+
+def _chain_row(
+    iid: str, *, member: bool = True, ret: float | None = 0.1, sma: float = 10.0
+) -> dict[str, object]:
+    own = dict.fromkeys(("sma10", "sma20", "sma150", "sma200", "high_52w", "low_52w"), sma)
+    own.update(adr20=1.0, adtr20=1.0, adv20=5.0, turnover20=50.0, sma50=sma)
+    own.update(ret21=ret, ret63=ret, ret126=ret, ret252=ret)
+    return {
+        "instrument_id": iid,
+        "_member": member,
+        "_with": True,
+        "_above": True,
+        "_weighted": ret,
+        **own,
+    }
+
+
+def test_splice_day_keeps_percentiles_when_returns_are_unchanged() -> None:
+    """A whole-history scale (prices halve, returns equal within float noise) splices: the new
+    row carries the new prices and the stored percentiles, and breadth does not move."""
+    old = [_chain_row("a", sma=20.0)]
+    new = [_chain_row("a", sma=10.0, ret=0.1 + 1e-16)]
+    splice = splice_day(old, new, {"a": (55.0, 70.0)})
+    assert splice is not None
+    assert splice.rows[0]["sma50"] == 10.0
+    assert (splice.rows[0]["rs_pct"], splice.rows[0]["mom_rank"]) == (55.0, 70.0)
+    assert (splice.universe_size, splice.with_sma50, splice.above_sma50) == (0, 0, 0)
+
+
+def test_splice_day_takes_the_percentiles_of_a_renamed_row() -> None:
+    """A linked ISIN's row moves to its chain's id with the same returns: the chain row takes
+    the old row's percentiles and the day's counts stay."""
+    splice = splice_day([_chain_row("old")], [_chain_row("chain")], {"old": (40.0, 41.0)})
+    assert splice is not None
+    assert [(r["instrument_id"], r["rs_pct"], r["mom_rank"]) for r in splice.rows] == [
+        ("chain", 40.0, 41.0)
+    ]
+
+
+def test_splice_day_refuses_when_percentiles_move() -> None:
+    """A changed return, a member leaving or joining, or a stored row missing: the day is
+    recomputed whole. A non-member's change only moves the counts."""
+    old = [_chain_row("a")]
+    assert splice_day(old, [_chain_row("a", ret=0.2)], {"a": (1.0, 1.0)}) is None
+    assert splice_day(old, [], {"a": (1.0, 1.0)}) is None
+    assert splice_day(old, [_chain_row("a", member=False)], {"a": (1.0, 1.0)}) is None
+    assert splice_day(old, old, {}) is None
+    fund = splice_day([], [_chain_row("f", member=False, ret=0.3)], {})
+    assert fund is not None
+    assert fund.rows[0]["rs_pct"] is None
+    assert (fund.universe_size, fund.with_sma50, fund.above_sma50) == (0, 0, 0)
+    joined = splice_day([], [_chain_row("n", ret=None)], {})
+    assert joined is not None
+    assert (joined.universe_size, joined.with_sma50, joined.above_sma50) == (1, 1, 1)

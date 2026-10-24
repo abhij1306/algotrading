@@ -6,15 +6,19 @@
 `compute_features` is a pure function of a bar frame. Every feature of date d is a function of the
 instrument's own rows dated on or before d (a window over rows, so a day an instrument did not
 trade is not a row), and the percentile columns of d rank only instruments that have a value on d.
-`run_features` reads the adjusted `bars_daily` view, computes the dates that still lack a
-partition (or every date, with `full=True`) and writes each partition atomically.
+`run_features` reads the adjusted `bars_daily` view and writes each partition atomically. The
+percentiles and breadth rank the ordinary equity rows only (`ORDINARY_EQUITY`, D257).
 
 Incremental equals full (HAT-DATA-077): both load the same way (the target dates plus, for every
-instrument, the 252 rows before the first target), so a date has the same inputs either way. Two
-things change old dates and so force a full rebuild even without the flag: a change in the
-corporate actions, the ISIN lineage or the universe (adjusted history and the percentiles move; a
-digest of them is kept in `features_daily/_state.json`) and a correction of already-featured bars
-(the caller passes `full=True`; the ingest does so).
+instrument, the 252 rows before the first target), so a date has the same inputs either way.
+`features_daily/_state.json` (`FeaturesState`) records the inputs and, per day, the fingerprint of
+the bars the day was computed from, so a run recomputes exactly what moved (DB5):
+- a day added, re-ingested or corrected, and the later days whose windows read it
+  (`stale_days`);
+- after a corporate-action or lineage change, the touched chains only (`affected_chains`): their
+  rows are spliced into each day whose percentiles they leave alone, and the other days are
+  recomputed whole;
+- every day on `full`, on the first run and when `FEATURES_RULE` changed.
 
 Full-history rebuild: about 4,150 dates x about 3,000 instruments. The rebuild runs in chunks of
 `CHUNK_DAYS` target dates, so memory stays at about (CHUNK_DAYS + 252) x instruments rows.
@@ -27,15 +31,20 @@ import fcntl
 import hashlib
 import json
 import logging
+import re
 import sys
 from bisect import bisect_left
-from collections.abc import Callable, Collection, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import polars as pl
+import pyarrow as pa
 
 from ..errors import HatError
 from ..ops.jobs import JobResult
@@ -47,6 +56,7 @@ from .store import (
     FEATURE_NAMES,
     FEATURES_SCHEMA,
     NO_ADJUSTMENT,
+    ActionFactor,
     Adjustment,
     DataStore,
     atomic_replace,
@@ -69,16 +79,31 @@ DUCKDB_THREADS = 2
 FEATURES_PART = "features"
 BREADTH_PART = "breadth"
 STATE_FILE = "_state.json"
+STATE_VERSION = 2
+# More changed chains than this in one night is a bulk reference change (an import): every date
+# is recomputed instead, which bounds the memory of the two chain computations.
+MAX_CHAINS = 100
 # A rolling mean is a running sum, so its last bits depend on where the frame starts (about 1e-14
 # relative; measured). A flat price series then sits a few ulps either side of its own mean, and
 # `close > sma` would flip between an incremental run and a rebuild. A close counts as above its
 # SMA only when it exceeds it by more than this relative margin: far below the smallest real
 # difference (a price in paise over a 50-day mean is at least 2e-4 / price), far above the noise.
 ABOVE_MARGIN = 1e-12
+# The ranked universe (D257): the rows whose own ISIN is an equity share, `IN` + issuer type `E`
+# (a company) or `9` (its DVR shares) + four issuer characters + security type `01` (equity
+# shares) + serial and check digit. This leaves out ETF and fund units (`INF`), rights
+# entitlements (type `20`, the `-RE` symbols), InvIT and REIT units (`23`, `25`). The ISIN is in
+# every bar, so the rule is point in time and needs no reference data (a symbol suffix is a
+# convention; `hat_instrument` keeps no security type and lacks some short-lived entitlements).
+ORDINARY_EQUITY = r"^IN[E9][0-9A-Z]{4}01[0-9A-Z]{2}[0-9]$"
+# What else besides the adjustment changes every date: the universe rule and the formulas. A
+# change here rebuilds every date (the state records it).
+FEATURES_RULE = f"v2|universe:{ORDINARY_EQUITY}"
 
 BAR_COLUMNS = (
     "instrument_id",
     "date",
+    "isin",
     "high",
     "low",
     "close",
@@ -87,7 +112,8 @@ BAR_COLUMNS = (
     "traded_value",
 )
 
-_COLUMNS_SQL = """instrument_id, date, CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
+_COLUMNS_SQL = """instrument_id, date, isin,
+       CAST(high AS DOUBLE) AS high, CAST(low AS DOUBLE) AS low,
        CAST(close AS DOUBLE) AS close, CAST(prev_close AS DOUBLE) AS prev_close,
        CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value"""
 # The latest ingest run's row per (instrument, date), as the `bars_daily` view gives, but read
@@ -98,6 +124,10 @@ _LATEST = (
 )
 _RANGE_SQL = f"""
 SELECT {_COLUMNS_SQL}, ingest_run_id FROM bars_daily_adj WHERE date BETWEEN ? AND ?
+"""  # noqa: S608
+_CHAINS_SQL = f"""
+SELECT {_COLUMNS_SQL}, ingest_run_id FROM bars_daily_adj
+WHERE instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
 """  # noqa: S608
 _OLDER_SQL = f"""
 SELECT {_COLUMNS_SQL} FROM (
@@ -165,22 +195,37 @@ def _per_instrument(frame: pl.DataFrame) -> pl.DataFrame:
     ).drop("high", "low", "prev_close", "volume", "traded_value")
 
 
+def ordinary_equity(isin: str | None) -> bool:
+    """True when the ISIN is an ordinary equity share, the ranked universe (`ORDINARY_EQUITY`)."""
+    return isin is not None and re.match(ORDINARY_EQUITY, isin) is not None
+
+
+def _above() -> pl.Expr:
+    """The close is above its SMA50 as breadth counts it (null without an SMA50)."""
+    return pl.col("close") > pl.col("sma50") * (1.0 + ABOVE_MARGIN)
+
+
+def _member() -> pl.Expr:
+    """The row's ISIN is in the ranked universe (`ordinary_equity`, as a polars expression)."""
+    return pl.col("isin").str.contains(ORDINARY_EQUITY).fill_null(value=False)
+
+
 def compute_features(
     bars: pl.DataFrame,
-    universe: Collection[str] | None = None,
     *,
     from_date: date | None = None,
     batch: int | None = None,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """(features, breadth) for the dates of `bars` (those on or after `from_date`, if given).
 
-    `bars` has the `BAR_COLUMNS` (instrument_id as text, date, doubles; `traded_value` null where
-    unknown). `universe` is the instruments the percentile columns and breadth rank and count
-    (default: every instrument with a bar); other instruments get null `rs_pct` and `mom_rank`.
-    `features` has `date`, `instrument_id` and the 17 feature columns; `breadth` has `date`
-    and the `BREADTH_SCHEMA` columns. The first rows of an instrument have null windows, so the
-    caller passes the lookback rows and `from_date`. `batch` computes the per-instrument columns
-    that many instruments at a time to bound memory; it changes no value.
+    `bars` has the `BAR_COLUMNS` (instrument_id and isin as text, date, doubles; `traded_value`
+    null where unknown). The percentile columns and breadth rank and count the rows of the
+    ranked universe (`ordinary_equity` of the row's own ISIN, so a day's members are those of
+    that day); other rows get null `rs_pct` and `mom_rank`. `features` has `date`,
+    `instrument_id` and the 17 feature columns; `breadth` has `date` and the `BREADTH_SCHEMA`
+    columns. The first rows of an instrument have null windows, so the caller passes the
+    lookback rows and `from_date`. `batch` computes the per-instrument columns that many
+    instruments at a time to bound memory; it changes no value.
     """
     missing = set(BAR_COLUMNS) - set(bars.columns)
     if missing:
@@ -189,7 +234,7 @@ def compute_features(
     if frame.select(pl.struct("instrument_id", "date").is_duplicated().any()).item():
         raise FeaturesError("features_duplicate_bar")
     col = pl.col
-    in_universe = pl.lit(True) if universe is None else col("instrument_id").is_in(list(universe))
+    in_universe = _member()
 
     ids = frame["instrument_id"].unique(maintain_order=True).to_list()
     step = len(ids) or 1 if batch is None else max(1, batch)
@@ -217,10 +262,7 @@ def compute_features(
         .agg(
             pl.len().cast(pl.Int64).alias("universe_size"),
             col("sma50").is_not_null().sum().cast(pl.Int64).alias("with_sma50"),
-            (col("close") > col("sma50") * (1.0 + ABOVE_MARGIN))
-            .sum()
-            .cast(pl.Int64)
-            .alias("above_sma50"),
+            _above().sum().cast(pl.Int64).alias("above_sma50"),
         )
         .with_columns(
             pl.when(col("with_sma50") > 0)
@@ -244,40 +286,190 @@ def compute_features(
 
 @dataclass
 class FeaturesReport:
-    """What a run did. `full` is true when every date was recomputed, and `reason` says why."""
+    """What a run did. `full` is true when every date was recomputed, and `reason` says why.
+    `dates` were recomputed whole; on `spliced` only the rows of the `chains` whose adjustment
+    changed were rewritten (and the day's breadth counts moved by them)."""
 
     full: bool = False
     reason: str = "incremental"
     dates: list[date] = field(default_factory=list)
     rows: int = 0
+    chains: list[str] = field(default_factory=list)
+    spliced: list[date] = field(default_factory=list)
 
 
-def inputs_digest(adjustment: Adjustment, universe: Collection[str] | None) -> str:
-    """Order-independent sha256 of what changes old dates without changing their bars: the
-    (instrument, ex-date, factor) set the adjusted view uses, its ISIN lineage and the universe
-    the percentiles and breadth rank over. No lineage leaves the digest of the factors alone."""
-    lines = sorted(
+def adjustment_lines(adjustment: Adjustment) -> tuple[list[str], list[str]]:
+    """The adjustment as sorted text: `instrument|ex_date|factor` per factor of the adjusted
+    view (keyed by chain id) and `old>chain` per linked ISIN. The state keeps them, so a later
+    run knows which chains a change touches and can rebuild their old series."""
+    factors = sorted(
         f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in adjustment.factors
     )
-    lines += sorted(f"lineage:{old}>{new}" for old, new in adjustment.lineage.items())
-    scope = "*" if universe is None else ",".join(sorted(universe))
-    return hashlib.sha256(("\n".join(lines) + "\nuniverse:" + scope).encode()).hexdigest()
+    lineage = sorted(f"{old}>{new}" for old, new in adjustment.lineage.items())
+    return factors, lineage
+
+
+def inputs_digest(adjustment: Adjustment) -> str:
+    """Order-independent sha256 of what changes old dates without changing their bars: the
+    (instrument, ex-date, factor) set the adjusted view uses, its ISIN lineage, and the ranked
+    universe and formulas (`FEATURES_RULE`). No lineage leaves the digest of the factors alone."""
+    factors, lineage = adjustment_lines(adjustment)
+    lines = [*factors, *(f"lineage:{line}" for line in lineage)]
+    return hashlib.sha256(("\n".join(lines) + "\nrule:" + FEATURES_RULE).encode()).hexdigest()
+
+
+@dataclass
+class FeaturesState:
+    """`features_daily/_state.json`: the inputs the partitions were written for and, per day,
+    the bars fingerprint (`DataStore.fingerprints`) the day's partitions were computed from. A
+    day without a record, or whose bars now have another fingerprint, is stale. A run removes
+    the records of the days it is about to rewrite before it writes any, and records each day
+    once written, so a run that dies part-way (a `--full` included) leaves the rest unrecorded
+    and the next run resumes there."""
+
+    inputs_digest: str
+    rule: str
+    factors: list[str]
+    lineage: list[str]
+    days: dict[date, str] = field(default_factory=dict)
 
 
 def _state_path(store: DataStore) -> Path:
     return store.root / DATASET_FEATURES / STATE_FILE
 
 
-def _read_digest(store: DataStore) -> str | None:
+def read_state(store: DataStore) -> FeaturesState | None:
+    """The recorded state; None when there is none or it is unreadable or of an older format
+    (every date is then recomputed)."""
     try:
-        return json.loads(_state_path(store).read_text(encoding="utf-8")).get("inputs_digest")
-    except (OSError, ValueError):
+        raw = json.loads(_state_path(store).read_text(encoding="utf-8"))
+        if raw.get("version") != STATE_VERSION:
+            return None
+        return FeaturesState(
+            str(raw["inputs_digest"]),
+            str(raw["rule"]),
+            [str(line) for line in raw["factors"]],
+            [str(line) for line in raw["lineage"]],
+            {date.fromisoformat(day): str(fp) for day, fp in raw["days"].items()},
+        )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
-def _write_digest(store: DataStore, digest: str) -> None:
-    text = json.dumps({"inputs_digest": digest}, sort_keys=True)
+def _write_state(store: DataStore, state: FeaturesState) -> None:
+    text = json.dumps(
+        {
+            "version": STATE_VERSION,
+            "inputs_digest": state.inputs_digest,
+            "rule": state.rule,
+            "factors": state.factors,
+            "lineage": state.lineage,
+            "days": {day.isoformat(): fp for day, fp in sorted(state.days.items())},
+        },
+        sort_keys=True,
+    )
     atomic_replace(_state_path(store), lambda tmp: tmp.write_text(text, encoding="utf-8"))
+
+
+def features_current(store: DataStore, digest: str, days: Iterable[date]) -> bool:
+    """True when every one of `days` has features written for the inputs `digest` from the bars
+    the store holds now (the backtest's gate; the caller holds the features lock). A rebuild in
+    progress, or bars corrected since, leaves some day unrecorded or with another fingerprint."""
+    state = read_state(store)
+    if state is None or state.inputs_digest != digest:
+        return False
+    prints = store.fingerprints(DATASET_BARS)
+    return all(
+        day in prints
+        and state.days.get(day) == prints[day]
+        and store.partition_files(DATASET_FEATURES, day)
+        for day in days
+    )
+
+
+def stale_days(
+    days: Sequence[date], dirty: Collection[date], presence: Callable[[date], Collection[str]]
+) -> set[date]:
+    """The days to recompute when the bars of `dirty` changed (or were never featured).
+
+    A feature of day x reads the instrument's own last `LOOKBACK_ROWS` rows before x, so a
+    changed day d moves, besides d itself, every later day on which an instrument with a row
+    on d has one of its next `LOOKBACK_ROWS` rows (counted per instrument: one that trades
+    rarely reaches further than `LOOKBACK_ROWS` store days), and with it the percentiles and
+    breadth of those days. The `LOOKBACK_ROWS` store days after d are stale whatever trades on
+    them, since an instrument whose run was removed from d is no longer listed. `dirty` may name
+    days not in `days` (a removed day): they count from the next day. `presence(day)` is the ids
+    with a bar on a day of `days`, as the adjusted view names them."""
+    stale: set[date] = set()
+    if not dirty:
+        return stale
+    pending = sorted(dirty)
+    remaining: dict[str, int] = {}  # rows still to come that read a dirty day, per instrument
+    floor = -1  # the last index stale by the store-day rule
+    k = 0
+    for i in range(bisect_left(days, pending[0]), len(days)):
+        day = days[i]
+        while k < len(pending) and pending[k] <= day:
+            if pending[k] < day:  # a removed day just before this one
+                floor = max(floor, i + LOOKBACK_ROWS - 1)
+            k += 1
+        if day in dirty:
+            stale.add(day)
+            floor = max(floor, i + LOOKBACK_ROWS)
+            remaining.update(dict.fromkeys(presence(day), LOOKBACK_ROWS))
+            continue
+        if not remaining and i > floor:
+            if k == len(pending):
+                break
+            continue
+        hit = [x for x in presence(day) if x in remaining] if remaining else []
+        if hit or i <= floor:
+            stale.add(day)
+        for x in hit:
+            remaining[x] -= 1
+            if not remaining[x]:
+                del remaining[x]
+    return stale
+
+
+def affected_chains(
+    old: tuple[Sequence[str], Sequence[str]], new: tuple[Sequence[str], Sequence[str]]
+) -> set[str]:
+    """The ids whose adjusted series may differ between two adjustments given as
+    `adjustment_lines`: a factor line belongs to its chain, a lineage line `old>chain` to both
+    ids (the old ISIN's bars leave its own series and join the chain's, or the reverse)."""
+
+    def groups(lines: tuple[Sequence[str], Sequence[str]]) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = defaultdict(set)
+        for line in lines[0]:
+            out[line.split("|", 1)[0]].add(line)
+        for line in lines[1]:
+            member, chain = line.split(">", 1)
+            out[member].add(line)
+            out[chain].add(line)
+        return out
+
+    before, after = groups(old), groups(new)
+    return {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
+
+
+def adjustment_of(
+    factors: Sequence[str], lineage: Sequence[str], chains: Collection[str]
+) -> Adjustment:
+    """The part of an adjustment (as `adjustment_lines`) that the series of `chains` read: their
+    factors and every link into or out of them. A link out of a chain to an untouched one keeps
+    that ISIN's bars under the other id, as in the whole adjustment."""
+    picked = []
+    for line in factors:
+        instrument, ex_date, factor = line.split("|")
+        if instrument in chains:
+            picked.append(ActionFactor(instrument, date.fromisoformat(ex_date), Decimal(factor)))
+    links = {}
+    for line in lineage:
+        member, chain = line.split(">", 1)
+        if member in chains or chain in chains:
+            links[member] = chain
+    return Adjustment(tuple(picked), links)
 
 
 def load_bars(
@@ -328,10 +520,184 @@ def write_day(store: DataStore, day: date, features: pl.DataFrame, breadth: pl.D
     store.write_partition(DATASET_BREADTH, day, BREADTH_PART, breadth_table)
 
 
-def _has_partitions(store: DataStore, day: date) -> bool:
-    return bool(store.partition_files(DATASET_FEATURES, day)) and bool(
-        store.partition_files(DATASET_BREADTH, day)
+# --- an adjustment change: only the touched chains --------------------------------------------
+
+RANK_INPUTS = ("ret21", "ret63", "ret126", "_weighted")  # what rs_pct and mom_rank rank
+OWN_FEATURES = tuple(n for n in FEATURE_NAMES if n not in ("rs_pct", "mom_rank"))
+COMPARED = (*OWN_FEATURES, "_weighted")  # every value of a chain row, the rank inputs among them
+# Two computations of one value from inputs scaled by a factor differ in the last bits; a change
+# this small is float noise, not a new value (a split moves a price by percents).
+SAME_TOLERANCE = 1e-12
+
+
+def _same(a: float | None, b: float | None) -> bool:
+    if a is None or b is None:
+        return a is b
+    return abs(a - b) <= SAME_TOLERANCE * max(1.0, abs(a), abs(b))
+
+
+@dataclass(frozen=True)
+class DaySplice:
+    """The touched chains' new feature rows of one day and how the day's breadth counts move."""
+
+    rows: list[dict[str, Any]]
+    universe_size: int
+    with_sma50: int
+    above_sma50: int
+
+
+def splice_day(
+    old: Sequence[Mapping[str, Any]],
+    new: Sequence[Mapping[str, Any]],
+    ranks: Mapping[str, tuple[float | None, float | None]],
+) -> DaySplice | None:
+    """The new rows of the touched chains on one day and the breadth deltas, when the change
+    leaves every percentile of the day as it was; None when the day must be recomputed whole.
+
+    `old` and `new` are the chains' computed rows of the day under the previous and the current
+    adjustment (`instrument_id`, `_member`, `_above`, the `RANK_INPUTS` and `OWN_FEATURES`);
+    `ranks` is the stored (rs_pct, mom_rank) of each old row. A percentile depends only on the
+    value and the multiset of the day's member values, so when the chains' member rank inputs
+    are the same multiset (within float noise) every other row keeps its percentiles and each new
+    row takes those of the old row with the same inputs. A split with a later ex-date scales a
+    whole history, which leaves every return as it was."""
+
+    def key(row: Mapping[str, Any]) -> tuple[tuple[bool, float], ...]:
+        return tuple((row[c] is None, row[c] or 0.0) for c in RANK_INPUTS)
+
+    def ranked(rows: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        valued = (r for r in rows if r["_member"] and any(r[c] is not None for c in RANK_INPUTS))
+        return sorted(valued, key=key)
+
+    before, after = ranked(old), ranked(new)
+    if len(before) != len(after) or any(r["instrument_id"] not in ranks for r in before):
+        return None
+    if not all(_same(a[c], b[c]) for a, b in zip(before, after, strict=True) for c in RANK_INPUTS):
+        return None
+    taken = {
+        b["instrument_id"]: ranks[a["instrument_id"]] for a, b in zip(before, after, strict=True)
+    }
+    rows = []
+    for r in sorted(new, key=lambda r: r["instrument_id"]):
+        rs_pct, mom_rank = taken.get(r["instrument_id"], (None, None))
+        own = {n: r[n] for n in OWN_FEATURES}
+        rows.append(
+            {"instrument_id": r["instrument_id"], **own, "rs_pct": rs_pct, "mom_rank": mom_rank}
+        )
+
+    def count(rows: Sequence[Mapping[str, Any]], column: str | None) -> int:
+        return sum(1 for r in rows if r["_member"] and (column is None or r[column]))
+
+    return DaySplice(
+        rows,
+        count(new, None) - count(old, None),
+        count(new, "_with") - count(old, "_with"),
+        count(new, "_above") - count(old, "_above"),
     )
+
+
+def _changed(old: Sequence[Mapping[str, Any]], new: Sequence[Mapping[str, Any]]) -> bool:
+    """The chains' rows of a day differ between two adjustments (beyond float noise)."""
+    before = {r["instrument_id"]: r for r in old}
+    after = {r["instrument_id"]: r for r in new}
+    if before.keys() != after.keys():
+        return True
+    return any(
+        before[i]["_member"] != after[i]["_member"]
+        or before[i]["_above"] != after[i]["_above"]
+        or not all(_same(before[i][c], after[i][c]) for c in COMPARED)
+        for i in before
+    )
+
+
+def chain_features(
+    con: duckdb.DuckDBPyConnection, chains: Collection[str], days: Sequence[date], chunk_days: int
+) -> dict[date, pl.DataFrame]:
+    """The per-instrument features of `chains` on every day, by day, computed on the chunks a
+    full rebuild uses (`chunk_days` store days from the first), so each value has the inputs it
+    has there: the chunk's rows and the `LOOKBACK_ROWS` before. `_member` and `_above` say
+    whether the row is ranked and above its SMA50 as `compute_features` counts breadth."""
+    bars = latest_rows(con.execute(_CHAINS_SQL, [sorted(chains)]).pl()).select(BAR_COLUMNS)
+    bars = bars.sort("instrument_id", "date")
+    col = pl.col
+    parts = []
+    for start in range(0, len(days), chunk_days):
+        first, last = days[start], days[min(start + chunk_days, len(days)) - 1]
+        ahead = bars.filter(col("date").is_between(first, last))
+        if not ahead.height:
+            continue
+        behind = (
+            bars.filter(col("date") < first)
+            .group_by("instrument_id", maintain_order=True)
+            .tail(LOOKBACK_ROWS)
+        )
+        frame = pl.concat([behind, ahead]).sort("instrument_id", "date")
+        parts.append(_per_instrument(frame).filter(col("date") >= first))
+    if not parts:
+        return {}
+    frame = pl.concat(parts).with_columns(
+        _member().alias("_member"),
+        col("sma50").is_not_null().alias("_with"),
+        _above().fill_null(value=False).alias("_above"),
+    )
+    frame = frame.select("date", "instrument_id", "_member", "_with", "_above", *COMPARED)
+    return {
+        key[0]: part.drop("date") for key, part in frame.partition_by("date", as_dict=True).items()
+    }
+
+
+def _rows(frames: Mapping[date, pl.DataFrame], day: date) -> list[dict[str, Any]]:
+    frame = frames.get(day)
+    return [] if frame is None else frame.to_dicts()
+
+
+def _splice(
+    store: DataStore,
+    day: date,
+    chains: Collection[str],
+    old: Sequence[Mapping[str, Any]],
+    new: Sequence[Mapping[str, Any]],
+) -> int | None:
+    """Rewrite the touched chains' rows of `day` (rows written), or None when the day needs a
+    whole recompute: the stored rows of the chains are not the ones the previous adjustment
+    gives, or the percentiles move."""
+    stored = store.read_partition(DATASET_FEATURES, day)
+    breadth = store.read_partition(DATASET_BREADTH, day)
+    mine = stored.filter(pl.col("instrument_id").is_in(list(chains)))
+    if breadth.height != 1 or set(mine["instrument_id"].to_list()) != {
+        r["instrument_id"] for r in old
+    }:
+        return None
+    ranks = {
+        r[0]: (r[1], r[2]) for r in mine.select("instrument_id", "rs_pct", "mom_rank").iter_rows()
+    }
+    splice = splice_day(old, new, ranks)
+    if splice is None:
+        return None
+    schema = pl.from_arrow(FEATURES_SCHEMA.empty_table()).schema  # type: ignore[union-attr]
+    rows = pl.DataFrame(splice.rows, schema=schema)
+    kept = stored.filter(~pl.col("instrument_id").is_in(list(chains)))
+    table = pl.concat([kept, rows]).sort("instrument_id").to_arrow().cast(FEATURES_SCHEMA)
+    counts = breadth.row(0, named=True)
+    size = counts["universe_size"] + splice.universe_size
+    with_sma50 = counts["with_sma50"] + splice.with_sma50
+    above = counts["above_sma50"] + splice.above_sma50
+    pct = 100.0 * above / with_sma50 if with_sma50 > 0 else None
+    breadth_table = pa.table(
+        {
+            "universe_size": [size],
+            "with_sma50": [with_sma50],
+            "above_sma50": [above],
+            "breadth_pct": [pct],
+        },
+        schema=BREADTH_SCHEMA,
+    )
+    store.write_partition(DATASET_FEATURES, day, FEATURES_PART, table)
+    store.write_partition(DATASET_BREADTH, day, BREADTH_PART, breadth_table)
+    return len(splice.rows)
+
+
+# --- the run ------------------------------------------------------------------------------------
 
 
 def run_features(
@@ -340,19 +706,21 @@ def run_features(
     *,
     through: date | None = None,
     full: bool = False,
-    universe: Collection[str] | None = None,
     chunk_days: int = CHUNK_DAYS,
 ) -> FeaturesReport:
-    """Compute and write the features of every date up to `through` that lacks a partition (all
-    dates when `full` or when the adjustment or the universe changed since the last run).
-    Safe to repeat and to resume after a crash: a partition is replaced whole, and the inputs
-    digest is recorded only after the last date is written."""
+    """Bring the features of every date up to `through` in line with the bars and `adjustment`:
+    the stale days (`stale_days`: bars changed or never featured) are recomputed whole; after an
+    adjustment change only the touched chains are recomputed (`chain_features`) and spliced into
+    each day whose percentiles they leave alone, the other days recomputed whole. Every date is
+    recomputed with `full`, on the first run, when the rule changed (`FEATURES_RULE`) or when
+    more than `MAX_CHAINS` chains changed. Safe to repeat and to resume after a crash
+    (`FeaturesState`)."""
     if chunk_days < 1:
         raise FeaturesError("features_bad_chunk")
     store.root.mkdir(parents=True, exist_ok=True)
     with (store.root / ".features.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time: runs must not interleave writes
-        return _run_locked(store, adjustment, through, full, universe, chunk_days)
+        return _run_locked(store, adjustment, through, full, chunk_days)
 
 
 def _run_locked(
@@ -360,42 +728,137 @@ def _run_locked(
     adjustment: Adjustment,
     through: date | None,
     full: bool,
-    universe: Collection[str] | None,
     chunk_days: int,
 ) -> FeaturesReport:
-    digest = inputs_digest(adjustment, universe)
-    all_days = store.days(DATASET_BARS)
+    lines = adjustment_lines(adjustment)
+    digest = inputs_digest(adjustment)
+    prints = store.fingerprints(DATASET_BARS)
+    all_days = sorted(prints)
     days = [d for d in all_days if through is None or d <= through]
     report = FeaturesReport()
+    state = read_state(store)
+    chains: set[str] = set()
     if full:
         report.full, report.reason = True, "full_requested"
-    elif (previous := _read_digest(store)) != digest:
-        report.full, report.reason = True, "inputs_changed" if previous else "first_run"
-    targets = days if report.full else [d for d in days if not _has_partitions(store, d)]
+    elif state is None:
+        report.full, report.reason = True, "first_run"
+    elif state.rule != FEATURES_RULE:
+        report.full, report.reason = True, "inputs_changed"
+    elif (state.factors, state.lineage) != lines:
+        chains = affected_chains((state.factors, state.lineage), lines)
+        if len(chains) > MAX_CHAINS:
+            report.full, report.reason = True, "inputs_changed"
+    if report.full or state is None:
+        state = FeaturesState(digest, FEATURES_RULE, *lines)
+        _write_state(store, state)
+        stale = set(days)
+    else:
+        stale = _update(store, state, report, chains, lines, digest, prints, chunk_days)
+    targets = [d for d in days if d in stale]
     if targets:
-        con = store.connect(adjustment)
-        con.execute(f"SET threads={DUCKDB_THREADS}")
-        try:
-            for start in range(0, len(targets), chunk_days):
-                chunk = targets[start : start + chunk_days]
-                bars = load_bars(con, chunk[0], chunk[-1], days)
-                features, breadth = compute_features(
-                    bars, universe, from_date=chunk[0], batch=BATCH_INSTRUMENTS
-                )
-                per_day = features.partition_by("date", as_dict=True)
-                per_day_breadth = breadth.partition_by("date", as_dict=True)
-                for day in chunk:
-                    f = per_day[(day,)]
-                    write_day(store, day, f, per_day_breadth[(day,)])
-                    report.rows += f.height
-                report.dates.extend(chunk)
-        finally:
-            con.close()
-    # A rebuild that stopped at `through` leaves later dates on the old inputs, so the new
-    # digest is recorded only when every date was covered; the next run then finishes the job.
-    if not (report.full and len(days) < len(all_days)):
-        _write_digest(store, digest)
+        _recompute(store, adjustment, state, report, targets, days, prints, chunk_days)
     return report
+
+
+def _update(
+    store: DataStore,
+    state: FeaturesState,
+    report: FeaturesReport,
+    chains: set[str],
+    lines: tuple[list[str], list[str]],
+    digest: str,
+    prints: Mapping[date, str],
+    chunk_days: int,
+) -> set[date]:
+    """The incremental path: the stale days (returned, to be recomputed whole) and, after an
+    adjustment change, the touched chains spliced into the days that allow it."""
+    all_days = sorted(prints)
+    written = set(store.days(DATASET_FEATURES)) & set(store.days(DATASET_BREADTH))
+    dirty = {d for d in all_days if state.days.get(d) != prints[d] or d not in written}
+    dirty |= {d for d in state.days if d not in prints}
+    # an id as either adjustment names it, so a lineage change on the same night is covered
+    old_links = dict(line.split(">", 1) for line in state.lineage)
+    new_links = dict(line.split(">", 1) for line in lines[1])
+
+    def presence(day: date) -> set[str]:
+        raw = store.bar_instruments(day)
+        return {old_links.get(i, i) for i in raw} | {new_links.get(i, i) for i in raw}
+
+    stale = stale_days(all_days, dirty, presence)
+    old: dict[date, pl.DataFrame] = {}
+    new: dict[date, pl.DataFrame] = {}
+    candidates: list[date] = []
+    if chains:
+        report.reason, report.chains = "adjustment_changed", sorted(chains)
+        for frames, (factors, lineage) in ((old, (state.factors, state.lineage)), (new, lines)):
+            with store.connect(adjustment_of(factors, lineage, chains)) as con:
+                con.execute(f"SET threads={DUCKDB_THREADS}")
+                frames.update(chain_features(con, chains, all_days, chunk_days))
+        candidates = sorted(
+            d
+            for d in old.keys() | new.keys()
+            if d in state.days and d not in stale and _changed(_rows(old, d), _rows(new, d))
+        )
+    # forget every day about to be rewritten before writing any, then adopt the new inputs
+    drop = stale | set(candidates)
+    state.days = {d: fp for d, fp in state.days.items() if d in prints and d not in drop}
+    state.inputs_digest, (state.factors, state.lineage) = digest, lines
+    _write_state(store, state)
+    for i, day in enumerate(candidates, 1):
+        written_rows = _splice(store, day, chains, _rows(old, day), _rows(new, day))
+        if written_rows is None:
+            stale.add(day)
+        else:
+            state.days[day] = prints[day]
+            report.spliced.append(day)
+            report.rows += written_rows
+        if i % chunk_days == 0 or i == len(candidates):
+            _write_state(store, state)
+    return stale
+
+
+def chunks(targets: Sequence[date], days: Sequence[date], chunk_days: int) -> list[list[date]]:
+    """`targets` (sorted, a subset of `days`) in runs that each span fewer than `chunk_days`
+    store days, so a chunk reads at most that many days besides its lookback however scattered
+    the targets are."""
+    position = {d: i for i, d in enumerate(days)}
+    out: list[list[date]] = []
+    for day in targets:
+        if out and position[day] - position[out[-1][0]] < chunk_days:
+            out[-1].append(day)
+        else:
+            out.append([day])
+    return out
+
+
+def _recompute(
+    store: DataStore,
+    adjustment: Adjustment,
+    state: FeaturesState,
+    report: FeaturesReport,
+    targets: list[date],
+    days: list[date],
+    prints: Mapping[date, str],
+    chunk_days: int,
+) -> None:
+    """Compute and write `targets` whole, a chunk at a time, recording each chunk once written."""
+    con = store.connect(adjustment)
+    con.execute(f"SET threads={DUCKDB_THREADS}")
+    try:
+        for chunk in chunks(targets, days, chunk_days):
+            bars = load_bars(con, chunk[0], chunk[-1], days)
+            features, breadth = compute_features(bars, from_date=chunk[0], batch=BATCH_INSTRUMENTS)
+            per_day = features.partition_by("date", as_dict=True)
+            per_day_breadth = breadth.partition_by("date", as_dict=True)
+            for day in chunk:
+                f = per_day[(day,)]
+                write_day(store, day, f, per_day_breadth[(day,)])
+                report.rows += f.height
+            report.dates.extend(chunk)
+            state.days.update({day: prints[day] for day in chunk})
+            _write_state(store, state)
+    finally:
+        con.close()
 
 
 def features_job(
@@ -404,13 +867,20 @@ def features_job(
     *,
     through: date | None = None,
     full: bool = False,
-    universe: Collection[str] | None = None,
 ) -> Callable[[], JobResult]:
     """The `features` body for `run_job`. Idempotent: a re-run after a crash between the body's
-    return and the success record finds every partition present and writes nothing new."""
+    return and the success record finds every day recorded and writes nothing new."""
 
     def body() -> JobResult:
-        report = run_features(store, adjustment(), through=through, full=full, universe=universe)
+        report = run_features(store, adjustment(), through=through, full=full)
+        logger.info(
+            "features: %d dates recomputed, %d spliced for %d chains, %d rows (%s)",
+            len(report.dates),
+            len(report.spliced),
+            len(report.chains),
+            report.rows,
+            report.reason,
+        )
         return JobResult(rows=report.rows)
 
     return body
@@ -422,10 +892,9 @@ def features_job(
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.data.features [--full] [--through YYYY-MM-DD] [--chunk-days N]
 
-    Computes the features of every date that lacks them (every date with --full) from the bars
-    under `HAT_DATA_ROOT`, the stored corporate actions and the ISIN lineage. The scheduled
-    `features` job calls `features_job` instead; this is for the first full-history build and
-    for a rebuild after bars were corrected or the lineage changed.
+    Brings the features in line with the bars under `HAT_DATA_ROOT`, the stored corporate
+    actions and the ISIN lineage, as the scheduled `features` job does (`run_features`: what
+    changed and what reads it); `--full` recomputes every date.
     """
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.features")
     parser.add_argument("--full", action="store_true", help="recompute every date")
@@ -449,7 +918,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         full=args.full,
         chunk_days=args.chunk_days,
     )
-    sys.stdout.write(f"features: {len(report.dates)} dates, {report.rows} rows ({report.reason})\n")
+    sys.stdout.write(
+        f"features: {len(report.dates)} dates recomputed, {len(report.spliced)} spliced for"
+        f" {len(report.chains)} chains, {report.rows} rows ({report.reason})\n"
+    )
     return 0
 
 

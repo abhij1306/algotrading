@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import json
 import math
 import uuid
 from bisect import bisect_left, bisect_right
@@ -32,7 +31,7 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.features import STATE_FILE, inputs_digest
+from ..data.features import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.lineage import stored_adjustment, unexplained_jumps
 from ..data.store import (
@@ -573,16 +572,6 @@ def _features(store: DataStore, days: Iterable[date], wanted: Sequence[str]) -> 
     return pl.concat(frames, how="diagonal_relaxed")
 
 
-def _features_digest(store: DataStore) -> str | None:
-    """The inputs digest the last complete `features` run recorded; None when none did."""
-    try:
-        state = json.loads((store.root / DATASET_FEATURES / STATE_FILE).read_text("utf-8"))
-    except (OSError, ValueError):
-        return None
-    digest = state.get("inputs_digest") if isinstance(state, dict) else None
-    return digest if isinstance(digest, str) else None
-
-
 def _current_features(
     store: DataStore,
     digest: str,
@@ -592,14 +581,12 @@ def _current_features(
 ) -> tuple[pl.DataFrame, dict[date, Decimal]]:
     """The features of `days` and the breadth of `breadth_days`, read under the features job's
     lock (shared), so a run that is rewriting partitions finishes first and both come from one
-    generation; `backtest_features_stale` unless the job's recorded digest is `digest` and
-    every day has a partition."""
+    generation; `backtest_features_stale` unless the job recorded every day as written for the
+    inputs `digest` from the bars the store holds now (`features.features_current`)."""
     store.root.mkdir(parents=True, exist_ok=True)
     with (store.root / FEATURES_LOCK).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)
-        if _features_digest(store) != digest or not all(
-            store.partition_files(DATASET_FEATURES, day) for day in days
-        ):
+        if not features_current(store, digest, days):
             raise BacktestError("backtest_features_stale")
         return _features(store, days, wanted), _breadth(store, breadth_days)
 
@@ -654,10 +641,10 @@ def load_market(
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
     read, for `hat_backtest_run.data_snapshot`). Raises `BacktestError` when the store has no
     session in the period or no features, and `backtest_features_stale` when the features were
-    not written for the stored corporate actions over every instrument (the nightly job's
-    digest, `universe` None) or a session of the window has none: the loop would read prices
-    adjusted one way and features computed another, or miss a night's scan, which the nightly
-    job never does. With `regime_inputs` it also reads the regime engine's index and VIX closes
+    not written for the stored corporate actions (the nightly job's digest) from the bars the
+    store holds now, or a session of the window has none: the loop would read prices adjusted
+    one way and features computed another, or miss a night's scan, which the nightly job never
+    does. With `regime_inputs` it also reads the regime engine's index and VIX closes
     and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
     of one of them (PR 68)."""
     every_day = store.days(DATASET_BARS)
@@ -667,7 +654,7 @@ def load_market(
         raise BacktestError("backtest_no_data")
     window = days[max(0, first - LOOKBACK_SESSIONS) :]
     adjustment = stored_adjustment(session)
-    expected = inputs_digest(adjustment, None)
+    expected = inputs_digest(adjustment)
     members = _members(session, universe_id, adjustment.lineage)
     instruments = {m.instrument_id for m in members}
     wanted = sorted(str(i) for i in instruments)
