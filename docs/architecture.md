@@ -14,9 +14,9 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
 | Package | Holds |
 | --- | --- |
-| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data and calendar, universe, corporate actions (`corporate_actions`, imports `ca_import`/`ca_research`/`ca_dividends`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions`, `point_in_time`, `ca_demergers`, notices
-`demerger_notice`), ISIN lineage (`lineage`), history build, features, Parquet store (`store`), live feed and 5-minute bars, gap scan, announcements |
-| `engine` | Criteria library, strategy config, scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
+| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data and calendar, universe, corporate actions (`corporate_actions`, the importers' kernel `ca_gate`, one-off imports `ca_import`/`ca_research`/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, notices
+`demerger_notice`), the adjusted series' input (`chains`), ISIN lineage (`lineage`, `lineage_review`, `lineage_override`, `nse_changes`), history build, features, Parquet store (`store`), live feed and 5-minute bars, gap scan, announcements |
+| `engine` | Criteria library, strategy config and versions (`strategy`: `versions`, the release gate `release`, the criterion catalogue `catalogue`), scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
 | `execution` | `HatBroker` and its adapters (Fyers `fyers_*`, Zerodha `kite_*`: payloads, transport, session, tokens, login, IPv4 pin), router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
