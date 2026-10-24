@@ -55,6 +55,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -887,8 +888,13 @@ def show_chains(
 
 def _text(path: str | None, url: str) -> str:  # pragma: no cover - a file or the network
     if path is not None:
-        with open(path, encoding="utf-8-sig") as handle:
-            return handle.read()
+        # A CSV under the working directory: anything resolving outside it, or with another
+        # suffix, is refused before it is opened.
+        base = Path.cwd().resolve()
+        target = (base / path).resolve()
+        if not target.is_relative_to(base) or target.suffix.lower() != ".csv":
+            raise LineageError("lineage_file_outside_cwd")
+        return target.read_text("utf-8-sig")
     from .bhavcopy import http_fetcher
 
     result = http_fetcher()(url)

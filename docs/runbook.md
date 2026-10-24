@@ -192,7 +192,7 @@ series under its current ISIN's id. `ca.adjust` refreshes it every night from th
 it will not link is alerted once (`lineage.review`). From `backend/`:
 
 - `python -m app.hat.data.lineage build`: decide every succession and store the verdicts (one
-  transaction; downloads NSE's lists unless `--symbol-changes`/`--name-changes` give files).
+  transaction; downloads NSE's lists unless `--symbol-changes`/`--name-changes` give CSV files under the working directory).
   Repeating it changes nothing.
 - `python -m app.hat.data.lineage report [--since D] [--limit N]`: the review list: successions
   not linked (and why), action copies that disagree within a chain, and the unexplained jumps of
