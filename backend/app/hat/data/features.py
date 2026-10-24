@@ -50,6 +50,7 @@ from .store import (
     Adjustment,
     DataStore,
     atomic_replace,
+    latest_rows,
 )
 
 logger = logging.getLogger(__name__)
@@ -295,13 +296,8 @@ def load_bars(
     if days:
         position = bisect_left(days, first)
         start = days[max(0, position - LOOKBACK_ROWS - LOOKBACK_SLACK_DAYS)]
-    frame = con.execute(_RANGE_SQL, [start, last]).pl()
-    # The latest run's row per (instrument, date), as in `bars_daily`. Done here, not in SQL (a
-    # window over the slice costs several times the memory of the slice), and sorted only when a
-    # day was written by more than one run, which is rare.
-    if frame.select(pl.struct("instrument_id", "date").is_duplicated().any()).item():
-        frame = frame.sort("ingest_run_id").unique(["instrument_id", "date"], keep="last")
-    frame = frame.select(BAR_COLUMNS)
+    # the latest run's row per (instrument, date), as in `bars_daily`
+    frame = latest_rows(con.execute(_RANGE_SQL, [start, last]).pl()).select(BAR_COLUMNS)
     before = frame.filter(pl.col("date") < first)
     complete = (
         before.group_by("instrument_id")

@@ -918,9 +918,12 @@ WHERE date >= ? AND previous_close > 0 AND date - previous_day <= ?
 """
 
 
-def unexplained_jumps(store: DataStore, adjust: Adjustment, since: date) -> list[Jump]:
-    """Every jump in the adjusted series HAT reads, from `since` on, newest first."""
-    days = [d for d in store.days(DATASET_BARS) if d >= since]
+def unexplained_jumps(
+    store: DataStore, adjust: Adjustment, since: date, until: date | None = None
+) -> list[Jump]:
+    """Every jump in the adjusted series HAT reads, from `since` on (to `until`, when given),
+    newest first."""
+    days = [d for d in store.days(DATASET_BARS) if d >= since and (until is None or d <= until)]
     found: list[Jump] = []
     if not days:
         return found
@@ -928,7 +931,7 @@ def unexplained_jumps(store: DataStore, adjust: Adjustment, since: date) -> list
         for year in range(days[0].year, days[-1].year + 1):
             first = max(since, date(year, 1, 1))
             lookback = first - timedelta(days=JUMP_MAX_DAYS)
-            params = [lookback, date(year, 12, 31), first, JUMP_MAX_DAYS, JUMP_TOL]
+            params = [lookback, min(date(year, 12, 31), days[-1]), first, JUMP_MAX_DAYS, JUMP_TOL]
             found += [
                 Jump(str(r[0]), r[1], r[2], r[3], r[4])
                 for r in con.execute(_JUMPS_SQL, params).fetchall()

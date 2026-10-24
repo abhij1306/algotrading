@@ -14,7 +14,8 @@ from the day high and low its tick carries only once a recorded tick confirms th
 (HAT-DATA-114). `HAT_SYMBOL_SILENT_SECONDS` is the silence after which a watched symbol is
 reported and subscribed again (default 120; HAT-DATA-116).
 `HAT_DUCKDB_MEMORY` caps every DuckDB connection of the data store (default 1GB, for an 8 GB
-machine shared with the app; a larger query spills to disk).
+machine shared with the app; a larger query spills to disk). A backtest's load of five years fits
+in the default (DB1: about 1.3 GB peak for 500 instruments, 2.4 GB for 2,000).
 The minute-history loader (audit D3, D1, D2, D7) reads `HAT_HISTORY_DAILY_LIMIT` (the broker plan's
 daily requests, default 5,000), `HAT_HISTORY_RESERVE` (requests left to live trading, default
 500; the loader's day cap is the smaller of the limit and the broker's day cap less the reserve),

@@ -4,15 +4,17 @@ recorded fill conventions and their refusals."""
 
 import dataclasses
 import math
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import hat_backtest_support as s
+import polars as pl
 import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
 from app.hat.backtest.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
+from app.hat.backtest.data import Bar, MarketData, MarketView, jump_skips, stopped_trading
 from app.hat.backtest.fillrules import (
     NSE_BANDS,
     lower_circuit_locked,
@@ -39,6 +41,7 @@ from app.hat.backtest.spec import (
     RunConventions,
 )
 from app.hat.confighash import config_hash
+from app.hat.data.ticks import tick_for_date
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal
@@ -477,3 +480,77 @@ def test_promotion_conventions_refused(fields: dict, slippage: D, code: str) -> 
         s.spec(config, DAYS, fills=fills, conventions=conventions, for_promotion=True)
     s.spec(config, DAYS, fills=fills, conventions=conventions)
     PROMOTED.check_promotion(DEFAULT_SLIPPAGE_BPS)
+
+
+def _sessions(n: int) -> list[date]:
+    return [date(2024, 1, 1) + timedelta(days=k) for k in range(n)]
+
+
+def test_stopped_trading_needs_no_later_bar_and_more_than_the_slack() -> None:
+    days = _sessions(31)  # the store's last day is days[30]
+    last_bar = {"gone": days[5], "edge": days[10], "past": days[9], "back": days[5]}
+    # "edge" is 20 sessions before the end (a suspension within the slack), "past" 21
+    assert stopped_trading(last_bar, {"back"}, days, 20) == {"gone": days[5], "past": days[9]}
+    assert stopped_trading(last_bar, set(), [], 20) == {}
+
+
+def test_jump_skips_cover_the_sessions_either_side_of_the_jump() -> None:
+    days = _sessions(10)
+    assert jump_skips([("a", days[0])], days, 2) == {("a", d) for d in days[:3]}
+    assert jump_skips([("a", days[5]), ("b", days[9])], days, 1) == {
+        ("a", days[4]),
+        ("a", days[5]),
+        ("a", days[6]),
+        ("b", days[8]),
+        ("b", days[9]),
+    }
+
+
+def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
+    days = _sessions(40)
+    rows = [
+        # (date, open, high, low, close) in 1/10,000; the 10th bar has no positive low; the
+        # closes fall below 250 in February, whose tick is still read from January's last close
+        (d, 1_000_000 + n, 1_010_000 + n, 0 if n == 10 else 990_000, 3_205_123 - n * 20_000)
+        for n, d in enumerate(days)
+    ]
+    bars = pl.DataFrame(
+        [("x", d, *p) for d, *p in rows],
+        schema={
+            "instrument_id": pl.String,
+            "date": pl.Date,
+            "open_e4": pl.Int64,
+            "high_e4": pl.Int64,
+            "low_e4": pl.Int64,
+            "close_e4": pl.Int64,
+        },
+        orient="row",
+    )
+    features = pl.DataFrame({"date": [days[0]], "instrument_id": ["x"]})
+    market = MarketData(tuple(days), bars, features, {}, (), skipped=frozenset({("x", days[20])}))
+    view = MarketView(market, "NIFTY 500")
+    assert view.bar("x", days[0]) == Bar(D("100.0000"), D("101.0000"), D("99.0000"), D("320.5123"))
+    assert str(view.bar("x", days[1]).open) == "100.0001"  # type: ignore[union-attr]
+    assert view.bar("x", days[10]) is None  # not four positive prices
+    assert view.bar("x", days[20]) is None  # skipped near a jump
+    assert view.bar("y", days[0]) is None
+    priced = [d for n, d in enumerate(days) if n != 10]  # day 20 is skipped but priced
+    closes = {d: D(close).scaleb(-4) for d, _, _, _, close in rows}
+    assert [b.close for b in view.bars_through("x", days[22], 3)] == [
+        closes[days[20]],
+        closes[days[21]],
+        closes[days[22]],
+    ]
+    assert view.bars_through("x", days[22], 3, inclusive=False)[-1].close == closes[days[21]]
+    assert view.prev_close("x", days[0]) is None
+    assert view.last_close("x", days[20]) == (days[19], closes[days[19]])
+    assert view.last_close("x", days[21]) == (days[21], closes[days[21]])
+    assert view.prev_close("x", days[21]) == closes[days[20]]
+    assert view.last_close("x", days[0] - timedelta(days=1)) is None
+    assert view.skipped_after("x", days[19], days[21]) == 1
+    assert view.skipped_after("x", days[20], days[30]) == 0
+    assert view.prev_close("x", days[11]) == closes[days[9]]
+    assert view.tick("x", days[38]) == D("0.05")  # January's last close, 260.5123
+    for day in days:
+        before = [d for d in priced if d < day]
+        assert view.tick("x", day) == tick_for_date(before, [closes[d] for d in before], day)
