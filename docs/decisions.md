@@ -112,6 +112,18 @@ here.
   --cash` (or a `cash` column in `correct-actions`), journalled, and no import rewrites it. A
   shadow sleeve's equity counts the dividends its virtual positions earned, by the backtest's
   rule (`engine/paper_dividends.py`); a trade's R stays price-only on both sides.
+- **Point-in-time adjustments (CA5, owner 2026-10-24).** The adjusted series stays the
+  hindsight view; each stored action records when its factor became knowable (`known_on`,
+  `known_basis`, `data/ca_known.py`): the ex-date for a split, bonus, TERP rights factor or
+  dividend (`ex_open`), the close five sessions on for a market-gap demerger with no dated
+  agreeing cross-check (`settled_close`), the resulting company's first close for a ratio-priced
+  demerger (`resulting_first_close`), the source's date (never before the ex-date) for a value
+  only research or a correction supplies (`research_source_date`, `correction`), and NULL when
+  nobody knows: never guessed. A linked ISIN succession records the last bar its rules read
+  (reported, not a pending window: a nightly build links with the bars there are).
+  A backtest neither scans nor enters a name from an ex-date until its `known_on` (on and on when
+  NULL); an open position keeps its price-basis handling. Live is unchanged. Not the full as-of
+  rebuild of the series per day.
 - **Identity (audit D5, owner 2026-10-23).** An instrument is (market, ISIN): one id and one
   history whatever the series. The series is an attribute: `hat_instrument.series` is the one it
   trades under now (its Fyers symbol, `-EQ` or `-BE`; any other series has none) with

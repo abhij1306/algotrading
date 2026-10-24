@@ -34,6 +34,9 @@ The owner can overrule the rules on a found succession (`link` / `unlink OLD NEW
 verdict is kept in `hat_lineage_override` and every build applies it over the rules'
 (`apply_overrides`), so it holds across nightly rebuilds.
 
+Each row keeps `known_on`, the last bar the rules read (the new ISIN's head, its first
+`EDGE_DAYS` days), which the point-in-time report lists (CA5, `point_in_time`).
+
 A demerger is never a succession: the parent keeps its ISIN (TATAMOTORS became TMPV on
 INE155A01022) and the resulting company is a new listing with its own history (TMCV,
 INE1TAE01010). A merged-away company's history just ends (HDFC Ltd, July 2023). The parent's
@@ -227,6 +230,7 @@ class Decision:
     status: str
     reason: str
     evidence: dict[str, Any] = field(default_factory=dict)
+    known_on: date | None = None  # the last bar the rules read: the new ISIN's head (CA5)
 
 
 def _nse_date(raw: str) -> date | None:
@@ -442,7 +446,13 @@ def decide(
 
     def verdict(status: str, reason: str) -> Decision:
         return Decision(
-            old.instrument_id, new.instrument_id, new.first_day, status, reason, evidence
+            old.instrument_id,
+            new.instrument_id,
+            new.first_day,
+            status,
+            reason,
+            evidence,
+            new.head[-1].day if new.head else None,
         )
 
     if ambiguous:
@@ -759,6 +769,7 @@ def save_decisions(session: Session, decisions: Sequence[Decision], report: Buil
             "status": decision.status,
             "reason": decision.reason,
             "evidence": decision.evidence,
+            "known_on": decision.known_on,
         }
         if decision.status == REVIEW and (row is None or row.status != REVIEW):
             evidence = decision.evidence
@@ -868,7 +879,7 @@ def override_lineage(
         raise LineageError("lineage_not_a_succession")
     before = f"{rows[pair].status}:{rows[pair].reason}"
     stored = [
-        Decision(old, new, r.effective_date, r.status, r.reason, dict(r.evidence))
+        Decision(old, new, r.effective_date, r.status, r.reason, dict(r.evidence), r.known_on)
         for (old, new), r in rows.items()
     ]
     decisions = apply_overrides(stored, {**stored_overrides(session), pair: verdict})

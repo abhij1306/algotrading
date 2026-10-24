@@ -75,3 +75,20 @@ def test_parse_list_refuses_a_bad_cash(line: str) -> None:
     with pytest.raises(CorrectionListError) as refused:
         parse_list(HEADER.replace("note\n", "note\tcash\n") + line)
     assert refused.value.code == "bad_cash@2"
+
+
+def test_parse_list_reads_the_optional_known_on_column() -> None:
+    header = HEADER.rstrip("\n") + "\tknown_on\n"
+    items = parse_list(
+        header
+        + "add\tINE847C01020\t2024-09-20\tother\t0.2892\t\tmarket gap\t2024-09-26\n"
+        + "replace\tINE258A01016\t2022-09-08\tother\t0.7961\t\tmarket gap\t\n"
+    )
+    assert [i.known_on for i in items] == [date(2024, 9, 26), None]
+    assert parse_list(HEADER + "add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")[0].known_on is None
+    with pytest.raises(CorrectionListError) as exc:
+        parse_list(header + "add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")
+    assert exc.value.code == "bad_columns@2"
+    both = HEADER.rstrip("\n") + "\tcash\tknown_on\n"
+    item = parse_list(both + "add\tINE1\t2024-08-19\tdividend\t1\t\tNSE file\t10\t2024-08-30\n")[0]
+    assert (item.cash, item.known_on) == (Decimal(10), date(2024, 8, 30))

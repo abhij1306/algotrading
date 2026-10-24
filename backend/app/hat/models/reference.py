@@ -114,6 +114,14 @@ class HatCorporateAction(Base):
             "adjustment_factor > 0 AND adjustment_factor <> 'NaN'",
             name="hat_corporate_action_factor_check",
         ),
+        # CA5: a known date has its basis and is never before the ex-date; both are NULL when
+        # nobody knows (`data/ca_known.py`). `schema.PG_DDL` adds it with the same text.
+        CheckConstraint(
+            "(known_on IS NULL AND known_basis IS NULL) OR (known_on IS NOT NULL AND known_basis"
+            " IS NOT NULL AND known_on >= ex_date AND known_basis IN ('ex_open', 'settled_close',"
+            " 'resulting_first_close', 'research_source_date', 'correction'))",
+            name="hat_corporate_action_known_check",
+        ),
     )
 
     id = uuid_pk()
@@ -127,6 +135,11 @@ class HatCorporateAction(Base):
     # A dividend's cash per share in rupees (`data/ca_dividends.py`); NULL on every other type
     # and on a dividend whose amount is not known. Price-neutral: no view applies it.
     cash_amount = Column(Ratio)
+    # CA5, point in time (`data/ca_known.py`): the first NSE filing naming the event (information
+    # only), and the first date a backtest could have used the factor with the fact it rests on.
+    announced_on = Column(Date)
+    known_on = Column(Date)
+    known_basis = Column(Text)
 
 
 class HatIsinLineage(Base):
@@ -150,6 +163,9 @@ class HatIsinLineage(Base):
     reason = Column(Text, nullable=False)
     evidence = Column(JsonB, nullable=False)
     decided_at = Column(Timestamptz, nullable=False, default=now_utc)
+    # CA5: the last bar the link rules read (the new ISIN's `EDGE_DAYS`-th session), so the
+    # first day a backtest could have known the link; NULL when the bars do not reach it.
+    known_on = Column(Date)
 
 
 # A chain never forks: one linked successor per instrument and one linked predecessor.

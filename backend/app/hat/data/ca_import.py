@@ -36,6 +36,10 @@ rewritten: a different factor is a conflict, fixed with `correct_action`; a key 
 vacated is never re-created) and journalled `corporate_action.imported`. An action already
 stored within `NEAR_DAYS` under the same company's other ISIN, symbol or lineage chain is not
 stored again. Repeating an import stores nothing.
+
+Each row records when its factor became knowable (CA5, `ca_known`): a split, bonus, ETF split or
+rights factor at the ex-date open, a demerger priced from its resulting company at that
+company's first close, and a gap-only demerger at the close `SETTLE_SESSIONS` on.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ from .. import events
 from ..errors import HatError
 from ..models import HatCorporateAction, HatInstrument, HatInstrumentSymbolHistory, HatIsinLineage
 from ..money import exact
+from .ca_known import RESULTING_FIRST_CLOSE, UNKNOWN, Known, at_ex_open, settle_known
 from .corporate_actions import (
     PRICE_NEUTRAL_TYPES,
     TYPE_BONUS,
@@ -205,7 +210,9 @@ class RightsTerms:
 
 
 _RIGHTS_RATIO = re.compile(rf"\brights?\b(?:\s*issue)?[\s:@-]*{_NUMBER}\s*:\s*{_NUMBER}")
-_PREMIUM = re.compile(rf"\b(?:premium|prem|prm)\b\s*(?:of\s*)?(?:(?:rs|re)\b\.?)?\s*{_NUMBER}")
+# an amount with digit groups ("Rs 1,000", "Rs 1,00,000") or without
+_AMOUNT = r"(\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)"
+_PREMIUM = re.compile(rf"\b(?:premium|prem|prm)\b\s*(?:of\s*)?(?:(?:rs|re)\b\.?)?\s*{_AMOUNT}")
 _AT_PAR = re.compile(r"(?:\bat|@)\s*par\b")
 _NON_SIMPLE = re.compile(r"warrant|ccps|ccd|convertible|debenture|partly|preference|\bncd")
 
@@ -226,7 +233,7 @@ def rights_terms(text: str, face_value: str) -> RightsTerms | str:
         return "unparsed"
     premiums = _PREMIUM.findall(lowered)
     if len(premiums) == 1:
-        premium = Fraction(premiums[0])
+        premium = Fraction(premiums[0].replace(",", ""))
     elif not premiums and _AT_PAR.search(lowered):
         premium = Fraction(0)
     else:
@@ -701,9 +708,12 @@ def decide(
     *,
     source: str = SOURCE_FILE,
     accept: frozenset[str] = frozenset(),
+    known: Known | None = None,
 ) -> Outcome:
     """The outcome of one proposal: its factor from the bars where it needs them, the gate, and
-    the plan against what is stored (`settle`: `source` and `accept`)."""
+    the plan against what is stored (`settle`: `source` and `accept`). A split, bonus or rights
+    factor is known at the ex-date open unless `known` says otherwise (research terms); a
+    demerger's is `_demerger_leg`'s (CA5)."""
     if p.status or p.ex_date is None:
         return Outcome(p, p.status or REVIEW, p.reason or "bad_ex_date")
     ids = ctx.reference.ids(p.symbol, p.isin, p.ex_date)
@@ -745,9 +755,11 @@ def decide(
     if p.demerger is not None and same_day != 1:
         # the ratio's basis (before or after the other action) is not knowable from the file
         return Outcome(p, REVIEW, "same_day_action", detail)
+    known = known or at_ex_open(p.ex_date)
     if p.demerger is not None:
-        leg, reason, how = _demerger_leg(
-            p, ctx, before, prev_close, ex_open / prev_close / same_day
+        days = sorted(b.day for b in bars if b.instrument_id == on.instrument_id)
+        leg, reason, how, known = _demerger_leg(
+            p, ctx, before, prev_close, (ex_open / prev_close / same_day, days)
         )
         detail += how
         if leg is None:
@@ -759,7 +771,9 @@ def decide(
     detail += f", gap {fmt4(verdict.gap)} vs factor {fmt4(expected)}"
     evidence["gap"] = fmt4(verdict.gap)
     near = [s for s in near if s.kind in kinds]
-    return settle(p, before, legs, near, verdict, detail, evidence, source=source, accept=accept)
+    return settle(
+        p, before, legs, near, verdict, detail, evidence, source=source, accept=accept, known=known
+    )
 
 
 def settle(
@@ -773,11 +787,12 @@ def settle(
     *,
     source: str = SOURCE_FILE,
     accept: frozenset[str] = frozenset(),
+    known: Known = UNKNOWN,
 ) -> Outcome:
     """The plan of `legs` against the same-kind actions stored `near` the ex-date, given the
     gate's verdict: store, already, conflict or review. A verdict whose reason is in `accept`
     still stores (the research import's rights, `price_unconfirmed`); the row goes on the
-    instrument of the bar `before` the ex-date."""
+    instrument of the bar `before` the ex-date, known on `known` (CA5)."""
     new, already, conflicts = plan_legs(legs, near)
     if conflicts:
         text = "; ".join(
@@ -800,6 +815,7 @@ def settle(
             factor_to_decimal(leg.factor),
             p.text,
             source,
+            known=known,
         )
         for leg in new
     ]
@@ -808,34 +824,44 @@ def settle(
 
 
 def _demerger_leg(
-    p: Proposal, ctx: Context, before: Bar, prev_close: Fraction, gap: Fraction
-) -> tuple[Leg | None, str, str]:
-    """(leg, review reason, detail): the parent's factor from the resulting company's first
-    close, else from the gap when it is a clear drop."""
+    p: Proposal,
+    ctx: Context,
+    before: Bar,
+    prev_close: Fraction,
+    market: tuple[Fraction, Sequence[date]],
+) -> tuple[Leg | None, str, str, Known]:
+    """(leg, review reason, detail, known): the parent's factor from the resulting company's
+    first close (known at that close), else from the gap when it is a clear drop (`market`: the
+    gap and the ex instrument's sessions; known at the close `SETTLE_SESSIONS` on, as a market
+    gap with no cross-check)."""
     if p.demerger is None or p.ex_date is None:
-        return None, "unparsed", ""
+        return None, "unparsed", "", UNKNOWN
     parent = ctx.reference.instruments.get(before.instrument_id)
     if parent is None:
-        return None, "no_instrument", ""
+        return None, "no_instrument", "", UNKNOWN
     children = resulting_company(ctx, parent, p.ex_date, p.note)
     if len(children) > 1:
         names = ", ".join(sorted(c.symbol for c in children))
-        return None, "several_resulting_candidates", f", candidates {names}"
+        return None, "several_resulting_candidates", f", candidates {names}", UNKNOWN
     if children:
         child = children[0]
         first, close = ctx.first_closes[child.id]
         how = f", resulting {child.symbol} {child.isin} first close {close} on {first}"
         factor = demerger_factor(p.demerger, Fraction(close), prev_close)
         if factor is None:
-            return None, "resulting_price_too_high", how
-        return Leg(TYPE_OTHER, factor), "", f"{how} -> factor {fmt4(factor)}"
+            return None, "resulting_price_too_high", how, UNKNOWN
+        known = Known(max(first, p.ex_date), RESULTING_FIRST_CLOSE)
+        return Leg(TYPE_OTHER, factor), "", f"{how} -> factor {fmt4(factor)}", known
+    gap, days = market
     if gap <= 1 - DEMERGER_MIN_DROP:
         return (
             Leg(TYPE_OTHER, gap),
             "",
             ", no resulting listing found: the ex-date gap is the factor",
+            settle_known(days, p.ex_date),
         )
-    return None, "gap_too_small_no_resulting", f", gap {fmt4(gap)}, no resulting listing found"
+    how = f", gap {fmt4(gap)}, no resulting listing found"
+    return None, "gap_too_small_no_resulting", how, UNKNOWN
 
 
 def dedupe(outcomes: list[Outcome]) -> None:

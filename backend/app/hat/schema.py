@@ -160,6 +160,23 @@ BEGIN
 END $$
 """
 
+# CA5: when a stored factor became knowable (`data/ca_known.py`); the text matches the model's.
+_KNOWN_CHECK = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'hat_corporate_action_known_check'
+      AND conrelid = to_regclass('hat_corporate_action')
+  ) THEN
+    ALTER TABLE hat_corporate_action ADD CONSTRAINT hat_corporate_action_known_check
+      CHECK ((known_on IS NULL AND known_basis IS NULL) OR (known_on IS NOT NULL AND known_basis
+        IS NOT NULL AND known_on >= ex_date AND known_basis IN ('ex_open', 'settled_close',
+        'resulting_first_close', 'research_source_date', 'correction')));
+  END IF;
+END $$
+"""
+
 # One instrument holds a symbol on any day (audit M3): no two rows of the symbol history with one
 # symbol overlap (a null `valid_to` is open). Checked at commit, as a writer closes the previous
 # holder's interval and adds the new one in either order. It needs `btree_gist`, and is added
@@ -318,6 +335,13 @@ CREATE OR REPLACE TRIGGER hat_event_no_update
     "CREATE INDEX IF NOT EXISTS hat_mode_change_bot ON hat_mode_change (bot_id)",
     "CREATE INDEX IF NOT EXISTS hat_telegram_message_sent_at ON hat_telegram_message (sent_at)",
     "CREATE INDEX IF NOT EXISTS hat_command_log_received_at ON hat_command_log (received_at)",
+    # CA5: a database created before the columns (hat_live) gains them; `ca_known backfill`
+    # then fills them
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS announced_on date",
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_on date",
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",
+    _KNOWN_CHECK,
+    "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
 )
 
 NSE_MARKET = {

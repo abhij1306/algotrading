@@ -198,6 +198,20 @@ Owner steps on each live database (hat_live), as a superuser, outside 08:30–15
    `select symbol from hat_instrument where symbol in ('AZADIND','BONFIG','SMT','TONBO','ZETWERK');`
 5. Install the nightly backup timer (Backup and restore drill) and run the first restore drill.
 
+### Point-in-time columns (CA5)
+
+On each live database (hat_live), outside 08:30–15:35 IST, after a `pg_dump`:
+
+1. Restart the backend (or run `init_db()`): `ensure_hat_schema` adds `announced_on`,
+   `known_on`, `known_basis` and `hat_corporate_action_known_check` to `hat_corporate_action` and
+   `known_on` to `hat_isin_lineage` before the drift check reads the catalog.
+2. `python -m app.hat.data.point_in_time backfill` (with `HAT_DATA_ROOT` set): the dry run. It
+   prints the rows it would date by source, type and basis, every row that stays undated, and
+   the links it would date.
+3. The same with `--apply`: one transaction under nothing else (no nightly job running).
+4. `python -m app.hat.data.point_in_time report --log adjustment_log.tsv`: the lagged and
+   undated counts. Date an undated row the owner can source with a correction's `known_on`.
+
 ### Runtime indexes (DB7)
 
 The backend creates its indexes at start (`ensure_hat_schema`, `PG_DDL` in `app/hat/schema.py`,
@@ -307,6 +321,15 @@ could not be read or stored): download that day's `PR<ddmmyy>.zip` from
 `nsearchives.nseindia.com/archives/equities/bhavcopy/pr/`, take `bc<ddmmyyyy>.csv` and run
 `python -m app.hat.data.ca_dividends --bc bc<ddmmyyyy>.csv --day YYYY-MM-DD [--apply]` (same
 working-directory rule). `lineage report` lists every dividend without an amount.
+
+Each stored action records when its factor became knowable (`known_on`, CA5). A correction
+gives it with `correct-action --known-on DATE` or the list's optional `known_on` column
+(the date the corrected value was public); without it the owner's factor is undated and a
+backtest never trades that name from its ex-date on. A `replace` with the stored factor and a
+`known_on` dates a stored row. A research row may carry a `source_date` column.
+`python -m app.hat.data.point_in_time report [--log FILE.tsv]` counts the lagged
+(`known_on` after the ex-date) and undated actions and links and lists them, `--log` writing the
+adjustment log; `pending SYMBOL...` lists the sessions a backtest holds a name factor-pending.
 `python -m app.hat.data.renames` seeds the symbol history from the renames in the
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`

@@ -89,6 +89,7 @@ from .ca_import import (
     nse_date,
     read_windows,
 )
+from .ca_known import RESEARCH_SOURCE_DATE, UNKNOWN, at_ex_open, from_sources, latest
 from .corporate_actions import (
     TYPE_DIVIDEND,
     ActionRecord,
@@ -137,6 +138,7 @@ BONUS_COLUMNS = (
     "quote",
     "notes",
 )
+SOURCE_DATE = "source_date"  # optional: when the research row's source was published (CA5)
 STORED_CONFIDENCE = frozenset({"high", "medium"})
 REASON_AMOUNT_ADDED = "amount_added"
 
@@ -463,7 +465,7 @@ def read_bonus_file(path: Path) -> list[dict[str, str]]:
         for row in reader:
             if len(out) >= MAX_ROWS:
                 raise CaFileError("research_file_too_large")
-            out.append({k: _cell(row.get(k)) for k in BONUS_COLUMNS})
+            out.append({k: _cell(row.get(k)) for k in (*BONUS_COLUMNS, SOURCE_DATE)})
     except csv.Error as exc:
         raise CaFileError("research_file_unreadable") from exc
     return out
@@ -562,6 +564,7 @@ class Proposal:
     hint: str = ""
     status: str = ""
     reason: str = ""
+    source_day: date | None = None  # a research row's `source_date`
 
     def ends(self, status: str, reason: str) -> Proposal:
         return replace(self, status=status, reason=reason)
@@ -613,6 +616,7 @@ def bonus_proposals(rows: Sequence[Mapping[str, str]]) -> list[Proposal]:
             _any_date(row["ex_date"]),
             text,
             hint=f"{row['source_url'][:200]} {row['notes'][:200]}".strip(),
+            source_day=_any_date(row.get(SOURCE_DATE, "")),
         )
         parts = bonus_value(row)
         if p.ex_date is None:
@@ -781,6 +785,11 @@ def decide(
         stored_text(p.parts, [p.text]),
         SOURCES[p.table],
         amount,
+        # NSE's feed and bc file announce the amount before the ex-date; research when its
+        # source says
+        at_ex_open(p.ex_date)
+        if p.table != T_BONUS
+        else from_sources(p.ex_date, [p.source_day], RESEARCH_SOURCE_DATE),
     )
     evidence = {
         "previous_day": before.day.isoformat(),
@@ -836,6 +845,7 @@ def merge(outcomes: Sequence[Outcome]) -> None:
                 (SOURCES[o.proposal.table] for o in group if o.proposal.table != T_BONUS),
                 first.record.source,
             ),
+            known=latest(o.record.known or UNKNOWN for o in group if o.record is not None),
         )
         first.evidence["payouts"] = [{"kind": x.kind, "amount": str(x.amount)} for x in parts]
         first.evidence["merged"] = [f"{o.proposal.table}:{o.proposal.rowid}" for o in rest]
@@ -975,6 +985,8 @@ def apply(
         if row is None or row.cash_amount is not None:
             raise CaFileError("ca_import_raced")
         row.cash_amount = o.record.cash_amount
+        known = o.record.known or UNKNOWN
+        row.known_on, row.known_basis = known.on, known.basis
     for o in [*new, *fills]:
         r = o.record
         assert r is not None
