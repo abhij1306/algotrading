@@ -513,8 +513,17 @@ def _column_drift(
     drift: list[str] = []
     for name in sorted(model.keys() - live.keys()):
         type_, not_null = model[name]
+        if not not_null:
+            drift.append(f"ALTER TABLE {table} ADD COLUMN {name} {type_};")
+            continue
+        # `ADD COLUMN ... NOT NULL` with no default fails on a populated table: add it nullable,
+        # fill it, then set NOT NULL, in one transaction, so an unfilled table rolls it all back.
         drift.append(
-            f"ALTER TABLE {table} ADD COLUMN {name} {type_}{' NOT NULL' if not_null else ''};"
+            f"BEGIN;  -- {table}.{name} is NOT NULL: fill its existing rows, or this rolls back\n"
+            f"ALTER TABLE {table} ADD COLUMN {name} {type_};\n"
+            f"-- here: fill {name} on every existing row of {table}\n"
+            f"ALTER TABLE {table} ALTER COLUMN {name} SET NOT NULL;\n"
+            "COMMIT;"
         )
     for name in sorted(live.keys() - model.keys()):
         drift.append(f"-- column {table}.{name} is in the database, not in the models")

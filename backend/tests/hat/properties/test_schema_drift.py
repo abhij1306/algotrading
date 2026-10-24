@@ -24,10 +24,22 @@ def test_matching_shapes_have_no_drift() -> None:
     assert schema_drift(live(), MODEL) == []
 
 
-def test_a_missing_column_prints_its_ddl() -> None:
+def test_a_missing_nullable_column_prints_its_ddl() -> None:
+    shape = live()
+    del shape["hat_order"]["columns"]["note"]
+    assert schema_drift(shape, MODEL) == ["ALTER TABLE hat_order ADD COLUMN note text;"]
+
+
+def test_a_missing_not_null_column_is_added_in_one_transaction() -> None:
+    # never `ADD COLUMN ... NOT NULL` (refused on a populated table) and never half of the steps
     shape = live()
     del shape["hat_order"]["columns"]["qty"]
-    assert schema_drift(shape, MODEL) == ["ALTER TABLE hat_order ADD COLUMN qty bigint NOT NULL;"]
+    (block,) = schema_drift(shape, MODEL)
+    lines = block.splitlines()
+    assert lines[0].startswith("BEGIN;")
+    assert lines[1] == "ALTER TABLE hat_order ADD COLUMN qty bigint;"
+    assert lines[2].startswith("--")
+    assert lines[3:] == ["ALTER TABLE hat_order ALTER COLUMN qty SET NOT NULL;", "COMMIT;"]
 
 
 def test_type_and_nullability_changes_print_their_ddl() -> None:

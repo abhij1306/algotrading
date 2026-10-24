@@ -134,11 +134,15 @@ def verify_manifest(directory: Path, manifest: Mapping) -> list[str]:
 
 
 def data_files(data_root: Path, exclude: Iterable[Path]) -> list[str]:
-    """Every regular file under `data_root`, relative, skipping the backup targets themselves."""
+    """Every regular file under `data_root`, relative, skipping the backup targets themselves.
+    A symlinked file is listed (the tar stores its bytes); a symlinked directory is refused, as
+    the walk would not enter it and its files would silently miss the backup."""
     skipped = [path.resolve() for path in exclude]
     names = []
     for path in sorted(data_root.rglob("*")):
         resolved = path.resolve()
+        if path.is_symlink() and path.is_dir():
+            raise RuntimeError(f"{path} is a symlinked directory: point --data-root at real files")
         if path.is_file() and not any(resolved.is_relative_to(skip) for skip in skipped):
             names.append(path.relative_to(data_root).as_posix())
     return names
@@ -160,7 +164,8 @@ def missing_dirs(names: Iterable[str], required: Iterable[str]) -> list[str]:
 
 
 def write_data_tar(data_root: Path, names: list[str], tar_path: Path) -> None:
-    with tarfile.open(tar_path, "w") as archive:
+    # dereference: a symlinked file is stored as its bytes, never as a link to outside the set
+    with tarfile.open(tar_path, "w", dereference=True) as archive:
         for name in names:
             archive.add(data_root / name, arcname=name, recursive=False)
 
@@ -289,7 +294,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     run.add_argument("--keep", type=int, default=DEFAULT_KEEP, help="sets kept per target")
     run.add_argument(
         "--require",
-        nargs="*",
+        nargs="+",
         default=list(REQUIRED_DIRS),
         help="top-level data-root directories that must hold files (default: raw bars_5m)",
     )
