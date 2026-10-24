@@ -122,7 +122,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   hindsight projection. Each action records when its value became knowable (`known_on`; NULL when
   unknown, never guessed). A backtest neither scans nor enters a name on a session where no
   version was available or the available one differs from the series' (`factor_pending`); a
-  version available later never changes what a backtest reads before it.
+  version available later never changes what a backtest reads before it. A correction that
+  re-dates `known_on` later appends a version available from the later date and withdraws
+  nothing: the earlier version stays what is read before then (accepted, QA1).
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
   InvITs and REITs get features but no rank.

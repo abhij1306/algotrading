@@ -59,9 +59,9 @@ UNDEFINED = "dsr_undefined"
 # A denominator this close to zero is zero in floating point: 1 - g3 SR rounds to a few ulps
 # where it should vanish, and dividing by it would score a degenerate series 1. It fails closed.
 RADICAND_FLOOR = 1e-12
-# [A] the floors of a family's DSR (PR 66, N15): at least 5 trials ("N of 2-5" is where V is
-# noise), and a trial-Sharpe variance of at least that of an annualised Sharpe spread of 0.5
-# (0.5 / sqrt(252) per session, squared).
+# [A] the floors of a family's DSR (PR 66, N15; confirmed, QA7): at least 5 trials ("N of 2-5"
+# is where V is noise), and a trial-Sharpe variance of at least that of an annualised Sharpe
+# spread of 0.5 (0.5 / sqrt(252) per session, squared).
 MIN_TRIALS = 5
 VARIANCE_FLOOR = 0.25 / 252
 # [A] CSCV splits the sessions into this many blocks (an even number; 8 gives 70 splits).

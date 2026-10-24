@@ -45,7 +45,7 @@ MIN_SPAN_YEARS = 5  # D150: the evidence run's sessions span at least five years
 # A run asked for whole years ends on the last session, which year-end holidays and a weekend
 # can put a few days before the anniversary of the first.
 SPAN_SLACK = timedelta(days=7)
-MAX_AMBIGUOUS_SHARE = Decimal("0.10")  # [OWNER-PENDING] of the sessions a trade was held
+MAX_AMBIGUOUS_SHARE = Decimal("0.10")  # QA7: of the sessions a trade was held
 # The regime rule the evidence run sizes under: the live regime engine's, as live sizes
 # (`backtest.spec.REGIME_MULT_POLICY`, PR 69).
 EVIDENCE_REGIME_RULE = "policy"

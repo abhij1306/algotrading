@@ -74,6 +74,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Storage.** Postgres is the system of record (fresh database, no migration tool, uuid v7 keys,
   `Numeric(18,4)`); price history is date-partitioned Parquet read through DuckDB; indicators are
   own polars code.
+- **Evidence defaults (QA7).** The DSR family floors N ≥ 5 trials and trial-Sharpe variance
+  V ≥ 0.25/252 (`dsr.py`); ambiguous days at most 10% of the sessions a trade was held
+  (`lifecycle.py`); `max_chase` 2% by default, 5% for stage2-contraction-breakout and 2% for
+  momentum-breakout-ep (`caps.py`).
 - **Backtest max-chase and regime table (Q14).** A run reads `max_chase` from its pinned strategy
   version, while live reads the newest version holding it: a version's evidence stays its own.
   The regime multipliers are the stored table live allocates with, read when the run starts and

@@ -17,7 +17,7 @@ from .policy import RiskPolicy
 from .sessions import SessionCalendar
 
 # The documented max-chase default per strategy (HAT-CRIT-122) and the fallback for any other
-# strategy (OWNER-PENDING: the stricter value). Percentages, not fractions.
+# strategy (the stricter value; QA7). Percentages, not fractions.
 MAX_CHASE_DEFAULT_PCT = Decimal(2)
 MAX_CHASE_BY_STRATEGY = {
     "stage2-contraction-breakout": Decimal(5),
