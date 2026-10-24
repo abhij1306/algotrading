@@ -27,6 +27,7 @@ from app.hat.engine.criteria import CriterionResult, LiveContext, evaluate, eval
 from app.hat.engine.criteria import vcp as vcp_module
 from app.hat.engine.criteria.base import EvalContext
 from app.hat.engine.criteria.darvas import Box, DarvasBoxParams, find_box
+from app.hat.engine.criteria.pullback import ema, pullback_span, volume_ratio
 from app.hat.engine.live_entry import ep_candidates
 
 SLOW = settings(
@@ -99,6 +100,58 @@ def test_darvas_box_exposes_the_levels_the_trigger_and_stop_read() -> None:
     assert result.extras == {"pivot": 110.0, "final_contraction_low": 100.0}
     assert not evaluate("darvas_box", {**short, "max_depth_pct": 9.0}, ctx).passed
     assert evaluate("darvas_box", {**short, "max_box_days": 5}, ctx).reason == "box_too_old"
+
+
+# --- ema_pullback -----------------------------------------------------------------
+
+
+def test_ema_is_the_recurrence_seeded_from_the_sma_of_its_own_window() -> None:
+    closes = [None, *(float(c) for c in range(1, 15))]  # a null before the 12-close window
+    alpha, value = Fraction(2, 3), Fraction(3 + 4, 2)
+    for close in range(5, 15):
+        value += alpha * (close - value)
+    assert Fraction(ema(closes, 2)) == value
+    assert ema(closes, 2, offset=3) is None  # its window reaches the null
+
+
+def test_pullback_span_counts_from_the_last_session_of_the_high() -> None:
+    assert pullback_span([1.0, 5.0, 3.0, 5.0, 4.0, 3.0], 2) == 2
+    assert pullback_span([1.0, 5.0, 3.0, 5.0, 4.0], 2) == "no_pullback"
+    assert pullback_span([1.0, 2.0, 3.0], 1) == "no_pullback"  # the date is the high
+
+
+def test_volume_ratio_reads_the_whole_pullback_even_past_the_average_window() -> None:
+    # a 55-session pullback: its first 5 sessions are heavy and fall outside the 50-session mean
+    volumes = [1200.0] * 5 + [100.0] * 50
+    assert volume_ratio(volumes, 55) == 2  # (6000 + 5000) / 55 = 200 over a mean of 100
+    assert volume_ratio(volumes, 50) == 1
+    assert volume_ratio(volumes[1:], 55) is None  # the pullback's window is not there
+    assert volume_ratio([0.0] * 50, 2) is None
+
+
+def test_ema_pullback_exposes_the_levels_the_trigger_and_stop_read() -> None:
+    # a steady rise, the high on session 125, then two quieter sessions back to the 10 EMA (221.08)
+    closes = [100.0 + i for i in range(125)] + [226.0, 223.0, 221.0]
+    lows = [c - 1 for c in closes[:-1]] + [219.0]
+    volumes = [1000.0] * 125 + [600.0] * 3
+    days = [EPOCH + timedelta(days=i) for i in range(len(closes))]
+    bars = pl.DataFrame(
+        {
+            "date": days,
+            "high": [c + 1 for c in closes],
+            "low": lows,
+            "close": closes,
+            "volume": volumes,
+        }
+    )
+    ctx = EvalContext(days[-1], "x", bars)
+    result = evaluate("ema_pullback", {}, ctx)
+    assert (result.passed, result.value) == (True, 10.0)
+    assert result.extras == {"pivot": 222.0, "final_contraction_low": 219.0}
+    heavy = EvalContext(days[-1], "x", bars.with_columns(volume=pl.lit(1000.0)))
+    assert evaluate("ema_pullback", {}, heavy).reason == "volume_not_lighter"
+    assert evaluate("ema_pullback", {"touch_pct": 0.0}, ctx).passed  # the low is under the EMA
+    assert evaluate("ema_pullback", {"max_undercut_pct": 0.0}, ctx).reason == "below_ema"
 
 
 # --- vcp ------------------------------------------------------------------------

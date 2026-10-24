@@ -22,6 +22,9 @@ with the broker.
     pivots (gap-ups on news, with the NSE announcement attached).
   - **S3 `darvas-box-breakout`** (Research): Darvas-style. Names at a new 52-week high that settle
     into a box, bought on the break of the box top with volume, stop under the box bottom.
+  - **S4 `trend-pullback-ema`** (Research): trend pullback. Relative-strength leaders above a
+    rising 50- and 200-day average that pull back on light volume to a rising 10- or 20-day EMA,
+    bought when price takes out the pullback day's high, stop under the pullback low.
 - **You stay in charge.** Every bot runs in one of three modes, switched per bot:
   - `shadow` (paper trading, virtual fills, never at the broker)
   - `confirm` (a Telegram card per entry; you approve each one)

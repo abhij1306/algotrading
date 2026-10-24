@@ -9,7 +9,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   allowlisted Telegram chat, long only, delivery (CNC).
 - **Two trading sleeves.** S1 `stage2-contraction-breakout` (Minervini-style) and S2
   `momentum-breakout-ep` (Qullamaggie-style breakout and episodic pivot): well-documented styles
-  that can be written as rules. S3 `darvas-box-breakout` is Research only (Strategy and risk).
+  that can be written as rules. S3 `darvas-box-breakout` and S4 `trend-pullback-ema` are Research
+  only (Strategy and risk).
 - **No manual trading.** No order ticket, order route or manual exit button: discipline is the
   product; `/flatten` is the one emergency exit, recorded as a breach.
 - **Modes: shadow, confirm, auto.** A bot runs shadow until its sleeve is Live and every account
@@ -41,8 +42,12 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   of the box top on volume, stop under the box bottom, `darvas_box`). It holds the strictest
   existing numbers and no capital: seed `p_max` 20%, base weight 0, `max_chase` 2%. Nothing turns
   it on; trading it needs the owner's policy version and the lifecycle gates.
+- **S4 `trend-pullback-ema` is Research only.** Trend pullback (an RS leader, `rs_rank` 80, above
+  a rising SMA50 and SMA200, pulls back 2-10 sessions on lighter volume to a rising 10 or 20 EMA,
+  `ema_pullback`; entry on the next session's break of the pullback day's high, stop under the
+  pullback low). Same footing as S3: seed `p_max` 20%, base weight 0, `max_chase` 2%.
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
-  50/50 (S3 0). A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
+  50/50 (S3, S4 0). A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.
 - **Exits.** Intraday stop on fill, swapped to a GTT around 15:25; MA exits 15:20-15:25 on the
   live price (a known gap to the official close, logged nightly); an ordered exit stack where
@@ -97,7 +102,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Evidence defaults (QA7).** The DSR family floors N ≥ 5 trials and trial-Sharpe variance
   V ≥ 0.25/252 (`dsr.py`); ambiguous days at most 10% of the sessions a trade was held
   (`lifecycle.py`); `max_chase` 2% by default, 5% for stage2-contraction-breakout and 2% for
-  momentum-breakout-ep and darvas-box-breakout (`caps.py`).
+  momentum-breakout-ep, darvas-box-breakout and trend-pullback-ema (`caps.py`).
 - **Backtest max-chase and regime table (Q14).** A run reads `max_chase` from its pinned strategy
   version, while live reads the newest version holding it: a version's evidence stays its own.
   The regime multipliers are the stored table live allocates with, read when the run starts and

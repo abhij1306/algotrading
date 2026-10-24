@@ -169,9 +169,10 @@ SEED_POLICY: dict[str, Any] = {
     "p_max": {
         "stage2-contraction-breakout": "0.20",
         "momentum-breakout-ep": "0.25",
-        # Research only: the strictest existing cap, and no capital (base weight 0) until the
-        # owner sets a policy version for it.
+        # Research only (S3, S4): the strictest existing cap, and no capital (base weight 0)
+        # until the owner sets a policy version for them.
         "darvas-box-breakout": "0.20",
+        "trend-pullback-ema": "0.20",
     },
     "adv_cap_pct": "0.01",
     "global_open_risk_pct": "0.015",
@@ -188,7 +189,7 @@ SEED_POLICY: dict[str, Any] = {
         "down_after_losses": 2,
     },
     "kill": {"account_drawdown_pct": "0.10", "bot_drawdown_pct": "0.10"},
-    "base_weight": {"S1": "0.50", "S2": "0.50", "S3": "0"},
+    "base_weight": {"S1": "0.50", "S2": "0.50", "S3": "0", "S4": "0"},
     "cluster_cap": "1.00",
     "multiplier_bounds": {"lo": "0.25", "hi": "1.0"},
     "health_bands": {"half_dd": "0.08", "zero_dd": "0.10", "full_mult": "1.0", "half_mult": "0.5"},
