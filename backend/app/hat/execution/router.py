@@ -48,9 +48,11 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
-from dataclasses import dataclass
-from datetime import date, datetime
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from decimal import Decimal
+from time import monotonic
 
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
@@ -131,6 +133,9 @@ class PlacementCheck:
     # the instrument's final 5-minute closes of the day, (final instant, close); none known
     # (no bars, even after a restart's restore: Q7) fails open
     closes: tuple[tuple[datetime, Decimal], ...] = ()
+    # the same check read again at a later instant, right before the send (after a
+    # reconciliation's broker round trip); None keeps this one
+    reread: Callable[[datetime], PlacementCheck] | None = field(default=None, compare=False)
 
 
 def placement_refusal(
@@ -420,7 +425,7 @@ class ExecutionRouter:
         )
         if symbol is None:
             return self._not_placed(session, signal, "unknown_instrument", now)
-        refusal = self._preflight(session, signal, account_id, now, check)
+        refusal, now = self._preflight(session, signal, account_id, now, check)
         if refusal is not None:
             tag = self._open_entry_tag(session, signal.id)
             if tag is not None and not self._release_unsent(session, tag):
@@ -438,27 +443,45 @@ class ExecutionRouter:
         account_id: uuid.UUID,
         now: datetime,
         check: PlacementCheck,
-    ) -> str | None:
-        """Why the entry may not be placed now (a fixed code), or None."""
+    ) -> tuple[str | None, datetime]:
+        """Why the entry may not be placed (a fixed code), or None, and the instant it was
+        decided at. The live conditions are checked, the trade date's first entry waits for a
+        successful reconciliation (HAT-BRK-110), and then, right before the send, they are
+        checked again at a fresh instant with the check read again (`PlacementCheck.reread`): a
+        reconciliation's broker round trip must not send on a price read before it. This only
+        adds refusals."""
         if signal.trade_date != trade_date_of(now):
-            return SIGNAL_EXPIRED  # its price, size and risk decision were for that session
+            return SIGNAL_EXPIRED, now  # its price, size and risk decision were for that session
         if signal.mode == Mode.AUTO and signal.confidence != HIGH:
-            return NOT_HIGH_CONFIDENCE  # auto places only a high label (HAT-EXEC-014, D149)
-        refusal = (
+            return NOT_HIGH_CONFIDENCE, now  # auto places only a high label (HAT-EXEC-014, D149)
+        started = monotonic()
+        refusal = self._refusal(session, signal, account_id, now, check)
+        if refusal is not None:
+            return refusal, now
+        if not self._guard.reconciled_today():
+            try:
+                self._reconciler.run(session, account_id)
+            except BrokerUnavailableError:
+                return "broker_unavailable", now
+        now += timedelta(seconds=monotonic() - started)
+        if check.reread is not None:
+            check = check.reread(now)
+        return self._refusal(session, signal, account_id, now, check), now
+
+    def _refusal(
+        self,
+        session: Session,
+        signal: HatSignal,
+        account_id: uuid.UUID,
+        now: datetime,
+        check: PlacementCheck,
+    ) -> str | None:
+        return (
             placement_refusal(check, now, signal)
             or _kill_refusal(session, signal.bot_id)
             or _gtt_refusal(session, account_id, self._broker)
             or _session_refusal(session, account_id, now)
         )
-        if refusal is not None:
-            return refusal
-        if not self._guard.reconciled_today():
-            # HAT-BRK-110: the trade date's first entry waits for a successful reconciliation.
-            try:
-                self._reconciler.run(session, account_id)
-            except BrokerUnavailableError:
-                return "broker_unavailable"
-        return None
 
     def _send_entry(
         self,

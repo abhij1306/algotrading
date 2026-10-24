@@ -196,6 +196,7 @@ class LiveRoute:
             ltp=ltp,
             ltp_refusal=refusal,
             closes=() if symbol is None else tuple(self._closes(symbol)),
+            reread=lambda at: self.check(session, bot_id, instrument_id, at),
         )
 
     def __call__(

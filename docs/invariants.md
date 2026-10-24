@@ -49,8 +49,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   the start is refused (`inactive_broker_holds_positions`), never left without a desk.
 - **Fail closed on the broker.** A missing client, open circuit or failed read raises
   `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
-  entry on a trade date before its first reconciliation succeeded; a mismatch blocks entries and
-  never auto-closes or adopts a position.
+  entry on a trade date before its first reconciliation succeeded, and the live conditions and
+  price are checked again after it, right before the send; a mismatch blocks entries and never
+  auto-closes or adopts a position.
 - **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
   a lost broker answer is settled against the broker's book, never left frozen.
