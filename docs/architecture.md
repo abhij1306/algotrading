@@ -54,6 +54,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   and `decide` read no clock, database or file; `backtest/loop.py` calls the same code.
 - **One strategy registry:** `engine/strategy/registry.py:STRATEGIES`, read from the seed files
   `engine/strategy/seeds/<name>.yaml` (a header with `sleeve` and `persona`, then the config).
+  A strategy has one name: the file name, its config's `bot` and `hat_strategy.name`
+  (`save_draft` refuses a config whose `bot` is another name), and every key reads it.
   Adding a strategy is one seed file plus any new criteria; its `p_max` and `base_weight` go into
   the risk policy as a new policy version.
 - **One risk authority:** `risk/service.py:evaluate_signal` -> `decide`, the only caller of

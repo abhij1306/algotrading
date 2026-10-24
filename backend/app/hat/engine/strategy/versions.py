@@ -150,8 +150,10 @@ def save_draft(
 ) -> HatStrategyVersion:
     """Validate `config` and store it as the strategy's next version (a draft), edited from
     `parent_version_id` (default: the latest version). Raises `ConfigError` for an invalid
-    config and `VersionError("market_hours")` unless the calendar says the market is closed at
-    `now`; either way nothing is written."""
+    config, `VersionError("market_hours")` unless the calendar says the market is closed at
+    `now`, and `VersionError("bot_name_mismatch")` when the config's `bot` is not the strategy's
+    name, the one identity sizing, allocation and evidence key on; either way nothing is
+    written."""
     # Validate afresh even a built model: it may have been changed since it was parsed.
     parsed = parse_config(config.to_json() if isinstance(config, StrategyConfig) else config)
     if calendar.state(now) is not SessionState.CLOSED:
@@ -160,6 +162,8 @@ def save_draft(
     strategy = session.get(HatStrategy, strategy_id, with_for_update=True)
     if strategy is None:
         raise VersionError("unknown_strategy")
+    if parsed.bot != strategy.name:
+        raise VersionError("bot_name_mismatch")
     return _new_version(session, strategy, parsed, parent_version_id, now)
 
 

@@ -3,7 +3,7 @@
 import copy
 import random
 import uuid
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -28,9 +28,11 @@ from app.hat.engine.strategy.config import (
 )
 from app.hat.engine.strategy.registry import STRATEGIES, RegistryError, parse_seed
 from app.hat.engine.strategy.versions import (
+    VersionError,
     publish_version,
     save_draft,
     seed_config,
+    seed_default_strategies,
     seed_text,
     start_shadow,
 )
@@ -361,3 +363,27 @@ def test_registry_refuses_a_bad_seed(text: str) -> None:
 def test_seed_policy_names_registered_strategies() -> None:
     assert set(SEED_POLICY["p_max"]) <= set(STRATEGIES)
     assert set(SEED_POLICY["base_weight"]) <= {s.sleeve for s in STRATEGIES.values()}
+
+
+def test_save_draft_refuses_another_bot_name() -> None:
+    """One identity: a strategy saves only a config whose `bot` is its own name (F3)."""
+    saturday = datetime(2026, 12, 5, 12, tzinfo=UTC)
+    with Session(ENGINE) as session:
+        first, second = seed_default_strategies(session, USER)[:2]
+        with pytest.raises(VersionError) as caught:
+            save_draft(
+                session,
+                strategy_id=first.id,
+                config=seed_config(second.name),
+                calendar=GATE_CALENDAR,
+                now=saturday,
+            )
+        assert caught.value.code == "bot_name_mismatch"
+        draft = save_draft(
+            session,
+            strategy_id=first.id,
+            config=seed_config(first.name),
+            calendar=GATE_CALENDAR,
+            now=saturday,
+        )
+        assert draft.version == 2
