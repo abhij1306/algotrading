@@ -1,5 +1,6 @@
-"""The sleeve lifecycle database operations (HAT-PORT-060..065): the evidence the guards read,
-the one writer of `hat_bot.lifecycle_state` (`transition`), the owner's moves and the engine's own.
+"""The sleeve database operations (HAT-PORT-060..065, HAT-BOT-061): creating sleeves, the
+evidence the lifecycle guards read, the one writer of `hat_bot.lifecycle_state` (`transition`),
+the owner's moves and the engine's own.
 
 Every function changes state and appends its event in the caller's open transaction through
 `events.record`, so the two commit or roll back together (HAT-SCH-062). None commits. The rules
@@ -20,7 +21,9 @@ from sqlalchemy.orm import Session
 from app.hat.backtest.evidence import backtest_evidence
 from app.hat.data.calendar import session_calendar
 from app.hat.engine.owner import OwnerCommand
+from app.hat.engine.strategy.versions import VersionError, seed_default_strategies
 from app.hat.events import record
+from app.hat.governance import Mode
 from app.hat.models import (
     HatBot,
     HatDailyBotSnapshot,
@@ -39,6 +42,7 @@ from .common import PortfolioError, close_of
 from .health import Health, health_of
 
 EVENT_LIFECYCLE = "sleeve.lifecycle_changed"
+DEFAULT_RISK_CLUSTER = "momentum-long"  # S1 and S2 share one cluster (HAT-PORT-011)
 
 
 @dataclass(frozen=True)
@@ -279,3 +283,77 @@ def advance_automatic(
             transition(session, bot.id, target, evidence, engine)
             moved.append((bot.id, target))
     return moved
+
+
+# --- creating sleeves ----------------------------------------------------------------------------
+
+
+def create_bot(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    strategy_id: uuid.UUID,
+    broker_account_id: uuid.UUID,
+    execution_mode: str | None = None,
+    risk_cluster: str = DEFAULT_RISK_CLUSTER,
+) -> HatBot:
+    """A new sleeve for a strategy. It always asks for `confirm` (HAT-BOT-061, HAT-DEC-B2) and
+    runs shadow until its sleeve is Live and the account and policy gates pass
+    (`execution.modes`); a mode change goes through the mode-change service, never through
+    creation."""
+    if execution_mode not in (None, Mode.CONFIRM):
+        raise VersionError("new_bot_starts_in_confirm")
+    bot = HatBot(
+        id=uuid.uuid4(),
+        user_id=user_id,
+        strategy_id=strategy_id,
+        broker_account_id=broker_account_id,
+        execution_mode=Mode.CONFIRM,
+        status="active",
+        lifecycle_state="research",
+        risk_cluster=risk_cluster,
+    )
+    session.add(bot)
+    session.flush()
+    return bot
+
+
+def add_sleeve(
+    session: Session, *, user_id: uuid.UUID, strategy_id: uuid.UUID, broker_account_id: uuid.UUID
+) -> HatBot:
+    """A further sleeve of one of the user's strategies (PR 73, PR 35 follow-up 3), in Research
+    and asking for confirm like any new sleeve: the owner assigns it a backtested version and
+    promotes it to Shadow, so a new version books shadow trades of its own while the strategy's
+    Live sleeve trades the live one. Only one sleeve of a strategy holds real money at a time
+    (`portfolio.sleeve_service.owner_transition`, `strategy_has_live_sleeve`). Refused for a
+    strategy that is not the user's (`unknown_strategy`); the caller checks the account is the
+    user's and active."""
+    strategy = session.get(HatStrategy, strategy_id)
+    if strategy is None or strategy.user_id != user_id:
+        raise VersionError("unknown_strategy")
+    return create_bot(
+        session, user_id=user_id, strategy_id=strategy_id, broker_account_id=broker_account_id
+    )
+
+
+def seed_default_bots(
+    session: Session, *, user_id: uuid.UUID, broker_account_id: uuid.UUID
+) -> list[HatBot]:
+    """One shadow bot per seeded strategy on the given broker account, when missing."""
+    bots = []
+    for strategy in seed_default_strategies(session, user_id):
+        bot = session.scalar(
+            select(HatBot).where(
+                HatBot.strategy_id == strategy.id, HatBot.broker_account_id == broker_account_id
+            )
+        )
+        bots.append(
+            bot
+            or create_bot(
+                session,
+                user_id=user_id,
+                strategy_id=strategy.id,
+                broker_account_id=broker_account_id,
+            )
+        )
+    return bots

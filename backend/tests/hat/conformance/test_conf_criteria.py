@@ -7,11 +7,8 @@ from sqlalchemy.orm import Session
 from app.hat.engine.criteria import REGISTRY
 from app.hat.engine.strategy.config import parse_config
 from app.hat.engine.strategy.registry import STRATEGIES
-from app.hat.engine.strategy.versions import (
-    seed_config,
-    seed_text,
-    sync_criterion_types,
-)
+from app.hat.engine.strategy.catalogue import sync_criterion_types
+from app.hat.engine.strategy.versions import seed_config, seed_text
 from app.hat.models import HatCriterionType
 from app.hat.schema import seed_hat_reference
 

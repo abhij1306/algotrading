@@ -104,7 +104,7 @@ from .engine.portfolio import lifecycle, sleeve_service, universe_service
 from .engine.portfolio.common import market_id_of
 from .engine.rescale import CLOSE_REASON, resolve_action
 from .engine.shadow import close_position
-from .engine.strategy import versions
+from .engine.strategy import release, versions
 from .engine.strategy.config import ConfigError
 from .engine.strategy.yamlio import import_yaml
 from .errors import HatConfigError, HatError
@@ -353,7 +353,7 @@ def _publish_universe(
     )
     live = universe_service.publish_version(session, draft.id, now)
     bot_ids = args.bot or [
-        uuid.UUID(b["id"]) for b in versions.release_overview(session, user_id)["bots"]
+        uuid.UUID(b["id"]) for b in release.release_overview(session, user_id)["bots"]
     ]
     for bot_id in bot_ids:
         universe_service.assign_universe(
@@ -410,7 +410,7 @@ def _setup(
     user_id = deps.user_id
     command = args.command
     if command == "show":
-        return versions.release_overview(session, user_id)
+        return release.release_overview(session, user_id)
     if command == "seed-policy":
         row = seed_initial_policy(session, user_id, now)
         return {"risk_policy_version": row.version, "id": str(row.id)}
@@ -423,11 +423,11 @@ def _setup(
         return {"strategies": {s.name: str(s.id) for s in rows}}
     if command == "seed-bots":
         require_active_account(session, args.account, user_id)
-        bots = versions.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
+        bots = sleeve_service.seed_default_bots(session, user_id=user_id, broker_account_id=args.account)
         return {"bots": [str(b.id) for b in bots]}
     if command == "add-sleeve":
         require_active_account(session, args.account, user_id)
-        bot = versions.add_sleeve(
+        bot = sleeve_service.add_sleeve(
             session, user_id=user_id, strategy_id=args.strategy, broker_account_id=args.account
         )
         return {"bot_id": str(bot.id), "lifecycle_state": bot.lifecycle_state}
@@ -456,7 +456,7 @@ def _release(
         row = versions.publish_version(session, args.version, backtest_run_id=args.run)
         return {"version_id": str(row.id), "status": row.status}
     if command == "shadow-version":
-        row = versions.start_shadow(session, args.version, calendar=_calendar(session), now=now)
+        row = release.start_shadow(session, args.version, calendar=_calendar(session), now=now)
         return {"version_id": str(row.id), "status": row.status}
     return None
 
@@ -511,7 +511,7 @@ def _owner(
         )
         return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
     if args.command == "assign-version":
-        bot = versions.assign_version(
+        bot = release.assign_version(
             session, bot_id=args.bot, version_id=args.version, command=owner
         )
         return {"bot_id": str(bot.id), "live_version_id": str(bot.live_version_id)}
@@ -524,7 +524,7 @@ def _owner(
         position = resolve_sale(session, args.tag, fill, args.note, owner)
         return {"position_id": str(position.id), "closed": position.closed_at is not None}
     if args.command == "promote-version":
-        row = versions.promote_version(session, args.version, owner)
+        row = release.promote_version(session, args.version, owner)
         return {"version_id": str(row.id), "status": row.status}
     bot = sleeve_service.owner_transition(
         session, args.bot, args.to, _policy(session, deps.user_id, now), owner
