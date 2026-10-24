@@ -60,11 +60,13 @@ _REFERENCE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hat_reference_data
 
 
 def lock_reference_data(session: Session) -> None:
-    """Hold the reference-data lock until the transaction ends (audit M4). The writers of the
-    actions, the lineage and the symbol history (`build_lineage`, `override_lineage`,
-    `correct_action`, `add_action`, `ca_import.apply`, `repair_symbol_history`) take it, so an
-    owner's correction never lands between a nightly build's read and its write. A no-op on
-    SQLite, which runs one writer at a time."""
+    """Hold the reference-data lock until the transaction ends (audit M4). Every writer of the
+    actions (`load_actions`, `correct_action`, `add_action`), the lineage (`build_lineage`,
+    `override_lineage`) and the symbol history (`instruments`: the refresh, the history build's
+    registrations, renames, `repair_symbol_history`) takes it before it reads what it writes, so
+    no write lands between another writer's read and its write: a nightly build never decides on
+    actions or overrides that changed meanwhile, and two symbol writers never miss each other's
+    interval. A no-op on SQLite, which runs one writer at a time."""
     if session.get_bind().dialect.name == "postgresql":
         session.execute(text(_REFERENCE_LOCK_SQL))
 
@@ -236,7 +238,9 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
     source to supply a key wins, and a later different factor (or dividend cash amount) is
     reported, not written. A key
     the owner vacated (`correct_action`: deleted, or retyped away) is never re-created: the
-    owner's correction wins over every later load."""
+    owner's correction wins over every later load. Under the reference-data lock, as every
+    writer of actions (the nightly lookups, the history build, the imports)."""
+    lock_reference_data(session)
     report = LoadReport()
     held = owner_vacated(session, {r.instrument_id for r in records})
     existing = {

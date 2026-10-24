@@ -119,7 +119,8 @@ def claim(
 
 def _settle(session: Session, row: HatInstrumentSymbolHistory) -> None:
     """Apply `claim` to `row`, just written, against every other instrument's interval of its
-    symbol, so no two instruments hold one symbol on one day."""
+    symbol, so no two instruments hold one symbol on one day. Its callers hold the
+    reference-data lock, so another writer's interval is committed, and seen here, or waits."""
     others = list(
         session.scalars(
             select(HatInstrumentSymbolHistory).where(
@@ -210,6 +211,7 @@ def apply_symbol_change(
     (`claim`). `old_symbol`, when known (the legacy history), labels the interval before
     `effective`. Returns True when any row changed.
     """
+    lock_reference_data(session)
     changed = _place_symbol(
         session, _history(session, instrument_id), instrument_id, new_symbol, effective, old_symbol
     )
@@ -585,6 +587,7 @@ def upsert_instruments(
     missing from a `complete` listing is marked delisted, never deleted. `still_listed` holds
     (symbol, series) pairs the source lists but this listing has no ISIN row for: they are not
     delisted. An ISIN listed under two series keeps the best-ranked one (`one_per_isin`)."""
+    lock_reference_data(session)  # the symbol history's writers, one at a time (`claim`)
     listing = {s.isin: s for s in one_per_isin(securities)}
     existing = by_isin(
         session.scalars(select(HatInstrument).where(HatInstrument.market_id == market_id))
@@ -628,6 +631,7 @@ def register_history_instrument(
     own its history (HAT-DATA-021). Name and face value are unknown here (the symbol and 0 stand
     in) until a weekly refresh lists it. Repeating the call, under any series, returns the same
     row."""
+    lock_reference_data(session)
     row = session.scalar(
         select(HatInstrument).where(
             HatInstrument.market_id == market_id, HatInstrument.isin == isin

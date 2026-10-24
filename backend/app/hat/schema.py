@@ -140,7 +140,8 @@ BEGIN
 END $$
 """
 
-# A corporate-action factor is positive (audit L2); the text matches the model's CHECK.
+# A corporate-action factor is positive and a number (audit L2: Postgres orders numeric NaN above
+# every finite value, so `> 0` alone accepts it); the text matches the model's CHECK.
 _FACTOR_CHECK = """
 DO $$
 BEGIN
@@ -150,7 +151,7 @@ BEGIN
       AND conrelid = to_regclass('hat_corporate_action')
   ) THEN
     ALTER TABLE hat_corporate_action ADD CONSTRAINT hat_corporate_action_factor_check
-      CHECK (adjustment_factor > 0);
+      CHECK (adjustment_factor > 0 AND adjustment_factor <> 'NaN');
   END IF;
 END $$
 """
