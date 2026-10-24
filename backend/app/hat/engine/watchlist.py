@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.instruments import FYERS_SERIES
-from ..events import record
+from ..events import record, recorded_for
 from ..models import (
     HatBot,
     HatEvent,
@@ -101,7 +101,9 @@ def _with_members(inputs: ScanInputs, members: frozenset[uuid.UUID]) -> ScanInpu
 def _already_published(session: Session, bot_id: uuid.UUID, trade_date: date) -> bool:
     for (payload,) in session.execute(
         select(HatEvent.payload).where(
-            HatEvent.bot_id == bot_id, HatEvent.event_type == EVENT_PUBLISHED
+            HatEvent.bot_id == bot_id,
+            HatEvent.event_type == EVENT_PUBLISHED,
+            recorded_for(trade_date),
         )
     ):
         if payload.get("trade_date") == trade_date.isoformat():

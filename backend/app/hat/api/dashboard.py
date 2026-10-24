@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from ...database import get_db
 from ..engine.confidence import stored_basis
+from ..events import recorded_for
 from ..models import (
     HatAllocationDaily,
     HatEvent,
@@ -307,6 +308,7 @@ def _feed_stale_at(session: Session, day: date) -> datetime | None:
     found = session.scalar(
         select(func.max(HatEvent.occurred_at)).where(
             HatEvent.event_type == FEED_STALE,
+            recorded_for(day),
             HatEvent.occurred_at >= start,
             HatEvent.occurred_at < end,
         )

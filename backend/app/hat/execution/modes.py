@@ -61,7 +61,6 @@ __all__ = [
     "ModeView",
     "mode_anchor",
     "mode_view",
-    "pending_change",
     "real_orders_allowed",
     "request_mode",
     "requested_mode",
@@ -226,7 +225,11 @@ def requested_mode(session: Session, bot: HatBot, at: datetime) -> str:
     """The mode the user asked for that is in force at `at`: the latest queued change effective
     by then and not refused at its open, else the bot's stored mode; anything outside the three
     modes reads as shadow."""
-    mode = queued_mode_at(bot.execution_mode, _changes(session, bot.id), at)
+    return _asked(bot, _changes(session, bot.id), at)
+
+
+def _asked(bot: HatBot, changes: list[ModeChange], at: datetime) -> str:
+    mode = queued_mode_at(bot.execution_mode, changes, at)
     return mode if mode in MODE_VALUES else Mode.SHADOW
 
 
@@ -244,17 +247,13 @@ def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalen
     return capability_gated(requested, account_gates(session, account, anchor))
 
 
-def pending_change(session: Session, bot: HatBot, at: datetime) -> HatModeChange | None:
-    """The bot's latest queued change still waiting for its open at `at`, if any."""
-    return session.scalars(
-        select(HatModeChange)
-        .where(
-            HatModeChange.bot_id == bot.id,
-            HatModeChange.effective_from > as_utc(at),
-            HatModeChange.refused_reason.is_(None),
-        )
-        .order_by(HatModeChange.effective_from.desc(), HatModeChange.requested_at.desc())
-    ).first()
+def _pending(changes: list[ModeChange], at: datetime) -> ModeChange | None:
+    """The latest queued change still waiting for its open at `at`, if any."""
+    moment = as_utc(at)
+    waiting = [c for c in changes if as_utc(c.effective_from) > moment]
+    if not waiting:
+        return None
+    return max(waiting, key=lambda c: (as_utc(c.effective_from), as_utc(c.requested_at)))
 
 
 @dataclass(frozen=True)
@@ -272,18 +271,20 @@ class ModeView:
 def mode_view(
     session: Session, bot: HatBot, at: datetime, calendar: SessionCalendar | None
 ) -> ModeView:
-    """The bot's `ModeView` at `at` (the same reads as `bot_mode`)."""
+    """The bot's `ModeView` at `at`: the rules of `bot_mode`, with the bot's queued changes and
+    its account's gates each read once (DB audit L1)."""
     anchor = mode_anchor(calendar, at)
-    asked = requested_mode(session, bot, anchor)
-    effective = bot_mode(session, bot, at, calendar)
-    why = None
-    if effective != asked:
-        if lifecycle.routes_as_shadow(bot.lifecycle_state):
-            why = f"sleeve_{bot.lifecycle_state}"
-        else:
-            account = session.get(HatBrokerAccount, bot.broker_account_id)
-            why = gate_refusal(asked, account_gates(session, account, anchor))
-    queued = pending_change(session, bot, at)
+    changes = _changes(session, bot.id)
+    asked = _asked(bot, changes, anchor)
+    if lifecycle.routes_as_shadow(bot.lifecycle_state):
+        effective = Mode.SHADOW
+        why = None if effective == asked else f"sleeve_{bot.lifecycle_state}"
+    else:
+        account = session.get(HatBrokerAccount, bot.broker_account_id)
+        gates = account_gates(session, account, anchor)
+        effective = capability_gated(asked, gates)
+        why = None if effective == asked else gate_refusal(asked, gates)
+    queued = _pending(changes, at)
     return ModeView(
         asked,
         effective,

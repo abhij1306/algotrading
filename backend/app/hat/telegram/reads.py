@@ -17,6 +17,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..data.calendar import session_calendar
+from ..events import recorded_for
 from ..models import (
     HatBot,
     HatBrokerAccount,
@@ -243,6 +244,7 @@ def rejection_rows(session: Session, day: date) -> list[render.RejectionRow]:
             select(HatEvent)
             .where(
                 HatEvent.event_type == "signal.rejected",
+                recorded_for(day),
                 HatEvent.occurred_at >= start,
                 HatEvent.occurred_at < end,
             )
