@@ -353,6 +353,10 @@ class StrategyConfig(Model):
         names = [p.name for p in self.playbooks]
         if len(set(names)) != len(names):
             raise ValueError("duplicate_playbook")
+        if sum(isinstance(e, ExitHardStop) and e.enabled for e in self.exits) != 1:
+            # the stop fires only through this rule in a backtest and in shadow, while live the
+            # broker stop always rests: without it the evidence is of another strategy
+            raise ValueError("one_enabled_hard_stop")
         return self
 
     def to_json(self) -> dict[str, Any]:

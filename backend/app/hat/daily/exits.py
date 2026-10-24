@@ -2,7 +2,9 @@
 virtual positions.
 
 - `ExitViews`: the `ViewSource` of the exits (checked live price, days held, SMA and swing
-  lows).
+  lows). A view that raises raises URGENT `exits.view_failed` once per position and trade date:
+  that position's exit rules are off (only its resting broker stop protects it), and each loop
+  goes on to the next position.
 - `ShadowExits`: the live exit rules of every virtual position (a `TradeManager` runs the live
   rules of real positions only), and the 15:20-15:25 rules of the virtual positions of bots whose
   account has no `TradeManager` (its `exits.close` covers its virtual positions too). That close
@@ -32,13 +34,16 @@ from ..engine.rescale import actions_between, flag_split_gap, manage_only, split
 from ..execution.manage import in_close_window
 from ..execution.series import broker_symbol, series_changed
 from ..models import HatBot, HatPosition, HatSignal
+from ..notify import Notifier
 from ..time import as_utc, trade_date_of, utc_now
 from .gates import CalendarSource
 from .market import DailyBook, held_sessions
 
-__all__ = ["ExitViews", "ShadowExits"]
+__all__ = ["VIEW_FAILED", "ExitViews", "ShadowExits"]
 
 logger = logging.getLogger(__name__)
+
+VIEW_FAILED = "exits.view_failed"
 
 
 class ExitViews:
@@ -65,13 +70,17 @@ class ExitViews:
         clock: Clock,
         calendar: CalendarSource,
         session_factory: Callable[[], Session],
+        notifier: Notifier,
     ) -> None:
         self._book = book
         self._prices = prices
         self._clock = clock
         self._calendar = calendar
         self._session_factory = session_factory
+        self._notifier = notifier
         self._flag_lock = threading.Lock()  # the shadow and account exits share the views
+        self._failed_lock = threading.Lock()
+        self._failed: dict[uuid.UUID, date] = {}  # the trade date of each view_failed raised
 
     def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
         """The instrument's checked exit price (`LivePrices.exit_price`); None when unknown."""
@@ -83,6 +92,33 @@ class ExitViews:
         return sorted(calendar.trading_days()) if calendar is not None else []
 
     def __call__(self, session: Session, position: HatPosition) -> ExitView | None:
+        try:
+            return self._view(session, position)
+        except Exception:
+            self._view_failed(position)
+            raise
+
+    def _view_failed(self, position: HatPosition) -> None:
+        """Raise `exits.view_failed` for the position once per trade date (again on the next
+        failure when it could not be delivered)."""
+        today = trade_date_of(utc_now(self._clock))
+        with self._failed_lock:
+            if self._failed.get(position.id) == today:
+                return
+            self._failed[position.id] = today
+        kind = "shadow" if position.is_virtual else "real"
+        try:
+            sent = self._notifier.alert(
+                VIEW_FAILED, today, {"position": str(position.id), "kind": kind}
+            )
+        except Exception:
+            logger.exception("alert %s for position %s not sent", VIEW_FAILED, position.id)
+            sent = False
+        if not sent:
+            with self._failed_lock:
+                self._failed.pop(position.id, None)
+
+    def _view(self, session: Session, position: HatPosition) -> ExitView | None:
         price = self._prices(session, position.instrument_id)
         if price is None:
             return None
@@ -163,10 +199,10 @@ class ShadowExits:
         done = 0
         with self._session_factory() as session:
             for position in self._positions(session, phase):
-                view = self._views(session, position)
-                if view is None or view.price is None:
-                    continue
                 try:
+                    view = self._views(session, position)
+                    if view is None or view.price is None:
+                        continue
                     result = shadow.evaluate_position(session, position.id, view, phase, now)
                     if phase == "close":
                         record_close_evaluation(

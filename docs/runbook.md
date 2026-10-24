@@ -265,6 +265,10 @@ advisory lock; `features` does not take it, so run it after they finish.
   (still protective); the stored stop or tick is wrong: a bug to report.
 - **`position.series_changed`:** exits continue under the new symbol; `unmapped` means none run:
   decide whether to sell at Fyers.
+- **`exits.view_failed`:** URGENT, once a day per position. Building the position's exit view
+  raised, so its exit rules (trailing stop, MA, target, time) are off and only its resting broker
+  stop protects it; the other positions' exits run. Read the log for the cause; decide on
+  `/flatten` for a real position.
 - **`sale.unfilled`:** check the book and band; decide on `/flatten` or a sale at Fyers.
   **`sale.settled_from_holdings`:** those shares' price is missing from P&L. Outside market
   hours, book it from the contract note: `$ADMIN resolve-sale --tag <sale tag> --qty <n> --price
@@ -277,7 +281,10 @@ advisory lock; `features` does not take it, so run it after they finish.
   or closed, or a sale on a closed position); it is booked and the stop covers the shares.
   Check the position and decide on `/flatten`.
 - **Kill and flatten:** `/kill` makes every bot manage-only and cancels its entries still working
-  at the broker (so does `/pause`). Re-arm after fixing the cause with `/arm` and Confirm
+  at the broker (so does `/pause`). Re-arm after fixing the cause with `/arm` (every tripped
+  drawdown or manual kill), `/arm account` or `/arm <bot>`, and Confirm: the question lists each
+  kill it re-arms (whose, reason, when tripped) and Confirm re-arms exactly those, refusing with
+  `kill_changed` if one changed or another tripped since. A re-arm restarts that drawdown peak
   (`/resume` does not lift a kill; data-health kills clear themselves). `/flatten` and Confirm
   trips the account kill, cancels the working entries and sells every real position; `/arm`
   lifts the kill. With the market closed it still trips the kill but sells nothing and queues

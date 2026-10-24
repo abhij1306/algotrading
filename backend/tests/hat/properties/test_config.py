@@ -242,6 +242,24 @@ def test_playbook_shape(raw: dict) -> None:
     assert "duplicate_playbook" in codes_of(twice)
 
 
+@given(raw_configs())
+def test_exits_need_one_enabled_hard_stop(raw: dict) -> None:
+    """A config is valid only with exactly one enabled hard_stop exit: none, a disabled one or
+    two are refused. Harm: a backtest and shadow ride through the stop the live broker stop
+    enforces, so the promotion evidence is of another strategy."""
+    stored = parse_config(raw).to_json()
+    others = [e for e in stored["exits"] if e["rule"] != "hard_stop"]
+    for exits in (
+        others,
+        [{"rule": "hard_stop", "enabled": False}, *others],
+        [{"rule": "hard_stop"}, {"rule": "hard_stop"}, *others],
+    ):
+        if exits:
+            assert "one_enabled_hard_stop" in codes_of({**stored, "exits": exits})
+    disabled_too = [{"rule": "hard_stop"}, {"rule": "hard_stop", "enabled": False}, *others]
+    assert parse_config({**stored, "exits": disabled_too})
+
+
 def inject(node: object, rnd: random.Random, key: str) -> bool:
     """Put `key` into a random dict inside `node`; False when none is reachable."""
     dicts: list[dict] = []

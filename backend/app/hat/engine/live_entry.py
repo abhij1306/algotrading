@@ -19,8 +19,10 @@
   the feed is stale and clears it when ticks resume (HAT-DATA-116, HAT-RISK-063).
 
 Every active bot is watched, whatever its mode. A bot's effective mode is the one in force at the
-session open, gated by its account's GTT capability (`execution/modes.py:bot_mode`), so with the
-Fyers adapter (no GTT for delivery) every bot runs shadow. An auto entry needs the router to
+session open when its sleeve is Live and every gate of its account passes
+(`execution/modes.py:bot_mode`, `gate_refusal`: GTT delivery, DDPI confirmed, weights
+confirmed), else shadow. The Fyers adapter reports GTT delivery, so a confirm or auto bot that
+passes them places real orders. An auto entry needs the router to
 place its order and a confirm entry needs it to sign its card: the default route refuses both
 (`auto_needs_router`, `confirm_needs_router`) rather than leave one unplaced or unanswerable.
 """
