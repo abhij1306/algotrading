@@ -89,6 +89,7 @@ def _runtime(settings_: object, dialect: str, touched: list[str]) -> HatRuntime:
         lambda: touched.append("db"),  # type: ignore[arg-type,return-value]
         dialect_name=dialect,
         parts=lambda: touched.append("parts"),  # type: ignore[arg-type,return-value]
+        runtime_lock=lambda: touched.append("lock"),  # type: ignore[arg-type,return-value]
     )
 
 

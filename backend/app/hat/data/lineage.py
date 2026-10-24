@@ -1094,11 +1094,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import SessionLocal
+    from app.database import HatSessionLocal
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     write = sys.stdout.write
-    with SessionLocal() as session:
+    with HatSessionLocal() as session:
         if args.command == "build":
             changes = parse_symbol_changes(_text(args.symbol_changes, SYMBOL_CHANGES_URL))
             names = parse_name_changes(_text(args.name_changes, NAME_CHANGES_URL))

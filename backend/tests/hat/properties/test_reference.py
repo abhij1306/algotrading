@@ -3,6 +3,7 @@ history, prefix paging, Fyers symbols, price bands and industries on the real co
 in-memory SQLite database and recorded or fake MCP servers (no network)."""
 
 import itertools
+import uuid
 from datetime import date
 from decimal import Decimal
 
@@ -12,6 +13,7 @@ from hat_mcp_support import (
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
+from app.hat.data.instruments import symbol_ids
 from app.hat.data.mcp_client import McpClient
 from app.hat.data.reference import (
     BAND_VALUES,
@@ -101,3 +103,15 @@ def test_current_band_circuit_fallback_valid(prev: Decimal, up: Decimal, down: D
 def test_current_band_circuit_fallback_exact(prev: Decimal, band: Decimal) -> None:
     """Circuit limits at exactly a supported band of the previous close give that band."""
     assert band_from_circuit_limits(prev, prev * (1 + band / 100), prev * (1 - band / 100)) == band
+
+
+def test_symbol_ids_prefer_the_active_instrument() -> None:
+    """A symbol two instruments carry maps to the active one, then the lowest id, in any row
+    order (`resolve_symbol`'s rule; DB audit H2: CANBK's old ISIN came last in heap order).
+    Harm: live bars are stored under the dead instrument and a restart's restore loses them."""
+    live, dead, other = uuid.UUID(int=9), uuid.UUID(int=1), uuid.UUID(int=5)
+    rows = [(live, "CANBK", True), (dead, "CANBK", False), (other, "TCS", False)]
+    for order in itertools.permutations(rows):
+        assert symbol_ids(order) == {"CANBK": live, "TCS": other}
+    both = [(live, "X", True), (other, "X", True)]
+    assert symbol_ids(both) == symbol_ids(reversed(both)) == {"X": other}

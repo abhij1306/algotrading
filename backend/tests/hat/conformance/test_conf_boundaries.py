@@ -237,6 +237,7 @@ def test_hat_runtime_requires_postgres(dialect: str) -> None:
         lambda: touched.append("db"),  # type: ignore[arg-type,return-value]
         dialect_name=dialect,
         parts=lambda: touched.append("parts"),  # type: ignore[arg-type,return-value]
+        runtime_lock=lambda: touched.append("lock"),  # type: ignore[arg-type,return-value]
     )
 
     async def start() -> int:

@@ -67,6 +67,9 @@ append-only `hat_event`); trade state replays from events (`journal.replay_state
 - **One position desk per broker account** (`execution/position_desk.py:PositionDesk`, shared by
   `StopDesk` and `TradeManager`): one re-entrant write lock per position, held by every stop write
   and by a sale from its checks to its send; one settle rule for a lost answer (`settle_verdict`).
+- **One HAT runtime per database** (`ops/runtime_lock.py`): `HatRuntime.start` takes a
+  session-level advisory lock on a connection held for the life of the process, before it reaps
+  or reads anything; a second runtime on the same database refuses to start.
 - **One session owner per broker account** (`SessionRegistry.acquire`), one token store
   (`fyers_tokens.token_store`), one live socket (`LiveFeed`, built only in `main.py`).
 - **One clock, one mode:** code that needs "now" takes a `clock.Clock` (`SYSTEM_CLOCK` in
@@ -119,8 +122,11 @@ stale-entry cancels; while the market is open), `housekeeping` (calendar check; 
 fill sync, approval expiry, reconciliation every 5 min, resume of stranded entries) and the
 announcements poll. The scheduler tick raises URGENT `periodic.stalled` when a loop has not
 started a pass for 60 s while the market is open. A wedged step is bounded, never killed: broker
-calls have the broker guard's timeout, and the runtime's sessions (`app.database.HatSessionLocal`)
-run every transaction under `SET LOCAL statement_timeout` (120 s).
+calls have the broker guard's timeout and every SDK HTTP request a `(connect, read)` timeout
+(`SDK_HTTP_TIMEOUT`); timed-out calls still holding workers past `HUNG_LIMIT` trip the breaker and
+replace the worker pool. Every session (`app.database.HatSessionLocal`: the runtime, `get_db`,
+`db_session_scope`, the data tools) runs each transaction under `SET LOCAL statement_timeout`
+(120 s).
 
 ## Verification layout
 

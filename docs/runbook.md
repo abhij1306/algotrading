@@ -37,7 +37,15 @@ incident in the PR or issue tracker).
    25 s, and any still running then are logged by name (look for `abandoned` in the log and
    check those jobs after the next start). Stop `postgres` only after the backend.
 4. Logs: `$COMPOSE logs -f backend` (one JSON object per line).
-5. Never `$COMPOSE down -v`: it deletes the database and data volumes.
+5. One HAT runtime per database. A backend that does not come up with `RuntimeLockHeldError`
+   found another process with `HAT_ENABLED=true` on the same database (a second container, a
+   manual `start_server.py`, a dev box pointed at it). Stop that process. The lock is a
+   session-level advisory lock held by a connection named `hat_runtime_lock`, so it frees itself
+   when that process or its connection dies. To see the holder:
+   `select pid, client_addr, backend_start from pg_stat_activity where application_name = 'hat_runtime_lock';`.
+   Only when that process is gone and the row remains (a half-open connection), end it:
+   `select pg_terminate_backend(<pid>);`, then start again.
+6. Never `$COMPOSE down -v`: it deletes the database and data volumes.
 
 ### Morning login (daily Fyers login)
 
@@ -144,6 +152,19 @@ refuse inside a session (`market_hours`).
     `lookups_failed`. Compare both with NSE's corporate-action announcement. HAT has no command to
     replace a stored factor yet; if the stored one is wrong, raise it with the orchestrator.
 12. Record each step in the check log.
+
+### Database role limits (once, on each database)
+
+Every HAT session bounds its statements (120 s); the role also bounds idle transactions and lock
+waits, for any session that slips past that (a psql shell, a stuck client). Run once as a
+superuser, then restart the backend:
+
+```sql
+ALTER ROLE <db_user> SET idle_in_transaction_session_timeout = '5min';
+ALTER ROLE <db_user> SET lock_timeout = '60s';
+```
+
+The runtime lock's connection runs in autocommit, so it is never idle in a transaction.
 
 ### Deploy and planned restart: `ops.deploy_window`
 
@@ -331,6 +352,10 @@ hat_trading_calendar where date = 'DAY';`.
    again ("Morning login").
 3. If the host is on the 4G link, see "Failover drill": no entries until the static line returns.
 4. Recovery is automatic once the session is back; check `/status`.
+5. `worker pool replaced` in the log: four Fyers calls timed out and still held their threads (a
+   stalled connection). The circuit opened for 20 s and later calls run on a new pool; the hung
+   requests end within their 10 s read timeout. Nothing to do unless it repeats: then check the
+   host's link to Fyers.
 
 ### Broker call limits: `broker_rate_limited`
 

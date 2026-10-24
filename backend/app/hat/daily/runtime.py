@@ -2,7 +2,8 @@
 
 With HAT disabled `HatRuntime.start` starts nothing (HAT-OPS-001). Enabled, it refuses a database
 that is not PostgreSQL (HAT-OPS-002) and a bad Telegram configuration (HAT-TG-040) before any
-task exists, then starts in the restart-safe order of HAT-OPS-003:
+task exists, then takes the runtime lock (`ops/runtime_lock.py`: one runtime per database; a
+second one refuses to start) and starts in the restart-safe order of HAT-OPS-003:
 
 1. reap the job runs a previous process left running, and read the trading calendar;
 2. build the assembly (`daily/assembly.py`): one desk per active broker account, reconciled
@@ -16,8 +17,9 @@ task exists, then starts in the restart-safe order of HAT-OPS-003:
 5. start the scheduler with every job of the daily cycle, the periodic loops (`daily/periodic.py`:
    exits, housekeeping, announcements) and the Telegram poller and relay.
 
-`stop` ends them in reverse, each step even if another failed. `assembly` is None until the
-assembly is built; a start that failed before then stops only the feed.
+`stop` ends them in reverse, each step even if another failed, and releases the lock last.
+`assembly` is None until the assembly is built; a start that failed before then stops only the
+feed.
 """
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from ..ops.jobs import (
     reopen,
     run_job,
 )
+from ..ops.runtime_lock import RuntimeLock
 from ..settings import HatSettings, require_postgres
 from ..telegram.service import run_relay
 from ..time import IST, trade_date_of, utc_now
@@ -81,12 +84,15 @@ class HatRuntime:
         *,
         dialect_name: str,
         parts: Callable[[], RuntimeParts],
+        runtime_lock: Callable[[], RuntimeLock],
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
         self.settings = settings
         self._session_factory = session_factory
         self._dialect_name = dialect_name
         self._parts = parts
+        self._runtime_lock = runtime_lock
+        self._lock: RuntimeLock | None = None  # held from start to the end of stop
         self.clock = clock
         self._halt = threading.Event()  # long job bodies (the ingest's wait) end on it
         self._stop = asyncio.Event()
@@ -109,11 +115,14 @@ class HatRuntime:
     async def start(self) -> bool:
         """Start HAT; False (and nothing started) when HAT is disabled. Raises `HatConfigError`
         for a non-Postgres database, a proxy that would carry Fyers traffic (`fyers_proxy_set`)
-        or a bad Telegram configuration, before any task exists."""
+        or a bad Telegram configuration, and `RuntimeLockHeldError` when another runtime runs on
+        this database, before any task exists."""
         if not self.settings.enabled:
             logger.info("HAT_ENABLED is false: no HAT task is started")
             return False
         require_postgres(self._dialect_name)
+        # before anything reads or reaps: a second runtime must not touch the first one's jobs
+        self._lock = await asyncio.to_thread(self._runtime_lock)
         # reads the Telegram settings (a bad one refuses the start) and builds the HTTP clients
         parts = await asyncio.to_thread(self._parts)
         self._feed = parts.feed
@@ -228,6 +237,7 @@ class HatRuntime:
             ("scheduler", self._stop_scheduler),
             ("feed", self._stop_feed),
             ("desks", self._release),
+            ("lock", self._release_lock),
         ]
         for name, step in steps:
             try:
@@ -261,6 +271,11 @@ class HatRuntime:
                 except Exception as exc:
                     logger.warning("HAT stop step %s failed: %s", name, type(exc).__name__)
         await self._feed.stop()
+
+    async def _release_lock(self) -> None:
+        lock, self._lock = self._lock, None
+        if lock is not None:
+            await asyncio.to_thread(lock.release)
 
     async def _release(self) -> None:
         if self.assembly is not None:

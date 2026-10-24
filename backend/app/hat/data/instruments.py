@@ -180,7 +180,25 @@ def resolve_symbol(
     ).all()
     if not candidates:
         return None
-    return min(candidates, key=lambda i: (not i.active, i.id.bytes))
+    return min(candidates, key=lambda i: _preference(i.active, i.id))
+
+
+def _preference(active: bool, instrument_id: uuid.UUID) -> tuple[bool, bytes]:
+    """The order several instruments sharing a symbol are chosen in: active first, then the
+    lowest id."""
+    return (not active, instrument_id.bytes)
+
+
+def symbol_ids(rows: Iterable[tuple[uuid.UUID, str, bool]]) -> dict[str, uuid.UUID]:
+    """Each symbol's instrument from `(id, symbol, active)` rows, by `resolve_symbol`'s rule
+    (active first, then the lowest id), whatever order the rows come in: a symbol an old,
+    inactive ISIN still carries maps to the live instrument."""
+    best: dict[str, tuple[bool, uuid.UUID]] = {}
+    for instrument_id, symbol, active in rows:
+        held = best.get(symbol)
+        if held is None or _preference(active, instrument_id) < _preference(*held):
+            best[symbol] = (active, instrument_id)
+    return {symbol: instrument_id for symbol, (_, instrument_id) in best.items()}
 
 
 @dataclass(frozen=True)

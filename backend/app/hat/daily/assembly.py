@@ -28,6 +28,7 @@ from ..clock import Clock
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
+from ..data.instruments import symbol_ids
 from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY
@@ -254,7 +255,8 @@ def _configs(session: Session) -> list[StrategyConfig]:
 
 def _instrument_ids(session_factory: SessionFactory) -> Mapping[str, uuid.UUID]:
     with session_factory() as session:
-        return {s: i for i, s in session.execute(select(HatInstrument.id, HatInstrument.symbol))}
+        rows = session.execute(select(HatInstrument.id, HatInstrument.symbol, HatInstrument.active))
+        return symbol_ids(rows)
 
 
 class TradingCalendar:
