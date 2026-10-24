@@ -133,7 +133,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   ticks, bands, the rescale and orders read the price basis (`bars_daily_cap`). A closed trade's
   P&L and R include the dividends its shares earned (ex-date in the holding, shares held at the
   ex-date's open), in backtest, shadow and live alike; the nightly `ca.adjust` restates them from
-  the stored amounts.
+  the stored amounts, each change with a `position.dividends_restated` event of the figures
+  before and after.
 - **Versions and `known_on`.** Every write of a corporate action appends a version in the same
   transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
   hindsight projection. Each action records when its value became knowable (`known_on`; NULL when

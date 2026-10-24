@@ -373,7 +373,7 @@ class Nightly:
             self.deps.notifier.alert(ALERT_DEMERGERS_UNCHECKED, day, {})
         try:
             with self.deps.session_factory() as session:
-                restated = restate_dividends(session)
+                restated = restate_dividends(session, self._now())
                 session.commit()
             logger.info("trade dividends restated: %d trades changed", restated)
         except Exception:
