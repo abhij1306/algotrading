@@ -8,15 +8,6 @@
         let theme = null;
         try {
           theme = localStorage.getItem("hat-theme");
-          // One-time move of a choice saved under the old SmartTrader key.
-          const legacy = localStorage.getItem("smarttrader-theme");
-          if (legacy !== null) {
-            if (theme === null) {
-              theme = legacy;
-              localStorage.setItem("hat-theme", legacy);
-            }
-            localStorage.removeItem("smarttrader-theme");
-          }
         } catch {
           // Storage unavailable: fall back to the system preference.
         }

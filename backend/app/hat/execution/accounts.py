@@ -22,11 +22,11 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..engine.owner import OwnerCommand
 from ..errors import HatError
 from ..events import record
 from ..models import HatBrokerAccount
 from ..models.strategy import ACCOUNT_ACTIVE, ACCOUNT_FAILED, ACCOUNT_PENDING, BROKER_FYERS
-from ..risk.sessions import SessionCalendar, SessionState
 from ..time import as_utc, trade_date_of
 from .broker import (
     CODE_RATE_LIMITED,
@@ -146,9 +146,7 @@ def confirm_ddpi(
     user_id: uuid.UUID,
     since: date,
     note: str,
-    calendar: SessionCalendar,
-    now: datetime,
-    chat_id: int,
+    command: OwnerCommand,
 ) -> HatBrokerAccount:
     """Record the owner's word that DDPI (or a POA) is registered on the account's demat since
     `since` (HAT-GOV-085): sets `ddpi_confirmed` with the time and the
@@ -161,9 +159,10 @@ def confirm_ddpi(
     account = session.get(HatBrokerAccount, account_id, with_for_update=True)
     if account is None or account.user_id != user_id or account.status != ACCOUNT_ACTIVE:
         raise OnboardingError("account_not_active")
-    if calendar.state(now) is not SessionState.CLOSED:
+    now = command.now
+    if command.in_session:
         raise OnboardingError("market_hours")
-    if since > trade_date_of(now):
+    if since > command.trade_date:
         raise OnboardingError("ddpi_date_in_future")
     text = note.strip()
     if not text or len(text) > DDPI_NOTE_MAX:
@@ -179,7 +178,7 @@ def confirm_ddpi(
         aggregate_id=account.id,
         event_type="broker.ddpi_confirmed",
         actor="user",
-        payload={"chat_id": chat_id, "via": "cli", "since": since.isoformat()},
+        payload={"chat_id": command.chat_id, "via": "cli", "since": since.isoformat()},
         user_id=account.user_id,
         occurred_at=now,
     )

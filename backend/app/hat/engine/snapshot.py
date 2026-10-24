@@ -18,10 +18,10 @@ from decimal import Decimal
 from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
+from ..governance import Mode
 from ..models import HatBot, HatEvent, HatIndustry, HatPosition, HatSignal, HatTradeResult
 from ..money import require_exact
 from ..risk.caps import OpenPosition
-from ..risk.modes import Mode
 from ..time import as_utc, day_bounds, trade_date_of
 from . import journal, lifecycle
 

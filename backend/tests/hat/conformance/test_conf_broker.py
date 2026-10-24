@@ -24,8 +24,8 @@ from app.hat.execution.broker import GttRequest, HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
 from app.hat.execution.fyers_payloads import gtt_payload, parse_gtt_row, parse_order_book
 from app.hat.execution.tags import encode_tag
+from app.hat.governance import Mode
 from app.hat.models import HatBot
-from app.hat.risk.modes import Mode
 
 HAT_ROOT = APP_ROOT / "hat"
 DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
@@ -73,8 +73,8 @@ def test_brk__import_boundary() -> None:
     transitively; the interface module itself imports none of them either."""
     graph = build_graph()
     # The one exception: HAT's data socket module imports the SDK socket and the
-    # Fyers session for its token (and the session's history request for the minute-history
-    # download); `test_imports__no_second_websocket` confines the socket to it.
+    # Fyers session for the minute-history download's history request (the feed's token is
+    # handed to it by `app/main.py`); `test_imports__no_second_websocket` confines the socket to it.
     graph[DATA_SOCKET_MODULE] = set()
     prefixes = (
         "app.hat.engine",

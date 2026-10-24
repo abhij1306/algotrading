@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.events import record
 from app.hat.models import HatRegimeModelVersion, HatRegimeState
+from app.hat.money import require_exact
 
 from . import regime
 from .common import close_of
@@ -132,4 +133,7 @@ def regime_table(model: HatRegimeModelVersion) -> dict[str, Decimal]:
     stored = (model.config or {}).get("multipliers", {}).get("momentum")
     if not stored:
         return dict(regime.DEFAULT_MULTIPLIERS)
-    return {state: Decimal(str(stored[state])) for state in regime.STATES}
+    return {
+        state: require_exact(stored[state], f"multipliers.momentum.{state}", floats=True)
+        for state in regime.STATES
+    }

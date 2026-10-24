@@ -1,36 +1,17 @@
 """The execution modes, and mode changes: queued outside market hours, effective at the next
 session open (HAT-GOV-084, HAT-SCH-086, HAT-TG-032). Pure; the queue's rows are
-`hat_mode_change`. `Mode` is the one spelling of the modes: the schema CHECKs, the strategy
-config and the router all read it."""
+`hat_mode_change`. `Mode` itself, the one spelling of the modes, is `app.hat.governance`."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
-from typing import Literal
 
 from ..errors import HatError
+from ..governance import MODE_VALUES
 from ..time import as_utc
 from .sessions import SessionCalendar, SessionState
-
-
-class Mode(StrEnum):
-    """How a bot's entries are routed: shadow (virtual, never at the broker), confirm (an
-    approval card first) or auto (placed; only a high-confidence signal, D149)."""
-
-    SHADOW = "shadow"
-    CONFIRM = "confirm"
-    AUTO = "auto"
-
-
-# Membership of any value, a plain `str` included: `x in Mode` raises TypeError for a str before
-# Python 3.12 (the project supports 3.11); a set of the members does not.
-MODE_VALUES: frozenset[str] = frozenset(Mode)
-
-# A config field holding a mode: validates and dumps as the plain string (pydantic `Literal`).
-ModeField = Literal[Mode.SHADOW, Mode.CONFIRM, Mode.AUTO]
 
 
 class ModeChangeError(HatError):

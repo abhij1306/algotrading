@@ -22,7 +22,7 @@ from sqlalchemy import (
 )
 
 from ...base import Base
-from ..risk.modes import Mode
+from ..governance import Mode
 from ._types import JsonB, Money, Ratio, Timestamptz, fk, in_values, uuid_pk
 
 __all__ = [

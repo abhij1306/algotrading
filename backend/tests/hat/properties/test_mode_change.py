@@ -7,14 +7,8 @@ from hat_risk_support import CALENDAR, TRADE_DAY
 from hypothesis import given
 from hypothesis import strategies as st
 
-from app.hat.risk.modes import (
-    MODE_VALUES,
-    Mode,
-    ModeChange,
-    ModeChangeError,
-    plan_mode_change,
-    queued_mode_at,
-)
+from app.hat.governance import MODE_VALUES, Mode
+from app.hat.risk.modes import ModeChange, ModeChangeError, plan_mode_change, queued_mode_at
 from app.hat.time import IST
 
 instants = st.datetimes(

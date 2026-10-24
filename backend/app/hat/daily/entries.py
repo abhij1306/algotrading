@@ -27,10 +27,10 @@ from ..engine import entries
 from ..engine.live_entry import route_by_mode
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
+from ..governance import Mode
 from ..models import HatAllocationDaily, HatBot, HatPosition, HatTradeResult
 from ..risk import bots, kill_ops
 from ..risk.decision import SignalContext
-from ..risk.modes import Mode
 from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar

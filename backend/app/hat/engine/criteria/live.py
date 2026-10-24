@@ -22,7 +22,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from ...risk.modes import Mode, ModeField
+from ...governance import Mode, ModeField
 from .base import CriterionResult, ParamModel, dec, no_data, verdict
 
 LEVEL_PIVOT = "pivot"

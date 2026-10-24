@@ -15,8 +15,7 @@
 (* Bounds: NBots = 2 bots; each bot has one position cycle (none, open,    *)
 (*   closed) and one approval in flight; kills, health flips, pauses and   *)
 (*   re-arms repeat without bound (the state space is finite because every *)
-(*   variable has a finite domain); BrokenMode names a deliberately broken *)
-(*   variant ("none" is the real protocol).                                *)
+(*   variable has a finite domain).                                        *)
 (* Assumptions: each action below is one database transaction (atomic) or  *)
 (*   one environment change; an equity read (the snapshot.bots job, the    *)
 (*   intraday drawdown step) reads the drawdown state and acts on it in    *)
@@ -34,14 +33,8 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS NBots, BrokenMode
+CONSTANTS NBots
 
-ASSUME BrokenMode \in {"none", "no_trip_on_drawdown", "entry_ignores_kill",
-                       "kill_keeps_approvals", "entry_ignores_live_health",
-                       "auto_rearm_on_recovery", "resume_clears_kill",
-                       "entry_ignores_pause", "health_manual_rearm",
-                       "exit_blocked_when_killed", "flatten_without_confirm",
-                       "flatten_opens", "shared_health_channel"}
 
 Bots == 1..NBots
 Reasons == {"acct", "bot", "health", "unhealthy", "paused"}
@@ -102,14 +95,8 @@ Blocking(b) ==
         \/ r = "unhealthy" /\ \E s \in Sources : unhealthy[s]
         \/ r = "paused" /\ paused[b]}
 
-\* The entry gate (evaluate_entry): the real protocol allows an entry only when nothing blocks.
-\* Each broken variant leaves one reason out of the gate.
-Gated(b) ==
-    Blocking(b) \ (IF BrokenMode = "entry_ignores_kill" THEN {"acct", "bot"} ELSE {}
-                   \cup IF BrokenMode = "entry_ignores_live_health" THEN {"unhealthy"} ELSE {}
-                   \cup IF BrokenMode = "entry_ignores_pause" THEN {"paused"} ELSE {})
-
-EntryAllowed(b) == Gated(b) = {}
+\* The entry gate (evaluate_entry): an entry is allowed only when nothing blocks.
+EntryAllowed(b) == Blocking(b) = {}
 
 \* code: backend/app/hat/risk/drawdown.py:evaluate_drawdown_kills  (snapshot.bots, and every
 \* minute of the session Intraday.drawdown, reads the account equity marked to market against
@@ -117,18 +104,13 @@ EntryAllowed(b) == Gated(b) = {}
 SnapshotAccount ==
     /\ \E breach \in BOOLEAN :
          /\ acctSeen' = (acctSeen \/ breach)
-         /\ IF breach /\ BrokenMode # "no_trip_on_drawdown"
+         /\ IF breach
                THEN /\ acct' = "tripped"
-                    /\ appr' = IF BrokenMode = "kill_keeps_approvals" THEN appr
-                               ELSE [b \in Bots |-> IF appr[b] = "pending" THEN "cancelled" ELSE appr[b]]
+                    /\ appr' = [b \in Bots |-> IF appr[b] = "pending" THEN "cancelled" ELSE appr[b]]
                     /\ badRearm' = badRearm
-               ELSE IF ~breach /\ acct = "tripped" /\ BrokenMode = "auto_rearm_on_recovery"
-                       THEN /\ acct' = "armed"
-                            /\ appr' = appr
-                            /\ badRearm' = TRUE
-                       ELSE /\ acct' = acct
-                            /\ appr' = appr
-                            /\ badRearm' = badRearm
+               ELSE /\ acct' = acct
+                    /\ appr' = appr
+                    /\ badRearm' = badRearm
     /\ UNCHANGED <<bot, health, unhealthy, paused, pos, exitDue, botSeen, askedAcct, askedBot,
                    badEntry>>
     /\ UNCHANGED flatVars
@@ -138,10 +120,9 @@ SnapshotAccount ==
 SnapshotBot(k) ==
     /\ \E breach \in BOOLEAN :
          /\ botSeen' = [botSeen EXCEPT ![k] = @ \/ breach]
-         /\ IF breach /\ BrokenMode # "no_trip_on_drawdown"
+         /\ IF breach
                THEN /\ bot' = [bot EXCEPT ![k] = "tripped"]
-                    /\ appr' = IF BrokenMode = "kill_keeps_approvals" THEN appr
-                               ELSE [appr EXCEPT ![k] = IF @ = "pending" THEN "cancelled" ELSE @]
+                    /\ appr' = [appr EXCEPT ![k] = IF @ = "pending" THEN "cancelled" ELSE @]
                     /\ badRearm' = badRearm
                ELSE /\ bot' = bot
                     /\ appr' = appr
@@ -154,8 +135,7 @@ SnapshotBot(k) ==
 \* undecided approval ends in the same transaction)
 ManualKill ==
     /\ acct' = "tripped"
-    /\ appr' = IF BrokenMode = "kill_keeps_approvals" THEN appr
-               ELSE [b \in Bots |-> IF appr[b] = "pending" THEN "cancelled" ELSE appr[b]]
+    /\ appr' = [b \in Bots |-> IF appr[b] = "pending" THEN "cancelled" ELSE appr[b]]
     /\ UNCHANGED <<bot, health, unhealthy, paused, pos, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry, badRearm>>
     /\ UNCHANGED flatVars
@@ -169,17 +149,13 @@ HealthFlip(src) ==
     /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/kill_ops.py:sync_health  (the source's health check: trip its own
-\* reason on the account key while failing, clear that reason by itself once healthy; the broken
-\* variant clears every health reason of the key, as one shared channel did)
+\* reason on the account key while failing, clear that reason by itself once healthy)
 HealthEval(src) ==
     /\ health[src] # IF unhealthy[src] THEN "tripped" ELSE "armed"
     /\ health' = [t \in Sources |->
           IF t = src
-             THEN IF unhealthy[src] THEN "tripped"
-                  ELSE IF BrokenMode = "health_manual_rearm" THEN health[t] ELSE "armed"
-          ELSE IF BrokenMode = "shared_health_channel" /\ ~unhealthy[src]
-                  THEN "armed" ELSE health[t]]
-    /\ ~(BrokenMode = "health_manual_rearm" /\ ~unhealthy[src])
+             THEN IF unhealthy[src] THEN "tripped" ELSE "armed"
+          ELSE health[t]]
     /\ badClear' = (badClear \/ \E t \in Sources :
                        health[t] = "tripped" /\ unhealthy[t] /\ health'[t] = "armed")
     /\ UNCHANGED <<acct, bot, unhealthy, paused, appr, pos, exitDue, acctSeen, botSeen,
@@ -197,11 +173,8 @@ Pause(k) ==
 Resume(k) ==
     /\ paused[k]
     /\ paused' = [paused EXCEPT ![k] = FALSE]
-    /\ IF BrokenMode = "resume_clears_kill"
-          THEN /\ bot' = [bot EXCEPT ![k] = "armed"]
-               /\ badRearm' = (badRearm \/ (bot[k] = "tripped"))
-          ELSE /\ bot' = bot
-               /\ badRearm' = badRearm
+    /\ bot' = bot
+    /\ badRearm' = badRearm
     /\ UNCHANGED <<acct, health, unhealthy, appr, pos, exitDue, acctSeen, botSeen, askedAcct,
                    askedBot, badEntry>>
     /\ UNCHANGED flatVars
@@ -257,10 +230,9 @@ ExitDue(k) ==
     /\ UNCHANGED flatVars
 
 \* code: backend/app/hat/risk/decision.py:decide  (an exit is always accepted, whatever the
-\* kill, pause or cap state; the broken variant gates it like an entry)
+\* kill, pause or cap state)
 ExitSend(k) ==
     /\ pos[k] = "open" /\ exitDue[k]
-    /\ BrokenMode # "exit_blocked_when_killed" \/ Blocking(k) = {}
     /\ pos' = [pos EXCEPT ![k] = "closed"]
     /\ exitDue' = [exitDue EXCEPT ![k] = FALSE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, acctSeen, botSeen, askedAcct,
@@ -313,13 +285,11 @@ RequestFlatten ==
 \* code: backend/app/hat/execution/manage.py:flatten  (the confirmed step: every open position
 \* is sold through the exit path, never gated by a kill or pause, and nothing is bought)
 ConfirmFlatten ==
-    /\ askedFlat \/ BrokenMode = "flatten_without_confirm"
+    /\ askedFlat
     /\ badFlat' = (badFlat \/ ~askedFlat)
     /\ askedFlat' = FALSE
     /\ pos' = [k \in Bots |->
-                 IF pos[k] = "open" THEN "closed"
-                 ELSE IF pos[k] = "none" /\ BrokenMode = "flatten_opens" THEN "open"
-                 ELSE pos[k]]
+                 IF pos[k] = "open" THEN "closed" ELSE pos[k]]
     /\ flatOpen' = (flatOpen \/ \E k \in Bots : pos[k] # "open" /\ pos'[k] = "open")
     /\ exitDue' = [k \in Bots |-> FALSE]
     /\ UNCHANGED <<acct, bot, health, unhealthy, paused, appr, acctSeen, botSeen, askedAcct,

@@ -24,8 +24,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapper
 
 from ...base import Base
-from ..risk.modes import Mode
-from ..risk.policy import require_cooling_off
+from ..governance import Mode, require_cooling_off
 from ._types import (
     VERSION_STATUSES,
     Currency,

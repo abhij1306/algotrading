@@ -45,11 +45,11 @@ from ..clock import SYSTEM_CLOCK, Clock
 from ..data.bars import Bar
 from ..data.gapscan import Gapper, is_candidate
 from ..execution.modes import bot_mode
+from ..governance import Mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
 from ..money import exact
 from ..risk import kill_ops
 from ..risk.decision import SignalContext
-from ..risk.modes import Mode
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
 from ..time import IST, utc_now

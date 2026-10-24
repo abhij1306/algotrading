@@ -46,6 +46,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.confidence import stored_basis
 from ..events import record
+from ..governance import Mode
 from ..models import (
     HatAnnouncement,
     HatApproval,
@@ -59,7 +60,6 @@ from ..models import (
 )
 from ..money import exact
 from ..read.positions import symbol_of
-from ..risk.modes import Mode
 from ..time import as_utc, trade_date_of, utc_now
 from . import reads, render, store
 from .client import BotClient, Button, TelegramError

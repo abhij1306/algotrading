@@ -7,7 +7,7 @@ Virtual and real rows share tables (HAT-SCH-017): shadow mode writes `hat_order`
 
 from __future__ import annotations
 
-from .risk.modes import MODE_VALUES, Mode
+from .governance import MODE_VALUES, Mode
 
 __all__ = ["child_is_virtual", "position_is_virtual"]
 

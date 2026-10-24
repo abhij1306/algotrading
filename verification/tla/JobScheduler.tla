@@ -19,8 +19,7 @@
 (*                                                                         *)
 (* Bounds: NWorkers = 2 concurrent callers of run_job for the one key;     *)
 (*   MaxCalls = 3 run_job calls per caller (also the most exits.close      *)
-(*   starts); MaxRestarts = 2 process restarts; BrokenMode names a         *)
-(*   deliberately broken variant ("none" is the real protocol).            *)
+(*   starts); MaxRestarts = 2 process restarts.                            *)
 (* Assumptions: each action below is one database transaction (atomic);    *)
 (*   the unique (job, trade_date) row serialises claims; a restart kills   *)
 (*   every in-flight caller and runs recover_interrupted before any new    *)
@@ -45,12 +44,7 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS NWorkers, MaxCalls, MaxRestarts, BrokenMode
-
-ASSUME BrokenMode \in {"none", "retry_after_success", "split_claim", "no_reap",
-                       "ignore_enabled", "no_retry", "no_window", "late_send",
-                       "prompt_holiday", "reprompt_logged_in", "report_before_close",
-                       "report_holiday"}
+CONSTANTS NWorkers, MaxCalls, MaxRestarts
 
 \* The spans of the exits.close day: before 15:20, the window, 15:25-15:30, after 15:30.
 Spans == <<"before", "window", "closing", "after">>
@@ -62,7 +56,7 @@ VARIABLES
     schedulerUp,   \* the scheduler loop exists
     row,           \* status of the one hat_job_run row: none | running | succeeded | failed
     pc,            \* per caller: idle | checked | body | done
-    seen,          \* per caller: row status read by a split (broken) claim
+    seen,          \* per caller: row status read by a split claim (never: the claim is atomic)
     calls,         \* per caller: run_job calls made
     successes,     \* successes recorded in the row
     restarts,      \* process restarts so far
@@ -113,19 +107,17 @@ Init ==
     /\ badPrompt = FALSE
     /\ badReport = FALSE
 
-\* A run can be taken when none exists, when the last one failed or was interrupted, and
-\* (only in the broken variant) after it succeeded.
+\* A run can be taken when none exists or when the last one failed or was interrupted.
 Claimable(r) ==
     \/ r = "none"
-    \/ r = "failed" /\ BrokenMode # "no_retry"
-    \/ r = "succeeded" /\ BrokenMode = "retry_after_success"
+    \/ r = "failed"
 
 CanCall(w) == schedulerUp /\ pc[w] = "idle" /\ calls[w] < MaxCalls
 
 \* code: backend/app/hat/daily/runtime.py:start
 StartScheduler ==
     /\ ~schedulerUp
-    /\ enabled \/ BrokenMode = "ignore_enabled"
+    /\ enabled
     /\ schedulerUp' = TRUE
     /\ UNCHANGED <<enabled, row, pc, seen, calls, successes, restarts, started, refusedFailed,
                    closeVars>>
@@ -134,7 +126,6 @@ StartScheduler ==
 \* code: backend/app/hat/ops/jobs.py:_claim  (insert the row, or flip a failed row to running,
 \* in one transaction; otherwise return the stored outcome)
 Claim(w) ==
-    /\ BrokenMode # "split_claim"
     /\ CanCall(w)
     /\ calls' = [calls EXCEPT ![w] = @ + 1]
     /\ started' = TRUE
@@ -146,30 +137,6 @@ Claim(w) ==
                /\ refusedFailed' = (refusedFailed \/ row = "failed")
                /\ row' = row
     /\ UNCHANGED <<enabled, schedulerUp, seen, successes, restarts, closeVars>>
-    /\ UNCHANGED tgVars
-
-\* code: backend/app/hat/ops/jobs.py:_claim  (broken variant "split_claim" only: the real claim
-\* is the single transaction above, never a read followed by a separate write)
-CheckOnly(w) ==
-    /\ BrokenMode = "split_claim"
-    /\ CanCall(w)
-    /\ calls' = [calls EXCEPT ![w] = @ + 1]
-    /\ started' = TRUE
-    /\ seen' = [seen EXCEPT ![w] = row]
-    /\ pc' = [pc EXCEPT ![w] = "checked"]
-    /\ UNCHANGED <<enabled, schedulerUp, row, successes, restarts, refusedFailed, closeVars>>
-    /\ UNCHANGED tgVars
-
-\* code: backend/app/hat/ops/jobs.py:_claim  (broken variant "split_claim" only: the write half)
-TakeAfterCheck(w) ==
-    /\ pc[w] = "checked"
-    /\ IF Claimable(seen[w])
-          THEN /\ row' = "running"
-               /\ pc' = [pc EXCEPT ![w] = "body"]
-          ELSE /\ row' = row
-               /\ pc' = [pc EXCEPT ![w] = "done"]
-    /\ UNCHANGED <<enabled, schedulerUp, seen, calls, successes, restarts, started,
-                   refusedFailed, closeVars>>
     /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/ops/jobs.py:_finish  (the body returned: record succeeded)
@@ -208,7 +175,7 @@ Restart ==
     /\ restarts < MaxRestarts
     /\ restarts' = restarts + 1
     /\ pc' = [w \in Workers |-> IF pc[w] \in {"body", "checked"} THEN "done" ELSE pc[w]]
-    /\ row' = IF row = "running" /\ BrokenMode # "no_reap" THEN "failed" ELSE row
+    /\ row' = IF row = "running" THEN "failed" ELSE row
     /\ UNCHANGED <<enabled, schedulerUp, seen, calls, successes, started, refusedFailed,
                    closeVars>>
     /\ UNCHANGED tgVars
@@ -221,10 +188,8 @@ ClockTick ==
                    refusedFailed, closeRow, closeStarts, closeOk, salesDue, ranOutside, sentLate>>
     /\ UNCHANGED tgVars
 
-\* The scheduler starts exits.close at or after 15:20 and never from 15:25 on (its `until`);
-\* broken variant "no_window": whenever it is late enough.
-CloseDue ==
-    IF BrokenMode = "no_window" THEN span >= 2 ELSE span = 2
+\* The scheduler starts exits.close at or after 15:20 and never from 15:25 on (its `until`).
+CloseDue == span = 2
 
 \* code: backend/app/hat/execution/manage.py:TradeManager.close_exits  (the body refuses outside
 \* the window; inside it evaluates every position and decides its sales; the run is recorded
@@ -246,12 +211,11 @@ CloseRun ==
     /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/execution/manage.py:TradeManager._sell  (the clock is read when the sale
-\* is sent: from 15:30 on it is not placed and is alerted; broken variant "late_send": the time
-\* the job started is used instead)
+\* is sent: from 15:30 on it is not placed and is alerted)
 CloseSell ==
     /\ salesDue > 0
     /\ salesDue' = salesDue - 1
-    /\ sentLate' = (sentLate \/ (span = 4 /\ BrokenMode = "late_send"))
+    /\ sentLate' = sentLate
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
                    refusedFailed, span, closeRow, closeStarts, closeOk, ranOutside>>
 
@@ -278,8 +242,7 @@ LoginFlip ==
 Prompt ==
     /\ schedulerUp /\ tspan = 2 /\ "prompt" \notin tgRan
     /\ tgRan' = tgRan \cup {"prompt"}
-    /\ badPrompt' = (badPrompt \/ (~trading /\ BrokenMode = "prompt_holiday")
-                     \/ "reprompt" \in tgRan)
+    /\ badPrompt' = (badPrompt \/ "reprompt" \in tgRan)
     /\ UNCHANGED <<trading, tspan, loggedIn, badReport>>
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
                    refusedFailed, closeVars>>
@@ -289,7 +252,7 @@ Prompt ==
 Reprompt ==
     /\ schedulerUp /\ tspan = 3 /\ "reprompt" \notin tgRan
     /\ tgRan' = tgRan \cup {"reprompt"}
-    /\ LET sends == trading /\ (~loggedIn \/ BrokenMode = "reprompt_logged_in")
+    /\ LET sends == trading /\ ~loggedIn
        IN badPrompt' = (badPrompt \/ (sends /\ loggedIn))
     /\ UNCHANGED <<trading, tspan, loggedIn, badReport>>
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
@@ -299,9 +262,9 @@ Reprompt ==
 \* digest, the daily report and the veto digest, only on a trading day)
 Report ==
     /\ schedulerUp /\ "report" \notin tgRan
-    /\ tspan = 4 \/ (tspan = 3 /\ BrokenMode = "report_before_close")
+    /\ tspan = 4
     /\ tgRan' = tgRan \cup {"report"}
-    /\ LET sends == trading \/ BrokenMode = "report_holiday"
+    /\ LET sends == trading
        IN badReport' = (badReport \/ (sends /\ (tspan # 4 \/ ~trading)))
     /\ UNCHANGED <<trading, tspan, loggedIn, badPrompt>>
     /\ UNCHANGED <<enabled, schedulerUp, row, pc, seen, calls, successes, restarts, started,
@@ -313,16 +276,15 @@ Next ==
     \/ ClockTick \/ CloseRun \/ CloseSell
     \/ TgTick \/ LoginFlip \/ Prompt \/ Reprompt \/ Report
     \/ \E w \in Workers :
-          Claim(w) \/ CheckOnly(w) \/ TakeAfterCheck(w) \/ FinishOk(w) \/ FinishFail(w)
-          \/ Recall(w)
+          Claim(w) \/ FinishOk(w) \/ FinishFail(w) \/ Recall(w)
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
     /\ WF_vars(StartScheduler)
     /\ \A w \in Workers :
-          WF_vars(Claim(w)) /\ WF_vars(TakeAfterCheck(w)) /\ WF_vars(FinishOk(w))
-          /\ WF_vars(FinishFail(w)) /\ WF_vars(Recall(w))
+          WF_vars(Claim(w)) /\ WF_vars(FinishOk(w)) /\ WF_vars(FinishFail(w))
+          /\ WF_vars(Recall(w))
 
 TypeOK ==
     /\ row \in {"none", "running", "succeeded", "failed"}

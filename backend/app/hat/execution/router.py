@@ -58,6 +58,7 @@ from sqlalchemy.orm import Session
 from ..clock import SYSTEM_CLOCK, Clock
 from ..data.live import PRICE_UNKNOWN
 from ..engine import approvals, entries, lifecycle, positions, snapshot
+from ..governance import Mode
 from ..models import (
     HatApproval,
     HatBot,
@@ -70,7 +71,6 @@ from ..models import (
 from ..notify import LogNotifier, Notifier
 from ..risk import kill_ops
 from ..risk.decision import Reason
-from ..risk.modes import Mode
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar, SessionState
 from ..time import trade_date_of

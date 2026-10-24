@@ -88,8 +88,13 @@ def _build_hat_feed() -> Any:  # noqa: ANN401
     from .database import HatSessionLocal
     from .hat.data.feed import LiveFeed, calendar_source
     from .hat.execution.fyers_auth import get_fyers_auth
+    from .hat.execution.fyers_session import fyers_token, session_token_valid
 
-    feed = LiveFeed(calendar_source=calendar_source(HatSessionLocal))
+    feed = LiveFeed(
+        calendar_source=calendar_source(HatSessionLocal),
+        token_source=fyers_token,  # read on every connect, so a re-login reaches the next socket
+        validate_token=session_token_valid,
+    )
     feed.install_auth_hooks(get_fyers_auth())
     return feed
 

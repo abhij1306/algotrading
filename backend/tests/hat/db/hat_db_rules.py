@@ -17,8 +17,8 @@ from sqlalchemy import Connection, Engine, delete, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
+from app.hat.governance import Mode
 from app.hat.ids import uuid7
-from app.hat.risk.modes import Mode
 
 SEVEN_DAYS = timedelta(days=7)
 

@@ -8,7 +8,9 @@ picked up by `validate_token`, and `reset_fyers_session` drops the process-wide 
 use reloads it.
 
 This module and `fyers_auth.py` / `fyers_tokens.py` are the only HAT code that touches Fyers
-credentials or the token file; every other module asks the session for a ready SDK model.
+credentials or the token file; every other module asks the session for a ready SDK model, or
+takes one of the adapters at the end: the live feed's token source and token check
+(`fyers_token`, `session_token_valid`, handed to it by `app/main.py`).
 Logs name the token's expiry and the file, never the token.
 """
 
@@ -25,7 +27,14 @@ from typing import Any
 from ..clock import SYSTEM_CLOCK, Clock
 from .fyers_tokens import TokenStore, TokenStoreError, token_store
 
-__all__ = ["FyersSession", "get_fyers_session", "reset_fyers_session", "sdk_model"]
+__all__ = [
+    "FyersSession",
+    "fyers_token",
+    "get_fyers_session",
+    "reset_fyers_session",
+    "sdk_model",
+    "session_token_valid",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -304,3 +313,23 @@ def reset_fyers_session() -> None:
     with _session_lock:
         _session = None
         _generation += 1
+
+
+def fyers_token() -> str | None:
+    """The current "client_id:access_token" from HAT's Fyers session, or None if logged out.
+
+    Read on every connect, so a re-login reaches the next socket.
+    """
+    session = get_fyers_session()
+    if session.fyers is None:  # also drops a token past its expiry
+        return None
+    client_id = session.client_id
+    access_token = session.access_token
+    if not client_id or not access_token:
+        return None
+    return f"{client_id}:{access_token}"
+
+
+def session_token_valid() -> bool:
+    """Whether Fyers accepts the session's token (a network call: never on the event loop)."""
+    return bool(get_fyers_session().validate_token())

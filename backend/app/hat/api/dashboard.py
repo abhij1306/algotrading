@@ -33,17 +33,15 @@ from ...database import get_db
 from ..engine.confidence import stored_basis
 from ..models import (
     HatAllocationDaily,
-    HatBrokerAccount,
-    HatBrokerSession,
     HatEvent,
     HatJobRun,
-    HatRegimeState,
     HatSignal,
 )
-from ..models.strategy import ACCOUNT_ACTIVE
 from ..read import bots as read_bots
 from ..read import kill as read_kill
 from ..read import positions as read_positions
+from ..read.regime import latest_regimes
+from ..read.sessions import broker_sessions
 from ..read.watchlist import latest_watchlists
 from ..risk import kill
 from ..time import as_utc, day_bounds, trade_date_of, utc_now
@@ -255,19 +253,9 @@ def _bots(session: Session, now: datetime, rows: list[kill.KillRow] | None = Non
 
 def _sessions(session: Session, day: date) -> list[BrokerSessionView]:
     """Today's login state of every active broker account (`missing` when none is recorded)."""
-    rows = session.execute(
-        select(HatBrokerAccount.broker, HatBrokerAccount.account_ref, HatBrokerSession.status)
-        .outerjoin(
-            HatBrokerSession,
-            (HatBrokerSession.broker_account_id == HatBrokerAccount.id)
-            & (HatBrokerSession.trade_date == day),
-        )
-        .where(HatBrokerAccount.status == ACCOUNT_ACTIVE)
-        .order_by(HatBrokerAccount.id)
-    )
     return [
-        BrokerSessionView(account=f"{broker} {ref}", status=status or "missing")
-        for broker, ref, status in rows
+        BrokerSessionView(account=row.label, status=row.status)
+        for row in broker_sessions(session, day)
     ]
 
 
@@ -289,10 +277,10 @@ def _kill_switches(rows: list[kill.KillRow]) -> list[KillSwitchView]:
 
 
 def _regimes(session: Session, limit: int) -> list[RegimeView]:
-    rows = session.scalars(
-        select(HatRegimeState).order_by(HatRegimeState.trade_date.desc()).limit(limit)
-    )
-    return [RegimeView(trade_date=r.trade_date, state=r.state, confirmed=r.confirmed) for r in rows]
+    return [
+        RegimeView(trade_date=r.trade_date, state=r.state, confirmed=r.confirmed)
+        for r in latest_regimes(session, limit)
+    ]
 
 
 def _jobs(session: Session, day: date) -> list[JobRunView]:

@@ -7,7 +7,7 @@ from typing import Any
 
 from hypothesis import strategies as st
 
-from app.hat.risk.modes import Mode
+from app.hat.governance import Mode
 
 NUM = st.floats(0.5, 90, allow_nan=False, allow_infinity=False)
 POS = st.sampled_from([0.5, 1.0, 2.5, 4.0, 10.0, 30.0, 50.0])

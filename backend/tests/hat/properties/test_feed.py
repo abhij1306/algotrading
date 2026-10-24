@@ -320,7 +320,7 @@ def test_token_source(client_id: str | None, access_token: str | None, has_model
     from types import SimpleNamespace
     from unittest.mock import patch
 
-    from app.hat.data.provider.fyers_websocket import fyers_token
+    from app.hat.execution.fyers_session import fyers_token
 
     session = SimpleNamespace(
         fyers=object() if has_model else None, client_id=client_id, access_token=access_token
@@ -383,7 +383,12 @@ def test_calendar_closed(
         else feed_module.calendar_source(lambda: nullcontext(object()), ttl_s=0.0)
     )
     with patch.object(feed_module, "session_calendar", load):
-        feed = feed_module.LiveFeed(calendar_source=source, clock=clock)
+        feed = feed_module.LiveFeed(
+            calendar_source=source,
+            clock=clock,
+            token_source=lambda: None,
+            validate_token=lambda: False,
+        )
         allowed = feed.connection_allowed()
     if calendar == "known":
         window = 9 * 3600 <= second <= 15 * 3600 + 1800

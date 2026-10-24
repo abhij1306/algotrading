@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
+from ..governance import Mode
 from ..models import (
     HatBot,
     HatFill,
@@ -31,7 +32,6 @@ from ..models import (
     HatTradeResult,
 )
 from ..risk import bots
-from ..risk.modes import Mode
 from ..risk.policy import effective_version
 from ..risk.policy_service import load_versions
 from ..time import trade_date_of

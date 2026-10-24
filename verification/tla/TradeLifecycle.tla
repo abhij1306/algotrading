@@ -19,8 +19,7 @@
 (*   an entry is Watchlisted to Open or Rejected in one commit, so the     *)
 (*   states Triggered, AwaitingApproval and EntryPlaced are steps inside   *)
 (*   that commit, not states a reader can observe (confirm and auto are    *)
-(*   PR 15); BrokenMode names a deliberately broken variant ("none" is     *)
-(*   the real rule).                                                       *)
+(*   PR 15).                                                               *)
 (* Assumptions: each action is one database transaction; the exit rules,   *)
 (*   the stop and the session end are arbitrary environment inputs; the    *)
 (*   lock is released when the transaction ends; the bot's cap is a count  *)
@@ -32,11 +31,8 @@
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
-CONSTANTS NTrades, Cap, MaxPartials, BrokenMode
+CONSTANTS NTrades, Cap, MaxPartials
 
-ASSUME BrokenMode \in {"none", "no_lock", "state_without_event", "skip_exit_pending",
-                       "virtual_skips_exit_pending", "reopen", "result_late",
-                       "exits_use_live", "exit_stalls"}
 
 Trades == 1..NTrades
 States == {"Watchlisted", "Triggered", "AwaitingApproval", "EntryPlaced", "Open",
@@ -117,12 +113,12 @@ Move(t, steps, to) ==
     /\ log' = [log EXCEPT ![t] = @ \o steps]
 
 \* code: backend/app/hat/engine/botlock.py:lock_bot  (take the bot's advisory lock, then read the
-\* snapshot the caps use; the broken variant "no_lock" reads without the lock)
+\* snapshot the caps use)
 Evaluate(t) ==
     /\ st[t] = "Watchlisted"
     /\ phase[t] = "idle"
-    /\ BrokenMode = "no_lock" \/ lock = 0
-    /\ lock' = IF BrokenMode = "no_lock" THEN lock ELSE t
+    /\ lock = 0
+    /\ lock' = t
     /\ snap' = [snap EXCEPT ![t] = Cardinality({u \in Trades : Held_(u)})]
     /\ phase' = [phase EXCEPT ![t] = "decided"]
     /\ \E v \in BOOLEAN : virt' = [virt EXCEPT ![t] = v]
@@ -138,21 +134,17 @@ Commit(t) ==
        ELSE /\ Move(t, <<"signal.triggered", "signal.rejected">>, "Rejected")
             /\ UNCHANGED pinned
     /\ phase' = [phase EXCEPT ![t] = "idle"]
-    /\ lock' = IF BrokenMode = "no_lock" THEN lock ELSE 0
+    /\ lock' = 0
     /\ UNCHANGED <<virt, snap, exitDue, partials, result, liveVer, rulesRead>>
 
 \* code: backend/app/hat/engine/shadow.py:expire_watchlist  (the session ends, the `watchlist.expire`
 \* job at 15:30. A trade that never triggered has no signal and so no hat_event: its record is the
 \* hat_watchlist_entry row, and this step is that row's status change, which the code writes
-\* through lifecycle.next_state; no `watchlist.expired` event row exists. The broken variant
-\* "state_without_event" changes the state without the step)
+\* through lifecycle.next_state; no `watchlist.expired` event row exists)
 Expire(t) ==
     /\ st[t] = "Watchlisted"
     /\ phase[t] = "idle"
-    /\ IF BrokenMode = "state_without_event"
-       THEN /\ st' = [st EXCEPT ![t] = "Expired"]
-            /\ UNCHANGED log
-       ELSE Move(t, <<"watchlist.expired">>, "Expired")
+    /\ Move(t, <<"watchlist.expired">>, "Expired")
     /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, result, pinned, liveVer,
                    rulesRead>>
 
@@ -172,51 +164,26 @@ PartialExit(t) ==
     /\ partials[t] < MaxPartials
     /\ Move(t, <<"exit.partial">>, "PartiallyExited")
     /\ partials' = [partials EXCEPT ![t] = @ + 1]
-    /\ rulesRead' = [rulesRead EXCEPT ![t] = IF BrokenMode = "exits_use_live"
-                                             THEN liveVer ELSE pinned[t]]
+    /\ rulesRead' = [rulesRead EXCEPT ![t] = pinned[t]]
     /\ UNCHANGED <<virt, phase, snap, lock, exitDue, result, pinned, liveVer>>
 
 \* code: backend/app/hat/engine/shadow.py:evaluate_position  (the full exit order is placed; a
-\* virtual trade is placed the same way, the broken variants skip ExitPending)
+\* virtual trade is placed the same way)
 PlaceExit(t) ==
     /\ st[t] \in Held
     /\ exitDue[t]
-    /\ IF BrokenMode = "skip_exit_pending" \/ (BrokenMode = "virtual_skips_exit_pending" /\ virt[t])
-       THEN /\ Move(t, <<"position.closed">>, "Closed")
-            /\ result' = [result EXCEPT ![t] = TRUE]
-       ELSE /\ Move(t, <<"order.placed.exit">>, "ExitPending")
-            /\ UNCHANGED result
-    /\ rulesRead' = [rulesRead EXCEPT ![t] = IF BrokenMode = "exits_use_live"
-                                             THEN liveVer ELSE pinned[t]]
+    /\ Move(t, <<"order.placed.exit">>, "ExitPending")
+    /\ UNCHANGED result
+    /\ rulesRead' = [rulesRead EXCEPT ![t] = pinned[t]]
     /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, pinned, liveVer>>
 
 \* code: backend/app/hat/engine/positions.py:record_sale  (the exit fills: the position closes and
 \* its one trade result is written in the same transaction)
 FillExit(t) ==
     /\ st[t] = "ExitPending"
-    /\ BrokenMode # "exit_stalls"
     /\ Move(t, <<"position.closed">>, "Closed")
-    /\ result' = [result EXCEPT ![t] = BrokenMode # "result_late"]
-    /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, pinned, liveVer, rulesRead>>
-
-\* code: backend/app/hat/engine/positions.py:write_result  (broken variant "result_late" only: the
-\* result is written after the close, in a later transaction)
-WriteResultLate(t) ==
-    /\ BrokenMode = "result_late"
-    /\ st[t] = "Closed"
-    /\ ~result[t]
     /\ result' = [result EXCEPT ![t] = TRUE]
-    /\ UNCHANGED <<st, log, virt, phase, snap, lock, exitDue, partials, pinned, liveVer,
-                   rulesRead>>
-
-\* code: backend/app/hat/engine/lifecycle.py:next_state  (broken variant "reopen" only: a closed
-\* trade takes a step the table does not allow)
-Reopen(t) ==
-    /\ BrokenMode = "reopen"
-    /\ st[t] = "Closed"
-    /\ Move(t, <<"position.opened">>, "Open")
-    /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, result, pinned, liveVer,
-                   rulesRead>>
+    /\ UNCHANGED <<virt, phase, snap, lock, exitDue, partials, pinned, liveVer, rulesRead>>
 
 \* code: backend/app/hat/engine/strategy/versions.py:publish_version  (the bot moves to version 2)
 Promote ==
@@ -235,15 +202,13 @@ Next ==
           \/ PartialExit(t)
           \/ PlaceExit(t)
           \/ FillExit(t)
-          \/ WriteResultLate(t)
-          \/ Reopen(t)
 
 Spec ==
     /\ Init
     /\ [][Next]_vars
     /\ \A t \in Trades :
           /\ WF_vars(Evaluate(t)) /\ WF_vars(Commit(t)) /\ WF_vars(Expire(t))
-          /\ WF_vars(PlaceExit(t)) /\ WF_vars(FillExit(t)) /\ WF_vars(WriteResultLate(t))
+          /\ WF_vars(PlaceExit(t)) /\ WF_vars(FillExit(t))
 
 TypeOK ==
     /\ st \in [Trades -> States]

@@ -37,9 +37,10 @@ from sqlalchemy.orm import Session
 
 from ..engine.portfolio import lifecycle
 from ..errors import HatError
+from ..governance import MODE_VALUES, Mode
 from ..models import HatBot, HatBrokerAccount, HatModeChange, HatRiskPolicyVersion
 from ..models.strategy import ACCOUNT_ACTIVE
-from ..risk.modes import MODE_VALUES, Mode, ModeChange, queued_mode_at
+from ..risk.modes import ModeChange, queued_mode_at
 from ..risk.policy import PolicyError, PolicyVersion, effective_version, parse_policy
 from ..risk.sessions import SessionCalendar
 from ..time import as_utc, trade_date_of

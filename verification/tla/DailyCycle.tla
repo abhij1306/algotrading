@@ -15,8 +15,7 @@
 (*   regime-gate refresh, 6 15:20 exits.close, 7 15:25 gtt.swap, 8 15:30   *)
 (*   trade.end_session, 9 15:40 reports, 10 18:00 the nightly chain);      *)
 (*   MaxEntries = 2 entry orders in the day; one open position held from   *)
-(*   an earlier day; BrokenMode names a deliberately broken variant        *)
-(*   ("none" is the real design).                                          *)
+(*   an earlier day.                                                       *)
 (* Assumptions: each job run, entry and environment change is one atomic   *)
 (*   step that reads the clock once; the clock only moves forward; the     *)
 (*   scheduler runs from before 08:30, so a job's first start is at its    *)
@@ -38,11 +37,8 @@
 (***************************************************************************)
 EXTENDS Integers, FiniteSets, Sequences
 
-CONSTANTS MaxEntries, BrokenMode
+CONSTANTS MaxEntries
 
-ASSUME BrokenMode \in {"none", "gapscan_before_preopen", "trigger_after_1520",
-                       "no_gate_refresh", "no_session_check", "swap_before_exits",
-                       "allocate_ignores_regime", "allocate_resizes"}
 ASSUME MaxEntries \in Nat \ {0}
 
 \* The intraday jobs in the order HAT-OPS-023 states; "gate" is the 09:20 regime-gate refresh.
@@ -58,10 +54,10 @@ At(j) ==
     CASE j = "login" -> 1
       [] j = "prepare" -> 2
       [] j = "preopen" -> 3
-      [] j = "gapscan" -> IF BrokenMode = "gapscan_before_preopen" THEN 3 ELSE 4
+      [] j = "gapscan" -> 4
       [] j = "gate" -> 5
       [] j = "exits" -> 6
-      [] j = "swap" -> IF BrokenMode = "swap_before_exits" THEN 6 ELSE 7
+      [] j = "swap" -> 7
       [] j = "endsession" -> 8
       [] j = "reports" -> 9
 
@@ -75,7 +71,7 @@ Pos(j) == CHOOSE i \in 1..Len(Chain) : Chain[i] = j
 
 \* The first slot of the trigger window (the 09:20 bar is final) and its end (15:20).
 TriggerFrom == 5
-TriggerUntil == IF BrokenMode = "trigger_after_1520" THEN 7 ELSE 6
+TriggerUntil == 6
 
 VARIABLES
     t,               \* the clock slot (see Bounds)
@@ -146,8 +142,8 @@ RunIntraday(j) ==
 Entry ==
     /\ entries < MaxEntries
     /\ TriggerFrom <= t /\ t < TriggerUntil
-    /\ BrokenMode = "no_gate_refresh" \/ st["gate"] = "succeeded"
-    /\ BrokenMode = "no_session_check" \/ loggedIn
+    /\ st["gate"] = "succeeded"
+    /\ loggedIn
     /\ entries' = entries + 1
     /\ badEntry' = (badEntry \/ t < 5 \/ t >= 6 \/ st["gate"] # "succeeded" \/ ~loggedIn)
     /\ UNCHANGED <<t, ran, st, loggedIn, outOfOrder, exitsAfterSwap, posQty, posStop, weight>>
@@ -166,11 +162,11 @@ Regime ==
 Allocate ==
     /\ t = 10
     /\ st["allocate"] # "succeeded"
-    /\ BrokenMode = "allocate_ignores_regime" \/ st["regime"] = "succeeded"
+    /\ st["regime"] = "succeeded"
     /\ \E r \in {"succeeded", "failed"} :
           /\ st' = [st EXCEPT !["allocate"] = r]
           /\ weight' = (IF r = "succeeded" THEN "new" ELSE weight)
-          /\ posQty' = (IF r = "succeeded" /\ BrokenMode = "allocate_resizes" THEN 0 ELSE posQty)
+          /\ posQty' = posQty
     /\ UNCHANGED <<t, ran, loggedIn, entries, outOfOrder, exitsAfterSwap, badEntry, posStop>>
 
 Next ==

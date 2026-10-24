@@ -37,8 +37,7 @@ from ..risk.sessions import SessionCalendar
 from ..time import IST
 from .calendar import session_calendar
 from .provider.data_socket import SocketFactory, TokenSource
-from .provider.fyers_websocket import fyers_socket_factory, session_token_valid
-from .provider.fyers_websocket import fyers_token as provider_token
+from .provider.fyers_websocket import fyers_socket_factory
 from .provider.metrics import feed_metrics, log_exception_throttled
 from .provider.provider_session import (
     ProviderSession,
@@ -123,8 +122,8 @@ class LiveFeed:
         symbols: SymbolMaster = symbol_master,
         registry: SubscriptionRegistry | None = None,
         socket_factory: SocketFactory = fyers_socket_factory,
-        token_source: TokenSource = provider_token,
-        validate_token: Callable[[], bool] = session_token_valid,
+        token_source: TokenSource,
+        validate_token: Callable[[], bool],
         retry: RetryPolicy | None = None,
         spawn: Spawn = spawn_daemon_thread,
     ) -> None:

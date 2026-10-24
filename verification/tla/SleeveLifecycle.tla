@@ -16,9 +16,7 @@
 (*   or 50 trades (the real thresholds are proved by PBT lifecycle.        *)
 (*   shadow_days and lifecycle.probation_trigger; the model proves what    *)
 (*   follows from reaching them); MaxEvents = 8 lifecycle events (a full   *)
-(*   cycle research to retired and back is 6); 4 regime states;            *)
-(*   BrokenMode names a deliberately broken variant ("none" is the real    *)
-(*   rule).                                                                *)
+(*   cycle research to retired and back is 6); 4 regime states.            *)
 (* Assumptions: each action is one database transaction (the transition    *)
 (*   and its event commit together, HAT-SCH-062); the backtest and         *)
 (*   probation evidence, the health multiplier and the regime are          *)
@@ -30,12 +28,7 @@
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS ShadowNeeded, ProbNeeded, MaxEvents, BrokenMode
-
-ASSUME BrokenMode \in {"none", "regime_retires", "skip_shadow", "no_dsr_guard",
-                       "short_shadow", "early_retire", "retired_to_live",
-                       "promote_while_failing", "auto_promote", "no_event",
-                       "no_probation_move"}
+CONSTANTS ShadowNeeded, ProbNeeded, MaxEvents
 
 LStates == {"research", "backtested", "shadow", "live", "probation", "retired"}
 Regimes == {"bull_quiet", "bull_volatile", "correction", "bear"}
@@ -97,8 +90,8 @@ Move(to, by) ==
     /\ shadowDays' = IF to = "shadow" THEN 0 ELSE shadowDays
     /\ probAge' = IF to = "probation" THEN 0 ELSE probAge
     /\ dsrOk' = IF to = "research" THEN FALSE ELSE dsrOk
-    /\ events' = IF BrokenMode = "no_event" THEN events ELSE events + 1
-    /\ lastEvent' = IF BrokenMode = "no_event" THEN lastEvent ELSE <<state, to>>
+    /\ events' = events + 1
+    /\ lastEvent' = <<state, to>>
     /\ pre' = Snap
     /\ lastBy' = by
     /\ lastAct' = "Transition"
@@ -108,7 +101,7 @@ Move(to, by) ==
 \* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (guard: lifecycle.backtest_gate)
 ToBacktested ==
     /\ state = "research"
-    /\ dsrOk \/ BrokenMode = "no_dsr_guard"
+    /\ dsrOk
     /\ Move("backtested", "engine")
 
 \* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (no condition beyond the edge)
@@ -119,42 +112,28 @@ ToShadow ==
 \* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (guard: lifecycle.shadow_gate)
 ToLive ==
     /\ state = "shadow"
-    /\ shadowDays >= ShadowNeeded \/ BrokenMode = "short_shadow"
-    /\ Move("live", "engine")
-
-\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (broken variant "skip_shadow"
-\* only: the real code has no edge from backtested to live)
-SkipShadow ==
-    /\ BrokenMode = "skip_shadow"
-    /\ state = "backtested"
+    /\ shadowDays >= ShadowNeeded
     /\ Move("live", "engine")
 
 \* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (the owner's promotion; guard:
 \* lifecycle.still_failing is false)
 Promote ==
     /\ state = "probation"
-    /\ ~failing \/ BrokenMode = "promote_while_failing"
-    /\ Move("live", IF BrokenMode = "auto_promote" THEN "engine" ELSE "owner")
+    /\ ~failing
+    /\ Move("live", "owner")
 
 \* code: backend/app/hat/engine/portfolio/sleeve_service.py:advance_automatic  (guard:
 \* lifecycle.retire_gate)
 Retire ==
     /\ state = "probation"
     /\ failing
-    /\ probAge >= ProbNeeded \/ BrokenMode = "early_retire"
+    /\ probAge >= ProbNeeded
     /\ Move("retired", "engine")
 
 \* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (the only edge out of retired)
 Reenter ==
     /\ state = "retired"
     /\ Move("research", "engine")
-
-\* code: backend/app/hat/engine/portfolio/sleeve_service.py:transition  (broken variant
-\* "retired_to_live" only)
-RetiredToLive ==
-    /\ BrokenMode = "retired_to_live"
-    /\ state = "retired"
-    /\ Move("live", "engine")
 
 \* code: backend/app/hat/engine/portfolio/allocation_service.py:run_allocation  (advance_automatic moves a
 \* live sleeve whose health is 0 or whose expectancy trigger fired into probation, then the
@@ -163,7 +142,6 @@ Allocate ==
     /\ events < MaxEvents
     /\ LET moves == /\ state = "live"
                     /\ (healthZero \/ ciFail)
-                    /\ BrokenMode # "no_probation_move"
            new == IF moves THEN "probation" ELSE state
        IN /\ state' = new
           /\ visited' = IF moves THEN visited \cup {"probation"} ELSE visited
@@ -181,7 +159,7 @@ Allocate ==
 \* confirmed regime state; the lifecycle state is not an input of it)
 RegimeChange ==
     /\ \E g \in Regimes : g # regime /\ regime' = g
-    /\ state' = IF BrokenMode = "regime_retires" /\ state = "live" THEN "probation" ELSE state
+    /\ state' = state
     /\ pre' = Snap
     /\ lastAct' = "Regime"
     /\ allocFresh' = FALSE
@@ -238,8 +216,8 @@ SetFailing ==
             /\ UNCHANGED <<dsrOk, shadowDays, healthZero, ciFail, probAge>>)
 
 Next ==
-    \/ ToBacktested \/ ToShadow \/ ToLive \/ SkipShadow \/ Promote \/ Retire \/ Reenter
-    \/ RetiredToLive \/ Allocate \/ RegimeChange
+    \/ ToBacktested \/ ToShadow \/ ToLive \/ Promote \/ Retire \/ Reenter
+    \/ Allocate \/ RegimeChange
     \/ SetDsr \/ TickShadow \/ TickProbation \/ SetHealth \/ SetCi \/ SetFailing
 
 Spec == Init /\ [][Next]_vars

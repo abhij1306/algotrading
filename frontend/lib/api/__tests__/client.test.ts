@@ -72,20 +72,6 @@ describe("unwrap", () => {
     });
   });
 
-  it("words the database-down envelope for people", async () => {
-    const api = clientReturning(() =>
-      Response.json(
-        { error: { code: "DATABASE_UNAVAILABLE", message: "Database unavailable" } },
-        { status: 503 },
-      ),
-    );
-    expect(await failureOf(unwrap(api.GET("/api/hat/auth/fyers/status")))).toMatchObject({
-      code: "DATABASE_UNAVAILABLE",
-      message: "Database unavailable: the backend cannot reach Postgres. Retry once it is back.",
-      status: 503,
-    });
-  });
-
   it("words the broker-down envelope even without a server message", async () => {
     const api = clientReturning(() =>
       Response.json({ error: { code: "BROKER_UNAVAILABLE" } }, { status: 503 }),

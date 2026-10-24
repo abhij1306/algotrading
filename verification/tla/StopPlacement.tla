@@ -25,8 +25,7 @@
 (* Bounds: MaxQty = 2 entry fills (a partial fill, then the rest); MaxStop *)
 (*   = 3 stop levels (the stop rises at most twice); sessions repeat       *)
 (*   without bound through four phases (open, swap from 15:25, after the   *)
-(*   close, night); BrokenMode names a deliberately broken variant ("none" *)
-(*   is the real code).                                                    *)
+(*   close, night).                                                        *)
 (* Assumptions: each action is one database transaction plus at most one   *)
 (*   broker call, or one change of the environment; the database and the   *)
 (*   broker survive a crash, so a restart resumes from the stored state    *)
@@ -61,13 +60,7 @@
 (***************************************************************************)
 EXTENDS Naturals
 
-CONSTANTS MaxQty, MaxStop, BrokenMode
-
-ASSUME BrokenMode \in {"none", "act_before_stop", "no_protect", "place_above",
-                       "cancel_first", "verify_skips_missing", "reset_on_follow",
-                       "no_unfilled_alert", "never_settle", "lost_blocks_sale",
-                       "close_with_rest", "keep_rest", "no_close_step",
-                       "no_resting_market"}
+CONSTANTS MaxQty, MaxStop
 
 Phases == {"open", "swap", "after", "night"}
 InSession == {"open", "swap"}
@@ -82,7 +75,8 @@ VARIABLES
     gtt,            \* the GTT at the broker: [st: none | working | resting | seen | marketed |
                     \* gone, px]; resting = triggered, its limit sale working unfilled below the
                     \* limit, not yet seen by HAT; seen = seen and alerted, left at its limit
-                    \* (broken variant only); marketed = HAT had that sale made a market sale;
+                    \* (not reached: HAT makes it a market sale); marketed = HAT had that sale
+                    \* made a market sale;
                     \* gone = triggered, its sale ended unfilled, not yet seen by HAT
     phase,          \* open | swap (from 15:25) | after (the close) | night
     pc,             \* idle | protecting (a fill whose stop work has not run yet)
@@ -115,8 +109,8 @@ SaleWorks == {"resting", "seen", "marketed"}
 \* HAT's book shows a working stop (a GTT that triggered unseen still looks working to HAT, and
 \* so does one whose answer was lost).
 Booked == day.st = "working" \/ gtt.st # "none" \/ lostGtt
-\* The price a new stop is placed at (the broken variant places it above the current stop).
-NewPx == IF BrokenMode = "place_above" THEN cur + 1 ELSE cur
+\* The price a new stop is placed at: the current stop.
+NewPx == cur
 SetPx(p) == /\ lowered' = (lowered \/ p < lastPx)
             /\ lastPx' = p
 
@@ -156,14 +150,14 @@ Init ==
     /\ cancelAsked = FALSE
 
 \* A HAT action on the position other than its stop work: in the real code it waits for the
-\* stop work of a fill (broken variant "act_before_stop": it does not).
-MayAct == pc = "idle" \/ BrokenMode = "act_before_stop"
+\* stop work of a fill.
+MayAct == pc = "idle"
 NoteAct == acted' = (acted \/ pc = "protecting")
 
 \* code: backend/app/hat/execution/fills.py:FillSync._apply  (the broker fills part of the entry;
 \* the fill is recorded, then its stop work runs: the position is `protecting` until it has. The
 \* last share ends the entry order. A fill of a position already closed is refused and alerted
-\* (fill.refused), which only the broken variant "close_with_rest" can reach)
+\* (fill.refused); a position closes only once no entry order works, so the model never reaches it)
 EntryFill ==
     /\ phase \in InSession
     /\ rest
@@ -174,34 +168,32 @@ EntryFill ==
           THEN /\ alerted' = TRUE
                /\ UNCHANGED <<qty, pc>>
           ELSE /\ qty' = qty + 1
-               /\ pc' = IF BrokenMode = "no_protect" THEN pc ELSE "protecting"
+               /\ pc' = "protecting"
                /\ UNCHANGED alerted
     /\ UNCHANGED <<closed, cur, day, gtt, phase, acted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    lostGtt, saleRefused, exited, cancelAsked>>
 
 \* A sale that sells every share HAT holds (a stop fill, an exit or a flatten): the broker's
-\* shares drop by as many, the rest of the entry is asked to be cancelled (broken variant
-\* "keep_rest": it is not, the main code before PR 20), and the position closes only when no entry
-\* order still works (broken variant "close_with_rest": at once, the main code before PR 20).
+\* shares drop by as many, the rest of the entry is asked to be cancelled, and the position
+\* closes only when no entry order still works.
 \* code: backend/app/hat/engine/live_trades.py:apply_exit_fill, protect.py:StopDesk.cancel_entry
 SellAll ==
     /\ qty' = 0
     /\ bqty' = bqty - qty
     /\ exited' = TRUE
-    /\ cancelAsked' = (cancelAsked \/ BrokenMode # "keep_rest")
-    /\ closed' = (BrokenMode = "close_with_rest" \/ ~rest)
+    /\ cancelAsked' = TRUE
+    /\ closed' = ~rest
     /\ UNCHANGED rest
 
 \* code: backend/app/hat/execution/fills.py:FillSync.run step 7, live_trades.close_if_emptied
 \* (the broker ends the entry order: the cancel HAT asked for, or the DAY limit expiring at the
-\* close; an emptied position then closes; broken variant "no_close_step": the sync never closes
-\* it)
+\* close; an emptied position then closes)
 EntryEnds ==
     /\ rest
     /\ cancelAsked \/ phase \in {"after", "night"}
     /\ rest' = FALSE
-    /\ closed' = (closed \/ (exited /\ qty = 0 /\ BrokenMode # "no_close_step"))
+    /\ closed' = (closed \/ (exited /\ qty = 0))
     /\ UNCHANGED <<qty, cur, day, gtt, phase, pc, acted, alerted, lastPx, lowered,
                    cancelledEarly, swapTried, swapFailed, verifyDone, nightAlert, replaceTried,
                    lostGtt, saleRefused, bqty, exited, cancelAsked>>
@@ -261,9 +253,8 @@ RaiseStop ==
                    saleRefused>>
     /\ UNCHANGED entryVars
 
-\* The price a follow modifies a stop to (broken variant "reset_on_follow": back to the
-\* initial stop).
-FollowPx == IF BrokenMode = "reset_on_follow" THEN 1 ELSE cur
+\* The price a follow modifies a stop to: the current stop.
+FollowPx == cur
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.follow  (a working stop below the current
 \* stop is modified up to it, never down: `stop_plans.raise_only`; a failed modify leaves it and
@@ -322,13 +313,13 @@ SwapPlaceGtt ==
     /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.cancel  (the day stop is cancelled once
-\* the GTT is confirmed; broken variant "cancel_first": before)
+\* the GTT is confirmed)
 SwapCancelDay ==
     /\ phase = "swap"
     /\ MayAct
     /\ day.st = "working"
-    /\ swapTried \/ BrokenMode = "cancel_first"
-    /\ gtt.st # "none" \/ BrokenMode = "cancel_first"
+    /\ swapTried
+    /\ gtt.st # "none"
     /\ day' = None
     /\ cancelledEarly' = (cancelledEarly \/ gtt.st = "none")
     /\ NoteAct
@@ -412,7 +403,7 @@ SeeUnfilled ==
     /\ phase \in InSession
     /\ gtt.st = "gone"
     /\ gtt' = None
-    /\ alerted' = (alerted \/ BrokenMode # "no_unfilled_alert")
+    /\ alerted' = TRUE
     /\ pc' = IF Held THEN "protecting" ELSE pc
     /\ UNCHANGED <<qty, closed, cur, day, phase, acted, lastPx, lowered, cancelledEarly,
                    swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
@@ -432,13 +423,12 @@ GttTriggersResting ==
     /\ UNCHANGED entryVars
 
 \* code: backend/app/hat/execution/fills.py:FillSync._gtt_resting  (the sync sees the untagged
-\* sale resting below its limit: alert once, then have it made a market sale; broken variant
-\* "no_resting_market": it is left at its limit, the main code before PR 27)
+\* sale resting below its limit: alert once, then have it made a market sale)
 SeeResting ==
     /\ phase \in InSession
     /\ gtt.st = "resting"
     /\ alerted' = TRUE
-    /\ gtt' = [gtt EXCEPT !.st = IF BrokenMode = "no_resting_market" THEN "seen" ELSE "marketed"]
+    /\ gtt' = [gtt EXCEPT !.st = "marketed"]
     /\ UNCHANGED <<qty, closed, cur, day, phase, pc, acted, lastPx, lowered, cancelledEarly,
                    swapTried, swapFailed, verifyDone, nightAlert, replaceTried, lostGtt,
                    saleRefused>>
@@ -474,11 +464,9 @@ CancelAfterSale ==
 
 \* code: backend/app/hat/execution/protect.py:StopDesk._settle_gtts  (a GTT whose answer was lost is
 \* looked up in the broker's GTT book: there, it is adopted; absent, it never landed: the row
-\* ends and a held position is protected again; broken variant "never_settle": it is never
-\* looked up, the main code before PR 18)
+\* ends and a held position is protected again)
 Settle ==
     /\ lostGtt
-    /\ BrokenMode # "never_settle"
     /\ lostGtt' = FALSE
     /\ pc' = IF gtt.st \notin {"working"} \cup SaleWorks /\ Held THEN "protecting" ELSE pc
     /\ UNCHANGED <<qty, closed, cur, day, gtt, phase, acted, alerted, lastPx, lowered,
@@ -488,21 +476,17 @@ Settle ==
 
 \* code: backend/app/hat/execution/manage.py:TradeManager._sell_locked  (an exit sale in the
 \* session: make_room cancels the resting stops HAT knows and skips one whose answer is still
-\* unknown, then the sale sells the position; broken variant "lost_blocks_sale": such a stop
-\* holds the sale back, the main code before PR 18)
+\* unknown, then the sale sells the position)
 Sell ==
     /\ phase \in InSession
     /\ MayAct
     /\ Held
     /\ gtt.st \notin SaleWorks
     /\ NoteAct
-    /\ IF lostGtt /\ BrokenMode = "lost_blocks_sale"
-          THEN /\ saleRefused' = TRUE
-               /\ UNCHANGED <<qty, closed, day, gtt, entryVars>>
-          ELSE /\ SellAll
-               /\ day' = None
-               /\ gtt' = IF lostGtt THEN gtt ELSE None
-               /\ UNCHANGED saleRefused
+    /\ SellAll
+    /\ day' = None
+    /\ gtt' = IF lostGtt THEN gtt ELSE None
+    /\ UNCHANGED saleRefused
     /\ UNCHANGED <<cur, phase, pc, alerted, lastPx, lowered, cancelledEarly, swapTried,
                    swapFailed, verifyDone, nightAlert, replaceTried, lostGtt>>
 
@@ -527,8 +511,6 @@ Verify ==
                  /\ gtt' = [gtt EXCEPT !.px = cur]
                  /\ SetPx(cur)
                  /\ UNCHANGED <<alerted, nightAlert, replaceTried>>
-            [] BrokenMode = "verify_skips_missing" ->
-                 UNCHANGED <<gtt, alerted, nightAlert, replaceTried, lastPx, lowered>>
             [] OTHER ->
                  /\ nightAlert' = TRUE
                  /\ replaceTried' = TRUE
