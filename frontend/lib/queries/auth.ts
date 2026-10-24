@@ -101,7 +101,9 @@ export function useBrokerDisconnect(broker: Broker) {
     mutationFn: async () => {
       await unwrap(postDisconnect(broker));
     },
-    onSuccess: () => {
+    // A status poll still in flight would land after this and show the broker connected again.
+    onSuccess: async () => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.auth.status(broker) });
       queryClient.setQueryData<BrokerStatus>(queryKeys.auth.status(broker), (old) => ({
         kind: "disconnected",
         active: old !== undefined && old.kind !== "offline" && old.active,
