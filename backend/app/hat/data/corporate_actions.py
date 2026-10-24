@@ -31,7 +31,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from fractions import Fraction
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
@@ -55,6 +55,20 @@ TYPE_DIVIDEND = "dividend"
 TYPE_NOTICE = "notice"  # any other action the MCP gives factor 1: no price changes
 PRICE_NEUTRAL_TYPES = (TYPE_DIVIDEND, TYPE_NOTICE)
 ACTION_TYPES = (TYPE_SPLIT, TYPE_BONUS, TYPE_OTHER, *PRICE_NEUTRAL_TYPES)
+
+_REFERENCE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hat_reference_data'))"
+
+
+def lock_reference_data(session: Session) -> None:
+    """Hold the reference-data lock until the transaction ends (audit M4). The writers of the
+    actions, the lineage and the symbol history (`build_lineage`, `override_lineage`,
+    `correct_action`, `add_action`, `ca_import.apply`, `repair_symbol_history`) take it, so an
+    owner's correction never lands between a nightly build's read and its write. A no-op on
+    SQLite, which runs one writer at a time."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text(_REFERENCE_LOCK_SQL))
+
+
 EVENT_CORRECTED = "corporate_action.corrected"  # the owner's correction (`correct_action`)
 STORED_PLACES = 12  # a factor such as 2/3 is stored rounded to 12 places
 
@@ -440,6 +454,7 @@ def correct_action(
     The adjusted view reads the change at the next features run (its digest covers the
     factors)."""
     replacement = check_correction(correction)
+    lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == correction.isin))
     if instrument is None:
         raise ActionCorrectionError("instrument_not_found")

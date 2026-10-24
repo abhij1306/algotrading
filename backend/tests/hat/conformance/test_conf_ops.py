@@ -95,7 +95,10 @@ ADMIN_IMPORTS = {
     "app.hat.data.calendar",
     "app.hat.data.ca_corrections",
     "app.hat.data.corporate_actions",
+    "app.hat.data.instruments",  # the symbol history repair (DB6)
     "app.hat.data.reference",
+    "app.hat.data.renames",
+    "app.hat.data.store",
     "app.hat.engine.portfolio",
     "app.hat.engine.owner",
     "app.hat.engine.portfolio.common",

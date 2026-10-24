@@ -69,7 +69,7 @@ from ..errors import HatConfigError, HatError
 from ..events import record
 from ..models import HatCorporateAction, HatInstrument, HatIsinLineage, HatLineageOverride
 from .calendar import recorded_history, session_calendar
-from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_DIVIDEND, TYPE_SPLIT
+from .corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_DIVIDEND, TYPE_SPLIT, lock_reference_data
 from .store import DATASET_BARS, ActionFactor, Adjustment, DataStore, DividendCash
 
 __all__ = [
@@ -792,16 +792,17 @@ def build_lineage(
 
     No Postgres transaction sits idle across the long work (a role's
     `idle_in_transaction_session_timeout` would end it): the DuckDB scan runs before the
-    database is read, and the read transaction is rolled back before the decisions are made, so
-    the session must carry no pending change. The writes then run in one transaction."""
+    database is read, and the read transaction is rolled back before the candidates are found,
+    so the session must carry no pending change. The decisions and the writes then run in one
+    transaction under the reference-data lock (audit M4), which reads the actions and the
+    owner's overrides: a `lineage link`, `correct-action` or import that commits during the
+    build is waited for and decided on, never overwritten."""
     stored = store.days(DATASET_BARS)
     if not stored:
         raise LineageError("lineage_no_bars")
     spans = read_spans(store)
     closed, special = calendar_days(session)
     known = {str(i) for i in session.scalars(select(HatInstrument.id))}
-    actions = stored_actions(session)
-    overrides = stored_overrides(session)
     session.rollback()  # end the read transaction: only plain values are kept
     sessions = exchange_sessions(stored, closed, special)
     report = BuildReport()
@@ -811,6 +812,9 @@ def build_lineage(
             found.append(c)
         else:
             report.unknown += 1
+    lock_reference_data(session)
+    actions = stored_actions(session)
+    overrides = stored_overrides(session)
     by_instrument: dict[str, list[Action]] = defaultdict(list)
     for action in actions:
         by_instrument[action.instrument_id].append(action)
@@ -837,13 +841,15 @@ def override_lineage(
 ) -> dict[str, Any]:
     """Store the owner's `link` or `unlink` of a found succession (old ISIN -> new ISIN), apply
     it to the stored verdicts at once (`apply_overrides`) and journal `lineage.overridden`
-    (actor user, via cli), in the caller's transaction. `owner` is (chat id, user id, now).
+    (actor user, via cli), in the caller's transaction, under the reference-data lock.
+    `owner` is (chat id, user id, now).
     Refused, writing nothing: a bad verdict or note (`lineage_bad_override`), an ISIN with no
     instrument (`lineage_unknown_isin`), a pair no build found (`lineage_not_a_succession`) and
     a link that would fork a chain another owner link holds (`lineage_fork`). A rules link it
     displaces comes back at the next build once the owner's link is undone."""
     if verdict not in (LINK, UNLINK) or not note.strip() or len(note) > NOTE_MAX:
         raise LineageError("lineage_bad_override")
+    lock_reference_data(session)
     ids = {
         i.isin: i.id
         for i in session.scalars(

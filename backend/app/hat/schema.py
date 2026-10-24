@@ -140,6 +140,58 @@ BEGIN
 END $$
 """
 
+# A corporate-action factor is positive (audit L2); the text matches the model's CHECK.
+_FACTOR_CHECK = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'hat_corporate_action_factor_check'
+      AND conrelid = to_regclass('hat_corporate_action')
+  ) THEN
+    ALTER TABLE hat_corporate_action ADD CONSTRAINT hat_corporate_action_factor_check
+      CHECK (adjustment_factor > 0);
+  END IF;
+END $$
+"""
+
+# One instrument holds a symbol on any day (audit M3): no two rows of the symbol history with one
+# symbol overlap (a null `valid_to` is open). Checked at commit, as a writer closes the previous
+# holder's interval and adds the new one in either order. It needs `btree_gist`, and is added
+# only once no overlap is stored (`admin repair-symbol-history --apply` closes them), so a
+# startup never fails on it: `ensure_hat_schema` warns while it is missing.
+_SYMBOL_HISTORY_EXCLUDE = """
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'hat_symbol_history_no_overlap'
+      AND conrelid = to_regclass('hat_instrument_symbol_history')
+  ) AND NOT EXISTS (
+    SELECT 1 FROM hat_instrument_symbol_history a JOIN hat_instrument_symbol_history b
+      ON a.symbol = b.symbol AND a.ctid < b.ctid
+      AND daterange(a.valid_from, a.valid_to) && daterange(b.valid_from, b.valid_to)
+  ) THEN
+    BEGIN
+      CREATE EXTENSION IF NOT EXISTS btree_gist;
+    EXCEPTION WHEN insufficient_privilege OR undefined_file THEN
+      RETURN;
+    END;
+    ALTER TABLE hat_instrument_symbol_history ADD CONSTRAINT hat_symbol_history_no_overlap
+      EXCLUDE USING gist (symbol WITH =, daterange(valid_from, valid_to) WITH &&)
+      DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $$
+"""
+
+_SYMBOL_HISTORY_GUARDED = """
+SELECT EXISTS (
+  SELECT 1 FROM pg_constraint
+  WHERE conname = 'hat_symbol_history_no_overlap'
+    AND conrelid = to_regclass('hat_instrument_symbol_history')
+)
+"""
+
 # A signal's confidence label and its basis are fixed when it is created (D132, HAT-EXEC-015).
 _SIGNAL_CONFIDENCE_FN = """
 CREATE OR REPLACE FUNCTION hat_signal_confidence_immutable() RETURNS trigger AS $$
@@ -220,6 +272,8 @@ CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
     _SIGNAL_STATE_CHECK,
     _POSITION_STATE_CHECK,
     _SIGNAL_CONFIDENCE_CHECK,
+    _FACTOR_CHECK,
+    _SYMBOL_HISTORY_EXCLUDE,
     _SIGNAL_CONFIDENCE_FN,
     """
 CREATE OR REPLACE TRIGGER hat_signal_confidence_guard
@@ -277,6 +331,11 @@ def _run_ddl(connection: Connection) -> None:
     connection.execute(text(_LOCK_SQL))
     for statement in PG_DDL:
         connection.execute(text(statement))
+    if not connection.execute(text(_SYMBOL_HISTORY_GUARDED)).scalar_one():
+        logger.warning(
+            "hat_symbol_history_no_overlap is missing: run `python -m app.hat.admin "
+            "repair-symbol-history --apply` (and install btree_gist), then restart"
+        )
     ensure_event_partitions(connection, utc_now().date())
 
 

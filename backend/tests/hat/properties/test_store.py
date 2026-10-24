@@ -164,6 +164,9 @@ def test_latest_rows_keeps_the_latest_run_per_day_in_read_order() -> None:
     assert latest_rows(frame)["close"].to_list() == [1.0, 3.0, 4.0, 5.0]
     unique = frame.filter(pl.col("ingest_run_id") == "r1")
     assert latest_rows(unique) is unique
+    # one day's partition read with two runs (`read_bars`, audit L5): per instrument
+    day = frame.filter(pl.col("date") == d1).drop("date")
+    assert latest_rows(day, ("instrument_id",))["close"].to_list() == [1.0, 4.0]
 
 
 def test_fingerprints_change_with_a_new_run_and_the_view_reads_by_glob() -> None:

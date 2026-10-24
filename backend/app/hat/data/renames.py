@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import sys
+import uuid
 from collections.abc import Sequence
+from datetime import date
 
 from sqlalchemy import select
 
@@ -47,6 +49,19 @@ def renames_from_bars(store: DataStore) -> list[SymbolRename]:
     finally:
         con.close()
     return [SymbolRename(old, new, day, isin) for isin, old, new, day in rows]
+
+
+def symbol_first_bars(store: DataStore) -> dict[tuple[uuid.UUID, str], date]:
+    """Each (instrument, symbol)'s first raw bar: who took a symbol when, for the symbol
+    history repair (`instruments.repair_symbol_history`)."""
+    con = store.connect()
+    try:
+        rows = con.execute(
+            "SELECT instrument_id, symbol, min(date) FROM bars_daily_raw GROUP BY 1, 2"
+        ).fetchall()
+    finally:
+        con.close()
+    return {(uuid.UUID(i), symbol): day for i, symbol, day in rows if i}
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database

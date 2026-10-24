@@ -13,7 +13,15 @@ from hat_mcp_support import (
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from app.hat.data.instruments import symbol_ids
+from app.hat.data.instruments import (
+    SKIP_NO_BARS,
+    SKIP_SAME_FIRST_BAR,
+    Interval,
+    claim,
+    overlapping_pairs,
+    repair_plan,
+    symbol_ids,
+)
 from app.hat.data.mcp_client import McpClient
 from app.hat.data.reference import (
     BAND_VALUES,
@@ -115,3 +123,71 @@ def test_symbol_ids_prefer_the_active_instrument() -> None:
         assert symbol_ids(order) == {"CANBK": live, "TCS": other}
     both = [(live, "X", True), (other, "X", True)]
     assert symbol_ids(both) == symbol_ids(reversed(both)) == {"X": other}
+
+
+def test_claim_closes_the_earlier_holder_and_stops_at_the_later_one() -> None:
+    """A new holder of a symbol from `start` closes an earlier holder still open there and ends
+    where a later holder begins; a holder that ended before, or starts the same day, is left
+    alone (audit M3: an old ISIN's interval stayed open from 2011). Harm: a date after the
+    change resolves the symbol to the old ISIN, and actions attach to the wrong security."""
+    start = date(2014, 9, 23)
+    others = [
+        (date(2011, 6, 22), None),  # open: closes at start
+        (date(2005, 1, 3), date(2010, 1, 4)),  # ended before: unchanged
+        (date(2012, 1, 2), date(2016, 1, 1)),  # runs past start: closes at start
+        (date(2020, 3, 2), None),  # a later holder: the new interval ends there
+        (start, None),  # same start: a conflict, left to the database
+    ]
+    ends, end = claim(start, None, others)
+    assert ends == [start, date(2010, 1, 4), start, None, None]
+    assert end == date(2020, 3, 2)
+    assert claim(start, date(2015, 1, 1), [(date(2020, 3, 2), None)]) == ([None], date(2015, 1, 1))
+
+
+def test_repair_plan_closes_overlaps_at_the_next_holders_first_bar() -> None:
+    """Each holder of an overlapping symbol keeps it until the next holder's first bar; a
+    start before its own first bar moves to it (JSWDULUX: the new ISIN carried the company's
+    2001 listing date); symbols without an overlap are untouched, and one whose holders' order
+    the bars cannot give is skipped."""
+    old, new, third, other = (uuid.UUID(int=i) for i in (1, 2, 3, 4))
+    rows = [
+        Interval(old, "SOUISPAT", date(2011, 6, 22), None),
+        Interval(new, "SOUISPAT", date(2014, 9, 23), None),
+        Interval(old, "AKZOINDIA", date(2011, 6, 22), date(2026, 4, 15)),
+        Interval(old, "JSWDULUX", date(2026, 4, 15), None),
+        Interval(new, "JSWDULUX", date(2001, 6, 28), None),
+        Interval(other, "ALONE", date(2011, 6, 22), None),
+        Interval(old, "TIE", date(2011, 6, 22), None),
+        Interval(third, "TIE", date(2012, 1, 2), None),
+        Interval(old, "NOBARS", date(2011, 6, 22), None),
+        Interval(third, "NOBARS", date(2012, 1, 2), None),
+    ]
+    first_bars = {
+        (old, "SOUISPAT"): date(2011, 6, 22),
+        (new, "SOUISPAT"): date(2014, 9, 23),
+        (old, "JSWDULUX"): date(2026, 4, 15),
+        (new, "JSWDULUX"): date(2026, 10, 22),
+        (old, "TIE"): date(2012, 1, 2),
+        (third, "TIE"): date(2012, 1, 2),
+        (old, "NOBARS"): date(2011, 6, 22),
+    }
+    assert overlapping_pairs(rows) == 4
+    plan = repair_plan(rows, first_bars)
+    assert plan.skipped == {"NOBARS": SKIP_NO_BARS, "TIE": SKIP_SAME_FIRST_BAR}
+    assert sorted(plan.changes) == sorted(
+        [
+            (rows[0], rows[0]._replace(valid_to=date(2014, 9, 23))),
+            (rows[3], rows[3]._replace(valid_to=date(2026, 10, 22))),
+            (rows[4], rows[4]._replace(valid_from=date(2026, 10, 22))),
+        ]
+    )
+    # an interval wholly before its holder's window is deleted
+    late = [
+        Interval(old, "K", date(2018, 4, 2), None),
+        Interval(new, "K", date(2011, 1, 3), date(2012, 1, 2)),
+        Interval(new, "K", date(2022, 6, 23), None),
+    ]
+    plan = repair_plan(late, {(old, "K"): date(2018, 4, 2), (new, "K"): date(2021, 8, 13)})
+    assert sorted(plan.changes, key=str) == sorted(
+        [(late[0], late[0]._replace(valid_to=date(2021, 8, 13))), (late[1], None)], key=str
+    )
