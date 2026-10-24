@@ -339,7 +339,7 @@ def market_factor(
     on, over the previous close) agrees with the gap as a cross-check would, so a pre-open
     discovery the market reverses (TATACOMM 2019-09-17: open 0.62, upper circuits to 0.83 in
     five sessions) is not stored; else (None, why it goes to review)."""
-    if gap <= 0 or gap >= 1:
+    if not 0 < gap.numerator < gap.denominator:  # 0 < gap < 1, exact
         return None, "no_drop"
     if checks:
         agreeing = [k for k, v in checks.items() if agrees(gap, v)]
