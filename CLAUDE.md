@@ -3,7 +3,23 @@
 Hire a Trader is a rules-based NSE swing-trading system: a FastAPI backend (`backend/app/hat/`
 holds the whole product), a small React shell (`frontend/`), a PostgreSQL database and a Telegram
 bot. Orders reach Fyers only from a HAT signal, through the risk authority. There is no manual
-trading. The repo holds nothing else: the old SmartTrader code is deleted.
+trading. The repo holds nothing else.
+
+**Current state.** Built and running on paper (shadow) against the live database `hat_live`; no
+bot trades real money until it passes the gates in `docs/runbook.md` (First deploy and releases).
+Open owner steps: `docs/runbook.md` (Pending owner DBA steps). Not built yet and owner-pending
+defaults: the last two sections of `docs/decisions.md`.
+
+**Where things are written down** (each fact in one place; link, don't restate):
+
+| Doc | Holds |
+| --- | --- |
+| `docs/architecture.md` | Module map, data flow, seams, storage, daily cycle, CI, startup, routes, environment |
+| `docs/invariants.md` | The trading, money-safety and data rules the code must keep |
+| `docs/decisions.md` | Owner decisions in force with their reasons; planned work; pending defaults |
+| `docs/runbook.md` | Operator procedures: run, deploy, admin CLI, data tools, alerts, backup |
+| `docs/agents/` | The orchestrator guide and the builder protocol |
+| `README.md` | The public pitch |
 
 ---
 
@@ -24,20 +40,20 @@ pnpm install
 pnpm dev                          # http://127.0.0.1:3000, proxies /api to the backend
 ```
 
-Startup sequence, routes and environment variables: `docs/architecture.md` (Startup and
-routes). Server won't start, database unreachable, Fyers disconnected: `docs/runbook.md` (Local
-development).
+Server exits at start: run it in a terminal for the traceback and check port 8000 is free.
+"Database unreachable": start PostgreSQL and check `DB_*`. Fyers disconnected: the token lasts
+until midnight IST; log in again from the app header. Other helpers in `scripts/`:
+`lock_ci_requirements.py`, `export_openapi.py` (for `pnpm gen:api`), and the operator's
+`hat_backup.py` and `hat_deploy_guard.py` (runbook).
 
 ---
 
 ## Docs and Repo Rules
 
-- **Code is the source of truth; docs are a guide, not something maintained one-to-one with the
-  code. Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to
-  date -- architecture, invariants, CLAUDE.md, decisions -- and they stay compact.** The canonical
-  docs: `docs/architecture.md` (module map, data flow, seams, startup, routes, environment),
-  `docs/invariants.md` (the money-safety and trading rules), `docs/decisions.md` (decisions in
-  force), `docs/runbook.md` (operator procedures).
+- **Code is the source of truth; docs are a guide, not a mirror of the code.** Keep only the
+  canonical docs above, current and compact; delete a plan or spec once implemented. Write what
+  is true now, not how it was built: no PR numbers, plan ids or history as instructions, and no
+  local machine paths, account ids or secrets.
 - **Implement and verify; don't build test ceremony.** Verify a change by running it for real:
   the affected job, CLI or route on real data (`HAT_DATA_ROOT`, the local database read-only);
   never a backtest as PR verification; put the evidence in the PR. Tests are
@@ -107,7 +123,7 @@ questions spanning many files, write one throwaway command/script that prints on
 instead of reading files one by one.
 
 ### CI
-The jobs: `docs/architecture.md` (Verification layout). Ruff, `vp check` and the tests stay at
+The jobs: `docs/architecture.md` (Verification and CI). Ruff, `vp check` and the tests stay at
 zero errors and zero warnings. A Python file newly mapped by a TLA model's `code:` comments goes
 into `tla.yml`'s paths. CI installs the hash-pinned `backend/requirements-ci.lock`; regenerate it
 with `python scripts/lock_ci_requirements.py` after changing `backend/requirements*.txt`

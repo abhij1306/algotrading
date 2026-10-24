@@ -2,15 +2,9 @@
 
 You build one PR, in your own git worktree and herdr tab, and take it to merge-ready. The
 orchestrator merges. Your brief gives the goal, scope and follow-ups. Read `CLAUDE.md`, the
-canonical docs it lists (`docs/architecture.md`, `docs/invariants.md`, `docs/decisions.md`), and
+canonical docs it lists (its docs rule applies to you), and
 `.claude/skills/trading-safety/SKILL.md` for anything touching orders, risk, positions, brokers or
 execution.
-
-## Docs rule
-
-Code is the source of truth; docs are a guide, not something maintained one-to-one with the code.
-Once a plan or spec is implemented, delete it. Only the canonical docs are kept up to date --
-architecture, invariants, CLAUDE.md, decisions -- and they stay compact.
 
 ## Owner rules
 

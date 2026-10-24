@@ -1,86 +1,107 @@
 # Invariants
 
-The money-safety and trading rules the code must keep. Code is the source of truth; if code and
-this file disagree, one of them is wrong and a check should say which. The mechanics for touching
-orders are in `.claude/skills/trading-safety/SKILL.md`.
+The rules the code must keep. If code and this file disagree, one is wrong. The mechanics for
+touching orders: `.claude/skills/trading-safety/SKILL.md`.
 
-## Six trading invariants (no configuration can change them)
+## Trading (no configuration can change them)
 
-1. A stop is never moved further from price (`current_stop` only rises: `positions.raise_stop`
-   refuses any other move, in the backtest too, and the Postgres trigger backs it in live; a
-   resting broker stop moves only where `execution/stop_plans.raise_only` allows, down only for a
-   split or bonus).
-2. No order adds to a losing position, and a bot never adds to an open position.
+1. A stop is never moved further from price: `current_stop` only rises (`positions.raise_stop`,
+   in the backtest too, backed by a Postgres trigger live); a resting broker stop moves down only
+   for a split or bonus (`execution/stop_plans.raise_only`).
+2. No order adds to a position: never to a loser, and a bot never adds to an open position.
 3. No entry without a stop price below the entry price.
-4. No entry when the day's data or the live feed is stale, or the instrument's own last price is
+4. No entry when the day's data or the live feed is stale, or the instrument's last price is
    unknown, 30 s old or outside the day's price band.
-5. No order outside the exchange session from `hat_trading_calendar` (09:15-15:30 IST); a date the
-   calendar does not hold is no trading day for any reader. A special session (a weekend one, or
-   one the recorded file names) has only the hours stored for it, never the default: without
-   them it is UNKNOWN, closed for orders.
+5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
+   lacks is no trading day; a special session has only its stored hours, else it is closed.
 6. `max_chase` always applies, even if a config deletes the criterion.
 
 ## Money safety
 
-- **One path to an order.** A signal is judged by `evaluate_signal`, recorded by `reserve_order`,
-  sent by `send_order`. No manual ticket, no second risk or sizing function, no override, bypass
-  or force switch. `size_position` is called from `decide` only.
-- **Shadow never reaches the broker.** Confirm and auto need: account active, adapter reports GTT
-  delivery, DDPI confirmed by the owner, policy weights confirmed. Otherwise the bot runs shadow.
-  A mode change takes effect at the next session open, never inside market hours.
-- **Orders are idempotent.** Every order has an `HT` tag (signal id + purpose + sequence), committed
-  as `pending` before the broker is called. An order of unknown outcome is looked up by tag before
-  any retry; an unknown entry is never re-sent. Fyers does not enforce tag uniqueness, so HAT does.
-- **Exact payloads and exact math.** `Decimal` for prices, notional, P&L and size; floats and
-  non-finite numbers are refused. Product is CNC; a finite positive price; the stored broker symbol.
-- **Risk never raises.** A missing or unreadable input is a REJECT with a typed reason; no fallback
-  to a hard-coded price. Size is `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`;
-  zero skips the trade.
+- **One path to an order.** `evaluate_signal` judges, `reserve_order` records, `send_order` sends.
+  No manual ticket, no second risk or sizing function, no override. `size_position` is called
+  from `decide` only.
+- **Shadow never reaches the broker.** Confirm and auto need an active account with GTT delivery,
+  DDPI confirmed by the owner and policy weights confirmed; otherwise the bot runs shadow. A mode
+  change takes effect at the next session open.
+- **Orders are idempotent.** Every order has an `HT` tag (signal id + purpose + sequence)
+  committed `pending` before the broker is called; an order of unknown outcome is looked up by tag
+  before any retry, and an unknown entry is never re-sent.
+- **Exact math.** `Decimal` for prices, notional, P&L and size; floats and non-finite numbers are
+  refused. Product CNC, a finite positive price, the stored broker symbol.
+- **Risk never raises.** A missing input is a REJECT with a typed reason. Size is
+  `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`; zero skips.
 - **Exits are never blocked** by a cap, kill switch, data failure, reconciliation state or mode.
-  Kill switches, pause and a failed quality gate stop new entries only (manage-only). A held
-  instrument that changes series (EQ to BE) keeps its exits under the new symbol.
+  Kill switches, pause and a failed gate stop new entries only (manage-only). A held instrument
+  that changes series keeps its exits under the new symbol.
 - **Fail closed on the broker.** A missing client, open circuit or failed read raises
-  `BrokerUnavailableError`, never an empty book. A write with unknown outcome is `unconfirmed`.
-  No entry on a trade date before that date's first reconciliation succeeded; a mismatch blocks
-  entries and never auto-closes or auto-adopts a position.
-- **Every real position has a resting broker stop** (intraday stop, then GTT overnight), re-verified
-  nightly; the GTT book is read at 08:40 and every few minutes by the fill sync, and a GTT the
-  broker dropped is ended and replaced at once (an unreadable book changes nothing); a lost broker answer never freezes a position and is settled against the broker's book.
-- **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). A drawdown or
-  manual kill re-arms by hand with a second confirmation; a health kill clears itself. A re-arm
-  restarts the peak: the scope is measured from its equity at the first point after the re-arm
-  (D232). Drawdown
-  equity is capital + realised P&L + open positions marked to market (the latest fresh trade in
-  the session, the official close at night); before its first trade of the session a holding is
-  marked at its previous official close, and a stale price (or no trade and no close) at the lower
-  of its last trade and its stop, never higher.
-- **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored only as hashes;
-  approval expires after 5 minutes; Take re-checks `max_chase`; unknown chats are ignored and logged.
-  Free text never produces an order; auto, `/arm` and `/flatten` need a second confirmation.
+  `BrokerUnavailableError`, never an empty book; a write of unknown outcome is `unconfirmed`. No
+  entry on a trade date before its first reconciliation succeeded; a mismatch blocks entries and
+  never auto-closes or adopts a position.
+- **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
+  nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
+  a lost broker answer is settled against the broker's book, never left frozen.
+- **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
+  manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
+  restarts the peak at the equity then. Drawdown equity is capital + realised P&L + open positions
+  marked to market (latest fresh trade, official close at night; before the session's first
+  trade the previous close; a stale price at the lower of last trade and stop).
+- **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored as hashes;
+  expiry 5 minutes; Take re-checks `max_chase`; unknown chats are ignored. Free text never makes
+  an order; auto, `/arm` and `/flatten` need a second confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
-  evidence gate; decreases apply next session; policy and strategy versions are immutable.
+  evidence gate; policy and strategy versions are immutable.
 - **One owner per resource.** One live socket, one session owner per broker account, one token
-  store, one fake broker, one risk authority. HAT code imports no legacy or manual-trading module.
-- **Nothing leaks.** Results carry fixed codes, never broker or database text; tokens and secrets
-  are never logged or returned; no secret value in the repo.
+  store, one fake broker, one risk authority, one HAT runtime per database.
+- **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
+  logged, returned or committed.
 - **Events.** Every state change and its event commit in one transaction; `hat_event` is
   append-only (trigger); trade state replays from events.
-- **Schema.** The database holds exactly the models' tables, columns, types, nullability,
-  constraints and indexes, plus `schema.PG_DDL`'s objects; HAT refuses to start on any
-  difference and prints the DDL. A change to an existing table ships as an idempotent `PG_DDL`
-  statement or as a runbook DDL step run before the deploy (`create_all` never alters a table).
-- **Data.** Scans never run on data that failed the gate; features use bars up to the scan date
-  only; raw bars are immutable; adjusted prices are raw times cumulative factors, each action
-  applied once per ISIN chain, and two ISINs share a history only through a `linked` lineage
-  row. A rule on an absolute rupee price (`min_price`, the NSE tick slab) reads the raw close of
-  its date, never an adjusted one, in the scan and the backtest alike; ratio and indicator rules
-  read adjusted bars. A dividend is in the signals' total-return series once per chain and never
-  in the price basis that fills, marks and orders read; a backtest, and a shadow sleeve's
-  equity, pays its cash once, on the ex-date, to the shares held into it, and a closed trade's
-  P&L and R include the dividends it was paid (its `dividends`), in every mode. A dividend without an
-  amount is never given a guessed one: it is alerted and listed until one is stored. Every write
-  of a corporate action appends its version in the same transaction (`hat_corporate_action_version`,
-  append-only); `hat_corporate_action` is the hindsight selection of those versions, and a version
-  available after a date never changes what a backtest reads on or before it. `bars_5m` is raw too: broker history is converted with the stored factors as of its fetch
-  day, and a day that does not fit the raw daily bar is ledgered (`bars_5m_rejects`), never
-  written.
+- **Schema.** The database holds exactly the models' tables, columns, types, constraints and
+  indexes plus `schema.PG_DDL`; HAT refuses to start on any difference and prints the DDL.
+  `create_all` never alters a table: a change ships as idempotent `PG_DDL` or a runbook DDL step.
+
+## Data
+
+- **Gate and point in time.** Scans never run on data that failed the quality gate; features use
+  bars up to the scan date only; raw bars (`bars_daily_raw`, `bars_5m`) are immutable. Broker
+  minute history is converted to raw with the factors as of its fetch day; a day that does not
+  fit the raw daily bar is ledgered (`bars_5m_rejects`), never written.
+- **Adjustment.** Adjusted prices are raw times cumulative factors, each action applied once per
+  ISIN chain; two ISINs share a history only through a `linked` lineage row. Price rules on
+  absolute rupees (`min_price`, the tick slab) read the raw close of their date; ratio and
+  indicator rules read adjusted bars. A bonus of preference shares or debentures is
+  price-neutral (a dividend when worth at least 1% of the previous close).
+- **Stored factors are bar-confirmed.** An imported split, bonus or rights factor is stored only
+  when the ex-date open over the previous close is within 20% of it and at least twice as close to
+  it as to 1; otherwise a review case (a research rights factor the gate finds ambiguous is
+  stored tagged `price_unconfirmed`). Rights adjust by TERP / cum price (1 at or above the cum
+  price). No load rewrites a stored key.
+- **Demergers** adjust the parent by the market gap (ex-date open / previous close). The CoA % and
+  the ratio priced at the resulting company's first close are cross-checks, never the factor (a
+  file import's ratio value is stored only when the gap confirms it through the price gate); a
+  ratio more than 10% (log) from the applied value is disputed and listed. Without an agreeing
+  cross-check the gap is stored only for a confirmed date, a drop of at least 10% and a close five
+  sessions on that holds it. The resulting company is never linked into the parent's lineage. The
+  NIFTY 500-neutralised gap is applied only with the owner's approval. A position held into a
+  demerger whose record date was public (`announced_on`) strictly before the last session before
+  the ex-date exits at that session's close (exit reason `demerger`), in backtest and live; a
+  real position is only alerted, never sold by HAT. Undated or late, it holds through.
+- **Dividends.** Every cash dividend counts, none guessed: one without an amount is alerted and
+  listed until one is stored. Signals read the total-return series (`bars_daily`); fills, marks,
+  ticks, bands, the rescale and orders read the price basis (`bars_daily_cap`). A closed trade's
+  P&L and R include the dividends its shares earned (ex-date in the holding, shares held at the
+  ex-date's open), in backtest, shadow and live alike; the nightly `ca.adjust` restates them from
+  the stored amounts.
+- **Versions and `known_on`.** Every write of a corporate action appends a version in the same
+  transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
+  hindsight projection. Each action records when its value became knowable (`known_on`; NULL when
+  unknown, never guessed). A backtest neither scans nor enters a name on a session where no
+  version was available or the available one differs from the series' (`factor_pending`); a
+  version available later never changes what a backtest reads before it.
+- **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
+  or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
+  InvITs and REITs get features but no rank.
+- **Owner corrections.** A stored factor, amount or `known_on` changes only through the owner's
+  `correct-action` / `correct-actions` (journalled, every version kept) or a lineage `link` /
+  `unlink`, which holds across rebuilds. No job applies a correction list.

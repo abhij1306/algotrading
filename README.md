@@ -136,9 +136,9 @@ list what needs review. First-deploy steps (risk policy, broker account, bots, u
 | Doc | What's in it |
 | --- | --- |
 | `docs/architecture.md` | Module map, data flow, daily schedule, startup and routes |
-| `docs/invariants.md` | The money-safety and trading rules the code keeps |
+| `docs/invariants.md` | The trading, money-safety and data rules the code keeps |
 | `docs/decisions.md` | The decisions in force |
-| `docs/runbook.md` | Operating it: start, login, first deploy, failures |
+| `docs/runbook.md` | Operating it: start, login, first deploy, data tools, alerts, backup |
 | `CLAUDE.md` | Development guide: checks, repo rules |
 
 ## Checks
