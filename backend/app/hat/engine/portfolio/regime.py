@@ -34,6 +34,8 @@ CONFIRM_DAYS = 3  # [A] HAT-PORT-030
 VIX_VOLATILE_PCT = Decimal(67)  # [A] HAT-PORT-032
 BREADTH_QUIET_PCT = Decimal(50)
 BREADTH_CORRECTION_PCT = Decimal(40)
+# The regime profile every registered strategy names today (`registry.Strategy.regime`).
+MOMENTUM = "momentum"
 # Momentum-sleeve multiplier per confirmed state: placeholders (HAT-PORT-033).
 DEFAULT_MULTIPLIERS: Mapping[str, Decimal] = {
     BULL_QUIET: Decimal("1.0"),
@@ -203,6 +205,19 @@ def multiplier_for(state: str, table: Mapping[str, Decimal] = DEFAULT_MULTIPLIER
         raise RegimeError("regime_unknown_state") from None
 
 
+def profile_table(
+    tables: Mapping[str, Mapping[str, Decimal]], profile: str | None
+) -> dict[str, Decimal]:
+    """The multiplier table of a strategy's regime `profile` among the model's `tables`. A
+    profile with no table, or None (an unregistered strategy), gets the most conservative of
+    them: each state's least multiplier, so it is never sized above any sleeve."""
+    if profile in tables:
+        return dict(tables[profile])
+    if not tables:
+        raise RegimeError("regime_no_table")
+    return {state: min(table[state] for table in tables.values()) for state in STATES}
+
+
 def rules_v1_config() -> dict[str, Any]:
     """The `hat_regime_model_version.config` of the rules model, version 1."""
     return {
@@ -213,5 +228,5 @@ def rules_v1_config() -> dict[str, Any]:
             "quiet_pct": str(BREADTH_QUIET_PCT),
             "correction_pct": str(BREADTH_CORRECTION_PCT),
         },
-        "multipliers": {"momentum": {s: str(m) for s, m in DEFAULT_MULTIPLIERS.items()}},
+        "multipliers": {MOMENTUM: {s: str(m) for s, m in DEFAULT_MULTIPLIERS.items()}},
     }

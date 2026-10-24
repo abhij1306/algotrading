@@ -232,6 +232,7 @@ def sale_gate(
     rejected: int,
     floor: Decimal | None,
     tags_left: int,
+    unsent: str | None,
 ) -> SaleGate:
     """Whether a sale of `qty` shares goes out, and how: the one place the sale rules are decided
     (HAT-OPS-032, HAT-EXEC-065, -066, -074, PR 48). `settled`: what settling the position's lost
@@ -239,7 +240,10 @@ def sale_gate(
     broker (a triggered GTT's sale is one); `open_now`: the session takes orders at the moment of
     sending; `rejected`: the purpose's sales the broker refused this session; `floor`: the day's
     lower circuit price, None when unknown; `tags_left`: the purpose's tags the signal has not
-    spent (none left: refused before any stop makes room for it, so the stop keeps resting).
+    spent (none left: refused before any stop makes room for it, so the stop keeps resting);
+    `unsent`: the code the broker refuses a write with now, unsent (`HatBroker.write_refusal`),
+    refused the same way, since the cancel that makes room would leave no stop under a sale
+    that cannot go.
 
     The market sale goes `MAX_SALE_REJECTIONS - rejected` times; refused that often, once more as
     a limit at `floor`. A budget spent before this sale was told then: HOLD."""
@@ -253,6 +257,8 @@ def sale_gate(
         return SaleGate(SaleStep.REFUSE, code=TAG_EXHAUSTED)
     if rejected > MAX_SALE_REJECTIONS or (rejected == MAX_SALE_REJECTIONS and floor is None):
         return SaleGate(SaleStep.HOLD)
+    if unsent is not None:
+        return SaleGate(SaleStep.REFUSE, code=unsent)
     return SaleGate(SaleStep.SEND, attempts=MAX_SALE_REJECTIONS - rejected, floor=floor)
 
 
@@ -621,6 +627,7 @@ class TradeManager:
             rejected=rejected,
             floor=floor,
             tags_left=MAX_SEQUENCE + 1 - spent,
+            unsent=self._broker.write_refusal() if open_now else None,
         )
 
     def _floor(self, session: Session, position: HatPosition, now: datetime) -> Decimal | None:

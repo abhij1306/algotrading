@@ -118,6 +118,10 @@ class OwnedBroker:
         """A local value, no broker call: not serialised, like `capabilities`."""
         return self._broker.day_budget_spent()
 
+    def write_refusal(self) -> str | None:
+        """A local value, no broker call: not serialised, so a sale is never held up by it."""
+        return self._broker.write_refusal()
+
     def __getattr__(self, name: str) -> object:
         attribute = getattr(self._broker, name)
         if not callable(attribute):

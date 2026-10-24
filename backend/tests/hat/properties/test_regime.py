@@ -208,3 +208,26 @@ def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None
                 index="NIFTY 500", rule="sma_fast_above_slow_both_rising", params=params
             )
             assert regime_gate.regime_allows_longs(regime, closes) is fast_slow(back)
+
+
+GENTLE = {
+    regime.BULL_QUIET: D("1.0"),
+    regime.BULL_VOLATILE: D("0.9"),
+    regime.CORRECTION: D("0.4"),
+    regime.BEAR: D("0.5"),
+}
+
+
+def test_profile_table() -> None:
+    """A strategy's profile gets its own row; one with no row, or an unregistered strategy, gets
+    each state's least multiplier over the stored rows, never above any sleeve's."""
+    tables = {regime.MOMENTUM: regime.DEFAULT_MULTIPLIERS, "gentle": GENTLE}
+    assert regime.profile_table(tables, "gentle") == GENTLE
+    assert regime.profile_table(tables, regime.MOMENTUM) == regime.DEFAULT_MULTIPLIERS
+    least = {**regime.DEFAULT_MULTIPLIERS, regime.CORRECTION: D("0.4")}
+    assert regime.profile_table(tables, "mean-reversion") == least
+    assert regime.profile_table(tables, None) == least
+    only = {regime.MOMENTUM: regime.DEFAULT_MULTIPLIERS}
+    assert regime.profile_table(only, None) == regime.DEFAULT_MULTIPLIERS
+    with pytest.raises(RegimeError, match="regime_no_table"):
+        regime.profile_table({}, regime.MOMENTUM)

@@ -39,7 +39,7 @@ from ..costs import (
 from ..data.store import DataStore, atomic_replace
 from ..engine.confidence import buckets
 from ..engine.portfolio.common import market_id_of
-from ..engine.portfolio.regime_service import stored_regime_table
+from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
 from ..engine.strategy.config import parse_config
 from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
 from ..risk.policy import effective_version
@@ -382,7 +382,9 @@ def backtest_bot(
         fills=fills,
         for_promotion=request.for_promotion,
         conventions=request.conventions,
-        regime_table=stored_regime_table(session, market_id_of(session)),
+        regime_table=stored_regime_table(
+            session, market_id_of(session), regime_profile(config.bot)
+        ),
     )
     data, snapshot = load_market(
         store,

@@ -1,6 +1,7 @@
 # Registration (engine/strategy/registry.py); the strategy config follows the --- line.
 sleeve: S5
 persona: Connors-style
+regime: mean-reversion
 ---
 # Source: L. Connors and C. Alvarez, "Short Term Trading Strategies That Work" (2008), the
 # 2-period RSI: buy a stock above its 200-day SMA when its RSI(2) closes below 10 (5 for fewer,

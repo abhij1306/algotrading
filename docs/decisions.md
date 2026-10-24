@@ -111,8 +111,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   (`caps.py`).
 - **Backtest max-chase and regime table (Q14).** A run reads `max_chase` from its pinned strategy
   version, while live reads the newest version holding it: a version's evidence stays its own.
-  The regime multipliers are the stored table live allocates with, read when the run starts and
-  recorded in its hashed conventions.
+  The regime multipliers are the stored table live allocates with, for the strategy's registered
+  `regime` profile, read when the run starts and recorded in its hashed conventions.
 - **Backtest gaps are listed.** Behaviours the backtest does not model are in `KNOWN_GAPS`
   (`backtest/spec.py`) and reported by every run; no fixture pins a result.
 

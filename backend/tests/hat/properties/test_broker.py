@@ -24,6 +24,7 @@ from app.hat.execution.broker import (
     OrderType,
     SessionStatus,
     Side,
+    write_refusal,
 )
 from app.hat.execution.fyers_adapter import (
     CODE_INVALID_RESPONSE,
@@ -454,7 +455,14 @@ def test_sale_gate(
     gate: SaleGate,
 ) -> None:
     got = sale_gate(
-        settled, qty, busy=busy, open_now=open_now, rejected=rejected, floor=floor, tags_left=36
+        settled,
+        qty,
+        busy=busy,
+        open_now=open_now,
+        rejected=rejected,
+        floor=floor,
+        tags_left=36,
+        unsent=None,
     )
     assert got == gate
 
@@ -470,9 +478,57 @@ def test_sale_gate(
 )
 def test_sale_gate_tags_spent(tags_left: int, open_now: bool, gate: SaleGate) -> None:
     got = sale_gate(
-        SETTLED, 10, busy=False, open_now=open_now, rejected=0, floor=None, tags_left=tags_left
+        SETTLED,
+        10,
+        busy=False,
+        open_now=open_now,
+        rejected=0,
+        floor=None,
+        tags_left=tags_left,
+        unsent=None,
     )
     assert got == gate
+
+
+@pytest.mark.parametrize(
+    ("unsent", "busy", "open_now", "rejected", "gate"),
+    [
+        # refused before make_room, so the stop keeps resting under a sale that cannot go
+        (CODE_UNAVAILABLE, False, True, 0, SaleGate(SaleStep.REFUSE, CODE_UNAVAILABLE)),
+        (CODE_RATE_LIMITED, False, True, 1, SaleGate(SaleStep.REFUSE, CODE_RATE_LIMITED)),
+        (CODE_UNAVAILABLE, True, True, 0, HOLD),  # another sale works: nothing to refuse
+        (CODE_UNAVAILABLE, False, True, 2, HOLD),  # refused twice, told then
+        (CODE_UNAVAILABLE, False, False, 0, SaleGate(SaleStep.REFUSE, "market_closed")),
+        (None, False, True, 0, SaleGate(SEND, attempts=2)),
+    ],
+)
+def test_sale_gate_refuses_before_making_room(
+    unsent: str | None, busy: bool, open_now: bool, rejected: int, gate: SaleGate
+) -> None:
+    got = sale_gate(
+        SETTLED,
+        10,
+        busy=busy,
+        open_now=open_now,
+        rejected=rejected,
+        floor=None,
+        tags_left=36,
+        unsent=unsent,
+    )
+    assert got == gate
+
+
+@pytest.mark.parametrize(
+    ("circuit_open", "writes_spent", "code"),
+    [
+        (True, False, CODE_UNAVAILABLE),
+        (True, True, CODE_UNAVAILABLE),
+        (False, True, CODE_RATE_LIMITED),
+        (False, False, None),
+    ],
+)
+def test_write_refusal(circuit_open: bool, writes_spent: bool, code: str | None) -> None:
+    assert write_refusal(circuit_open, writes_spent) == code
 
 
 READ_AT = datetime(2026, 10, 23, 5, 0, tzinfo=UTC)

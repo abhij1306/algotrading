@@ -311,6 +311,7 @@ class CallBudget:
         self._day_of: date | None = None
         self._day_count = 0
         self._spent_on: date | None = None  # the trading day whose calls are spent
+        self._refused_on: date | None = None  # the trading day the broker said so
         self._paused_until = 0.0
         self._writers = 0
 
@@ -377,13 +378,21 @@ class CallBudget:
         """The broker refused a call because the plan's daily requests are spent: the day is
         spent whatever the budget's own count says."""
         with self._cond:
-            self._spent_on = self._day()
+            self._spent_on = self._refused_on = self._day()
 
     def day_spent(self) -> bool:
         """Whether the trading day's calls are spent (the day cap refused a call, or the broker
         said so): new entries and the reads that can wait stop until the next day (Q11)."""
         with self._cond:
             return self._spent_on is not None and self._spent_on == self._day()
+
+    def writes_spent(self) -> bool:
+        """Whether a write would be refused for the day, unsent or unread: the broker said the
+        day is spent, or the day's writes are counted out (reads stop earlier, `day_spent`)."""
+        with self._cond:
+            today, per_day = self._day(), self.limits.per_day
+            counted = per_day is not None and self._day_of == today and self._day_count >= per_day
+            return self._refused_on == today or counted
 
     def pause(self, seconds: float) -> None:
         """Send nothing for `seconds` (a broker 429), at most `MAX_PAUSE`."""

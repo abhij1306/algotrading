@@ -24,7 +24,7 @@ from app.hat.risk.policy_service import load_versions
 from . import regime
 from .allocator import SleeveInput, allocate, sleeve_key
 from .common import PortfolioError, close_of, market_id_of
-from .regime_service import confirmed_state, ensure_regime_model, regime_table
+from .regime_service import confirmed_state, ensure_regime_model, regime_profile, regime_table
 from .sleeve_service import advance_automatic, sleeve_health
 
 EVENT_ALLOCATION = "allocation.computed"
@@ -77,16 +77,17 @@ def run_allocation(
         raise PortfolioError("allocate_no_regime")
     policy = policy_at(session, user_id, trade_date)
     moved = advance_automatic(session, trade_date, policy)
-    table = regime_table(model)
     sleeves = []
     bots = session.scalars(select(HatBot).order_by(HatBot.id)).all()
     for bot in bots:
         strategy = session.get(HatStrategy, bot.strategy_id)
+        name = strategy.name if strategy else ""
+        table = regime_table(model, regime_profile(name))
         before = previous_allocation(session, bot.id, trade_date)
         sleeves.append(
             SleeveInput(
                 bot_id=bot.id,
-                sleeve=sleeve_key(strategy.name if strategy else ""),
+                sleeve=sleeve_key(name),
                 cluster=bot.risk_cluster,
                 lifecycle_state=bot.lifecycle_state,
                 regime_table_value=regime.multiplier_for(state, table),

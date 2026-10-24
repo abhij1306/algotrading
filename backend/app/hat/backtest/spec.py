@@ -72,10 +72,14 @@ KNOWN_GAPS = (
     # the NIFTY 500 membership is today's list over the whole period, not point in time: a
     # survivorship bias accepted until a constituents history exists (QA5)
     "universe_from_current_constituents",
-    # one `momentum` regime multiplier table scales every sleeve, the Darvas box (S3), EMA
-    # pullback (S4) and RSI(2) mean-reversion (S5) sleeves too, rather than a table fitted to
-    # each style (audit A5 F5)
+    # no regime table is fitted to each style: S1-S3 name the `momentum` profile
+    # (`registry.Strategy.regime`), and the EMA pullback (S4) and RSI(2) mean-reversion (S5)
+    # profiles have no stored row, so they size under the most conservative one (today momentum's)
     "regime_table_shared_momentum",
+    # the run is one sleeve: its capital is the account's equity and only its positions count,
+    # so the account-level caps (global open risk, the cluster cap, the position and entry
+    # slots) never bind across sleeves as they do live
+    "single_sleeve_caps",
 )
 
 

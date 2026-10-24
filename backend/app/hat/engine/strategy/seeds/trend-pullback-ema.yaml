@@ -1,6 +1,7 @@
 # Registration (engine/strategy/registry.py); the strategy config follows the --- line.
 sleeve: S4
 persona: Trend-pullback
+regime: pullback
 ---
 # Sources: M. Minervini, "Trade Like a Stock Market Wizard" (2013): leaders above a rising 50-
 # and 200-day line, a low-volume pullback to the 10- or 20-day line as a lower-risk entry, a
