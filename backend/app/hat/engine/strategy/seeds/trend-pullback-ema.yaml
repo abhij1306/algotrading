@@ -1,0 +1,53 @@
+# Registration (engine/strategy/registry.py); the strategy config follows the --- line.
+sleeve: S4
+persona: Trend-pullback
+---
+# Sources: M. Minervini, "Trade Like a Stock Market Wizard" (2013): leaders above a rising 50-
+# and 200-day line, a low-volume pullback to the 10- or 20-day line as a lower-risk entry, a
+# loss cut at 7-8% at most; W. O'Neil, "How to Make Money in Stocks": buy leaders of relative
+# strength 80 or more, the pullback to the moving average on light volume as a later buy point,
+# sell on a break of the 50-day line. Entry on the next session's break of the pullback day's high
+# (its reclaim), stop under the pullback low: the usual codification of the pattern.
+bot: trend-pullback-ema
+version: 1
+market: NSE
+# capital allocation: set in the account risk policy
+
+universe:
+  - {type: series_in, params: {series: [EQ, BE]}}
+  - {type: min_turnover, params: {days: 20, inr_cr: 10}}
+  - {type: min_price, params: {inr: 50}}
+
+regime:
+  index: NIFTY 500
+  rule: close_above_sma_and_rising    # assumption, as S1; pullbacks are bought in a rising market
+  params: {sma: 50, rising_days: 10}
+
+setup:
+  criteria:
+    - {type: rs_rank, mode: hard, params: {min_percentile: 80}}    # O'Neil's RS 80+ leader
+    - {type: sma_above, mode: hard, params: {a: close, b: 50}}
+    - {type: sma_above, mode: hard, params: {a: 50, b: 200}}
+    - {type: sma_rising, mode: hard, params: {sma: 50, lookback_days: 10}}
+    - {type: sma_rising, mode: hard, params: {sma: 200, lookback_days: 21}}   # about a month
+    # the pullback: 2 to 10 sessions after the 11-session high, on volume below the 50-session
+    # mean, its low within 1% of a rising (5 sessions) 10 or 20 EMA, the close at most 2% under it
+    - {type: ema_pullback, mode: hard, params: {emas: [10, 20], rising_days: 5, touch_pct: 1,
+        max_undercut_pct: 2, min_days: 2, max_days: 10, volume_vs_avg50: 1}}
+    - {type: earnings_growth, mode: hard, enabled: false, params: {eps_yoy: 20, sales_yoy: 20}}
+
+trigger:
+  - {type: price_breaks_level, params: {level: pivot, bar: 5m}}    # the pullback day's high
+
+entry_filters:
+  - {type: max_chase, params: {pct: 2}}
+
+stop: {rule: below_final_contraction_low, buffer_pct: 0.5, max_pct: 8}   # under the pullback low
+
+# sizing: from the account risk policy
+
+exits:                                  # evaluated top to bottom
+  - {rule: hard_stop}
+  - {rule: move_stop_to_breakeven, at_r: 2}
+  - {rule: trailing_swing_low, lookback_days: 10, sell_fraction: 1.0}   # under the next higher low
+  - {rule: close_below_sma, sma: 50, sell_fraction: 1.0, when: "15:25"}
