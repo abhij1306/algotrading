@@ -129,10 +129,7 @@ def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> 
 
 def official_closes(store: DataStore, day: date) -> dict[uuid.UUID, Decimal]:
     """Each instrument's official close of `day` (the latest ingest run's row)."""
-    frame = store.read_bars(day)
-    if frame.height == 0:
-        return {}
-    latest = frame.sort("ingest_run_id").unique(subset=["instrument_id"], keep="last")
+    latest = store.read_bars(day)
     out: dict[uuid.UUID, Decimal] = {}
     for instrument_id, close in zip(latest["instrument_id"], latest["close"], strict=True):
         value = exact(close, floats=True)

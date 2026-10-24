@@ -106,7 +106,15 @@ class HatIndustry(Base):
 
 class HatCorporateAction(Base):
     __tablename__ = "hat_corporate_action"
-    __table_args__ = (UniqueConstraint("instrument_id", "ex_date", "action_type"),)
+    __table_args__ = (
+        UniqueConstraint("instrument_id", "ex_date", "action_type"),
+        # One factor <= 0 or NaN would stop every adjusted reader (audit L2); `schema.PG_DDL`
+        # adds it to a table created before it, with the same text.
+        CheckConstraint(
+            "adjustment_factor > 0 AND adjustment_factor <> 'NaN'",
+            name="hat_corporate_action_factor_check",
+        ),
+    )
 
     id = uuid_pk()
     instrument_id = fk(INSTRUMENT_ID)

@@ -42,6 +42,7 @@ from .corporate_actions import (
     Correction,
     check_correction,
     correct_action,
+    lock_reference_data,
 )
 
 SOURCE_OWNER = "owner"
@@ -138,6 +139,7 @@ def add_action(
     checked = check_correction(Correction(isin, ex_date, action_type, factor, note=note))
     if checked is None or action_type in PRICE_NEUTRAL_TYPES:
         raise ActionCorrectionError("bad_action_type")
+    lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == isin))
     if instrument is None:
         raise ActionCorrectionError("instrument_not_found")

@@ -43,14 +43,17 @@ Commands, in first-deploy order:
                                               (replace, delete, move, add; CA2), one
                                               transaction; without --apply a dry run that
                                               writes nothing
+    repair-symbol-history [--apply]           closes the overlapping symbol intervals from the
+                                              raw bars' first days (audit M3, one-off);
+                                              without --apply a dry run that writes nothing
 
 Input files (`--constituents`, `--config`, `--list`) are names inside `<HAT_DATA_ROOT>/admin/`:
 a path that leaves that folder, or a file without the expected suffix, is refused
 (`file_outside_admin`).
 
 `assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version`, `resolve-action`,
-`correct-action` and `correct-actions` are the owner's acts: their events carry `actor = user`,
-the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
+`correct-action`, `correct-actions` and `repair-symbol-history` are the owner's acts: their
+events carry `actor = user`, the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
 
 from __future__ import annotations
@@ -74,7 +77,10 @@ from .clock import SYSTEM_CLOCK, Clock
 from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
 from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
+from .data.instruments import repair_symbol_history
 from .data.reference import parse_industry_csv
+from .data.renames import symbol_first_bars
+from .data.store import DataStore
 from .engine.owner import OwnerCommand
 from .engine.portfolio import lifecycle, sleeve_service, universe_service
 from .engine.portfolio.common import market_id_of
@@ -117,7 +123,7 @@ class AdminError(HatError):
 class AdminDeps:
     """What a command needs from outside: the owner's user id, the folder its input files are
     read from, the transaction, the broker of an onboarding, the
-    environment and the clock. `production()` builds the real ones."""
+    environment, the clock and the bar store. `production()` builds the real ones."""
 
     user_id: uuid.UUID
     files: Path
@@ -125,6 +131,7 @@ class AdminDeps:
     broker_for: Callable[[str], HatBroker]
     env: Mapping[str, str]
     clock: Clock
+    store: Callable[[], DataStore]
 
     @staticmethod
     def production() -> AdminDeps:  # pragma: no cover - needs the database and .env
@@ -140,6 +147,7 @@ class AdminDeps:
             broker_for=lambda name: ADAPTER_FACTORIES[name](),
             env=process_env(),
             clock=SYSTEM_CLOCK,
+            store=lambda: DataStore(settings.data_root, memory_limit=settings.duckdb_memory),
         )
 
 
@@ -201,6 +209,8 @@ def _parser() -> argparse.ArgumentParser:
     corrections = commands.add_parser("correct-actions")
     corrections.add_argument("--list", required=True)
     corrections.add_argument("--apply", action="store_true")
+    repair = commands.add_parser("repair-symbol-history")
+    repair.add_argument("--apply", action="store_true")
     return parser
 
 
@@ -369,8 +379,8 @@ def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
     """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote-version`,
-    `resolve-action`, `correct-action`, `correct-actions` and `promote`) under the allowlisted
-    chat id."""
+    `resolve-action`, `correct-action`, `correct-actions`, `repair-symbol-history` and
+    `promote`) under the allowlisted chat id."""
     try:
         chat_id = owner_chat_id(deps.env)
     except HatConfigError:
@@ -389,6 +399,11 @@ def _owner(
         items = parse_list(_read(deps.files, args.list, (".tsv",), "list_unreadable"))
         return apply_list(
             session, items, apply=args.apply, chat_id=chat_id, user_id=deps.user_id, now=now
+        )
+    if args.command == "repair-symbol-history":  # stored reference data (audit M3), any time
+        first_bars = symbol_first_bars(deps.store())
+        return repair_symbol_history(
+            session, first_bars, apply=args.apply, owner=(chat_id, deps.user_id, now)
         )
     if args.command == "revoke-ddpi":  # only narrows, so it needs no calendar (any time)
         account = revoke_ddpi(

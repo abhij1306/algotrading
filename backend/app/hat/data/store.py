@@ -555,11 +555,13 @@ class DataStore:
     # --- reads ------------------------------------------------------------------------------
 
     def read_bars(self, day: date) -> pl.DataFrame:
-        """All raw rows of a day across runs; an absent day is empty, never filled."""
+        """The raw rows of a day, the latest ingest run's row per instrument when a day was
+        written by more than one run (as the `bars_daily` view keeps); an absent day is empty,
+        never filled."""
         files = self.partition_files(DATASET_BARS, day)
         if not files:
             return pl.DataFrame(schema=pl.from_arrow(BAR_SCHEMA.empty_table()).schema)  # type: ignore[union-attr]
-        return pl.concat([pl.read_parquet(f) for f in files])
+        return latest_rows(pl.concat([pl.read_parquet(f) for f in files]), ("instrument_id",))
 
     def read_index(self, day: date) -> list[IndexRow]:
         rows: list[IndexRow] = []
@@ -740,12 +742,14 @@ def _load(con: duckdb.DuckDBPyConnection, name: str, table: pa.Table) -> None:
     con.unregister("_load")
 
 
-def latest_rows(frame: pl.DataFrame) -> pl.DataFrame:
-    """The latest ingest run's row per (`instrument_id`, `date`) of rows read from
-    `bars_daily_adj` with their `ingest_run_id`, as the `bars_daily` view keeps, in the order
+def latest_rows(
+    frame: pl.DataFrame, key: Sequence[str] = ("instrument_id", "date")
+) -> pl.DataFrame:
+    """The latest ingest run's row per `key` (by default (`instrument_id`, `date`) of rows read
+    from `bars_daily_adj`) by `ingest_run_id`, as the `bars_daily` view keeps, in the order
     read; done in polars, as a window over a slice in DuckDB costs several times the memory of
     the slice, and only when a day was written by more than one run, which is rare."""
-    key = ["instrument_id", "date"]
+    key = list(key)
     if not frame.select(pl.struct(key).is_duplicated().any()).item():
         return frame
     latest = frame.filter(pl.col("ingest_run_id") == pl.col("ingest_run_id").max().over(key))

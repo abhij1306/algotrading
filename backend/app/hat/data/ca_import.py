@@ -72,6 +72,7 @@ from .corporate_actions import (
     ActionRecord,
     factor_to_decimal,
     load_actions,
+    lock_reference_data,
     non_equity_bonus,
     owner_vacated,
     parse_action_text,
@@ -905,6 +906,7 @@ def apply(
     `corporate_action.imported` in the same transaction, `journal` (the source and the input
     files' digests) in every payload; returns the rows created. Raises when the database
     disagrees with the plan (a row appeared meanwhile): nothing is then kept."""
+    lock_reference_data(session)
     run_id = str(uuid.uuid4())
     records = [r for o in outcomes for r in o.records]
     report = load_actions(session, records)

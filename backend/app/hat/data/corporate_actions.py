@@ -31,7 +31,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 from fractions import Fraction
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.hat.data.ratios import find_bonus_ratio, split_pair_numbers
@@ -55,6 +55,22 @@ TYPE_DIVIDEND = "dividend"
 TYPE_NOTICE = "notice"  # any other action the MCP gives factor 1: no price changes
 PRICE_NEUTRAL_TYPES = (TYPE_DIVIDEND, TYPE_NOTICE)
 ACTION_TYPES = (TYPE_SPLIT, TYPE_BONUS, TYPE_OTHER, *PRICE_NEUTRAL_TYPES)
+
+_REFERENCE_LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hat_reference_data'))"
+
+
+def lock_reference_data(session: Session) -> None:
+    """Hold the reference-data lock until the transaction ends (audit M4). Every writer of the
+    actions (`load_actions`, `correct_action`, `add_action`), the lineage (`build_lineage`,
+    `override_lineage`) and the symbol history (`instruments`: the refresh, the history build's
+    registrations, renames, `repair_symbol_history`) takes it before it reads what it writes, so
+    no write lands between another writer's read and its write: a nightly build never decides on
+    actions or overrides that changed meanwhile, and two symbol writers never miss each other's
+    interval. A no-op on SQLite, which runs one writer at a time."""
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(text(_REFERENCE_LOCK_SQL))
+
+
 EVENT_CORRECTED = "corporate_action.corrected"  # the owner's correction (`correct_action`)
 STORED_PLACES = 12  # a factor such as 2/3 is stored rounded to 12 places
 
@@ -222,7 +238,9 @@ def load_actions(session: Session, records: Sequence[ActionRecord]) -> LoadRepor
     source to supply a key wins, and a later different factor (or dividend cash amount) is
     reported, not written. A key
     the owner vacated (`correct_action`: deleted, or retyped away) is never re-created: the
-    owner's correction wins over every later load."""
+    owner's correction wins over every later load. Under the reference-data lock, as every
+    writer of actions (the nightly lookups, the history build, the imports)."""
+    lock_reference_data(session)
     report = LoadReport()
     held = owner_vacated(session, {r.instrument_id for r in records})
     existing = {
@@ -440,6 +458,7 @@ def correct_action(
     The adjusted view reads the change at the next features run (its digest covers the
     factors)."""
     replacement = check_correction(correction)
+    lock_reference_data(session)
     instrument = session.scalar(select(HatInstrument).where(HatInstrument.isin == correction.isin))
     if instrument is None:
         raise ActionCorrectionError("instrument_not_found")

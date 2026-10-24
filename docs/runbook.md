@@ -257,6 +257,34 @@ lineage and run `features --full` (the total-return series and the features' dig
 bars (the weekly job and the history build do it too). A build that changes a link changes the features'
 inputs, so the next `features` run recomputes the chains it touches (`python -m app.hat.data.features`
 does it now).
+Every writer of the actions, the lineage and the symbol history (`lineage build`/`link`/`unlink`,
+`ca.adjust`, the nightly action lookups, the history build, `correct-action(s)`, `ca_import`,
+`ca_dividends` and
+`ca_research --apply`, the weekly reference refresh, `renames`, `repair-symbol-history --apply`)
+takes one transaction-scoped advisory lock (`hat_reference_data`): one waits for the other, so an
+owner's link is never overwritten by a build that read the overrides before it.
+
+### Symbol history: one holder per symbol and day (DB6)
+
+When a new ISIN takes a symbol, the previous holder's interval closes at the new one's first day
+(the weekly refresh: the refresh day; the history build: its first bar). Postgres keeps it so
+with `hat_symbol_history_no_overlap` (EXCLUDE, `btree_gist`, checked at commit; a write that
+would make an overlap fails). `ensure_hat_schema` adds it only once no overlap is stored and
+warns at startup until then. A database from before DB6 is repaired once, after a fresh
+`pg_dump`, never while a nightly job runs:
+
+1. `python -m app.hat.admin repair-symbol-history`: the dry run. It prints `overlaps_before`,
+   `overlaps_after`, the rows it would change (`SYMBOL ISIN from..to -> from..to`; null: deleted)
+   and the symbols it leaves alone (`no_bars`, `same_first_bar`, `key_taken`: fix by hand).
+   Each overlapping symbol's holders, in the order of their first raw bar under it, keep it
+   until the next holder's first bar.
+2. The same with `--apply`: one transaction, each row journalled `symbol_history.repaired`.
+3. Restart HAT (or run `init_db()`): the constraint is added, with the extension
+   (`CREATE EXTENSION btree_gist` needs a role that may create it, else run it as a superuser
+   first). `SELECT conname FROM pg_constraint WHERE conname = 'hat_symbol_history_no_overlap'`
+   shows it.
+
+The same startup adds `hat_corporate_action_factor_check` (`adjustment_factor > 0`).
 
 ### Restart recovery: reconcile, then resume
 

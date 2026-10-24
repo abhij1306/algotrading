@@ -80,7 +80,13 @@ from .ca_import import (
     nse_date,
     read_windows,
 )
-from .corporate_actions import TYPE_DIVIDEND, ActionRecord, load_actions, owner_vacated
+from .corporate_actions import (
+    TYPE_DIVIDEND,
+    ActionRecord,
+    load_actions,
+    lock_reference_data,
+    owner_vacated,
+)
 from .store import DATASET_BARS, DataStore
 
 SOURCE_FEED = "nse_ca_feed"
@@ -819,6 +825,7 @@ def apply(
     and journal each as `corporate_action.imported` in the same transaction; returns (rows
     created, amounts added). Raises when the database disagrees with the plan (a row appeared or
     got an amount meanwhile): nothing is then kept."""
+    lock_reference_data(session)  # before the stored rows it fills are read
     run_id = str(uuid.uuid4())
     new = [o for o in outcomes if o.status == STORED and o.record is not None and o.fill is None]
     fills = [o for o in outcomes if o.status == STORED and o.fill is not None]
