@@ -320,7 +320,9 @@ its ex-date drop is in the signals' series until one is set) and `dividend.unche
 could not be read or stored): download that day's `PR<ddmmyy>.zip` from
 `nsearchives.nseindia.com/archives/equities/bhavcopy/pr/`, take `bc<ddmmyyyy>.csv` and run
 `python -m app.hat.data.ca_dividends --bc bc<ddmmyyyy>.csv --day YYYY-MM-DD [--apply]` (same
-working-directory rule). `lineage report` lists every dividend without an amount.
+working-directory rule). `lineage report` lists every dividend without an amount. A stored or
+corrected amount reaches the closed trades' P&L and R at the next `ca.adjust`
+(`restate_dividends`, logged as `trade dividends restated: N trades changed`).
 
 Each stored action records when its factor became knowable (`known_on`, CA5). A correction
 gives it with `correct-action --known-on DATE` or the list's optional `known_on` column

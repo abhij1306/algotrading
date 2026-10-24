@@ -55,6 +55,7 @@ from ..engine.close_gap import record_close_gaps
 from ..engine.journal import ALERT_JOURNAL_MISMATCH, mismatches
 from ..engine.portfolio.allocation_service import policy_at
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB, allocate_job, regime_job
+from ..engine.positions import restate_dividends
 from ..engine.rescale import (
     ALERT_ACTION_UNCHECKED,
     flag_unhandled,
@@ -324,7 +325,9 @@ class Nightly:
         split whose lookup failed on the day releases its quarantine at the next gate once
         stored. A failure there is only logged: the quarantine was alerted already and stands.
         Then the dividends of the day's corporate-action file go in with their amounts
-        (`_dividends`, CA4). Then the factors are checked to load into the adjusted view
+        (`_dividends`, CA4), and every closed trade's dividends are brought up to the stored ones
+        (`restate_dividends`, R-DIV: a trade closed on tonight's ex-date was written without
+        it). Then the factors are checked to load into the adjusted view
         (`cumulative_segments`, no connection) before the features read it."""
         try:
             self._next_session_actions(day)
@@ -340,6 +343,14 @@ class Nightly:
             # the day's file is imported by hand; the chain goes on.
             logger.exception("nightly dividend import failed")
             self.deps.notifier.alert(ALERT_DIVIDENDS_UNCHECKED, day, {})
+        try:
+            with self.deps.session_factory() as session:
+                restated = restate_dividends(session)
+                session.commit()
+            logger.info("trade dividends restated: %d trades changed", restated)
+        except Exception:
+            # The trades keep their figures until the next night restates them.
+            logger.exception("trade dividend restatement failed")
         try:
             self._quarantine_actions()
         except Exception:

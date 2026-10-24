@@ -1,11 +1,12 @@
-"""The cash a shadow position earns on an ex-date (CA4, `engine/paper_dividends.py`): the shares
-held at the start of the session times the cash per share, the backtest's rule. Toy positions;
-no database."""
+"""The cash a position earns on an ex-date (CA4, `engine/trade_dividends.py`): the shares held at
+the start of the session times the cash per share, the backtest's rule; and a closed trade's P&L
+and R with them (R-DIV, `positions.trade_outcome`). Toy positions; no database."""
 
 from datetime import date, datetime
 from decimal import Decimal
 
-from app.hat.engine.paper_dividends import (
+from app.hat.engine.positions import trade_outcome
+from app.hat.engine.trade_dividends import (
     BUY,
     RESCALE,
     SELL,
@@ -49,3 +50,31 @@ def test_a_rescale_sets_the_shares_a_later_dividend_pays() -> None:
     steps = [Step(_at(6), BUY, 100), Step(_at(8, 8), RESCALE, 200)]
     assert held_at_start(steps, date(2026, 7, 8)) == 100
     assert position_dividends(steps, [(date(2026, 7, 9), Decimal(1))], date(2026, 7, 9)) == 200
+
+
+# bought 100 at Rs 100 on the 6th (stop Rs 90: Rs 1,000 at risk), sold all on the 14th
+ROUND_TRIP = [Step(_at(6), BUY, 100), Step(_at(14), SELL, 100)]
+ENTRY, STOP = Decimal(100), Decimal(90)
+
+
+def _outcome(dividends: list[tuple[date, Decimal]]) -> tuple[Decimal, Decimal]:
+    earned = position_dividends(ROUND_TRIP, dividends, date(2026, 7, 14))
+    return trade_outcome(Decimal(500), earned, ENTRY, STOP, 100)
+
+
+def test_a_trade_without_dividends_keeps_its_price_result() -> None:
+    assert _outcome([]) == (Decimal(500), Decimal("0.5"))
+
+
+def test_a_dividend_held_into_adds_to_the_trades_pnl_and_r() -> None:
+    assert _outcome([(date(2026, 7, 9), Decimal(2))]) == (Decimal(700), Decimal("0.7"))
+
+
+def test_an_ex_date_on_the_entry_day_pays_the_trade_nothing() -> None:
+    assert _outcome([(date(2026, 7, 6), Decimal(2))]) == (Decimal(500), Decimal("0.5"))
+
+
+def test_an_ex_date_on_the_exit_day_pays_the_trade() -> None:
+    assert _outcome([(date(2026, 7, 14), Decimal(2))]) == (Decimal(700), Decimal("0.7"))
+    # after the exit day: nothing
+    assert _outcome([(date(2026, 7, 15), Decimal(2))]) == (Decimal(500), Decimal("0.5"))

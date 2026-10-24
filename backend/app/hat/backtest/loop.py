@@ -82,8 +82,10 @@ Dividends (CA3): the run trades and marks the price basis, the prices a broker s
 position open at the start of an ex-date session earns its dividends that day, `qty_open` times
 the cash per share (`MarketData.dividends`, `dividend_credit`), into the account's cash; a buy on
 the ex-date earns nothing. The signals read the total-return series (`MarketView`), so the ex-date
-drop is neither a breakdown nor a loss: it is paid back as cash, once. The credit is cash, not
-part of a trade's R; the metrics count it (`dividend_income`, `dividend_credits`).
+drop is neither a breakdown nor a loss: it is paid back as cash, once. The ledger holds the same
+dividends (`ledger._seed_dividends`), so a closed trade's P&L and R include the credits it earned
+(R-DIV, `positions.write_result`); the metrics count them too (`dividend_income`,
+`dividend_credits`).
 
 The run's one risk-policy version (`RunSpec.policy`) is in force over the whole period, from its
 first session, whenever the stored version took effect: a backtest of years before the policy

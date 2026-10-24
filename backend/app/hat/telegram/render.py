@@ -175,6 +175,7 @@ class PositionEventView:
     qty: int | None
     price: Decimal | None
     r_so_far: Decimal | None
+    dividends: Decimal | None = None  # a closed trade's, already in its R (R-DIV)
 
 
 _EVENT_TITLES = {
@@ -186,13 +187,17 @@ _EVENT_TITLES = {
 
 
 def position_event_text(event_type: str, view: PositionEventView) -> str:
-    """A fill, exit or stop move on a real position: price, qty and R so far."""
+    """A fill, exit or stop move on a real position: price, qty and R so far (and a closed
+    trade's dividends, when it earned any)."""
     title = _EVENT_TITLES.get(event_type, event_type)
     qty = "n/a" if view.qty is None else str(view.qty)
-    return (
+    text = (
         f"{title}: {view.symbol}\n"
         f"Price {money(view.price)}  Qty {qty}  R so far {_r(view.r_so_far)}"
     )
+    if view.dividends:
+        text += f"  incl. dividends {money(view.dividends)}"
+    return text
 
 
 # --- alerts ------------------------------------------------------------------------------------

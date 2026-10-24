@@ -254,6 +254,7 @@ def trade_result(conn: Connection, position_id: uuid.UUID, **overrides: object) 
         "position_id": position_id,
         "realized_pnl": Decimal("50"),
         "fees": Decimal("2"),
+        "dividends": Decimal("0"),
         "r_multiple": Decimal("1"),
         "holding_days": 3,
         "exit_reason": "target",

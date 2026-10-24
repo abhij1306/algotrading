@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
-from datetime import time
+from datetime import date, time
 from decimal import Decimal
 
 from sqlalchemy import create_engine, func, select, update
@@ -17,8 +17,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from ...base import Base
+from ..data.corporate_actions import TYPE_DIVIDEND
 from ..models import (
     HatBot,
+    HatCorporateAction,
     HatFill,
     HatIndustry,
     HatInstrument,
@@ -118,6 +120,7 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
                     effective_from=effective_from,
                 )
             )
+    _seed_dividends(session, data)
     bot = HatBot(
         id=uuid.uuid4(),
         user_id=_SANDBOX_USER,
@@ -133,6 +136,29 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     session.add(bot)
     session.flush()
     return session, bot.id
+
+
+def _seed_dividends(session: Session, data: MarketData) -> None:
+    """The members' dividends as the HAT database stores them, the cash per price-basis share
+    the run pays (`MarketData.dividends`), so a closed trade's result counts them as a live
+    one's does (`positions.write_result`, R-DIV)."""
+    members = {str(i.instrument_id) for i in data.members}
+    for instrument_id in sorted(members & data.dividends.keys()):
+        per_day: dict[date, Decimal] = {}
+        for ex_date, cash in data.dividends[instrument_id]:
+            per_day[ex_date] = per_day.get(ex_date, _ZERO) + cash
+        session.add_all(
+            HatCorporateAction(
+                instrument_id=uuid.UUID(instrument_id),
+                ex_date=ex_date,
+                action_type=TYPE_DIVIDEND,
+                adjustment_factor=Decimal(1),
+                raw_text="",
+                source="backtest",
+                cash_amount=cash,
+            )
+            for ex_date, cash in sorted(per_day.items())
+        )
 
 
 def set_series(session: Session, series: Mapping[str, str]) -> None:
@@ -210,6 +236,7 @@ def trade_rows(
                 exit_reason=result.exit_reason,
                 realized_pnl=Decimal(result.realized_pnl),
                 fees=Decimal(result.fees),
+                dividends=Decimal(result.dividends),
                 r_multiple=Decimal(result.r_multiple),
                 mfe_r=Decimal(result.mfe_r),
                 mae_r=Decimal(result.mae_r),

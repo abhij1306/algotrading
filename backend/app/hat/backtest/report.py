@@ -96,6 +96,7 @@ class TradeRow:
     strategy_version_id: uuid.UUID
     risk_policy_version_id: uuid.UUID
     score: Decimal | None = None  # the watchlist row's score (PR 65, N10)
+    dividends: Decimal = Decimal(0)  # the cash dividends in `realized_pnl` and R (R-DIV)
 
 
 @dataclass(frozen=True)
@@ -267,6 +268,7 @@ TRADE_SCHEMA = pa.schema(
         ("exit_reason", pa.string()),
         ("realized_pnl", _MONEY),
         ("fees", _MONEY),
+        ("dividends", _MONEY),  # already in realized_pnl and r_multiple (R-DIV)
         ("r_multiple", _R),
         ("mfe_r", _R),
         ("mae_r", _R),
