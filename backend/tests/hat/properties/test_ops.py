@@ -223,6 +223,38 @@ def test_cancel_after_the_lock_releases_it() -> None:
     assert lock.released.wait(5)
 
 
+def test_second_cancel_during_the_stop_still_releases_the_lock() -> None:
+    """A second cancel ends the start's wait on its (shielded) stop while the stop is still
+    stopping the feed: the lock is released before the start returns, not left to the
+    detached stop."""
+    lock, reached, go = _Lock(), threading.Event(), threading.Event()
+
+    def parts() -> None:
+        reached.set()
+        go.wait(5)
+
+    class Feed:
+        async def stop(self) -> None:
+            await asyncio.Event().wait()  # never stops
+
+    runtime = _enabled_runtime(lambda: lock, parts)
+    runtime._feed = Feed()  # type: ignore[assignment]
+
+    async def run() -> bool:
+        task = asyncio.ensure_future(runtime.start())
+        await asyncio.to_thread(reached.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0.05)  # the stop is now waiting on the feed
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        released = lock.released.is_set()
+        go.set()
+        return released
+
+    assert asyncio.run(run()) is True
+
+
 def test_failed_start_keeps_the_lock_for_the_callers_stop() -> None:
     """A start that raises leaves the stop to its caller (the lifespan's shutdown), which
     releases the lock last; a runtime that never started holds no other runtime's lock."""

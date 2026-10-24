@@ -133,8 +133,15 @@ class HatRuntime:
         except BaseException as exc:
             if not isinstance(exc, Exception):
                 # cancelled (or interrupted): the caller's `except Exception` does not stop it,
-                # so stop here, shielded from a second cancel, and release the lock
-                await asyncio.shield(asyncio.ensure_future(self.stop()))
+                # so stop here, shielded from a second cancel
+                try:
+                    await asyncio.shield(asyncio.ensure_future(self.stop()))
+                finally:
+                    # a second cancel ends this wait while the stop runs on detached, and the
+                    # loop may close before it reaches the lock: release it now (one connection
+                    # closed; after a finished stop a no-op, and a lock the worker thread takes
+                    # later is released by it)
+                    self._drop_lock()
             raise
         self.started = True
         logger.info("HAT runtime started")
