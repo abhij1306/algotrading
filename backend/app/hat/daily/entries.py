@@ -29,7 +29,14 @@ from ..engine.trade_dividends import shadow_dividend_cash
 from ..execution.modes import bot_mode
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
-from ..models import HatAllocationDaily, HatBot, HatInstrument, HatPosition, HatTradeResult
+from ..models import (
+    HatAllocationDaily,
+    HatBot,
+    HatInstrument,
+    HatPosition,
+    HatSignal,
+    HatTradeResult,
+)
 from ..risk import bots, kill_ops
 from ..risk.decision import SignalContext
 from ..risk.policy_service import load_versions
@@ -58,37 +65,41 @@ def _allocation(
     return session.get(HatAllocationDaily, (made, bot_id))
 
 
-def _virtual_realised(session: Session, bot_id: uuid.UUID) -> Decimal:
-    """The bot's realised P&L of virtual trades: a real book's is in the broker funds its
-    capital was read from, so only a virtual book adds it (Q1)."""
+# The bot's own shadow positions: virtual ones of shadow signals. The veto trades of skipped
+# confirm signals (virtual, but not the shadow book's) feed the veto score only (HAT-EXEC-130).
+_SHADOW_BOOK = (HatPosition.is_virtual.is_(True), HatSignal.mode == Mode.SHADOW)
+
+
+def _shadow_realised(session: Session, bot_id: uuid.UUID) -> Decimal:
+    """The realised P&L of the bot's shadow book: a real book's is in the broker funds its
+    capital was read from, so only a shadow book adds it (Q1)."""
     rows = session.scalars(
         select(HatTradeResult.realized_pnl)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
-        .where(HatPosition.bot_id == bot_id, HatPosition.is_virtual.is_(True))
+        .join(HatSignal, HatSignal.id == HatPosition.signal_id)
+        .where(HatPosition.bot_id == bot_id, *_SHADOW_BOOK)
     )
     return sum((Decimal(r) for r in rows), Decimal(0))
 
 
-def _open_notional(session: Session, bot_id: uuid.UUID, virtual: bool) -> Decimal:
+def _shadow_open_notional(session: Session, bot_id: uuid.UUID) -> Decimal:
     rows = session.execute(
-        select(HatPosition.avg_entry, HatPosition.qty_open).where(
-            HatPosition.bot_id == bot_id,
-            HatPosition.is_virtual.is_(virtual),
-            HatPosition.closed_at.is_(None),
-        )
+        select(HatPosition.avg_entry, HatPosition.qty_open)
+        .join(HatSignal, HatSignal.id == HatPosition.signal_id)
+        .where(HatPosition.bot_id == bot_id, HatPosition.closed_at.is_(None), *_SHADOW_BOOK)
     ).all()
     return sum((Decimal(entry) * qty for entry, qty in rows), Decimal(0))
 
 
 class LiveContexts:
-    """The `ContextSource` of live entries. Equity is the sleeve's allocation capital plus its
-    realised P&L in the bot's mode (a closed trade's dividends included, R-DIV), and for a shadow
-    sleeve the dividends its open virtual positions earned (`trade_dividends`, the backtest's
-    rule: an open real position's come in the broker's funds); free cash is the broker's
-    available funds for a real entry and the sleeve's equity less its open virtual positions for
-    a shadow one. A virtual entry of a Shadow or Probation sleeve (weight 0) is sized from its
-    nominal allocation (`virtual_capital`, `virtual_risk_pct`, health 1; HAT-PORT-050); a real
-    entry never is."""
+    """The `ContextSource` of live entries. Equity is the sleeve's allocation capital, whose
+    broker funds already carry a real book's realised P&L (Q1); a shadow sleeve adds its shadow
+    book's realised P&L (a closed trade's dividends included, R-DIV) and the dividends its open
+    shadow positions earned (`trade_dividends`, the backtest's rule), never a veto trade's
+    (HAT-EXEC-130). Free cash is the broker's available funds for a real entry and the sleeve's
+    equity less its open shadow positions for a shadow one. A virtual entry of a Shadow or
+    Probation sleeve (weight 0) is sized from its nominal allocation (`virtual_capital`,
+    `virtual_risk_pct`, health 1; HAT-PORT-050); a real entry never is."""
 
     def __init__(
         self,
@@ -130,9 +141,7 @@ class LiveContexts:
         # allocate, which already carries its realised P&L (Q1)
         equity = capital
         if virtual:
-            equity += _virtual_realised(session, bot_id) + shadow_dividend_cash(
-                session, bot_id, day
-            )
+            equity += _shadow_realised(session, bot_id) + shadow_dividend_cash(session, bot_id, day)
         book = (
             func.coalesce(HatAllocationDaily.virtual_capital, HatAllocationDaily.capital)
             if virtual
@@ -142,7 +151,7 @@ class LiveContexts:
             select(func.sum(book)).where(HatAllocationDaily.trade_date == allocation.trade_date)
         )
         cash = (
-            equity - _open_notional(session, bot_id, True)
+            equity - _shadow_open_notional(session, bot_id)
             if virtual
             else self._funds(bot.broker_account_id)
         )

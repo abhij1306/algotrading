@@ -28,7 +28,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.corporate_actions import TYPE_DIVIDEND
-from ..models import HatCorporateAction, HatEvent, HatFill, HatOrder, HatPosition
+from ..governance import Mode
+from ..models import HatCorporateAction, HatEvent, HatFill, HatOrder, HatPosition, HatSignal
 from ..money import ZERO, dividend_credit
 from ..time import as_utc, trade_date_of
 from .rescale import EVENT_RESCALED
@@ -155,12 +156,16 @@ def trade_dividends(session: Session, position: HatPosition, through: date) -> D
 
 
 def shadow_dividend_cash(session: Session, bot_id: uuid.UUID, through: date) -> Decimal:
-    """The dividends the bot's open virtual positions earned on ex-dates on or before `through`
-    (a closed one's are in its trade result's P&L)."""
+    """The dividends the bot's open shadow positions earned on ex-dates on or before `through`
+    (a closed one's are in its trade result's P&L). A veto trade of a skipped confirm signal is
+    not the shadow book's (HAT-EXEC-130)."""
     positions = session.execute(
-        select(HatPosition.id, HatPosition.instrument_id).where(
+        select(HatPosition.id, HatPosition.instrument_id)
+        .join(HatSignal, HatSignal.id == HatPosition.signal_id)
+        .where(
             HatPosition.bot_id == bot_id,
             HatPosition.is_virtual.is_(True),
+            HatSignal.mode == Mode.SHADOW,
             HatPosition.closed_at.is_(None),
         )
     ).all()

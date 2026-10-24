@@ -211,6 +211,19 @@ def test_live_point_peak() -> None:
     assert kill.live_point(last, D("110000"), risen).peak == D("120000")
 
 
+def test_peak_restarts_at_capital_after_zero_allocation() -> None:
+    """A sleeve back from a zero allocation measures from its new capital, as a new sleeve does:
+    a 10% loss on its first day trips, in the live point and in the restated series."""
+    at = datetime(2026, 10, 23, 6, 0, tzinfo=UTC)
+    benched = kill.SnapshotPoint(at, D("0"), D("0"), D("0"))
+    back = kill.SnapshotPoint(at + timedelta(days=1), D("90000"), D("100000"), D("0.5"))
+    live = kill.live_point(benched, D("0"), back)
+    assert live.peak == D("100000")
+    assert kill.drawdown_breached(live.equity, live.peak, D("0.10"))
+    series = kill.adjusted_series([benched, back])
+    assert [(p.equity, p.peak) for p in series] == [(D("90000"), D("100000"))]
+
+
 def test_restated_capital() -> None:
     """The previous capital at the new funds total: capital x previous weight / weight; a new
     weight of 0 keeps the previous capital; anything unknown is None."""

@@ -336,9 +336,15 @@ def open_pnl(holdings: Iterable[Holding]) -> tuple[Decimal, dict[str, int]]:
 
 
 def _rebased(previous: SnapshotPoint, peak: Decimal, point: SnapshotPoint) -> Decimal:
-    """`previous`'s peak restated at `point`'s allocation (`rebase_peak`, `restated_capital`)."""
+    """`previous`'s peak restated at `point`'s allocation (`rebase_peak`, `restated_capital`).
+    When nothing is left to restate (a sleeve back from a zero allocation, or one whose equity
+    was gone), the peak restarts at the new capital, as a new sleeve's does (`live_point`), so a
+    first day's loss is measured."""
     old = restated_capital(previous.capital, previous.weight, point.capital, point.weight)
-    return rebase_peak(previous.equity, peak, old, point.capital)
+    base = rebase_peak(previous.equity, peak, old, point.capital)
+    if base == 0 and point.capital is not None:
+        return point.capital
+    return base
 
 
 def live_point(previous: SnapshotPoint | None, peak: Decimal, point: SnapshotPoint) -> EquityPoint:
