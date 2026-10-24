@@ -58,7 +58,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   trade the previous close; a stale price at the lower of last trade and stop).
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored as hashes;
   expiry 5 minutes; Take re-checks `max_chase`; unknown chats are ignored. Free text never makes
-  an order; auto, `/arm` and `/flatten` need a second confirmation.
+  an order; auto, `/arm` and `/flatten` need a second confirmation. An entry fill landing after
+  a flatten sold its position is sold under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
   evidence gate; policy and strategy versions are immutable.
 - **One owner per resource.** One live socket, one session owner per broker account, one token

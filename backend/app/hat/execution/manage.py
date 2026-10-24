@@ -897,8 +897,24 @@ class TradeManager:
             report = self._fills.run(session, account_id, now, check_gtts=check_gtts)
         except BrokerUnavailableError:
             return None
+        if self._orders_allowed(now):
+            self._flatten_again(session, account_id, now)
         self._mpp.after_sync(session, report, now, self)
         return report
+
+    def _flatten_again(self, session: Session, account_id: uuid.UUID, now: datetime) -> None:
+        """Sell the late entry fill of each position a flatten emptied (`flatten_owed`, Q13): a
+        follow-up flatten sale under the original confirmation, through the exit path (the same
+        session, lock and stop checks), once the fill sync has protected the shares. A sale the
+        gate holds is asked again at the next sync. One position's failure leaves the others."""
+        for position in self.open_positions(session, account_id):
+            try:
+                if live_trades.flatten_owed(session, position):
+                    order = SaleOrder(position, FLATTEN, position.qty_open)
+                    self._sell_qty(session, order, now, self._sending_clock(now))
+            except Exception:
+                session.rollback()
+                logger.exception("follow-up flatten of position %s failed", position.id)
 
     # --- market price protection (PR 48) ------------------------------------------------------
 

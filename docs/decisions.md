@@ -96,6 +96,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   fact and alerted URGENT: shares the broker holds must be tracked and under a stop, never left
   unbooked. A reopened trade's result is rewritten at its second close; the ladder step of its
   first close stands.
+- **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
+  confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
 
 ## Planned, not built
 

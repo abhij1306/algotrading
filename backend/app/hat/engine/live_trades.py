@@ -15,7 +15,9 @@ are sent by `execution/manage.py`.
   part-filled DAY limit), the emptied position stays open at quantity 0: the stop desk cancels
   the remainder; a late fill of it adds to the position, is protected like any entry fill and
   fires again the rules of the sale that emptied it; `close_if_emptied` closes the position once
-  the broker shows the entry ended (F2). The first fill of a broker stop is the stop triggering:
+  the broker shows the entry ended (F2). A flatten fires no rules: a late fill of a position a
+  `/flatten` emptied is `flatten_owed`, and the manager sells it under that flatten (Q13). The
+  first fill of a broker stop is the stop triggering:
   its `order.filled` carries `exit_triggered` and stands for the exit order placed (ExitPending),
   as does any fill that empties a position no full exit order was placed for.
 - A broker fill is a broker fact (Q2): every event a real fill writes is kept even when the
@@ -66,6 +68,7 @@ __all__ = [
     "apply_exit_fill",
     "close_if_emptied",
     "entry_working",
+    "flatten_owed",
     "evaluate_real_position",
     "mark_fired",
     "unmark_fired",
@@ -349,6 +352,38 @@ def _fire_again_late(session: Session, position: HatPosition) -> None:
     if rule_ids:
         gone = set(rule_ids)
         position.rules_fired = [rid for rid in (position.rules_fired or []) if rid not in gone]
+
+
+def flatten_owed(session: Session, position: HatPosition) -> bool:
+    """The real position holds shares an entry fill brought in after its last sale, and that sale
+    was a flatten (Q13): the shares are owed the flatten's follow-up sale. Read from the stored
+    fills, so a restart keeps it."""
+    if position.is_virtual or position.closed_at is not None or position.qty_open <= 0:
+        return False
+    last_sale = session.execute(
+        select(HatOrder.purpose, HatFill.filled_at, HatFill.id)
+        .join(HatFill, HatFill.order_id == HatOrder.id)
+        .where(
+            HatOrder.position_id == position.id,
+            HatOrder.purpose.in_((*EXIT_PURPOSES, *STOP_PURPOSES)),
+        )
+        .order_by(HatFill.filled_at.desc(), HatFill.id.desc())
+        .limit(1)
+    ).first()
+    if last_sale is None or last_sale.purpose != "flatten":
+        return False
+    later_entry = session.scalar(
+        select(HatFill.id)
+        .join(HatOrder, HatOrder.id == HatFill.order_id)
+        .where(
+            HatOrder.signal_id == position.signal_id,
+            HatOrder.purpose == ENTRY,
+            HatOrder.is_virtual.is_(False),
+            HatFill.filled_at >= last_sale.filled_at,
+        )
+        .limit(1)
+    )
+    return later_entry is not None
 
 
 def close_if_emptied(session: Session, position_id: uuid.UUID, now: datetime) -> HatPosition | None:
