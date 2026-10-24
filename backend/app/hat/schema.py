@@ -9,12 +9,16 @@ the rules the app can enforce are enforced in the app. Every statement names onl
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping
 from datetime import time
+from typing import TypedDict
 
 from sqlalchemy import Connection, Engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..base import Base
 from .models import HatMarket
 from .ops.partitions import ensure_event_partitions
 from .time import utc_now
@@ -360,3 +364,214 @@ def seed_hat_reference(bind: Engine) -> None:
         except IntegrityError:
             session.rollback()  # another process seeded it first
             logger.debug("hat_market NSE already seeded")
+
+
+# --- Schema drift (DB audit M5) ---------------------------------------------------------------
+#
+# `create_all` never alters an existing table, so a model change (a column, a CHECK, an index)
+# that is merged but not hand-applied would fail only at its first write. At startup, after the
+# upkeep above, `check_schema_drift` compares the live catalog with the catalog the models give:
+# the models are created as temporary tables in the same transaction, both are read with the same
+# catalog queries, and the transaction rolls back. Any difference refuses the start and names the
+# DDL to run. Triggers, functions and partitions are `ensure_hat_schema`'s and are not compared.
+
+# Tables the models do not hold that may stay until the owner drops them: the P6b ISIN-merge
+# bookkeeping (runbook, post-merge DBA steps).
+DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row"})
+
+
+class TableShape(TypedDict):
+    """One table as the catalog describes it; definitions carry no schema qualifier."""
+
+    columns: dict[str, tuple[str, bool]]  # name: (format_type, not null)
+    constraints: dict[str, str]  # name: pg_get_constraintdef
+    indexes: dict[str, str]  # name: pg_get_indexdef
+
+
+SchemaShape = Mapping[str, TableShape]
+
+_SHAPE_SQL = {
+    "columns": """
+SELECT c.relname, a.attname, format_type(a.atttypid, a.atttypmod), a.attnotnull
+FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid
+WHERE c.relnamespace = :ns AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+  AND c.relname LIKE 'hat\\_%' AND a.attnum > 0 AND NOT a.attisdropped
+""",
+    # NOT NULL constraints (Postgres 18) are compared as the columns' nullability.
+    "constraints": """
+SELECT c.relname, k.conname, pg_get_constraintdef(k.oid)
+FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid
+WHERE c.relnamespace = :ns AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+  AND c.relname LIKE 'hat\\_%' AND k.contype <> 'n'
+""",
+    "indexes": """
+SELECT c.relname, i.relname, pg_get_indexdef(i.oid)
+FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class c ON c.oid = x.indrelid
+WHERE c.relnamespace = :ns AND c.relkind IN ('r', 'p') AND NOT c.relispartition
+  AND c.relname LIKE 'hat\\_%'
+""",
+}
+
+# The objects `PG_DDL` owns beyond the models: its indexes must exist (their definition is
+# `PG_DDL`'s), and its constraints may (the symbol-history EXCLUDE waits for a repair).
+_DDL_INDEX = re.compile(r"CREATE INDEX IF NOT EXISTS (\w+)\s+ON (\w+)")
+_DDL_CONSTRAINT = re.compile(r"ALTER TABLE (\w+)\s+ADD CONSTRAINT (\w+)")
+
+
+class SchemaDriftError(RuntimeError):
+    """The database's schema differs from the models; the message holds the DDL to run."""
+
+
+def pg_ddl_objects() -> tuple[dict[str, str], dict[str, str]]:
+    """The indexes and constraints `PG_DDL` creates, each as {name: table}."""
+    text_ = "\n".join(PG_DDL)
+    indexes = dict(_DDL_INDEX.findall(text_))
+    constraints = {name: table for table, name in _DDL_CONSTRAINT.findall(text_)}
+    return indexes, constraints
+
+
+def _read_shape(connection: Connection, namespace_sql: str) -> SchemaShape:
+    namespace = connection.execute(text(f"SELECT {namespace_sql}")).scalar_one()
+    schema = connection.execute(
+        text("SELECT nspname FROM pg_namespace WHERE oid = :ns"), {"ns": namespace}
+    ).scalar_one()
+    qualified = re.compile(rf"\b(?:{re.escape(schema)}|pg_temp(?:_\d+)?)\.")
+    shape: dict[str, TableShape] = {}
+
+    def table(name: str) -> TableShape:
+        return shape.setdefault(name, {"columns": {}, "constraints": {}, "indexes": {}})
+
+    def unqualified(definition: str) -> str:
+        # So the live (`public`) and the probe (`pg_temp`) texts compare.
+        return qualified.sub("", definition).replace(" ON ONLY ", " ON ")
+
+    params = {"ns": namespace}
+    for name, column, type_, not_null in connection.execute(text(_SHAPE_SQL["columns"]), params):
+        table(name)["columns"][column] = (type_, bool(not_null))
+    for name, constraint, definition in connection.execute(text(_SHAPE_SQL["constraints"]), params):
+        table(name)["constraints"][constraint] = unqualified(definition)
+    for name, index, definition in connection.execute(text(_SHAPE_SQL["indexes"]), params):
+        table(name)["indexes"][index] = unqualified(definition)
+    return shape
+
+
+def read_live_and_model_shapes(connection: Connection) -> tuple[SchemaShape, SchemaShape]:
+    """The live schema and the models' schema, read on `connection` inside a transaction the
+    caller rolls back (the models are created there as temporary tables)."""
+    live = _read_shape(connection, "to_regnamespace(current_schema())::oid")
+    probe = connection.execution_options(schema_translate_map={None: "pg_temp"})
+    Base.metadata.create_all(probe, checkfirst=False)
+    model = _read_shape(connection, "pg_my_temp_schema()")
+    return live, model
+
+
+def schema_drift(
+    live: SchemaShape,
+    model: SchemaShape,
+    *,
+    ddl_indexes: Mapping[str, str] | None = None,
+    ddl_constraints: Mapping[str, str] | None = None,
+    allowed_tables: frozenset[str] = DRIFT_ALLOWED_TABLES,
+) -> list[str]:
+    """Every difference between the live schema and the models', as DDL to run or (for what the
+    database has and the models do not) a comment. Empty when they match."""
+    ddl_indexes = ddl_indexes or {}
+    ddl_constraints = ddl_constraints or {}
+    drift: list[str] = []
+    for table in sorted(model.keys() - live.keys()):
+        drift.append(f"-- table {table} is missing: Base.metadata.create_all creates it")
+    for table in sorted(live.keys() - model.keys() - allowed_tables):
+        drift.append(f"-- table {table} is in the database, not in the models")
+    for table in sorted(model.keys() & live.keys()):
+        drift += _column_drift(table, live[table]["columns"], model[table]["columns"])
+        table_ddl_indexes = {n for n, t in ddl_indexes.items() if t == table}
+        table_ddl_constraints = {n for n, t in ddl_constraints.items() if t == table}
+        drift += _named_drift(
+            table,
+            "constraint",
+            live[table]["constraints"],
+            model[table]["constraints"],
+            table_ddl_constraints,
+        )
+        # A constraint's own index (the EXCLUDE's) carries the constraint's name.
+        drift += _named_drift(
+            table,
+            "index",
+            live[table]["indexes"],
+            model[table]["indexes"],
+            table_ddl_indexes | table_ddl_constraints,
+        )
+        for name in sorted(table_ddl_indexes):
+            if name not in live[table]["indexes"] and name not in model[table]["indexes"]:
+                drift.append(f"-- index {name} on {table} is missing (schema.PG_DDL creates it)")
+    return drift
+
+
+def _column_drift(
+    table: str, live: Mapping[str, tuple[str, bool]], model: Mapping[str, tuple[str, bool]]
+) -> list[str]:
+    drift: list[str] = []
+    for name in sorted(model.keys() - live.keys()):
+        type_, not_null = model[name]
+        drift.append(
+            f"ALTER TABLE {table} ADD COLUMN {name} {type_}{' NOT NULL' if not_null else ''};"
+        )
+    for name in sorted(live.keys() - model.keys()):
+        drift.append(f"-- column {table}.{name} is in the database, not in the models")
+    for name in sorted(live.keys() & model.keys()):
+        (live_type, live_not_null), (type_, not_null) = live[name], model[name]
+        if live_type != type_:
+            drift.append(
+                f"ALTER TABLE {table} ALTER COLUMN {name} TYPE {type_};  -- is {live_type}"
+            )
+        if live_not_null != not_null:
+            change = "SET" if not_null else "DROP"
+            drift.append(f"ALTER TABLE {table} ALTER COLUMN {name} {change} NOT NULL;")
+    return drift
+
+
+def _named_drift(
+    table: str,
+    kind: str,
+    live: Mapping[str, str],
+    model: Mapping[str, str],
+    tolerated: set[str],
+) -> list[str]:
+    def create(name: str) -> str:
+        if kind == "index":
+            return f"{model[name]};"
+        return f"ALTER TABLE {table} ADD CONSTRAINT {name} {model[name]};"
+
+    def drop(name: str) -> str:
+        if kind == "index":
+            return f"DROP INDEX {name};"
+        return f"ALTER TABLE {table} DROP CONSTRAINT {name};"
+
+    drift: list[str] = [create(name) for name in sorted(model.keys() - live.keys())]
+    for name in sorted(live.keys() - model.keys() - tolerated):
+        drift.append(f"-- {kind} {name} on {table} is in the database, not in the models")
+    for name in sorted(live.keys() & model.keys()):
+        if live[name] != model[name]:
+            drift.append(f"{drop(name)}  -- is {live[name]}")
+            drift.append(create(name))
+    return drift
+
+
+def check_schema_drift(bind: Engine) -> None:
+    """Refuse a database whose schema differs from the models (DB audit M5): raise
+    `SchemaDriftError` naming the DDL to run. No-op on other dialects."""
+    if bind.dialect.name != "postgresql":
+        return
+    with bind.connect() as connection:
+        transaction = connection.begin()
+        try:
+            live, model = read_live_and_model_shapes(connection)
+        finally:
+            transaction.rollback()
+    ddl_indexes, ddl_constraints = pg_ddl_objects()
+    drift = schema_drift(live, model, ddl_indexes=ddl_indexes, ddl_constraints=ddl_constraints)
+    if drift:
+        raise SchemaDriftError(
+            "the database schema differs from the models; run this DDL, then restart:\n"
+            + "\n".join(drift)
+        )

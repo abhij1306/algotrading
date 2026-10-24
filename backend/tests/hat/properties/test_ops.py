@@ -581,6 +581,14 @@ def test_backup_manifest(files: dict[str, bytes], target: int, how: str, pick: i
         assert hat_backup.verify_manifest(targets[1 - target], manifest) == []
 
 
+def test_backup_requires_the_unrebuildable_dirs() -> None:
+    names = ["raw/a.zip", "raw/b.zip", "features_daily/date=x/p.parquet", "backend.log"]
+    assert hat_backup.top_dirs(names) == {".": 1, "features_daily": 1, "raw": 2}
+    assert hat_backup.missing_dirs(names, hat_backup.REQUIRED_DIRS) == ["bars_5m"]
+    assert hat_backup.missing_dirs([*names, "bars_5m/date=x/p.parquet"], ["raw", "bars_5m"]) == []
+    assert hat_backup.missing_dirs([], ["raw"]) == ["raw"]
+
+
 WINDOW_OPEN_MINUTE = 8 * 60 + 30
 WINDOW_CLOSE_MINUTE = 15 * 60 + 35
 guard_zones = st.sampled_from((UTC, IST, ZoneInfo("America/New_York"), ZoneInfo("Asia/Tokyo")))

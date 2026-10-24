@@ -160,7 +160,10 @@ demand.
 
 1. Get the event loop.
 2. Create the database schema (`init_db`). If the database is down, one log line says so and the
-   app does not start, whatever `HAT_ENABLED` says.
+   app does not start, whatever `HAT_ENABLED` says. Then `check_schema_drift` (`schema.py`)
+   compares the live catalog with the models' (created as temporary tables and rolled back):
+   any difference in tables, columns, types, nullability, constraints or indexes refuses the
+   start and logs the DDL to run (runbook, Schema drift at startup).
 3. Only when `HAT_ENABLED` is true: check the Fyers token (warn only), then start the HAT runtime
    (`app/hat/daily/runtime.py`, production parts in `app/hat/daily/production.py`). It refuses a
    database that is not PostgreSQL, a proxy variable that would carry Fyers traffic

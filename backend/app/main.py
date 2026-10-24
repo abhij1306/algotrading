@@ -43,11 +43,13 @@ def _ensure_database_schema() -> None:
 
 async def _init_database() -> None:
     """Create the schema. Without its database the app does not start: an unreachable database
-    is one clear log line, no driver text and no password, then the startup fails. Any other
-    error (a schema bug, a refused permission) propagates with its traceback."""
+    is one clear log line, no driver text and no password, then the startup fails; so is a schema
+    that differs from the models, with the DDL to run. Any other error (a schema bug, a refused
+    permission) propagates with its traceback."""
     from sqlalchemy.exc import InterfaceError, OperationalError
 
     from .database import describe_database_target
+    from .hat.schema import SchemaDriftError
 
     try:
         await asyncio.to_thread(_ensure_database_schema)
@@ -58,6 +60,9 @@ async def _init_database() -> None:
             type(exc).__name__,
         )
         raise RuntimeError("database unavailable") from None
+    except SchemaDriftError as exc:
+        logger.error("[ERROR] Schema drift at %s: %s", describe_database_target(), exc)
+        raise RuntimeError("database schema differs from the models") from None
     logger.info("[OK] Database ready")
 
 
