@@ -155,13 +155,15 @@ def test_read_bc_keeps_the_equity_rows_of_the_night() -> None:
         + "EQ,LTTS,L&T TECHNOLOGY SER. LTD.,2026-10-27,,,2026-10-27,,,INTDIV - RS 20 PER SH\n"
         + "EQ,ANGELONE,ANGEL ONE LIMITED,2026-10-22,,,2026-10-22,,,INTDIV - RS 1.40 PER SH\n"
         + "EQ,AIFL,ASHOKA FINANCE LTD,2026-10-26,,,,,,CAPITAL REDUCTION\n"
+        + "EQ,HEXT,HEXAWARE TECH LTD,2026-10-26,,,26-1O-2026,,,INTDIV - RS 9.50 PER SH\n"
     )
-    assert [r.series for r in rows] == ["EQ", "BE", "EQ", "EQ", "EQ"]
-    night = nightly_window(rows, date(2026, 10, 23))  # LTTS goes ex later, AIFL names no date
-    proposals = feed_proposals(night, T_NIGHTLY)
-    assert [(p.symbol, p.ex_date, p.parts) for p in proposals] == [
-        ("ANGELONE", date(2026, 10, 22), (Payout(KIND_INTERIM, Decimal("1.40")),)),
-        ("TECHM", date(2026, 10, 23), (Payout(KIND_INTERIM, Decimal(15)),)),
+    assert [r.series for r in rows] == ["EQ", "BE", "EQ", "EQ", "EQ", "EQ"]
+    # LTTS goes ex later; AIFL names no ex-date but no dividend either
+    proposals = feed_proposals(nightly_window(rows, date(2026, 10, 23)), T_NIGHTLY)
+    assert [(p.symbol, p.ex_date, p.parts, p.status, p.reason) for p in proposals] == [
+        ("ANGELONE", date(2026, 10, 22), (Payout(KIND_INTERIM, Decimal("1.40")),), "", ""),
+        ("TECHM", date(2026, 10, 23), (Payout(KIND_INTERIM, Decimal(15)),), "", ""),
+        ("HEXT", None, (), "review", "bad_ex_date"),  # an unreadable date: review, alerted
     ]
 
 

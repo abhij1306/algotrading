@@ -1077,10 +1077,11 @@ class MissingAmount:
 
 
 def nightly_window(rows: Iterable[FeedRow], day: date) -> list[FeedRow]:
-    """The rows of the night's file whose ex-date is `day` or up to `CATCH_UP_DAYS` before it:
-    a dividend is stored on its ex-date's night, from that day's file."""
+    """The rows of the night's file whose ex-date is `day` or up to `CATCH_UP_DAYS` before it
+    (a dividend is stored on its ex-date's night, from that day's file), and every row whose
+    ex-date cannot be read: a dividend among them is a `bad_ex_date` review case, alerted."""
     first = day - timedelta(days=CATCH_UP_DAYS)
-    return [r for r in rows if r.ex_date is not None and first <= r.ex_date <= day]
+    return [r for r in rows if r.ex_date is None or first <= r.ex_date <= day]
 
 
 def missing_amounts(
