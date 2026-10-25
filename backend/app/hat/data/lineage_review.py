@@ -33,7 +33,7 @@ from .chains import (
     stored_dividends,
 )
 from .isin import etf_unit, rights_entitlement
-from .store import DATASET_BARS, Adjustment, DataStore
+from .store import DATASET_BARS, LATEST_ROW, Adjustment, DataStore
 
 JUMP_TOL = Decimal("0.25")
 JUMP_MAX_DAYS = 14  # a relisting after a longer suspension may jump on its own
@@ -99,11 +99,11 @@ def jump_counts(jumps: Iterable[Jump]) -> tuple[dict[int, int], dict[str, int]]:
 # One year at a time, from the latest run's rows filtered by date first (a window over the
 # whole view holds every bar in memory); the lookback gives the year's first day its previous
 # close. The raw open is the adjusted one over the day's factor (close / raw close).
-_JUMPS_SQL = """
+_JUMPS_SQL = f"""
 WITH latest AS (
     SELECT instrument_id, date, isin, open, close, raw_close FROM bars_daily_adj
     WHERE date BETWEEN ? AND ?
-    QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
+    {LATEST_ROW}
 ),
 s AS (
     SELECT instrument_id, date, isin, open, close, raw_close,
@@ -116,7 +116,7 @@ SELECT instrument_id, previous_day, date, previous_close, open, isin, previous_r
 FROM s
 WHERE date >= ? AND previous_close > 0 AND date - previous_day <= ?
   AND abs(open - previous_close) > ? * previous_close
-"""
+"""  # noqa: S608
 
 
 def unexplained_jumps(

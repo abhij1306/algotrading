@@ -88,7 +88,7 @@ from .nse_changes import (
     parse_symbol_changes,
     read_list,
 )
-from .store import DATASET_BARS, DataStore
+from .store import DATASET_BARS, DataStore, newest
 
 __all__ = [
     "Bar",
@@ -485,20 +485,19 @@ def stored_overrides(session: Session) -> dict[tuple[str, str], str]:
 
 # Aggregates only (a window over every bar would hold the whole history in memory); on a day
 # written by more than one ingest run the latest run's row wins, as in `bars_daily`.
-_SPANS_SQL = """
+_SPANS_SQL = f"""
 WITH span AS (
     SELECT instrument_id, min(date) AS first_day, max(date) AS last_day
     FROM bars_daily_raw GROUP BY instrument_id
 ),
 f AS (
-    SELECT r.instrument_id, arg_max(r.isin, r.ingest_run_id) AS isin,
-           arg_max(r.symbol, r.ingest_run_id) AS symbol,
-           arg_max(r.prev_close, r.ingest_run_id) AS prev_close
+    SELECT r.instrument_id, {newest("isin")} AS isin, {newest("symbol")} AS symbol,
+           {newest("prev_close")} AS prev_close
     FROM bars_daily_raw r JOIN span s ON r.instrument_id = s.instrument_id AND r.date = s.first_day
     GROUP BY r.instrument_id
 ),
 l AS (
-    SELECT r.instrument_id, arg_max(r.symbol, r.ingest_run_id) AS symbol
+    SELECT r.instrument_id, {newest("symbol")} AS symbol
     FROM bars_daily_raw r JOIN span s ON r.instrument_id = s.instrument_id AND r.date = s.last_day
     GROUP BY r.instrument_id
 )
@@ -507,18 +506,18 @@ FROM span s
 JOIN f ON f.instrument_id = s.instrument_id
 JOIN l ON l.instrument_id = s.instrument_id
 ORDER BY s.instrument_id
-"""
-_EDGES_SQL = """
+"""  # noqa: S608
+_EDGES_SQL = f"""
 WITH span AS (
     SELECT instrument_id, min(date) AS first_day, max(date) AS last_day
     FROM bars_daily_raw GROUP BY instrument_id
 )
-SELECT r.instrument_id, r.date, arg_max(r.open, r.ingest_run_id), arg_max(r.close, r.ingest_run_id)
+SELECT r.instrument_id, r.date, {newest("open")}, {newest("close")}
 FROM bars_daily_raw r JOIN span s ON r.instrument_id = s.instrument_id
      AND (r.date - s.first_day <= ? OR s.last_day - r.date <= ?)
 GROUP BY r.instrument_id, r.date
 ORDER BY r.instrument_id, r.date
-"""
+"""  # noqa: S608
 
 
 def read_spans(store: DataStore) -> list[Span]:

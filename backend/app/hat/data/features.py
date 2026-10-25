@@ -56,6 +56,7 @@ from .store import (
     DATASET_FEATURES,
     FEATURE_NAMES,
     FEATURES_SCHEMA,
+    LATEST_ROW,
     NO_ADJUSTMENT,
     ActionFactor,
     Adjustment,
@@ -122,12 +123,9 @@ LEVEL_FEATURES = ("sma10", "sma20", "sma50", "sma150", "sma200", "high_52w", "lo
 DIV_FACTOR = "div_factor"
 DIVIDEND_LINE = "dividend:"  # a dividend's value in `adjustment_lines`
 _LOADED = (*BAR_COLUMNS, DIV_FACTOR)  # what `load_bars` reads
-# The latest ingest run's row per (instrument, date), as the `bars_daily` view gives, but read
-# through `bars_daily_adj` with the date filter first: a window over the whole view would not be
-# pruned by date and would hold the full history in memory.
-_LATEST = (
-    "QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1"
-)
+# The latest ingest run's row per (instrument, date) (`store.LATEST_ROW`), as the `bars_daily` view
+# gives, but read through `bars_daily_adj` with the date filter first: a window over the whole view
+# would not be pruned by date and would hold the full history in memory.
 _RANGE_SQL = f"""
 SELECT {_COLUMNS_SQL}, ingest_run_id FROM bars_daily_adj WHERE date BETWEEN ? AND ?
 """  # noqa: S608
@@ -139,7 +137,7 @@ _OLDER_SQL = f"""
 SELECT {_COLUMNS_SQL} FROM (
     SELECT *, row_number() OVER (PARTITION BY instrument_id ORDER BY date DESC) AS rn FROM (
         SELECT * FROM bars_daily_adj
-        WHERE date < ? AND instrument_id NOT IN (SELECT unnest(CAST(? AS VARCHAR[]))) {_LATEST}))
+        WHERE date < ? AND instrument_id NOT IN (SELECT unnest(CAST(? AS VARCHAR[]))) {LATEST_ROW}))
 WHERE rn <= ?
 """  # noqa: S608
 

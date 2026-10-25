@@ -25,7 +25,8 @@ Views, per connection from `DataStore.connect`:
   close before it). Volume and `raw_close` are the price basis's: a dividend changes no share
   count.
 - `bars_daily` and `bars_daily_cap`: those views with one row per (instrument_id, date), from the
-  latest ingest run (run ids are uuid v7, so byte order is time order).
+  latest ingest run (`LATEST_ROW`: run ids are uuid v7, so byte order is time order), and
+  `bars_daily_raw_latest` the raw bars so.
 - `index_daily`: index levels.
 - Both adjusted views are hindsight: every factor and link as stored now, whatever date a bar
   has (CA6). A backtest reads them and skips the days they are not point in time
@@ -375,22 +376,33 @@ _ADJ_VIEWS = (
     ("bars_daily_cap_adj", "ca_segment", "no_dividend", "bars_daily_cap"),
     ("bars_daily_adj", "tr_segment", "dividend", "bars_daily"),
 )
-_LATEST_VIEW_SQL = """
-CREATE VIEW {latest} AS
-SELECT * FROM {view}
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-"""
+# One (instrument, date) written by more than one ingest run reads as the latest run's row: run
+# ids are uuid v7, so byte order is time order. `LATEST_ROW` keeps that row of a select (DuckDB
+# applies a date or instrument filter before it); `newest` is the same rule inside an aggregate,
+# for a reader that joins first. `bars_daily_raw_latest` is the raw bars with the rule applied.
+LATEST_ROW = (
+    "QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1"
+)
+RAW_LATEST = "bars_daily_raw_latest"
+
+
+def newest(column: str, alias: str = "r") -> str:
+    """`column` of the latest ingest run's row, in an aggregate over `alias` (`LATEST_ROW`)."""
+    return f"arg_max({alias}.{column}, {alias}.ingest_run_id)"
+
+
+_LATEST_VIEW_SQL = "CREATE VIEW {latest} AS SELECT * FROM {view} " + LATEST_ROW  # noqa: S608
 # Each dividend's chain id, the raw close and date of the chain's last session in the 30 days
 # before its ex-date (the latest ingest run's row) and whether the chain has a bar on or after
 # the ex-date (a dividend ahead of the bars is not priced in).
-_DIVIDEND_CLOSE_SQL = """
+_DIVIDEND_CLOSE_SQL = f"""
 WITH chained AS (
     SELECT COALESCE(l.chain_id, r.instrument_id) AS chain, r.date, r.close, r.ingest_run_id
     FROM bars_daily_raw r LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
     WHERE COALESCE(l.chain_id, r.instrument_id) IN (SELECT chain FROM div_in)
 ),
 day_close AS (
-    SELECT d.k, c.date, arg_max(c.close, c.ingest_run_id) AS close
+    SELECT d.k, c.date, {newest("close", "c")} AS close
     FROM div_in d JOIN chained c ON c.chain = d.chain AND c.date BETWEEN d.ex - 30 AND d.ex - 1
     GROUP BY d.k, c.date
 ),
@@ -400,7 +412,7 @@ FROM div_in d
 JOIN day_close dc ON dc.k = d.k
 JOIN last_day ld ON ld.chain = d.chain AND ld.last_date >= d.ex
 GROUP BY d.k
-"""
+"""  # noqa: S608
 # The open-ended first segment's NULL `from_date` is read as the first day there is rather than
 # with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
 # (24 s of CPU for five years of bars), the equality as a hash join (DB1).
@@ -629,6 +641,7 @@ class DataStore:
             config={"memory_limit": self.memory_limit, "temp_directory": str(self.temp_dir)},
         )
         self._dataset_view(con, DATASET_BARS, "bars_daily_raw")
+        con.execute(_LATEST_VIEW_SQL.format(latest=RAW_LATEST, view="bars_daily_raw"))
         self._dataset_view(con, DATASET_INDEX, "index_daily")
         # Loaded from Arrow tables: row-by-row inserts of ~1,500 segments cost half a second.
         links = sorted(adjustment.lineage.items())

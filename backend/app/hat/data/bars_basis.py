@@ -28,7 +28,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from ..money import MONEY_SCALE
 from .bars import Bar
-from .store import ActionFactor, DataStore
+from .store import RAW_LATEST, ActionFactor, DataStore
 
 __all__ = [
     "BASIS_MISMATCH",
@@ -127,11 +127,10 @@ class RawBasis:
         return fyers_factor(self._actions.get(instrument_id, ()), day, fetched_on)
 
 
-_DAILY_SQL = """
-SELECT CAST(instrument_id AS VARCHAR), date, open, high, low, close FROM bars_daily_raw
+_DAILY_SQL = f"""
+SELECT CAST(instrument_id AS VARCHAR), date, open, high, low, close FROM {RAW_LATEST}
 WHERE date BETWEEN ? AND ? AND list_contains(?, CAST(instrument_id AS VARCHAR))
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-"""
+"""  # noqa: S608
 
 
 def store_daily(store: DataStore) -> DailySource:

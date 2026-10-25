@@ -22,11 +22,7 @@ from sqlalchemy.orm import Session
 
 from ..data.chains import stored_adjustment
 from ..data.instruments import current_band
-from ..data.store import (
-    DATASET_BARS,
-    DATASET_FEATURES,
-    DataStore,
-)
+from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
 from ..engine.exits import ExitView, view_from_rules
 from ..engine.scan import ScanInputs
@@ -60,18 +56,15 @@ FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
 """
 # The two closes `reference_close` can pick, per instrument: the last before the month start and
 # the latest (each date's close from its newest ingest run; a date without a close is skipped).
-_RAW_SQL = """
-WITH latest AS (
-    SELECT instrument_id, date, close FROM bars_daily_raw WHERE date BETWEEN ? AND ?
-    QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-)
+_RAW_SQL = f"""
+WITH latest AS (SELECT instrument_id, date, close FROM {RAW_LATEST} WHERE date BETWEEN ? AND ?)
 SELECT CAST(instrument_id AS VARCHAR),
        max(date) FILTER (WHERE date < ?),
        CAST(arg_max(close, date) FILTER (WHERE date < ?) AS VARCHAR),
        max(date),
        CAST(arg_max(close, date) AS VARCHAR)
 FROM latest WHERE close IS NOT NULL GROUP BY instrument_id
-"""
+"""  # noqa: S608
 _INDEX_SQL = """
 SELECT date, CAST(close AS VARCHAR) FROM index_daily
 WHERE index_name = ? AND date <= ? ORDER BY date
