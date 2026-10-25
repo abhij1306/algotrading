@@ -26,6 +26,8 @@ from app.hat.data.store import (
     BarRow,
     DataStore,
     StoreError,
+    ex_prev_factor,
+    ex_total_factors,
     latest_rows,
     newest,
 )
@@ -224,3 +226,31 @@ def test_fingerprints_change_with_a_new_run_and_the_view_reads_by_glob() -> None
             ("i1", DAYS[1], Decimal("100.00")),
             ("i2", DAYS[1], Decimal("100.00")),
         ]
+
+
+def test_ex_prev_factor_adjusts_an_unadjusted_prev_close_only() -> None:
+    """NSE's ex-date PREVCLOSE is mostly the previous raw close (old basis: take the day's
+    factor); when NSE restated it (new basis) it takes nothing; without a close, the factor."""
+    half, tenth = Decimal("0.5"), Decimal("0.1")
+    assert ex_prev_factor(Decimal("637.00"), Decimal("637.00"), half) == half  # bonus 1:1
+    assert ex_prev_factor(Decimal("63.70"), Decimal("637.00"), tenth) == 1  # restated by NSE
+    assert ex_prev_factor(Decimal("13.83"), Decimal("138.30"), Decimal(10)) == 10  # consolidation
+    assert ex_prev_factor(Decimal("138.30"), Decimal("13.83"), Decimal(10)) == 1
+    assert ex_prev_factor(Decimal("641.10"), Decimal("637.00"), half) == half  # NSE's own close
+    assert ex_prev_factor(None, Decimal("637.00"), half) == half
+    assert ex_prev_factor(Decimal("637.00"), None, half) == half
+    assert ex_prev_factor(Decimal(0), Decimal("637.00"), half) == half
+
+
+def test_a_dividend_without_a_bar_on_its_ex_date_reaches_the_next_session() -> None:
+    """A dividend's prev_close factor sits on the chain's first session on or after its
+    ex-date, multiplied into a price factor of the same session."""
+    ex, session, other = date(2024, 3, 8), date(2024, 3, 11), date(2024, 5, 2)
+    price = {("c", session): Decimal("0.5")}
+    paid = [
+        ("c", ex, date(2024, 3, 7), Decimal(2), Decimal(100), Decimal("0.98")),
+        ("c", other, date(2024, 4, 30), Decimal(1), Decimal(100), Decimal("0.99")),
+    ]
+    total = ex_total_factors(price, paid, {("c", ex): session, ("c", other): other})
+    assert total == {("c", session): Decimal("0.490"), ("c", other): Decimal("0.99")}
+    assert price == {("c", session): Decimal("0.5")}  # the price basis is untouched

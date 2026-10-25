@@ -153,6 +153,16 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Point in time, not full as-of rebuild.** The series stays the hindsight view; the backtest
   skips names whose value was not yet knowable (`known_on`, versions) instead of rebuilding the
   series per date.
+- **A long gap breaks the series (D5, 2026-10-25).** An instrument back after more than 92
+  calendar days without a bar (`series_break.SERIES_BREAK_DAYS`, a quarter, about 63 sessions)
+  starts a new series: features, criteria, entry stop and breakout-volume windows read only the
+  rows since, so they are null or short until they refill (a 200-day SMA needs 200 new rows).
+  Shorter halts stay one series. Counted in calendar days between the instrument's own bars, so a
+  full rebuild, an incremental run and a scan read the same; a held position's exit history is
+  not cut.
+- **The benchmark is NIFTY 500 TRI (D6).** A run's benchmark is the total-return index, as its
+  equity earns dividends; the regime reading stays on the NIFTY 500 price index. A session the
+  index lacks gives no benchmark rather than the last close carried over.
 - **Owner corrections over automation.** Wrong factors, amounts and dates are fixed by the owner's
   journalled corrections and reviewed lists with bar evidence; loads never overwrite them, and
   nothing is guessed.

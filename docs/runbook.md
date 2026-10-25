@@ -333,6 +333,14 @@ Owner corrections (journalled; no load rewrites them):
   nothing. A demerger is added as type `demerger` (stored as an `other` flagged one); a move
   keeps the row's own text and flag.
 
+Known raw-bar artefacts (raw bars are immutable; kept, not corrected):
+
+- ADANIENT 2015-06-03 (demerger ex-date): open and high 573.30 are a single pre-open print (low
+  106.35, close 109.75). The demerger factor is the close over the previous close, so the close
+  series is continuous, but the bar's high lifts the 52-week high until about 2016-06 and adtr20
+  for 20 sessions (`lineage report` lists it as an `other` jump). Conservative: S1's distance
+  from the 52-week high fails, so it gives no false entry.
+
 Tools, `python -m app.hat.data.<tool>`: imports are dry runs until `--apply` and idempotent;
 input files sit under the working directory (run there with `PYTHONPATH=<repo>/backend`).
 
@@ -349,13 +357,17 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `demerger_notice announced F.tsv [--replace]` | Date stored demergers' `announced_on` from a reviewed file (`isin ex_date announced_on source_url note`); `--replace` also moves a stored date to an earlier sourced one; journalled `corporate_action.announced` |
 | `demerger_notice exits [SYMBOL...]` | The session each stored demerger's forced exit falls on, or why it holds |
 | `point_in_time report` / `pending SYMBOL` | Lagged and undated actions, version ledger (projection check must be 0); factor-pending sessions |
+| `index_history backfill [--from D] [--to D] [--apply]` | Fill the bar days `index_daily` lacks: the nightly indices from NSE's day files, then niftyindices' copy, then its price history; NIFTY 500 TRI from niftyindices (a year per request). A day no source has stays missing and is listed (exit 1; India VIX has 5 such days), never the last close carried. The nightly ingest does not fetch TRI: run it before a research run so the benchmark reaches the last session (a run with a missing day has no benchmark) |
 | `renames` | Seed symbol history from renames |
 | `$ADMIN repair-symbol-history [--apply]` | Close overlapping symbol intervals |
 
 After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
 factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is
-never needed for it. The writers of actions, lineage and symbol history share the `hat_reference_data`
-advisory lock; `features` does not take it, so run it after they finish.
+never needed for it. A release that changes a feature formula or the adjusted views bumps
+`FEATURES_RULE` (`features_state.py`), which makes the next run, scheduled or manual, recompute
+every date (`inputs_changed`); `features --full` does the same at once. The writers of actions,
+lineage and symbol history share the `hat_reference_data` advisory lock; `features` does not take
+it, so run it after they finish.
 
 ## Alerts and failures
 

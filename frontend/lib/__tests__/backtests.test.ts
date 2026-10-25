@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
+  BENCHMARK_NAME,
+  benchmarkName,
   compareEquity,
   compareYearly,
   equityRows,
@@ -212,5 +214,14 @@ describe("reasonRows and formatMetric", () => {
     expect(formatMetric(undefined, "pct")).toBe("--");
     expect(formatMetric("score", "text")).toBe("score");
     expect(formatMetric(0.02561, "drawdown")).toBe("-2.56%");
+  });
+});
+
+describe("benchmarkName", () => {
+  it("labels a report by the index it recorded, else the current benchmark", () => {
+    const bench = { name: "NIFTY 500", total_return: 0.1, cagr: 0.05, max_drawdown: -0.2 };
+    expect(benchmarkName({ benchmark: bench })).toBe("NIFTY 500");
+    expect(benchmarkName({ benchmark: { ...bench, name: "NIFTY 500 TRI" } })).toBe("NIFTY 500 TRI");
+    expect(benchmarkName({ benchmark: null })).toBe(BENCHMARK_NAME);
   });
 });

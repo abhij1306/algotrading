@@ -97,8 +97,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   versions, lineage, index membership by date), strategy, risk and bots, portfolio, runtime
   (watchlist, signal, approval, order, fill, position, trade result, holding baseline), ops (events, job runs, Telegram, snapshots, backtest runs).
 - Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
-  `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily`,
-  `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
+  `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily` (the
+  nightly indices, and NIFTY 500 TRI from `index_history backfill`), `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
   NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable; a later, different copy of that
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
 - `backtests/run_id=<id>/` holds a completed run's `trades.parquet`, `returns.parquet` (daily

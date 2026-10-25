@@ -43,8 +43,10 @@ from ..data.chains import stored_adjustment
 from ..data.demerger_notice import exit_day
 from ..data.features_state import features_current, inputs_digest
 from ..data.identity import series_changes
+from ..data.index_history import NIFTY_500_TRI
 from ..data.lineage_review import unexplained_jumps
 from ..data.point_in_time import chain_pending
+from ..data.series_break import segment_start
 from ..data.store import (
     DATASET_BARS,
     DATASET_BREADTH,
@@ -435,21 +437,37 @@ class MarketView:
         return _price(rows.get(instrument_id, {}).get(name))
 
     def bars_through(
-        self, instrument_id: str, day: date, count: int, *, inclusive: bool = True
+        self,
+        instrument_id: str,
+        day: date,
+        count: int,
+        *,
+        inclusive: bool = True,
+        since_break: bool = False,
     ) -> list[Bar]:
         """The instrument's last `count` bars dated on or before `day` (before it, if not
         `inclusive`), oldest first: the total-return series on the scale of its last bar on or
         before `day`, what a signal reads that day (CA3), so a rule comparing them with the day's
-        close sees no ex-date drop; the price basis where no dividend went ex among them."""
+        close sees no ex-date drop; the price basis where no dividend went ex among them. With
+        `since_break`, none before the last series break up to `day` (`series_break`), as the
+        live trigger reads the stop inputs."""
         series, end = self._find(instrument_id, day, inclusive=inclusive)
         _, through = self._find(instrument_id, day, inclusive=True)
-        return series.signal_bars(max(0, end - count), end, through - 1)
+        start = max(0, end - count)
+        if since_break:
+            days = [_EPOCH + timedelta(days=int(n)) for n in series.days[start:end]]
+            start += segment_start(days, None if inclusive else day)
+        return series.signal_bars(start, end, through - 1)
 
     def volumes_through(self, instrument_id: str, day: date, count: int) -> list[float]:
         """The volumes of the instrument's last `count` stored sessions on or before `day`,
-        oldest first, a session with bad prices included (NaN where the store has none)."""
+        oldest first, a session with bad prices included (NaN where the store has none), none
+        before the last series break (`series_break`)."""
         days, volumes = self.volumes.get(instrument_id, _NO_VOLUMES)
-        return last_through(days, volumes, _ordinal(day), count)
+        window = last_through(days, volumes, _ordinal(day), count)
+        end = int(np.searchsorted(days, _ordinal(day), side="right"))
+        dates = [_EPOCH + timedelta(days=int(n)) for n in days[end - len(window) : end]]
+        return window[segment_start(dates) :]
 
     def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
         """The instrument's bars dated from `first` on and before `day`, oldest first, on the
@@ -485,8 +503,8 @@ class MarketView:
         return real_shares(qty, float(closes.factor[through - 1])) if through else None
 
     def atr(self, instrument_id: str, day: date, length: int) -> Decimal | None:
-        """The mean true range of the `length` sessions up to `day`."""
-        window = self.bars_through(instrument_id, day, length + 1)
+        """The mean true range of the `length` sessions up to `day` (since a series break)."""
+        window = self.bars_through(instrument_id, day, length + 1, since_break=True)
         return mean_true_range(
             [b.high for b in window], [b.low for b in window], [b.close for b in window], length
         )
@@ -990,8 +1008,16 @@ def load_market(
             _DIVIDENDS_SQL, [window[0], end, wanted]
         ).fetchall():
             dividends[str(instrument_id)].append((ex_date, Decimal(amount) * Decimal(basis)))
-        # NIFTY 500 always: the run's report charts against it (`report_data`)
-        names = sorted({index, regime.INDEX_NAME, *((regime.VIX_NAME,) if regime_inputs else ())})
+        # NIFTY 500 and its TRI always: the run's report splits trades by the one's regime and
+        # charts against the other (`report_data`)
+        names = sorted(
+            {
+                index,
+                regime.INDEX_NAME,
+                NIFTY_500_TRI,
+                *((regime.VIX_NAME,) if regime_inputs else ()),
+            }
+        )
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
     # read once DuckDB has let go of the bars' memory
     features, breadth = _current_features(

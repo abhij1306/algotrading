@@ -250,7 +250,8 @@ class _History:
         return self.view.atr(self.instrument_id, self.through, length)
 
     def lows(self, count: int) -> list[Decimal]:
-        return [b.low for b in self.view.bars_through(self.instrument_id, self.through, count)]
+        bars = self.view.bars_through(self.instrument_id, self.through, count, since_break=True)
+        return [b.low for b in bars]
 
 
 def _at(day: date, moment: time, offset: int = 0) -> datetime:

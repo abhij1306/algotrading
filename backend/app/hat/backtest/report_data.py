@@ -1,12 +1,12 @@
 """A run's report data (`backtests/run_id=<id>/report.json`): what the results page charts, built
-once when the run completes from its result and the NIFTY 500 closes, and read back by the API
-(`/api/hat/backtests`). Pure but for `write_report` and `read_report`.
+once when the run completes from its result and the NIFTY 500 and NIFTY 500 TRI closes, and read
+back by the API (`/api/hat/backtests`). Pure but for `write_report` and `read_report`.
 
-The document (`REPORT_VERSION`): the equity curve with its drawdown and the NIFTY 500 rebased to
-the run's first session, the yearly returns of both, the R curve (cumulative R in exit order),
-the trades with MFE/MAE and the index regime at entry, the breakdowns by exit reason, hold time
-and regime, and the signal funnel. Money and R are exact decimal strings, return and drawdown
-ratios floats, dates ISO strings.
+The document (`REPORT_VERSION`): the equity curve with its drawdown and the NIFTY 500 TRI
+(`BENCHMARK`, none when it lacks a session of the run) rebased to the run's first session, the
+yearly returns of both, the R curve (cumulative R in exit order), the trades with MFE/MAE and the
+index regime at entry, the breakdowns by exit reason, hold time and regime, and the signal funnel.
+Money and R are exact decimal strings, return and drawdown ratios floats, dates ISO strings.
 
 The regime at entry (`REGIME_RULE`) is the NIFTY 500's trend on the session before the entry:
 `up` when its close is above its 200-session SMA and that SMA is above its value 20 sessions
@@ -19,13 +19,14 @@ from __future__ import annotations
 import json
 import math
 import uuid
-from bisect import bisect_left, bisect_right
+from bisect import bisect_left
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from ..data.index_history import NIFTY_500_TRI
 from ..data.store import atomic_replace
 from . import metrics as bt_metrics
 from .report import BacktestResult, TradeRow
@@ -48,7 +49,7 @@ __all__ = [
 ]
 
 REPORT_VERSION = 1
-BENCHMARK = "NIFTY 500"
+BENCHMARK = NIFTY_500_TRI  # the signals read total-return prices, so the benchmark is one too
 REGIME_SMA = 200
 REGIME_RISING = 20
 REGIME_RULE = "nifty500_close_above_sma200_and_sma200_above_20_sessions_ago_on_prior_session"
@@ -155,16 +156,11 @@ def yearly_returns(
 
 
 def _benchmark_on(closes: Sequence[tuple[date, Decimal]], days: Sequence[date]) -> list[Decimal]:
-    """The index's last close on or before each of `days` (forward-filled); empty when the index
-    has no close on or before the first day."""
-    dates = [d for d, _ in closes]
-    out = []
-    for day in days:
-        at = bisect_right(dates, day)
-        if at == 0:
-            return []
-        out.append(closes[at - 1][1])
-    return out
+    """The index's close on each of `days`; empty (no benchmark) when it lacks any of them: a
+    missing index day is never filled with an earlier close."""
+    on = dict(closes)
+    out = [on.get(day) for day in days]
+    return [] if any(v is None for v in out) else [v for v in out if v is not None]
 
 
 def drawdowns(values: Sequence[float], start: float = -math.inf) -> list[float]:
@@ -243,15 +239,19 @@ def _trade_json(t: TradeRow, regime: str) -> dict[str, Any]:
 
 
 def build_report(
-    result: BacktestResult, initial: Decimal, benchmark: Sequence[tuple[date, Decimal]]
+    result: BacktestResult,
+    initial: Decimal,
+    benchmark: Sequence[tuple[date, Decimal]],
+    regime_closes: Sequence[tuple[date, Decimal]],
 ) -> dict[str, Any]:
     """The run's report document (see the module docstring) from its `result`, its initial
-    equity and the NIFTY 500 closes (oldest first; empty: no benchmark)."""
+    equity, the `BENCHMARK` closes (oldest first; empty: no benchmark) and the NIFTY 500 price
+    closes the trades' regime is read from (`REGIME_RULE`)."""
     equity = list(result.equity)
     values = [float(v) for _, v in equity]
     drawdown = drawdowns(values, float(initial))
     rebased, bench, bench_yearly = _benchmark(benchmark, equity)
-    states = index_regimes(benchmark)
+    states = index_regimes(regime_closes)
     regime_of = {id(t): regime_before(states, t.entry_date) for t in result.trades}
     curve = []
     total = _ZERO

@@ -5,7 +5,8 @@
 
 `compute_features` is a pure function of a bar frame. Every feature of date d is a function of the
 instrument's own rows dated on or before d (a window over rows, so a day an instrument did not
-trade is not a row), and the percentile columns of d rank only instruments that have a value on d.
+trade is not a row) since its last series break (`series_break`: a window never spans a gap of
+more than a quarter), and the percentile columns of d rank only instruments that have a value on d.
 `run_features` reads the adjusted `bars_daily` view and writes each partition atomically. The
 percentiles and breadth rank the ordinary equity rows only (`ORDINARY_EQUITY`, D257).
 
@@ -57,6 +58,7 @@ from .features_state import (
     write_state,
 )
 from .isin import ORDINARY_EQUITY
+from .series_break import breaks
 from .store import (
     BREADTH_SCHEMA,
     DATASET_BARS,
@@ -145,15 +147,20 @@ class FeaturesError(HatError):
         self.code = code
 
 
+# A window runs over the instrument's rows since its last series break (`series_break`).
+_SEGMENT = "_segment"
+_SERIES = ("instrument_id", _SEGMENT)
+
+
 def _mean(expr: pl.Expr, window: int) -> pl.Expr:
-    """Mean over the last `window` rows of the instrument; null unless the window is full (a
-    null input in the window also gives null)."""
-    return expr.rolling_mean(window, min_samples=window).over("instrument_id")
+    """Mean over the last `window` rows of the series; null unless the window is full (a null
+    input in the window also gives null)."""
+    return expr.rolling_mean(window, min_samples=window).over(_SERIES)
 
 
 def _ret(window: int) -> pl.Expr:
     """close_d / close_{d-window} - 1, null without that many rows (or a non-positive base)."""
-    base = pl.col("close").shift(window).over("instrument_id")
+    base = pl.col("close").shift(window).over(_SERIES)
     return pl.when(base > 0).then(pl.col("close") / base - 1.0)
 
 
@@ -164,10 +171,17 @@ def _percentile(value: pl.Expr) -> pl.Expr:
 
 
 def _per_instrument(frame: pl.DataFrame) -> pl.DataFrame:
-    """Every feature that depends on one instrument's own rows (all but the percentiles)."""
+    """Every feature that depends on one instrument's own rows (all but the percentiles), each
+    window over the rows since the instrument's last series break. `frame` is sorted by date
+    within each instrument."""
     col = pl.col
+    start = breaks(col("date")).over("instrument_id")
+    frame = frame.with_columns(start.alias("_break")).with_columns(
+        col("_break").cum_sum().over("instrument_id").alias(_SEGMENT)
+    )
     ratio = pl.when(col("low") > 0).then(col("high") / col("low") - 1.0)
-    prev = pl.when(col("prev_close") > 0).then(col("prev_close"))  # no usable prev close: ignored
+    # no usable prev close, or one from before a series break: ignored
+    prev = pl.when((col("prev_close") > 0) & ~col("_break")).then(col("prev_close"))
     true_range = pl.max_horizontal(col("high"), prev) - pl.min_horizontal(col("low"), prev)
     traded = pl.coalesce(col("traded_value"), col("close") * col("volume"))
     # 0.4 r3 + 0.2 r6 + 0.2 r9 + 0.2 r12, added left to right as `compute_rs_map` does; a null
@@ -177,21 +191,15 @@ def _per_instrument(frame: pl.DataFrame) -> pl.DataFrame:
         weighted = weighted + w * _ret(n)
     return frame.with_columns(
         *(_mean(col("close"), n).alias(f"sma{n}") for n in SMA_WINDOWS),
-        col("high")
-        .rolling_max(WINDOW_52W, min_samples=WINDOW_52W)
-        .over("instrument_id")
-        .alias("high_52w"),
-        col("low")
-        .rolling_min(WINDOW_52W, min_samples=WINDOW_52W)
-        .over("instrument_id")
-        .alias("low_52w"),
+        col("high").rolling_max(WINDOW_52W, min_samples=WINDOW_52W).over(_SERIES).alias("high_52w"),
+        col("low").rolling_min(WINDOW_52W, min_samples=WINDOW_52W).over(_SERIES).alias("low_52w"),
         (100.0 * _mean(ratio, WINDOW_20)).alias("adr20"),
         _mean(true_range, WINDOW_20).alias("adtr20"),
         _mean(col("volume"), WINDOW_20).alias("adv20"),
         _mean(traded, WINDOW_20).alias("turnover20"),
         *(_ret(n).alias(f"ret{n}") for n in RET_WINDOWS),
         weighted.alias("rs_weighted"),
-    ).drop("high", "low", "prev_close", "volume", "traded_value")
+    ).drop("high", "low", "prev_close", "volume", "traded_value", "_break", _SEGMENT)
 
 
 def _above() -> pl.Expr:
