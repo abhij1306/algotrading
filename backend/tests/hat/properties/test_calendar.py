@@ -7,6 +7,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from app.hat.data import calendar as cal
+from app.hat.risk.sessions import SessionCalendar, SessionState
 from app.hat.time import IST
 
 CalSpec = tuple[time, time, dict[date, cal.CalendarDay]]
@@ -76,3 +77,19 @@ def test_weekday_rows(spec: CalSpec) -> None:
             expected = cal.CalendarDay(day, True, open_default, close_default)
             assert by_day.get(day) == (expected if day.weekday() < 5 else None)
         day += timedelta(days=1)
+
+
+def test_unlisted_weekend_inside_the_span_is_closed() -> None:
+    """An ordinary Saturday or Sunday has no stored row: inside the calendar's span it is
+    closed, so the outside-market-hours commands run at the weekend; outside it, and on a
+    missing weekday, the state stays unknown."""
+    friday, monday = date(2026, 10, 23), date(2026, 10, 26)
+    rows = [(d, True, instant(d, time(9, 15)), instant(d, time(15, 30))) for d in (friday, monday)]
+    calendar = SessionCalendar.from_rows(rows)
+    noon = time(12, 0)
+    assert calendar.state(instant(date(2026, 10, 24), noon)) is SessionState.CLOSED
+    assert calendar.state(instant(date(2026, 10, 25), noon)) is SessionState.CLOSED
+    assert calendar.state(instant(date(2026, 10, 31), noon)) is SessionState.UNKNOWN
+    assert calendar.state(instant(date(2026, 10, 27), noon)) is SessionState.UNKNOWN
+    assert calendar.state(instant(friday, noon)) is SessionState.OPEN
+    assert SessionCalendar().state(instant(date(2026, 10, 24), noon)) is SessionState.UNKNOWN

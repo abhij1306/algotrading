@@ -8,13 +8,15 @@ are the pure ones in `universe`.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Mapping, Sequence
 from datetime import date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
+from app.hat.data.isin import ordinary_equity
+from app.hat.data.reference import IndustryRow
 from app.hat.data.symbol_history import resolve_symbol
 from app.hat.models import HatBot, HatUniverse, HatUniverseMember, HatUniverseVersion
 from app.hat.risk.sessions import SessionCalendar, SessionState
@@ -68,6 +70,26 @@ def resolve_symbols(
         else:
             found.add(instrument.id)
     return frozenset(found), tuple(unknown)
+
+
+def stock_rows(
+    rows: Sequence[IndustryRow], excluded: Collection[str]
+) -> tuple[list[IndustryRow], tuple[str, ...]]:
+    """The index list's rows to resolve: the excluded symbols' rows dropped first (an exclude may
+    name a row no instrument matches, such as an index provider's placeholder), then every row
+    whose ISIN is not an ordinary equity share's (decisions.md "Stocks only": a REIT, InvIT,
+    ETF or fund unit, or a placeholder), which are also returned, by symbol, sorted. A row
+    without an ISIN is kept: its instrument's ISIN is classed when it is scanned."""
+    kept: list[IndustryRow] = []
+    not_stocks: list[str] = []
+    for row in rows:
+        if row.symbol in excluded:
+            continue
+        if row.isin and not ordinary_equity(row.isin):
+            not_stocks.append(row.symbol)
+        else:
+            kept.append(row)
+    return kept, tuple(sorted(not_stocks))
 
 
 def assign_universe(

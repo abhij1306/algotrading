@@ -8,8 +8,9 @@ after it (CA3). The run fills, marks and pays dividends on the price basis; ever
 scan's window, the SMA, swing low and ATR) is the total-return series rescaled to the day it is read
 for (`MarketView`), as live reads it that day, so an ex-date drop is no signal and a held position
 earns the cash (`MarketData.dividends`). Features come from the `features_daily` partitions the
-nightly job wrote, the regime index from `index_daily`, and membership from the universe's
-intervals, delisted instruments included. Nothing is filtered by what happened later: the day loop
+nightly job wrote, the regime index from `index_daily`, and membership is the universe's current
+members over the whole period (`current_members`, a known gap). Nothing else is filtered by what
+happened later: the day loop
 reads each input only up to the date it decides for (`MarketView`). The features must be the ones
 the nightly job wrote for the corporate actions the bars are adjusted with: the job's stored inputs
 digest must equal the digest of the stored actions over the whole store (HAT-DATA-077, PR 67). A run
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import math
 import uuid
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -67,9 +69,11 @@ __all__ = [
     "MarketData",
     "MarketView",
     "classifications",
+    "current_members",
     "industry_on",
     "jump_skips",
     "load_market",
+    "real_shares",
     "stopped_trading",
 ]
 
@@ -79,6 +83,7 @@ LOOKBACK_SESSIONS = 700
 _PRICE_DIGITS = 4
 _ZERO_CASH = Decimal(0)
 _ALWAYS = date(1900, 1, 1)
+_SHARE_SLACK = 1e-6  # `real_shares`: a double's error on a whole number of shares
 _EPOCH = date(1970, 1, 1)  # polars' Date is days since this day
 # Sessions without a bar, up to the store's last day, after which an instrument that never trades
 # again counts as delisted (`MarketData.last_traded`).
@@ -113,13 +118,14 @@ class MarketData:
     a rupee price read (`min_price`, the tick slab), as doubles, for the scan, and `open_e4` ..
     `close_e4`, the exact 4-place prices as integers of 1/10,000, for the day loop's Decimals).
     `features`: the daily features (`date`, `instrument_id`, columns). `index_closes`:
-    per index name, (date, close) oldest first. `members`: the universe's membership intervals,
-    delisted instruments included. `industries`: each instrument's industry, either one name
-    or its classifications as (effective_from, industry), read point in time. `series`: each
-    instrument's series as change points (first day, series) from its bars, so a scan reads
-    the series of its own day (`identity.series_on`), not today's. `breadth`: the features job's
-    `breadth_pct` per session, read with the `regime.INDEX_NAME` and `regime.VIX_NAME` closes of
-    `index_closes` only by a run under the `policy` regime rule (PR 68).
+    per index name, (date, close) oldest first. `members`: the universe's current members, each
+    a member over the whole period (`current_members`). `industries`: each instrument's
+    industry, either one name or its classifications as (effective_from, industry), read point
+    in time. `series`: each instrument's series as change points (first day, series) from its
+    bars, so a scan reads the series of its own day (`identity.series_on`), not today's.
+    `breadth`: the features job's `breadth_pct` per session, read with the `regime.INDEX_NAME`
+    and `regime.VIX_NAME` closes of `index_closes` only by a run under the `policy` regime rule
+    (PR 68).
 
     `last_traded`: the last session of each instrument delisted by the period's end, where the
     day loop closes a position in it (HAT-BT-012). It is read from the bars (`stopped_trading`),
@@ -261,15 +267,21 @@ _SCALED = ("open", "high", "low", "close", "prev_close")  # the scan's double pr
 class _RawCloses:
     """One instrument's bars with a positive raw close, whatever their other prices (live reads
     every raw close for the tick, `daily.market._RAW_SQL`): the dates as days since `_EPOCH`,
-    ascending, and the raw and adjusted closes in 1/10,000 (adjusted 0 when absent)."""
+    ascending, the raw and adjusted closes in 1/10,000 (adjusted 0 when absent) and the price
+    basis's factor (the adjusted close over the raw one, from the unrounded close; NaN without
+    an adjusted close)."""
 
     days: np.ndarray
     raw: np.ndarray
     adjusted: np.ndarray
+    factor: np.ndarray
 
 
 _NO_RAW = _RawCloses(
-    np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
+    np.empty(0, dtype=np.int32),
+    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.float64),
 )
 
 
@@ -333,12 +345,14 @@ class MarketView:
             # a raw price has at most the store's 4 places, so the double rounds back exactly
             raw=(pl.col("raw_close") * 10_000).round(0).cast(pl.Int64),
             adjusted=pl.col("close_e4").fill_null(0),
+            factor=(pl.col("close") / pl.col("raw_close")).fill_null(float("nan")),
         ).filter(pl.col("raw") > 0)
         return {
             str(key[0]): _RawCloses(
                 part["date"].to_physical().to_numpy(),
                 part["raw"].to_numpy(),
                 part["adjusted"].to_numpy(),
+                part["factor"].to_numpy(),
             )
             for key, part in frame.partition_by("instrument_id", as_dict=True).items()
         }
@@ -416,6 +430,13 @@ class MarketView:
             return None
         last = through - 1
         return scaled_tick(tick, _exact(closes.adjusted[last]), _exact(closes.raw[last]))
+
+    def real_shares(self, instrument_id: str, day: date, qty: int) -> int | None:
+        """The whole shares `qty` price-basis shares were on `day` (`real_shares`), by the factor
+        of its bar of `day` (or the last before it); None without one."""
+        closes = self.raw_closes.get(instrument_id, _NO_RAW)
+        through = int(np.searchsorted(closes.days, _ordinal(day), side="right"))
+        return real_shares(qty, float(closes.factor[through - 1])) if through else None
 
     def atr(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The mean true range of the `length` sessions up to `day`."""
@@ -515,17 +536,36 @@ WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 def _members(
     session: Session, universe_id: uuid.UUID, lineage: Mapping[str, str]
 ) -> tuple[Interval, ...]:
-    """The universe's membership intervals; a linked older ISIN's are its chain's, whose id its
-    bars carry in `bars_daily`."""
+    """The universe's members over the whole run (`current_members`)."""
     rows = session.scalars(
-        select(HatUniverseMember)
-        .where(HatUniverseMember.universe_id == universe_id)
-        .order_by(HatUniverseMember.instrument_id, HatUniverseMember.effective_from)
+        select(HatUniverseMember).where(HatUniverseMember.universe_id == universe_id)
     ).all()
-    return tuple(
-        Interval(_chain_id(r.instrument_id, lineage), r.effective_from, r.effective_to)
-        for r in rows
+    return current_members(
+        (Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows), lineage
     )
+
+
+def real_shares(qty: int, factor: float) -> int | None:
+    """The whole shares a quantity of price-basis shares was on a day whose bar the stored
+    corporate actions adjust by `factor` (adjusted price over raw price): a split after the day
+    makes each real share `1 / factor` basis shares, so a 5:1 split's 858 basis shares were 171
+    real ones (171.6, rounded down to whole shares as an order would be). A product within a
+    millionth of a share below a whole number is that number, as the factor is read through
+    doubles. None for a factor that is not a positive finite number."""
+    if not (math.isfinite(factor) and factor > 0):
+        return None
+    return math.floor(qty * factor + _SHARE_SLACK)
+
+
+def current_members(rows: Iterable[Interval], lineage: Mapping[str, str]) -> tuple[Interval, ...]:
+    """The universe's current members (an interval without an end), each a member from the first
+    day there is, by instrument id: the known gap `universe_from_current_constituents`, today's
+    list over the whole period, until a constituents history exists. A published list starts
+    on its `as_of` date, so read point in time it would leave every earlier session empty. A
+    linked older ISIN is its chain's, whose id its bars carry in `bars_daily`; a former member
+    is not in the run."""
+    current = {_chain_id(r.instrument_id, lineage) for r in rows if r.effective_to is None}
+    return tuple(Interval(i, _ALWAYS) for i in sorted(current))
 
 
 def _chain_id(instrument_id: uuid.UUID, lineage: Mapping[str, str]) -> uuid.UUID:

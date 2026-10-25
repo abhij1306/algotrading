@@ -118,7 +118,9 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    account takes no sleeve); `seed-strategies`; `seed-bots --account <id>`. Then start HAT with
    `HAT_ENABLED=true`.
 3. `publish-universe --constituents <ind_nifty500list.csv> --as-of <date> [--include S]
-   [--exclude S]` (unknown symbols or ISINs are listed; nothing written).
+   [--exclude S]`. Rows whose ISIN is not an ordinary share (a REIT, a placeholder such as
+   `DUMMYHEG`) are skipped and listed under `not_stocks`; an `--exclude` drops its row before
+   symbols resolve. Any other unknown symbol or ISIN is listed and nothing is written.
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
    <bot> --version <v> --from 2011-06-22 --to <last trading day> --for-promotion --regime-mult
    policy`; then `publish-version --version <v> --run <run_id>` (the version is `frozen`) and
@@ -139,6 +141,26 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    the old version and moves the Live sleeve onto it; open trades keep theirs). One Live sleeve per
    strategy.
 8. Recovered Probation sleeve: `promote --bot <bot> --to live`.
+
+### Research backtest
+
+A research run needs no bot, broker account or Fyers login, only a strategy version, a published
+universe and the risk policy (`seed-policy`, `seed-strategies`, step 3's `publish-universe`):
+
+```bash
+python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-10-25 \
+  --to <last trading day> [--sleeve-weight W] [--slot-order score] [...]
+```
+
+`--universe` takes the universe's id or name. The run records a trial of the (strategy, universe)
+family in the database it runs against and writes `backtests/run_id=<id>/` under
+`HAT_DATA_ROOT`. The universe is its current members over the whole window, through lineage
+(known gap `universe_from_current_constituents`: survivorship bias, returns read optimistic). A
+sleeve the policy gives base weight 0 sizes at 0.5 in a research run (recorded in the run's
+conventions); a `--for-promotion` run of it is refused `backtest_no_base_weight`. The trade
+ledger's `qty` is in today's split-adjusted shares; `qty_real` is the whole real shares on the
+entry day. Admin commands gated outside market hours run at weekends: an ordinary Saturday or
+Sunday inside the stored calendar reads closed.
 
 ### First live session checks (O2 day)
 

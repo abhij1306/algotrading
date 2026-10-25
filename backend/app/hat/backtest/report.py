@@ -105,6 +105,9 @@ class TradeRow:
     dividends: Decimal = Decimal(0)  # the cash dividends in `realized_pnl` and R (R-DIV)
     # an exit priced at a daily close far from live's pre-15:15 price (`auction_days`): its tags
     auction_risk: str | None = None
+    # `qty` is in price-basis shares, adjusted for every later split and bonus; the whole real
+    # shares it was on the entry day (`data.real_shares`), None without a bar to read it from
+    qty_real: int | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +335,8 @@ TRADE_SCHEMA = pa.schema(
         ("score", pa.float64()),
         # `fo_expiry`/`index_rebalance` for an exit priced at that day's auction close, else null
         ("auction_risk", pa.string()),
+        # the entry's whole real shares on its day; `qty` is in today's price-basis shares
+        ("qty_real", pa.int64()),
     ]
 )
 

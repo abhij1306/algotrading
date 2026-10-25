@@ -1,5 +1,7 @@
 """The backtest command line: `python -m app.hat.backtest --bot <id> --from YYYY-MM-DD --to
-YYYY-MM-DD [...]` backtests a sleeve over the Parquet store and records the run (`runs`)."""
+YYYY-MM-DD [...]` backtests a sleeve over the Parquet store and records the run (`runs`);
+`--strategy-version <id> --universe <id or name>` in place of `--bot` is a research run with no
+bot."""
 
 from __future__ import annotations
 
@@ -44,13 +46,15 @@ def _sleeve_weight_arg(text: str) -> Decimal:  # pragma: no cover - the command 
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
-    """python -m app.hat.backtest --bot <id> --from YYYY-MM-DD --to YYYY-MM-DD
-    [--version <id>] [--slippage-bps N] [--cost-model NAME] [--cooldown-sessions N]
+    """python -m app.hat.backtest (--bot <id> | --strategy-version <id> --universe <id|name>)
+    --from YYYY-MM-DD --to YYYY-MM-DD [--version <id>] [--slippage-bps N] [--cost-model NAME]
+    [--cooldown-sessions N]
     [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
     [--regime-mult 1|policy] [--for-promotion]
 
-    Backtests the sleeve's live strategy version (or `--version`) on its universe over the
+    Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
+    mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
     Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
     `backtests/run_id=<id>/trades.parquet`. Prints the run id, status, trade count and DSR.
     The slippage defaults to 20 bps; `--for-promotion` marks a run `publish_version` may take as
@@ -58,14 +62,16 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     the estimated trigger order (`--slot-order time`, PR 63). `--ambiguous pessimistic` fills
     a raised stop the day's low reached; a bar-less position is marked down after
     `--suspension-sessions` sessions (PR 64). Entries are sized from the sleeve's nightly
-    allocation at `--sleeve-weight` (the policy's base weight by default) under the regime rule
-    `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
+    allocation at `--sleeve-weight` (the policy's base weight by default; a research run of a
+    sleeve the policy gives no weight sizes at `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime
+    rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
     """
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
-    parser.add_argument("--bot", type=uuid.UUID, required=True)
+    parser.add_argument("--bot", type=uuid.UUID, default=None)
+    parser.add_argument("--universe", default=None)
     parser.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
     parser.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
-    parser.add_argument("--version", type=uuid.UUID, default=None)
+    parser.add_argument("--version", "--strategy-version", type=uuid.UUID, default=None)
     parser.add_argument("--slippage-bps", type=Decimal, default=DEFAULT_SLIPPAGE_BPS)
     parser.add_argument("--cost-model", default=DEFAULT_COST_MODEL)
     parser.add_argument("--cooldown-sessions", type=int, default=None)
@@ -86,6 +92,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         try:
             request = RunRequest(
                 bot_id=args.bot,
+                universe=args.universe,
                 start=args.start,
                 end=args.end,
                 slippage_bps=args.slippage_bps,

@@ -7,8 +7,10 @@ from datetime import date, timedelta
 from hypothesis import example, given
 from hypothesis import strategies as st
 
+from app.hat.data.reference import parse_industry_csv
 from app.hat.engine.portfolio import universe
 from app.hat.engine.portfolio.universe import Interval, UniverseError
+from app.hat.engine.portfolio.universe_service import stock_rows
 
 POOL = tuple(uuid.UUID(int=i + 1) for i in range(5))
 START = date(2026, 1, 1)
@@ -127,3 +129,22 @@ def test_membership_intervals(ops: list) -> None:
     """Whatever edits are applied or refused, every instrument's intervals stay ordered, non
     empty and non overlapping."""
     assert intervals_valid(apply_ops(ops))
+
+
+def test_publish_universe_drops_excludes_first_and_keeps_stocks_only() -> None:
+    """`publish-universe` resolves only the stock rows the excludes leave: an exclude drops its
+    row whether or not an instrument matches it (NSE's `DUMMYHEG` placeholder), and a REIT's
+    row is skipped and reported (decisions.md "Stocks only")."""
+    text = (
+        "Company Name,Industry,Symbol,Series,ISIN Code\n"
+        "ABB India Ltd.,Capital Goods,ABB,EQ,INE117A01022\n"
+        "Dummy HEG Ltd.,Capital Goods,DUMMYHEG,EQ,DUM545A01024\n"
+        "Bagmane Prime Office REIT,Realty,BAGMANE,RR,INE2OVN25015\n"
+        "No ISIN Ltd.,Realty,NOISIN,EQ,\n"
+    )
+    rows = parse_industry_csv(text)
+    kept, not_stocks = stock_rows(rows, frozenset({"DUMMYHEG"}))
+    assert [r.symbol for r in kept] == ["ABB", "NOISIN"]
+    assert not_stocks == ("BAGMANE",)
+    kept, not_stocks = stock_rows(rows, frozenset())
+    assert not_stocks == ("BAGMANE", "DUMMYHEG")

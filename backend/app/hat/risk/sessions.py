@@ -2,9 +2,11 @@
 
 Every reader (risk, execution, the scheduler, the feed, portfolio and Telegram) reads the session
 of a trade date from `hat_trading_calendar` rows, loaded once by `data.calendar.session_calendar`,
-never from a weekday rule, so a holiday is closed and a special session is open. An instant whose
-date the calendar does not know is never open: risk fails closed on it, and every other reader
-treats the day as no trading day.
+never from a weekday rule, so a holiday is closed and a special session is open. The stored
+calendar holds a row for every weekday of the years it covers and none for an ordinary weekend
+(`data.calendar.with_weekdays`), so a Saturday or Sunday without a row inside its span is closed.
+Any other instant whose date the calendar does not know is never open: risk fails closed on it,
+and every other reader treats the day as no trading day.
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ REGULAR_CLOSE = time(15, 30)
 # close is the auction's, settled around 15:40, so a close-phase rule decides on the live last
 # trade and only the nightly work (ingest, close gaps, features) reads the official close.
 CLOSING_AUCTION = timedelta(minutes=15)
+_SATURDAY = 5  # `date.weekday()`
 REGULAR_CONTINUOUS_END = (datetime.combine(date.min, REGULAR_CLOSE) - CLOSING_AUCTION).time()
 
 
@@ -70,10 +73,15 @@ class SessionCalendar:
 
     def state(self, at: datetime) -> SessionState:
         """OPEN from the session open to its close, both ends inclusive (as the market-hours
-        policy); CLOSED on a non-trading day, before the open or after the close; UNKNOWN when
-        the date is missing or a trading day lacks its times."""
-        day = self.days.get(trade_date_of(at))
+        policy); CLOSED on a non-trading day, before the open or after the close, and on a
+        Saturday or Sunday without a row between the calendar's first and last dates (an
+        ordinary weekend, which the stored calendar does not list); UNKNOWN when any other date
+        is missing or a trading day lacks its times."""
+        when = trade_date_of(at)
+        day = self.days.get(when)
         if day is None:
+            if when.weekday() >= _SATURDAY and self._span[0] <= when <= self._span[1]:
+                return SessionState.CLOSED
             return SessionState.UNKNOWN
         if not day.is_trading:
             return SessionState.CLOSED
@@ -137,6 +145,11 @@ class SessionCalendar:
             if day.is_trading and day.open_at is not None and as_utc(day.open_at) > moment
         ]
         return min(opens) if opens else None
+
+    @cached_property
+    def _span(self) -> tuple[date, date]:
+        """The calendar's first and last dates (an empty span without rows)."""
+        return (min(self.days), max(self.days)) if self.days else (date.max, date.min)
 
     @cached_property
     def _trading(self) -> tuple[date, ...]:

@@ -3,6 +3,7 @@ independently: the fill proxies, the entry-day and circuit inferences, slot orde
 recorded fill conventions and their refusals."""
 
 import dataclasses
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -16,7 +17,9 @@ from app.hat.backtest.data import (
     Bar,
     MarketData,
     MarketView,
+    current_members,
     jump_skips,
+    real_shares,
     stopped_trading,
 )
 from app.hat.backtest.fillrules import (
@@ -40,12 +43,16 @@ from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slot
 from app.hat.backtest.spec import (
     REGIME_MULT_POLICY,
     REGIME_MULT_RULES,
+    RESEARCH_SLEEVE_WEIGHT,
     BacktestError,
     RunConventions,
+    sleeve_weight,
 )
 from app.hat.confighash import config_hash
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.data.ticks import scaled_tick, tick_for_date
+from app.hat.engine.portfolio.allocator import sleeve_key
+from app.hat.engine.portfolio.universe import Interval
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal
@@ -490,7 +497,7 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
         for n, d in enumerate(days)
     ]
     bars = pl.DataFrame(
-        [("x", d, *p, p[-1] / 10_000) for d, *p in rows],
+        [("x", d, *p, p[-1] / 10_000, p[-1] / 20_000) for d, *p in rows],
         schema={
             "instrument_id": pl.String,
             "date": pl.Date,
@@ -499,6 +506,7 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
             "low_e4": pl.Int64,
             "close_e4": pl.Int64,
             "raw_close": pl.Float64,
+            "close": pl.Float64,  # unrounded: a 2:1 split after the period halves it
         },
         orient="row",
     )
@@ -510,6 +518,8 @@ def test_market_view_builds_exact_bars_only_for_tradeable_days() -> None:
     assert view.bar("x", days[10]) is None  # not four positive prices
     assert view.bar("x", days[20]) is None  # skipped near a jump
     assert view.bar("y", days[0]) is None
+    assert view.real_shares("x", days[5], 11) == 5  # 5.5 real shares, whole 5
+    assert view.real_shares("y", days[5], 11) is None
     closes = {d: D(close).scaleb(-4) for d, _, _, _, close in rows}
     assert [b.close for b in view.bars_through("x", days[22], 3)] == [
         closes[days[20]],
@@ -544,3 +554,61 @@ def test_scaled_tick_reads_the_tick_in_adjusted_units() -> None:
     assert scaled_tick(D("0.01"), D("0.01"), D("1000")) == D("0.0001")  # never below 0.0001
     assert scaled_tick(D("0.05"), D("100"), D("0")) is None  # no raw close
     assert scaled_tick(D("0.05"), D("100"), None) is None
+
+
+# --- research mode: the universe, the sleeve weight and real shares ---------------------------
+
+
+def test_current_members_cover_the_whole_period_through_lineage() -> None:
+    """Today's members are members from the first day there is (the known gap
+    `universe_from_current_constituents`), a linked older ISIN under its chain's id, once; a
+    former member is not one."""
+    a, b, old_c, c = (uuid.UUID(int=n) for n in (1, 2, 3, 4))
+    rows = [
+        Interval(a, date(2026, 10, 23)),
+        Interval(b, date(2020, 1, 1), date(2024, 1, 1)),
+        Interval(old_c, date(2026, 10, 23)),
+        Interval(c, date(2026, 10, 23)),
+    ]
+    members = current_members(rows, {str(old_c): str(c)})
+    assert [m.instrument_id for m in members] == sorted([a, c])
+    assert all(m.effective_to is None and m.effective_from <= date(2011, 1, 1) for m in members)
+
+
+@pytest.mark.parametrize(
+    ("qty", "factor", "real"),
+    [
+        (858, 0.2, 171),  # a 5:1 split after the day: 171.6 real shares, whole 171
+        (300, 1 / 3, 100),  # a double a hair under the whole number
+        (100, 1.0, 100),
+        (7, 2.0, 14),  # a consolidation after the day
+        (10, float("nan"), None),
+        (10, 0.0, None),
+    ],
+)
+def test_real_shares(qty: int, factor: float, real: int | None) -> None:
+    assert real_shares(qty, factor) == real
+
+
+def test_research_run_sizes_an_unweighted_sleeve_and_promotion_refuses_it() -> None:
+    """A sleeve the policy gives weight 0 sizes at `RESEARCH_SLEEVE_WEIGHT` in a research run,
+    recorded like an explicit weight; a promotion run of it is still refused."""
+    version = s.policy_version()
+    key = sleeve_key(s.BOT)
+    policy = dataclasses.replace(
+        version.policy, base_weight={**version.policy.base_weight, key: D(0)}
+    )
+    unweighted = dataclasses.replace(version, policy=policy)
+    run = s.spec(s.config(), DAYS, policy=unweighted)
+    assert sleeve_weight(run) == RESEARCH_SLEEVE_WEIGHT
+    assert run.recorded_conventions()["sleeve_weight"] == "0.5"
+    fills = BacktestFills(load_cost_model(), DEFAULT_SLIPPAGE_BPS)
+    with pytest.raises(BacktestError, match="backtest_no_base_weight"):
+        s.spec(
+            s.config(),
+            DAYS,
+            fills=fills,
+            policy=unweighted,
+            conventions=PROMOTED,
+            for_promotion=True,
+        )

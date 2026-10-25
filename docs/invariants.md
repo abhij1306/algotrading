@@ -14,7 +14,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    unknown, 30 s old or outside the day's price band. An exit view may act on an older last
    trade of the day only while the feed itself is fresh (an illiquid name), never an entry.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
-   lacks is no trading day; a special session has only its stored hours, else it is closed.
+   lacks is no trading day (an ordinary Saturday or Sunday inside its span reads closed, any other
+   missing date unknown, and risk fails closed on it); a special session has only its stored
+   hours, else it is closed.
    Continuous trading ends 15 minutes before the stored close (15:15 IST; NSE's closing auction
    takes the rest). The close phase is set against that end: `exits.close` (real and shadow) 10
    to 5 minutes before it, the GTT swap 5 minutes before it, the trigger window ends 10 minutes
