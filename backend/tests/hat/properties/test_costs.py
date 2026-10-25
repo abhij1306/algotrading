@@ -208,8 +208,9 @@ def test_schedule_picks_the_file_in_force(day: date, effective_from: date) -> No
 def test_schedule_refuses_a_day_before_its_first_file_and_records_the_window() -> None:
     """No charges exist before the first file; a run records each file in force in its window."""
     schedule = load_cost_schedule()
+    before = date(2015, 12, 31)
     with pytest.raises(CostError, match="cost_no_schedule"):
-        schedule.on(date(2015, 12, 31))
+        schedule.on(before)
     recorded = schedule.to_json(date(2020, 5, 4), date(2021, 2, 1))
     assert recorded["version"] == "cnc-delivery-1"
     assert [s["effective_from"] for s in recorded["schedules"]] == [
