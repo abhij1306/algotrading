@@ -1,16 +1,25 @@
 """The pure fill rules of the day loop that read a daily bar (HAT-BT-020, HAT-BT-021,
 HAT-BT-025): the entry day's low before the break, the upper and lower circuit inferred from a
-bar, and the first price on a day's way up at which the live exit rules act."""
+bar, the first price on a day's way up at which the live exit rules act, and the close entry's
+breakout volume test."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from ..engine import exits, trigger
+from ..money import require_exact
 
-__all__ = ["first_trigger", "lower_circuit_locked", "pre_break_low", "upper_circuit_locked"]
+__all__ = [
+    "breakout_volume_ok",
+    "first_trigger",
+    "lower_circuit_locked",
+    "pre_break_low",
+    "upper_circuit_locked",
+]
 
 # The NSE price bands an upper circuit is inferred at when the run has no band table (PR 61).
 NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
@@ -98,6 +107,19 @@ def lower_circuit_locked(
         if lower is not None and lower < prev_close and abs(close - lower) <= tick:
             return True
     return False
+
+
+def breakout_volume_ok(volumes: Sequence[float], days: int, multiple: float) -> bool | None:
+    """Whether the last of `volumes` (the breakout session's, known at its close) is at least
+    `multiple` x the mean of the `days` before it, compared exactly without dividing; None when
+    those `days + 1` volumes are not all there, or the mean is not positive."""
+    if len(volumes) != days + 1 or any(not math.isfinite(v) or v < 0 for v in volumes):
+        return None
+    exact = [require_exact(v, "volume", floats=True) for v in volumes]
+    prior = sum(exact[:-1], Decimal(0))
+    if prior <= 0:
+        return None
+    return exact[-1] * days >= require_exact(multiple, "multiple", floats=True) * prior
 
 
 def first_trigger(

@@ -21,7 +21,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 
 from ...governance import Mode, ModeField
 from .base import CriterionResult, ParamModel, dec, no_data, verdict
@@ -35,6 +35,9 @@ _MAX = re.compile(r"max\((.+)\)")
 
 REASON_BELOW_LEVEL = "below_level"
 REASON_LEVEL_UNDEFINED = "level_undefined"
+REASON_DAILY_CLOSE_NOT_LIVE = "daily_close_not_live"
+INTRADAY_BREAK = "intraday_break"
+DAILY_CLOSE = "daily_close"
 REASON_GAP_TOO_SMALL = "gap_too_small"
 REASON_LOW_PACE = "volume_pace_low"
 REASON_LOW_EARLY_VOLUME = "early_volume_low"
@@ -85,12 +88,29 @@ class PriceBreaksLevelParams(ParamModel):
     # `close`: the bar must also close at or above the level, so a spike that fell back below it
     # is no break (PR 49); `high`: a trade above the level is enough
     confirm: Literal["close", "high"] = "close"
+    # When the entry is taken. `intraday_break`: on the break of the level during the session, as
+    # live's 5-minute trigger takes it. `daily_close`: at the session's close when the close is
+    # above the level, a backtest variant; live does not trade it (`daily_close_not_live`).
+    entry_timing: Literal["intraday_break", "daily_close"] = Field(
+        default=INTRADAY_BREAK, exclude_if=lambda v: v == INTRADAY_BREAK
+    )
+    # Under `daily_close` only: the breakout session's volume at least `volume_vs_avg` x the mean
+    # volume of the `volume_avg_days` sessions before it (None: no volume test). An intraday
+    # break cannot know the day's volume, so it refuses the test.
+    volume_vs_avg: float | None = Field(default=None, gt=0, le=100, exclude_if=lambda v: v is None)
+    volume_avg_days: int = Field(default=50, ge=5, le=252, exclude_if=lambda v: v == 50)
 
     @field_validator("level")
     @classmethod
     def _expression(cls, value: str) -> str:
         level_names(value)
         return value
+
+    @model_validator(mode="after")
+    def _volume_at_the_close(self) -> PriceBreaksLevelParams:
+        if self.volume_vs_avg is not None and self.entry_timing != DAILY_CLOSE:
+            raise ValueError("breakout_volume_needs_daily_close")
+        return self
 
 
 class AdtrFilterParams(ParamModel):
@@ -185,7 +205,11 @@ def resolve_level(
 def price_breaks_level(ctx: LiveContext, p: PriceBreaksLevelParams) -> CriterionResult:
     """HAT-CRIT-119: the final bar traded strictly above the level (its high is above it) and,
     with `confirm: close` (the default, PR 49), closed at or above it. The level is reported as
-    the value and in `extras["level"]`, the trigger price of the signal."""
+    the value and in `extras["level"]`, the trigger price of the signal. An `entry_timing:
+    daily_close` level never breaks live (`daily_close_not_live`): that timing is a backtest
+    variant, and its known gap blocks the version's promotion."""
+    if p.entry_timing == DAILY_CLOSE:
+        return no_data(REASON_DAILY_CLOSE_NOT_LIVE)
     level = resolve_level(p.level, ctx.levels)
     if level is None:
         return no_data(REASON_LEVEL_UNDEFINED)

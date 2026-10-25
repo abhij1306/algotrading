@@ -50,7 +50,13 @@ describe("versionFields", () => {
   });
 
   it("offers only the addable rules the stack lacks", () => {
-    expect(addableRules(VERSION)).toEqual(["max_hold", "early_failure", "trailing_atr"]);
+    expect(addableRules(VERSION)).toEqual([
+      "max_hold",
+      "early_failure",
+      "trailing_atr",
+      "step_trail",
+      "close_below_ema",
+    ]);
   });
 });
 

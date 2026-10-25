@@ -59,8 +59,21 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `isin.ordinary_equity`). They reach the store because NSE lists them in the EQ series beside
   stocks; their price data stays.
 - **S4 research tests two exits (owner 2026-10-25).** S4's research must test both a close below
-  the 10 or 20 EMA exit and the seed's close below the SMA50 before either is chosen; the seed keeps
-  the SMA50 until then. An EMA exit rule is not built yet (Planned, not built).
+  the 10 or 20 EMA exit (`close_below_ema`) and the seed's close below the SMA50 before either is
+  chosen; the seed keeps the SMA50 until then.
+- **S1 research is config only (owner 2026-10-25).** Every parameter the S1 research varies is
+  settable in the version YAML or by `--set` (runbook, Research variants): the VCP's swing width,
+  minimum base, dry-up baseline, noise floor and score floor, the step trail, the close-below-EMA
+  exit, the entry timing with its breakout volume, and the regime without a slope test. The VCP is
+  judged on its most recent contractions (at most `contractions[1]`), so the final contraction,
+  pivot and dry-up are current.
+- **Entry timing and volume (owner 2026-10-25).** A level trigger enters on the intraday break
+  (`entry_timing: intraday_break`, live's 5-minute trigger) or, as a backtest variant, at the daily
+  close above the level (`daily_close`), filled at the official close as the close-phase exits are.
+  A breakout volume test (`volume_vs_avg`) exists only at the close, where the day's volume is
+  known; an intraday break refuses it rather than read the full day's volume. Live does not trade
+  `daily_close` (the trigger fails closed) and `volume_pace` is not backtested: each is a known
+  gap that names the playbook and blocks its promotion (`GAP_PLAYBOOKS`).
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
   50/50 (S3, S4, S5 0). A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.
@@ -250,8 +263,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; minute history older than Fyers' 365 days; PDF summaries on cards and a chat
-MCP server (advisory only); a CLI to re-run one job for a past trade date; a close-below-EMA exit
-rule (for the S4 exit research).
+MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
+live trading of `entry_timing: daily_close`.
 
 ## Defaults awaiting owner confirmation
 
@@ -274,3 +287,6 @@ Chosen where the owner has not ruled; the code implements them.
   run's report reads the regime at entry as NIFTY 500 above a rising SMA200 on the session before
   (`report_data.REGIME_RULE`), not the regime engine's state; `--max-positions N` sets the account
   cap and the exposure ladder's top level to N and caps its lower levels at N.
+- VCP (S1): `min_depth_pct` off (every 3-bar swing counts) until the owner picks a noise floor;
+  each tightness sub-score is `score_floor` 0.5 at its pass limit, so a pattern that only just
+  passes scores 0.625, not 0.25 (the S1 threshold 0.6 then gates on RS and the tighter patterns).

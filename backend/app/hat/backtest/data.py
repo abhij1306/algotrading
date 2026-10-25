@@ -240,6 +240,7 @@ class _Series:
     prices: np.ndarray
     traded: np.ndarray
     div: np.ndarray  # per row, the factor of the dividends after it (`div_factor`)
+    volume: np.ndarray  # per row, the session's volume (NaN where the store has none)
 
     def bars(self, start: int, stop: int) -> list[Bar]:
         return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
@@ -266,6 +267,7 @@ _NO_SERIES = _Series(
     np.empty(0, dtype=np.int32),
     np.empty((0, 4), dtype=np.int64),
     np.empty(0, dtype=np.int64),
+    np.empty(0, dtype=np.float64),
     np.empty(0, dtype=np.float64),
 )
 _DIV = "div_factor"
@@ -326,9 +328,14 @@ class MarketView:
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
         div = pl.col(_DIV) if _DIV in self.bars.columns else pl.lit(1.0)
-        frame = self.bars.select("instrument_id", "date", *_EXACT, div.alias(_DIV)).filter(
-            pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
-        )
+        volume = pl.col("volume") if "volume" in self.bars.columns else pl.lit(None)
+        frame = self.bars.select(
+            "instrument_id",
+            "date",
+            *_EXACT,
+            div.alias(_DIV),
+            volume.cast(pl.Float64).fill_null(float("nan")).alias("volume"),
+        ).filter(pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False))
         # A skipped bar stays in the history: it is a real session, whose close sets the tick and
         # the SMA, ATR and swing low; only the loop's trades and marks leave it out.
         left_out = pl.DataFrame(
@@ -344,6 +351,7 @@ class MarketView:
                 part.select(_EXACT).to_numpy(),
                 np.maximum.accumulate(kept) if part.height else kept,
                 part[_DIV].cast(pl.Float64).to_numpy(),
+                part["volume"].to_numpy(),
             )
         return found
 
@@ -420,6 +428,12 @@ class MarketView:
         series, end = self._find(instrument_id, day, inclusive=inclusive)
         _, through = self._find(instrument_id, day, inclusive=True)
         return series.signal_bars(max(0, end - count), end, through - 1)
+
+    def volumes_through(self, instrument_id: str, day: date, count: int) -> list[float]:
+        """The volumes of the instrument's last `count` bars dated on or before `day`, oldest
+        first (NaN where the store has none)."""
+        series, end = self._find(instrument_id, day, inclusive=True)
+        return [float(v) for v in series.volume[max(0, end - count) : end]]
 
     def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
         """The instrument's bars dated from `first` on and before `day`, oldest first, on the

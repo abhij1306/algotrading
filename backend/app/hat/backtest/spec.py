@@ -92,6 +92,14 @@ KNOWN_GAPS = (
     # so the account-level caps (global open risk, the cluster cap, the position and entry
     # slots) never bind across sleeves as they do live
     "single_sleeve_caps",
+    # the backtest takes every break of the level: a playbook with an enabled `volume_pace`
+    # trigger (live's intraday volume pace) has trades live would refuse (`GAP_PLAYBOOKS`); under
+    # `entry_timing: daily_close` the breakout volume test (`volume_vs_avg`) is the backtestable
+    # stand-in
+    "volume_pace_not_backtested",
+    # `entry_timing: daily_close` enters at the daily close (the auction price standing in for
+    # the price before the 15:15 cut-off) and live does not trade it (`GAP_PLAYBOOKS`)
+    "daily_close_entry_not_live",
 )
 
 
@@ -99,12 +107,29 @@ def _preopen(playbook: Playbook) -> bool:
     return playbook.preopen
 
 
+VOLUME_PACE = "volume_pace"
+
+
+def _volume_pace(playbook: Playbook) -> bool:
+    return any(i.enabled and i.type == VOLUME_PACE for i in playbook.trigger)
+
+
+def _daily_close(playbook: Playbook) -> bool:
+    return playbook.at_close
+
+
 # The playbooks a known gap names, by what they use rather than by name: the lifecycle gate
 # refuses a version that enables one of them on this evidence (PR 69, HAT-PORT-061). The stored
 # code `episodic_pivot_not_backtested` names every pre-open playbook (`Playbook.preopen`), whatever
-# it is called. A gap not listed here names no playbook: it holds for all of them alike, a
-# measured approximation of the daily-bar loop, and blocks none.
-GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {"episodic_pivot_not_backtested": _preopen}
+# it is called; `volume_pace_not_backtested` every one with an enabled `volume_pace` trigger, and
+# `daily_close_entry_not_live` every one whose level trigger enters at the daily close. A gap not
+# listed here names no playbook: it holds for all of them alike, a measured approximation of the
+# daily-bar loop, and blocks none.
+GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {
+    "episodic_pivot_not_backtested": _preopen,
+    "volume_pace_not_backtested": _volume_pace,
+    "daily_close_entry_not_live": _daily_close,
+}
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.

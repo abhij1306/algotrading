@@ -43,7 +43,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    backtest alike (`resolve_level`); a config naming a level its setup does not expose, or with
    two such triggers, is refused. A setup that passes without the level its trigger names (a score
    criterion failed) is not watchlisted. On daily bars the opening range is unavailable: it drops
-   out of a `max`, and a level of it alone never breaks.
+   out of a `max`, and a level of it alone never breaks. A level with `entry_timing: daily_close`
+   never breaks live; the backtest enters it at the daily close above the level. A volume test
+   reads only volume known at its decision: the breakout day's at that day's close, never the
+   full day's volume for an intraday break (`breakout_volume_needs_daily_close`).
 
 ## Money safety
 

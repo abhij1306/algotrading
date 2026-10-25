@@ -25,10 +25,15 @@ __all__ = [
 
 
 def close_above_sma_and_rising(closes: Sequence[Decimal], rule: CloseAboveSma) -> bool:
-    """close_t > SMA_t and SMA_t > SMA_{t - rising_days} (the Minervini-style rule)."""
+    """close_t > SMA_t and SMA_t > SMA_{t - rising_days} (the Minervini-style rule); with
+    `rising_days` 0 the close above the SMA alone (no slope test)."""
     now = sma_sum(closes, rule.sma)
+    if now is None:
+        return False
+    if rule.rising_days == 0:
+        return closes[-1] * rule.sma > now
     before = sma_sum(closes, rule.sma, offset=rule.rising_days)
-    if now is None or before is None:
+    if before is None:
         return False
     # close > now/sma and now > before, compared without dividing
     return closes[-1] * rule.sma > now and now > before
