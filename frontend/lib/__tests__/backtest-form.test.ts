@@ -54,6 +54,51 @@ describe("versionFields", () => {
   });
 });
 
+describe("optional settings", () => {
+  const trail: VersionOption = {
+    ...VERSION,
+    exits: [
+      { rule: "move_stop_to_breakeven", at_r: null, after: "partial", enabled: true },
+      {
+        rule: "trailing_swing_low",
+        lookback_days: 10,
+        sell_fraction: 1,
+        start_r: 2,
+        enabled: true,
+      },
+    ],
+    playbooks: [{ name: "default", stop: { rule: "swing_low", lookback_days: 10, max_pct: 12 } }],
+  };
+  const fields = versionFields(trail);
+
+  it("offers no at_r for a breakeven triggered by a partial", () => {
+    expect(fields.map((f) => f.path)).not.toContain("exits[0].at_r");
+  });
+
+  it("turns an optional setting off when cleared, and keeps a required one", () => {
+    const body = variantBody(
+      fields,
+      draft({
+        values: {
+          "exits[1].start_r": "",
+          "playbooks[0].stop.max_pct": " ",
+          "exits[1].lookback_days": "",
+        },
+      }),
+    );
+    expect(body).toEqual({
+      ok: true,
+      value: {
+        label: "base",
+        sets: [
+          { path: "playbooks[0].stop.max_pct", value: null },
+          { path: "exits[1].start_r", value: null },
+        ],
+      },
+    });
+  });
+});
+
 describe("variantBody", () => {
   it("sends only what differs from the version, then the added rules", () => {
     const body = variantBody(

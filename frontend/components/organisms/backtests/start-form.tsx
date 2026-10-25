@@ -120,7 +120,7 @@ function SettingInput({
       <input
         className={cn(fieldClass, "w-24")}
         inputMode={field.whole ? "numeric" : "decimal"}
-        placeholder="off"
+        placeholder={field.nullable ? "off" : undefined}
         value={value}
         onChange={(e) => set(e.target.value)}
       />

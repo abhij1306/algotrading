@@ -103,6 +103,7 @@ def test_the_variants_file_names_only_what_each_variant_sets() -> None:
         ([JobVariant(label="")], "backtest_sweep_bad_variants"),
         ([JobVariant(label="a", sets=(("exits[0", 1),))], "backtest_bad_override_path"),
         ([JobVariant(label="a", slot_order="fastest")], "backtest_bad_slot_order"),
+        ([JobVariant(label="a", slot_order="")], "backtest_bad_slot_order"),
         ([JobVariant(label="a", sleeve_weight=Decimal("1.5"))], "backtest_bad_sleeve_weight"),
     ],
 )

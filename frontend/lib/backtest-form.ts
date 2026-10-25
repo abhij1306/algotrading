@@ -49,6 +49,10 @@ export const ADDABLE: Readonly<Record<string, Readonly<Record<string, number>>>>
 };
 
 const WHOLE = new Set(["days", "sma", "lookback_days", "buffer_ticks"]);
+// The optional settings: a trail's start, and the stop-width cap of the rules without their own.
+const NULLABLE_STOP_CAP = new Set(["low_of_day", "atr_multiple", "swing_low"]);
+const nullable = (rule: string, name: string) =>
+  name === "start_r" || (name === "max_pct" && NULLABLE_STOP_CAP.has(rule));
 
 export type Field = Readonly<{
   path: string; // the override path
@@ -56,6 +60,7 @@ export type Field = Readonly<{
   name: string; // the parameter
   kind: "number" | "switch";
   whole: boolean;
+  nullable: boolean; // left empty, the setting is turned off (sent as null)
   initial: string; // the version's value as typed ("" when unset)
 }>;
 
@@ -70,12 +75,14 @@ function ruleFields(
   rule: Config,
   names: readonly string[],
 ): Field[] {
+  const kind = asText(rule["rule"] ?? "");
   return names.map((name) => ({
     path: `${prefix}.${name}`,
     group,
     name,
     kind: "number",
     whole: WHOLE.has(name),
+    nullable: nullable(kind, name),
     initial: initialText(rule[name]),
   }));
 }
@@ -105,10 +112,14 @@ export function versionFields(version: VersionOption): Field[] {
         name: "enabled",
         kind: "switch",
         whole: false,
+        nullable: false,
         initial: initialText(exit["enabled"]),
       });
     }
-    fields.push(...ruleFields(prefix, rule, exit, EXIT_FIELDS[rule] ?? []));
+    // A breakeven triggered by a partial (`after`) has no `at_r` to edit: setting one is refused.
+    const breakevenAfter = rule === "move_stop_to_breakeven" && exit["at_r"] == null;
+    const names = (EXIT_FIELDS[rule] ?? []).filter((name) => !(breakevenAfter && name === "at_r"));
+    fields.push(...ruleFields(prefix, rule, exit, names));
   });
   return fields;
 }
@@ -176,7 +187,12 @@ export function variantBody(fields: readonly Field[], draft: Draft): Parsed<Vari
   const sets: NonNullable<VariantBody["sets"]> = [];
   for (const field of fields) {
     const text = draft.values[field.path];
-    if (text === undefined || text === field.initial || text.trim() === "") continue;
+    if (text === undefined || text === field.initial) continue;
+    if (text.trim() === "") {
+      // Empty turns an optional setting off; any other setting stays the version's.
+      if (field.nullable && field.initial !== "") sets.push({ path: field.path, value: null });
+      continue;
+    }
     const what = `${field.group} ${field.name}`;
     if (field.kind === "switch") {
       sets.push({ path: field.path, value: text === "true" });

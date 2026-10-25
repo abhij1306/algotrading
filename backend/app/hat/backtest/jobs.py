@@ -119,7 +119,8 @@ def check_variants(variants: Sequence[JobVariant]) -> None:
                 parse_set(set_text(path, value))
         except OverrideError as exc:
             raise BacktestError(exc.code) from None
-        RunConventions(slot_order=v.slot_order or SLOT_ORDER_TIME, sleeve_weight=v.sleeve_weight)
+        slot_order = SLOT_ORDER_TIME if v.slot_order is None else v.slot_order
+        RunConventions(slot_order=slot_order, sleeve_weight=v.sleeve_weight)
 
 
 def command(
@@ -259,6 +260,7 @@ class Jobs:
             if any(job.status == RUNNING for job in self._jobs):
                 raise BacktestError(JOB_BUSY)
             job_id = uuid.uuid4()
+            root = root.resolve()  # the child runs from `backend/`: a relative root would move
             folder = root / "backtests" / "jobs" / str(job_id)
             folder.mkdir(parents=True)
             variants_file = folder / "variants.json"
