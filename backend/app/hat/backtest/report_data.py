@@ -36,6 +36,7 @@ __all__ = [
     "REGIME_RULE",
     "REPORT_VERSION",
     "build_report",
+    "drawdowns",
     "group_stats",
     "hold_bucket",
     "index_regimes",
@@ -166,8 +167,10 @@ def _benchmark_on(closes: Sequence[tuple[date, Decimal]], days: Sequence[date]) 
     return out
 
 
-def _drawdowns(values: Sequence[float]) -> list[float]:
-    peak = -math.inf
+def drawdowns(values: Sequence[float], start: float = -math.inf) -> list[float]:
+    """Each value's drawdown from the running peak, the peak starting at `start` (a run's
+    initial equity, as `compute_metrics` counts it: a first mark below it is a drawdown)."""
+    peak = start
     out = []
     for v in values:
         peak = max(peak, v)
@@ -193,7 +196,7 @@ def _benchmark(
         "name": BENCHMARK,
         "total_return": _float(rebased[-1] - 1.0),
         "cagr": cagr,
-        "max_drawdown": min(_drawdowns(rebased), default=0.0),
+        "max_drawdown": min(drawdowns(rebased), default=0.0),
     }
     yearly = yearly_returns(list(zip(days, on, strict=True)), base)
     return rebased, summary, yearly
@@ -246,7 +249,7 @@ def build_report(
     equity and the NIFTY 500 closes (oldest first; empty: no benchmark)."""
     equity = list(result.equity)
     values = [float(v) for _, v in equity]
-    drawdown = _drawdowns(values)
+    drawdown = drawdowns(values, float(initial))
     rebased, bench, bench_yearly = _benchmark(benchmark, equity)
     states = index_regimes(benchmark)
     regime_of = {id(t): regime_before(states, t.entry_date) for t in result.trades}

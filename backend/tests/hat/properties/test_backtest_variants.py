@@ -12,6 +12,7 @@ import pytest
 
 from app.hat.backtest.overrides import OverrideError, Overrides, parse_set, set_path
 from app.hat.backtest.report_data import (
+    drawdowns,
     group_stats,
     hold_bucket,
     index_regimes,
@@ -282,3 +283,8 @@ def test_group_stats() -> None:
         ("b", 2, "1.000000", 0.5),
         ("a", 1, "-1.000000", 0.0),
     ]
+
+
+def test_drawdown_counts_from_the_initial_equity() -> None:
+    assert drawdowns([90.0, 120.0, 60.0], 100.0) == pytest.approx([-0.1, 0.0, -0.5])
+    assert drawdowns([90.0, 99.0]) == pytest.approx([0.0, 0.0])  # no start: the first is the peak
