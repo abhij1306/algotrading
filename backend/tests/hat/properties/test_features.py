@@ -17,7 +17,6 @@ from app.hat.data.features import (
     affected_chains,
     chunks,
     compute_features,
-    ordinary_equity,
     splice_day,
     stale_days,
 )
@@ -187,19 +186,6 @@ def test_flat_series_is_not_above_its_own_mean() -> None:
 
 
 # --- the ranked universe (D257) --------------------------------------------------------------
-
-
-def test_ordinary_equity_is_an_equity_share_isin() -> None:
-    """Equity shares of a company (`INE`, type `01`) and DVR shares (`IN9`) are ranked; fund and
-    ETF units, rights entitlements, InvIT and REIT units are not."""
-    assert ordinary_equity("INE002A01018")  # RELIANCE
-    assert ordinary_equity("IN9155A01020")  # TATAMTRDVR
-    assert not ordinary_equity("INF204KB14I2")  # an ETF
-    assert not ordinary_equity("INE002A20018")  # a rights entitlement (RIL-RE)
-    assert not ordinary_equity("INE183W23014")  # an InvIT
-    assert not ordinary_equity("INE041025011")  # a REIT
-    assert not ordinary_equity(None)
-    assert not ordinary_equity("INE002A0101")
 
 
 def test_only_ordinary_equity_is_ranked_and_counted() -> None:

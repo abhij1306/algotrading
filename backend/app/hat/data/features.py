@@ -31,7 +31,6 @@ import fcntl
 import hashlib
 import json
 import logging
-import re
 import sys
 from bisect import bisect_left
 from collections import defaultdict
@@ -49,6 +48,7 @@ import pyarrow as pa
 from ..errors import HatError
 from ..money import require_exact
 from ..ops.jobs import JobResult
+from .isin import ORDINARY_EQUITY
 from .store import (
     BREADTH_SCHEMA,
     DATASET_BARS,
@@ -91,13 +91,9 @@ MAX_CHAINS = 100
 # SMA only when it exceeds it by more than this relative margin: far below the smallest real
 # difference (a price in paise over a 50-day mean is at least 2e-4 / price), far above the noise.
 ABOVE_MARGIN = 1e-12
-# The ranked universe (D257): the rows whose own ISIN is an equity share, `IN` + issuer type `E`
-# (a company) or `9` (its DVR shares) + four issuer characters + security type `01` (equity
-# shares) + serial and check digit. This leaves out ETF and fund units (`INF`), rights
-# entitlements (type `20`, the `-RE` symbols), InvIT and REIT units (`23`, `25`). The ISIN is in
-# every bar, so the rule is point in time and needs no reference data (a symbol suffix is a
-# convention; `hat_instrument` keeps no security type and lacks some short-lived entitlements).
-ORDINARY_EQUITY = r"^IN[E9][0-9A-Z]{4}01[0-9A-Z]{2}[0-9]$"
+# The ranked universe (D257) is the rows whose own ISIN is an equity share (`isin.ORDINARY_EQUITY`):
+# point in time, with no reference data (a symbol suffix is a convention; `hat_instrument` keeps
+# no security type and lacks some short-lived entitlements).
 # What else besides the adjustment changes every date: the universe rule and the formulas. A
 # change here rebuilds every date (the state records it).
 FEATURES_RULE = f"v3|universe:{ORDINARY_EQUITY}"
@@ -205,18 +201,13 @@ def _per_instrument(frame: pl.DataFrame) -> pl.DataFrame:
     ).drop("high", "low", "prev_close", "volume", "traded_value")
 
 
-def ordinary_equity(isin: str | None) -> bool:
-    """True when the ISIN is an ordinary equity share, the ranked universe (`ORDINARY_EQUITY`)."""
-    return isin is not None and re.match(ORDINARY_EQUITY, isin) is not None
-
-
 def _above() -> pl.Expr:
     """The close is above its SMA50 as breadth counts it (null without an SMA50)."""
     return pl.col("close") > pl.col("sma50") * (1.0 + ABOVE_MARGIN)
 
 
 def _member() -> pl.Expr:
-    """The row's ISIN is in the ranked universe (`ordinary_equity`, as a polars expression)."""
+    """The row's ISIN is in the ranked universe (`isin.ordinary_equity`, as a polars expression)."""
     return pl.col("isin").str.contains(ORDINARY_EQUITY).fill_null(value=False)
 
 
@@ -232,7 +223,7 @@ def compute_features(
     null where unknown) and may have `div_factor` (the total-return series' factor of the
     dividends after the date): the `LEVEL_FEATURES` of a date are then divided by its own factor.
     The percentile columns and breadth rank and count the rows of the ranked universe
-    (`ordinary_equity` of the row's own ISIN, so a day's members are those of that day); other
+    (`isin.ordinary_equity` of the row's own ISIN, so a day's members are those of that day); other
     rows get null `rs_pct` and `mom_rank`. `features` has `date`, `instrument_id` and the 18
     feature columns; `breadth` has `date` and the `BREADTH_SCHEMA` columns. The first rows of an
     instrument have null windows, so the caller passes the lookback rows and `from_date`. `batch`

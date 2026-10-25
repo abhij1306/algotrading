@@ -32,6 +32,7 @@ from .chains import (
     stored_actions,
     stored_dividends,
 )
+from .isin import etf_unit, rights_entitlement
 from .store import DATASET_BARS, Adjustment, DataStore
 
 JUMP_TOL = Decimal("0.25")
@@ -72,9 +73,9 @@ class Jump:
 def jump_kind(isin: str, previous_raw_close: Decimal | None, raw_open: Decimal | None) -> str:
     """What a jump is (`JUMP_KINDS`): a rights entitlement or an ETF unit by its ISIN, else a
     tick when the raw open is within `TICK_MOVE` of the raw previous close, else `other`."""
-    if isin[7:9] == "20":
+    if rights_entitlement(isin):
         return JUMP_RIGHTS
-    if isin.startswith("INF"):
+    if etf_unit(isin):
         return JUMP_ETF
     if (
         previous_raw_close is not None
