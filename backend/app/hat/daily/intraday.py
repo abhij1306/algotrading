@@ -309,7 +309,7 @@ class Intraday:
 
     def close_shadow(self, _day: date) -> JobResult:
         now = self._now()
-        return JobResult(rows=self._shadow.close(now))
+        return JobResult(rows=self._shadow.close(now, self.close_shift(trade_date_of(now))))
 
     # --- 15:30 --------------------------------------------------------------------------------
 

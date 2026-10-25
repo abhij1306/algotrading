@@ -290,7 +290,7 @@ def _lookup_before_retry(
         raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
     if sender.absent is not None:
         if found is not None:
-            sender.absent.found(row.tag)
+            sender.absent.forget(row.tag)
         elif not sender.absent.confirmed(row.tag, sender.clock.now()):
             raise AwaitingAbsenceError("absent on one read: the book may lag the order")
     if verdict is Retry.SEND or found is None:

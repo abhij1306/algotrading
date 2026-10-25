@@ -106,10 +106,10 @@ def second_absence(first_absent: datetime, now: datetime, settle_after: timedelt
 
 
 class AbsentReads:
-    """When each lost day stop or sale was first read absent from a good read of the order book
-    (by its tag). `confirmed` is True only for a second absent read `settle_after` after the
-    first; a read that finds the order forgets the first. Held in memory: after a restart the
-    first read is taken again, which only waits longer."""
+    """When each lost order was first read absent from a good read of the order book (by its
+    tag). `confirmed` is True only for a second absent read `settle_after` after the first; a
+    read that finds the order (or settles it otherwise) forgets the first. Held in memory: after
+    a restart the first read is taken again, which only waits longer."""
 
     def __init__(self, settle_after: timedelta) -> None:
         self._settle_after = settle_after
@@ -124,7 +124,7 @@ class AbsentReads:
             del self._first[tag]
             return True
 
-    def found(self, tag: str) -> None:
+    def forget(self, tag: str) -> None:
         with self._lock:
             self._first.pop(tag, None)
 
@@ -170,8 +170,8 @@ class PositionDesk:
         from_holdings: bool = False,
         tag: str | None = None,
     ) -> Verdict:
-        """`settle_verdict` now. With the order's `tag` (a day stop or sale in the session), an
-        EXPIRE stands only on a second absent read (`AbsentReads`); the first is WAIT."""
+        """`settle_verdict` now. With the order's `tag`, an EXPIRE stands only on a second absent
+        read (`AbsentReads`); the first is WAIT."""
         now = self.clock.now()
         verdict = settle_verdict(
             placed_at,
@@ -183,10 +183,10 @@ class PositionDesk:
         )
         if tag is None:
             return verdict
-        if found:
-            self.absent.found(tag)
-        elif verdict is Verdict.EXPIRE and not self.absent.confirmed(tag, now):
-            return Verdict.WAIT
+        if verdict is Verdict.EXPIRE:
+            return verdict if self.absent.confirmed(tag, now) else Verdict.WAIT
+        if found or verdict is not Verdict.WAIT:
+            self.absent.forget(tag)  # found, or of an earlier session: no absence to confirm
         return verdict
 
 

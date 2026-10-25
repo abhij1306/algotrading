@@ -240,11 +240,10 @@ class ShadowExits:
                     logger.exception("demerger exit of position %s failed", d.position.id)
         return closed
 
-    def close(self, now: datetime) -> int:
+    def close(self, now: datetime, shift: timedelta = timedelta(0)) -> int:
         """The close-phase pass (the day's demerger exits first); nothing outside the close
-        window (15:20-15:25 IST in a regular session, `in_close_window`)."""
-        calendar = self._calendar()
-        shift = calendar.close_shift(trade_date_of(now)) if calendar is not None else timedelta(0)
+        window (15:20-15:25 IST in a regular session, moved by the session's `shift` from the
+        regular close, `in_close_window`)."""
         if not in_close_window(now, shift):
             return 0
         return self.demergers(now) + self.run(now, "close")

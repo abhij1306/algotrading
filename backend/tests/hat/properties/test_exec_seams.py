@@ -6,11 +6,14 @@ adapter over a recording SDK; no broker is called."""
 import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from typing import cast
 
 import pytest
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
+from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
+from app.hat.daily.exits import ExitViews, ShadowExits
 from app.hat.execution.broker import (
     CODE_UNAVAILABLE,
     GttRequest,
@@ -147,3 +150,28 @@ def test_a_shifted_job_starts_and_ends_with_the_session() -> None:
     assert is_due(ist(DAY, 13, 50))
     assert not is_due(ist(DAY, 13, 55))
     assert not is_due(ist(DAY, 15, 20))
+
+
+def test_the_shadow_close_pass_runs_only_in_the_shifted_window() -> None:
+    """Outside its window the shadow close pass returns before any read; inside it, it runs
+    (here: reaches its session factory)."""
+
+    def no_session() -> Session:
+        raise LookupError("session opened")
+
+    shadow = ShadowExits(no_session, cast("ExitViews", None), set)
+    muhurat = timedelta(hours=3, minutes=45)  # an 18:00-19:15 session
+    assert shadow.close(ist(DAY, 15, 22), muhurat) == 0
+    assert shadow.close(ist(DAY, 19, 12), muhurat) == 0
+    with pytest.raises(LookupError):
+        shadow.close(ist(DAY, 19, 7), muhurat)
+
+
+def test_a_settled_order_forgets_its_first_absent_read() -> None:
+    clock = FixedClock(ist(DAY, 11, 0))
+    desk = PositionDesk(settle_after=SETTLE, clock=clock)
+    sent = ist(DAY, 10, 58)
+    assert desk.verdict(sent, False, tag="C") is Verdict.WAIT
+    assert desk.verdict(sent, True, tag="C", filled_qty=5) is Verdict.WAIT  # found, shares sold
+    clock.advance(SETTLE)
+    assert desk.verdict(sent, False, tag="C") is Verdict.WAIT  # a first read again

@@ -1131,9 +1131,11 @@ class TradeManager:
         does not hold ends its signal Rejected (`entry_not_found`); a reserved entry that was
         never sent is cancelled with it. A sale of unknown outcome the book does not hold ends
         `expired` (cancelled when never sent) and its rules fire again (a DAY market sale cannot
-        fill after the close). An order sent less than `settle_after` ago is left for the next run
-        (HAT-EXEC-065). Today's book cannot show an order of an earlier session: such a sale is
-        settled from the holdings by the sale path, and such an entry by `_settle_earlier_entry`.
+        fill after the close). An order sent less than `settle_after` ago, or one sent and absent
+        on one read only (the book may lag it, `AbsentReads`), is left unsure (HAT-EXEC-065):
+        once its session is over it is settled from the holdings. Today's book cannot show an
+        order of an earlier session: such a sale is settled from the holdings by the sale path,
+        and such an entry by `_settle_earlier_entry`.
         Returns the number of signals ended. Nothing is ended when the book cannot be read."""
         rows = list(
             session.scalars(
@@ -1154,13 +1156,17 @@ class TradeManager:
         ended = 0
         for row in rows:
             sale = row.purpose != ENTRY
-            verdict = self._positions.verdict(row.placed_at, row.tag in book, from_holdings=True)
+            sent = row.placed_at is not None  # a reserved row never sent ends at once
+            verdict = self._positions.verdict(
+                row.placed_at, row.tag in book, from_holdings=True, tag=row.tag if sent else None
+            )
             if verdict is Verdict.STALE and not sale:
                 ended += self._settle_earlier_entry(session, row, now)
                 continue
             if verdict is not Verdict.EXPIRE:
-                # held: the next sync adopts it; young: it may still be on its way; a sale of
-                # an earlier session: settled from holdings before the position is sold again
+                # held: the next sync adopts it; young, or absent on one read only (the book may
+                # lag it): it stays unsure, and once its session is over it is settled from the
+                # holdings (a sale before the position is sold again, an entry here)
                 continue
             if sale:
                 if row.placed_at is None:
@@ -1214,8 +1220,7 @@ class TradeManager:
             return ended
         logger.warning("lost entry %s: %d shares held with no position", row.tag, unexplained)
         if row.id not in self._entry_alerted:
-            self._entry_alerted.add(row.id)
-            self._notifier.alert(
+            delivered = self._notifier.alert(
                 ALERT_ENTRY_UNRESOLVED,
                 trade_date_of(now),
                 {
@@ -1226,4 +1231,6 @@ class TradeManager:
                     "held": unexplained,
                 },
             )
+            if delivered:  # one that could not be delivered is told again at the next run
+                self._entry_alerted.add(row.id)
         return 0
