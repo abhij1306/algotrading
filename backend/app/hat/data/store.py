@@ -48,7 +48,7 @@ import fcntl
 import os
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
@@ -244,15 +244,6 @@ def dividend_factor(amount: Decimal, previous_close: Decimal) -> Decimal | None:
 NO_ADJUSTMENT = Adjustment()  # raw prices: the views without factors or lineage
 
 
-@dataclass
-class PartitionReport:
-    """Which expected days have data (HAT-DATA-091, 096). A missing day stays missing."""
-
-    row_counts: dict[date, int] = field(default_factory=dict)
-    missing: list[date] = field(default_factory=list)
-    unexpected: list[date] = field(default_factory=list)  # data on a day that is not expected
-
-
 def _money(value: Decimal | None) -> Decimal | None:
     if value is None:
         return None
@@ -345,6 +336,9 @@ def cumulative_segments(
 # and INVERSE_PLACES); the views are constants so no text is ever built into SQL. `lineage` maps a
 # linked older ISIN's id to its chain's id. `ca_segment` holds the price basis's factors,
 # `tr_segment` those times the dividends' (its inverse is unused: volume keeps the price basis's).
+# The open-ended first segment's NULL `from_date` is read as the first day there is rather than
+# with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
+# (24 s of CPU for five years of bars), the equality as a hash join (DB1).
 _SEGMENT_TABLES = ("ca_segment", "tr_segment", "div_segment")
 _ADJ_VIEW_SQL = """
 CREATE VIEW {view} AS
@@ -413,13 +407,6 @@ JOIN day_close dc ON dc.k = d.k
 JOIN last_day ld ON ld.chain = d.chain AND ld.last_date >= d.ex
 GROUP BY d.k
 """  # noqa: S608
-# The open-ended first segment's NULL `from_date` is read as the first day there is rather than
-# with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
-# (24 s of CPU for five years of bars), the equality as a hash join (DB1).
-_COUNT_SQL = {
-    DATASET_BARS: "SELECT date, count(*) FROM bars_daily_raw GROUP BY date ORDER BY date",
-    DATASET_INDEX: "SELECT date, count(*) FROM index_daily GROUP BY date ORDER BY date",
-}
 
 
 def atomic_replace(
@@ -778,44 +765,3 @@ def _duck_type(arrow_type: pa.DataType) -> str:
     if pa.types.is_int64(arrow_type):
         return "BIGINT"
     return "VARCHAR"
-
-
-def partition_report(
-    store: DataStore, dataset: str, expected_days: Collection[date]
-) -> PartitionReport:
-    """Row count per day found, the expected days with no rows (missing) and the days with data
-    that are not expected. Missing days are reported and left empty (HAT-DATA-091)."""
-    report = PartitionReport()
-    con = store.connect()
-    try:
-        for day, count in con.execute(_COUNT_SQL[dataset]).fetchall():
-            report.row_counts[day] = count
-    finally:
-        con.close()
-    expected = set(expected_days)
-    report.missing = sorted(d for d in expected if report.row_counts.get(d, 0) == 0)
-    report.unexpected = sorted(d for d in report.row_counts if d not in expected)
-    return report
-
-
-def index_coverage(
-    store: DataStore, trading_days: Collection[date], starts: dict[str, date]
-) -> dict[str, list[date]]:
-    """Per index, the trading days on or after its start date that have no row (HAT-DATA-095).
-    Raises when an index has more than one row on a day."""
-    con = store.connect()
-    try:
-        counts = {
-            (name, day): n
-            for name, day, n in con.execute(
-                "SELECT index_name, date, count(*) FROM index_daily GROUP BY index_name, date"
-            ).fetchall()
-        }
-    finally:
-        con.close()
-    if any(n > 1 for n in counts.values()):
-        raise StoreError("store_duplicate_key")
-    return {
-        name: sorted(d for d in trading_days if d >= start and (name, d) not in counts)
-        for name, start in starts.items()
-    }

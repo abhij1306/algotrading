@@ -11,15 +11,12 @@ from hypothesis import strategies as st
 from app.hat.data.features import (
     ABOVE_MARGIN,
     BAR_COLUMNS,
-    LOOKBACK_ROWS,
     RANK_INPUTS,
-    adjustment_of,
-    affected_chains,
     chunks,
     compute_features,
     splice_day,
-    stale_days,
 )
+from app.hat.data.features_state import LOOKBACK_ROWS, adjustment_of, affected_chains, stale_days
 
 EPOCH = date(2020, 1, 6)
 

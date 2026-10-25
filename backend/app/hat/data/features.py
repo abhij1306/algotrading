@@ -11,8 +11,9 @@ percentiles and breadth rank the ordinary equity rows only (`ORDINARY_EQUITY`, D
 
 Incremental equals full (HAT-DATA-077): both load the same way (the target dates plus, for every
 instrument, the 252 rows before the first target), so a date has the same inputs either way.
-`features_daily/_state.json` (`FeaturesState`) records the inputs and, per day, the fingerprint of
-the bars the day was computed from, so a run recomputes exactly what moved (DB5):
+`features_daily/_state.json` (`features_state.FeaturesState`) records the inputs and, per day,
+the fingerprint of the bars the day was computed from, so a run recomputes exactly what moved
+(DB5):
 - a day added, re-ingested or corrected, and the later days whose windows read it
   (`stale_days`);
 - after a corporate-action or lineage change, the touched chains only (`affected_chains`): their
@@ -28,17 +29,12 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import hashlib
-import json
 import logging
 import sys
 from bisect import bisect_left
-from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -46,8 +42,20 @@ import polars as pl
 import pyarrow as pa
 
 from ..errors import HatError
-from ..money import require_exact
 from ..ops.jobs import JobResult
+from .features_state import (
+    FEATURES_RULE,
+    LOOKBACK_ROWS,
+    FeaturesState,
+    adjustment_lines,
+    adjustment_of,
+    affected_chains,
+    fingerprint_parts,
+    inputs_digest,
+    read_state,
+    stale_days,
+    write_state,
+)
 from .isin import ORDINARY_EQUITY
 from .store import (
     BREADTH_SCHEMA,
@@ -58,11 +66,8 @@ from .store import (
     FEATURES_SCHEMA,
     LATEST_ROW,
     NO_ADJUSTMENT,
-    ActionFactor,
     Adjustment,
     DataStore,
-    DividendCash,
-    atomic_replace,
     latest_rows,
 )
 
@@ -74,15 +79,12 @@ WINDOW_20 = 20
 RET_WINDOWS = (21, 63, 126, 252)
 RS_WEIGHTS = ((63, 0.4), (126, 0.2), (189, 0.2), (252, 0.2))  # 3/6/9/12 months of 21 days
 MOM_WINDOWS = (21, 63, 126)
-LOOKBACK_ROWS = 252  # rows before a date that any feature of the date can read
 LOOKBACK_SLACK_DAYS = 40  # store days read beyond those rows before falling back to a deeper read
 CHUNK_DAYS = 63
 BATCH_INSTRUMENTS = 500  # instruments per per-instrument computation
 DUCKDB_THREADS = 2
 FEATURES_PART = "features"
 BREADTH_PART = "breadth"
-STATE_FILE = "_state.json"
-STATE_VERSION = 2
 # More changed chains than this in one night is a bulk reference change (an import): every date
 # is recomputed instead, which bounds the memory of the two chain computations.
 MAX_CHAINS = 100
@@ -92,12 +94,6 @@ MAX_CHAINS = 100
 # SMA only when it exceeds it by more than this relative margin: far below the smallest real
 # difference (a price in paise over a 50-day mean is at least 2e-4 / price), far above the noise.
 ABOVE_MARGIN = 1e-12
-# The ranked universe (D257) is the rows whose own ISIN is an equity share (`isin.ORDINARY_EQUITY`):
-# point in time, with no reference data (a symbol suffix is a convention; `hat_instrument` keeps
-# no security type and lacks some short-lived entitlements).
-# What else besides the adjustment changes every date: the universe rule and the formulas. A
-# change here rebuilds every date (the state records it).
-FEATURES_RULE = f"v3|universe:{ORDINARY_EQUITY}"
 
 BAR_COLUMNS = (
     "instrument_id",
@@ -121,7 +117,6 @@ _COLUMNS_SQL = """instrument_id, date, isin,
 # that day and a later dividend never changes them (CA3).
 LEVEL_FEATURES = ("sma10", "sma20", "sma50", "sma150", "sma200", "high_52w", "low_52w", "adtr20")
 DIV_FACTOR = "div_factor"
-DIVIDEND_LINE = "dividend:"  # a dividend's value in `adjustment_lines`
 _LOADED = (*BAR_COLUMNS, DIV_FACTOR)  # what `load_bars` reads
 # The latest ingest run's row per (instrument, date) (`store.LATEST_ROW`), as the `bars_daily` view
 # gives, but read through `bars_daily_adj` with the date filter first: a window over the whole view
@@ -302,208 +297,6 @@ class FeaturesReport:
     rows: int = 0
     chains: list[str] = field(default_factory=list)
     spliced: list[date] = field(default_factory=list)
-
-
-def adjustment_lines(adjustment: Adjustment) -> tuple[list[str], list[str]]:
-    """The adjustment as sorted text: `instrument|ex_date|factor` per factor of the adjusted
-    view and `instrument|ex_date|dividend:amount` per dividend (both keyed by chain id), and
-    `old>chain` per linked ISIN. The state keeps them, so a later run knows which chains a change
-    touches and can rebuild their old series. A dividend imported for past dates changes the
-    returns before it; one that goes ex later changes no stored date (`LEVEL_FEATURES`)."""
-    factors = sorted(
-        [f"{a.instrument_id}|{a.ex_date.isoformat()}|{a.factor}" for a in adjustment.factors]
-        + [
-            f"{d.instrument_id}|{d.ex_date.isoformat()}|{DIVIDEND_LINE}{d.amount}"
-            for d in adjustment.dividends
-        ]
-    )
-    lineage = sorted(f"{old}>{new}" for old, new in adjustment.lineage.items())
-    return factors, lineage
-
-
-def inputs_digest(adjustment: Adjustment) -> str:
-    """Order-independent sha256 of what changes old dates without changing their bars: the
-    (instrument, ex-date, factor) set the adjusted view uses, its dividends, its ISIN lineage, and
-    the ranked universe and formulas (`FEATURES_RULE`). No lineage or dividend leaves the digest
-    of the factors alone."""
-    factors, lineage = adjustment_lines(adjustment)
-    lines = [*factors, *(f"lineage:{line}" for line in lineage)]
-    return hashlib.sha256(("\n".join(lines) + "\nrule:" + FEATURES_RULE).encode()).hexdigest()
-
-
-@dataclass
-class FeaturesState:
-    """`features_daily/_state.json`: the inputs the partitions were written for and, per day,
-    the bars fingerprint (`DataStore.fingerprints`) the day's partitions were computed from. A
-    day without a record, or whose bars now have another fingerprint, is stale. A run removes
-    the records of the days it is about to rewrite before it writes any, and records each day
-    once written, so a run that dies part-way (a `--full` included) leaves the rest unrecorded
-    and the next run resumes there."""
-
-    inputs_digest: str
-    rule: str
-    factors: list[str]
-    lineage: list[str]
-    days: dict[date, str] = field(default_factory=dict)
-
-
-def _state_path(store: DataStore) -> Path:
-    return store.root / DATASET_FEATURES / STATE_FILE
-
-
-def read_state(store: DataStore) -> FeaturesState | None:
-    """The recorded state; None when there is none or it is unreadable or of an older format
-    (every date is then recomputed)."""
-    try:
-        raw = json.loads(_state_path(store).read_text(encoding="utf-8"))
-        if raw.get("version") != STATE_VERSION:
-            return None
-        return FeaturesState(
-            str(raw["inputs_digest"]),
-            str(raw["rule"]),
-            [str(line) for line in raw["factors"]],
-            [str(line) for line in raw["lineage"]],
-            {date.fromisoformat(day): str(fp) for day, fp in raw["days"].items()},
-        )
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
-
-
-def _write_state(store: DataStore, state: FeaturesState) -> None:
-    text = json.dumps(
-        {
-            "version": STATE_VERSION,
-            "inputs_digest": state.inputs_digest,
-            "rule": state.rule,
-            "factors": state.factors,
-            "lineage": state.lineage,
-            "days": {day.isoformat(): fp for day, fp in sorted(state.days.items())},
-        },
-        sort_keys=True,
-    )
-    atomic_replace(_state_path(store), lambda tmp: tmp.write_text(text, encoding="utf-8"))
-
-
-def features_current(
-    store: DataStore, digest: str, days: Iterable[date], read: Mapping[date, str] | None = None
-) -> bool:
-    """True when every one of `days` has features written for the inputs `digest` from the bars
-    the store holds now (the backtest's gate; the caller holds the features lock). A rebuild in
-    progress, or bars corrected since, leaves some day unrecorded or with another fingerprint.
-    `read` is the fingerprints a caller took before reading the bars itself: they must be the
-    recorded ones and still the store's, so features never pair with bars read before a change."""
-    state = read_state(store)
-    if state is None or state.inputs_digest != digest:
-        return False
-    prints = store.fingerprints(DATASET_BARS)
-    seen = prints if read is None else read
-    return all(
-        day in prints
-        and state.days.get(day) == prints[day] == seen.get(day)
-        and store.partition_files(DATASET_FEATURES, day)
-        for day in days
-    )
-
-
-def stale_days(
-    days: Sequence[date],
-    dirty: Collection[date],
-    presence: Callable[[date], Collection[str]],
-    lost: Collection[date] = (),
-) -> set[date]:
-    """The days to recompute when the bars of `dirty` (days of `days`) changed or were never
-    featured, or a recorded part file of `lost` disappeared.
-
-    A feature of day x reads the instrument's own last `LOOKBACK_ROWS` rows before x, so a
-    changed day d moves, besides d itself, every later day on which an instrument with a row
-    on d has one of its next `LOOKBACK_ROWS` rows (counted per instrument: one that trades
-    rarely reaches further than `LOOKBACK_ROWS` store days), and with it the percentiles and
-    breadth of those days; the `LOOKBACK_ROWS` store days after d are stale in any case. A lost
-    day (removed, or one of its recorded files removed or rewritten) no longer lists the
-    instruments it had, so every day from it on is stale. `presence(day)` is the ids with a bar
-    on a day of `days`, as the adjusted view names them."""
-    stale: set[date] = set()
-    if lost:
-        first_lost = min(lost)
-        stale.update(d for d in days if d >= first_lost)
-    if not dirty:
-        return stale
-    remaining: dict[str, int] = {}  # rows still to come that read a dirty day, per instrument
-    floor = -1  # the last index stale by the store-day rule
-    last_dirty = max(dirty)
-    for i in range(bisect_left(days, min(dirty)), len(days)):
-        day = days[i]
-        if day in dirty:
-            stale.add(day)
-            floor = max(floor, i + LOOKBACK_ROWS)
-            remaining.update(dict.fromkeys(presence(day), LOOKBACK_ROWS))
-            continue
-        if not remaining and i > floor:
-            if day > last_dirty:
-                break
-            continue
-        hit = [x for x in presence(day) if x in remaining] if remaining else []
-        if hit or i <= floor:
-            stale.add(day)
-        for x in hit:
-            remaining[x] -= 1
-            if not remaining[x]:
-                del remaining[x]
-    return stale
-
-
-def _parts(fingerprint: str) -> set[str]:
-    """The `name:size` parts of a `DataStore.fingerprints` entry."""
-    return {part for part in fingerprint.split(";") if part}
-
-
-def affected_chains(
-    old: tuple[Sequence[str], Sequence[str]], new: tuple[Sequence[str], Sequence[str]]
-) -> set[str]:
-    """The ids whose adjusted series may differ between two adjustments given as
-    `adjustment_lines`: a factor line belongs to its chain, a lineage line `old>chain` to both
-    ids (the old ISIN's bars leave its own series and join the chain's, or the reverse)."""
-
-    def groups(lines: tuple[Sequence[str], Sequence[str]]) -> dict[str, set[str]]:
-        out: dict[str, set[str]] = defaultdict(set)
-        for line in lines[0]:
-            out[line.split("|", 1)[0]].add(line)
-        for line in lines[1]:
-            member, chain = line.split(">", 1)
-            out[member].add(line)
-            out[chain].add(line)
-        return out
-
-    before, after = groups(old), groups(new)
-    return {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
-
-
-def adjustment_of(
-    factors: Sequence[str], lineage: Sequence[str], chains: Collection[str]
-) -> Adjustment:
-    """The part of an adjustment (as `adjustment_lines`) that the series of `chains` read: their
-    factors and every link into or out of them. A link out of a chain to an untouched one keeps
-    that ISIN's bars under the other id, as in the whole adjustment."""
-    picked, paid = [], []
-    for line in factors:
-        instrument, ex_date, value = line.split("|")
-        if instrument not in chains:
-            continue
-        day = date.fromisoformat(ex_date)
-        if value.startswith(DIVIDEND_LINE):
-            paid.append(
-                DividendCash(
-                    instrument, day, require_exact(value.removeprefix(DIVIDEND_LINE), "dividend")
-                )
-            )
-        else:
-            picked.append(ActionFactor(instrument, day, Decimal(value)))
-    links = {}
-    for line in lineage:
-        member, chain = line.split(">", 1)
-        if member in chains or chain in chains:
-            links[member] = chain
-    return Adjustment(tuple(picked), links, tuple(paid))
 
 
 def load_bars(
@@ -809,7 +602,7 @@ def _run_locked(
             report.full, report.reason = True, "inputs_changed"
     if report.full or state is None:
         state = FeaturesState(digest, FEATURES_RULE, *lines)
-        _write_state(store, state)
+        write_state(store, state)
         stale = set(days)
     else:
         stale = _update(store, state, report, chains, lines, digest, prints, chunk_days)
@@ -836,7 +629,11 @@ def _update(
     dirty = {d for d in all_days if state.days.get(d) != prints[d] or d not in written}
     # A day keeps its instruments only when every recorded file is still there unchanged (a new
     # run beside them adds rows); a file removed or rewritten took rows nobody lists any more.
-    lost = {d for d, fp in state.days.items() if not _parts(fp) <= _parts(prints.get(d, ""))}
+    lost = {
+        d
+        for d, fp in state.days.items()
+        if not fingerprint_parts(fp) <= fingerprint_parts(prints.get(d, ""))
+    }
     # an id as either adjustment names it, so a lineage change on the same night is covered
     old_links = dict(line.split(">", 1) for line in state.lineage)
     new_links = dict(line.split(">", 1) for line in lines[1])
@@ -864,7 +661,7 @@ def _update(
     drop = stale | set(candidates)
     state.days = {d: fp for d, fp in state.days.items() if d in prints and d not in drop}
     state.inputs_digest, (state.factors, state.lineage) = digest, lines
-    _write_state(store, state)
+    write_state(store, state)
     for i, day in enumerate(candidates, 1):
         written_rows = _splice(store, day, chains, _rows(old, day), _rows(new, day))
         if written_rows is None:
@@ -874,7 +671,7 @@ def _update(
             report.spliced.append(day)
             report.rows += written_rows
         if i % chunk_days == 0 or i == len(candidates):
-            _write_state(store, state)
+            write_state(store, state)
     return stale
 
 
@@ -917,7 +714,7 @@ def _recompute(
                 report.rows += f.height
             report.dates.extend(chunk)
             state.days.update({day: prints[day] for day in chunk})
-            _write_state(store, state)
+            write_state(store, state)
     finally:
         con.close()
 

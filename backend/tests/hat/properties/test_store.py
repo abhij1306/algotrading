@@ -24,8 +24,8 @@ from app.hat.data.store import (
     DataStore,
     StoreError,
     latest_rows,
-    partition_report,
 )
+from app.hat.data.store_coverage import partition_report
 from app.hat.ids import Uuid7Generator, uuid7
 
 DAYS = weekdays(date(2024, 3, 1), date(2024, 4, 30))[:20]

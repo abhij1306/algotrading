@@ -40,7 +40,7 @@ from sqlalchemy.orm import Session
 from ..data.ca_versions import digest as versions_digest
 from ..data.chains import stored_adjustment
 from ..data.demerger_notice import exit_day
-from ..data.features import features_current, inputs_digest
+from ..data.features_state import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.lineage_review import unexplained_jumps
 from ..data.point_in_time import chain_pending
@@ -677,7 +677,7 @@ def _current_features(
     lock (shared), so a run that is rewriting partitions finishes first and both come from one
     generation; `backtest_features_stale` unless the job recorded every day as written for the
     inputs `digest` from the bars `read` fingerprints (taken before the bars were read) and the
-    store still holds those bars (`features.features_current`)."""
+    store still holds those bars (`features_state.features_current`)."""
     store.root.mkdir(parents=True, exist_ok=True)
     with (store.root / FEATURES_LOCK).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_SH)

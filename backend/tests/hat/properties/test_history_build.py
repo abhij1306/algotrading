@@ -29,9 +29,7 @@ from app.hat.data.history_build import BuildReport
 from app.hat.data.history_validation import mcp_close_source
 from app.hat.data.index_history import mcp_index_source
 from app.hat.data.mcp_client import CODE_BAD_RESPONSE, McpClient, McpError
-from app.hat.data.store import (
-    PartitionReport,
-)
+from app.hat.data.store_coverage import PartitionReport
 
 # --- the MCP history wrappers ---------------------------------------
 
