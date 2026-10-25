@@ -1,24 +1,30 @@
 """The forced exit before a demerger (CA8): the exit session, the `bc` rows that become notices,
-the reviewed announced-on file and the backtest's count of the exits. Plain examples; no
-database, no bars."""
+the reviewed announced-on file, its journalled write (one in-memory row) and the backtest's
+count of the exits. Plain examples; no bars."""
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
+from hat.hat_support import memory_engine
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from app.hat.backtest.data import demerger_exits
 from app.hat.backtest.report import DEMERGER, TradeRow, forced_exits
 from app.hat.data.ca_bc import FeedRow, read_bc
 from app.hat.data.demerger_notice import (
+    EVENT_ANNOUNCED,
     AnnouncedFileError,
     Demerger,
+    apply_announced,
     demerger_rows,
     exit_day,
     plan_announced,
     read_announced,
 )
+from app.hat.models import HatCorporateAction, HatEvent
 
 # HEG's demerger: ex-date (and, under T+1, record date) Monday 2026-09-07
 EX = date(2026, 9, 7)
@@ -108,6 +114,49 @@ def test_the_plan_dates_only_undated_rows_and_lists_the_rest() -> None:
     assert {k: r.announced_on for k, r in plan.dated.items()} == {"a": date(2026, 7, 6)}
     assert [d.action_id for d, _ in plan.differing] == ["b"]
     assert [r.isin for r in plan.unmatched] == ["INE000000000"]
+    assert not plan.replaced
+
+
+def test_replace_takes_only_an_earlier_date() -> None:
+    stored = [
+        Demerger("a", "SINTEX", "INE429C01035", date(2017, 5, 25), date(2017, 5, 25)),
+        Demerger("b", "TMPV", "INE155A01022", date(2025, 10, 14), date(2025, 9, 1)),
+        Demerger("c", "HEGAM", "INE545A01024", EX, None),
+    ]
+    rows = read_announced(
+        HEADER
+        + "INE429C01035\t2017-05-25\t2017-05-16\thttps://x\tReg 42 letter\n"
+        + "INE155A01022\t2025-10-14\t2025-09-02\thttps://y\tlater: kept\n"
+        + "INE545A01024\t2026-09-07\t2026-07-06\thttps://z\tundated: dated\n"
+    )
+    plan = plan_announced(stored, rows, replace=True)
+    assert {k: r.announced_on for k, (_, r) in plan.replaced.items()} == {"a": date(2017, 5, 16)}
+    assert [d.action_id for d, _ in plan.differing] == ["b"]
+    assert list(plan.dated) == ["c"]
+
+
+def test_apply_replaces_the_planned_date_and_journals_it() -> None:
+    engine = memory_engine(HatCorporateAction, HatEvent)
+    with Session(engine) as session:
+        row = HatCorporateAction(
+            instrument_id=uuid.uuid4(), ex_date=date(2017, 5, 25), action_type="other",
+            adjustment_factor=Decimal("0.9"), raw_text="demerger", source="ca_research",
+            demerger=True, announced_on=date(2017, 5, 25),
+        )  # fmt: skip
+        session.add(row)
+        session.flush()
+        stored = [Demerger(str(row.id), "SINTEX", "INE429C01035", row.ex_date, row.announced_on)]
+        line = "INE429C01035\t2017-05-25\t2017-05-16\thttps://x\tReg 42 letter\n"
+        plan = plan_announced(stored, read_announced(HEADER + line), replace=True)
+        now = datetime(2026, 10, 25, tzinfo=UTC)
+        assert apply_announced(session, plan, now=now) == 1
+        assert row.announced_on == date(2017, 5, 16)
+        (event,) = session.scalars(select(HatEvent)).all()
+        assert event.event_type == EVENT_ANNOUNCED
+        assert event.payload["before"] == "2017-05-25"
+        assert event.payload["source_url"] == "https://x"
+        # a rerun of the same plan finds the date changed and writes nothing
+        assert apply_announced(session, plan, now=now) == 0
 
 
 def test_backtest_exits_under_the_chain_within_the_period() -> None:

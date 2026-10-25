@@ -63,6 +63,8 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "coverage.acknowledged",
         # a stored demerger notice the night's bc file no longer lists (Q6)
         "corporate_action.demerger_unlisted",
+        # a stored demerger's announced_on dated or replaced from a reviewed file (CA8)
+        "corporate_action.announced",
     ),
     "Signals": (
         "watchlist.published",

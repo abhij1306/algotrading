@@ -127,6 +127,15 @@ class Reference:
             found |= self.chain.get(iid, set())
         return found
 
+    def disagrees(self, symbol: str, isin: str, day: date) -> bool:
+        """True when the row's symbol (now or around `day`) and its ISIN each name an instrument
+        and no chain holds both: NSE filed one company's action under another's ISIN (DTIL's
+        dividends under DVL's, 2025). Either one unknown is no disagreement."""
+        if not symbol or isin not in self.by_isin:
+            return False
+        by_symbol = self.ids(symbol, "", day)
+        return bool(by_symbol) and not by_symbol & self.ids("", isin, day)
+
 
 def load_reference(session: Session) -> Reference:
     instruments = {

@@ -245,8 +245,9 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `lineage link\|unlink OLD NEW --note T` | Owner's verdict on a succession |
 | `ca_import --db FILE` | Collected NSE corporate-action file |
 | `ca_research --db FILE --a .. --d ..` | Research-confirmed demergers and rights |
-| `ca_dividends --feed DIR [--bonus F]` | Dividends from NSE's monthly feed JSON |
+| `ca_dividends --feed DIR [--bonus F]` | Dividends from NSE's monthly feed JSON; `symbol_isin_disagree` (NSE filed one company under another's ISIN) is the owner's to fix |
 | `ca_demergers [--apply [--neutral]]` | Demerger gaps, ratio, disputed list; `--neutral` only with owner approval |
+| `demerger_notice announced F.tsv [--replace]` | Date stored demergers' `announced_on` from a reviewed file (`isin ex_date announced_on source_url note`); `--replace` also moves a stored date to an earlier sourced one; journalled `corporate_action.announced` |
 | `demerger_notice exits [SYMBOL...]` | The session each stored demerger's forced exit falls on, or why it holds |
 | `point_in_time report` / `pending SYMBOL` | Lagged and undated actions, version ledger (projection check must be 0); factor-pending sessions |
 | `renames` | Seed symbol history from renames |

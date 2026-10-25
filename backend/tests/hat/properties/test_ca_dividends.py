@@ -13,7 +13,7 @@ from app.hat.data.ca_bc import (
     bc_subject,
     read_bc,
 )
-from app.hat.data.ca_gate import CaFileError
+from app.hat.data.ca_gate import REVIEW, CaFileError, Instrument, Reference
 from app.hat.data.ca_nightly import (
     nightly_window,
 )
@@ -21,10 +21,12 @@ from app.hat.data.ca_payouts import (
     KIND_FINAL,
     KIND_INTERIM,
     KIND_SPECIAL,
+    REASON_SYMBOL_ISIN,
     T_NIGHTLY,
     Payout,
     bonus_counts,
     combine,
+    decide,
     feed_proposals,
     over_yield,
     payouts,
@@ -45,6 +47,71 @@ def test_payouts_reads_one_amount_per_kind() -> None:
         _p(KIND_INTERIM, "5"),
         _p(KIND_SPECIAL, "10"),
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Interm Dividend - Rs 2 Per Share",
+        "Int Dividend Rs 2 Per Share",
+        "Interest Dividend - Rs 2 Per Share",
+    ],
+)
+def test_interim_typos_read_as_interim(text: str) -> None:
+    assert payouts(text) == (_p(KIND_INTERIM, "2"),)
+    for typo in ("Interm", "Int"):
+        both = payouts(f"Dividend - {typo} Rs 2 And Special Re 1 Per Share")
+        assert both == (_p(KIND_INTERIM, "2"), _p(KIND_SPECIAL, "1"))
+
+
+def test_interest_elsewhere_is_no_interim() -> None:
+    assert payouts("Interest On Debentures / Dividend Rs 2 Per Share") == (_p(KIND_FINAL, "2"),)
+
+
+def _reference() -> Reference:
+    dvl, dtil = (
+        Instrument("dvl", DVL, "DVL", "Dhunseri Ventures"),
+        Instrument("dtil", "INE341R01014", "DTIL", "Dhunseri Tea"),
+    )
+    return Reference(
+        {"dvl": dvl, "dtil": dtil},
+        {DVL: "dvl", dtil.isin: "dtil"},
+        {"DVL": {"dvl"}, "DTIL": {"dtil"}},
+        {},
+        {},
+        set(),
+    )
+
+
+DVL = "INE477B01010"
+
+
+def test_a_symbol_of_another_company_than_the_isin_disagrees() -> None:
+    ref, day = _reference(), date(2025, 7, 31)
+    assert ref.disagrees("DTIL", DVL, day)
+    assert not ref.disagrees("DVL", DVL, day)
+    assert not ref.disagrees("NEWCO", DVL, day)  # an unknown symbol: the ISIN decides
+    assert not ref.disagrees("DTIL", "INE000000000", day)  # an unknown ISIN: the symbol does
+
+
+def test_a_feed_row_filed_under_another_isin_goes_to_review() -> None:
+    day = date(2025, 7, 31)
+    feed = [
+        FeedRow("DVL", DVL, "EQ", day, "Dividend - Rs 5 Per Share"),
+        FeedRow("DTIL", DVL, "EQ", day, "Dividend - Rs 5 Per Share"),
+    ]
+    (p,) = feed_proposals(feed)
+    assert p.symbols == ("DVL", "DTIL")
+    outcome = decide(p, _reference(), [])
+    assert (outcome.status, outcome.reason) == (REVIEW, REASON_SYMBOL_ISIN)
+    # DTIL 2025-08-01: two amounts under DVL's ISIN, named for the ISIN, not rows_disagree
+    feed = [
+        FeedRow("DTIL", DVL, "EQ", day, "Dividend - Re 1 Per Share"),
+        FeedRow("DTIL", DVL, "EQ", day, "Dividend - Rs 5 Per Share"),
+    ]
+    (p,) = feed_proposals(feed)
+    assert p.reason == "rows_disagree"
+    assert decide(p, _reference(), []).reason == REASON_SYMBOL_ISIN
 
 
 def test_payouts_never_guesses() -> None:

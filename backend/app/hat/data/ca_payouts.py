@@ -9,12 +9,14 @@ dividend and a text with no single amount are never guessed: review or skipped. 
 rows of one (ISIN, ex-date) are combined (`combine`): identical ones once, different kinds
 added, a disagreement on one kind to review unless the revised rows settle it.
 
-The last close before the ex-date (within `ca_gate.BAR_DAYS`) must exist and the cash may be
-at most `MAX_YIELD` of it, else review; the row goes on the instrument that holds that bar, one
-row per (instrument, ex-date, `dividend`). Against what is stored for the company (any ISIN of
-its chain): the same amount is `already`, a stored dividend without one gets it (`stored`,
-`amount_added`), another amount is a `conflict`, never rewritten, and a key the owner vacated
-is never re-created. `apply` journals each row as `corporate_action.imported`.
+A row whose symbol and ISIN name different companies goes to review (`symbol_isin_disagree`),
+never stored by its ISIN alone. The last close before the ex-date (within `ca_gate.BAR_DAYS`)
+must exist and the cash may be at most `MAX_YIELD` of it, else review; the row goes on the
+instrument that holds that bar, one row per (instrument, ex-date, `dividend`). Against what is
+stored for the company (any ISIN of its chain): the same amount is `already`, a stored dividend
+without one gets it (`stored`, `amount_added`), another amount is a `conflict`, never
+rewritten, and a key the owner vacated is never re-created. `apply` journals each row as
+`corporate_action.imported`.
 """
 
 from __future__ import annotations
@@ -80,6 +82,8 @@ KIND_FINAL = "final"
 KIND_SPECIAL = "special"
 KIND_BONUS = "bonus_instrument"
 REASON_AMOUNT_ADDED = "amount_added"
+# the row's symbol and ISIN name different companies (`Reference.disagrees`): to review
+REASON_SYMBOL_ISIN = "symbol_isin_disagree"
 
 
 @dataclass(frozen=True, order=True)
@@ -98,7 +102,7 @@ _SEP = re.compile(r"/(?!-)|\band\b|&|\+|;|,")
 # a bonus of debentures or preference shares in a feed purpose (`named_bonus_dates`)
 _BONUS_INSTRUMENT = re.compile(r"bonus\b.*\b(?:debentures?|deb|ncds?|n?c?rps|pref\w*)\b")
 _PREFERENCE = re.compile(r"preference|\bpref\b|\bc?n?c?rps\b|\bcps\b")
-_KIND = re.compile(r"\b(final|special|interim)\b")
+_KIND = re.compile(r"\b(final|special|interim|interm|int)\b")
 _KIND_STOP = re.compile(r"[0-9%/]")
 
 
@@ -124,10 +128,14 @@ def _kinded(body: str) -> list[tuple[str, str]]:
 _BARE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:/-\s*)?per\s*(?:equity\s*)?sh")
 
 
+# NSE's typos of "interim" in the words before "Dividend": "Interm", "Int", "Interest Dividend"
+_INTERIM = re.compile(r"interim|\b(?:interm|int)\b")
+
+
 def _kind(words: str) -> str:
     if "special" in words:
         return KIND_SPECIAL
-    if "interim" in words:
+    if _INTERIM.search(words) or words.split()[-1:] == ["interest"]:
         return KIND_INTERIM
     return KIND_FINAL  # "Dividend" at an AGM, or "Final Dividend"
 
@@ -323,6 +331,7 @@ class Proposal:
     status: str = ""
     reason: str = ""
     source_day: date | None = None  # a research row's `source_date`
+    symbols: tuple[str, ...] = ()  # every symbol a feed group's rows give (else `symbol`)
 
     def ends(self, status: str, reason: str) -> Proposal:
         return replace(self, status=status, reason=reason)
@@ -330,7 +339,7 @@ class Proposal:
 
 def feed_proposals(rows: Iterable[FeedRow], table: str = T_FEED) -> list[Proposal]:
     """One proposal per (ISIN or symbol, ex-date) of the feed's (or the nightly file's) dividend
-    rows."""
+    rows, with every symbol its rows give (`decide` checks each against the ISIN)."""
     groups: dict[tuple[str, date | None], list[FeedRow]] = defaultdict(list)
     for row in rows:
         if _DIVIDEND.search(row.subject.lower()):
@@ -339,8 +348,10 @@ def feed_proposals(rows: Iterable[FeedRow], table: str = T_FEED) -> list[Proposa
     for (key, ex_date), members in sorted(groups.items(), key=lambda g: (str(g[0][1]), g[0][0])):
         first = members[0]
         subjects = list(dict.fromkeys(m.subject for m in members))
+        symbols = tuple(dict.fromkeys(m.symbol for m in members))
+        text = " | ".join(subjects)
         p = Proposal(
-            table, key, first.symbol, first.isin, ex_date, " | ".join(subjects), hint=first.series
+            table, key, first.symbol, first.isin, ex_date, text, hint=first.series, symbols=symbols
         )
         if ex_date is None:
             out.append(p.ends(REVIEW, "bad_ex_date"))
@@ -468,13 +479,21 @@ def decide(
     first_bar: date | None = None,
 ) -> Outcome:
     """A proposal's candidate row on the instrument of the bar before its ex-date, or why not:
-    no instrument (skipped: no bars anywhere), no bar, an amount over `MAX_YIELD`, a bonus
+    a symbol and ISIN naming different companies (`symbol_isin_disagree`, review), no instrument
+    (skipped: no bars anywhere), no bar, an amount over `MAX_YIELD`, a bonus
     distribution under `BONUS_MIN_SHARE` of the close (skipped: it stays price-neutral) or one
     whose ex-date is not settled (`bonus_ex_date`)."""
-    if p.status or p.ex_date is None:
+    if p.ex_date is None:
         return Outcome(p, p.status or REVIEW, p.reason or "bad_ex_date")
+    # never stored by the ISIN alone, and named over another review reason (the owner's first fix)
+    disagree = any(reference.disagrees(s, p.isin, p.ex_date) for s in p.symbols or (p.symbol,))
+    if p.status:
+        reason = REASON_SYMBOL_ISIN if disagree and p.status == REVIEW else p.reason
+        return Outcome(p, p.status, reason)
     if first_bar is not None and p.ex_date <= first_bar:
         return Outcome(p, SKIPPED, "before_bars")  # no instrument has a bar to hold it
+    if disagree:
+        return Outcome(p, REVIEW, REASON_SYMBOL_ISIN)
     if not reference.ids(p.symbol, p.isin, p.ex_date):
         sme = p.hint in SME_SERIES
         return Outcome(p, SKIPPED if p.table != T_BONUS or sme else REVIEW, "no_instrument")
