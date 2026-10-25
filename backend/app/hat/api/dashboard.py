@@ -32,9 +32,9 @@ from sqlalchemy.orm import Session
 from ...database import get_db
 from ..engine.confidence import stored_basis
 from ..engine.portfolio.regime import RegimeState
+from ..events import recorded_for
 from ..execution.broker import SessionStatus
 from ..governance import ModeField
-from ..events import recorded_for
 from ..models import (
     HatAllocationDaily,
     HatEvent,

@@ -208,7 +208,8 @@ def test_flat_series_is_not_above_its_own_mean() -> None:
 
 def test_only_ordinary_equity_is_ranked_and_counted() -> None:
     """A fund row on the same day gets no percentile and is not in the breadth counts. The frames
-    have the columns `write_day` stores (`date`, then the dataset's schema), every feature a float."""
+    have the columns `write_day` stores (`date`, then the dataset's schema), each feature a float.
+    """
     rows = [
         {
             "date": EPOCH + timedelta(days=i),
