@@ -24,7 +24,7 @@ from app.hat.backtest.report import TradeRow, compute_metrics
 from app.hat.backtest.spec import KNOWN_GAPS, membership_key, sleeve_weight
 
 D = Decimal
-# without `volume_pace`, which the backtest does not model (`volume_pace_not_backtested`)
+# without `volume_pace`, which the backtest does not model (`trigger_is_level_break_only`)
 NO_PACE = "playbooks[{}].trigger[volume_pace].enabled"
 S2_BOOKS = tuple(  # breakout, episodic_pivot
     Overrides(sets=((NO_PACE.format("breakout"), False),)).apply_config(seed_config(S2)).playbooks

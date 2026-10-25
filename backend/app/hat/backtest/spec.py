@@ -69,7 +69,10 @@ INITIAL_EQUITY = Decimal(1_000_000)
 RESEARCH_SLEEVE_WEIGHT = Decimal("0.5")
 # What the daily-bar loop does not model, by fixed code (HAT-BT-070); measured in shadow.
 KNOWN_GAPS = (
-    "trigger_is_level_break_only",  # volume_pace and the opening range need intraday bars
+    # volume_pace and the opening range need intraday bars: a playbook with an enabled
+    # `volume_pace` trigger has trades live would refuse (`GAP_PLAYBOOKS`); under `entry_timing:
+    # daily_close` the breakout volume test (`volume_vs_avg`) is the backtestable stand-in
+    "trigger_is_level_break_only",
     "episodic_pivot_not_backtested",  # every pre-open playbook (`GAP_PLAYBOOKS`)
     "close_exits_at_official_close",
     # the close rules decide and fill on the daily close: the auction price stands in for the
@@ -92,11 +95,6 @@ KNOWN_GAPS = (
     # so the account-level caps (global open risk, the cluster cap, the position and entry
     # slots) never bind across sleeves as they do live
     "single_sleeve_caps",
-    # the backtest takes every break of the level: a playbook with an enabled `volume_pace`
-    # trigger (live's intraday volume pace) has trades live would refuse (`GAP_PLAYBOOKS`); under
-    # `entry_timing: daily_close` the breakout volume test (`volume_vs_avg`) is the backtestable
-    # stand-in
-    "volume_pace_not_backtested",
     # `entry_timing: daily_close` enters at the daily close (the auction price standing in for
     # the price before the 15:15 cut-off) and live does not trade it (`GAP_PLAYBOOKS`)
     "daily_close_entry_not_live",
@@ -121,13 +119,14 @@ def _daily_close(playbook: Playbook) -> bool:
 # The playbooks a known gap names, by what they use rather than by name: the lifecycle gate
 # refuses a version that enables one of them on this evidence (PR 69, HAT-PORT-061). The stored
 # code `episodic_pivot_not_backtested` names every pre-open playbook (`Playbook.preopen`), whatever
-# it is called; `volume_pace_not_backtested` every one with an enabled `volume_pace` trigger, and
-# `daily_close_entry_not_live` every one whose level trigger enters at the daily close. A gap not
-# listed here names no playbook: it holds for all of them alike, a measured approximation of the
-# daily-bar loop, and blocks none.
+# it is called; `trigger_is_level_break_only` every one with an enabled `volume_pace` trigger
+# (every run has recorded that code, so a run made before it named any playbook names them too),
+# and `daily_close_entry_not_live` every one whose level trigger enters at the daily close (a
+# timing no earlier version could hold). A gap not listed here names no playbook: it holds for all
+# of them alike, a measured approximation of the daily-bar loop, and blocks none.
 GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {
     "episodic_pivot_not_backtested": _preopen,
-    "volume_pace_not_backtested": _volume_pace,
+    "trigger_is_level_break_only": _volume_pace,
     "daily_close_entry_not_live": _daily_close,
 }
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).

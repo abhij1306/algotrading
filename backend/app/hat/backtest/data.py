@@ -240,7 +240,6 @@ class _Series:
     prices: np.ndarray
     traded: np.ndarray
     div: np.ndarray  # per row, the factor of the dividends after it (`div_factor`)
-    volume: np.ndarray  # per row, the session's volume (NaN where the store has none)
 
     def bars(self, start: int, stop: int) -> list[Bar]:
         return [Bar(*(_exact(v) for v in row)) for row in self.prices[start:stop]]
@@ -257,6 +256,15 @@ class _Series:
         ]
 
 
+_NO_VOLUMES = (np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float64))
+
+
+def last_through(days: np.ndarray, values: np.ndarray, through: int, count: int) -> list[float]:
+    """The last `count` of `values` whose `days` (ascending) are on or before `through`."""
+    end = int(np.searchsorted(days, through, side="right"))
+    return [float(v) for v in values[max(0, end - count) : end]]
+
+
 def rescaled(units: int, ratio: float) -> Decimal:
     """A price of 1/10,000 units times a dividend ratio, rounded half to even to the store's 4
     places; a ratio of 1 is the price itself (a price is far below 2**53 units, so exact)."""
@@ -267,7 +275,6 @@ _NO_SERIES = _Series(
     np.empty(0, dtype=np.int32),
     np.empty((0, 4), dtype=np.int64),
     np.empty(0, dtype=np.int64),
-    np.empty(0, dtype=np.float64),
     np.empty(0, dtype=np.float64),
 )
 _DIV = "div_factor"
@@ -311,6 +318,7 @@ class MarketView:
         self.bars = data.bars
         self.series = self._series(data.skipped)
         self.raw_closes = self._raw_closes()
+        self.volumes = self._volumes()
         self.skipped: dict[str, list[date]] = {}
         for instrument_id, day in sorted(data.skipped):
             self.skipped.setdefault(instrument_id, []).append(day)
@@ -328,14 +336,9 @@ class MarketView:
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
         div = pl.col(_DIV) if _DIV in self.bars.columns else pl.lit(1.0)
-        volume = pl.col("volume") if "volume" in self.bars.columns else pl.lit(None)
-        frame = self.bars.select(
-            "instrument_id",
-            "date",
-            *_EXACT,
-            div.alias(_DIV),
-            volume.cast(pl.Float64).fill_null(float("nan")).alias("volume"),
-        ).filter(pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False))
+        frame = self.bars.select("instrument_id", "date", *_EXACT, div.alias(_DIV)).filter(
+            pl.all_horizontal(pl.col(c) > 0 for c in _EXACT).fill_null(value=False)
+        )
         # A skipped bar stays in the history: it is a real session, whose close sets the tick and
         # the SMA, ATR and swing low; only the loop's trades and marks leave it out.
         left_out = pl.DataFrame(
@@ -351,7 +354,6 @@ class MarketView:
                 part.select(_EXACT).to_numpy(),
                 np.maximum.accumulate(kept) if part.height else kept,
                 part[_DIV].cast(pl.Float64).to_numpy(),
-                part["volume"].to_numpy(),
             )
         return found
 
@@ -371,6 +373,20 @@ class MarketView:
                 part["adjusted"].to_numpy(),
                 part["factor"].to_numpy(),
             )
+            for key, part in frame.partition_by("instrument_id", as_dict=True).items()
+        }
+
+    def _volumes(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """Each instrument's (dates as days since `_EPOCH`, volumes) over every stored session,
+        whatever its prices (`_series` keeps only rows with four positive prices), so a volume
+        average never skips a session; NaN where the store has no volume."""
+        if "volume" not in self.bars.columns:
+            return {}
+        frame = self.bars.select(
+            "instrument_id", "date", pl.col("volume").cast(pl.Float64).fill_null(float("nan"))
+        )
+        return {
+            str(key[0]): (part["date"].to_physical().to_numpy(), part["volume"].to_numpy())
             for key, part in frame.partition_by("instrument_id", as_dict=True).items()
         }
 
@@ -430,10 +446,10 @@ class MarketView:
         return series.signal_bars(max(0, end - count), end, through - 1)
 
     def volumes_through(self, instrument_id: str, day: date, count: int) -> list[float]:
-        """The volumes of the instrument's last `count` bars dated on or before `day`, oldest
-        first (NaN where the store has none)."""
-        series, end = self._find(instrument_id, day, inclusive=True)
-        return [float(v) for v in series.volume[max(0, end - count) : end]]
+        """The volumes of the instrument's last `count` stored sessions on or before `day`,
+        oldest first, a session with bad prices included (NaN where the store has none)."""
+        days, volumes = self.volumes.get(instrument_id, _NO_VOLUMES)
+        return last_through(days, volumes, _ordinal(day), count)
 
     def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
         """The instrument's bars dated from `first` on and before `day`, oldest first, on the

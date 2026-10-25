@@ -11,6 +11,10 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
+import numpy as np
+
+from app.hat.backtest.data import last_through
+from app.hat.backtest.evidence import RunMetrics, unbacktested
 from app.hat.backtest.fillrules import breakout_volume_ok, first_trigger
 from app.hat.backtest.overrides import OverrideError, Overrides
 from app.hat.backtest.spec import GAP_PLAYBOOKS
@@ -138,6 +142,19 @@ def test_breakout_volume_against_the_mean_before() -> None:
     assert breakout_volume_ok([0, 0, 150], 2, 1.5) is None
 
 
+def test_volume_window_counts_every_stored_session() -> None:
+    """The breakout average reads the last sessions on or before the day from the volume series
+    of every stored session (a session with bad prices included, its volume NaN when missing), so
+    a dropped price row never pulls an older session into the window."""
+    days = np.array([1, 2, 3, 5, 6])
+    volumes = np.array([10.0, 20.0, 30.0, 50.0, 60.0])
+    assert last_through(days, volumes, 5, 3) == [20.0, 30.0, 50.0]
+    assert last_through(days, volumes, 4, 2) == [20.0, 30.0]  # day 4 has no session
+    assert last_through(days, volumes, 0, 3) == []
+    volumes[2] = float("nan")  # a session whose volume the store lacks
+    assert breakout_volume_ok(last_through(days, volumes, 5, 3), 2, 1.0) is None  # fails closed
+
+
 def test_breakout_volume_only_at_the_close() -> None:
     """An intraday break cannot know the day's volume: the test needs `daily_close`."""
     with pytest.raises(ValidationError, match="breakout_volume_needs_daily_close"):
@@ -174,7 +191,7 @@ def test_gaps_name_volume_pace_and_daily_close_playbooks() -> None:
     """S1's seed relies on `volume_pace`, which the backtest does not model; a daily-close
     entry is not traded live. Each names the playbook, which blocks its promotion."""
     named = {code for code, test in GAP_PLAYBOOKS.items() if test(seed_config(S1).playbooks[0])}
-    assert named == {"volume_pace_not_backtested"}
+    assert named == {"trigger_is_level_break_only"}
     plain = _s1_with(("playbooks[default].trigger[volume_pace].enabled", False))
     assert not any(test(plain.playbooks[0]) for test in GAP_PLAYBOOKS.values())
     close = _s1_with(
@@ -183,6 +200,13 @@ def test_gaps_name_volume_pace_and_daily_close_playbooks() -> None:
     )
     assert close.playbooks[0].entry_timing == "daily_close"
     assert GAP_PLAYBOOKS["daily_close_entry_not_live"](close.playbooks[0])
+
+
+def test_runs_recorded_before_the_volume_pace_gap_still_name_it() -> None:
+    """A run made before this gap named a playbook recorded `trigger_is_level_break_only` like
+    every run, so it already names S1's `volume_pace` playbook for the comparison and the gate."""
+    earlier = RunMetrics.from_json({"known_gaps": ["trigger_is_level_break_only"]})
+    assert unbacktested(earlier, seed_config(S1).playbooks) == frozenset({"default"})
 
 
 # --- regime --------------------------------------------------------------------------------------
