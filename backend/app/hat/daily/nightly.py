@@ -34,6 +34,7 @@ from ..clock import Clock
 from ..data import ca_bc, ca_nightly
 from ..data import ingest as nightly_ingest
 from ..data.bhavcopy import Fetcher
+from ..data.ca_versions import projection_mismatches, read_versions, stored_rows
 from ..data.calendar import session_calendar
 from ..data.chains import stored_adjustment
 from ..data.corporate_actions import lookup_actions, store_actions
@@ -159,6 +160,10 @@ ALERT_DIVIDENDS_UNCHECKED = "dividend.unchecked"
 ALERT_DEMERGERS_UNCHECKED = "demerger.unchecked"  # tonight's demerger notices failed (CA8)
 # the closed trades' dividends could not be restated: their P&L and R lag the stored dividends
 ALERT_TRADE_DIVIDENDS_STALE = "dividend.trades_stale"
+# `hat_corporate_action` is not the hindsight selection of the version ledger (a writer broke the
+# pairing) or the check failed: `python -m app.hat.data.point_in_time report` lists the keys
+ALERT_PROJECTION = "corporate_action.projection"
+PROJECTION_KEYS = 3  # mismatched keys named in the alert; the report lists them all
 
 
 @dataclass(frozen=True)
@@ -348,7 +353,8 @@ class Nightly:
         (`_dividends`, CA4), its demergers become notices and the positions held into them are
         alerted (`_demergers`, CA8), and every closed trade's dividends are brought up to the
         stored ones (`restate_dividends`, R-DIV: a trade closed on tonight's ex-date was written
-        without it). Then the factors are checked to load into the adjusted view
+        without it). The stored actions are checked against the version ledger (`_projection`,
+        CA6). Then the factors are checked to load into the adjusted view
         (`cumulative_segments`, no connection) before the features read it."""
         try:
             self._next_session_actions(day)
@@ -389,6 +395,7 @@ class Nightly:
             logger.exception("quarantine corporate-action lookup failed")
         self._refresh_lineage(day)
         self._isin_changes(day)
+        self._projection(day)
         with self.deps.session_factory() as session:
             adjustment = stored_adjustment(session)
         cumulative_segments(adjustment.factors)  # raises when a factor cannot load into the view
@@ -398,6 +405,27 @@ class Nightly:
             len(adjustment.lineage),
         )
         return JobResult(rows=len(adjustment.factors))
+
+    def _projection(self, day: date) -> None:
+        """Every write of a corporate action appends its version in the same transaction, so
+        `hat_corporate_action` is the hindsight selection of the ledger
+        (`ca_versions.projection_mismatches`). Tonight's writes are in: a mismatch, or a check
+        that fails, is alerted, never fatal (the adjusted view reads the stored rows either
+        way)."""
+        try:
+            with self.deps.session_factory() as session:
+                found = projection_mismatches(stored_rows(session), read_versions(session))
+                session.rollback()
+        except Exception:
+            logger.exception("corporate-action projection check failed")
+            self.deps.notifier.alert(ALERT_PROJECTION, day, {"mismatches": "unchecked"})
+            return
+        logger.info("corporate-action projection: %d mismatches", len(found))
+        if found:
+            keys = ", ".join(f"{k[0]}:{k[1]}:{k[2]}:{why}" for k, why in found[:PROJECTION_KEYS])
+            self.deps.notifier.alert(
+                ALERT_PROJECTION, day, {"mismatches": len(found), "keys": keys}
+            )
 
     def _refresh_lineage(self, day: date) -> None:
         """The ISIN lineage from tonight's bars and NSE's symbol-change list (PR 74), before the

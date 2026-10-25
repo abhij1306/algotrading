@@ -193,6 +193,9 @@ Alerts:
   longer lists a stored notice before its ex-date (a moved or withdrawn record date). The notice
   stands and its exit still fires; check NSE's announcement and sell or hold by hand.
 - `dividend.trades_stale`: the closed-trade dividend restatement failed; read the log.
+- `corporate_action.projection` (`mismatches`, the first `keys`): a stored action is not what its
+  version ledger selects (a writer skipped `Ledger`), or the check failed (`unchecked`); `point_in_time
+  report` lists every key. A backtest selects from the versions, so fix the writer first.
 - `lineage.unchecked`, `lineage.review`: see `lineage report`.
 
 Owner corrections (journalled; no load rewrites them):

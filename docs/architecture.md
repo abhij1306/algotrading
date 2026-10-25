@@ -37,7 +37,8 @@ Nightly (jobs chained with `after`, keyed `(job, trade_date)`):
 ingest.nightly (NSE MCP from 18:00, bhavcopy 22:00) -> raw bars + index/breadth, then each after it:
   quality.gate ─┐
   ca.adjust ────┴> features -> regime -> allocate -> scan -> watchlist digest
-  (ca.adjust: corporate actions, the day's dividends and demerger notices, lineage, trade dividends)
+  (ca.adjust: corporate actions, the day's dividends and demerger notices, lineage, trade dividends,
+  the version-ledger projection check)
   coverage.check, exits.close_gaps
 ```
 

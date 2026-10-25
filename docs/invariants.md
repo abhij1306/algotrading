@@ -159,7 +159,7 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   before and after.
 - **Versions and `known_on`.** Every write of a corporate action appends a version in the same
   transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
-  hindsight projection. Each action records when its value became knowable (`known_on`; NULL when
+  hindsight projection, checked every night by `ca.adjust` (alert `corporate_action.projection`). Each action records when its value became knowable (`known_on`; NULL when
   unknown, never guessed). A backtest neither scans nor enters a name on a session where no
   version was available or the available one differs from the series' (`factor_pending`); a
   version available later never changes what a backtest reads before it. A correction that
