@@ -245,8 +245,9 @@ rule (for the S4 exit research).
 Chosen where the owner has not ruled; the code implements them.
 
 - Universe: NIFTY 500 plus liquidity criteria. The membership is today's list, not point in time:
-  the backtest reports the survivorship bias as the known gap `universe_from_current_constituents`
-  until a constituents history exists (QA5).
+  the backtest takes the universe's current members over its whole window (through lineage) and
+  reports the survivorship bias as the known gap `universe_from_current_constituents` until a
+  constituents history exists (QA5).
 - Confidence: the 30 trades, the band edges (0.60/0.75/0.90) and the raw (undiscounted) mean.
 - Regime: first day bootstraps confirmed; percentile over the trailing 252 values; precedence
   Bear > Correction > Bull volatile > Bull quiet.

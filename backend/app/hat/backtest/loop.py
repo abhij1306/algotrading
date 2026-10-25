@@ -993,9 +993,12 @@ class _Run:
 
     def _result(self) -> BacktestResult:
         watch_rows = ledger_watch_rows(self.session, self.bot_id)
-        trade_rows = flag_auction_risk(
-            ledger_trade_rows(self.session, self.bot_id, watch_rows),
-            auction_risk_days(self.view.days),
+        trade_rows = tuple(
+            replace(t, qty_real=self.view.real_shares(t.instrument_id, t.entry_date, t.qty))
+            for t in flag_auction_risk(
+                ledger_trade_rows(self.session, self.bot_id, watch_rows),
+                auction_risk_days(self.view.days),
+            )
         )
         equity = tuple(self.equity)
         skips = dict(sorted(self.skips.items()))

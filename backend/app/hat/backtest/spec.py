@@ -49,6 +49,7 @@ __all__ = [
     "REGIME_MULT_ONE",
     "REGIME_MULT_POLICY",
     "REGIME_MULT_RULES",
+    "RESEARCH_SLEEVE_WEIGHT",
     "TOUCH_GAP",
     "BacktestError",
     "RunConventions",
@@ -59,6 +60,9 @@ __all__ = [
 ]
 
 INITIAL_EQUITY = Decimal(1_000_000)
+# The weight a research run sizes a sleeve at when the policy gives it none (`sleeve_weight`):
+# the seed policy's weight of a sleeve it trades.
+RESEARCH_SLEEVE_WEIGHT = Decimal("0.5")
 # What the daily-bar loop does not model, by fixed code (HAT-BT-070); measured in shadow.
 KNOWN_GAPS = (
     "trigger_is_level_break_only",  # volume_pace and the opening range need intraday bars
@@ -251,15 +255,20 @@ class RunSpec:
 
 def sleeve_weight(spec: RunSpec) -> Decimal:
     """The run's sleeve weight (HAT-BT-014): its conventions' `sleeve_weight`, else the
-    policy's base weight of the strategy's sleeve; `backtest_no_base_weight` when the policy
-    has none or gives it 0 (a policy may), and `backtest_weight_above_cluster_cap` above the
-    policy's cluster cap, which the allocator would silently cut it to."""
+    policy's base weight of the strategy's sleeve. When the policy has none or gives it 0 (a
+    policy may: a sleeve still in research), a research run sizes at `RESEARCH_SLEEVE_WEIGHT`
+    (the cluster cap, if lower), recorded in its conventions like an explicit weight, and a run
+    flagged for promotion is refused `backtest_no_base_weight`: live would give the sleeve
+    nothing. Above the policy's cluster cap, which the allocator would silently cut it to, the
+    weight is refused `backtest_weight_above_cluster_cap`."""
     policy = spec.policy.policy
     weight = spec.conventions.sleeve_weight
     if weight is None:
         weight = policy.base_weight.get(sleeve_key(spec.config.bot))
         if weight is None or weight <= 0:
-            raise BacktestError("backtest_no_base_weight")
+            if spec.for_promotion:
+                raise BacktestError("backtest_no_base_weight")
+            weight = min(RESEARCH_SLEEVE_WEIGHT, policy.cluster_cap)
     if weight > policy.cluster_cap:
         raise BacktestError("backtest_weight_above_cluster_cap")
     return weight

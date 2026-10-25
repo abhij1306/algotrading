@@ -29,7 +29,9 @@ Commands, in first-deploy order:
                                               shadow from their next routing decision
     publish-universe --constituents CSV --as-of DATE [--name N] [--include S]... [--exclude S]...
                      [--bot ID]...            a universe version from an NSE index CSV, made live
-                                              and given to the sleeves (default: all of them)
+                                              and given to the sleeves (default: all of them);
+                                              stocks only (a REIT or placeholder row is skipped),
+                                              and an --exclude drops its row before resolving
     save-draft --strategy ID --config YAML    a new draft version, outside market hours
                                               (HAT-BOT-084)
     publish-version --version ID --run ID     draft -> frozen on a completed run (HAT-BT-061)
@@ -320,7 +322,9 @@ def _publish_universe(
     user_id = deps.user_id
     calendar = _calendar(session)
     content = _read(deps.files, args.constituents, (".csv",), "constituents_unreadable")
-    rows = parse_industry_csv(content)
+    excluded = _symbols(args.exclude)
+    listed = parse_industry_csv(content)
+    rows, not_stocks = universe_service.stock_rows(listed, excluded)
     if not rows:
         raise AdminError("constituents_empty")
     market_id = market_id_of(session)
@@ -334,9 +338,10 @@ def _publish_universe(
     include, unknown_in = universe_service.resolve_symbols(
         session, market_id, args.include, args.as_of
     )
-    exclude, unknown_ex = universe_service.resolve_symbols(
-        session, market_id, args.exclude, args.as_of
-    )
+    exclude, unknown_ex = universe_service.resolve_symbols(session, market_id, excluded, args.as_of)
+    # an exclude naming a row of the list has dropped it, known instrument or not; one naming
+    # nothing in the list must still name an instrument (a mistyped exclude excludes nothing)
+    unknown_ex = tuple(s for s in unknown_ex if s not in {row.symbol for row in listed})
     missing = sorted({*unknown, *unknown_in, *unknown_ex})
     if missing:
         # every symbol must name an instrument: a silent drop would trade an unapproved list
@@ -365,8 +370,13 @@ def _publish_universe(
         "universe_version_id": str(live.id),
         "version": live.version,
         "members": live.definition["members"],
+        "not_stocks": list(not_stocks),
         "bots": [str(b) for b in bot_ids],
     }
+
+
+def _symbols(raw: Sequence[str]) -> frozenset[str]:
+    return frozenset(s.strip().upper() for s in raw if s.strip())
 
 
 def _onboard(session: Session, args: argparse.Namespace, deps: AdminDeps) -> dict[str, Any]:

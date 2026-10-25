@@ -41,7 +41,14 @@ from ..engine.confidence import buckets
 from ..engine.portfolio.common import market_id_of
 from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
 from ..engine.strategy.config import parse_config
-from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
+from ..models import (
+    HatBacktestBucket,
+    HatBacktestRun,
+    HatBot,
+    HatStrategy,
+    HatStrategyVersion,
+    HatUniverse,
+)
 from ..money import require_exact
 from ..risk.policy import effective_version
 from ..risk.policy_upkeep import load_versions
@@ -327,14 +334,17 @@ def record_backtest(
 
 @dataclass(frozen=True)
 class RunRequest:
-    """One backtest of a sleeve (`backtest_bot`): its strategy version (the live one unless
-    `version_id` names another of the same strategy), the period, the fills (slippage and cost
-    model), the cooldown replacing the policy's for a sweep, whether the run may
-    evidence a version, and its conventions."""
+    """One backtest (`backtest_bot`): of a sleeve (`bot_id`: its strategy version, the live one
+    unless `version_id` names another of the same strategy, on its universe), or, in research
+    mode, of a strategy version (`version_id`) on a universe (`universe`, its id or its name
+    among the strategy owner's universes) with no bot, so no broker account; the period, the
+    fills (slippage and cost model), the cooldown replacing the policy's for a sweep, whether
+    the run may evidence a version, and its conventions."""
 
-    bot_id: uuid.UUID
     start: date
     end: date
+    bot_id: uuid.UUID | None = None
+    universe: str | None = None
     slippage_bps: Decimal = DEFAULT_SLIPPAGE_BPS
     cost_model: str = DEFAULT_COST_MODEL
     version_id: uuid.UUID | None = None
@@ -343,25 +353,61 @@ class RunRequest:
     conventions: RunConventions = field(default_factory=RunConventions)
 
 
+def _sleeve_of(
+    session: Session, request: RunRequest
+) -> tuple[HatStrategyVersion, uuid.UUID, uuid.UUID]:
+    """The run's strategy version, universe id and owner (whose risk policy sizes it): the
+    bot's, or in research mode the version's and the named universe's. A request naming both a
+    bot and a universe, or neither, is refused `backtest_bad_request`."""
+    if (request.bot_id is None) == (request.universe is None):
+        raise BacktestError("backtest_bad_request")
+    if request.bot_id is not None:
+        bot = session.get(HatBot, request.bot_id)
+        if bot is None:
+            raise BacktestError("backtest_unknown_bot")
+        version = session.get(HatStrategyVersion, request.version_id or bot.live_version_id)
+        if version is None or version.strategy_id != bot.strategy_id:
+            raise BacktestError("backtest_unknown_version")
+        universe_id = universe_of(session, bot)
+        if universe_id is None:
+            raise BacktestError("backtest_no_universe")
+        return version, universe_id, bot.user_id
+    version = (
+        None if request.version_id is None else session.get(HatStrategyVersion, request.version_id)
+    )
+    strategy = None if version is None else session.get(HatStrategy, version.strategy_id)
+    if version is None or strategy is None:
+        raise BacktestError("backtest_unknown_version")
+    universe = _universe_named(session, request.universe or "", strategy.user_id)
+    if universe is None:
+        raise BacktestError("backtest_no_universe")
+    return version, universe.id, strategy.user_id
+
+
+def _universe_named(session: Session, text: str, user_id: uuid.UUID) -> HatUniverse | None:
+    """The universe a research run names: by id, or by name among the user's universes (None
+    when no universe, or more than one, has it)."""
+    try:
+        return session.get(HatUniverse, uuid.UUID(text))
+    except ValueError:
+        found = session.scalars(
+            select(HatUniverse).where(HatUniverse.user_id == user_id, HatUniverse.name == text)
+        ).all()
+        return found[0] if len(found) == 1 else None
+
+
 def backtest_bot(
     session: Session, store: DataStore, request: RunRequest, *, root: Path
 ) -> HatBacktestRun:
-    """Backtest a sleeve's strategy version on the sleeve's universe under the risk policy in
-    force now, over the Parquet store; the `policy` regime rule also reads the regime engine's
-    index, VIX and breadth, and sizes with the stored regime table live allocates with. The
-    command line's body. Refusals before the run is recorded (an unknown bot or version,
+    """Backtest a sleeve's strategy version on the sleeve's universe, or in research mode a
+    strategy version on a universe (`RunRequest`), under the owner's risk policy in force now,
+    over the Parquet store; the `policy` regime rule also reads the regime engine's index, VIX
+    and breadth, and sizes with the stored regime table live allocates with. The command
+    line's body. Refusals before the run is recorded (an unknown bot, version or universe,
     conventions a promotion run may not use, ...) raise `BacktestError` and record nothing; a
     refusal of the engine is a failed trial."""
-    bot = session.get(HatBot, request.bot_id)
-    if bot is None:
-        raise BacktestError("backtest_unknown_bot")
-    version = session.get(HatStrategyVersion, request.version_id or bot.live_version_id)
-    if version is None or version.strategy_id != bot.strategy_id:
-        raise BacktestError("backtest_unknown_version")
-    universe_id = universe_of(session, bot)
-    if universe_id is None:
-        raise BacktestError("backtest_no_universe")
-    policy = effective_version(load_versions(session, bot.user_id), utc_now())
+    version, universe_id, user_id = _sleeve_of(session, request)
+    policy = effective_version(load_versions(session, user_id), utc_now())
     if policy is None:
         raise BacktestError("backtest_no_policy")
     if request.cooldown_sessions is not None:
