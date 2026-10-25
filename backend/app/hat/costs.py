@@ -2,10 +2,12 @@
 pure.
 
 A simulated fill is moved against the trade by the run's slippage, then charged the statutory
-and exchange costs of a delivery (CNC) trade. Every rate lives in a versioned cost-model file
-(`cost_models/<version>.yaml`); nothing here holds a rate. Each charge is computed on the traded
-value, capped where the file says so, and rounded half up to the paisa; GST is charged on the sum
-of the components the file marks taxable. All of it is Decimal.
+and exchange costs of a delivery (CNC) trade in force on the fill's trade date. Every rate lives
+in a dated cost-model file (`cost_models/<version>/<effective_from>.yaml`), and a version's files
+form its schedule; nothing here holds a rate. Each charge is computed on the traded value, capped
+where the file says so, and rounded half up to the paisa; GST is charged on the sum of the
+components the file marks taxable. A sell also pays the file's flat depository (DP) charge, GST
+included, once per instrument per sell day. All of it is Decimal.
 
 `BacktestFills` is the fill model the shadow engine's virtual fills accept
 (`app.hat.engine.shadow.FillModel`): shadow trading fills at the default slippage and cost model
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from importlib import resources
 from typing import Any, Literal
@@ -36,8 +39,9 @@ __all__ = [
     "Component",
     "CostError",
     "CostModel",
+    "CostSchedule",
     "charges",
-    "load_cost_model",
+    "load_cost_schedule",
     "parse_cost_model",
     "slipped",
 ]
@@ -51,6 +55,7 @@ DEFAULT_SLIPPAGE_BPS = Decimal(20)
 PRICE_PLACES = Decimal("0.0001")  # hat_fill.price is numeric(18, 4)
 _BPS = Decimal(10_000)
 _ZERO = Decimal(0)
+DP = "dp"  # the depository charge's name in `Charges.by_component`
 
 
 class CostError(HatError):
@@ -76,13 +81,56 @@ class Component:
 
 @dataclass(frozen=True)
 class CostModel:
-    version: str
-    gst_rate: Decimal
-    components: tuple[Component, ...]
-    digest: str  # sha256 of the canonical document, recorded with every run
+    """The charges in force from `effective_from` until the next file of its schedule."""
 
-    def to_json(self) -> dict[str, Any]:
-        return {"version": self.version, "digest": self.digest}
+    version: str
+    effective_from: date
+    gst_rate: Decimal
+    dp_per_sell_day: Decimal  # flat, GST included
+    components: tuple[Component, ...]
+    digest: str  # sha256 of the canonical document, recorded with every run that used it
+
+
+@dataclass(frozen=True)
+class CostSchedule:
+    """A cost-model version's dated files, oldest first: the file in force on a day is the
+    latest one effective on or before it."""
+
+    version: str
+    models: tuple[CostModel, ...]
+
+    def __post_init__(self) -> None:
+        days = [m.effective_from for m in self.models]
+        if not days or days != sorted(set(days)):
+            raise CostError("cost_bad_schedule")
+        if any(m.version != self.version for m in self.models):
+            raise CostError("cost_version_mismatch")
+
+    def on(self, day: date) -> CostModel:
+        """The file in force on `day`; `CostError` before the first one."""
+        found = None
+        for model in self.models:
+            if model.effective_from > day:
+                break
+            found = model
+        if found is None:
+            raise CostError("cost_no_schedule")
+        return found
+
+    def used(self, start: date, end: date) -> tuple[CostModel, ...]:
+        """The files in force on some day from `start` to `end`: those a fill in it can use."""
+        first = self.on(start)
+        return tuple(m for m in self.models if first.effective_from <= m.effective_from <= end)
+
+    def to_json(self, start: date, end: date) -> dict[str, Any]:
+        """The version and the digest of each file in force from `start` to `end`."""
+        return {
+            "version": self.version,
+            "schedules": [
+                {"effective_from": m.effective_from.isoformat(), "digest": m.digest}
+                for m in self.used(start, end)
+            ],
+        }
 
 
 @dataclass(frozen=True)
@@ -125,41 +173,58 @@ def _component(raw: object) -> Component:
 
 
 def parse_cost_model(document: Mapping[str, Any]) -> CostModel:
-    """A validated cost model, or `CostError`. Rates are strings or integers, never floats."""
-    if not isinstance(document, Mapping) or set(document) != {"version", "gst_rate", "components"}:
+    """A validated cost model, or `CostError`. Rates are strings or integers, never floats;
+    `effective_from` is an ISO date string."""
+    keys = {"version", "effective_from", "gst_rate", "dp_per_sell_day", "components"}
+    if not isinstance(document, Mapping) or set(document) != keys:
         raise CostError("cost_bad_document")
     version = document["version"]
     if not isinstance(version, str) or not version:
         raise CostError("cost_bad_version")
+    try:
+        effective_from = date.fromisoformat(document["effective_from"])
+    except (TypeError, ValueError):
+        raise CostError("cost_bad_effective_from") from None
     raw = document["components"]
     if not isinstance(raw, Sequence) or isinstance(raw, str):
         raise CostError("cost_bad_component")
     components = tuple(_component(c) for c in raw)
     if len({c.name for c in components}) != len(components):
         raise CostError("cost_duplicate_component")
+    if DP in {c.name for c in components}:
+        raise CostError("cost_duplicate_component")
     return CostModel(
         version=version,
+        effective_from=effective_from,
         gst_rate=_rate(document["gst_rate"], "gst_rate"),
+        dp_per_sell_day=_rate(document["dp_per_sell_day"], "dp_per_sell_day"),
         components=components,
         digest=config_hash(dict(document)),
     )
 
 
-def load_cost_model(version: str = DEFAULT_COST_MODEL) -> CostModel:
-    """The packaged cost model `cost_models/<version>.yaml`; its `version` must match the name."""
+def load_cost_schedule(version: str = DEFAULT_COST_MODEL) -> CostSchedule:
+    """The packaged schedule `cost_models/<version>/`: every file in it, each named for its
+    `effective_from` and naming `version`."""
     if not version.replace("-", "").isalnum():
         raise CostError("cost_unknown_version")
-    path = resources.files(__package__).joinpath("cost_models", f"{version}.yaml")
-    if not path.is_file():
+    folder = resources.files(__package__).joinpath("cost_models", version)
+    if not folder.is_dir():
         raise CostError("cost_unknown_version")
-    model = parse_cost_model(yaml.safe_load(path.read_text(encoding="utf-8")))
-    if model.version != version:
-        raise CostError("cost_version_mismatch")
-    return model
+    models = []
+    for path in sorted(folder.iterdir(), key=lambda p: p.name):
+        if not path.name.endswith(".yaml"):
+            continue
+        model = parse_cost_model(yaml.safe_load(path.read_text(encoding="utf-8")))
+        if path.name != f"{model.effective_from.isoformat()}.yaml":
+            raise CostError("cost_bad_schedule")
+        models.append(model)
+    return CostSchedule(version, tuple(models))
 
 
-def charges(model: CostModel, side: str, qty: int, price: Decimal) -> Charges:
-    """The charges of one fill of `qty` shares at `price` on `side` (HAT-BT-023)."""
+def charges(model: CostModel, side: str, qty: int, price: Decimal, *, dp: bool = False) -> Charges:
+    """The charges of one fill of `qty` shares at `price` on `side` (HAT-BT-023); with `dp`, a
+    sell also pays the flat depository charge (the instrument's first sale of the day)."""
     if side not in SIDES or isinstance(qty, bool) or not isinstance(qty, int) or qty < 1:
         raise CostError("cost_bad_fill")
     if not isinstance(price, Decimal) or not price.is_finite() or price <= 0:
@@ -177,6 +242,8 @@ def charges(model: CostModel, side: str, qty: int, price: Decimal) -> Charges:
         if component.taxable:
             taxable += found[component.name]
     gst = to_money(taxable * model.gst_rate)
+    if dp and side == "sell":
+        found[DP] = to_money(model.dp_per_sell_day)
     return Charges(found, gst, sum(found.values(), _ZERO) + gst)
 
 
@@ -203,26 +270,32 @@ def slipped(price: Decimal, side: str, bps: Decimal) -> Decimal:
 
 @dataclass(frozen=True)
 class BacktestFills:
-    """The backtest's fill model: slippage, then the cost model's charges on the slipped fill."""
+    """The backtest's fill model: slippage, then the charges in force on the fill's trade date
+    on the slipped fill."""
 
-    model: CostModel
+    schedule: CostSchedule
     slippage_bps: Decimal
 
     def __post_init__(self) -> None:
         check_slippage(self.slippage_bps)
 
-    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]:
-        """(fill price, fees) of a fill of `qty` at the reference `price`."""
+    def fill(
+        self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
+    ) -> tuple[Decimal, Decimal]:
+        """(fill price, fees) of a fill of `qty` at the reference `price` on trade date `day`.
+        A sell pays the DP charge unless the instrument was `sold_today` already (one DP debit
+        per instrument per sell day, however many sales)."""
         filled = slipped(price, side, self.slippage_bps)
-        return filled, charges(self.model, side, qty, filled).total
+        model = self.schedule.on(day)
+        return filled, charges(model, side, qty, filled, dp=not sold_today).total
 
-    def outlay(self, qty: int, price: Decimal) -> Decimal:
-        """The cash a buy of `qty` at the reference `price` takes: its value after slippage
-        plus its charges."""
-        filled, fees = self.fill("buy", qty, price)
+    def outlay(self, qty: int, price: Decimal, day: date) -> Decimal:
+        """The cash a buy of `qty` at the reference `price` on `day` takes: its value after
+        slippage plus its charges."""
+        filled, fees = self.fill("buy", qty, price, day)
         return filled * qty + fees
 
-    def affordable(self, cash: Decimal, price: Decimal) -> int:
+    def affordable(self, cash: Decimal, price: Decimal, day: date) -> int:
         """The most shares a buy at the reference `price` can take whose outlay (slippage and
         charges included) fits in `cash`; 0 when not one does, or `cash` is not positive. The
         outlay grows with the quantity, so the largest one that fits is found by bisection."""
@@ -231,7 +304,7 @@ class BacktestFills:
         low, high = 0, int(cash // slipped(price, "buy", self.slippage_bps))
         while low < high:
             mid = (low + high + 1) // 2
-            if self.outlay(mid, price) <= cash:
+            if self.outlay(mid, price, day) <= cash:
                 low = mid
             else:
                 high = mid - 1
@@ -251,8 +324,10 @@ class CashBoundFills:
     fills: BacktestFills
     cash: Decimal
 
-    def fill(self, side: str, qty: int, price: Decimal) -> tuple[Decimal, Decimal]:
-        filled, fees = self.fills.fill(side, qty, price)
+    def fill(
+        self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
+    ) -> tuple[Decimal, Decimal]:
+        filled, fees = self.fills.fill(side, qty, price, day, sold_today=sold_today)
         if side == "buy" and filled * qty + fees > self.cash:
             raise CostError("cost_cash_overdraw")
         return filled, fees

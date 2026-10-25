@@ -605,7 +605,7 @@ class _Run:
         # The free cash net of the entry's slippage and charges: the cash the shares it can
         # afford take at the entry price, so no size the cash term allows overdraws the account
         # (a broker refuses that order); with no cash left the entry is a cash rejection.
-        cash = self.spec.fills.affordable(self._cash(), plan.price) * plan.price
+        cash = self.spec.fills.affordable(self._cash(), plan.price, row.trade_date) * plan.price
         allocation = self.allocations.get(row.trade_date)
         capital = None if allocation is None else allocation.capital
         instrument_id = str(row.instrument_id)

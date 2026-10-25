@@ -216,7 +216,11 @@ class RunConventions:
             raise BacktestError("backtest_promotion_with_overrides")
 
     def record(
-        self, fills: BacktestFills, weight: Decimal, table: Mapping[str, Decimal]
+        self,
+        fills: BacktestFills,
+        window: tuple[date, date],
+        weight: Decimal,
+        table: Mapping[str, Decimal],
     ) -> dict[str, Any]:
         """The conventions a run used, as recorded in its metrics and hashed into its
         `config_digest`, with the run's fills, its resolved sleeve weight and the regime table it
@@ -230,7 +234,8 @@ class RunConventions:
             "trigger_proxy": TRIGGER_PROXY,
             # normalised, so 20 and 20.0 bps record (and hash) alike
             "slippage_bps": format(abs(fills.slippage_bps).normalize(), "f"),  # -0 is 0
-            "cost_model": fills.model.to_json(),
+            # the version and the digest of each dated file in force in the run's window
+            "cost_model": fills.schedule.to_json(*window),
             "slot_order": self.slot_order,
             "ambiguous": self.ambiguous,
             "lower_circuit": LOWER_CIRCUIT_RULE,
@@ -284,7 +289,9 @@ class RunSpec:
 
     def recorded_conventions(self) -> dict[str, Any]:
         """The conventions block recorded in the run's metrics, which `config_digest` hashes."""
-        return self.conventions.record(self.fills, sleeve_weight(self), self.regime_table)
+        return self.conventions.record(
+            self.fills, (self.start, self.end), sleeve_weight(self), self.regime_table
+        )
 
 
 def sleeve_weight(spec: RunSpec) -> Decimal:

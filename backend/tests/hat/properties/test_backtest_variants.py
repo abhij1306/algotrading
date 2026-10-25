@@ -196,10 +196,11 @@ def test_conventions_record_overrides_only_when_set() -> None:
     from tests.hat.hat_backtest_support import zero_fills
 
     fills, weight, table = zero_fills(), D("0.5"), {}
-    plain = RunConventions().record(fills, weight, table)
+    window = (date(2025, 1, 6), date(2025, 2, 7))
+    plain = RunConventions().record(fills, window, weight, table)
     assert "overrides" not in plain
     varied = RunConventions(overrides=Overrides(sets=(("exits[0].enabled", True),)))
-    assert varied.record(fills, weight, table)["overrides"] == {
+    assert varied.record(fills, window, weight, table)["overrides"] == {
         "set": [{"path": "exits[0].enabled", "value": True}]
     }
     with pytest.raises(BacktestError, match="backtest_promotion_with_overrides"):

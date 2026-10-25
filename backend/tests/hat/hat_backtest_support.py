@@ -13,7 +13,8 @@ from typing import Any
 from app.hat.backtest.spec import RunConventions, RunSpec
 from app.hat.costs import (
     BacktestFills,
-    load_cost_model,
+    CostSchedule,
+    load_cost_schedule,
     parse_cost_model,
 )
 from app.hat.engine.strategy.config import StrategyConfig, parse_config
@@ -121,8 +122,16 @@ WARM_UP = 21
 
 def zero_fills() -> BacktestFills:
     """No slippage and no charges: fills at the proxy prices exactly."""
-    model = parse_cost_model({"version": "zero", "gst_rate": "0", "components": []})
-    return BacktestFills(model, ZERO)
+    model = parse_cost_model(
+        {
+            "version": "zero",
+            "effective_from": "2000-01-01",
+            "gst_rate": "0",
+            "dp_per_sell_day": "0",
+            "components": [],
+        }
+    )
+    return BacktestFills(CostSchedule("zero", (model,)), ZERO)
 
 
 def spec(
@@ -142,7 +151,7 @@ def spec(
         policy=policy or policy_version(),
         start=days[min(start, len(days) - 1)],
         end=days[-1],
-        fills=fills or BacktestFills(load_cost_model(), slippage),
+        fills=fills or BacktestFills(load_cost_schedule(), slippage),
         for_promotion=for_promotion,
         conventions=conventions or RunConventions(),
     )
