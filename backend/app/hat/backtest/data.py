@@ -461,9 +461,13 @@ class MarketView:
 
     def volumes_through(self, instrument_id: str, day: date, count: int) -> list[float]:
         """The volumes of the instrument's last `count` stored sessions on or before `day`,
-        oldest first, a session with bad prices included (NaN where the store has none)."""
+        oldest first, a session with bad prices included (NaN where the store has none), none
+        before the last series break (`series_break`)."""
         days, volumes = self.volumes.get(instrument_id, _NO_VOLUMES)
-        return last_through(days, volumes, _ordinal(day), count)
+        window = last_through(days, volumes, _ordinal(day), count)
+        end = int(np.searchsorted(days, _ordinal(day), side="right"))
+        dates = [_EPOCH + timedelta(days=int(n)) for n in days[end - len(window) : end]]
+        return window[segment_start(dates) :]
 
     def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
         """The instrument's bars dated from `first` on and before `day`, oldest first, on the
