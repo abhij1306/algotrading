@@ -381,8 +381,9 @@ RAW_LATEST = "bars_daily_raw_latest"
 
 
 def newest(column: str, alias: str = "r") -> str:
-    """`column` of the latest ingest run's row, in an aggregate over `alias` (`LATEST_ROW`)."""
-    return f"arg_max({alias}.{column}, {alias}.ingest_run_id)"
+    """`column` of the latest ingest run's row, in an aggregate over `alias` (`LATEST_ROW`):
+    `arg_max_null`, as plain `arg_max` skips a NULL and would return an older run's value."""
+    return f"arg_max_null({alias}.{column}, {alias}.ingest_run_id)"
 
 
 _LATEST_VIEW_SQL = "CREATE VIEW {latest} AS SELECT * FROM {view} " + LATEST_ROW  # noqa: S608

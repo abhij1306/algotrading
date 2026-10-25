@@ -1,11 +1,14 @@
 """The pure rules of the features job: SMA comparison under float noise, which ISINs are ranked
 and counted, the stale days and chains a change touches, the rebuild chunks, and when a day's
-percentiles may be spliced instead of recomputed."""
+percentiles may be spliced instead of recomputed, and the backtest's freshness gate over a
+temporary store."""
 
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import polars as pl
+from hat_bhav_support import bar
 from hypothesis import strategies as st
 
 from app.hat.data.features import (
@@ -16,7 +19,17 @@ from app.hat.data.features import (
     compute_features,
     splice_day,
 )
-from app.hat.data.features_state import LOOKBACK_ROWS, adjustment_of, affected_chains, stale_days
+from app.hat.data.features_state import (
+    LOOKBACK_ROWS,
+    FeaturesState,
+    adjustment_of,
+    affected_chains,
+    features_current,
+    stale_days,
+    write_state,
+)
+from app.hat.data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataStore
+from app.hat.ids import uuid7
 
 EPOCH = date(2020, 1, 6)
 
@@ -348,3 +361,17 @@ def test_splice_day_refuses_a_value_that_moves_past_another() -> None:
     pair_old = [_chain_row("a", ret=0.1), _chain_row("b", ret=0.1 + 1e-15)]
     pair_new = [_chain_row("a", ret=0.1 + 2e-15), _chain_row("b", ret=0.1 + 1e-15)]
     assert splice_day(pair_old, pair_new, {"a": (1.0, 1.0), "b": (2.0, 2.0)}, NO_OTHERS) is None
+
+
+def test_features_current_needs_the_features_and_the_breadth_file(tmp_path: Path) -> None:
+    store = DataStore(tmp_path)
+    day = date(2024, 3, 1)
+    store.write_bars(day, [bar("i1", uuid7())])
+    write_state(store, FeaturesState("d", "rule", [], [], store.fingerprints(DATASET_BARS)))
+    for dataset in (DATASET_FEATURES, DATASET_BREADTH):
+        store.partition_dir(dataset, day).mkdir(parents=True)
+    (store.partition_dir(DATASET_FEATURES, day) / "part-features.parquet").write_bytes(b"x")
+    assert not features_current(store, "d", [day])
+    (store.partition_dir(DATASET_BREADTH, day) / "part-breadth.parquet").write_bytes(b"x")
+    assert features_current(store, "d", [day])
+    assert not features_current(store, "other digest", [day])

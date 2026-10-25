@@ -8,6 +8,7 @@ import logging
 from datetime import date, datetime
 
 from ..data import ca_bc, ca_nightly
+from ..data.ca_gate import CaFileError
 from ..data.ca_versions import projection_mismatches, read_versions, stored_rows
 from ..data.calendar import session_calendar
 from ..data.chains import stored_adjustment
@@ -203,9 +204,15 @@ class CaAdjust:
         Q6: never retired), a stored demerger takes its notice's date, and each open position
         held into one is alerted (`demerger_exit.flag_positions`, CA8), in one transaction.
         Without tonight's file the stored notices are still checked, so a position whose exit
-        passed is alerted late."""
+        passed is alerted late, and so it is when tonight's file cannot be read (alerted)."""
+        rows = None
+        if text is not None:
+            try:
+                rows = ca_bc.read_bc(text)
+            except CaFileError:
+                logger.exception("tonight's bc file is unreadable; the stored notices are checked")
+                self.deps.notifier.alert(ALERT_DEMERGERS_UNCHECKED, day, {})
         with self.deps.session_factory() as session:
-            rows = ca_bc.read_bc(text) if text is not None else None
             stored = store_notices(session, rows, day) if rows is not None else 0
             unlisted = (
                 flag_unlisted(session, unlisted_notices(session, rows, day), self._now())

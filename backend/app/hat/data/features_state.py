@@ -19,6 +19,7 @@ from ..money import require_exact
 from .isin import ORDINARY_EQUITY
 from .store import (
     DATASET_BARS,
+    DATASET_BREADTH,
     DATASET_FEATURES,
     ActionFactor,
     Adjustment,
@@ -124,7 +125,8 @@ def features_current(
 ) -> bool:
     """True when every one of `days` has features written for the inputs `digest` from the bars
     the store holds now (the backtest's gate; the caller holds the features lock). A rebuild in
-    progress, or bars corrected since, leaves some day unrecorded or with another fingerprint.
+    progress, or bars corrected since, leaves some day unrecorded or with another fingerprint;
+    a day missing its features or its breadth file is not current.
     `read` is the fingerprints a caller took before reading the bars itself: they must be the
     recorded ones and still the store's, so features never pair with bars read before a change."""
     state = read_state(store)
@@ -136,6 +138,7 @@ def features_current(
         day in prints
         and state.days.get(day) == prints[day] == seen.get(day)
         and store.partition_files(DATASET_FEATURES, day)
+        and store.partition_files(DATASET_BREADTH, day)
         for day in days
     )
 
