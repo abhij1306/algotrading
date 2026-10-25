@@ -2,11 +2,12 @@
 HAT-DEC-T6, HAT-DEC-B27).
 
 Layout: `bars_daily_raw/date=YYYY-MM-DD/part-<ingest_run_id>.parquet`,
-`index_daily/date=YYYY-MM-DD/part.parquet` and `raw/<file>` (bhavcopy zips, immutable). A
-partition file is written to a temporary name and renamed over the final name, so a reader sees
-the whole old file or the whole new one (HAT-DATA-082). Raw prices are stored as decimal(18,4)
-and never rewritten; adjusted prices exist only as the `bars_daily_adj` view, which multiplies
-them by cumulative factors computed from corporate actions (HAT-DATA-053, 054).
+`index_daily/date=YYYY-MM-DD/part.parquet`, `raw/<file>` (bhavcopy zips, immutable) and
+`ca_bc/bc_<date>.csv` (the nightly bc files, immutable). A partition file is written to a
+temporary name and renamed over the final name, so a reader sees the whole old file or the whole
+new one (HAT-DATA-082). Raw prices are stored as decimal(18,4) and never rewritten; adjusted
+prices exist only as the `bars_daily_adj` view, which multiplies them by cumulative factors
+computed from corporate actions (HAT-DATA-053, 054).
 
 Views, per connection from `DataStore.connect`:
 - `bars_daily_raw`: every raw row, with the partition's `date`.
@@ -45,6 +46,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import hashlib
 import os
 import uuid
 from collections import defaultdict
@@ -70,6 +72,7 @@ DATASET_FEATURES = "features_daily"  # written by data/features.py (HAT-DATA-070
 DATASET_BREADTH = "breadth_daily"  # one row per day (HAT-DATA-076)
 DATASET_MARKET_BREADTH = "market_breadth"  # advances and declines, one row per day (HAT-DATA-044)
 RAW_DIR = "raw"
+BC_DIR = "ca_bc"  # the nightly bc files, kept as fetched: bc_<trade date>.csv
 SOURCES = frozenset({"bhavcopy", "mcp"})  # adjusted values have no source: they are never stored
 
 PRICE_TYPE = pa.decimal128(18, 4)
@@ -430,6 +433,29 @@ def atomic_replace(
         raise
 
 
+def _keep_once(path: Path, data: bytes) -> bool:
+    """Write `data` to `path` once, never over another file. True when written, False when the
+    identical bytes were already there; different bytes under an existing name raise."""
+    if path.exists():
+        if path.read_bytes() == data:
+            return False
+        raise StoreError("store_raw_immutable")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_bytes(data)
+        try:
+            os.link(tmp, path)  # fails if the name appeared meanwhile: never overwritten
+        except FileExistsError:
+            if path.read_bytes() != data:
+                raise StoreError("store_raw_immutable") from None
+            return False
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+    return True
+
+
 class DataStore:
     """The HAT Parquet datasets under one root: the settings' `data_root` (HAT-DATA-080). There
     is no default: `app.paths.HAT_DATA_ROOT` is read when `app.paths` is imported, before
@@ -529,25 +555,22 @@ class DataStore:
     def store_raw(self, name: str, data: bytes) -> bool:
         """Keep a raw bhavcopy zip untouched forever (HAT-DATA-083). True when written, False when
         the identical bytes were already there; different bytes under an existing name raise."""
-        path = self.raw_path(name)
-        if path.exists():
-            if path.read_bytes() == data:
-                return False
-            raise StoreError("store_raw_immutable")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        return _keep_once(self.raw_path(name), data)
+
+    def store_bc(self, day: date, text: str) -> Path:
+        """Keep the night's `bc` file of NSE's PR archive untouched under `ca_bc/`, dated by its
+        trade date (owner 2026-10-25: so moved demerger notices can later be checked against
+        the files NSE listed each night). A later, different file of the same day is kept beside
+        the first under its full SHA-256; the identical file is kept once. The kept path."""
+        data = text.encode("utf-8")
+        path = self._under_root(self.root / BC_DIR / f"bc_{day.isoformat()}.csv")
         try:
-            tmp.write_bytes(data)
-            try:
-                os.link(tmp, path)  # fails if the name appeared meanwhile: never overwritten
-            except FileExistsError:
-                if path.read_bytes() != data:
-                    raise StoreError("store_raw_immutable") from None
-                return False
-        finally:
-            with contextlib.suppress(OSError):
-                tmp.unlink()
-        return True
+            _keep_once(path, data)
+        except StoreError:
+            digest = hashlib.sha256(data).hexdigest()
+            path = path.with_name(f"bc_{day.isoformat()}_{digest}.csv")
+            _keep_once(path, data)
+        return path
 
     def raw_exists(self, name: str) -> bool:
         return self.raw_path(name).is_file()

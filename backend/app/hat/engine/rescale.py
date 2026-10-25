@@ -34,7 +34,9 @@ two, is taken for an unstored split (Q3): the exits record one URGENT `position.
 (`flag_split_gap`) and the position is manage-only (`open_guards`) until the owner stores the
 action (it is then rescaled or flagged unhandled as above) or resolves the gap (`resolve_action`,
 `<day>:split_gap`; a real position is sold by `/flatten`). A real crash of 40% waits for the
-owner too, by decision.
+owner too, by decision. A stored dividend never explains a gap, however large (owner
+2026-10-25), and a rights entitlement (`-RE`) is never watched: it trades on its own terms and
+gaps without any action (`split_gap_watched`).
 
 A position held across an ISIN change (an open position on the old side of a `linked` lineage
 row that took effect after it opened) is manage-only the same way (Q4): its old instrument gets
@@ -60,6 +62,7 @@ from sqlalchemy.orm import Session
 
 from ..data.chains import LINKED, chain_members, stored_links
 from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
+from ..data.isin import rights_entitlement
 from ..errors import HatError
 from ..events import record
 from ..models import (
@@ -96,12 +99,14 @@ __all__ = [
     "flag_unhandled",
     "held_and_watchlisted",
     "manage_only",
+    "open_gaps",
     "open_guards",
     "pending_actions",
     "rescale_open_positions",
     "resolve_action",
     "scale_position",
     "scale_qty",
+    "split_gap_watched",
     "split_like",
     "unhandled_actions",
 ]
@@ -265,9 +270,17 @@ def split_like(price: Decimal, previous_close: Decimal) -> bool:
     return previous_close > 0 and price <= SPLIT_GAP_RATIO * previous_close
 
 
+def split_gap_watched(isin: str | None) -> bool:
+    """Whether the split-gap guard watches an instrument of this ISIN: every one but a rights
+    entitlement (`-RE`), which trades on its own terms (owner 2026-10-25). An unknown ISIN is
+    watched."""
+    return isin is None or not rights_entitlement(isin)
+
+
 def actions_between(session: Session, instrument_id: uuid.UUID, after: date, through: date) -> bool:
     """Whether a price-changing action of the instrument is stored with its ex-date after
-    `after` and on or before `through`."""
+    `after` and on or before `through`. A dividend is price-neutral here: it never explains a
+    split-like gap until the dividend feed is reviewed (owner 2026-10-25)."""
     found = session.scalar(
         select(HatCorporateAction.id)
         .where(
@@ -320,23 +333,40 @@ def chain_of(session: Session, instrument_id: uuid.UUID) -> set[uuid.UUID]:
     return {instrument_id, *(uuid.UUID(iid) for iid in members)}
 
 
+def open_gaps(
+    payloads: Sequence[dict], resolved: set[str], isin: str | None
+) -> list[tuple[str, date]]:
+    """(key, previous session) of each `position.split_gap` payload the owner has not resolved;
+    none for an instrument the guard does not watch (`split_gap_watched`), so a gap recorded
+    before a rights entitlement was excluded holds it no longer."""
+    if not split_gap_watched(isin):
+        return []
+    return [
+        (key, date.fromisoformat(str(p.get("previous_day"))))
+        for p in payloads
+        if (key := str(p.get("action"))) not in resolved
+    ]
+
+
 def open_guards(session: Session, position: HatPosition) -> list[str]:
     """The keys of the position's locks the owner has not resolved (`corporate_action.resolved`):
     each `position.split_gap` no action stored since explains (a stored action ex in the gap's
-    sessions takes the gap over: rescaled, or unhandled), and an ISIN change it is held across
-    (`isin_successor`). None for a closed position."""
+    sessions takes the gap over: rescaled, or unhandled; none of a rights entitlement,
+    `open_gaps`), and an ISIN change it is held across (`isin_successor`). None for a closed
+    position."""
     if position.closed_at is not None:
         return []
     resolved = {str(p.get("action")) for p in _payloads(session, position.id, EVENT_RESOLVED)}
+    isin = session.scalar(
+        select(HatInstrument.isin).where(HatInstrument.id == position.instrument_id)
+    )
     keys = [
         key
-        for p in _payloads(session, position.id, EVENT_SPLIT_GAP)
-        if (key := str(p.get("action"))) not in resolved
-        and not actions_between(
-            session,
-            position.instrument_id,
-            date.fromisoformat(str(p.get("previous_day"))),
-            date.fromisoformat(key.split(":")[0]),
+        for key, previous_day in open_gaps(
+            _payloads(session, position.id, EVENT_SPLIT_GAP), resolved, isin
+        )
+        if not actions_between(
+            session, position.instrument_id, previous_day, date.fromisoformat(key.split(":")[0])
         )
     ]
     link = isin_successor(session, position)

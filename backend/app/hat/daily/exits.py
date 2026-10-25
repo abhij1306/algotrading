@@ -30,10 +30,16 @@ from ..clock import Clock
 from ..engine import demerger_exit, positions, shadow
 from ..engine.close_gap import record_close_evaluation
 from ..engine.exits import ExitView, Phase
-from ..engine.rescale import actions_between, flag_split_gap, manage_only, split_like
+from ..engine.rescale import (
+    actions_between,
+    flag_split_gap,
+    manage_only,
+    split_gap_watched,
+    split_like,
+)
 from ..execution.manage import in_close_window
 from ..execution.series import broker_symbol, series_changed
-from ..models import HatBot, HatPosition, HatSignal
+from ..models import HatBot, HatInstrument, HatPosition, HatSignal
 from ..notify import Notifier
 from ..time import as_utc, trade_date_of, utc_now
 from .gates import CalendarSource
@@ -56,7 +62,8 @@ class ExitViews:
     held keeps its exits (D210, HAT-EXEC-146): its prices are continuous under one instrument,
     and a sale goes out under the new series' symbol; only one moved to a series with no Fyers
     symbol (BZ) has none, as no sale can be sent for it. A live price at or below 0.6 of the
-    previous raw close with no action stored since is an unstored split (Q3): the position
+    previous raw close with no action stored since is an unstored split (Q3; a rights
+    entitlement is never watched): the position
     gets one URGENT `position.split_gap`, in its own transaction, and no view until the owner
     stores the action or resolves the gap (`rescale.open_guards`). The price is
     `LivePrices.exit_price`: one outside the day's band gives no view, nor one the stale threshold
@@ -145,9 +152,13 @@ class ExitViews:
         self, session: Session, position: HatPosition, price: Decimal, today: date
     ) -> bool:
         """True, after recording `position.split_gap` in a transaction of its own, when the
-        live price gaps split-like from the previous raw close with no action stored since."""
+        live price gaps split-like from the previous raw close with no action stored since (a
+        rights entitlement is never watched)."""
         previous = self._book.day(today).previous_raw_close(position.instrument_id)
         if previous is None or not split_like(price, previous[1]):
+            return False
+        instrument = session.get(HatInstrument, position.instrument_id)
+        if not split_gap_watched(instrument.isin if instrument is not None else None):
             return False
         if actions_between(session, position.instrument_id, previous[0], today):
             return False

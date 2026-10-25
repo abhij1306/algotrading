@@ -2,6 +2,7 @@
 (instrument, date) in `bars_daily`, and a missing day that stays missing. Real `DataStore` on a
 temporary directory; no network."""
 
+import hashlib
 import random
 import tempfile
 import uuid
@@ -70,6 +71,23 @@ def test_raw_immutable_adjusted_values_not_storable() -> None:
         for name in ("../x.zip", "a/b.zip", "", ".hidden"):
             with pytest.raises(StoreError):
                 store.store_raw(name, b"x")
+
+
+def test_bc_kept_by_date(tmp_path: Path) -> None:
+    """A night's bc file is kept under its trade date; the same file again is kept once, and a
+    different file of that day is kept beside it, never over it."""
+    store = DataStore(tmp_path)
+    day = date(2026, 10, 23)
+    first = store.store_bc(day, "SERIES,SYMBOL\nEQ,A\n")
+    assert first.name == "bc_2026-10-23.csv"
+    assert store.store_bc(day, "SERIES,SYMBOL\nEQ,A\n") == first
+    second = store.store_bc(day, "SERIES,SYMBOL\nEQ,B\n")
+    assert second.parent == first.parent
+    digest = hashlib.sha256(b"SERIES,SYMBOL\nEQ,B\n").hexdigest()
+    assert second.name == f"bc_2026-10-23_{digest}.csv"
+    assert first.read_text() == "SERIES,SYMBOL\nEQ,A\n"
+    assert second.read_text() == "SERIES,SYMBOL\nEQ,B\n"
+    assert len(list(first.parent.iterdir())) == 2
 
 
 @st.composite
