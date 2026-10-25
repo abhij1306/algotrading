@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import io
 import uuid
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -39,8 +39,9 @@ from ..costs import (
 from ..data.store import DataStore, atomic_replace
 from ..engine.confidence import buckets
 from ..engine.portfolio.common import market_id_of
+from ..engine.portfolio.regime import INDEX_NAME
 from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
-from ..engine.strategy.config import parse_config
+from ..engine.strategy.config import StrategyConfig, parse_config
 from ..models import (
     HatBacktestBucket,
     HatBacktestRun,
@@ -49,16 +50,18 @@ from ..models import (
     HatStrategyVersion,
     HatUniverse,
 )
-from ..money import require_exact
-from ..risk.policy import effective_version
+from ..money import exact, require_exact
+from ..risk.policy import PolicyVersion, effective_version
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from .data import MarketData, load_market
 from .dsr import MIN_TRIALS, PBO_BLOCKS, VARIANCE_FLOOR, Deflated, pbo
 from .evidence import COMPLETED, DSR_DIGITS, RunMetrics, family_key, run_dsr, universe_of
 from .loop import run_backtest
+from .overrides import OverrideError, Overrides, parse_set
 from .report import BacktestResult
 from .report import trades_parquet as encode_trades
+from .report_data import build_report, write_report
 from .spec import REGIME_MULT_POLICY, BacktestError, RunConventions, RunSpec, with_cooldown
 
 __all__ = [
@@ -66,14 +69,18 @@ __all__ = [
     "RETURNS_SCHEMA",
     "RUNNING",
     "RunRequest",
+    "SweepOutcome",
+    "Variant",
     "backtest_bot",
     "complete_run",
     "fail_run",
     "family_pbo",
+    "parse_variants",
     "read_returns",
     "record_backtest",
     "returns_path",
     "start_run",
+    "sweep_bot",
     "trades_path",
 ]
 
@@ -240,11 +247,18 @@ def start_run(
 
 
 def complete_run(
-    session: Session, run: HatBacktestRun, result: BacktestResult, *, root: Path
+    session: Session,
+    run: HatBacktestRun,
+    result: BacktestResult,
+    *,
+    root: Path,
+    benchmark: Sequence[tuple[date, Decimal]] = (),
+    variant: Mapping[str, str] | None = None,
 ) -> HatBacktestRun:
-    """Write the run's `trades.parquet` and `returns.parquet` and store its metrics with the DSR
-    at this moment's family trial count and variance, the family's PBO with this run among its
-    variants, and the completion time."""
+    """Write the run's `trades.parquet`, `returns.parquet` and `report.json` (`report_data`,
+    charted against the `benchmark` NIFTY 500 closes) and store its metrics with the DSR at this
+    moment's family trial count and variance, the family's PBO with this run among its variants,
+    the completion time and, for a sweep's run, its `variant` (label and sweep id)."""
     if session.get(HatBacktestRun, run.id) is not run:
         raise BacktestError("backtest_run_unrecorded")
     if run.status != RUNNING:
@@ -255,6 +269,8 @@ def complete_run(
     atomic_replace(
         returns_path(root, run.id), lambda tmp: tmp.write_bytes(_returns_parquet(result))
     )
+    initial = RunMetrics.from_json(result.metrics).initial_equity
+    write_report(root, run.id, build_report(result, initial or Decimal(0), benchmark))
     # everything is computed before the one change of status, so nothing can fail in between
     deflated, trials, variance = run_dsr(session, run, RunMetrics.from_json(result.metrics))
     metrics = {
@@ -262,6 +278,7 @@ def complete_run(
         "dsr": _dsr_json(deflated, trials, variance),
         "pbo": family_pbo(session, run.family_key, root, also=run),
         "completed_at": utc_now().isoformat(),
+        **({} if variant is None else {"variant": dict(variant)}),
     }
     run.metrics = metrics
     run.status = COMPLETED
@@ -290,10 +307,13 @@ def bucket_rows(run_id: uuid.UUID, result: BacktestResult) -> list[HatBacktestBu
     ]
 
 
-def fail_run(session: Session, run: HatBacktestRun, code: str) -> HatBacktestRun:
-    """End a run as `failed` with a fixed error code; it stays a trial of its family."""
+def fail_run(
+    session: Session, run: HatBacktestRun, code: str, variant: Mapping[str, str] | None = None
+) -> HatBacktestRun:
+    """End a run as `failed` with a fixed error code (and a sweep's `variant`); it stays a trial
+    of its family."""
     run.status = FAILED
-    run.metrics = {"error": code}
+    run.metrics = {"error": code, **({} if variant is None else {"variant": dict(variant)})}
     session.flush()
     return run
 
@@ -306,11 +326,38 @@ def record_backtest(
     universe_id: uuid.UUID,
     data_snapshot: Mapping[str, Any],
     root: Path,
+    variant: Mapping[str, str] | None = None,
 ) -> HatBacktestRun:
-    """Record, run and complete one backtest. A run the engine refuses is stored as `failed`
-    (still a trial) and its `BacktestError` raised; any other error leaves the run `failed`
-    and raises `BacktestError("backtest_error")` chained to it. A caller that commits after
-    catching `BacktestError` keeps the trial (the command line does)."""
+    """Record, run and complete one backtest (a sweep's run with its `variant`). A run the
+    engine refuses is stored as `failed` (still a trial) and its `BacktestError` raised; any
+    other error leaves the run `failed` and raises `BacktestError("backtest_error")` chained to
+    it. A caller that commits after catching `BacktestError` keeps the trial (the command line
+    does)."""
+    run, error = _record(
+        session,
+        spec,
+        data,
+        universe_id=universe_id,
+        data_snapshot=data_snapshot,
+        root=root,
+        variant=variant,
+    )
+    if error is not None:
+        raise error
+    return run
+
+
+def _record(
+    session: Session,
+    spec: RunSpec,
+    data: MarketData,
+    *,
+    universe_id: uuid.UUID,
+    data_snapshot: Mapping[str, Any],
+    root: Path,
+    variant: Mapping[str, str] | None,
+) -> tuple[HatBacktestRun, BacktestError | None]:
+    """`record_backtest`'s body: the run, and the error it failed with (None: completed)."""
     run = start_run(
         session,
         strategy_version_id=spec.strategy_version_id,
@@ -322,14 +369,18 @@ def record_backtest(
     )
     try:
         result = run_backtest(spec, data)
-        return complete_run(session, run, result, root=root)
+        benchmark = data.index_closes.get(INDEX_NAME, ())
+        complete_run(session, run, result, root=root, benchmark=benchmark, variant=variant)
     except BacktestError as exc:
-        fail_run(session, run, exc.code)
-        raise
+        fail_run(session, run, exc.code, variant)
+        return run, exc
     except Exception as exc:
         # Whatever went wrong, the run stays a trial of its family (HAT-BT-030).
-        fail_run(session, run, "backtest_error")
-        raise BacktestError("backtest_error") from exc
+        fail_run(session, run, "backtest_error", variant)
+        error = BacktestError("backtest_error")
+        error.__cause__ = exc
+        return run, error
+    return run, None
 
 
 @dataclass(frozen=True)
@@ -395,16 +446,22 @@ def _universe_named(session: Session, text: str, user_id: uuid.UUID) -> HatUnive
     return found[0] if len(found) == 1 else None
 
 
-def backtest_bot(
-    session: Session, store: DataStore, request: RunRequest, *, root: Path
-) -> HatBacktestRun:
-    """Backtest a sleeve's strategy version on the sleeve's universe, or in research mode a
-    strategy version on a universe (`RunRequest`), under the owner's risk policy in force now,
-    over the Parquet store; the `policy` regime rule also reads the regime engine's index, VIX
-    and breadth, and sizes with the stored regime table live allocates with. The command
-    line's body. Refusals before the run is recorded (an unknown bot, version or universe,
-    conventions a promotion run may not use, ...) raise `BacktestError` and record nothing; a
-    refusal of the engine is a failed trial."""
+@dataclass(frozen=True)
+class _Target:
+    """What every run of one request shares: the strategy version and its parsed config, the
+    policy version, the universe, the fills and the stored regime table."""
+
+    version_id: uuid.UUID
+    config: StrategyConfig
+    policy: PolicyVersion
+    universe_id: uuid.UUID
+    fills: BacktestFills
+    regime_table: Mapping[str, Decimal]
+
+
+def _target(session: Session, request: RunRequest) -> _Target:
+    """The request's version, universe (`_sleeve_of`), owner's policy (under its cooldown) and
+    fills; refusals raise `BacktestError` and record nothing."""
     version, universe_id, user_id = _sleeve_of(session, request)
     policy = effective_version(load_versions(session, user_id), utc_now())
     if policy is None:
@@ -418,28 +475,201 @@ def backtest_bot(
         )
     except CostError as exc:
         raise BacktestError(exc.code) from None
-    spec = RunSpec(  # refuses a promotion run's conventions and a missing base weight
+    table = stored_regime_table(session, market_id_of(session), regime_profile(config.bot))
+    return _Target(version.id, config, policy, universe_id, fills, table)
+
+
+def _spec(target: _Target, request: RunRequest, conventions: RunConventions) -> RunSpec:
+    """The run of `target` under `conventions`, its overrides applied to the config and the
+    policy; refuses a promotion run's conventions, a missing base weight and a refused
+    override (`BacktestError`)."""
+    overrides = conventions.overrides
+    if overrides.touches_identity():
+        raise BacktestError("backtest_override_identity")
+    try:
+        config = overrides.apply_config(target.config)
+        policy = overrides.apply_policy(target.policy)
+    except OverrideError as exc:
+        raise BacktestError(exc.code) from None
+    return RunSpec(
         config=config,
-        strategy_version_id=version.id,
+        strategy_version_id=target.version_id,
         policy=policy,
         start=request.start,
         end=request.end,
-        fills=fills,
+        fills=target.fills,
         for_promotion=request.for_promotion,
-        conventions=request.conventions,
-        regime_table=stored_regime_table(
-            session, market_id_of(session), regime_profile(config.bot)
-        ),
+        conventions=conventions,
+        regime_table=target.regime_table,
     )
-    data, snapshot = load_market(
+
+
+def _load(
+    session: Session,
+    store: DataStore,
+    request: RunRequest,
+    target: _Target,
+    specs: Sequence[RunSpec],
+) -> tuple[MarketData, dict[str, Any]]:
+    """The one market every one of `specs` runs on: their regime index (one for all, else
+    `backtest_sweep_mixed_index`), with the regime engine's inputs when any sizes under
+    `policy`."""
+    indices = {spec.config.regime.index for spec in specs}
+    if len(indices) != 1:
+        raise BacktestError("backtest_sweep_mixed_index")
+    return load_market(
         store,
         session,
-        universe_id=universe_id,
-        index=config.regime.index,
+        universe_id=target.universe_id,
+        index=indices.pop(),
         start=request.start,
         end=request.end,
-        regime_inputs=request.conventions.regime_mult == REGIME_MULT_POLICY,
+        regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
     )
+
+
+def backtest_bot(
+    session: Session, store: DataStore, request: RunRequest, *, root: Path
+) -> HatBacktestRun:
+    """Backtest a sleeve's strategy version on the sleeve's universe, or in research mode a
+    strategy version on a universe (`RunRequest`), under the owner's risk policy in force now,
+    over the Parquet store, with the request's overrides (`overrides`); the `policy` regime rule
+    also reads the regime engine's index, VIX and breadth, and sizes with the stored regime
+    table live allocates with. The command line's body. Refusals before the run is recorded (an
+    unknown bot, version or universe, conventions a promotion run may not use, a refused
+    override, ...) raise `BacktestError` and record nothing; a refusal of the engine is a failed
+    trial."""
+    target = _target(session, request)
+    spec = _spec(target, request, request.conventions)
+    data, snapshot = _load(session, store, request, target, [spec])
     return record_backtest(
-        session, spec, data, universe_id=universe_id, data_snapshot=snapshot, root=root
+        session, spec, data, universe_id=target.universe_id, data_snapshot=snapshot, root=root
     )
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One run of a sweep: a label and its conventions (the overrides among them)."""
+
+    label: str
+    conventions: RunConventions
+
+
+VARIANT_KEYS = frozenset(
+    {"label", "set", "risk_pct", "max_positions", "sleeve_weight", "slot_order"}
+)
+
+
+def parse_variants(doc: object, base: RunConventions) -> list[Variant]:
+    """A sweep's variants from its file's document: a list of mappings, each a unique `label`
+    and any of `set` (a list of `path=value` strings, `overrides.parse_set`, after the base's),
+    `risk_pct`, `max_positions`, `sleeve_weight` and `slot_order` (each replacing the base's).
+    `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
+    conventions or override raise."""
+    if not isinstance(doc, list) or not doc:
+        raise BacktestError("backtest_sweep_bad_variants")
+    out = []
+    for item in doc:
+        if not isinstance(item, dict) or not set(item) <= VARIANT_KEYS:
+            raise BacktestError("backtest_sweep_bad_variants")
+        label, sets = item.get("label"), item.get("set", [])
+        if not isinstance(label, str) or not label or not isinstance(sets, list):
+            raise BacktestError("backtest_sweep_bad_variants")
+        try:
+            parsed = tuple(parse_set(text) for text in sets if isinstance(text, str))
+        except OverrideError as exc:
+            raise BacktestError(exc.code) from None
+        if len(parsed) != len(sets):
+            raise BacktestError("backtest_sweep_bad_variants")
+        overrides = Overrides(
+            sets=(*base.overrides.sets, *parsed),
+            risk_pct=_number(item, "risk_pct", base.overrides.risk_pct),
+            max_positions=_count(item, "max_positions", base.overrides.max_positions),
+        )
+        conventions = replace(
+            base,
+            overrides=overrides,
+            sleeve_weight=_number(item, "sleeve_weight", base.sleeve_weight),
+            slot_order=str(item.get("slot_order", base.slot_order)),
+        )
+        out.append(Variant(label, conventions))
+    if len({v.label for v in out}) != len(out):
+        raise BacktestError("backtest_sweep_bad_variants")
+    return out
+
+
+def _number(item: Mapping[str, object], key: str, default: Decimal | None) -> Decimal | None:
+    if key not in item:
+        return default
+    found = exact(item[key], floats=True)
+    if found is None:
+        raise BacktestError("backtest_sweep_bad_variants")
+    return found
+
+
+def _count(item: Mapping[str, object], key: str, default: int | None) -> int | None:
+    if key not in item:
+        return default
+    found = item[key]
+    if isinstance(found, bool) or not isinstance(found, int):
+        raise BacktestError("backtest_sweep_bad_variants")
+    return found
+
+
+@dataclass(frozen=True)
+class SweepOutcome:
+    """A sweep variant's run (None when it was refused before it was recorded) and the refusal
+    or failure code (None for a completed run)."""
+
+    label: str
+    run: HatBacktestRun | None
+    code: str | None
+
+
+def sweep_bot(
+    session: Session,
+    store: DataStore,
+    request: RunRequest,
+    variants: Sequence[Variant],
+    *,
+    root: Path,
+    after: Callable[[], None] = lambda: None,
+) -> list[SweepOutcome]:
+    """Run each variant of `request` (its conventions in place of the request's) over one load of
+    the market, in order, each recorded as a trial of the family with its label and the sweep's
+    id in `metrics.variant` (so a later run sees the earlier ones in its DSR trial count and PBO
+    variants); `after` runs after each variant (the command line commits there, so a later
+    failure keeps the earlier trials). A variant refused before it is recorded (a bad override,
+    a missing weight) is skipped with its code; the request-wide refusals, and a sweep whose
+    variants read different regime indices, raise `BacktestError` before any run."""
+    if not variants or len({v.label for v in variants}) != len(variants):
+        raise BacktestError("backtest_sweep_bad_variants")
+    target = _target(session, request)
+    specs: list[tuple[Variant, RunSpec | str]] = []
+    for variant in variants:
+        try:
+            specs.append((variant, _spec(target, request, variant.conventions)))
+        except BacktestError as exc:
+            specs.append((variant, exc.code))
+    runnable = [spec for _, spec in specs if isinstance(spec, RunSpec)]
+    if not runnable:
+        return [SweepOutcome(v.label, None, str(code)) for v, code in specs]
+    data, snapshot = _load(session, store, request, target, runnable)
+    sweep_id = str(uuid.uuid4())
+    out: list[SweepOutcome] = []
+    for variant, spec in specs:
+        if not isinstance(spec, RunSpec):
+            out.append(SweepOutcome(variant.label, None, spec))
+            continue
+        run, error = _record(
+            session,
+            spec,
+            data,
+            universe_id=target.universe_id,
+            data_snapshot=snapshot,
+            root=root,
+            variant={"label": variant.label, "sweep_id": sweep_id},
+        )
+        out.append(SweepOutcome(variant.label, run, None if error is None else error.code))
+        after()
+    return out

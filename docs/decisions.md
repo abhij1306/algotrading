@@ -259,3 +259,8 @@ Chosen where the owner has not ruled; the code implements them.
 - Ops: MCP backoff 1 s doubling to 30 s; NTP offset at most 1 s; a 2% fallback stop; statutory
   costs as versioned config.
 - Shadow results do not move the exposure ladder.
+- Research variants: a trail's start, the early-failure exit and the ATR trail read the best price
+  since entry from the highs of the sessions from the entry session on and the decision price; a
+  run's report reads the regime at entry as NIFTY 500 above a rising SMA200 on the session before
+  (`report_data.REGIME_RULE`), not the regime engine's state; `--max-positions N` sets the account
+  cap and the exposure ladder's top level to N and caps its lower levels at N.

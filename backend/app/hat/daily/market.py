@@ -220,18 +220,27 @@ class DailyData:
         price: Decimal,
         rules: Sequence[ExitRule],
         days_held: int,
+        opened_on: date,
     ) -> ExitView:
-        """The view of a position at the live `price` under its pinned exit `rules`, from the
-        sessions before the trade date (`view_from_bars`, as the backtest builds it)."""
-        frame = self.bars(instrument_id).tail(history_sessions(rules))
-        closes = frame["close"].to_list() if frame.height else []
-        lows = frame["low"].to_list() if frame.height else []
+        """The view of a position opened on `opened_on` at the live `price` under its pinned exit
+        `rules`, from the sessions before the trade date (`view_from_bars`, as the backtest builds
+        it): the peak from the highs of the sessions from `opened_on` on."""
+        bars = self.bars(instrument_id)
+        frame = bars.tail(history_sessions(rules))
+
+        def column(part: pl.DataFrame, name: str) -> list[Decimal]:
+            values = part[name].to_list() if part.height else []
+            return [require_exact(v, name, floats=True) for v in values]
+
+        held = bars.filter(pl.col("date") >= opened_on) if bars.height else bars
         return view_from_bars(
             price,
             rules,
             days_held,
-            [require_exact(v, "close", floats=True) for v in closes],
-            [require_exact(v, "low", floats=True) for v in lows],
+            column(frame, "close"),
+            column(frame, "low"),
+            column(frame, "high"),
+            column(held, "high"),
         )
 
 

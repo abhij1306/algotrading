@@ -269,8 +269,17 @@ def _contraction(rule: StopBelowFinalContractionLow, inputs: StopInputs) -> Stop
     )
 
 
+def _capped(plan: StopPlan, entry: Decimal, max_pct: float | None) -> StopPlan:
+    """`plan`, skipped as `stop_too_wide` when the rule's optional width cap `max_pct` is set and
+    the stop is more than that percentage below the entry."""
+    if plan.stop is None or max_pct is None:
+        return plan
+    return check_width(entry, plan.stop, require_exact(max_pct, "max_pct", floats=True))
+
+
 def _low_of_day(rule: StopLowOfDay, inputs: StopInputs) -> StopPlan:
-    return low_of_day(inputs.entry, inputs.day_lows, rule.buffer_ticks, inputs.tick)
+    plan = low_of_day(inputs.entry, inputs.day_lows, rule.buffer_ticks, inputs.tick)
+    return _capped(plan, inputs.entry, rule.max_pct)
 
 
 def _pct_below(rule: StopPctBelowEntry, inputs: StopInputs) -> StopPlan:
@@ -281,11 +290,13 @@ def _atr_multiple(rule: StopAtrMultiple, inputs: StopInputs) -> StopPlan:
     if inputs.atr is None:
         return _skip(SKIP_BAD_INPUT)
     multiple = require_exact(rule.multiple, "multiple", floats=True)
-    return atr_multiple(inputs.entry, inputs.atr, multiple, inputs.tick)
+    plan = atr_multiple(inputs.entry, inputs.atr, multiple, inputs.tick)
+    return _capped(plan, inputs.entry, rule.max_pct)
 
 
 def _swing_low(rule: StopSwingLow, inputs: StopInputs) -> StopPlan:
-    return swing_low(inputs.entry, inputs.swing_lows, inputs.tick)
+    plan = swing_low(inputs.entry, inputs.swing_lows, inputs.tick)
+    return _capped(plan, inputs.entry, rule.max_pct)
 
 
 # The planner of each stop rule; an unknown rule is a skip.

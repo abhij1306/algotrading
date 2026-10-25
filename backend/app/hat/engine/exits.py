@@ -18,24 +18,27 @@ Evaluation rules, as written in the spec:
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Literal
 
 from ..money import require_exact
 from .criteria.indicators import sma
-from .stops import lowest
+from .stops import lowest, mean_true_range
 from .strategy.config import (
     ExitBreakeven,
     ExitCloseAboveSma,
     ExitCloseBelowSma,
+    ExitEarlyFailure,
     ExitHardStop,
+    ExitMaxHold,
     ExitPartialAfterDays,
     ExitPartialAtR,
     ExitPctGainTarget,
     ExitRegime,
     ExitRule,
     ExitTimeStop,
+    ExitTrailingAtr,
     ExitTrailingSwingLow,
     ExitVsSma,
 )
@@ -55,6 +58,7 @@ __all__ = [
     "r_multiple",
     "rule_id",
     "history_sessions",
+    "reads_peak",
     "view_from_bars",
 ]
 
@@ -76,7 +80,10 @@ _RULE_PHASE = {
     "close_below_sma": "close",
     "close_above_sma": "close",
     "trailing_swing_low": "close",
+    "trailing_atr": "close",
     "time_stop": "close",
+    "early_failure": "close",
+    "max_hold": "close",
     "regime_exit": "nightly",
 }
 # The rules the close phase runs: an exit by one of them is priced at the close-phase price.
@@ -97,13 +104,18 @@ class PositionState:
 
 @dataclass(frozen=True)
 class ExitView:
-    """Market facts at one evaluation. A fact left out makes the rules that need it not fire."""
+    """Market facts at one evaluation. A fact left out makes the rules that need it not fire.
+    `peak` is the best price since entry (the highs from the entry session on, and `price`), the
+    level a trail's start, the early-failure exit and the ATR trail read; `atr` the mean true
+    range by length over the sessions before the decision session."""
 
     price: Decimal | None
     days_held: int = 0
     sma: Mapping[int, Decimal] = field(default_factory=dict)
     swing_low: Mapping[int, Decimal] = field(default_factory=dict)
     regime_off: bool = False
+    peak: Decimal | None = None
+    atr: Mapping[int, Decimal] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -127,7 +139,18 @@ def history_sessions(rules: Sequence[ExitRule]) -> int:
     """How many sessions before the decision session `view_from_bars` reads for `rules`."""
     needs = [rule.sma - 1 for rule in rules if isinstance(rule, ExitVsSma)]
     needs += [rule.lookback_days for rule in rules if isinstance(rule, ExitTrailingSwingLow)]
+    needs += [rule.days + 1 for rule in rules if isinstance(rule, ExitTrailingAtr)]
     return max(needs, default=0)
+
+
+def reads_peak(rules: Sequence[ExitRule]) -> bool:
+    """Whether a rule of the stack reads `ExitView.peak`: a trail with a start, the ATR trail or
+    the early-failure exit."""
+    return any(
+        isinstance(rule, ExitTrailingAtr | ExitEarlyFailure)
+        or getattr(rule, "start_r", None) is not None
+        for rule in rules
+    )
 
 
 def view_from_bars(
@@ -136,17 +159,22 @@ def view_from_bars(
     days_held: int,
     closes: Sequence[Decimal],
     lows: Sequence[Decimal],
+    highs: Sequence[Decimal] = (),
+    entry_highs: Sequence[Decimal] | None = None,
 ) -> ExitView:
-    """The view of a position at `price` with the SMA and swing-low levels its `rules` read, from
-    the `closes` and `lows` of the sessions the instrument traded before the decision session
-    (oldest first, at least `history_sessions(rules)` of them for every level to exist). `price`
-    stands in for the decision session's close in each SMA (the live price, or the backtest's
-    daily close, HAT-EXEC-074); the swing low is the lowest of the last `lookback_days` lows
-    before it. A level without enough sessions is left out, and its rule does not fire. The
-    live close phase and the backtest both build their views here, so the rules read the same
-    inputs in both."""
+    """The view of a position at `price` with the SMA, swing-low and ATR levels its `rules` read,
+    from the `closes`, `lows` and `highs` of the sessions the instrument traded before the
+    decision session (oldest first, at least `history_sessions(rules)` of them for every level to
+    exist; the ATR needs the highs). `price` stands in for the decision session's close in each SMA
+    (the live price, or the backtest's daily close, HAT-EXEC-074); the swing low is the lowest of
+    the last `lookback_days` lows before it. A level without enough sessions is left out, and its
+    rule does not fire. `entry_highs`, the highs of the sessions from the entry session on before
+    the decision session, give the view's `peak` with `price` (None: no peak, and the rules that
+    read it do not fire). The live close phase and the backtest both build their views here, so
+    the rules read the same inputs in both."""
     sma_levels: dict[int, Decimal] = {}
     swing: dict[int, Decimal] = {}
+    atr: dict[int, Decimal] = {}
     for rule in rules:
         if isinstance(rule, ExitVsSma) and price is not None:
             prior = list(closes[-(rule.sma - 1) :]) if rule.sma > 1 else []
@@ -156,7 +184,15 @@ def view_from_bars(
             n = rule.lookback_days
             if (low := lowest(lows[-n:], n)) is not None:
                 swing[n] = low
-    return ExitView(price, days_held=days_held, sma=sma_levels, swing_low=swing)
+        elif isinstance(rule, ExitTrailingAtr) and len(highs) == len(closes) == len(lows):
+            n = rule.days
+            found = mean_true_range(highs[-(n + 1) :], lows[-(n + 1) :], closes[-(n + 1) :], n)
+            if found is not None:
+                atr[n] = found
+    peak = None
+    if entry_highs is not None and price is not None:
+        peak = max([*entry_highs, price])
+    return ExitView(price, days_held=days_held, sma=sma_levels, swing_low=swing, peak=peak, atr=atr)
 
 
 def rule_id(index: int, rule: ExitRule) -> str:
@@ -203,6 +239,17 @@ def _reached_r(view: ExitView, pos: PositionState, at_r: float) -> bool:
     )
 
 
+def _peak_reached(view: ExitView, pos: PositionState, at_r: float) -> bool:
+    """The best price since entry reached +`at_r` R (`ExitView.peak`); False without a peak."""
+    return view.peak is not None and _reached_r(replace(view, price=view.peak), pos, at_r)
+
+
+def _trail_started(rule: ExitRule, pos: PositionState, view: ExitView) -> bool:
+    """A trail with a `start_r` fires only once the peak reached it; one without, from entry."""
+    start = getattr(rule, "start_r", None)
+    return start is None or _peak_reached(view, pos, start)
+
+
 def _price_at_or_below_stop(rule: ExitHardStop, pos: PositionState, view: ExitView) -> bool:
     return view.price is not None and view.price <= pos.current_stop
 
@@ -229,7 +276,12 @@ def _after_days(rule: ExitPartialAfterDays, pos: PositionState, view: ExitView) 
 
 def _below_sma(rule: ExitCloseBelowSma, pos: PositionState, view: ExitView) -> bool:
     level = view.sma.get(rule.sma)
-    return view.price is not None and level is not None and view.price < level
+    return (
+        view.price is not None
+        and level is not None
+        and view.price < level
+        and _trail_started(rule, pos, view)
+    )
 
 
 def _above_sma(rule: ExitCloseAboveSma, pos: PositionState, view: ExitView) -> bool:
@@ -239,7 +291,36 @@ def _above_sma(rule: ExitCloseAboveSma, pos: PositionState, view: ExitView) -> b
 
 def _below_swing_low(rule: ExitTrailingSwingLow, pos: PositionState, view: ExitView) -> bool:
     level = view.swing_low.get(rule.lookback_days)
-    return view.price is not None and level is not None and view.price < level
+    return (
+        view.price is not None
+        and level is not None
+        and view.price < level
+        and _trail_started(rule, pos, view)
+    )
+
+
+def _below_atr_trail(rule: ExitTrailingAtr, pos: PositionState, view: ExitView) -> bool:
+    """price < peak - multiple x ATR(days), once the trail has started."""
+    atr = view.atr.get(rule.days)
+    if view.price is None or view.peak is None or atr is None:
+        return False
+    level = view.peak - require_exact(rule.multiple, "multiple", floats=True) * atr
+    return view.price < level and _trail_started(rule, pos, view)
+
+
+def _early_failure(rule: ExitEarlyFailure, pos: PositionState, view: ExitView) -> bool:
+    """`days` sessions held and the peak never reached +`min_r` R (a known peak only)."""
+    return (
+        view.price is not None
+        and view.peak is not None
+        and view.days_held >= rule.days
+        and pos.avg_entry > pos.initial_stop
+        and not _peak_reached(view, pos, rule.min_r)
+    )
+
+
+def _max_hold(rule: ExitMaxHold, pos: PositionState, view: ExitView) -> bool:
+    return view.price is not None and view.days_held >= rule.days
 
 
 def _time_stop(rule: ExitTimeStop, pos: PositionState, view: ExitView) -> bool:
@@ -266,7 +347,10 @@ _SELL_TESTS: dict[type, Callable[[Any, PositionState, ExitView], bool]] = {
     ExitCloseBelowSma: _below_sma,
     ExitCloseAboveSma: _above_sma,
     ExitTrailingSwingLow: _below_swing_low,
+    ExitTrailingAtr: _below_atr_trail,
     ExitTimeStop: _time_stop,
+    ExitEarlyFailure: _early_failure,
+    ExitMaxHold: _max_hold,
     ExitRegime: _regime_off,
 }
 
@@ -278,8 +362,9 @@ def _sells(rule: ExitRule, pos: PositionState, view: ExitView) -> bool:
 
 
 def _is_full(rule: ExitRule) -> bool:
-    """hard_stop and time_stop always sell everything; the others when their fraction is 1."""
-    if isinstance(rule, ExitHardStop | ExitTimeStop):
+    """hard_stop, time_stop, early_failure and max_hold always sell everything; the others when
+    their fraction is 1."""
+    if isinstance(rule, ExitHardStop | ExitTimeStop | ExitEarlyFailure | ExitMaxHold):
         return True
     fraction = _fraction_of(rule)
     return fraction is not None and fraction >= 1.0

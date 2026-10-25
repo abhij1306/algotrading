@@ -38,6 +38,7 @@ from .fills import (
     TOUCH,
     TRIGGER_PROXY,
 )
+from .overrides import Overrides
 from .slots import SLOT_ORDER_TIME, is_slot_order
 
 __all__ = [
@@ -131,10 +132,11 @@ class RunConventions:
     """The rules a run chooses besides its slippage and cost model (PR 62, O5): the entry fill
     rule (HAT-BT-020), the slot order (HAT-BT-026, PR 63), the ambiguous-day rule (HAT-BT-021)
     and the bar-less sessions before the suspension markdown (PR 64), the sleeve weight (None:
-    the policy's base weight) and the regime rule the entries are sized under (HAT-BT-014,
-    PR 68). Refused at construction (`BacktestError`): an unknown entry fill rule, slot order,
-    ambiguous-day rule or regime rule, a bar-less session count that is not a whole number in
-    0..`MAX_SUSPENSION_SESSIONS`, and a sleeve weight that is not a Decimal in (0, 1]."""
+    the policy's base weight), the regime rule the entries are sized under (HAT-BT-014, PR 68)
+    and the config and policy overrides (`overrides`). Refused at construction
+    (`BacktestError`): an unknown entry fill rule, slot order, ambiguous-day rule or regime rule,
+    a bar-less session count that is not a whole number in 0..`MAX_SUSPENSION_SESSIONS`, and a
+    sleeve weight that is not a Decimal in (0, 1]."""
 
     entry_fill_rule: str = PENETRATION  # `touch` is the variant
     slot_order: str = SLOT_ORDER_TIME  # `score` and `random:K` are variants
@@ -142,6 +144,8 @@ class RunConventions:
     suspension_sessions: int = SUSPENSION_SESSIONS
     sleeve_weight: Decimal | None = None
     regime_mult: str = REGIME_MULT_ONE  # `policy` applies the live regime engine
+    # the run's config and policy overrides (`overrides`), already applied to its spec
+    overrides: Overrides = field(default_factory=Overrides, hash=False)
 
     def __post_init__(self) -> None:
         if self.entry_fill_rule not in ENTRY_FILL_RULES:
@@ -164,6 +168,8 @@ class RunConventions:
             raise BacktestError("backtest_bad_sleeve_weight")
         if self.regime_mult not in REGIME_MULT_RULES:
             raise BacktestError("backtest_bad_regime_mult")
+        if not isinstance(self.overrides, Overrides):
+            raise BacktestError("backtest_bad_override")
 
     def check_promotion(self, slippage_bps: Decimal) -> None:
         """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
@@ -182,14 +188,17 @@ class RunConventions:
             raise BacktestError("backtest_promotion_off_base_weight")
         if self.regime_mult != REGIME_MULT_POLICY:  # live sizes under the regime engine (PR 69)
             raise BacktestError("backtest_promotion_regime_variant")
+        if not self.overrides.empty:  # the evidence is of the version's own config and policy
+            raise BacktestError("backtest_promotion_with_overrides")
 
     def record(
         self, fills: BacktestFills, weight: Decimal, table: Mapping[str, Decimal]
     ) -> dict[str, Any]:
         """The conventions a run used, as recorded in its metrics and hashed into its
         `config_digest`, with the run's fills, its resolved sleeve weight and the regime table it
-        sized under. The keys and their order are the stored format: a change makes new digests
-        differ from every stored run's."""
+        sized under, and its overrides when it has any (a run without keeps the digest it had
+        before overrides existed). The keys and their order are the stored format: a change makes
+        new digests differ from every stored run's."""
         return {
             "fill_path": FILL_PATH,
             "entry_fill_rule": self.entry_fill_rule,
@@ -214,6 +223,7 @@ class RunConventions:
                 if self.regime_mult == REGIME_MULT_POLICY
                 else {}
             ),
+            **({} if self.overrides.empty else {"overrides": self.overrides.record()}),
         }
 
 

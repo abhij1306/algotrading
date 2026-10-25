@@ -412,6 +412,13 @@ class MarketView:
         _, through = self._find(instrument_id, day, inclusive=True)
         return series.signal_bars(max(0, end - count), end, through - 1)
 
+    def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
+        """The instrument's bars dated from `first` on and before `day`, oldest first, on the
+        scale `bars_through` reads them at `day`."""
+        _, start = self._find(instrument_id, first, inclusive=False)
+        _, end = self._find(instrument_id, day, inclusive=False)
+        return self.bars_through(instrument_id, day, end - start, inclusive=False)
+
     def tick(self, instrument_id: str, day: date) -> Decimal | None:
         """The instrument's NSE tick on `day` (HAT-EXEC-053) in the units of its adjusted bars.
         The slab is picked from its raw closes before `day`, as the live trigger prices it (a
@@ -837,7 +844,8 @@ def load_market(
             _DIVIDENDS_SQL, [window[0], end, wanted]
         ).fetchall():
             dividends[str(instrument_id)].append((ex_date, Decimal(amount) * Decimal(basis)))
-        names = sorted({index, *((regime.INDEX_NAME, regime.VIX_NAME) if regime_inputs else ())})
+        # NIFTY 500 always: the run's report charts against it (`report_data`)
+        names = sorted({index, regime.INDEX_NAME, *((regime.VIX_NAME,) if regime_inputs else ())})
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
     # read once DuckDB has let go of the bars' memory
     features, breadth = _current_features(

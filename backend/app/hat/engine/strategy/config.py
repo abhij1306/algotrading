@@ -210,9 +210,16 @@ class StopBelowFinalContractionLow(Model):
         return self
 
 
+# An optional stop-width cap on the rules without one of their own: the stop is skipped
+# (`stop_too_wide`) when it is more than `max_pct` percent below the entry. Left out of the
+# canonical form when unset, so the stored configs' hashes do not change.
+WidthCap = Field(default=None, gt=0, le=100, exclude_if=lambda v: v is None)
+
+
 class StopLowOfDay(Model):
     rule: Literal["low_of_day"]
     buffer_ticks: int = Field(default=1, ge=0, le=100)
+    max_pct: float | None = WidthCap
 
 
 class StopPctBelowEntry(Model):
@@ -224,11 +231,13 @@ class StopAtrMultiple(Model):
     rule: Literal["atr_multiple"]
     days: int = Field(ge=1, le=252)
     multiple: float = Field(gt=0, le=100)
+    max_pct: float | None = WidthCap
 
 
 class StopSwingLow(Model):
     rule: Literal["swing_low"]
     lookback_days: int = Field(ge=1, le=252)
+    max_pct: float | None = WidthCap
 
 
 StopRule = Annotated[
@@ -240,6 +249,10 @@ StopRule = Annotated[
     Field(discriminator="rule"),
 ]
 Fraction = Field(default=1.0, gt=0, le=1)
+# A trail's start: the rule fires only once the position's best price since entry (`ExitView.peak`)
+# has reached +`start_r` R; unset, it trails from the entry. Left out of the canonical form when
+# unset, so the stored configs' hashes do not change.
+TrailStart = Field(default=None, gt=0, le=100, exclude_if=lambda v: v is None)
 
 
 class ExitHardStop(Model):
@@ -287,6 +300,7 @@ class ExitVsSma(Model):
 
 class ExitCloseBelowSma(ExitVsSma):
     rule: Literal["close_below_sma"]
+    start_r: float | None = TrailStart
 
 
 class ExitCloseAboveSma(ExitVsSma):
@@ -299,6 +313,19 @@ class ExitTrailingSwingLow(Model):
     rule: Literal["trailing_swing_low"]
     lookback_days: int = Field(ge=1, le=252)
     sell_fraction: float = Fraction
+    start_r: float | None = TrailStart
+    enabled: bool = True
+
+
+class ExitTrailingAtr(Model):
+    """A close-phase exit under the best price since entry less `multiple` x ATR(`days`) (a
+    chandelier trail)."""
+
+    rule: Literal["trailing_atr"]
+    days: int = Field(ge=1, le=252)
+    multiple: float = Field(gt=0, le=100)
+    sell_fraction: float = Fraction
+    start_r: float | None = TrailStart
     enabled: bool = True
 
 
@@ -316,6 +343,24 @@ class ExitTimeStop(Model):
     enabled: bool = True
 
 
+class ExitEarlyFailure(Model):
+    """A close-phase full exit of a position that has not reached +`min_r` R (its best price since
+    entry, `ExitView.peak`) after `days` sessions held."""
+
+    rule: Literal["early_failure"]
+    days: int = Field(ge=1, le=252)
+    min_r: float = Field(default=0.5, gt=0, le=100)
+    enabled: bool = True
+
+
+class ExitMaxHold(Model):
+    """A close-phase full exit after `days` sessions held, whatever the price."""
+
+    rule: Literal["max_hold"]
+    days: int = Field(ge=1, le=1000)
+    enabled: bool = True
+
+
 class ExitRegime(Model):
     rule: Literal["regime_exit"]
     sell_fraction: float = Fraction
@@ -330,8 +375,11 @@ ExitRule = Annotated[
     | ExitCloseBelowSma
     | ExitCloseAboveSma
     | ExitTrailingSwingLow
+    | ExitTrailingAtr
     | ExitPctGainTarget
     | ExitTimeStop
+    | ExitEarlyFailure
+    | ExitMaxHold
     | ExitRegime,
     Field(discriminator="rule"),
 ]
