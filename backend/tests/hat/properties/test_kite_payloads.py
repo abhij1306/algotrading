@@ -309,20 +309,16 @@ def test_an_unreadable_foreign_trade_is_skipped_and_a_hat_one_fails_the_read() -
 
 def test_positions_holdings_funds() -> None:
     positions = parse_positions(FIXTURE["positions"], same)
-    assert [(p.symbol, p.qty, p.avg_price, p.product) for p in positions] == [
-        ("INFY", 1, Decimal("1404"), "CNC")  # SBIN's net 0 is no position
+    assert [(p.symbol, p.qty, p.avg_price, p.product, p.ltp) for p in positions] == [
+        ("INFY", 1, Decimal("1404"), "CNC", Decimal("1410.5"))  # SBIN's net 0 is no position
     ]
     holdings = parse_holdings(FIXTURE["holdings"], same)
-    assert [(h.symbol, h.qty, h.avg_price) for h in holdings] == [
-        ("GOLDBEES", 2, Decimal("40.67")),
-        ("IDEA", 8, Decimal("8.466")),  # settled 5 plus 3 T1
+    assert [(h.symbol, h.qty, h.avg_price, h.ltp) for h in holdings] == [
+        ("GOLDBEES", 2, Decimal("40.67"), Decimal("42.47")),
+        ("IDEA", 8, Decimal("8.466"), Decimal("10")),  # settled 5 plus 3 T1
     ]
     funds = parse_funds(FIXTURE["margins_equity"])
-    assert (funds.available, funds.used, funds.total) == (
-        Decimal("99725.05"),
-        Decimal("145706.55"),
-        Decimal("245431.60"),
-    )
+    assert (funds.available, funds.used) == (Decimal("99725.05"), Decimal("145706.55"))
     with pytest.raises(KeyError):
         parse_funds({"enabled": True})  # not a reply of 0 cash
 

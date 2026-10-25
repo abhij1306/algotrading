@@ -302,9 +302,10 @@ def _text(value: object, name: str) -> str:
 
 def parse_positions(rows: Iterable[dict[str, Any]]) -> list[BrokerPosition]:
     """The open positions of a `netPositions` list (a net quantity of 0 is none): the signed net
-    quantity, the average of the side held (`buyAvg` long, `sellAvg` short) and the product. A
-    missing or unreadable quantity, average or product raises (never an average of 0, never an
-    INTRADAY product)."""
+    quantity, the average of the side held (`buyAvg` long, `sellAvg` short), the product and the
+    last traded price (None when missing or unreadable: only equity needs it). A missing or
+    unreadable quantity, average or product raises (never an average of 0, never an INTRADAY
+    product)."""
     positions = []
     for row in rows:
         qty = reply_count(row["netQty"], "netQty", minimum=None)
@@ -317,14 +318,16 @@ def parse_positions(rows: Iterable[dict[str, Any]]) -> list[BrokerPosition]:
                 qty=qty,
                 avg_price=require_exact(row[average], average, floats=True, positive=True),
                 product=_text(row["productType"], "productType"),
+                ltp=exact(row.get("ltp"), floats=True, positive=True),
             )
         )
     return positions
 
 
 def parse_holdings(rows: Iterable[dict[str, Any]]) -> list[BrokerHolding]:
-    """The demat holdings of a `holdings` list. A missing or unreadable quantity or `costPrice`
-    raises (a bonus share may cost 0 [A]; a negative cost is not a cost)."""
+    """The demat holdings of a `holdings` list, with their last traded price (None when missing
+    or unreadable: only equity needs it). A missing or unreadable quantity or `costPrice` raises
+    (a bonus share may cost 0 [A]; a negative cost is not a cost)."""
     holdings = []
     for row in rows:
         cost = require_exact(row["costPrice"], "costPrice", floats=True)
@@ -335,6 +338,7 @@ def parse_holdings(rows: Iterable[dict[str, Any]]) -> list[BrokerHolding]:
                 symbol=symbol_master.to_db(str(row["symbol"])),
                 qty=reply_count(row["quantity"], "quantity"),
                 avg_price=cost,
+                ltp=exact(row.get("ltp"), floats=True, positive=True),
             )
         )
     return holdings
@@ -342,13 +346,14 @@ def parse_holdings(rows: Iterable[dict[str, Any]]) -> list[BrokerHolding]:
 
 # The `fund_limit` rows HAT reads, by title (Fyers documents ten; the rest are never parsed, so
 # an odd collateral amount cannot fail the read).
-_FUND_ROWS = {"Available Balance": "available", "Utilized Amount": "used", "Total Balance": "total"}
+_FUND_ROWS = {"Available Balance": "available", "Utilized Amount": "used"}
 
 
 def parse_funds(reply: dict[str, Any]) -> BrokerFunds:
     """The funds of an ok `funds` reply, from its `fund_limit` rows: "Available Balance" and
-    "Utilized Amount" must be there with an amount, and a "Total Balance" Fyers leaves out is
-    their exact sum. A reply without them raises: it is not a reply of 0 cash."""
+    "Utilized Amount" must be there with an amount. "Total Balance" is not read: it still holds a
+    CNC buy's cost until settlement, so it is not equity (Q1). A reply without them raises: it is
+    not a reply of 0 cash."""
     rows = reply["fund_limit"]
     if not isinstance(rows, list):
         raise TypeError("fund_limit: not a list")
@@ -357,8 +362,7 @@ def parse_funds(reply: dict[str, Any]) -> BrokerFunds:
         field = _FUND_ROWS.get(row.get("title")) if isinstance(row, dict) else None
         if field is not None:
             amounts[field] = require_exact(row["equityAmount"], row["title"], floats=True)
-    available, used = amounts["available"], amounts["used"]
-    return BrokerFunds(available=available, used=used, total=amounts.get("total", available + used))
+    return BrokerFunds(available=amounts["available"], used=amounts["used"])
 
 
 def parse_trade(row: dict[str, Any]) -> BrokerTrade:

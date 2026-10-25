@@ -188,7 +188,7 @@ def rebase_peak(
 
     Equity is allocation capital plus the result not yet in it, so cutting a sleeve's weight (a
     regime or health change, HAT-PORT-050) lowers equity without any trade losing money.
-    `prev_capital` is the previous capital restated at the new funds total
+    `prev_capital` is the previous capital restated at the new book equity
     (`restated_capital`). The previous equity moves to `prev_equity + (capital - prev_capital)`
     and the peak scales by the same ratio, which keeps (peak - equity) / peak exactly as it was
     before the reallocation: only trading results move the drawdown (HAT-RISK-066). Unknown
@@ -219,10 +219,10 @@ def restated_capital(
     capital: Decimal | None,
     weight: Decimal | None,
 ) -> Decimal | None:
-    """The previous allocation capital restated at the new funds total (Q1): `capital x
-    prev_weight / weight`. Capital is weight x the broker funds total, which carries the realised
-    P&L, so only a change of weight is a planned reallocation; a change of the funds total is a
-    result and moves the drawdown. A new weight of 0 has no funds total to restate at: the
+    """The previous allocation capital restated at the new book equity (Q1): `capital x
+    prev_weight / weight`. Capital is weight x the account book equity, which carries the realised
+    P&L, so only a change of weight is a planned reallocation; a change of the book equity is a
+    result and moves the drawdown. A new weight of 0 has no book equity to restate at: the
     previous capital stands, so the whole cut is planned. None when any input is unknown."""
     if prev_capital is None or capital is None or prev_weight is None or weight is None:
         return None
@@ -263,18 +263,6 @@ def adjusted_series(points: Iterable[SnapshotPoint]) -> list[EquityPoint]:
         if point.capital is None or point.capital != 0:
             out.append(EquityPoint(point.at, point.equity, peak))
     return out
-
-
-def tripped_after_rearm(
-    base: SnapshotPoint, points: Iterable[SnapshotPoint], threshold: Decimal
-) -> bool:
-    """D232 (Q41): after a re-arm the drawdown is measured from `base`, the scope's equity at
-    the first point after the re-arm. The peak restarts there and rises with the later points
-    (restated for reallocation, `adjusted_series`), so only a new fall of `threshold` from it
-    trips; `base` itself never does, and a point at or before it is not read."""
-    since = as_utc(base.at)
-    later = [p for p in points if as_utc(p.at) > since]
-    return tripped_since(adjusted_series([base, *later]), threshold, since)
 
 
 # --- Mark-to-market equity (P5, owner decision X9) ---------------------------------------------

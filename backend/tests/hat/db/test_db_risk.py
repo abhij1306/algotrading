@@ -179,14 +179,15 @@ def test_risk__snapshot_job_is_idempotent_and_feeds_the_kill(conn: Connection) -
         assert sorted(tripped) == sorted([str(w["bot"]), "account"])
 
 
-def test_risk__rearm_restarts_the_health_peak(conn: Connection) -> None:
-    """A re-arm of the bot's kill restarts the snapshot peak the health multiplier reads at the
-    next snapshot's equity (QA10); without one, a fall of the funds total at the same weight
-    stays a drawdown under the old peak (Q1)."""
+def test_risk__the_peak_carries_across_a_manual_rearm(conn: Connection) -> None:
+    """QA10 (owner 2026-10-25): 9% under the peak, a manual kill re-armed, then another 9%
+    trips the 10% bot kill (and the account's, the world holding this one bot): the re-arm
+    leaves the snapshot peak, which the health multiplier reads too, where it was. Each fall is
+    a fall of the funds total at the same weight, a result (Q1)."""
     w = b.world(conn)
     day = date(2026, 10, 19)
     with session_on(conn) as session:
-        for offset, capital in ((0, "100000"), (1, "90000"), (2, "90000")):
+        for offset, capital in ((0, "100000"), (1, "91000"), (2, "82810")):
             session.add(
                 HatAllocationDaily(
                     trade_date=day + timedelta(days=offset),
@@ -203,11 +204,14 @@ def test_risk__rearm_restarts_the_health_peak(conn: Connection) -> None:
         session.flush()
         snapshot_bots(session, day)
         snapshot_bots(session, day + timedelta(days=1))
-        held = session.get(HatDailyBotSnapshot, (w["bot"], day + timedelta(days=1)))
-        assert (held.equity, held.equity_peak) == (Decimal("90000"), Decimal("100000"))
         evening = datetime.combine(day + timedelta(days=1), time(20, 0), tzinfo=IST)
-        trip_kill(session, scope="bot", bot_id=w["bot"], reason="drawdown_bot", now=evening)
-        rearm_kill(session, scope="bot", bot_id=w["bot"], confirmed=True, now=evening, chat_id=1)
+        assert evaluate_drawdown_kills(session, seed_policy(), evening) == []
+        trip_kill(session, scope="bot", bot_id=w["bot"], reason="manual", now=evening)
+        later = evening + timedelta(minutes=1)
+        rearm_kill(session, scope="bot", bot_id=w["bot"], confirmed=True, now=later, chat_id=1)
         snapshot_bots(session, day + timedelta(days=2))
         after = session.get(HatDailyBotSnapshot, (w["bot"], day + timedelta(days=2)))
-        assert (after.equity, after.equity_peak) == (Decimal("90000"), Decimal("90000"))
+        assert (after.equity, after.equity_peak) == (Decimal("82810"), Decimal("100000"))
+        night = datetime.combine(day + timedelta(days=2), time(20, 0), tzinfo=IST)
+        tripped = evaluate_drawdown_kills(session, seed_policy(), night)
+        assert sorted(tripped) == sorted([str(w["bot"]), "account"])

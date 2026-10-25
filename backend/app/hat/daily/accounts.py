@@ -39,8 +39,16 @@ from sqlalchemy.sql.expression import Exists
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.entries import TokenIssuer
 from ..errors import HatConfigError
-from ..execution.broker import Capabilities, HatBroker, SessionStatus
+from ..execution.broker import (
+    BrokerFunds,
+    BrokerHolding,
+    BrokerPosition,
+    Capabilities,
+    HatBroker,
+    SessionStatus,
+)
 from ..execution.entry_timeout import EntryWatch
+from ..execution.equity import OpenCost, book_equity
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
 from ..execution.gtt_upkeep import GttUpkeep
 from ..execution.guard import ExecutionGuard
@@ -59,12 +67,21 @@ from ..execution.session import (
     record_session,
     refresh_capabilities,
 )
-from ..models import HatApproval, HatBot, HatBrokerAccount, HatOrder, HatPosition, HatSignal
+from ..models import (
+    HatApproval,
+    HatBot,
+    HatBrokerAccount,
+    HatInstrument,
+    HatOrder,
+    HatPosition,
+    HatSignal,
+)
 from ..models.strategy import ACCOUNT_ACTIVE
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
 from ..ops.trade_jobs import job_name, trade_jobs
+from ..risk.drawdown import fill_cash
 from ..risk.kill_ops import sync_health
 from ..risk.sessions import SessionCalendar
 from ..time import trade_date_of, utc_now
@@ -74,6 +91,7 @@ __all__ = [
     "END_SESSION",
     "END_SESSION_AT",
     "RECONCILE_DOWN_AFTER",
+    "RECONCILE_DOWN_IN_SESSION",
     "RECONCILE_FAILED",
     "AccountDesk",
     "Desks",
@@ -91,7 +109,9 @@ BROKER_HEALTH = "broker_health"
 # The fill sync's cadence when nothing is watched closely; the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
 FILL_SYNC_EVERY = timedelta(minutes=1)
-# A reconciliation failing this long after the trade date's last success is alerted (C22 A1).
+# A reconciliation failing this long after the trade date's last success is alerted (C22 A1):
+# sooner in the session, when entries wait on it, than outside it.
+RECONCILE_DOWN_IN_SESSION = timedelta(minutes=10)
 RECONCILE_DOWN_AFTER = timedelta(minutes=30)
 
 BrokerFor = Callable[[HatBrokerAccount], HatBroker | None]
@@ -209,10 +229,10 @@ class AccountDesk:
         """Reconcile now; True when the account's trade date is reconciled (its entries may be
         placed). Until the first success of a trade date its entries wait (HAT-BRK-110); a failure
         raises one `reconcile.failed` health alert for the date while the date has no success, or
-        once the last success is `RECONCILE_DOWN_AFTER` old (`reconcile_down`). A failed re-run
-        after a success leaves the gate open. Stops and sales never wait (D118). Once the day's
-        broker calls are spent it reads nothing (`budget_spent`): it only gates entries, which
-        wait for the next day then (Q11)."""
+        once the last success is 10 minutes old in the session, 30 outside it (`reconcile_down`).
+        A failed re-run after a success leaves the gate open. Stops and sales never wait (D118).
+        Once the day's broker calls are spent it reads nothing (`budget_spent`): it only gates
+        entries, which wait for the next day then (Q11)."""
         if self.budget_spent(now):
             return self.guard.reconciled_today()
         try:
@@ -220,7 +240,12 @@ class AccountDesk:
         except Exception:
             logger.exception("reconciliation of account %s failed", self.account_id)
             day = trade_date_of(now)
-            down = reconcile_down(self.guard.reconciled_today(), self.reconciled_at, now)
+            down = reconcile_down(
+                self.guard.reconciled_today(),
+                self.reconciled_at,
+                now,
+                in_session=self.manager.in_session(now),
+            )
             if down and self.failed_alerted_on != day:
                 self.failed_alerted_on = day
                 self.notifier.alert(RECONCILE_FAILED, day, {"account_id": str(self.account_id)})
@@ -242,12 +267,52 @@ class AccountDesk:
         return True
 
 
-def reconcile_down(reconciled_today: bool, last_success: datetime | None, now: datetime) -> bool:
+def reconcile_down(
+    reconciled_today: bool, last_success: datetime | None, now: datetime, *, in_session: bool
+) -> bool:
     """Whether a failed reconciliation at `now` is an outage to alert (C22 A1): the trade date
-    has no success yet, or its last one is `RECONCILE_DOWN_AFTER` old."""
+    has no success yet, or its last one is `RECONCILE_DOWN_IN_SESSION` old during the session,
+    `RECONCILE_DOWN_AFTER` outside it."""
     if not reconciled_today:
         return True
-    return last_success is not None and now - last_success >= RECONCILE_DOWN_AFTER
+    wait = RECONCILE_DOWN_IN_SESSION if in_session else RECONCILE_DOWN_AFTER
+    return last_success is not None and now - last_success >= wait
+
+
+def _one_book(
+    broker: HatBroker,
+) -> tuple[BrokerFunds, list[BrokerPosition], list[BrokerHolding]]:
+    """The funds, positions and holdings as one book: three reads, so the positions are read
+    again after the funds and the whole read once more when a fill moved them in between (the
+    cash and the shares of one book, never of two). Raises ValueError when they moved twice."""
+    for _ in range(2):
+        positions = broker.positions()
+        holdings = broker.holdings()
+        funds = broker.funds()
+        if _shares(broker.positions()) == _shares(positions):
+            return funds, positions, holdings
+    raise ValueError("positions moved during the equity read")
+
+
+def _shares(positions: list[BrokerPosition]) -> list[tuple[str, int, str]]:
+    return sorted((p.symbol, p.qty, p.product) for p in positions)
+
+
+def _open_costs(session: Session, account_id: uuid.UUID) -> list[OpenCost]:
+    """The account's open real positions (its bots'), each with its symbol, shares and fill
+    cash (`drawdown.fill_cash`)."""
+    rows = session.execute(
+        select(HatPosition.signal_id, HatPosition.qty_open, HatInstrument.symbol)
+        .join(HatBot, HatBot.id == HatPosition.bot_id)
+        .join(HatInstrument, HatInstrument.id == HatPosition.instrument_id)
+        .where(
+            HatBot.broker_account_id == account_id,
+            HatPosition.is_virtual.is_(False),
+            HatPosition.closed_at.is_(None),
+        )
+    ).all()
+    cash = fill_cash(session, {signal_id for signal_id, _, _ in rows})
+    return [OpenCost(str(symbol), qty, cash[signal_id]) for signal_id, qty, symbol in rows]
 
 
 def _holds_real_positions() -> Exists:
@@ -482,17 +547,22 @@ class Desks:
             return None
 
     def total_equity(self, _day: date) -> Decimal:
-        """The broker funds total of every active account, read when the evening allocation runs:
-        the real books' equity, which carries their realised P&L (Q1). Fails the job when there
-        is no account or one cannot be read."""
-        desks = list(self.by_account.values())
+        """The book equity of every account with a desk, read when the evening allocation runs
+        (Q1, `equity.book_equity`): the available cash plus the shares held at the broker's last
+        price, HAT's open real positions at their cost, so it carries the realised P&L and the
+        drawdown marks the open ones once. Fails the job when there is no account or one cannot
+        be read."""
+        desks = list(self.by_account.items())
         if not desks:
             raise JobError("equity_unavailable")
         total = Decimal(0)
-        for desk in desks:
+        for account_id, desk in desks:
             try:
-                total += desk.broker.funds().total
+                with self._session_factory() as session:
+                    hat_open = _open_costs(session, account_id)
+                total += book_equity(*_one_book(desk.broker), hat_open)
             except Exception as exc:
+                logger.exception("equity of account %s unreadable", account_id)
                 raise JobError("equity_unavailable") from exc
         return total
 

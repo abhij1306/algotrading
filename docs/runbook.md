@@ -51,6 +51,8 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    ```
    Retention never truncates or drops event partitions (`ops/retention.py` deletes only the two
    chat tables).
+8. `DROP TABLE hat_drawdown_base;` (a re-arm no longer restarts the drawdown peak, QA10) and
+   remove it from `DRIFT_ALLOWED_TABLES` in `app/hat/schema.py`.
 
 ## Running it
 
@@ -134,6 +136,27 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    On a separate sleeve: `add-sleeve`, `assign-version`, step 5's `promote`s; one Live sleeve per
    strategy.
 8. Recovered Probation sleeve: `promote --bot <bot> --to live`.
+
+### First live session checks (O2 day)
+
+Checks on the first session with a real Fyers account; note each in the Check log. They place
+no order, though `onboard-account` writes the account row and its capabilities.
+Fyers' reply fields here are assumed from its documentation until read on the live account.
+
+- GTT fields and tags: a placed GTT shows its HT `orderTag`; its sale carries the tag.
+- Error codes: `-360` (day's calls spent), 429, `-50`, `-16` reach HAT as their fixed codes.
+- Holdings vs positions: a stock bought today is in positions (`netQty`, `productType` CNC)
+  only, not in holdings; it moves to holdings (T1, then settled) without appearing in both; a
+  sale today of a holding shows as a negative net position against the holding.
+- Equity basis (Q1): before a CNC buy, on its trade date and on its settlement day,
+  "Available Balance" + every share at `ltp` (holdings plus today's CNC positions) gives the same
+  equity at unchanged prices: the cost leaves "Available Balance" on the trade date (into
+  "Utilized Amount") and is not taken again at settlement. Also check a sale day: the proceeds
+  reach "Available Balance" on the trade date. The evening `allocate` logs no
+  `equity_unavailable`.
+- Stop-to-market: a sale over a day stop shows the stop cancelled in the order book before the
+  market sale, within the bounded wait (`stop.cancel_unacked` otherwise).
+- The market-price-protection fixture and `onboard-account` against the live account.
 
 ### Switching the order broker
 
@@ -261,8 +284,9 @@ advisory lock; `features` does not take it, so run it after they finish.
   hand.
 - **`relay.skipped`:** Telegram refused a message for good; read the event. A skipped card expires.
 - **`reconcile.failed`:** no entry on that account until a pass succeeds; check the session.
-  Raised once a day: before the day's first success, or once passes have failed for 30 minutes
-  after one (the gate stays open then; mismatches go unseen until a pass succeeds).
+  Raised once a day: before the day's first success, or once passes have failed after one for
+  10 minutes in the session, 30 outside it (the gate stays open then; mismatches go unseen until
+  a pass succeeds).
   **`reconcile.unreadable_row`:** check the Fyers book for a manual order.
   **`reconcile.mismatch`:** that bot's entries are blocked; a broker position HAT does not know is
   not HAT's; a missing fill or quantity difference is a bug. A duplicate order at the broker:
@@ -273,6 +297,13 @@ advisory lock; `features` does not take it, so run it after they finish.
   position and reason while each sync keeps trying. **`stop.would_move_down`:** the position's
   stop is below its resting broker stop, which only rises, so the broker stop stays where it is
   (still protective); the stored stop or tick is wrong: a bug to report.
+- **`stop.cancel_unacked`:** URGENT, once a day per position. A sale over a day stop waited for
+  the broker to show the stop cancelled and it did not (Fyers cannot turn an SL-M into a market
+  order, so the stop is cancelled before the sale). The sale was not sent. A stop still shown
+  working, or a cancel the broker refused, stays HAT's working stop; a cancel whose answer was
+  lost is probed with a modify to the stop's own trigger, and a refused probe (the stop gone)
+  places a new stop at once. Check the Fyers order book: the stop resting is protective (the
+  exit tries again); no stop resting means decide on `/flatten`.
 - **`position.series_changed`:** exits continue under the new symbol; `unmapped` means none run:
   decide whether to sell at Fyers.
 - **`exits.view_failed`:** URGENT, once a day per position. Building the position's exit view
@@ -299,8 +330,9 @@ advisory lock; `features` does not take it, so run it after they finish.
   at the broker (so does `/pause`). Re-arm after fixing the cause with `/arm` (every tripped
   drawdown or manual kill), `/arm account` or `/arm <bot>`, and Confirm: the question lists each
   kill it re-arms (whose, reason, when tripped) and Confirm re-arms exactly those, refusing with
-  `kill_changed` if one changed or another tripped since. A re-arm restarts that drawdown peak
-  (`/resume` does not lift a kill; data-health kills clear themselves). `/flatten` and Confirm
+  `kill_changed` if one changed or another tripped since. A re-arm keeps the drawdown peak, so
+  a drawdown kill re-armed while still 10% under it trips again at the next mark (`/resume`
+  does not lift a kill; data-health kills clear themselves). `/flatten` and Confirm
   trips the account kill, cancels the working entries and sells every real position; `/arm`
   lifts the kill. With the market closed it still trips the kill but sells nothing and queues
   nothing: send `/flatten` again in the session.

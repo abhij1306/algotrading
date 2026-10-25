@@ -9,6 +9,7 @@ from decimal import Decimal
 from typing import cast
 
 import pytest
+from hat.fakes.broker import CANCEL_TIMEOUT, FakeBroker
 from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from sqlalchemy.orm import Session
 
@@ -20,6 +21,7 @@ from app.hat.data.preopen import GapSource, PreopenGaps
 from app.hat.engine.trigger import in_window
 from app.hat.execution.broker import (
     CODE_UNAVAILABLE,
+    BrokerUnavailableError,
     GttRequest,
 )
 from app.hat.execution.fyers_adapter import FyersHatBroker
@@ -29,6 +31,12 @@ from app.hat.execution.position_desk import (
     PositionDesk,
     Verdict,
     second_absence,
+)
+from app.hat.execution.protect import (
+    CANCEL_ACK_EVERY,
+    CANCEL_ACK_READS,
+    CancelAck,
+    await_cancel,
 )
 from app.hat.execution.tags import encode_tag
 from app.hat.ops.scheduler import ScheduledJob, due, starts_at, window_end
@@ -250,3 +258,106 @@ def test_the_trigger_window_ends_before_the_closing_auction() -> None:
     assert not in_window(ist(MUHURAT, 14, 24), muhurat_open, muhurat_close)
     assert in_window(ist(MUHURAT, 14, 25), muhurat_open, muhurat_close)
     assert not in_window(ist(MUHURAT, 15, 6), muhurat_open, muhurat_close)
+
+
+# --- a sale's day stop: cancel, then the acknowledgement, then the sale -----------------------
+
+
+STOP_TAG = encode_tag(uuid.UUID(int=7), "stop_day", 0)
+
+
+def stop_row(status: int, filled: int = 0) -> dict[str, object]:
+    return {
+        "id": "S-1",
+        "orderTag": STOP_TAG,
+        "symbol": "NSE:TCS-EQ",
+        "side": -1,
+        "qty": 10,
+        "filledQty": filled,
+        "status": status,
+        "productType": "CNC",
+        "type": 3,
+    }
+
+
+def test_a_sale_waits_for_its_stop_cancel_to_show_in_the_book() -> None:
+    """Fyers cannot modify an SL-M into a MARKET order, so the stop is cancelled first and the
+    sale may go only once the book shows it cancelled: the cancel is sent before any read, the
+    book is read again while it still shows the stop working, and nothing is placed meanwhile."""
+    fake = FakeBroker(orders=[stop_row(6)])
+    waits: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        if len(waits) == 2:
+            fake.orders = [stop_row(1)]
+
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=sleep) is CancelAck.ACKED
+    assert [name for name, _ in fake.calls] == [
+        "cancel_order",
+        "fetch_orderbook",
+        "fetch_orderbook",
+        "fetch_orderbook",
+    ]
+    assert waits == [CANCEL_ACK_EVERY, CANCEL_ACK_EVERY]
+
+
+@pytest.mark.parametrize(
+    ("book", "cancel_reply", "outcome"),
+    [
+        ([stop_row(6)], {"s": "ok", "message": "Cancelled"}, CancelAck.RESTING),  # still working
+        ([stop_row(2, filled=10)], {"s": "error", "message": "rejected"}, CancelAck.TRIGGERED),
+        (BrokerUnavailableError("down"), CANCEL_TIMEOUT, CancelAck.UNKNOWN),  # all lost
+    ],
+)
+def test_no_cancel_ack_in_the_bounded_wait_holds_the_sale(
+    book: object, cancel_reply: object, outcome: CancelAck
+) -> None:
+    fake = FakeBroker(orders=book, cancel_reply=cancel_reply)
+    waits: list[float] = []
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=waits.append) is outcome
+    assert fake.calls[0] == ("cancel_order", "S-1")
+    assert not any(name == "place_order" for name, _ in fake.calls)
+    assert len(waits) <= CANCEL_ACK_READS - 1
+
+
+def test_no_cancel_is_sent_while_writes_are_refused() -> None:
+    fake = FakeBroker(orders=[stop_row(1)], circuit_open=True)
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None) is CancelAck.RESTING
+    assert fake.calls == []
+
+
+class _Spent:
+    """A call budget with its writes or its day spent."""
+
+    def __init__(self, *, writes: bool, day: bool) -> None:
+        self.writes, self.day = writes, day
+
+    def writes_spent(self) -> bool:
+        return self.writes
+
+    def day_spent(self) -> bool:
+        return self.day
+
+
+def test_spent_reads_never_hold_a_sale_over_a_cancelled_stop() -> None:
+    """The broker answered the cancel ok but the book cannot be read (the day's reads spent, or
+    rate limited): the ok answer is the acknowledgement, so the sale is not held while the
+    position sits with no stop at the broker."""
+    fake = FakeBroker(orders=[stop_row(6)], budget=_Spent(writes=False, day=True))
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None) is CancelAck.ACKED
+    assert fake.calls[0] == ("cancel_order", "S-1")
+
+
+def test_spent_writes_send_no_cancel() -> None:
+    """A budget whose writes are spent refuses unsent, as `FyersBroker` does with its circuit
+    closed: the stop rests and no cancel reaches the broker."""
+    fake = FakeBroker(orders=[stop_row(1)], budget=_Spent(writes=True, day=False))
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert adapter.write_refusal() is not None
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None) is CancelAck.RESTING
+    assert fake.calls == []

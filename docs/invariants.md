@@ -56,7 +56,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   caps count a position's unfilled entry remainder while that entry still works.
 - **Exits are never blocked** by a cap, kill switch, data failure, reconciliation state or mode.
   Kill switches, pause and a failed gate stop new entries only (manage-only); a drawdown or
-  manual kill or a pause also cancels the bot's entries still working at the broker, and a
+  manual kill or a pause also cancels the bot's entries still working at the broker (entries
+  only: its resting stops and GTT exits stay untouched), and a
   placement re-reads the mode gates, so an entry routed before a gate closed is refused. A held
   instrument that changes series keeps its exits under the new symbol. An account holding an open real
   position gets a desk at start whatever its status, so its fill sync, stops, exits and flatten
@@ -74,8 +75,14 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   go out on the writes' share.
 - **Every real position has a resting broker stop** (intraday, then GTT overnight), re-verified
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
-  a lost broker answer is settled against the broker's book, never left frozen. A lost sale of
-  an earlier session is settled from the holdings net of the owner's own shares (the holding
+  a lost broker answer is settled against the broker's book, never left frozen. Fyers cannot
+  modify an SL-M stop into a MARKET order, so a market sale over a day stop cancels it first and
+  is sent only once the broker acknowledges the cancel, within a bounded wait: the book shows the
+  stop cancelled, or the cancel was answered ok and no read showed the stop (spent or
+  rate-limited reads never hold a sale over a stop already gone). Otherwise the sale waits and
+  the owner is told URGENT (`stop.cancel_unacked`); a stop whose cancel answer was lost is
+  probed with a modify to its own trigger and, refused, placed again at once. A lost sale of an
+  earlier session is settled from the holdings net of the owner's own shares (the holding
   baseline a reconciliation recorded before the sale); with no baseline the position sells
   nothing until the owner books that sale. A lost entry of an earlier session is never rejected
   on today's book: it ends only when the holdings show no shares beyond HAT's other open
@@ -93,10 +100,11 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   09:00 deadline, then URGENT `job.failed`) it stays locked.
 - **Kill switches are HAT's own** (account and bot drawdown, health, manual, pause). Drawdown and
   manual kills re-arm by hand with a second confirmation; a health kill clears itself. A re-arm
-  restarts the peak at the equity then, the drawdown kill's and, for a bot, the health
-  multiplier's (QA10). Drawdown equity is capital (weight x the broker funds
-  total, which carries the realised P&L) + the realised P&L of trades closed since that funds
-  read + open positions marked to market (latest fresh trade, official close at night; before the session's first
+  never restarts a peak (QA10): the drawdown kill's and the health multiplier's peaks carry
+  across it, and only a point after the re-arm trips the kill again. Drawdown equity is capital
+  (weight x the account's book equity: the available cash plus the shares held at market, HAT's
+  open positions at cost; never "Total Balance", Q1) + the realised P&L of trades closed since
+  that read + open positions marked to market (latest fresh trade, official close at night; before the session's first
   trade the previous close; a stale price at the lower of last trade and stop).
 - **Approvals.** Tokens are signed, bound to signal and expiry, single-use, stored as hashes;
   expiry 5 minutes; Take re-checks `max_chase`; unknown chats are ignored. Free text never makes

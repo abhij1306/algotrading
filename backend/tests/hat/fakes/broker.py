@@ -16,13 +16,15 @@ Configure it by attribute (or constructor keyword):
   and GTT modifies and cancels the same way.
 - `circuit_open = True` answers as `FyersBroker` does while its circuit breaker is open: places
   are rejected without being sent, modifies and cancels return the timeout fallback, and the
-  reads raise `BrokerUnavailableError`.
+  reads raise `BrokerUnavailableError`. A `budget` whose writes are spent refuses the writes as
+  rate limited, unsent; one whose day is spent fails the reads.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from app.hat.execution.broker import write_refusal
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     OrderReply,
@@ -31,6 +33,7 @@ from app.hat.execution.fyers_broker import (
 from app.hat.execution.fyers_broker import (
     FyersUnavailableError as BrokerUnavailableError,
 )
+from app.hat.execution.fyers_broker import _throttled as throttled
 
 DEFAULT_FUNDS = 1_000_000.0
 MODIFY_TIMEOUT = {"s": "error", "message": "Fyers modify timeout/unavailable"}
@@ -77,7 +80,9 @@ class FakeBroker:
         self.modify_reply: object = {"s": "ok", "message": "Modified"}
         self.cancel_reply: object = {"s": "ok", "message": "Cancelled"}
         self.circuit_open = False
-        self.budget: Any = None  # a `CallBudget` the adapter reads `day_spent` from, or none
+        # a `CallBudget` or none: its spent writes refuse the writes unsent, its spent day the
+        # reads, as `FyersBroker` does
+        self.budget: Any = None
         for name, value in config.items():
             if name not in vars(self) or name == "calls":
                 raise TypeError(f"FakeBroker has no setting {name!r}")
@@ -89,18 +94,30 @@ class FakeBroker:
             return OrderReply(
                 order_id="", status="REJECTED", message=BROKER_CIRCUIT_OPEN, details=None
             )
+        if self.write_refusal() is not None:
+            return classify_place_reply(throttled(method))  # the budget's refusal: unsent
         if reply is not None:
             return _settle(reply)
         placed = sum(1 for name, _ in self.calls if name == method)
         return classify_place_reply({"s": "ok", "id": f"{prefix}-{placed}", "message": "Placed"})
 
+    def write_refusal(self) -> str | None:
+        """As `FyersBroker.write_refusal`: refused unsent while the circuit is open or the
+        budget's writes of the day are spent."""
+        spent = self.budget is not None and self.budget.writes_spent()
+        return write_refusal(self.circuit_open, writes_spent=spent)
+
     def _write(self, method: str, args: object, reply: object, timeout: dict[str, Any]) -> Any:  # noqa: ANN401
         self.calls.append((method, args))
-        return dict(timeout) if self.circuit_open else _settle(reply)
+        if self.circuit_open:
+            return dict(timeout)
+        if self.write_refusal() is not None:
+            return throttled(method)  # the budget's refusal: nothing reaches Fyers
+        return _settle(reply)
 
     def _read(self, method: str, state: object) -> Any:  # noqa: ANN401
         self.calls.append((method, None))
-        if self.circuit_open:
+        if self.circuit_open or (self.budget is not None and self.budget.day_spent()):
             raise BrokerUnavailableError(f"Fyers {method} request failed")
         return _settle(state)
 

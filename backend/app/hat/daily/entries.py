@@ -137,7 +137,7 @@ class LiveContexts:
         nominal = virtual and allocation.virtual_capital is not None
         capital = Decimal(allocation.virtual_capital if nominal else allocation.capital)
         risk_pct = Decimal(allocation.virtual_risk_pct if nominal else allocation.risk_pct)
-        # a real book's equity is its share of the broker funds total read at the evening
+        # a real book's equity is its share of the account book equity read at the evening
         # allocate, which already carries its realised P&L (Q1)
         equity = capital
         if virtual:

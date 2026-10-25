@@ -27,10 +27,7 @@ from ...base import Base
 from ..governance import Mode, require_cooling_off
 from ._types import (
     VERSION_STATUSES,
-    Currency,
     JsonB,
-    Money,
-    Ratio,
     Timestamptz,
     fk,
     in_values,
@@ -265,21 +262,6 @@ class HatKillSwitch(Base):
     tripped_at = Column(Timestamptz, nullable=False)
     reason = Column(Text, nullable=False)
     rearmed_at = Column(Timestamptz)
-
-
-class HatDrawdownBase(Base):
-    """D232 (Q41): where a re-armed drawdown kill measures from. One row per re-arm row of a
-    drawdown or manual kill, written at the first equity point after the re-arm: that point's
-    time, its equity and the allocation capital and weight it was measured against."""
-
-    __tablename__ = "hat_drawdown_base"
-
-    rearm_id = fk("hat_kill_switch.id", primary_key=True)
-    taken_at = Column(Timestamptz, nullable=False)
-    equity = Column(Money, nullable=False)
-    capital = Column(Money, nullable=False)
-    weight = Column(Ratio)  # None on rows before Q1 (unknown)
-    currency = Column(Currency, nullable=False)  # the scope's allocation currency
 
 
 class HatExposureState(Base):

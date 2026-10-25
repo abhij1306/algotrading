@@ -49,7 +49,7 @@ class NightlyDeps:
     mcp: Callable[[], McpClient | None]  # a fresh client per run, so its call count is the run's
     bhavcopy: Callable[[], Fetcher]  # the 22:00 fallback's downloader
     sources: TextSources
-    total_equity: Callable[[date], Decimal]  # the broker funds total (Q1)
+    total_equity: Callable[[date], Decimal]  # the account book equity (Q1)
     # an account's last successful fill sync (`Desks.fills_read_at`): `ca.rescale`'s gate (Q8)
     fills_read_at: Callable[[uuid.UUID], datetime | None]
     sleep: Callable[[float], None]  # the ingest's wait; the runtime's raises when HAT stops

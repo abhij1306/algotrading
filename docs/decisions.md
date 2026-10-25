@@ -188,15 +188,30 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **An illiquid name's exits use its last trade (QA15).** A symbol silent for 30 s while the feed
   is fresh keeps its last trade of the day (inside the band) for the exit views only; entries
   still need a fresh print, since a missed entry is safe and an exit that never fires is not.
+- **A re-arm keeps the drawdown peak (QA10, owner 2026-10-25).** A manual re-arm of a drawdown
+  or manual kill does not restart the peak: the account and bot drawdowns and the health
+  multiplier are measured from the peak before it, so 9% down, a re-arm, then another 9% trips
+  the 10% kill. A re-arm that restarted the peak would let repeated re-arms walk the equity down
+  without the kill ever tripping. A drawdown kill re-armed while still past its threshold trips
+  again at the next point.
 - **A late fill after `/flatten` is sold (Q13).** The follow-up sale goes under the original
   confirmation: the owner asked for no exposure, and the shares are protected meanwhile.
 
-- **Equity is the broker funds total (Q1).** Read at the evening allocate; a sleeve's capital is
-  its weight x that total, which already carries the real books' realised P&L, so sizing adds
-  none; only a virtual (shadow) book adds its own. The drawdown adds the realised P&L of trades
-  closed after that read, and restates its peak only for a change of weight: a change of the
-  funds total (a result, a deposit or a withdrawal) moves the drawdown, and a sleeve's realised
-  result reaches its capital shared by weight.
+- **Equity is the available cash plus the holdings at market (Q1, owner 2026-10-25).** Read at
+  the evening allocate from the broker's funds (Fyers "Available Balance", Kite `net`), its
+  holdings and today's net CNC positions, each share at the broker's last price; never "Total
+  Balance". After a CNC buy the cost leaves the available cash and sits in "Utilized" until
+  settlement, so a total read keeps it as cash on the trade date and drops it at settlement while
+  the shares were bought on the trade date; on this basis the buy turns cash into shares (today's
+  position) on the trade date and settlement changes nothing (the same shares, now a holding).
+  The owner's own holdings in the account count. The allocator takes the book equity: HAT's own
+  open positions at their cost, since the drawdown marks them itself. A sleeve's capital is its
+  weight x that equity, which already carries the real books' realised P&L, so sizing adds none;
+  only a virtual (shadow) book adds its own. The drawdown adds the realised P&L of trades closed
+  after that read and the open positions marked to market, and restates its peak only for a
+  change of weight: a change of the book equity (a result, a deposit or a withdrawal, the owner's
+  holdings moving) moves the drawdown, and a sleeve's realised result reaches its capital shared
+  by weight. The first live session confirms the basis (runbook, First live session checks).
 
 ## Planned, not built
 

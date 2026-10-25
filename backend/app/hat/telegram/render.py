@@ -35,6 +35,7 @@ __all__ = [
     "card_text",
     "confidence_line",
     "confirm_text",
+    "drawdown_line",
     "kill_line",
     "daily_report_text",
     "login_text",
@@ -88,6 +89,7 @@ URGENT_ALERTS = frozenset(
         "sale.unfilled",
         "entry.unresolved",
         "broker.budget_spent",
+        "stop.cancel_unacked",
     }
 )
 _SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
@@ -455,13 +457,24 @@ _CONFIRM_TEXT = {
         " every bot stays manage-only until /arm. This is logged as a discipline breach."
     ),
     "arm": (
-        "Re-arm these kill switches? A re-arm restarts the drawdown peak at the equity then;"
-        " only these are re-armed:"
+        "Re-arm these kill switches? The drawdown peak stays where it was, so a drawdown kill"
+        " still past its threshold trips again; only these are re-armed:"
     ),
     "mode_auto": (
         "Switch to auto mode from the next session? Real orders will go out without a card."
     ),
 }
+
+
+def drawdown_line(account_pct: Decimal | None, bot_pct: Decimal | None) -> str:
+    """The drawdown thresholds of the policy in force, for the `/arm` question."""
+    if account_pct is None or bot_pct is None:
+        return "Drawdown thresholds: no risk policy in force"
+    return f"Drawdown thresholds: account {_pct(account_pct)}, bot {_pct(bot_pct)}"
+
+
+def _pct(fraction: Decimal) -> str:
+    return f"{(fraction * 100).normalize():f}%"
 
 
 def confirm_text(action: str, expires_at: datetime, lines: Sequence[str] = ()) -> str:

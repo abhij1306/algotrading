@@ -250,6 +250,7 @@ class BrokerPosition:
     qty: int  # signed: long positive
     avg_price: Decimal
     product: str
+    ltp: Decimal | None = None  # the broker's last traded price; None when it gave none
 
 
 @dataclass(frozen=True)
@@ -257,13 +258,17 @@ class BrokerHolding:
     symbol: str
     qty: int
     avg_price: Decimal
+    ltp: Decimal | None = None  # the broker's last traded price; None when it gave none
 
 
 @dataclass(frozen=True)
 class BrokerFunds:
+    """The cash of the account: `available` to trade, and `used` (a CNC buy's cost sits there
+    until settlement). Equity is `available` plus the shares at market (`equity.account_equity`,
+    Q1), never their sum."""
+
     available: Decimal
     used: Decimal
-    total: Decimal
 
 
 @runtime_checkable

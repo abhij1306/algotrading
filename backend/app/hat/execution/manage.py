@@ -392,6 +392,11 @@ class TradeManager:
         (15:15 IST in a regular session, `SessionCalendar.continuous_end_on`)."""
         return self._orders_allowed(now)
 
+    def in_session(self, now: datetime) -> bool:
+        """Whether `now` is inside the calendar session (OPEN), when entries wait on the
+        reconciliation (`reconcile_down`); an unknown date or no calendar places no entry."""
+        return self._calendar is not None and self._calendar.state(now) is SessionState.OPEN
+
     def _orders_allowed(self, now: datetime) -> bool:
         open_now = self._calendar is not None and self._calendar.state(now) is SessionState.OPEN
         shift = self.close_shift(trade_date_of(now))
