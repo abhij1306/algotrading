@@ -384,12 +384,9 @@ CREATE OR REPLACE TRIGGER hat_event_no_truncate
     _KNOWN_CHECK,
     _DEMERGER_COLUMN,
     "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
-    # Q1: drawdown points keep the allocation they were measured against; the realised P&L
-    # of a re-arm base is gone (equity carries it through the broker funds)
+    # Q1: drawdown points keep the allocation they were measured against
     "ALTER TABLE hat_daily_bot_snapshot ADD COLUMN IF NOT EXISTS capital numeric(18,4)",
     "ALTER TABLE hat_daily_bot_snapshot ADD COLUMN IF NOT EXISTS final_weight numeric",
-    "ALTER TABLE hat_drawdown_base ADD COLUMN IF NOT EXISTS weight numeric",
-    "ALTER TABLE hat_drawdown_base DROP COLUMN IF EXISTS realized",
     # CA6: create_all makes the table; its rows are append-only
     _ACTION_VERSION_APPEND_ONLY_FN,
     """
@@ -455,8 +452,8 @@ def seed_hat_reference(bind: Engine) -> None:
 # DDL to run. Triggers, functions and partitions are `ensure_hat_schema`'s and are not compared.
 
 # Tables the models do not hold that may stay until the owner drops them: the P6b ISIN-merge
-# bookkeeping (runbook, post-merge DBA steps).
-DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row"})
+# bookkeeping and the re-arm bases a re-arm no longer takes (Q3; runbook, DBA steps).
+DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row", "hat_drawdown_base"})
 
 
 class TableShape(TypedDict):

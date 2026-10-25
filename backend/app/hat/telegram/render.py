@@ -88,6 +88,7 @@ URGENT_ALERTS = frozenset(
         "sale.unfilled",
         "entry.unresolved",
         "broker.budget_spent",
+        "stop.cancel_unacked",
     }
 )
 _SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
@@ -455,8 +456,8 @@ _CONFIRM_TEXT = {
         " every bot stays manage-only until /arm. This is logged as a discipline breach."
     ),
     "arm": (
-        "Re-arm these kill switches? A re-arm restarts the drawdown peak at the equity then;"
-        " only these are re-armed:"
+        "Re-arm these kill switches? The drawdown peak stays where it was, so a drawdown kill"
+        " still 10% under it trips again; only these are re-armed:"
     ),
     "mode_auto": (
         "Switch to auto mode from the next session? Real orders will go out without a card."

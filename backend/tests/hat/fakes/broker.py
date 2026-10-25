@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.hat.execution.broker import write_refusal
 from app.hat.execution.fyers_broker import (
     BROKER_CIRCUIT_OPEN,
     OrderReply,
@@ -93,6 +94,10 @@ class FakeBroker:
             return _settle(reply)
         placed = sum(1 for name, _ in self.calls if name == method)
         return classify_place_reply({"s": "ok", "id": f"{prefix}-{placed}", "message": "Placed"})
+
+    def write_refusal(self) -> str | None:
+        """As `FyersBroker.write_refusal`: refused unsent while the circuit is open."""
+        return write_refusal(self.circuit_open, writes_spent=False)
 
     def _write(self, method: str, args: object, reply: object, timeout: dict[str, Any]) -> Any:  # noqa: ANN401
         self.calls.append((method, args))

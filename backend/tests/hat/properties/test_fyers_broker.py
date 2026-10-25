@@ -612,7 +612,7 @@ NOT_AMOUNTS = st.sampled_from([math.nan, math.inf, -math.inf, "1,5", "abc", True
 def test_reply_amounts_exact(buy: float, available: float, used: float, bad: object) -> None:
     """PBT fyers_broker.reply_amounts_exact (trading-safety rules 7 and 8): the adapter's parsers
     read a position's average and the funds rows (JSON floats) as the Decimal each float's
-    shortest text names, a "Total Balance" Fyers leaves out is the exact sum, and an amount that
+    shortest text names, "Total Balance" is never needed (Q1: not equity), and an amount that
     is missing or not a finite number raises, while a fund row HAT does not read never does.
     Harm: 0.1 + 0.2 in float puts 0.30000000000000004 of free cash into sizing, a missing
     average reads as a cost of 0, or an odd collateral row blocks every entry."""
@@ -631,7 +631,6 @@ def test_reply_amounts_exact(buy: float, available: float, used: float, bad: obj
     assert position.avg_price == Decimal(repr(buy))
     got = parse_funds(funds)
     assert (got.available, got.used) == (Decimal(repr(available)), Decimal(repr(used)))
-    assert got.total == Decimal(repr(available)) + Decimal(repr(used))
 
 
 def test_hung_calls_replace_at_limit() -> None:

@@ -26,7 +26,7 @@ from collections.abc import Callable, Iterable, Mapping
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from ..money import require_exact
+from ..money import exact, require_exact
 from .broker import (
     CODE_INVALID_INTENT,
     CODE_OK,
@@ -447,8 +447,9 @@ def _trade_row(
 
 def parse_positions(reply: Mapping[str, Any], to_db: Callable[[str], str]) -> list[BrokerPosition]:
     """The open positions of a `positions` reply's `net` list (a quantity of 0 is none): the
-    signed quantity, Kite's average price and the product. A missing or unreadable quantity,
-    average or product raises."""
+    signed quantity, Kite's average price, the product and the last price (None when missing or
+    unreadable: only equity needs it). A missing or unreadable quantity, average or product
+    raises."""
     rows = reply["net"]
     if not isinstance(rows, list):
         raise TypeError("net: not a list")
@@ -468,6 +469,7 @@ def parse_positions(reply: Mapping[str, Any], to_db: Callable[[str], str]) -> li
                     row["average_price"], "average_price", floats=True, positive=True
                 ),
                 product=product,
+                ltp=exact(row.get("last_price"), floats=True, positive=True),
             )
         )
     return positions
@@ -478,8 +480,9 @@ def parse_holdings(
 ) -> list[BrokerHolding]:
     """The demat holdings of a `holdings` list: the settled `quantity` plus the T1 shares not yet
     delivered (`t1_quantity`, bought the session before), as Fyers counts them [verify on a live
-    account]. A missing or unreadable quantity or `average_price` raises (a bonus share may cost
-    0; a negative cost is not a cost)."""
+    account], with the last price (None when missing or unreadable: only equity needs it). A
+    missing or unreadable quantity or `average_price` raises (a bonus share may cost 0; a
+    negative cost is not a cost)."""
     holdings = []
     for row in rows_of(rows):
         cost = require_exact(row["average_price"], "average_price", floats=True)
@@ -488,17 +491,24 @@ def parse_holdings(
         held = reply_count(row["quantity"], "quantity") + reply_count(
             row.get("t1_quantity") or 0, "t1_quantity"
         )
-        holdings.append(BrokerHolding(symbol=_symbol(row, to_db), qty=held, avg_price=cost))
+        holdings.append(
+            BrokerHolding(
+                symbol=_symbol(row, to_db),
+                qty=held,
+                avg_price=cost,
+                ltp=exact(row.get("last_price"), floats=True, positive=True),
+            )
+        )
     return holdings
 
 
 def parse_funds(reply: Mapping[str, Any]) -> BrokerFunds:
-    """The funds of a `margins(segment="equity")` reply: `net` is what is available to trade,
-    `utilised.debits` what is used, and the total their exact sum. A reply without them raises:
-    it is not a reply of 0 cash."""
+    """The funds of a `margins(segment="equity")` reply: `net` is what is available to trade
+    (a CNC buy's cost already out of it, as Fyers' "Available Balance"), `utilised.debits` what
+    is used. A reply without them raises: it is not a reply of 0 cash."""
     available = require_exact(reply["net"], "net", floats=True)
     used = require_exact(reply["utilised"]["debits"], "debits", floats=True)
-    return BrokerFunds(available=available, used=used, total=available + used)
+    return BrokerFunds(available=available, used=used)
 
 
 def parse_gtt_row(row: Mapping[str, Any], to_db: Callable[[str], str]) -> BrokerGtt | None:

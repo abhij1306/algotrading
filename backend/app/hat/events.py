@@ -106,7 +106,6 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "bot.resumed",
         "kill.tripped",
         "kill.rearmed",
-        "kill.peak_reset",
         "flatten.executed",
     ),
     "Governance": (

@@ -309,30 +309,21 @@ def test_kill_thresholds(equities: list, rearm_after: int | None) -> None:
         assert kill.tripped_since(series, threshold, since) is expected
 
 
-def test_rearm_restarts_the_peak() -> None:
-    """D232 (Q41): re-armed at 85 after a peak of 100, the kill measures from 85. A fall to 80
-    (20% under the old peak, 5.9% under the base) does not trip; a rise to 90 lifts the peak,
-    and only 81 (10% under 90) trips. A capital cut moves equity and peak together."""
-    base = kill.SnapshotPoint(AT, D("85"), D("100"))
-
-    def tripped(*equities: str) -> bool:
-        points = [
-            kill.SnapshotPoint(AT + timedelta(days=n + 1), D(e), D("100"))
-            for n, e in enumerate(equities)
-        ]
-        return kill.tripped_after_rearm(base, points, SEED.bot_drawdown_pct)
-
-    assert not tripped("80")
-    assert not tripped("90", "81.01")
-    assert tripped("90", "81")
-    assert tripped("76.5")
-    # the base itself, and a point at or before it, are never read
-    old = kill.SnapshotPoint(AT - timedelta(days=1), D("10"), D("100"))
-    assert not kill.tripped_after_rearm(base, [old, base], SEED.bot_drawdown_pct)
-    # weight 0.5 -> 0.25 with no trade: equity 85 -> 35 is a reallocation, not a fall
-    weighted = kill.SnapshotPoint(AT, D("85"), D("100"), D("0.5"))
-    cut = kill.SnapshotPoint(AT + timedelta(days=1), D("35"), D("50"), D("0.25"))
-    assert not kill.tripped_after_rearm(weighted, [cut], SEED.bot_drawdown_pct)
+def test_the_peak_carries_across_a_manual_rearm() -> None:
+    """QA10 (owner 2026-10-25): a re-arm never restarts the peak. 9% under a peak of 100, a
+    re-arm, then another 9% (91 -> 82.81, 17.19% under 100) trips the 10% kill; the fall before
+    the re-arm alone never does."""
+    rearmed_at = AT + timedelta(days=1, hours=2)
+    points = [
+        kill.SnapshotPoint(AT, D("100"), D("100"), D("0.5")),
+        kill.SnapshotPoint(AT + timedelta(days=1), D("91"), D("100"), D("0.5")),
+        kill.SnapshotPoint(AT + timedelta(days=2), D("82.81"), D("100"), D("0.5")),
+    ]
+    series = kill.adjusted_series(points)
+    assert [p.peak for p in series] == [D("100")] * 3
+    assert not kill.tripped_since(series[:2], SEED.bot_drawdown_pct, rearmed_at)
+    assert kill.tripped_since(series, SEED.bot_drawdown_pct, rearmed_at)
+    assert kill.tripped_since(series, SEED.account_drawdown_pct, rearmed_at)
 
 
 @given(st.decimals(min_value=D("1"), max_value=D("1000000"), places=2))

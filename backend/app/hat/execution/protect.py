@@ -12,6 +12,12 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 - **The entry remainder** (`cancel_entry`, F2): once the position holds no shares, or before a
   sale of all of them (`make_room` to 0), the unfilled rest of its entry is cancelled at the
   broker (`entry_cancel.EntryCancel`, which also cancels an entry nothing of which filled).
+- **A sale over a day stop** (`make_room`, `await_cancel`): Fyers cannot modify an SL-M stop
+  into a MARKET order, so a market sale of shares a day stop covers cancels the stop first and
+  goes only once the broker acknowledges the cancel: its book shows the stop cancelled, read
+  again for a bounded wait (`CANCEL_ACK_READS`). With no acknowledgement the sale is not sent,
+  the owner is told URGENT (`stop.cancel_unacked`) and the stop is restored: it stays the
+  position's working stop, and the fill sync places another if the broker shows it gone.
 - **When the stop rises** (`follow`): the working stop is modified up to the new price (day:
   `modify_order`; GTT: `modify_gtt`, event `gtt.refreshed`), never down (`raise_only`), at the
   stop rounded down to the tick (`broker_trigger`).
@@ -45,7 +51,9 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -72,7 +80,14 @@ from .broker import (
 from .entry_cancel import EntryCancel
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
-from .order_book import EXIT_SALES, adopt_broker_order, adopt_gtt, end_lost_order, find_gtt
+from .order_book import (
+    EXIT_SALES,
+    TagBook,
+    adopt_broker_order,
+    adopt_gtt,
+    end_lost_order,
+    find_gtt,
+)
 from .position_desk import PositionDesk, Verdict, serialised
 from .reconcile import baseline_at
 from .series import broker_symbol, series_changed
@@ -140,9 +155,23 @@ ALERT_GTT_SWAP_FAILED = "gtt.swap_failed"
 ALERT_GTT_MISSING = "gtt.missing"
 ALERT_GTT_UNVERIFIED = "gtt.unverified"
 ALERT_GTT_UNFILLED = "gtt.unfilled"
+# URGENT: a sale's day stop was not shown cancelled in time: the sale waits, the stop stays
+ALERT_STOP_CANCEL_UNACKED = "stop.cancel_unacked"
+CODE_NO_CANCEL_ACK = "no_cancel_ack"
 # Raised again at every sync while the cause stands: told once per position, reason and trade
 # date (C22 A4).
-ONCE_A_DAY = frozenset({ALERT_STOP_NOT_PLACED, ALERT_STOP_NOT_MOVED, ALERT_STOP_WOULD_MOVE_DOWN})
+ONCE_A_DAY = frozenset(
+    {
+        ALERT_STOP_NOT_PLACED,
+        ALERT_STOP_NOT_MOVED,
+        ALERT_STOP_WOULD_MOVE_DOWN,
+        ALERT_STOP_CANCEL_UNACKED,
+    }
+)
+# The bounded wait for the broker to acknowledge a sale's stop cancel: its book read this many
+# times, this many seconds apart (about 4 s in all).
+CANCEL_ACK_READS = 5
+CANCEL_ACK_EVERY = 1.0
 
 # Outcomes (fixed words) the jobs count.
 PROTECTED = "protected"
@@ -154,6 +183,42 @@ EXIT_WORKING = "exit_working"
 VERIFIED = "verified"
 REPLACED = "replaced"
 UNVERIFIED = "unverified"
+
+
+def await_cancel(
+    broker: HatBroker,
+    broker_order_id: str,
+    tag: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    reads: int = CANCEL_ACK_READS,
+    every: float = CANCEL_ACK_EVERY,
+) -> bool:
+    """Cancel the day stop `broker_order_id` (HT tag `tag`) and wait for the broker to
+    acknowledge it: True once its order book shows the stop cancelled with nothing filled,
+    read up to `reads` times `every` seconds apart; the cancel always goes before the first
+    read. False when no acknowledgement came by then: no write may go (`write_refusal`: the
+    circuit or the day's calls; nothing is sent), the book shows the stop still working or
+    filled (it triggered: the fill sync books the sale), or the book could not be read. A
+    cancel reply that was lost or refused is read for like an ok one, since the stop may be
+    cancelled all the same."""
+    if broker.write_refusal() is not None:
+        return False
+    broker.cancel_order(broker_order_id)
+    for attempt in range(reads):
+        if attempt:
+            sleep(every)
+        try:
+            found = TagBook.of(broker.orders()).by_id.get(broker_order_id)
+        except BrokerUnavailableError:
+            continue
+        if found is None or found.tag != tag:
+            continue  # the book can lag behind the cancel
+        if found.filled_qty > 0:
+            return False
+        if found.status == "cancelled":
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -209,9 +274,11 @@ class StopDesk:
         tick_for: TickSource,
         calendar: SessionCalendar | None = None,
         notifier: Notifier | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self._broker = broker
         self._guard = guard
+        self._sleep = sleep  # the wait between the reads of a sale's stop cancel (`await_cancel`)
         # The position locks, the settle wait and the clock that stamps the sends.
         self._positions = positions
         self._clock = positions.clock
@@ -727,6 +794,27 @@ class StopDesk:
                 cancelled += 1
         return cancelled
 
+    def cancel_for_sale(
+        self, session: Session, target: StopTarget, row: HatOrder, now: datetime
+    ) -> bool:
+        """Cancel the stop `row` so a market sale of its shares can go. A day stop sent to the
+        broker is cancelled only through `await_cancel`: Fyers cannot modify an SL-M into a
+        MARKET order, and a sale sent while the stop still rests is refused, or, when the owner
+        holds shares of the symbol, sells them too. With no acknowledgement in the bounded wait
+        the stop is restored (left the position's working stop, never marked cancelled; the
+        fill sync protects the position again if the broker shows it gone), the owner is told
+        URGENT `stop.cancel_unacked` and False holds the sale back. Any other stop is `cancel`."""
+        if row.purpose != STOP_DAY or row.broker_order_id is None or row.placed_at is None:
+            return self.cancel(session, target, row, now)
+        if not await_cancel(self._broker, row.broker_order_id, row.tag, sleep=self._sleep):
+            logger.error("stop %s not shown cancelled: the sale waits, the stop stays", row.tag)
+            self.alert(ALERT_STOP_CANCEL_UNACKED, target, now, CODE_NO_CANCEL_ACK)
+            return False
+        row.status = "cancelled"
+        self.order_event(session, row, target, "order.cancelled", now)
+        session.commit()
+        return True
+
     def cancel(self, session: Session, target: StopTarget, row: HatOrder, now: datetime) -> bool:
         if row.status == "pending" and row.placed_at is None:
             row.status = "cancelled"  # never sent
@@ -769,11 +857,12 @@ class StopDesk:
         (cancel them when none stay), since a broker holds the shares a resting CNC sell covers
         and would refuse the sale; before a sale of every share the entry remainder is cancelled
         too. True when no stop covers more than `keep` shares; a stop that could not be changed
-        is alerted and the sale waits. A failed sale is protected again by
-        the next sync. A stop whose answer was lost is settled first; one still unknown is
-        skipped (HAT-EXEC-065), since a resting CNC stop makes the broker refuse the sale, unless
-        the owner holds shares of the symbol (`owner_holds`): then the broker would take both and
-        sell the owner's shares, so the sale waits for the stop's settle."""
+        is alerted and the sale waits. A day stop is cancelled for the sale only once the broker
+        acknowledges it (`cancel_for_sale`). A failed sale is protected again by the next sync. A
+        stop whose answer was lost is settled first; one still unknown is skipped (HAT-EXEC-065),
+        since a resting CNC stop makes the broker refuse the sale, unless the owner holds shares
+        of the symbol (`owner_holds`): then the broker would take both and sell the owner's
+        shares, so the sale waits for the stop's settle."""
         target = self.target(session, position_id)
         if keep <= 0:
             self.cancel_entry(session, position_id)  # never holds the sale back
@@ -788,7 +877,7 @@ class StopDesk:
                     done = False
                 continue
             if keep <= 0 or row.status not in LIVE:
-                done = self.cancel(session, target, row, now) and done
+                done = self.cancel_for_sale(session, target, row, now) and done
             else:
                 done = self._resize_to(session, target, row, keep, now) and done
         return done
