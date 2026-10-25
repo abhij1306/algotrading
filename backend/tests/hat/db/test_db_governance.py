@@ -33,13 +33,13 @@ def test_governance__universe_version_immutable(conn: Connection) -> None:
 
 
 @pytest.mark.postgres
-def test_governance__one_live_version(conn: Connection) -> None:
-    rules.check_governance__one_live_version(conn)
+def test_governance__one_released_version(conn: Connection) -> None:
+    rules.check_governance__one_released_version(conn)
 
 
 @pytest.mark.postgres
-def test_governance__live_requires_evidence(conn: Connection) -> None:
-    rules.check_governance__live_requires_evidence(conn)
+def test_governance__release_requires_evidence(conn: Connection) -> None:
+    rules.check_governance__release_requires_evidence(conn)
 
 
 @pytest.mark.postgres

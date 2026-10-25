@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..base import Base
+from .confighash import canonical_json, config_hash
 from .models import HatMarket
 from .ops.partitions import ensure_event_partitions
 from .time import utc_now
@@ -227,6 +228,50 @@ BEGIN
 END $$
 """
 
+# A strategy version's release states are named apart from a sleeve's (`governance.VersionStatus`).
+# A database created with the old names (hat_live) moves to the new ones once, in this
+# transaction: its CHECKs and one-released index are dropped, the stored statuses renamed
+# (backtested -> frozen, shadow -> trial, live -> released, retired -> superseded; the
+# immutability trigger allows a status change that keeps the config), and the CHECKs and index
+# made again with the models' text. A database that has the new index never runs it again.
+_VERSION_STATUS_RENAME = """
+DO $$
+BEGIN
+  IF to_regclass('hat_strategy_version') IS NOT NULL
+     AND to_regclass('hat_one_released_version') IS NULL THEN
+    ALTER TABLE hat_strategy_version DROP CONSTRAINT IF EXISTS ck_hat_strategy_version_status;
+    ALTER TABLE hat_strategy_version
+      DROP CONSTRAINT IF EXISTS ck_hat_strategy_version_live_evidence;
+    DROP INDEX IF EXISTS hat_one_live_version;
+    UPDATE hat_strategy_version SET status = CASE status
+        WHEN 'backtested' THEN 'frozen' WHEN 'shadow' THEN 'trial'
+        WHEN 'live' THEN 'released' WHEN 'retired' THEN 'superseded' ELSE status END
+      WHERE status IN ('backtested', 'shadow', 'live', 'retired');
+    ALTER TABLE hat_strategy_version ADD CONSTRAINT hat_strategy_version_status_check
+      CHECK (status IN ('draft', 'frozen', 'trial', 'released', 'superseded'));
+    ALTER TABLE hat_strategy_version ADD CONSTRAINT hat_strategy_version_release_evidence_check
+      CHECK (status <> 'released'
+        OR (backtest_run_id IS NOT NULL AND shadow_started_at IS NOT NULL));
+    CREATE UNIQUE INDEX hat_one_released_version ON hat_strategy_version (strategy_id)
+      WHERE status = 'released';
+  END IF;
+END $$
+"""
+
+# The close-phase exits once carried a `when` clock that nothing read (the window is the
+# session's, `SessionCalendar.continuous_end_on`); the config model no longer has it, so a stored
+# version holding it would not parse. Each such row loses the key once and its `config_hash` is
+# recomputed (`_strip_exit_when`): the only config change a frozen version ever takes, made with
+# its immutability trigger off inside this transaction, and only where the stored hash is the
+# stored config's, so the new hash names exactly what the old one did, less the unread key.
+_VERSION_GUARD = "hat_strategy_version_immutable_guard"
+_EXITS_WITH_WHEN = """
+SELECT id, config, config_hash FROM hat_strategy_version
+WHERE jsonb_path_exists(config, '$.exits[*] ? (exists (@."when"))')
+FOR UPDATE
+"""
+
+
 _SYMBOL_HISTORY_GUARDED = """
 SELECT EXISTS (
   SELECT 1 FROM pg_constraint
@@ -325,6 +370,7 @@ CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
     _SIGNAL_CONFIDENCE_CHECK,
     _FACTOR_CHECK,
     _SYMBOL_HISTORY_EXCLUDE,
+    _VERSION_STATUS_RENAME,
     _SIGNAL_CONFIDENCE_FN,
     """
 CREATE OR REPLACE TRIGGER hat_signal_confidence_guard
@@ -421,12 +467,43 @@ def _run_ddl(connection: Connection) -> None:
     connection.execute(text(_LOCK_SQL))
     for statement in PG_DDL:
         connection.execute(text(statement))
+    _strip_exit_when(connection)
     if not connection.execute(text(_SYMBOL_HISTORY_GUARDED)).scalar_one():
         logger.warning(
             "hat_symbol_history_no_overlap is missing: run `python -m app.hat.admin "
             "repair-symbol-history --apply` (and install btree_gist), then restart"
         )
     ensure_event_partitions(connection, utc_now().date())
+
+
+def _strip_exit_when(connection: Connection) -> None:
+    """Drop the unread `when` key from every stored version's exits and recompute its
+    `config_hash` (`_EXITS_WITH_WHEN`). Idempotent: a row without the key is never read. Raises
+    when a stored hash is not its stored config's, so no hash is ever made up."""
+    rows = connection.execute(text(_EXITS_WITH_WHEN)).all()
+    if not rows:
+        return
+    connection.execute(
+        text(
+            "ALTER TABLE hat_strategy_version DISABLE TRIGGER hat_strategy_version_immutable_guard"
+        )
+    )
+    for row in rows:
+        if config_hash(row.config) != row.config_hash:
+            raise RuntimeError(f"strategy version {row.id}: stored config_hash is not its config's")
+        config = dict(row.config)
+        config["exits"] = [
+            {k: v for k, v in rule.items() if k != "when"} for rule in config["exits"]
+        ]
+        connection.execute(
+            text(
+                "UPDATE hat_strategy_version SET config = CAST(:config AS jsonb),"
+                " config_hash = :hash WHERE id = :id"
+            ),
+            {"config": canonical_json(config), "hash": config_hash(config), "id": row.id},
+        )
+    connection.execute(text(f"ALTER TABLE hat_strategy_version ENABLE TRIGGER {_VERSION_GUARD}"))
+    logger.info("dropped the unread exit `when` from %d strategy versions", len(rows))
 
 
 def seed_hat_reference(bind: Engine) -> None:

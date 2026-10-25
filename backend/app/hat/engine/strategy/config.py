@@ -16,14 +16,15 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
 
 from ...confighash import config_hash as _hash
+from ...data.index_history import INDEX_NAMES, INDIA_VIX
 from ...errors import HatError
 from ...risk.policy import POLICY_FIELDS, SEED_POLICY
 from ..criteria import PREOPEN, REGISTRY, UnknownCriterionError, get_type
 from ..criteria.base import STAGES
-from ..criteria.live import LEVEL_OPENING_RANGE
+from ..criteria.live import LEVEL_OPENING_RANGE, level_names
 
 PRICE_BREAKS_LEVEL = "price_breaks_level"
 
@@ -57,7 +58,6 @@ def _policy_key_names() -> frozenset[str]:
 
 POLICY_KEYS = _policy_key_names()
 NAME = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-CLOCK = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
 class ConfigError(HatError):
@@ -140,35 +140,19 @@ class SetupStage(Model):
 
 # --- regime, stop and exit rules --------------------------------------------------------------
 
-REGIME_RULES = ("close_above_sma_and_rising", "sma_fast_above_slow_both_rising")
-
-
-class Regime(Model):
-    """HAT-BOT-053: one index and one rule with parameters."""
-
-    index: Literal["NIFTY 500", "NIFTY SMALLCAP 250"]
-    rule: Literal["close_above_sma_and_rising", "sma_fast_above_slow_both_rising"]
-    params: dict[str, Any]
-
-    @model_validator(mode="after")
-    def _check(self) -> Regime:
-        model: type[BaseModel] = (
-            CloseAboveSma if self.rule == "close_above_sma_and_rising" else FastAboveSlow
-        )
-        object.__setattr__(self, "params", model.model_validate(self.params).model_dump())
-        return self
-
 
 class _Rule(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid", allow_inf_nan=False)
 
 
 class CloseAboveSma(_Rule):
+    rule: Literal["close_above_sma_and_rising"]
     sma: int = Field(default=50, ge=2, le=400)
     rising_days: int = Field(default=10, ge=1, le=252)
 
 
 class FastAboveSlow(_Rule):
+    rule: Literal["sma_fast_above_slow_both_rising"]
     fast: int = Field(default=10, ge=2, le=400)
     slow: int = Field(default=20, ge=2, le=400)
     # Both SMAs above their value 3 sessions earlier: owner default;
@@ -180,6 +164,34 @@ class FastAboveSlow(_Rule):
         if self.fast >= self.slow:
             raise ValueError("fast_not_below_slow")
         return self
+
+
+# The closed set of strategy regime rules, one model each; `regime_gate.RULES` maps each to its
+# function, as `stops` maps each stop rule to its planner.
+RegimeRule = Annotated[CloseAboveSma | FastAboveSlow, Field(discriminator="rule")]
+_REGIME_RULE: TypeAdapter[CloseAboveSma | FastAboveSlow] = TypeAdapter(RegimeRule)
+# The indices a regime may read: those the store ingests, less India VIX (not a price index).
+REGIME_INDICES = tuple(name for name in INDEX_NAMES if name != INDIA_VIX)
+
+
+class Regime(Model):
+    """HAT-BOT-053: one index the store holds and one rule with parameters (`RegimeRule`)."""
+
+    index: str
+    rule: str
+    params: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _check(self) -> Regime:
+        if self.index not in REGIME_INDICES:
+            raise ValueError("unknown_regime_index")
+        model = self.parsed()
+        object.__setattr__(self, "params", model.model_dump(exclude={"rule"}))
+        return self
+
+    def parsed(self) -> CloseAboveSma | FastAboveSlow:
+        """The rule as its model (`RegimeRule`), its parameters validated."""
+        return _REGIME_RULE.validate_python({**self.params, "rule": self.rule})
 
 
 class StopBelowFinalContractionLow(Model):
@@ -264,18 +276,13 @@ class ExitPartialAfterDays(Model):
 
 
 class ExitVsSma(Model):
-    """A close-phase exit against the `sma`-session SMA, evaluated on the live price."""
+    """A close-phase exit against the `sma`-session SMA, evaluated on the live price in the
+    session's close window (decisions.md "Square-off before the closing auction"); the window is
+    the session's, never a rule's."""
 
     sma: int = Field(ge=2, le=400)
     sell_fraction: float = Fraction
-    when: str = "15:25"
     enabled: bool = True
-
-    @model_validator(mode="after")
-    def _check(self) -> ExitVsSma:
-        if not CLOCK.match(self.when):
-            raise ValueError("bad_clock_time")
-        return self
 
 
 class ExitCloseBelowSma(ExitVsSma):
@@ -356,7 +363,32 @@ class Playbook(Model):
             for i in self.trigger
         ):
             raise ValueError("preopen_level_not_opening_range")
+        # Every level a trigger names is one its setup exposes or the opening range (HAT-BOT-071),
+        # else the playbook could never trigger.
+        exposed = {LEVEL_OPENING_RANGE, *self.setup_levels}
+        for instance in self.trigger:
+            if instance.type == PRICE_BREAKS_LEVEL and instance.enabled:
+                if not set(level_names(instance.params["level"])) <= exposed:
+                    raise ValueError("level_not_exposed")
         return self
+
+    @property
+    def setup_levels(self) -> tuple[str, ...]:
+        """The levels the playbook's enabled setup criteria expose (`CriterionType.levels`), in
+        criterion order: the scan stores these with each watchlist row."""
+        found: dict[str, None] = {}
+        for instance in self.setup.criteria:
+            if instance.enabled:
+                found.update(dict.fromkeys(get_type(instance.type).levels))
+        return tuple(found)
+
+    @property
+    def level_expression(self) -> str | None:
+        """The level of the playbook's enabled `price_breaks_level` trigger, None without one."""
+        for instance in self.trigger:
+            if instance.type == PRICE_BREAKS_LEVEL and instance.enabled:
+                return str(instance.params["level"])
+        return None
 
     @property
     def preopen(self) -> bool:

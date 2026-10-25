@@ -591,7 +591,8 @@ def _committed_bot_world(
         version = b.strategy_version(connection, strategy, **({"config": config} if config else {}))
         account = b.broker_account(connection)
         instruments = [
-            b.instrument(connection, market, isin=f"INE{n:09d}", symbol=f"PB{n}") for n in (1, 2)
+            b.instrument(connection, market, isin=f"INE{n:04d}01010", symbol=f"PB{n}")
+            for n in (1, 2)
         ]
         universe = b.universe(connection, market)
         uversion = b.universe_version(connection, universe)

@@ -97,7 +97,7 @@ def config(
                 }
             ],
         },
-        "trigger": [{"type": "price_breaks_level", "params": {"level": "pivot"}}],
+        "trigger": [{"type": "price_breaks_level", "params": {"level": "consolidation_high"}}],
         "entry_filters": filters,
         "stop": dict(stop or {"rule": "pct_below_entry", "pct": 5}),
         "exits": copy.deepcopy(list(exits or _EXITS)),

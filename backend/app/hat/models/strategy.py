@@ -24,9 +24,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapper
 
 from ...base import Base
-from ..governance import Mode, require_cooling_off
+from ..governance import Mode, VersionStatus, require_cooling_off
 from ._types import (
-    VERSION_STATUSES,
     JsonB,
     Timestamptz,
     fk,
@@ -97,11 +96,12 @@ class HatStrategyVersion(Base):
     __table_args__ = (
         UniqueConstraint("strategy_id", "version"),
         CheckConstraint(
-            in_values("status", VERSION_STATUSES), name="ck_hat_strategy_version_status"
+            in_values("status", VersionStatus), name="hat_strategy_version_status_check"
         ),
         CheckConstraint(
-            "status <> 'live' OR (backtest_run_id IS NOT NULL AND shadow_started_at IS NOT NULL)",
-            name="ck_hat_strategy_version_live_evidence",
+            "status <> 'released'"
+            " OR (backtest_run_id IS NOT NULL AND shadow_started_at IS NOT NULL)",
+            name="hat_strategy_version_release_evidence_check",
         ),
         # hat_backtest_run references this table back, so this side is added with ALTER.
         ForeignKeyConstraint(
@@ -111,11 +111,11 @@ class HatStrategyVersion(Base):
             use_alter=True,
         ),
         Index(
-            "hat_one_live_version",
+            "hat_one_released_version",
             "strategy_id",
             unique=True,
-            postgresql_where=text("status = 'live'"),
-            sqlite_where=text("status = 'live'"),
+            postgresql_where=text("status = 'released'"),
+            sqlite_where=text("status = 'released'"),
         ),
     )
 

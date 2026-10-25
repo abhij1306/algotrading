@@ -8,6 +8,7 @@ from decimal import Decimal
 from fractions import Fraction
 
 import polars as pl
+import pytest
 from hat.hat_criteria_support import (
     EPOCH,
     Lcg,
@@ -27,6 +28,7 @@ from app.hat.engine.criteria import CriterionResult, LiveContext, evaluate, eval
 from app.hat.engine.criteria import vcp as vcp_module
 from app.hat.engine.criteria.base import EvalContext
 from app.hat.engine.criteria.darvas import Box, DarvasBoxParams, find_box
+from app.hat.engine.criteria.live import level_names, resolve_level
 from app.hat.engine.criteria.pullback import ema, pullback_span, volume_ratio
 from app.hat.engine.criteria.reversion import wilder_rsi
 from app.hat.engine.live_entry import ep_candidates
@@ -538,6 +540,26 @@ def test_price_breaks_level_edge() -> None:
     )
     assert fell_back.reason == "below_level"
     assert live("price_breaks_level", params, bar_high=paise(10_100)).reason == "level_undefined"
+
+
+def test_level_expressions() -> None:
+    """A level expression names one level or the largest of several (`max(a, b, ...)`), each
+    name any level a setup exposes; the opening range drops out on daily bars, and a level not
+    yet known leaves the expression unknown. Harm: a new setup's level cannot trigger without
+    code edits, or the backtest breaks on a level the playbook does not name."""
+    assert level_names("flag_high") == ("flag_high",)
+    assert level_names("max(flag_high, opening_range_high)") == ("flag_high", "opening_range_high")
+    for bad in ("", "max(a)", "max(a, a)", "min(a, b)", "Pivot", "max(a,)", "a b"):
+        with pytest.raises(ValueError, match="bad_level_expression"):
+            level_names(bad)
+    levels = {"flag_high": paise(10_000), "pivot": paise(12_000), "opening_range_high": None}
+    assert resolve_level("flag_high", levels) == paise(10_000)
+    assert resolve_level("max(flag_high, opening_range_high)", levels) is None
+    assert resolve_level("max(flag_high, opening_range_high)", levels, daily=True) == paise(10_000)
+    assert resolve_level("opening_range_high", levels, daily=True) is None
+    levels["opening_range_high"] = paise(11_000)
+    assert resolve_level("max(flag_high, opening_range_high)", levels) == paise(11_000)
+    assert resolve_level("missing", levels) is None
 
 
 def test_gap_up_edge() -> None:

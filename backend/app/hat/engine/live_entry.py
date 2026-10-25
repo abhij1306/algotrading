@@ -60,7 +60,7 @@ from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
 from ..time import IST, trade_date_of, utc_now
 from . import entries, lifecycle, positions
-from .criteria import CriterionResult, EvalContext
+from .criteria import CONTRACTION_LOW, CriterionResult, EvalContext
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
 from .strategy.config import Playbook, StopRule, StrategyConfig, parse_config
 from .strategy.scoring import evaluate_stage
@@ -196,9 +196,9 @@ def watchlist_candidates(
                     symbol=symbols[row.instrument_id],
                     trade_date=trade_date,
                     daily=daily(row.instrument_id, playbook.stop),
-                    levels=watchlist_levels(row.pivot, levels),
+                    levels=watchlist_levels(levels),
                     final_contraction_low=exact(
-                        levels.get("final_contraction_low"), floats=True, positive=True
+                        levels.get(CONTRACTION_LOW), floats=True, positive=True
                     ),
                     configured_max_chase_pct=last_configured_chase(configs, playbook.name),
                     daily_results=_daily_results(playbook, bars, row.instrument_id, trade_date),

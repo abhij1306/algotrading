@@ -23,6 +23,8 @@ from decimal import ROUND_FLOOR, Decimal
 from typing import Any, Literal
 
 from ..money import require_exact
+from .criteria.indicators import sma
+from .stops import lowest
 from .strategy.config import (
     ExitBreakeven,
     ExitCloseAboveSma,
@@ -52,7 +54,8 @@ __all__ = [
     "is_partial_rule",
     "r_multiple",
     "rule_id",
-    "view_from_rules",
+    "history_sessions",
+    "view_from_bars",
 ]
 
 Phase = Literal["live", "close", "nightly"]
@@ -120,28 +123,40 @@ class Evaluation:
     ignored: tuple[tuple[str, str], ...] = ()  # (rule id, reason), logged by the caller
 
 
-def view_from_rules(
+def history_sessions(rules: Sequence[ExitRule]) -> int:
+    """How many sessions before the decision session `view_from_bars` reads for `rules`."""
+    needs = [rule.sma - 1 for rule in rules if isinstance(rule, ExitVsSma)]
+    needs += [rule.lookback_days for rule in rules if isinstance(rule, ExitTrailingSwingLow)]
+    return max(needs, default=0)
+
+
+def view_from_bars(
     price: Decimal | None,
     rules: Sequence[ExitRule],
     days_held: int,
-    sma_of: Callable[[int], Decimal | None],
-    swing_low_of: Callable[[int], Decimal | None],
+    closes: Sequence[Decimal],
+    lows: Sequence[Decimal],
 ) -> ExitView:
-    """The view of a position at `price` with the SMA and swing-low levels its `rules` read
-    (`sma_of(length)`, `swing_low_of(lookback)`; a level left out makes its rule not fire). The
+    """The view of a position at `price` with the SMA and swing-low levels its `rules` read, from
+    the `closes` and `lows` of the sessions the instrument traded before the decision session
+    (oldest first, at least `history_sessions(rules)` of them for every level to exist). `price`
+    stands in for the decision session's close in each SMA (the live price, or the backtest's
+    daily close, HAT-EXEC-074); the swing low is the lowest of the last `lookback_days` lows
+    before it. A level without enough sessions is left out, and its rule does not fire. The
     live close phase and the backtest both build their views here, so the rules read the same
     inputs in both."""
-    sma: dict[int, Decimal] = {}
+    sma_levels: dict[int, Decimal] = {}
     swing: dict[int, Decimal] = {}
     for rule in rules:
-        if isinstance(rule, ExitVsSma) and (level := sma_of(rule.sma)) is not None:
-            sma[rule.sma] = level
-        elif (
-            isinstance(rule, ExitTrailingSwingLow)
-            and (low := swing_low_of(rule.lookback_days)) is not None
-        ):
-            swing[rule.lookback_days] = low
-    return ExitView(price, days_held=days_held, sma=sma, swing_low=swing)
+        if isinstance(rule, ExitVsSma) and price is not None:
+            prior = list(closes[-(rule.sma - 1) :]) if rule.sma > 1 else []
+            if (level := sma([*prior, price], rule.sma)) is not None:
+                sma_levels[rule.sma] = level
+        elif isinstance(rule, ExitTrailingSwingLow):
+            n = rule.lookback_days
+            if (low := lowest(lows[-n:], n)) is not None:
+                swing[n] = low
+    return ExitView(price, days_held=days_held, sma=sma_levels, swing_low=swing)
 
 
 def rule_id(index: int, rule: ExitRule) -> str:

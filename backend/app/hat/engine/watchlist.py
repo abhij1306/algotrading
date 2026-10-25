@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.broker_symbols import FYERS_SERIES
+from ..data.isin import ordinary_equity
 from ..events import record, recorded_for
 from ..models import (
     HatBot,
@@ -63,20 +64,22 @@ def _universe_id(session: Session, bot: HatBot) -> uuid.UUID | None:
 
 
 def _tradable_members(session: Session, universe_id: uuid.UUID, day: date) -> frozenset[uuid.UUID]:
-    """The members of `universe_id` on `day` whose instrument is active and trades under a series
-    with a Fyers symbol now (D210: BZ has none, so it never reaches a scan or an entry)."""
+    """The members of `universe_id` on `day` whose instrument is active, trades under a series
+    with a Fyers symbol now (D210: BZ has none, so it never reaches a scan or an entry) and is a
+    stock: HAT trades ordinary equity shares only, never an ETF, fund, InvIT or REIT unit or a
+    rights entitlement (decisions.md "Stocks only", `isin.ordinary_equity`); their prices are
+    kept. Every entry path, the nightly scan, the gap scan and the backtest read it here."""
     members = members_of(session, universe_id, day)
     if not members:
         return members
-    return frozenset(
-        session.scalars(
-            select(HatInstrument.id).where(
-                HatInstrument.id.in_(members),
-                HatInstrument.active.is_(True),
-                HatInstrument.series.in_(FYERS_SERIES),
-            )
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.isin).where(
+            HatInstrument.id.in_(members),
+            HatInstrument.active.is_(True),
+            HatInstrument.series.in_(FYERS_SERIES),
         )
     )
+    return frozenset(row.id for row in rows if ordinary_equity(row.isin))
 
 
 def bot_universe_members(session: Session, bot: HatBot, day: date) -> frozenset[uuid.UUID]:

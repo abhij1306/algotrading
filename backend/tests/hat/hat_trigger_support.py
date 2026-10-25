@@ -34,13 +34,17 @@ def ist(day: date, hh: int, mm: int, ss: int = 0) -> datetime:
     return datetime.combine(day, time(hh, mm, ss), tzinfo=IST)
 
 
+SETUP = ({"type": "vcp"}, {"type": "consolidation"})
+
+
 def playbook(
     trigger: Sequence[dict[str, Any]] = (),
     filters: Sequence[dict[str, Any]] = (),
     stop: dict[str, Any] | None = None,
     name: str = "pb",
 ) -> Playbook:
-    """A playbook from instance dicts (`stage` and `order` filled from the position)."""
+    """A playbook from instance dicts (`stage` and `order` filled from the position), its setup
+    exposing the `pivot`, `final_contraction_low` and `consolidation_high` its trigger may name."""
 
     def fill(items: Sequence[dict[str, Any]], stage: str) -> list[dict[str, Any]]:
         return [{"stage": stage, "order": i, **item} for i, item in enumerate(items)]
@@ -48,7 +52,7 @@ def playbook(
     return Playbook.model_validate(
         {
             "name": name,
-            "setup": {"criteria": []},
+            "setup": {"criteria": fill(SETUP, "setup")},
             "trigger": fill(trigger, "trigger"),
             "entry_filters": fill(filters, "entry_filter"),
             "stop": stop or {"rule": "pct_below_entry", "pct": 5.0},

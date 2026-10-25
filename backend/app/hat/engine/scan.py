@@ -24,11 +24,12 @@ import polars as pl
 
 from ..data.ticks import scaled_tick, tick_for_date
 from ..money import exact
-from .criteria import EvalContext
+from .criteria import CONTRACTION_LOW, EvalContext
 from .regime_gate import regime_allows_longs
 from .stops import SeriesHistory, StopInputs, history_inputs, plan_stop_at_pivot
 from .strategy.config import Playbook, StopBelowFinalContractionLow, StrategyConfig
 from .strategy.scoring import PlaybookEvaluation, StageOutcome, evaluate_playbook
+from .trigger import daily_level
 
 __all__ = [
     "ScanInputs",
@@ -37,9 +38,6 @@ __all__ = [
     "criteria_results",
     "scan_bot",
 ]
-
-# The setup levels stored with a watchlist row for the live trigger and stop.
-LEVEL_KEYS = ("pivot", "consolidation_high", "final_contraction_low")
 
 
 @dataclass(frozen=True)
@@ -102,11 +100,17 @@ def _stage_json(stage: StageOutcome) -> dict[str, Any]:
     }
 
 
-def criteria_results(evaluation: PlaybookEvaluation) -> dict[str, Any]:
+def setup_levels(playbook: Playbook, evaluation: PlaybookEvaluation) -> dict[str, Decimal]:
+    """Every level the playbook's setup criteria declare (`Playbook.setup_levels`) that they
+    exposed on this evaluation: what the live trigger, the stop and the backtest read."""
+    return {k: v for k in playbook.setup_levels if (v := _extra(evaluation, k)) is not None}
+
+
+def criteria_results(playbook: Playbook, evaluation: PlaybookEvaluation) -> dict[str, Any]:
     """The stored `criteria_results`: the stages in stage order, stopping at the first that
-    failed (HAT-CRIT-010), and the setup levels the live trigger reads (`levels`, text
-    decimals, a level the setup did not expose left out)."""
-    levels = {k: str(v) for k in LEVEL_KEYS if (v := _extra(evaluation, k)) is not None}
+    failed (HAT-CRIT-010), and the setup levels (`setup_levels`, text decimals, a level the
+    setup did not expose left out)."""
+    levels = {k: str(v) for k, v in setup_levels(playbook, evaluation).items()}
     return {"stages": [_stage_json(s) for s in evaluation.stages], "levels": levels}
 
 
@@ -134,7 +138,7 @@ def _planned_stop(
     if pivot is None or tick is None:
         return None
     rule = playbook.stop
-    contraction_low = _extra(evaluation, "final_contraction_low")
+    contraction_low = _extra(evaluation, CONTRACTION_LOW)
     if isinstance(rule, StopBelowFinalContractionLow) and contraction_low is None:
         return None
     history = ctx.history
@@ -196,13 +200,13 @@ def _scan_playbook(
         evaluation = evaluate_playbook(config, playbook.name, ctx, regime_allows_longs=True)
         if not evaluation.passed:
             continue
-        pivot = _extra(evaluation, "pivot") or _extra(evaluation, "consolidation_high")
+        pivot = daily_level(playbook, dict(setup_levels(playbook, evaluation)))
         rows.append(
             WatchRow(
                 playbook=playbook.name,
                 instrument_id=instrument_id,
                 score=evaluation.stages[-1].score,
-                criteria_results=criteria_results(evaluation),
+                criteria_results=criteria_results(playbook, evaluation),
                 pivot=pivot,
                 planned_stop=_planned_stop(playbook, evaluation, pivot, ctx),
                 adtr=exact(adtr.get(instrument_id), floats=True),

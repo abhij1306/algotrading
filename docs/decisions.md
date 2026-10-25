@@ -38,8 +38,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   expectancy, each sleeve's evidence run needs five years of sessions, no known gap naming an
   enabled playbook and ambiguous days within the cap, the Research -> Backtested conditions. A
   decrease restarting the trade window is intended: each step up earns its own evidence.
-- **S3 `darvas-box-breakout` is Research only.** Darvas-style (box at a new 52-week high, break
-  of the box top on volume, stop under the box bottom, `darvas_box`). It holds the strictest
+- **S3 `darvas-box-breakout` is Research only.** Darvas-style (`darvas_box`: the box top is the
+  252-session high and the box at most 60 sessions old; break of the box top on volume, stop under
+  the box bottom). It holds the strictest
   existing numbers and no capital: seed `p_max` 20%, base weight 0, `max_chase` 2%. Nothing turns
   it on; trading it needs the owner's policy version and the lifecycle gates.
 - **S4 `trend-pullback-ema` is Research only.** Trend pullback (an RS leader, `rs_rank` 80, above
@@ -49,8 +50,17 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **S5 `rsi2-uptrend-reversion` is Research only.** Connors-style mean reversion, a return driver
   apart from the momentum sleeves: a close above the SMA200 with RSI(2) under 10 (`rsi_below`),
   entry on the next session's trade back above the signal close, out on a close above the SMA5
-  (`close_above_sma`) or after 10 sessions. Connors uses no stop; HAT's is a wide 3 x ATR(14).
+  (`close_above_sma`) or after 10 sessions. Connors uses no stop; the wide 3 x ATR(14) hard stop is a HAT
+  choice, not the textbook.
   Same footing as S3: seed `p_max` 20%, base weight 0, `max_chase` 2%.
+- **Stocks only (owner 2026-10-25).** HAT trades ordinary equity shares only: ETFs, fund units,
+  InvIT and REIT units and rights entitlements never enter any strategy's universe, live, gap
+  scan, nightly scan or backtest alike (`watchlist._tradable_members`, by ISIN:
+  `isin.ordinary_equity`). They reach the store because NSE lists them in the EQ series beside
+  stocks; their price data stays.
+- **S4 research tests two exits (owner 2026-10-25).** S4's research must test both a close below
+  the 10 or 20 EMA exit and the seed's close below the SMA50 before either is chosen; the seed keeps
+  the SMA50 until then. An EMA exit rule is not built yet (Planned, not built).
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
   50/50 (S3, S4, S5 0). A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.
@@ -227,7 +237,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; minute history older than Fyers' 365 days; PDF summaries on cards and a chat
-MCP server (advisory only); a CLI to re-run one job for a past trade date.
+MCP server (advisory only); a CLI to re-run one job for a past trade date; a close-below-EMA exit
+rule (for the S4 exit research).
 
 ## Defaults awaiting owner confirmation
 

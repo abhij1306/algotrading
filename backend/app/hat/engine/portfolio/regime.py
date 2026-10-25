@@ -14,6 +14,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from app.hat.engine.criteria.indicators import sma
 from app.hat.errors import HatError
 
 BULL_QUIET = "bull_quiet"
@@ -79,13 +80,6 @@ class RegimeInputs:
             "breadth_pct": str(self.breadth_pct),
             "ad_ratio": None if self.ad_ratio is None else str(self.ad_ratio),
         }
-
-
-def sma(values: Sequence[Decimal], window: int) -> Decimal | None:
-    """Mean of the last `window` values; None while fewer exist."""
-    if window < 1 or len(values) < window:
-        return None
-    return sum(values[-window:], Decimal(0)) / window
 
 
 def vix_percentile(values: Sequence[Decimal], window: int = VIX_WINDOW) -> Decimal | None:

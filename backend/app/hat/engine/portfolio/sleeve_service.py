@@ -23,7 +23,7 @@ from app.hat.data.calendar import session_calendar
 from app.hat.engine.owner import OwnerCommand
 from app.hat.engine.strategy.versions import VersionError, seed_default_strategies
 from app.hat.events import record
-from app.hat.governance import Mode
+from app.hat.governance import Mode, VersionStatus
 from app.hat.models import (
     HatBot,
     HatDailyBotSnapshot,
@@ -242,8 +242,8 @@ def owner_transition(
             if bot.live_version_id is None
             else session.get(HatStrategyVersion, bot.live_version_id)
         )
-        if version is None or version.status != "live":
-            raise lifecycle.LifecycleError("version_not_live")
+        if version is None or version.status != VersionStatus.RELEASED:
+            raise lifecycle.LifecycleError("version_not_released")
         # one sleeve of a strategy holds real money: a second would take its base weight twice.
         # The strategy row's lock orders two owners promoting sibling sleeves at once: the
         # second reads the first's committed Live sleeve (the engine's own edges never enter

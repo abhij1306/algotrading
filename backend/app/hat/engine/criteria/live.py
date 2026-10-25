@@ -13,6 +13,7 @@ session a `Fraction`, so a value exactly on a threshold is a tie, never a roundi
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -20,16 +21,17 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from ...governance import Mode, ModeField
 from .base import CriterionResult, ParamModel, dec, no_data, verdict
 
-LEVEL_PIVOT = "pivot"
+# The one level the live monitor supplies itself, once the 09:15 bar is final; every other level
+# is a setup criterion's (`CriterionType.levels`), stored with its watchlist row.
 LEVEL_OPENING_RANGE = "opening_range_high"
-LEVEL_BREAKOUT = "max(consolidation_high, opening_range_high)"
-LEVELS = (LEVEL_PIVOT, LEVEL_OPENING_RANGE, LEVEL_BREAKOUT)
-CONSOLIDATION_HIGH = "consolidation_high"
+# A level expression: one level's name, or `max(a, b, ...)` of several.
+_NAME = re.compile(r"[a-z][a-z0-9_]*")
+_MAX = re.compile(r"max\((.+)\)")
 
 REASON_BELOW_LEVEL = "below_level"
 REASON_LEVEL_UNDEFINED = "level_undefined"
@@ -61,12 +63,34 @@ class CatalystAttachedParams(ParamModel):
     required_in: list[ModeField] = Field(default_factory=lambda: [Mode.CONFIRM], max_length=3)
 
 
+def level_names(expression: str) -> tuple[str, ...]:
+    """The levels a `price_breaks_level` expression names, in order: `name` or `max(a, b, ...)`
+    of distinct names. Raises `ValueError("bad_level_expression")` for anything else."""
+    text = expression.strip()
+    found = _MAX.fullmatch(text)
+    names = tuple(n.strip() for n in found.group(1).split(",")) if found else (text,)
+    if not all(_NAME.fullmatch(n) for n in names) or len(set(names)) != len(names):
+        raise ValueError("bad_level_expression")
+    if found and len(names) < 2:
+        raise ValueError("bad_level_expression")
+    return names
+
+
 class PriceBreaksLevelParams(ParamModel):
-    level: Literal["pivot", "opening_range_high", "max(consolidation_high, opening_range_high)"]
+    """`level`: the level expression (`level_names`), each name a level the playbook's setup
+    criteria expose or the opening range high (`config.Playbook` checks which)."""
+
+    level: str
     bar: Literal["5m"] = "5m"
     # `close`: the bar must also close at or above the level, so a spike that fell back below it
     # is no break (PR 49); `high`: a trade above the level is enough
     confirm: Literal["close", "high"] = "close"
+
+    @field_validator("level")
+    @classmethod
+    def _expression(cls, value: str) -> str:
+        level_names(value)
+        return value
 
 
 class AdtrFilterParams(ParamModel):
@@ -81,10 +105,11 @@ class MaxChaseParams(ParamModel):
 class LiveContext:
     """What a live criterion may read for one instrument at one instant.
 
-    `levels` names the reference prices (`pivot`, `consolidation_high`, `opening_range_high`); the
-    opening range is absent until its bar is final. `elapsed` is the share of the session gone at
-    `at`, in (0, 1]. `announcements` are the `published_at` instants of the announcements matched
-    to the instrument. `locked_upper_circuit` is None when it cannot be told (no band known)."""
+    `levels` names the reference prices: the setup's levels stored with the watchlist row (such as
+    `pivot` or `consolidation_high`) and `opening_range_high`, absent until its bar is final.
+    `elapsed` is the share of the session gone at `at`, in (0, 1]. `announcements` are the
+    `published_at` instants of the announcements matched to the instrument.
+    `locked_upper_circuit` is None when it cannot be told (no band known)."""
 
     at: datetime
     price: Decimal | None = None
@@ -140,21 +165,21 @@ def _pos(value: object) -> Decimal | None:
     return value if isinstance(value, Decimal) and value.is_finite() and value > 0 else None
 
 
-def resolve_level(expression: str, levels: Mapping[str, Decimal | None]) -> Decimal | None:
-    """The price a `price_breaks_level` expression names (HAT-BOT-071): the pivot, the opening
-    range high, or the larger of the consolidation high and the opening range high. None while
-    any level it needs is unknown, so the breakout level does not exist before 09:20."""
-    if expression == LEVEL_PIVOT:
-        names: tuple[str, ...] = (LEVEL_PIVOT,)
-    elif expression == LEVEL_OPENING_RANGE:
-        names = (LEVEL_OPENING_RANGE,)
-    elif expression == LEVEL_BREAKOUT:
-        names = (CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE)
-    else:
-        return None
+def resolve_level(
+    expression: str, levels: Mapping[str, Decimal | None], *, daily: bool = False
+) -> Decimal | None:
+    """The price a `price_breaks_level` expression names (HAT-BOT-071): the one level, or the
+    largest of `max(...)`'s. None while any level it needs is unknown, so a breakout level with the
+    opening range does not exist before 09:20. The one resolver of live, the scan and the
+    backtest: `daily` reads the opening range as unavailable on daily bars (the backtest's known
+    gap `trigger_is_level_break_only`): it drops out of a `max`, and a level of it alone is
+    None."""
+    names = level_names(expression)
+    if daily:
+        names = tuple(n for n in names if n != LEVEL_OPENING_RANGE)
     values = [_pos(levels.get(name)) for name in names]
     known = [v for v in values if v is not None]
-    return max(known) if len(known) == len(names) else None
+    return max(known) if known and len(known) == len(names) else None
 
 
 def price_breaks_level(ctx: LiveContext, p: PriceBreaksLevelParams) -> CriterionResult:

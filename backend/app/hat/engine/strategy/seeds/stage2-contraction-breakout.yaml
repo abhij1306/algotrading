@@ -52,5 +52,5 @@ exits:                                  # evaluated top to bottom
   - {rule: hard_stop}
   - {rule: move_stop_to_breakeven, at_r: 2}
   - {rule: partial_at_r, at_r: 3, sell_fraction: 0.33}
-  - {rule: close_below_sma, sma: 50, sell_fraction: 1.0, when: "15:25"}
+  - {rule: close_below_sma, sma: 50, sell_fraction: 1.0}
   - {rule: time_stop, enabled: false, days: 15, min_r: 1}

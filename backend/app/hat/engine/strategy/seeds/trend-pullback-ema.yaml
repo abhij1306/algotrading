@@ -51,4 +51,4 @@ exits:                                  # evaluated top to bottom
   - {rule: hard_stop}
   - {rule: move_stop_to_breakeven, at_r: 2}
   - {rule: trailing_swing_low, lookback_days: 10, sell_fraction: 1.0}   # under the next higher low
-  - {rule: close_below_sma, sma: 50, sell_fraction: 1.0, when: "15:25"}
+  - {rule: close_below_sma, sma: 50, sell_fraction: 1.0}

@@ -1,7 +1,8 @@
 """The governance vocabulary the models validate with: the execution modes and the risk-policy
 cooling-off rule. Pure and a leaf (it imports only `errors` and `time`), so `app.hat.models` and
 the data layer that imports it pull no risk code. `Mode` is the one spelling of the modes: the
-schema CHECKs, the strategy config and the router all read it. Mode changes (the queue) live in
+schema CHECKs, the strategy config and the router all read it; `VersionStatus` likewise for a
+strategy version's release states. Mode changes (the queue) live in
 `risk.modes`; the policy record in `risk.policy`."""
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ __all__ = [
     "CoolingOffError",
     "Mode",
     "ModeField",
+    "VersionStatus",
     "cooling_off_satisfied",
     "require_cooling_off",
 ]
@@ -39,6 +41,21 @@ MODE_VALUES: frozenset[str] = frozenset(Mode)
 
 # A config field holding a mode: validates and dumps as the plain string (pydantic `Literal`).
 ModeField = Literal[Mode.SHADOW, Mode.CONFIRM, Mode.AUTO]
+
+
+class VersionStatus(StrEnum):
+    """A strategy version's release state (`engine/strategy/release.py`), named apart from a
+    sleeve's lifecycle states (`portfolio/lifecycle.py`: research, backtested, shadow, live,
+    probation, retired), which gate the sleeve that runs it. A draft is editable; publishing it
+    against its promotion backtest freezes it; its trial is its 20 sessions of paper trading;
+    released is the one version of the strategy a real-money sleeve may run; superseded is a
+    released version a newer one replaced."""
+
+    DRAFT = "draft"
+    FROZEN = "frozen"
+    TRIAL = "trial"
+    RELEASED = "released"
+    SUPERSEDED = "superseded"
 
 
 # Risk increases take effect no sooner than this after they are requested (assumption A in

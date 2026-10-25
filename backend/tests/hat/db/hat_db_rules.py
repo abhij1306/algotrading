@@ -217,8 +217,8 @@ def _domain_cases(conn: Connection) -> list[tuple[str, Callable[[str], None], tu
         (
             "hat_strategy_version.status",
             version,
-            ("draft", "backtested", "shadow", "retired"),
-            ("", "signal", "LIVE", "done"),
+            ("draft", "frozen", "trial", "superseded"),
+            ("", "signal", "RELEASED", "backtested", "shadow", "live", "retired"),
         ),
         (
             "hat_risk_policy_version.direction",
@@ -537,16 +537,17 @@ def check_ops__family_key_not_null(conn: Connection) -> None:
 
 # --- governance (.. 087) -----------------------------------------------------
 
-NON_DRAFT = ("backtested", "shadow", "live", "retired")
+NON_DRAFT = ("backtested", "shadow", "live", "retired")  # a universe version's
+VERSION_NON_DRAFT = ("frozen", "trial", "released", "superseded")  # a strategy version's
 
 
 def _published_version(
     conn: Connection, strategy: uuid.UUID, number: int, status: str
 ) -> uuid.UUID:
-    """A strategy version moved from draft to `status` (a live one with its evidence)."""
+    """A strategy version moved from draft to `status` (a released one with its evidence)."""
     version = b.strategy_version(conn, strategy, number)
     values: dict[str, object] = {"status": status}
-    if status == "live":
+    if status == "released":
         policy = b.risk_policy(conn, number)
         run = b.backtest_run(conn, version, policy)
         values.update(backtest_run_id=run, shadow_started_at=b.NOW)
@@ -569,8 +570,8 @@ def check_governance__version_config_immutable(conn: Connection) -> None:
             update(table).where(table.c.id == draft).values(config={"a": 2}, config_hash="h2")
         ),
     )
-    for number, status in enumerate(NON_DRAFT, start=2):
-        # one strategy per version, so a live one never meets another live one
+    for number, status in enumerate(VERSION_NON_DRAFT, start=2):
+        # one strategy per version, so a released one never meets another released one
         version = _published_version(conn, b.strategy(conn, market), number, status)
         for new in ({"a": 3}, {"x": [1, 2]}, {}):
             rejects(
@@ -642,33 +643,33 @@ def check_governance__universe_version_immutable(conn: Connection) -> None:
         assert stored.config_hash == "h"
 
 
-def check_governance__one_live_version(conn: Connection) -> None:
+def check_governance__one_released_version(conn: Connection) -> None:
     market = b.market(conn)
     table = m.HatStrategyVersion.__table__
     strategy = b.strategy(conn, market)
-    first = _published_version(conn, strategy, 1, "live")
+    first = _published_version(conn, strategy, 1, "released")
     second = b.strategy_version(conn, strategy, 2)
     evidence = b.backtest_run(conn, second, b.risk_policy(conn, 99))
-    go_live = {"status": "live", "backtest_run_id": evidence, "shadow_started_at": b.NOW}
+    go_live = {"status": "released", "backtest_run_id": evidence, "shadow_started_at": b.NOW}
     rejects(
         conn,
-        "a second live version of one strategy",
+        "a second released version of one strategy",
         lambda: conn.execute(update(table).where(table.c.id == second).values(**go_live)),
     )
     other = b.strategy(conn, market)
     accepts(
         conn,
-        "a live version of another strategy",
-        lambda: _published_version(conn, other, 3, "live"),
+        "a released version of another strategy",
+        lambda: _published_version(conn, other, 3, "released"),
     )
     accepts(
         conn,
-        "retiring the live version",
-        lambda: conn.execute(update(table).where(table.c.id == first).values(status="retired")),
+        "superseding the released version",
+        lambda: conn.execute(update(table).where(table.c.id == first).values(status="superseded")),
     )
     accepts(
         conn,
-        "going live once the other is retired",
+        "releasing once the other is superseded",
         lambda: conn.execute(update(table).where(table.c.id == second).values(**go_live)),
     )
 
@@ -691,7 +692,7 @@ def check_governance__one_live_version(conn: Connection) -> None:
     )
 
 
-def check_governance__live_requires_evidence(conn: Connection) -> None:
+def check_governance__release_requires_evidence(conn: Connection) -> None:
     market = b.market(conn)
     table = m.HatStrategyVersion.__table__
     strategy = b.strategy(conn, market)
@@ -705,27 +706,27 @@ def check_governance__live_requires_evidence(conn: Connection) -> None:
     for number, (label, values) in enumerate(cases.items(), start=10):
         rejects(
             conn,
-            f"inserting a live version with {label}",
+            f"inserting a released version with {label}",
             lambda n=number, v=values: b.strategy_version(
-                conn, b.strategy(conn, market), n, status="live", **v
+                conn, b.strategy(conn, market), n, status="released", **v
             ),
         )
         candidate = b.strategy_version(conn, b.strategy(conn, market), number + 10)
         rejects(
             conn,
-            f"updating a version to live with {label}",
+            f"updating a version to released with {label}",
             lambda c=candidate, v=values: conn.execute(
-                update(table).where(table.c.id == c).values(status="live", **v)
+                update(table).where(table.c.id == c).values(status="released", **v)
             ),
         )
     accepts(
         conn,
-        "a live version with a backtest run and a shadow start",
+        "a released version with a backtest run and a shadow start",
         lambda: b.strategy_version(
             conn,
             b.strategy(conn, market),
             50,
-            status="live",
+            status="released",
             backtest_run_id=run,
             shadow_started_at=b.NOW,
         ),

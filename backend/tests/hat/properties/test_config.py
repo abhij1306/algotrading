@@ -195,6 +195,7 @@ def test_close_vs_pivot_needs_vcp(
     """PBT config.close_vs_pivot_needs_vcp: a setup with an enabled
     `close_vs_pivot` is valid exactly when an enabled `vcp` comes before it (S1's seed setup
     with the two moved, removed or switched off), and `close_vs_pivot` is refused in score mode.
+    Without an enabled `vcp` S1's trigger names a level no setup criterion exposes.
     Harm: a config whose gate can never pass is saved, and the playbook silently stops trading;
     a scored gate only lowers the score, so a stale breakout still publishes."""
     raw = yaml.safe_load(seed_text("stage2-contraction-breakout"))
@@ -213,10 +214,12 @@ def test_close_vs_pivot_needs_vcp(
     )
     if scored:
         assert "close_vs_pivot_not_hard" in codes_of(raw)
-    elif valid:
+    elif not valid:
+        assert codes_of(raw) == {"close_vs_pivot_needs_vcp"}
+    elif vcp_at is not None and vcp_on:
         parse_config(raw)
     else:
-        assert codes_of(raw) == {"close_vs_pivot_needs_vcp"}
+        assert codes_of(raw) == {"level_not_exposed"}
 
 
 @given(raw_configs())
@@ -407,3 +410,45 @@ def test_preopen_playbook_triggers_on_the_opening_range_only() -> None:
             instance["params"]["level"] = "pivot"
     with pytest.raises(ValueError, match="preopen_level_not_opening_range"):
         Playbook.model_validate(raw)
+
+
+def test_trigger_level_must_be_exposed() -> None:
+    """A `price_breaks_level` names only levels its playbook's enabled setup criteria expose
+    (`CriterionType.levels`) or the opening range, so a playbook that could never trigger is
+    refused when saved. Harm: the backtest triggered on whatever `pivot` held."""
+    raw = seed_config("momentum-breakout-ep").playbook("breakout").model_dump(mode="json")
+    assert Playbook.model_validate(raw).setup_levels == ("consolidation_high",)
+    for instance in raw["trigger"]:
+        if instance["type"] == "price_breaks_level":
+            instance["params"]["level"] = "pivot"  # no setup criterion of S2's breakout has one
+    with pytest.raises(ValueError, match="level_not_exposed"):
+        Playbook.model_validate(raw)
+    for instance in raw["setup"]["criteria"]:
+        if instance["type"] == "consolidation":
+            instance["enabled"] = False
+    for instance in raw["trigger"]:
+        if instance["type"] == "price_breaks_level":
+            instance["params"]["level"] = "consolidation_high"  # its criterion is disabled
+    with pytest.raises(ValueError, match="level_not_exposed"):
+        Playbook.model_validate(raw)
+
+
+def test_seed_trigger_levels() -> None:
+    """Each seed playbook's level expression and the setup levels the scan stores for it."""
+    found = {
+        (name, p.name): (p.level_expression, p.setup_levels)
+        for name in STRATEGIES
+        for p in seed_config(name).playbooks
+    }
+    pivot = ("pivot", ("pivot", "final_contraction_low"))
+    assert found == {
+        ("stage2-contraction-breakout", "default"): pivot,
+        ("momentum-breakout-ep", "breakout"): (
+            "max(consolidation_high, opening_range_high)",
+            ("consolidation_high",),
+        ),
+        ("momentum-breakout-ep", "episodic_pivot"): ("opening_range_high", ()),
+        ("darvas-box-breakout", "default"): pivot,
+        ("trend-pullback-ema", "default"): pivot,
+        ("rsi2-uptrend-reversion", "default"): ("pivot", ("pivot",)),
+    }

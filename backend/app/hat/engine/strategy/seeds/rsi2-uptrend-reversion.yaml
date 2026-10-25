@@ -5,9 +5,9 @@ regime: mean-reversion
 ---
 # Source: L. Connors and C. Alvarez, "Short Term Trading Strategies That Work" (2008), the
 # 2-period RSI: buy a stock above its 200-day SMA when its RSI(2) closes below 10 (5 for fewer,
-# deeper pullbacks), sell on a close above its 5-day SMA; the book tests no stop. HAT adds what a
-# swing book needs: entry on the next session's trade back above the signal close (the pivot),
-# a wide 3 x ATR(14) hard stop, and a 10-session time stop.
+# deeper pullbacks), sell on a close above its 5-day SMA. Connors uses no stop. HAT's own choices,
+# not the textbook: entry on the next session's trade back above the signal close (the pivot), a
+# wide 3 x ATR(14) hard stop, and a 10-session time stop.
 bot: rsi2-uptrend-reversion
 version: 1
 market: NSE
@@ -34,11 +34,11 @@ trigger:
 entry_filters:
   - {type: max_chase, params: {pct: 2}}
 
-stop: {rule: atr_multiple, days: 14, multiple: 3}    # wide: Connors uses none
+stop: {rule: atr_multiple, days: 14, multiple: 3}    # a HAT choice, not textbook: Connors uses no stop
 
 # sizing: from the account risk policy
 
 exits:                                  # evaluated top to bottom
   - {rule: hard_stop}
-  - {rule: close_above_sma, sma: 5, sell_fraction: 1.0, when: "15:25"}    # the snap-back
+  - {rule: close_above_sma, sma: 5, sell_fraction: 1.0}    # the snap-back
   - {rule: partial_after_days, days: 10, sell_fraction: 1.0}    # the time stop, sells all

@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 NIFTY_50 = "NIFTY 50"
 NIFTY_500 = "NIFTY 500"
-INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", "INDIA VIX")
+INDIA_VIX = "INDIA VIX"
+INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", INDIA_VIX)
 MCP_HISTORY_MONTHS = 12
 # [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
 INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
