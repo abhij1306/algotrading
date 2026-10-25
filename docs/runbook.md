@@ -278,6 +278,11 @@ advisory lock; `features` does not take it, so run it after they finish.
   symbol from its own: it refuses every sale of the position until you book that sale with
   `resolve-sale` (the contract note's quantity; `--qty 0` when it shows no fill, which ends the
   sale so the exit sells again).
+- **`entry.unresolved`:** URGENT, once per entry. An entry of an earlier session whose answer
+  was lost may have filled: the account holds `held` shares of the symbol that no HAT position
+  explains, and no HAT stop covers them. HAT neither rejects nor adopts it. Check the contract
+  note: if it filled, those shares are unprotected; sell them at Fyers or protect them there.
+  The entry stays unsure until the holdings show no such shares, when the session end rejects it.
 - **`fill.off_lifecycle`:** URGENT. A fill landed after its trade ended (an entry seen cancelled
   or closed, or a sale on a closed position); it is booked and the stop covers the shares.
   Check the position and decide on `/flatten`.

@@ -61,6 +61,7 @@ __all__ = [
 # Q8: a position `ca.rescale` could not rescale stays manage-only (`corporate_action.pending`).
 # An exit view that raised: that position's exit rules are off until it reads again.
 # Q11: the broker calls of the day are spent: no new entry until the next trade date.
+# A lost entry of an earlier session may hold shares with no position and no stop.
 URGENT_ALERTS = frozenset(
     {
         "job.failed",
@@ -84,6 +85,7 @@ URGENT_ALERTS = frozenset(
         "exits.view_failed",
         "position.isin_changed",
         "sale.unfilled",
+        "entry.unresolved",
         "broker.budget_spent",
     }
 )

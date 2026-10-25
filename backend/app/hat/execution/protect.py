@@ -24,9 +24,11 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   send, a GTT is looked up in the GTT book (`submit.find_gtt`), a day stop by its tag. Found, it
   is adopted; found with shares sold, it waits for the fill sync to adopt it with its fills
   (`position_desk.found_verdict`), so no stop goes over shares sold; absent after a good read,
-  it ends `expired` and the position is protected again. While a stop's outcome is unknown it
-  never holds a sale back (`make_room` skips it; a resting CNC stop makes the broker refuse the
-  sale, the safe way round).
+  it ends `expired` and the position is protected again; a day stop only on a second absent read
+  `settle_after` after the first (`position_desk.AbsentReads`), as Fyers' book can lag. While a
+  stop's outcome is unknown it holds a sale back only when the owner holds shares of the symbol
+  (`make_room`, the holding baseline): otherwise a resting CNC stop makes the broker refuse the
+  sale, the safe way round. A lost sale sent today holds back a new stop until it is settled.
 
 The pure planners in `stop_plans` (`protect_plan`, `verify_plan`, `raise_only`) decide; `StopDesk`
 reads the rows, carries a step out and plans again when the broker leaves it open. Its write
@@ -72,11 +74,13 @@ from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
 from .order_book import EXIT_SALES, adopt_broker_order, adopt_gtt, end_lost_order, find_gtt
 from .position_desk import PositionDesk, Verdict, serialised
+from .reconcile import baseline_at
 from .series import broker_symbol, series_changed
 from .stop_plans import (
     LIVE,
     STOP_DAY,
     STOP_GTT,
+    UNSURE,
     WORKING,
     ProtectPlan,
     ProtectStep,
@@ -87,6 +91,7 @@ from .stop_plans import (
     retry_due,
 )
 from .submit import (
+    AwaitingAbsenceError,
     AwaitingFillsError,
     OrderRefusedError,
     OrderRequest,
@@ -124,6 +129,7 @@ CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
 NO_TICK = "no_tick"  # the instrument's tick is unknown: a GTT has no limit price
 # a lost stop found in the book with shares sold: the fill sync records its fills
 CODE_AWAITING_FILLS = "awaiting_fills"
+CODE_AWAITING_ABSENCE = "awaiting_second_read"
 
 ALERT_STOP_NOT_PLACED = "stop.not_placed"
 ALERT_EXIT_NOT_PLACED = "exit.not_placed"
@@ -210,7 +216,7 @@ class StopDesk:
         self._positions = positions
         self._clock = positions.clock
         self._tick_for = tick_for
-        self._sender = OrderSender(broker, guard, self._clock, tick_for)
+        self._sender = OrderSender(broker, guard, self._clock, tick_for, positions.absent)
         self._calendar = calendar
         self._notifier = notifier or LogNotifier()
         self._alerted = AlertedToday()  # the ONCE_A_DAY alerts raised
@@ -267,6 +273,48 @@ class StopDesk:
         )
         return found is not None
 
+    def _sale_still_lost(self, session: Session, target: StopTarget, now: datetime) -> bool:
+        """A sale of the position sent today whose answer was lost and is still unsettled (or that
+        its settle found resting): it may rest at the broker, so no stop is placed beside it (the
+        broker refuses a second sell only when HAT owns every share of the symbol). Each one old
+        enough is settled first against
+        the order book, as the sale path does: found is adopted (found with shares sold waits
+        for the fill sync), absent on two reads `settle_after` apart ends `expired` and its rules
+        fire again; an unreadable book leaves it unsettled. A sale of an earlier session cannot
+        rest (a DAY order) and holds nothing back."""
+        start, _ = day_bounds(trade_date_of(now))
+        rows = [
+            row
+            for row in session.scalars(
+                select(HatOrder).where(
+                    HatOrder.position_id == target.position.id,
+                    HatOrder.is_virtual.is_(False),
+                    HatOrder.purpose.in_(EXIT_SALES),
+                    HatOrder.status.in_(UNSURE),
+                    HatOrder.placed_at >= start,
+                )
+            )
+            if lost(row)
+        ]
+        if any(not self._positions.young(row.placed_at) for row in rows):
+            try:
+                orders = {order.tag: order for order in self._broker.orders()}
+            except BrokerUnavailableError:
+                return True
+            for row in rows:
+                found = orders.get(row.tag)
+                filled = 0 if found is None else found.filled_qty
+                verdict = self._positions.verdict(
+                    row.placed_at, found is not None, filled_qty=filled, tag=row.tag
+                )
+                if found is not None and verdict is Verdict.ADOPT:
+                    adopt_broker_order(session, row, found, target.signal.bot_id, clock=self._clock)
+                elif verdict is Verdict.EXPIRE:
+                    end_lost_order(session, row)
+                session.commit()
+        # one adopted as resting is a working sale now
+        return any(lost(row) or row.status in LIVE for row in rows)
+
     @staticmethod
     def triggered_gtts(session: Session, position_id: uuid.UUID, now: datetime) -> set[uuid.UUID]:
         """The position's live GTTs that triggered today with their sale still working at the
@@ -292,12 +340,12 @@ class StopDesk:
         )
 
     def _day_stop_time(self, now: datetime) -> bool:
-        """In the session and before the 15:25 swap: a new stop is an intraday order."""
-        return (
-            self._calendar is not None
-            and self._calendar.state(now) is SessionState.OPEN
-            and now.astimezone(IST).time() < SWAP_AT
-        )
+        """In the session and before the swap (15:25 IST, moved with a session that closes at
+        another time): a new stop is an intraday order."""
+        if self._calendar is None or self._calendar.state(now) is not SessionState.OPEN:
+            return False
+        shift = self._calendar.close_shift(trade_date_of(now))
+        return (now - shift).astimezone(IST).time() < SWAP_AT
 
     def target(self, session: Session, position_id: uuid.UUID) -> StopTarget:
         position = session.get(HatPosition, position_id)
@@ -406,6 +454,8 @@ class StopDesk:
             return BROKER_UNAVAILABLE
         except AwaitingFillsError:
             return CODE_AWAITING_FILLS
+        except AwaitingAbsenceError:
+            return CODE_AWAITING_ABSENCE
         except UnresolvedOrderError:
             return "unresolved"
 
@@ -528,8 +578,8 @@ class StopDesk:
     def _settle_days(self, session: Session, target: StopTarget, rows: list[HatOrder]) -> None:
         """Lost day stops old enough against the broker's order book by their tags
         (`settle_verdict`): found is adopted; found with shares sold waits for the fill sync,
-        which adopts it with its fills; absent after a good read never landed and ends
-        `expired`. An unreadable book leaves them as they are."""
+        which adopts it with its fills; absent on two good reads `settle_after` apart never
+        landed and ends `expired`. An unreadable book leaves them as they are."""
         try:
             orders = {order.tag: order for order in self._broker.orders()}
         except BrokerUnavailableError:
@@ -537,7 +587,9 @@ class StopDesk:
         for row in rows:
             found = orders.get(row.tag)
             filled = 0 if found is None else found.filled_qty
-            verdict = self._positions.verdict(row.placed_at, found is not None, filled_qty=filled)
+            verdict = self._positions.verdict(
+                row.placed_at, found is not None, filled_qty=filled, tag=row.tag
+            )
             if found is not None and verdict is Verdict.ADOPT:
                 adopt_broker_order(session, row, found, target.signal.bot_id, clock=self._clock)
             elif verdict is Verdict.EXPIRE:
@@ -566,7 +618,10 @@ class StopDesk:
         target = self.target(session, position_id)
         position = target.position
         open_qty = 0 if position.closed_at is not None else position.qty_open
-        exit_live = open_qty > 0 and self.exit_working(session, position.id, LIVE)
+        exit_live = open_qty > 0 and (
+            self.exit_working(session, position.id, LIVE)
+            or self._sale_still_lost(session, target, now)
+        )
         rows = self.stops_of(session, position.id)
 
         def plan(after: ProtectStep | None = None) -> ProtectPlan:
@@ -584,17 +639,18 @@ class StopDesk:
             rows = self.settled_stops(session, target, STOP_GTT)
             step = plan(ProtectStep.SETTLE)
         if step.step is ProtectStep.RESEND:
-            filled = False
+            quiet = False
             for row in step.rows:
                 sent = self._resent(session, target, row)
                 if not isinstance(sent, str) and sent.status in LIVE:
                     return PROTECTED
-                filled = filled or sent == CODE_AWAITING_FILLS
+                quiet = quiet or sent in (CODE_AWAITING_FILLS, CODE_AWAITING_ABSENCE)
             rows = self.stops_of(session, position.id)
             step = plan(ProtectStep.RESEND)
-            if filled and step.step is ProtectStep.WAIT_LOST:
-                # The lost stop rested and sold: not a stop that failed, so nothing is alerted;
-                # the fill sync records its fills and protects what is left.
+            if quiet and step.step is ProtectStep.WAIT_LOST:
+                # The lost stop rested and sold (the fill sync records its fills and protects
+                # what is left), or one read found it absent (the next sync reads again): not a
+                # stop that failed, so nothing is alerted.
                 step = ProtectPlan(ProtectStep.WAIT_LOST)
         return self._carry_out(session, target, step, now)
 
@@ -715,20 +771,34 @@ class StopDesk:
         too. True when no stop covers more than `keep` shares; a stop that could not be changed
         is alerted and the sale waits. A failed sale is protected again by
         the next sync. A stop whose answer was lost is settled first; one still unknown is
-        skipped (HAT-EXEC-065)."""
+        skipped (HAT-EXEC-065), since a resting CNC stop makes the broker refuse the sale, unless
+        the owner holds shares of the symbol (`owner_holds`): then the broker would take both and
+        sell the owner's shares, so the sale waits for the stop's settle."""
         target = self.target(session, position_id)
         if keep <= 0:
             self.cancel_entry(session, position_id)  # never holds the sale back
         rows = self.settled_stops(session, target)
         done = True
         for row in rows:
-            if row.qty <= keep or lost(row):
+            if row.qty <= keep:
+                continue
+            if lost(row):
+                if self.owner_holds(session, target, now):
+                    logger.info("sale of %s waits: stop %s unsettled", position_id, row.tag)
+                    done = False
                 continue
             if keep <= 0 or row.status not in LIVE:
                 done = self.cancel(session, target, row, now) and done
             else:
                 done = self._resize_to(session, target, row, keep, now) and done
         return done
+
+    @staticmethod
+    def owner_holds(session: Session, target: StopTarget, now: datetime) -> bool:
+        """The owner's own shares of the symbol, as the last holding baseline recorded (Q12),
+        are more than none: the broker's oversell refusal does not hold for this symbol."""
+        own = baseline_at(session, target.account_id, target.symbol, now)
+        return own is not None and own > 0
 
     # --- follow the stop up -------------------------------------------------------------------
 

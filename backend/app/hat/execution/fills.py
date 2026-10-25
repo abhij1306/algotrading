@@ -320,7 +320,11 @@ class FillSync:
             report.gtt_read_at = self._clock.now()
             report.gtt_book = self._read_gtts(account_id, now)
         orders = list(self._broker.orders())
-        trades = list(self._broker.trades())
+        book = self._broker.trades()
+        if book.skipped:
+            # a foreign trade the adapter cannot read is out of scope for the sync (D118)
+            logger.warning("fill sync skipped %d unreadable foreign trade rows", book.skipped)
+        trades = list(book)
         # Every step reaches a row through a tag the broker's books show today (`TagBook.for_row`
         # and the trades match on the tag), so only those rows are read, not the account's whole
         # history (DB audit L1).

@@ -20,7 +20,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -240,9 +240,10 @@ class ShadowExits:
                     logger.exception("demerger exit of position %s failed", d.position.id)
         return closed
 
-    def close(self, now: datetime) -> int:
-        """The close-phase pass (the day's demerger exits first); nothing outside 15:20-15:25
-        IST."""
-        if not in_close_window(now):
+    def close(self, now: datetime, shift: timedelta = timedelta(0)) -> int:
+        """The close-phase pass (the day's demerger exits first); nothing outside the close
+        window (15:20-15:25 IST in a regular session, moved by the session's `shift` from the
+        regular close, `in_close_window`)."""
+        if not in_close_window(now, shift):
             return 0
         return self.demergers(now) + self.run(now, "close")

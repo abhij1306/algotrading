@@ -302,9 +302,14 @@ class Intraday:
 
     # --- 15:20-15:25 --------------------------------------------------------------------------
 
+    def close_shift(self, day: date) -> timedelta:
+        """How far `day`'s session closes from the regular close (the close jobs move with it)."""
+        calendar = self._calendar()
+        return calendar.close_shift(day) if calendar is not None else timedelta(0)
+
     def close_shadow(self, _day: date) -> JobResult:
         now = self._now()
-        return JobResult(rows=self._shadow.close(now))
+        return JobResult(rows=self._shadow.close(now, self.close_shift(trade_date_of(now))))
 
     # --- 15:30 --------------------------------------------------------------------------------
 
@@ -406,6 +411,7 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
             intraday.close_shadow,
             until=EXITS_CLOSE_UNTIL,
             retry_after=ONE_MINUTE,
+            shift=intraday.close_shift,
         ),
         ScheduledJob(
             WATCHLIST_EXPIRE,

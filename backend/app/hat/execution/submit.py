@@ -75,10 +75,11 @@ from .order_book import (
     placed_event,
     resolve_by_tag,
 )
-from .position_desk import Verdict, found_verdict
+from .position_desk import AbsentReads, Verdict, found_verdict
 from .tags import encode_tag
 
 __all__ = [
+    "AwaitingAbsenceError",
     "AwaitingFillsError",
     "OrderRefusedError",
     "OrderRequest",
@@ -113,6 +114,11 @@ class UnresolvedOrderError(HatError):
 class AwaitingFillsError(UnresolvedOrderError):
     """A stop or sale whose answer was lost, found in the broker's book with shares sold: not
     sent again; the fill sync adopts it with its fills (`found_verdict`)."""
+
+
+class AwaitingAbsenceError(UnresolvedOrderError):
+    """A stop whose answer was lost, absent from the broker's book on its first good read: not
+    sent again until a second read `settle_after` later confirms it (`AbsentReads`)."""
 
 
 @dataclass(frozen=True)
@@ -151,6 +157,9 @@ class OrderSender:
     guard: ExecutionGuard
     clock: Clock
     tick_for: TickSource | None = None
+    # the first absent reads of lost orders: with it, one is sent again only on a second
+    # (`AbsentReads`); the stop desk passes its position desk's
+    absent: AbsentReads | None = None
 
 
 @dataclass(frozen=True)
@@ -268,21 +277,27 @@ def retry_verdict(purpose: str, filled_qty: int | None) -> Retry:
 
 
 def _lookup_before_retry(
-    session: Session, broker: HatBroker, row: HatOrder, bot_id: uuid.UUID, clock: Clock
+    session: Session, sender: OrderSender, row: HatOrder, bot_id: uuid.UUID
 ) -> SendOutcome | None:
     """An attempt was made before: ask the broker for the tag and act on `retry_verdict`. An
-    order found is adopted and returned; None means the same tag may be placed again."""
+    order found is adopted and returned; None means the same tag may be placed again (with
+    `sender.absent`, only once a second absent read confirms the first)."""
     if row.purpose == GTT_PURPOSE:
         raise UnresolvedOrderError("a GTT of unknown outcome is settled, never sent again")
-    found = resolve_by_tag(broker, row.tag)
+    found = resolve_by_tag(sender.broker, row.tag)
     verdict = retry_verdict(row.purpose, None if found is None else found.filled_qty)
     if verdict is Retry.NEVER:
         raise UnresolvedOrderError("an entry of unknown outcome is never sent again")
+    if sender.absent is not None:
+        if found is not None:
+            sender.absent.forget(row.tag)
+        elif not sender.absent.confirmed(row.tag, sender.clock.now()):
+            raise AwaitingAbsenceError("absent on one read: the book may lag the order")
     if verdict is Retry.SEND or found is None:
         return None
     if verdict is Retry.AWAIT_FILLS:
         raise AwaitingFillsError("found with shares sold: the fill sync adopts it")
-    adopt_broker_order(session, row, found, bot_id, clock=clock)
+    adopt_broker_order(session, row, found, bot_id, clock=sender.clock)
     session.commit()
     return SendOutcome(row.tag, row.status, row.broker_order_id, CODE_OK, 0)
 
@@ -381,7 +396,7 @@ def _prepare(session: Session, sender: OrderSender, row: HatOrder) -> _Prepared 
     bot_id, symbol, position = _order_of(session, row)
     _check_allowed(session, sender.broker, sender.guard, row, bot_id)
     if row.status == "unconfirmed" or row.placed_at is not None:
-        adopted = _lookup_before_retry(session, sender.broker, row, bot_id, sender.clock)
+        adopted = _lookup_before_retry(session, sender, row, bot_id)
         if adopted is not None:
             return adopted
         # The lookup returned absent: the same tag may be placed again.

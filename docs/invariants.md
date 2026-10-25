@@ -14,7 +14,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    unknown, 30 s old or outside the day's price band. An exit view may act on an older last
    trade of the day only while the feed itself is fresh (an illiquid name), never an entry.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
-   lacks is no trading day; a special session has only its stored hours, else it is closed.
+   lacks is no trading day; a special session has only its stored hours, else it is closed. The
+   close phase (`exits.close`, the GTT swap, the sales' cut-off) is set against the session's
+   stored close, 10, 5 and 0 minutes before it, so it follows an early close or a Muhurat session.
 6. `max_chase` always applies, even if a config deletes the criterion.
 7. No entry is placed, and no Take passes, once its break failed: a final 5-minute bar after the
    trigger bar closed below the level. An unfilled entry whose break failed is cancelled, and its
@@ -64,7 +66,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   a lost broker answer is settled against the broker's book, never left frozen. A lost sale of
   an earlier session is settled from the holdings net of the owner's own shares (the holding
   baseline a reconciliation recorded before the sale); with no baseline the position sells
-  nothing until the owner books that sale.
+  nothing until the owner books that sale. A lost entry of an earlier session is never rejected
+  on today's book: it ends only when the holdings show no shares beyond HAT's other open
+  positions of the symbol; otherwise it stays unsure and the owner is told URGENT
+  (`entry.unresolved`).
 - **Corporate-action locks.** A position whose prices may be on the wrong scale gets no exit
   evaluation and its instrument no entry; its broker stop rests and `/flatten` still sells it:
   a stored split or bonus not yet rescaled, an action the rescale cannot handle, and a held name

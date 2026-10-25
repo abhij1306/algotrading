@@ -10,10 +10,12 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   user and never check a kill switch or pause. `hard_stop` is the broker's: while a stop
   rests at the broker the engine sends no sale of its own for it (two sales would oversell); a
   position without a working broker stop is sold by the engine.
-- **`exits.close`** (`close_exits`, 15:20-15:25 IST, HAT-EXEC-074): every open position of the
+- **`exits.close`** (`close_exits`, 15:20-15:25 IST, moved with a session that closes at
+  another time, HAT-EXEC-074): every open position of the
   account's bots, virtual and real, is evaluated on the live price in the close phase, and each
   `close_below_sma` evaluation is recorded with its live price (`exit.close_evaluated`,
-  HAT-OPS-034). The body refuses to run outside the window and sends no sale after 15:30.
+  HAT-OPS-034). The body refuses to run outside the window and sends no sale after the session's
+  close.
 - **`gtt.swap`** (`swap_stops`, ~15:25) and **`gtt.verify`** (`verify_stops`, nightly): through
   the `StopDesk`; the verify first reads the broker's fills so a position the GTT sold is closed.
 - **`gtt.check`** (`check_gtts`, 08:40, HAT-EXEC-145, P1): the day's first read of the broker's
@@ -25,7 +27,9 @@ entries. It runs the exit stack on real positions and the jobs around the close:
 - **Session end** (`end_session`): an entry whose order the broker's book does not hold after a
   successful read (its outcome was unknown) ends its signal Rejected with `entry_not_found`; a
   DAY limit cannot fill after the close. (An entry first found already ended is settled when it
-  is adopted: `submit.adopt_broker_order`.) A sale of unknown outcome the book does not hold
+  is adopted: `submit.adopt_broker_order`.) Today's book cannot show an entry of an earlier
+  session: it is settled from the holdings, and one that may hold shares is told URGENT
+  (`entry.unresolved`), never rejected. A sale of unknown outcome the book does not hold
   never landed: it ends `expired` and its rules fire again.
 
 Every sale (an exit, a flatten, a market price protection re-send) is one `SaleOrder`, and one
@@ -52,7 +56,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from time import monotonic
@@ -99,7 +103,7 @@ from .protect import (
 )
 from .reconcile import baseline_at, broker_quantities
 from .series import ALERT_SERIES_CHANGED, broker_symbol, series_changed
-from .stop_plans import LIVE, UNSURE, stops_cover
+from .stop_plans import LIVE, UNSURE, lost, stops_cover
 from .submit import (
     OrderRefusedError,
     OrderRequest,
@@ -157,6 +161,8 @@ NEVER_SOLD = "never_sold"
 SOLD = "sold"
 UNKNOWN = "unknown"
 ALERT_SALE_SETTLED = "sale.settled_from_holdings"
+# a lost entry of an earlier session may have bought shares held with no position or stop
+ALERT_ENTRY_UNRESOLVED = "entry.unresolved"
 EVENT_QTY_CORRECTED = "position.qty_corrected"
 
 # The live view of a position at the close (price, SMA levels, days held); None when unknown.
@@ -187,9 +193,10 @@ def earlier_sale_verdict(qty_open: int, broker_held: int, row_qty: int) -> str:
     return UNKNOWN
 
 
-def in_close_window(now: datetime) -> bool:
-    """15:20 <= now < 15:25 IST."""
-    local = now.astimezone(IST).time()
+def in_close_window(now: datetime, shift: timedelta = timedelta(0)) -> bool:
+    """15:20 <= now < 15:25 IST, moved by the session's `shift` from the regular close
+    (`SessionCalendar.close_shift`): 10 to 5 minutes before the session's close."""
+    local = (now - shift).astimezone(IST).time()
     return EXITS_CLOSE_FROM <= local < EXITS_CLOSE_UNTIL
 
 
@@ -342,6 +349,8 @@ class TradeManager:
         self._ticker = config.ticker
         # positions whose lost earlier sales wait for the owner (no holding baseline): told once
         self._baseline_alerted: set[uuid.UUID] = set()
+        # lost entries of an earlier session that may hold shares, told once
+        self._entry_alerted: set[uuid.UUID] = set()
 
     def use_calendar(self, calendar: SessionCalendar | None) -> None:
         """The trading calendar read again (a refresh, a new year's rows), for the manager and its
@@ -371,12 +380,20 @@ class TradeManager:
         return list(session.scalars(query.order_by(HatPosition.opened_at, HatPosition.id)))
 
     def orders_allowed(self, now: datetime) -> bool:
-        """A sale goes out only inside the calendar session and before 15:30 IST."""
+        """A sale goes out only inside the calendar session and before its close (15:30 IST in a
+        regular session)."""
         return self._orders_allowed(now)
 
     def _orders_allowed(self, now: datetime) -> bool:
         open_now = self._calendar is not None and self._calendar.state(now) is SessionState.OPEN
-        return open_now and now.astimezone(IST).time() < ORDERS_UNTIL
+        shift = self.close_shift(trade_date_of(now))
+        return open_now and (now - shift).astimezone(IST).time() < ORDERS_UNTIL
+
+    def close_shift(self, day: date) -> timedelta:
+        """How far `day`'s session closes from the regular close (the close jobs move with it)."""
+        if self._calendar is None:
+            return timedelta(0)
+        return self._calendar.close_shift(day)
 
     # --- live price events --------------------------------------------------------------------
 
@@ -580,7 +597,10 @@ class TradeManager:
         if gate.step is SaleStep.HOLD:
             return None
         if not self._desk.make_room(session, position.id, position.qty_open - order.qty, now):
-            self._not_placed(signal, position, "stop_not_moved", now)
+            unsettled = any(lost(row) for row in self._desk.stops_of(session, position.id))
+            self._not_placed(
+                signal, position, "stop_unsettled" if unsettled else "stop_not_moved", now
+            )
             return None
         request = OrderRequest(
             bot_id=signal.bot_id,
@@ -686,7 +706,7 @@ class TradeManager:
         fills; STALE: of an earlier session)."""
         filled = 0 if found is None else found.filled_qty
         verdict = self._positions.verdict(
-            row.placed_at, found is not None, filled_qty=filled, sale=True
+            row.placed_at, found is not None, filled_qty=filled, from_holdings=True, tag=row.tag
         )
         if found is not None and verdict is Verdict.ADOPT:
             adopt_broker_order(session, row, found, bot_id, clock=self._clock)
@@ -919,9 +939,12 @@ class TradeManager:
     ) -> CloseReport:
         """The `exits.close` job body: the close-phase rules of every open position of the
         account's bots on the live price (HAT-EXEC-074), each `close_below_sma` evaluation
-        recorded with that price (HAT-OPS-034). Refused outside 15:20-15:25 IST or the session."""
+        recorded with that price (HAT-OPS-034). Refused outside the session or its close window
+        (15:20-15:25 IST in a regular session, `in_close_window`)."""
         report = CloseReport()
-        if not in_close_window(now) or not self._orders_allowed(now):
+        if not in_close_window(
+            now, self.close_shift(trade_date_of(now))
+        ) or not self._orders_allowed(now):
             report.refused = "outside_close_window"
             return report
         sending = self._sending_clock(now)
@@ -1108,9 +1131,12 @@ class TradeManager:
         does not hold ends its signal Rejected (`entry_not_found`); a reserved entry that was
         never sent is cancelled with it. A sale of unknown outcome the book does not hold ends
         `expired` (cancelled when never sent) and its rules fire again (a DAY market sale cannot
-        fill after the close). An order sent less than `settle_after` ago is left for the next run
-        (HAT-EXEC-065). Returns the number of signals ended. Nothing is ended when the book cannot
-        be read."""
+        fill after the close). An order sent less than `settle_after` ago, or one sent and absent
+        on one read only (the book may lag it, `AbsentReads`), is left unsure (HAT-EXEC-065):
+        once its session is over it is settled from the holdings. Today's book cannot show an
+        order of an earlier session: such a sale is settled from the holdings by the sale path,
+        and such an entry by `_settle_earlier_entry`.
+        Returns the number of signals ended. Nothing is ended when the book cannot be read."""
         rows = list(
             session.scalars(
                 select(HatOrder).where(
@@ -1130,11 +1156,17 @@ class TradeManager:
         ended = 0
         for row in rows:
             sale = row.purpose != ENTRY
-            if self._positions.verdict(row.placed_at, row.tag in book, sale=sale) is not (
-                Verdict.EXPIRE
-            ):
-                # held: the next sync adopts it; young: it may still be on its way; a sale of
-                # an earlier session: today's book cannot show it, settled from holdings
+            sent = row.placed_at is not None  # a reserved row never sent ends at once
+            verdict = self._positions.verdict(
+                row.placed_at, row.tag in book, from_holdings=True, tag=row.tag if sent else None
+            )
+            if verdict is Verdict.STALE and not sale:
+                ended += self._settle_earlier_entry(session, row, now)
+                continue
+            if verdict is not Verdict.EXPIRE:
+                # held: the next sync adopts it; young, or absent on one read only (the book may
+                # lag it): it stays unsure, and once its session is over it is settled from the
+                # holdings (a sale before the position is sold again, an entry here)
                 continue
             if sale:
                 if row.placed_at is None:
@@ -1148,3 +1180,57 @@ class TradeManager:
                 ended += 1
             session.commit()
         return ended
+
+    def _settle_earlier_entry(self, session: Session, row: HatOrder, now: datetime) -> int:
+        """An entry of an earlier session whose answer was lost, from the broker's holdings: when
+        the account holds no more shares of the symbol than its other open HAT positions, it
+        never filled (a DAY order cannot still rest), and its signal ends Rejected
+        (`entry_not_found`). Otherwise shares the entry may have bought are held with no HAT
+        position and no stop over them: never rejected nor adopted (a mismatch is never
+        auto-adopted), it stays unsure and the owner is told URGENT once
+        (`entry.unresolved`). Returns the number of signals ended; 0 with nothing changed when
+        the holdings cannot be read."""
+        try:
+            held = broker_quantities(self._broker.positions(), self._broker.holdings())
+        except BrokerUnavailableError:
+            logger.warning(
+                "holdings unreadable: lost entry %s of an earlier session waits", row.tag
+            )
+            return 0
+        signal = session.get(HatSignal, row.signal_id)
+        if signal is None:
+            return 0
+        symbol = session.scalar(
+            select(HatInstrument.symbol).where(HatInstrument.id == signal.instrument_id)
+        )
+        others = session.scalar(
+            select(func.coalesce(func.sum(HatPosition.qty_open), 0)).where(
+                HatPosition.instrument_id == signal.instrument_id,
+                HatPosition.bot_id.in_(self._bots(session, row.broker_account_id)),
+                HatPosition.is_virtual.is_(False),
+                HatPosition.closed_at.is_(None),
+            )
+        )
+        unexplained = held.get(str(symbol), 0) - int(others or 0)
+        if unexplained <= 0:
+            logger.info("lost entry %s of an earlier session never filled", row.tag)
+            row.status = "expired"
+            ended = int(entries.reject_signal(session, row.signal_id, ENTRY_NOT_FOUND, now))
+            session.commit()
+            return ended
+        logger.warning("lost entry %s: %d shares held with no position", row.tag, unexplained)
+        if row.id not in self._entry_alerted:
+            delivered = self._notifier.alert(
+                ALERT_ENTRY_UNRESOLVED,
+                trade_date_of(now),
+                {
+                    "bot_id": str(signal.bot_id),
+                    "signal_id": str(signal.id),
+                    "tag": row.tag,
+                    "symbol": str(symbol),
+                    "held": unexplained,
+                },
+            )
+            if delivered:  # one that could not be delivered is told again at the next run
+                self._entry_alerted.add(row.id)
+        return 0

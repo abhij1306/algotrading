@@ -48,6 +48,7 @@ from .broker import (
     OrderIntent,
     OrderType,
     Side,
+    TradeBook,
 )
 from .fyers_payloads import (
     UNREADABLE,
@@ -402,34 +403,46 @@ def parse_order_book(rows: Iterable[Any], to_db: Callable[[str], str]) -> OrderB
 
 def parse_trades(
     rows: Iterable[Mapping[str, Any]], orders: Iterable[Any], to_db: Callable[[str], str]
-) -> list[BrokerTrade]:
+) -> TradeBook:
     """The day's trades, each with its order's tags from the day's order rows (`orders`, raw):
     a Kite trade row has none of its own. A trade whose order is not among them raises (it may be
-    one of HAT's, and a fill must never read as foreign)."""
+    one of HAT's, and a fill must never read as foreign). A trade of an order without an HT tag
+    that cannot be read is skipped and counted, as in the order book (D118)."""
     tags: dict[str, tuple[str | None, str | None]] = {}
     for order in rows_of(orders):
         if isinstance(order, Mapping) and order.get("order_id") is not None:
             tags[str(order["order_id"])] = _row_tags(order.get("tag"))
-    trades = []
+    trades = TradeBook()
     for row in rows_of(rows):
         order_id = reply_id(row["order_id"], "order_id")
         tag, gtt_tag = tags[order_id]  # KeyError: the trade's order is not in the book
-        trades.append(
-            BrokerTrade(
-                trade_id=reply_id(row["trade_id"], "trade_id"),
-                order_id=order_id,
-                tag=tag,
-                symbol=_symbol(row, to_db),
-                side=_side(row["transaction_type"]),
-                qty=reply_count(row["quantity"], "quantity", minimum=1),
-                price=require_exact(
-                    row["average_price"], "average_price", floats=True, positive=True
-                ),
-                traded_at=None,
-                gtt_tag=gtt_tag,
-            )
-        )
+        try:
+            trades.append(_trade_row(row, order_id, tag, gtt_tag, to_db))
+        except UNREADABLE:
+            if is_hat_tag(tag) or gtt_tag is not None:
+                raise
+            trades.skipped += 1
     return trades
+
+
+def _trade_row(
+    row: Mapping[str, Any],
+    order_id: str,
+    tag: str | None,
+    gtt_tag: str | None,
+    to_db: Callable[[str], str],
+) -> BrokerTrade:
+    return BrokerTrade(
+        trade_id=reply_id(row["trade_id"], "trade_id"),
+        order_id=order_id,
+        tag=tag,
+        symbol=_symbol(row, to_db),
+        side=_side(row["transaction_type"]),
+        qty=reply_count(row["quantity"], "quantity", minimum=1),
+        price=require_exact(row["average_price"], "average_price", floats=True, positive=True),
+        traded_at=None,
+        gtt_tag=gtt_tag,
+    )
 
 
 def parse_positions(reply: Mapping[str, Any], to_db: Callable[[str], str]) -> list[BrokerPosition]:

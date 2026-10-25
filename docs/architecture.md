@@ -112,7 +112,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 | 08:40-08:45 | ca.rescale, gtt.check, live.prepare |
 | 09:15-09:20 | modes.apply, gapscan |
 | 09:20-15:20 | triggers, routing, stops on fill |
-| 15:20-15:25 | exits.close; 15:25 gtt.swap |
+| 15:20-15:25 | exits.close; 15:25 gtt.swap (both move with a session's stored close) |
 | 15:30-15:45 | watchlist.expire, trade.end_session, reports and digests |
 | 18:00 on | the nightly chain |
 | 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots |
