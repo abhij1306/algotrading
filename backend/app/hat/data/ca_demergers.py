@@ -25,7 +25,7 @@ The applied value stays the raw market gap. Only when the owner approved the neu
 (`--neutral`, with `--apply`) does each demerger whose applied value is the raw gap take the
 neutralised gap, as the owner's correction (`correct_action`: journalled
 `corporate_action.corrected` under the owner's chat, a new accepted version, known on the gap's
-date with basis `correction`); the features then need `features --full`.
+date with basis `correction`); the next `features` run recomputes the chains it changed.
 """
 
 from __future__ import annotations
@@ -426,8 +426,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     Lists every stored demerger's estimates, band and review list (a dry run); `--apply` appends
     the versions not stored yet in one transaction under the reference-data lock; `--neutral`
     (with `--apply`, only once the owner approved it) makes the neutralised gap the applied value
-    as the owner's correction (the owner's chat id), after which
-    `python -m app.hat.data.features --full` must run. Bars and index under `HAT_DATA_ROOT`."""
+    as the owner's correction (the owner's chat id), after which `python -m app.hat.data.features`
+    recomputes the chains it changed. Bars and index under `HAT_DATA_ROOT`."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.ca_demergers")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--neutral", action="store_true")
@@ -462,7 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             session.commit()
             write(f"applied: {appended} versions appended, {changed} factors changed")
             if changed:
-                write("the factors changed: run `python -m app.hat.data.features --full`")
+                write("the factors changed: run `python -m app.hat.data.features`")
     return 0
 
 

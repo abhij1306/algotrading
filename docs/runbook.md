@@ -226,8 +226,9 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `renames` | Seed symbol history from renames |
 | `$ADMIN repair-symbol-history [--apply]` | Close overlapping symbol intervals |
 
-After an import or correction: `lineage build`, then `features` (`--full` after dividends or
-`--neutral`). The writers of actions, lineage and symbol history share the `hat_reference_data`
+After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
+factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is
+never needed for it. The writers of actions, lineage and symbol history share the `hat_reference_data`
 advisory lock; `features` does not take it, so run it after they finish.
 
 ## Alerts and failures
