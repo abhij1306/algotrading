@@ -233,6 +233,10 @@ def playbook_body(draw: st.DrawFn) -> dict[str, Any]:
         {n for i in setup["criteria"] if i.get("enabled", True) for n in REGISTRY[i["type"]].levels}
     )
     preopen = any(i["type"] == "gap_up" for i in trigger)
+    # one enabled `price_breaks_level` per playbook: the rest are drawn disabled
+    breaks = [i for i in trigger if i["type"] == "price_breaks_level" and i.get("enabled", True)]
+    for instance in breaks[1:]:
+        instance["enabled"] = False
     for instance in trigger:
         if instance["type"] == "price_breaks_level":
             choices = [ORH] if preopen else [ORH, *exposed, *(f"max({n}, {ORH})" for n in exposed)]

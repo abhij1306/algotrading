@@ -1,7 +1,8 @@
 """The release gate of a strategy version (HAT-BOT-084, HAT-GOV-083) as database operations.
 
 `start_trial` moves a frozen version to its `trial`, `release_version` makes it `released` after
-20 trading sessions of trial and moves the sleeves of the version it supersedes onto it, and
+20 trading sessions of trial that a sleeve ran it on paper and moves the sleeves of the version it
+supersedes onto it, and
 `assign_version` points a sleeve at the version it runs (a sleeve that can place real orders only
 at a released one). The version states (`governance.VersionStatus`) are named apart from a
 sleeve's lifecycle states (`portfolio.lifecycle`), whose own shadow gate the sleeve still passes.
@@ -21,11 +22,12 @@ from sqlalchemy.orm import Session
 
 from ...events import record
 from ...governance import VersionStatus
-from ...models import HatBot, HatStrategy, HatStrategyVersion
+from ...models import HatBot, HatEvent, HatStrategy, HatStrategyVersion
 from ...risk.sessions import SessionCalendar, SessionState
 from ...time import as_utc, trade_date_of
 from ..owner import OwnerCommand
-from ..portfolio.lifecycle import LIVE, PROBATION, shadow_gate
+from ..portfolio.lifecycle import LIVE, PROBATION, SHADOW_DAYS, paper_sessions, shadow_gate
+from ..watchlist import EVENT_PUBLISHED
 from .versions import VersionError, versions_of
 
 EVENT_PROMOTED = "strategy.promoted"
@@ -62,17 +64,31 @@ def release_version(
     version_id: uuid.UUID,
     command: OwnerCommand,
 ) -> HatStrategyVersion:
-    """Release a version in trial (HAT-BOT-084): outside market hours, with its backtest run and
-    at least 20 trading sessions of trial on the calendar. The strategy's previously released
+    """Release a version in trial (HAT-BOT-084): outside market hours, with its backtest run, at
+    least 20 trading sessions of trial on the calendar and at least 20 of them that a sleeve of the
+    strategy ran it on paper (`trial_sessions`). The strategy's previously released
     version is superseded first (one released version, HAT-PORT-020's rule), the sleeves
     that ran it move to this one (their open trades keep their entry version, HAT-BOT-083), and
     `strategy.promoted` is recorded as the owner's (`actor = user`, the allowlisted chat, `via =
     cli`). A refusal changes nothing."""
     calendar, now, chat_id = command.calendar, command.now, command.chat_id
     _closed(calendar, now)
-    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
-    if row is None:
+    strategy_id = session.scalar(
+        select(HatStrategyVersion.strategy_id).where(HatStrategyVersion.id == version_id)
+    )
+    if strategy_id is None:
         raise VersionError("unknown_version")
+    # sleeves before versions, the order `assign_version` locks in, so the two never deadlock
+    sleeves = list(
+        session.scalars(
+            select(HatBot)
+            .where(HatBot.strategy_id == strategy_id)
+            .order_by(HatBot.id)
+            .with_for_update()
+        ).all()
+    )
+    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
+    assert row is not None  # versions are never deleted
     if (
         row.status != VersionStatus.TRIAL
         or row.backtest_run_id is None
@@ -80,21 +96,24 @@ def release_version(
     ):
         raise VersionError("not_in_trial")
     started: date = trade_date_of(as_utc(row.shadow_started_at))
-    if not shadow_gate(calendar.trading_days(), started, trade_date_of(now)):
+    today = trade_date_of(now)
+    if not shadow_gate(calendar.trading_days(), started, today):
         raise VersionError("trial_days")
+    if trial_sessions(session, row, sleeves, calendar, today) < SHADOW_DAYS:
+        raise VersionError("trial_sessions")
     previous = session.scalars(
-        select(HatStrategyVersion).where(
+        select(HatStrategyVersion)
+        .where(
             HatStrategyVersion.strategy_id == row.strategy_id,
             HatStrategyVersion.status == VersionStatus.RELEASED,
         )
+        .with_for_update()
     ).first()
     moved: list[HatBot] = []
     if previous is not None:
         previous.status = VersionStatus.SUPERSEDED
         session.flush()  # the one-released index never sees two
-        moved = list(
-            session.scalars(select(HatBot).where(HatBot.live_version_id == previous.id)).all()
-        )
+        moved = [b for b in sleeves if b.live_version_id == previous.id]
         for bot in moved:
             _assigned(session, bot, row, chat_id=chat_id, now=now)
     row.status = VersionStatus.RELEASED
@@ -122,6 +141,35 @@ def release_version(
     return row
 
 
+def trial_sessions(
+    session: Session,
+    row: HatStrategyVersion,
+    sleeves: list[HatBot],
+    calendar: SessionCalendar,
+    today: date,
+) -> int:
+    """The trading sessions of `row`'s trial that a sleeve ran it on paper: the trade dates of the
+    sleeves' `watchlist.published` events naming the version (`lifecycle.paper_sessions`). A
+    version in trial runs on no Live or Probation sleeve (`assign_version`), so each is paper."""
+    if row.shadow_started_at is None or not sleeves:
+        return 0
+    payloads = session.scalars(
+        select(HatEvent.payload).where(
+            HatEvent.event_type == EVENT_PUBLISHED,
+            HatEvent.bot_id.in_([b.id for b in sleeves]),
+            HatEvent.occurred_at >= row.shadow_started_at,
+        )
+    ).all()
+    version = str(row.id)
+    published = (
+        date.fromisoformat(p["trade_date"])
+        for p in payloads
+        if p.get("strategy_version_id") == version
+    )
+    started = trade_date_of(as_utc(row.shadow_started_at))
+    return paper_sessions(published, calendar.trading_days(), started, today)
+
+
 def assign_version(
     session: Session,
     *,
@@ -138,7 +186,7 @@ def assign_version(
     bot = session.get(HatBot, bot_id, with_for_update=True)
     if bot is None:
         raise VersionError("unknown_bot")
-    # locked, so a release that supersedes it waits and then moves this sleeve too
+    # locked after the sleeve, the order `release_version` locks in
     row = session.get(HatStrategyVersion, version_id, with_for_update=True)
     if row is None or row.strategy_id != bot.strategy_id:
         raise VersionError("unknown_version")

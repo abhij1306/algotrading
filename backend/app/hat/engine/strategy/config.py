@@ -366,10 +366,14 @@ class Playbook(Model):
         # Every level a trigger names is one its setup exposes or the opening range (HAT-BOT-071),
         # else the playbook could never trigger.
         exposed = {LEVEL_OPENING_RANGE, *self.setup_levels}
-        for instance in self.trigger:
-            if instance.type == PRICE_BREAKS_LEVEL and instance.enabled:
-                if not set(level_names(instance.params["level"])) <= exposed:
-                    raise ValueError("level_not_exposed")
+        breaks = [i for i in self.trigger if i.type == PRICE_BREAKS_LEVEL and i.enabled]
+        for instance in breaks:
+            if not set(level_names(instance.params["level"])) <= exposed:
+                raise ValueError("level_not_exposed")
+        # One trigger level (HAT-BOT-071): live, the scan and the backtest all read this one
+        # instance's expression (`level_expression`), so two could not disagree.
+        if len(breaks) > 1:
+            raise ValueError("one_trigger_level")
         return self
 
     @property

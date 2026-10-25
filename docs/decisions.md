@@ -38,9 +38,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   expectancy, each sleeve's evidence run needs five years of sessions, no known gap naming an
   enabled playbook and ambiguous days within the cap, the Research -> Backtested conditions. A
   decrease restarting the trade window is intended: each step up earns its own evidence.
-- **S3 `darvas-box-breakout` is Research only.** Darvas-style (`darvas_box`: the box top is the
-  252-session high and the box at most 60 sessions old; break of the box top on volume, stop under
-  the box bottom). It holds the strictest
+- **S3 `darvas-box-breakout` is Research only.** Darvas-style (`darvas_box`: by the seed's settings,
+  which a version may change, the box top is the 252-session high and the box at most 60 sessions
+  old; break of the box top on volume, stop under the box bottom). It holds the strictest
   existing numbers and no capital: seed `p_max` 20%, base weight 0, `max_chase` 2%. Nothing turns
   it on; trading it needs the owner's policy version and the lifecycle gates.
 - **S4 `trend-pullback-ema` is Research only.** Trend pullback (an RS leader, `rs_rank` 80, above

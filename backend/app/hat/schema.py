@@ -529,8 +529,8 @@ def seed_hat_reference(bind: Engine) -> None:
 # DDL to run. Triggers, functions and partitions are `ensure_hat_schema`'s and are not compared.
 
 # Tables the models do not hold that may stay until the owner drops them: the P6b ISIN-merge
-# bookkeeping and the re-arm bases a re-arm no longer takes (Q3; runbook, DBA steps).
-DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row", "hat_drawdown_base"})
+# bookkeeping (runbook, DBA steps).
+DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row"})
 
 
 class TableShape(TypedDict):

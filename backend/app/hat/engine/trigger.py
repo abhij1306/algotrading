@@ -65,7 +65,7 @@ from .criteria import (
     evaluate_live,
     get_type,
 )
-from .criteria.live import LEVEL_OPENING_RANGE, LiveContext, resolve_level
+from .criteria.live import LEVEL_OPENING_RANGE, LiveContext, level_names, resolve_level
 from .stops import (
     SKIP_BAD_INPUT,
     SeriesHistory,
@@ -421,8 +421,8 @@ def evaluate_trigger(
             result = evaluate_live(instance.type, instance.params, ctx)
         blocking = instance.type != CATALYST or mode in instance.params.get("required_in", ())
         outcomes.append(CriterionOutcome(instance.type, instance.order, blocking, result))
-        if instance.type == PRICE_BREAKS_LEVEL and result.passed:
-            level = result.extras.get("level")
+        if instance.type == PRICE_BREAKS_LEVEL and result.passed and level is None:
+            level = result.extras.get("level")  # the one enabled instance (`one_trigger_level`)
     blocking_results = [o.result.passed for o in outcomes if o.blocking]
     fired = bool(blocking_results) and all(blocking_results)
     return TriggerEvaluation(fired, tuple(outcomes), level)
@@ -481,6 +481,17 @@ def daily_level(playbook: Playbook, levels: Mapping[str, Decimal | None]) -> Dec
     and ranks on it. None without such a trigger or without its levels."""
     expression = playbook.level_expression
     return None if expression is None else resolve_level(expression, levels, daily=True)
+
+
+def needs_setup_level(playbook: Playbook) -> bool:
+    """The playbook's trigger level names a setup level, not only the opening range. A setup can
+    pass on score while the score criterion that exposes that level failed, so the scan keeps
+    such a candidate off the watchlist (`daily_level` None): every candidate the live trigger and
+    the backtest read then has its trigger level."""
+    expression = playbook.level_expression
+    return expression is not None and any(
+        name != LEVEL_OPENING_RANGE for name in level_names(expression)
+    )
 
 
 def daily_context(

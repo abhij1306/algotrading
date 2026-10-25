@@ -6,10 +6,12 @@ after it that the next sessions do not undercut, each confirmed by `confirm_days
 in the usual codification of his rules). The box top is the breakout level and the stop goes just
 under the box bottom.
 
-In HAT, plainly: the box top is the highest high of the last 252 sessions (`lookback_days`, the
-52-week high), and the box must be at most 60 sessions old (`max_box_days`: the top's session is
-one of the last 60, the date's own counting as 1). A box whose top is older does not pass, however
-well it was confirmed, so a break of the top is always a new 52-week high made from a recent box.
+In HAT, plainly: the box top is the highest high of the last `lookback_days` sessions, and the box
+must be at most `max_box_days` sessions old (the top's session is one of the last `max_box_days`,
+the date's own counting as 1). A box whose top is older does not pass, however well it was
+confirmed. Both are parameters: the defaults and the S3 seed use 252 (the 52-week high) and 60, so
+a seed break of the top is a new 52-week high made from a recent box; a version may set a shorter
+lookback (5 to 252) or an older box limit (up to its lookback).
 
 The criterion exposes the top as `pivot` and the bottom as `final_contraction_low`, the levels the
 trigger (`price_breaks_level: pivot`) and the stop rule (`below_final_contraction_low`) read.

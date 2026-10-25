@@ -29,7 +29,7 @@ from .regime_gate import regime_allows_longs
 from .stops import SeriesHistory, StopInputs, history_inputs, plan_stop_at_pivot
 from .strategy.config import Playbook, StopBelowFinalContractionLow, StrategyConfig
 from .strategy.scoring import PlaybookEvaluation, StageOutcome, evaluate_playbook
-from .trigger import daily_level
+from .trigger import daily_level, needs_setup_level
 
 __all__ = [
     "ScanInputs",
@@ -201,6 +201,8 @@ def _scan_playbook(
         if not evaluation.passed:
             continue
         pivot = daily_level(playbook, dict(setup_levels(playbook, evaluation)))
+        if pivot is None and needs_setup_level(playbook):
+            continue  # set up on score without the level its trigger breaks
         rows.append(
             WatchRow(
                 playbook=playbook.name,

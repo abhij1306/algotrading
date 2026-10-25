@@ -24,9 +24,9 @@ regime:
 
 setup:
   criteria:
-    # box top = the 252-session (52-week) high, unexceeded for 3 sessions; bottom = the low after
-    # it, unbroken for 3 sessions; the box at most 60 sessions old (the top in the last 60
-    # sessions) and at most 8% deep
+    # this seed's settings: box top = the 252-session (52-week) high, unexceeded for 3 sessions;
+    # bottom = the low after it, unbroken for 3 sessions; the box at most 60 sessions old (the top
+    # in the last 60 sessions) and at most 8% deep
     - {type: darvas_box, mode: hard, params: {lookback_days: 252, confirm_days: 3, max_box_days: 60,
         max_depth_pct: 8}}
     - {type: earnings_growth, mode: hard, enabled: false, params: {eps_yoy: 20, sales_yoy: 20}}

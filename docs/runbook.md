@@ -51,8 +51,6 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    ```
    Retention never truncates or drops event partitions (`ops/retention.py` deletes only the two
    chat tables).
-8. `DROP TABLE hat_drawdown_base;` (a re-arm no longer restarts the drawdown peak, QA10) and
-   remove it from `DRIFT_ALLOWED_TABLES` in `app/hat/schema.py`.
 
 ## Running it
 

@@ -172,6 +172,27 @@ def test_shadow_days(offsets: set[int], start_offset: int, length: int) -> None:
             assert lifecycle.shadow_gate(sessions | {extra}, started, today)
 
 
+@given(
+    st.sets(st.integers(0, 120), max_size=120),
+    st.sets(st.integers(-10, 130), max_size=120),
+    st.integers(0, 60),
+    st.integers(0, 100),
+)
+def test_paper_sessions(offsets: set[int], ran: set[int], start_offset: int, length: int) -> None:
+    """A version's trial counts only the sessions a sleeve ran it on paper: published trade dates
+    that are calendar sessions after the trial began, up to today. Elapsed sessions alone, or
+    publications outside the window or on non-session days, count nothing. Harm: a version no
+    sleeve ever ran could be released after 20 idle sessions."""
+    sessions = {d for n in offsets if (d := START + timedelta(days=n)).weekday() < 5}
+    published = [START + timedelta(days=n) for n in ran]
+    started = START + timedelta(days=start_offset)
+    today = started + timedelta(days=length)
+    want = len({d for d in published if d in sessions and started < d <= today})
+    assert lifecycle.paper_sessions(published, sessions, started, today) == want
+    assert lifecycle.paper_sessions([], sessions, started, today) == 0
+    assert want <= lifecycle.sessions_after(sessions, started, today)
+
+
 def t_cdf_upper_tail_check(df: int, q: float) -> float:
     """P(0 < T <= q) of Student's t by Simpson's rule on the density (independent of the
     expansion the code uses)."""

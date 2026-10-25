@@ -73,6 +73,7 @@ def candidate(
     daily: DailyInputs | None = None,
     pivot: Decimal | None = None,
     consolidation_high: Decimal | None = None,
+    final_contraction_low: Decimal | None = None,
     open_price: Decimal | None = None,
     announcements: tuple[datetime, ...] = (),
     configured_pct: Decimal | None = None,
@@ -89,7 +90,13 @@ def candidate(
         symbol=symbol,
         trade_date=trade_date,
         daily=daily or DailyInputs(tick=Decimal("0.05"), band_known=True, band_pct=None),
-        levels={"pivot": pivot, "consolidation_high": consolidation_high},
+        # every level SETUP exposes, as `watchlist_levels` gives a live candidate
+        levels={
+            "pivot": pivot,
+            "final_contraction_low": final_contraction_low,
+            "consolidation_high": consolidation_high,
+        },
+        final_contraction_low=final_contraction_low,
         open_price=open_price,
         announcements=announcements,
         configured_max_chase_pct=configured_pct,
