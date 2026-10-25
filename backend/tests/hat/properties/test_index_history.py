@@ -1,5 +1,6 @@
-"""The index sources' pure parts: niftyindices' TRI answer and request, and the archive's
-fallback to niftyindices' copy of a day file NSE's archive lacks (a fake fetcher; no network)."""
+"""The index sources' pure parts: niftyindices' TRI and price-history answers and request, and
+the archive's fallback to niftyindices' copy of a day file NSE's archive lacks (a fake fetcher;
+no network)."""
 
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ from app.hat.data.index_history import (
     NIFTY_500,
     NIFTY_500_TRI,
     ArchiveIndexSource,
+    parse_history_json,
+    parse_index_archive_csv,
     parse_tri_json,
     tri_request,
 )
@@ -26,6 +29,13 @@ CSV = (
     b"Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,"
     b"Closing Index Value\nCNX 500,09-10-2013,4512.3,4596.75,4505.75,4592.45\n"
 )
+
+
+def test_archive_csv_with_an_html_page_has_no_row() -> None:
+    """An HTML page served in place of a missing file (lines wider than its first) is no row."""
+    page = "<!DOCTYPE html>\n<link href=a,b,c,d rel=x>\n" + CSV.decode()
+    assert parse_index_archive_csv(page, DAY) == []
+    assert [p.row.close for p in parse_index_archive_csv(CSV.decode(), DAY)] == [Decimal("4592.45")]
 
 
 def test_parse_tri_json_reads_the_close_only() -> None:
@@ -45,6 +55,23 @@ def test_parse_tri_json_reads_the_close_only() -> None:
     assert row.open == row.high == row.low == row.close == Decimal("6419.91")
     assert parse_tri_json(b"<html>login</html>", NIFTY_500_TRI) is None
     assert parse_tri_json(b'{"Message": "error"}', NIFTY_500_TRI) is None
+
+
+def test_parse_history_json_reads_all_four_levels() -> None:
+    row = {"INDEX_NAME": "Nifty 500", "HistoricalDate": "15 Dec 2014", "OPEN": "6632.40"}
+    answer = json.dumps(
+        [
+            {**row, "HIGH": "6687.80", "LOW": "6632.40", "CLOSE": "6667.55"},
+            {**row, "HIGH": "6687.80", "LOW": "-", "CLOSE": "6667.55"},
+            {**row, "HistoricalDate": "", "HIGH": "1", "LOW": "1", "CLOSE": "1"},
+        ]
+    ).encode()
+    points = parse_history_json(answer, NIFTY_500)
+    assert points is not None
+    assert [(p.day, p.row.open, p.row.close) for p in points] == [
+        (date(2014, 12, 15), Decimal("6632.40"), Decimal("6667.55"))
+    ]
+    assert parse_history_json(b"<html></html>", NIFTY_500) is None
 
 
 def test_tri_request_names_the_price_index_and_range() -> None:
