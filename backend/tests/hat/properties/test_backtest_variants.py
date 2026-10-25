@@ -5,6 +5,7 @@ sweep's variants file (`runs.parse_variants`) and the report data's pure parts
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -192,6 +193,28 @@ def test_apply_policy_and_record() -> None:
         Overrides(risk_pct=D(2)).apply_policy(version)
 
 
+def test_flat_ladder_holds_the_cap_at_full_size() -> None:
+    version = policy_version()
+    policy = version.policy
+    flat = Overrides(flat_ladder=True, max_positions=10, max_per_industry=3)
+    changed = flat.apply_policy(version).policy
+    assert {k: (r.max_positions, r.risk_mult) for k, r in changed.ladder.items()} == {
+        k: (10, D(1)) for k in ("L1", "L2", "L3")
+    }
+    assert changed.max_positions_per_industry == 3
+    # the ladder's steps, the day limits and the kill and health rules stay as written
+    assert replace(
+        changed, ladder=policy.ladder, max_open_positions=6, max_positions_per_industry=2
+    ) == replace(policy, max_open_positions=6, max_positions_per_industry=2)
+    own_cap = Overrides(flat_ladder=True).apply_policy(version).policy
+    assert {r.max_positions for r in own_cap.ladder.values()} == {policy.max_open_positions}
+    assert flat.record() == {"max_positions": 10, "max_per_industry": 3, "flat_ladder": True}
+    with pytest.raises(BacktestError, match="backtest_promotion_with_overrides"):
+        RunConventions(regime_mult="policy", overrides=Overrides(flat_ladder=True)).check_promotion(
+            DEFAULT_SLIPPAGE_BPS
+        )
+
+
 def test_conventions_record_overrides_only_when_set() -> None:
     from tests.hat.hat_backtest_support import zero_fills
 
@@ -219,6 +242,8 @@ def test_parse_variants_layers_on_the_base() -> None:
                 "set": ["exits[1].at_r=3"],
                 "risk_pct": 0.005,
                 "max_positions": 8,
+                "max_per_industry": 3,
+                "flat_ladder": True,
                 "sleeve_weight": 0.5,
                 "slot_order": "score",
             },
@@ -231,9 +256,17 @@ def test_parse_variants_layers_on_the_base() -> None:
         sets=(("exits[0].enabled", True), ("exits[1].at_r", 3)),
         risk_pct=D("0.005"),
         max_positions=8,
+        max_per_industry=3,
+        flat_ladder=True,
     )
     assert (wide.sleeve_weight, wide.slot_order) == (D("0.5"), "score")
-    for bad in ([], [{"label": "a"}, {"label": "a"}], [{"label": "a", "other": 1}], [{"x": 1}]):
+    for bad in (
+        [],
+        [{"label": "a"}, {"label": "a"}],
+        [{"label": "a", "other": 1}],
+        [{"x": 1}],
+        [{"label": "a", "flat_ladder": 1}],
+    ):
         with pytest.raises(BacktestError):
             parse_variants(bad, base)
 

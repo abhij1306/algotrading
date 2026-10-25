@@ -223,13 +223,16 @@ entry (`trigger[price_breaks_level].params`): `entry_timing` `intraday_break` or
 `volume_avg_days` (the breakout day's volume against the mean before). The regime
 (`regime.params.rising_days=0`): the close above the SMA with no slope test. A version that
 enables `volume_pace` or `daily_close` cannot be promoted on a run (known gaps). `--max-positions N` sets the account cap and
-the exposure ladder's top level to N (lower levels capped at N). The overrides are recorded in
+the exposure ladder's top level to N (lower levels capped at N); the ladder still starts at L1.
+`--flat-ladder` gives every ladder level the run's cap at risk multiplier 1, so the run trades at
+one size from day one (the strategy, not the ladder's throttle); `--max-per-industry N` sets the
+per-industry cap. The overrides are recorded in
 the run's conventions and the run counts as a trial of its family (DSR, PBO); a
 `--for-promotion` run takes none.
 
 A sweep runs several variants over one load of the market: `--variants sweep.yaml` on top of the
 options given, a list of `{label, set: [path=value, ...], risk_pct, max_positions,
-sleeve_weight, slot_order}`. It prints one JSON line per variant (run id, status, trades,
+max_per_industry, flat_ladder, sleeve_weight, slot_order}`. It prints one JSON line per variant (run id, status, trades,
 expectancy, DSR, PBO) as each finishes; each run carries `metrics.variant` (label, sweep id), and
 the runs and their report data read at `/api/hat/backtests?sweep_id=<id>`.
 

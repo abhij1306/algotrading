@@ -95,7 +95,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
     [--regime-mult 1|policy] [--for-promotion] [--set PATH=VALUE ...] [--risk-pct P]
-    [--max-positions N] [--variants FILE]
+    [--max-positions N] [--max-per-industry N] [--flat-ladder] [--variants FILE]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
     mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
@@ -109,12 +109,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     allocation at `--sleeve-weight` (the policy's base weight by default; a research run of a
     sleeve the policy gives no weight sizes at `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime
     rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
-    `--set` (repeatable), `--risk-pct` and `--max-positions` override the version's config and
-    the policy for this run only (`overrides`), recorded in its conventions; a promotion run
-    takes none. `--variants FILE` (YAML or JSON, `runs.parse_variants`) runs each variant over
-    one load of the market, on top of the options given here, and prints one line per variant as
-    it finishes;
-    a file argparse cannot open is a usage error, one that does not parse is refused
+    `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
+    `--flat-ladder` override the version's config and the policy for this run only
+    (`overrides`), recorded in its conventions; a promotion run takes none. `--variants FILE`
+    (YAML or JSON, `runs.parse_variants`) runs each variant over one load of the market, on top
+    of the options given here, and prints one line per variant as it finishes; a file argparse
+    cannot open is a usage error, one that does not parse is refused
     (`backtest_sweep_bad_variants`).
     """
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
@@ -136,6 +136,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
     parser.add_argument("--risk-pct", type=_risk_pct_arg, default=None)
     parser.add_argument("--max-positions", type=int, default=None)
+    parser.add_argument("--max-per-industry", type=int, default=None)
+    parser.add_argument("--flat-ladder", action="store_true")
     parser.add_argument("--variants", type=argparse.FileType("r", encoding="utf-8"), default=None)
     args = parser.parse_args(argv)
     settings = operator_settings()
@@ -166,6 +168,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                         sets=tuple(args.sets),
                         risk_pct=args.risk_pct,
                         max_positions=args.max_positions,
+                        max_per_industry=args.max_per_industry,
+                        flat_ladder=args.flat_ladder,
                     ),
                 ),
             )
