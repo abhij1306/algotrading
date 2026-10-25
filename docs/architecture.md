@@ -101,6 +101,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
   NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable; a later, different copy of that
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
+- `backtests/run_id=<id>/` holds a completed run's `trades.parquet`, `returns.parquet` (daily
+  returns, the PBO input) and `report.json` (what the results page charts, `backtest/report_data.py`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features
   (`backtest_features_stale`).
@@ -157,7 +159,9 @@ Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET 
 /url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`), and the same four
 under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
 dashboard under `/api/hat` (`/status`, `/watchlist`, `/signals`, `/positions`,
-`/allocations`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes.
+`/allocations`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes;
+the read-only backtests under `/api/hat/backtests` (the runs, `/{run_id}` with its metrics and
+report data, `/{run_id}/trades`; the response shape is documented in `app/hat/api/backtests.py`).
 A panel whose poll fails keeps its last good read on screen, dimmed, under a stale notice; when several
 reads fail together the page shows one banner instead. The page header shows the backend's `as_of` in IST; the broker login status polls on the same cadence. The design
 tokens live only in `frontend/app/globals.css` `@theme`, which resets Tailwind's palette, type scale

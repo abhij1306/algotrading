@@ -162,6 +162,33 @@ ledger's `qty` is in today's split-adjusted shares; `qty_real` is the whole real
 entry day. Admin commands gated outside market hours run at weekends: an ordinary Saturday or
 Sunday inside the stored calendar reads closed.
 
+### Backtest research variants
+
+A research run changes the version's config or the policy for that run only, without a new
+draft:
+
+```bash
+python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from <d> --to <d> \
+  --set 'exits[trailing_swing_low].lookback_days=20' \
+  --set 'exits[+]={"rule": "early_failure", "days": 10}' \
+  --risk-pct 0.005 --max-positions 10 --sleeve-weight 0.5 --slot-order score
+```
+
+A list item is named by its index or its `rule`/`name`; `exits[+]=` appends a rule. The
+variables: the stop width cap (`playbooks[<name>].stop.max_pct`), `early_failure` (`days`,
+`min_r`), `move_stop_to_breakeven.at_r`, the trails (`trailing_swing_low`, `close_below_sma`,
+`trailing_atr` with `days` and `multiple`, each with an optional `start_r`), `partial_at_r`
+(`at_r`, `sell_fraction`) and `max_hold` (`days`). `--max-positions N` sets the account cap and
+the exposure ladder's top level to N (lower levels capped at N). The overrides are recorded in
+the run's conventions and the run counts as a trial of its family (DSR, PBO); a
+`--for-promotion` run takes none.
+
+A sweep runs several variants over one load of the market: `--variants sweep.yaml` on top of the
+options given, a list of `{label, set: [path=value, ...], risk_pct, max_positions,
+sleeve_weight, slot_order}`. It prints one JSON line per variant (run id, status, trades,
+expectancy, DSR, PBO); each run carries `metrics.variant` (label, sweep id), and the runs and
+their report data read at `/api/hat/backtests?sweep_id=<id>`.
+
 ### First live session checks (O2 day)
 
 Checks on the first session with a real Fyers account; note each in the Check log. They place

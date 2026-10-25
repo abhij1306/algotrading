@@ -205,6 +205,66 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/hat/backtests": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Runs
+     * @description The recorded runs, newest first.
+     */
+    get: operations["list_runs_api_hat_backtests_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/backtests/{run_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Run
+     * @description One run: its summary, stored metrics and report data (without the trades).
+     */
+    get: operations["get_run_api_hat_backtests__run_id__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/backtests/{run_id}/trades": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Trades
+     * @description One run's trades in exit order, with their symbols.
+     */
+    get: operations["get_trades_api_hat_backtests__run_id__trades_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/hat/events": {
     parameters: {
       query?: never;
@@ -361,6 +421,219 @@ export interface components {
     AuthCodeRequest: {
       /** Auth Code */
       auth_code: string;
+    };
+    /** BacktestBenchmark */
+    BacktestBenchmark: {
+      /** Cagr */
+      cagr: number | null;
+      /** Max Drawdown */
+      max_drawdown: number;
+      /** Name */
+      name: string;
+      /** Total Return */
+      total_return: number | null;
+    };
+    /** BacktestEquityPoint */
+    BacktestEquityPoint: {
+      /** Benchmark */
+      benchmark: number | null;
+      /**
+       * Date
+       * Format: date
+       */
+      date: string;
+      /** Drawdown */
+      drawdown: number;
+      /** Equity */
+      equity: string;
+    };
+    /** BacktestFunnel */
+    BacktestFunnel: {
+      /** Entered */
+      entered: number;
+      /** Rejected */
+      rejected: number;
+      /** Rejections */
+      rejections: {
+        [key: string]: number;
+      };
+      /** Signals */
+      signals: number;
+      /** Skipped */
+      skipped: number;
+      /** Skips */
+      skips: {
+        [key: string]: number;
+      };
+      /** Trades */
+      trades: number;
+      /** Watchlisted */
+      watchlisted: number;
+    };
+    /** BacktestGroupStats */
+    BacktestGroupStats: {
+      /** Key */
+      key: string;
+      /** Mean R */
+      mean_r: string;
+      /** Sum R */
+      sum_r: string;
+      /** Trades */
+      trades: number;
+      /** Win Rate */
+      win_rate: number;
+    };
+    /** BacktestRPoint */
+    BacktestRPoint: {
+      /**
+       * Date
+       * Format: date
+       */
+      date: string;
+      /** R */
+      r: string;
+    };
+    /** BacktestReport */
+    BacktestReport: {
+      benchmark: components["schemas"]["BacktestBenchmark"] | null;
+      /** Equity */
+      equity: components["schemas"]["BacktestEquityPoint"][];
+      /** Exit Reasons */
+      exit_reasons: components["schemas"]["BacktestGroupStats"][];
+      funnel: components["schemas"]["BacktestFunnel"];
+      /** Hold Time */
+      hold_time: components["schemas"]["BacktestGroupStats"][];
+      /** R Curve */
+      r_curve: components["schemas"]["BacktestRPoint"][];
+      /** Regime */
+      regime: components["schemas"]["BacktestGroupStats"][];
+      /** Regime Rule */
+      regime_rule: string;
+      /** Version */
+      version: number;
+      /** Yearly */
+      yearly: components["schemas"]["BacktestYear"][];
+    };
+    /** BacktestRunDetail */
+    BacktestRunDetail: {
+      /** Metrics */
+      metrics: {
+        [key: string]: unknown;
+      };
+      report: components["schemas"]["BacktestReport"] | null;
+      run: components["schemas"]["BacktestRunSummary"];
+    };
+    /** BacktestRunSummary */
+    BacktestRunSummary: {
+      /** Dsr */
+      dsr: string | null;
+      /** Family Key */
+      family_key: string;
+      /** Has Report */
+      has_report: boolean;
+      /** Headline */
+      headline: {
+        [key: string]: unknown;
+      };
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Overrides */
+      overrides: {
+        [key: string]: unknown;
+      } | null;
+      /** Pbo */
+      pbo: string | null;
+      /**
+       * Period End
+       * Format: date
+       */
+      period_end: string;
+      /**
+       * Period Start
+       * Format: date
+       */
+      period_start: string;
+      /**
+       * Risk Policy Version Id
+       * Format: uuid
+       */
+      risk_policy_version_id: string;
+      /** Status */
+      status: string;
+      /** Strategy */
+      strategy: string | null;
+      /** Strategy Version */
+      strategy_version: number | null;
+      /**
+       * Strategy Version Id
+       * Format: uuid
+       */
+      strategy_version_id: string;
+      variant: components["schemas"]["BacktestVariant"] | null;
+    };
+    /** BacktestTrade */
+    BacktestTrade: {
+      /** Auction Risk */
+      auction_risk: string | null;
+      /**
+       * Entry Date
+       * Format: date
+       */
+      entry_date: string;
+      /** Entry Price */
+      entry_price: string;
+      /**
+       * Exit Date
+       * Format: date
+       */
+      exit_date: string;
+      /** Exit Reason */
+      exit_reason: string;
+      /** Fees */
+      fees: string;
+      /** Holding Days */
+      holding_days: number;
+      /** Initial Stop */
+      initial_stop: string;
+      /** Instrument Id */
+      instrument_id: string;
+      /** Mae R */
+      mae_r: string;
+      /** Mfe R */
+      mfe_r: string;
+      /** Playbook */
+      playbook: string;
+      /** Qty */
+      qty: number;
+      /** R Multiple */
+      r_multiple: string;
+      /** Realized Pnl */
+      realized_pnl: string;
+      /** Regime */
+      regime: string;
+      /** Score */
+      score: string | null;
+      /** Symbol */
+      symbol: string | null;
+    };
+    /** BacktestVariant */
+    BacktestVariant: {
+      /** Label */
+      label: string;
+      /** Sweep Id */
+      sweep_id: string;
+    };
+    /** BacktestYear */
+    BacktestYear: {
+      /** Benchmark */
+      benchmark: number | null;
+      /** Return */
+      return: number | null;
+      /** Year */
+      year: number;
     };
     /** BotView */
     BotView: {
@@ -1038,6 +1311,164 @@ export interface operations {
       };
       /** @description Credentials missing or the link could not be built */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  list_runs_api_hat_backtests_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        family_key?: string | null;
+        sweep_id?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BacktestRunSummary"][];
+        };
+      };
+      /** @description No such run */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_run_api_hat_backtests__run_id__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BacktestRunDetail"];
+        };
+      };
+      /** @description No such run */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_trades_api_hat_backtests__run_id__trades_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BacktestTrade"][];
+        };
+      };
+      /** @description No such run */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
         headers: {
           [name: string]: unknown;
         };

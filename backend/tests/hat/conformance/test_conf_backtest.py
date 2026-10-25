@@ -18,7 +18,7 @@ LOOP = tuple(
     HAT / "backtest" / f"{name}.py"
     for name in ("loop", "spec", "data", "ledger", "fillrules", "report")
 )
-RUNNERS = {"runs.py", "evidence.py", "__main__.py"}
+RUNNERS = {"runs.py", "evidence.py", "overrides.py", "__main__.py"}
 PROPERTIES = Path(__file__).resolve().parents[1] / "properties"
 
 # The engine functions the day loop must reach through, and the logic it must never import

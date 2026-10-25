@@ -832,12 +832,19 @@ class _Run:
         before = self.view.bars_through(
             held.instrument_id, day, exits.history_sessions(rules), inclusive=False
         )
+        since = (
+            [b.high for b in self.view.bars_since(held.instrument_id, held.entry_day, day)]
+            if exits.reads_peak(rules)
+            else None
+        )
         return exits.view_from_bars(
             bar.close,
             rules,
             self.index[day] - self.index[held.entry_day],
             [b.close for b in before],
             [b.low for b in before],
+            [b.high for b in before],
+            since,
         )
 
     def _close_phase(self, day: date) -> None:

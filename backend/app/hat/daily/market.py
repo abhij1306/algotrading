@@ -24,7 +24,7 @@ from ..data.chains import stored_adjustment
 from ..data.instruments import current_band
 from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
-from ..engine.exits import ExitView, history_sessions, view_from_bars
+from ..engine.exits import ExitView, history_sessions, reads_peak, view_from_bars
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import ExitRule, StopRule
 from ..engine.trigger import DailyFeeds, DailyInputs, daily_inputs
@@ -52,6 +52,11 @@ SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
        CAST(volume AS DOUBLE) AS volume, CAST(traded_value AS DOUBLE) AS traded_value,
        CAST(raw_close AS DOUBLE) AS raw_close
 FROM bars_daily WHERE date BETWEEN ? AND ? ORDER BY instrument_id, date
+"""
+# The highest adjusted high of one instrument over [from, to): a position's peak before the window.
+_HIGH_SQL = """
+SELECT CAST(max(high) AS DOUBLE) FROM bars_daily
+WHERE CAST(instrument_id AS VARCHAR) = ? AND date >= ? AND date < ?
 """
 # The two closes `reference_close` can pick, per instrument: the last before the month start and
 # the latest (each date's close from its newest ingest run; a date without a close is skipped).
@@ -138,7 +143,11 @@ class DailyData:
     ) -> None:
         self.trade_date = trade_date
         window = sessions_before(store, trade_date, DAILY_SESSIONS)
+        # the first session the bars cover: a position opened before it reads its older highs
+        # from the store (`_high_before`)
+        self.first_session: date | None = window[0] if window else None
         adjustment = stored_adjustment(session)
+        self._store, self._adjustment = store, adjustment
         # a position bought under a linked older ISIN reads its chain's bars, features and tick
         self._chain: dict[str, str] = dict(adjustment.lineage)
         if window:
@@ -220,19 +229,41 @@ class DailyData:
         price: Decimal,
         rules: Sequence[ExitRule],
         days_held: int,
+        opened_on: date,
     ) -> ExitView:
-        """The view of a position at the live `price` under its pinned exit `rules`, from the
-        sessions before the trade date (`view_from_bars`, as the backtest builds it)."""
-        frame = self.bars(instrument_id).tail(history_sessions(rules))
-        closes = frame["close"].to_list() if frame.height else []
-        lows = frame["low"].to_list() if frame.height else []
+        """The view of a position opened on `opened_on` at the live `price` under its pinned exit
+        `rules`, from the sessions before the trade date (`view_from_bars`, as the backtest builds
+        it): the peak from the highs of the sessions from `opened_on` on, those before the
+        `DAILY_SESSIONS` window read from the store, so a long hold sees its whole peak."""
+        bars = self.bars(instrument_id)
+        frame = bars.tail(history_sessions(rules))
+
+        def column(part: pl.DataFrame, name: str) -> list[Decimal]:
+            values = part[name].to_list() if part.height else []
+            return [require_exact(v, name, floats=True) for v in values]
+
+        held = column(bars.filter(pl.col("date") >= opened_on), "high") if bars.height else []
+        if self.first_session is not None and opened_on < self.first_session and reads_peak(rules):
+            older = self._high_before(instrument_id, opened_on)
+            held = held if older is None else [older, *held]
         return view_from_bars(
             price,
             rules,
             days_held,
-            [require_exact(v, "close", floats=True) for v in closes],
-            [require_exact(v, "low", floats=True) for v in lows],
+            column(frame, "close"),
+            column(frame, "low"),
+            column(frame, "high"),
+            held,
         )
+
+    def _high_before(self, instrument_id: uuid.UUID, opened_on: date) -> Decimal | None:
+        """The instrument's highest adjusted high from `opened_on` up to the window's first
+        session; None without one."""
+        with self._store.connect(self._adjustment) as con:
+            row = con.execute(
+                _HIGH_SQL, [self.chain_key(instrument_id), opened_on, self.first_session]
+            ).fetchone()
+        return None if row is None or row[0] is None else require_exact(row[0], "high", floats=True)
 
 
 def held_sessions(trading_days: Iterable[date], opened: date, today: date) -> int:

@@ -144,9 +144,10 @@ class ExitViews:
             return None
         calendar = self._calendar()
         trading = calendar.trading_days() if calendar is not None else []
-        held = held_sessions(trading, trade_date_of(as_utc(position.opened_at)), today)
+        opened = trade_date_of(as_utc(position.opened_at))
+        held = held_sessions(trading, opened, today)
         rules = positions.exit_rules_of(session, signal)
-        return self._book.day(today).exit_view(position.instrument_id, price, rules, held)
+        return self._book.day(today).exit_view(position.instrument_id, price, rules, held, opened)
 
     def _split_gap(
         self, session: Session, position: HatPosition, price: Decimal, today: date
