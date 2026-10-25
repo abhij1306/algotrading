@@ -51,6 +51,11 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    ```
    Retention never truncates or drops event partitions (`ops/retention.py` deletes only the two
    chat tables).
+8. Point-in-time membership: restart the backend (creates `hat_index_member` and
+   `hat_index_membership`), copy the NIFTY 500 history CSV into `<HAT_DATA_ROOT>/admin/` and load
+   it (Index membership), then republish the universe (`publish-universe`, step 3 of First deploy)
+   so its live version names its index: until then a backtest of it is refused
+   `backtest_universe_no_index`.
 
 ## Running it
 
@@ -117,8 +122,9 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
 2. `seed-policy`; "Morning login"; `onboard-account --account-ref <Fyers client id>` (a `failed`
    account takes no sleeve); `seed-strategies`; `seed-bots --account <id>`. Then start HAT with
    `HAT_ENABLED=true`.
-3. `publish-universe --constituents <ind_nifty500list.csv> --as-of <date> [--include S]
-   [--exclude S]`. Rows whose ISIN is not an ordinary share (a REIT, a placeholder such as
+3. `publish-universe --constituents <ind_nifty500list.csv> --as-of <date> [--index I]
+   [--include S] [--exclude S]`, and load the index's membership (Index membership). Rows whose
+   ISIN is not an ordinary share (a REIT, a placeholder such as
    `DUMMYHEG`) are skipped and listed under `not_stocks`; an `--exclude` drops its row before
    symbols resolve. Any other unknown symbol or ISIN is listed and nothing is written.
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
@@ -154,13 +160,37 @@ python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 201
 
 `--universe` takes the universe's id or name. The run records a trial of the (strategy, universe)
 family in the database it runs against and writes `backtests/run_id=<id>/` under
-`HAT_DATA_ROOT`. The universe is its current members over the whole window, through lineage
-(known gap `universe_from_current_constituents`: survivorship bias, returns read optimistic). A
+`HAT_DATA_ROOT`. The universe is its index's members as of each session, through lineage (Index
+membership). Backtests run from 2016-01-01 onward until the 2011-2015 membership is resolved
+(decisions.md "Backtests from 2016-01-01"): a `--from` before the loaded history's first day is
+refused `backtest_starts_before_membership@2016-01-01`, a `--to` after its last day
+`backtest_ends_after_membership@<day>`, and a universe whose index has no history loaded
+`backtest_no_index_membership`. Bars before 2016 still warm the indicators up. A
 sleeve the policy gives base weight 0 sizes at 0.5 in a research run (recorded in the run's
 conventions); a `--for-promotion` run of it is refused `backtest_no_base_weight`. The trade
 ledger's `qty` is in today's split-adjusted shares; `qty_real` is the whole real shares on the
 entry day. Admin commands gated outside market hours run at weekends: an ordinary Saturday or
 Sunday inside the stored calendar reads closed.
+
+### Index membership
+
+A backtest reads its universe's index (`publish-universe --index`, default `NIFTY 500`) point in
+time from `hat_index_member`. NSE publishes only today's list, so the history is a CSV built
+outside the repo from the NSE Indices change notices (`index_name,isin,symbol_at_the_time,
+from_date,to_date,source_notice`; `to_date` is the first session no longer a member, empty for a
+member on `as_of`), with its coverage report beside it. Load it from `<HAT_DATA_ROOT>/admin/`:
+
+```bash
+$ADMIN load-index-membership --csv nifty500-membership.csv --as-of <list date>          # dry run
+$ADMIN load-index-membership --csv nifty500-membership.csv --as-of <list date> --apply
+```
+
+The command replaces that index's rows with the file's (loading the same file again changes
+nothing) and records the source, digest, cover (the earliest `from_date` to `--as-of`) and
+`off_size`, the change dates whose member count is not `--size` (default 500; the coverage report
+explains each: a second share class, a vacancy, a non-stock row). Every ISIN must name an
+instrument, or nothing is written. A run ending after `--as-of` is refused: after an index change
+notice, extend the CSV and load it again.
 
 ### Backtest research variants
 

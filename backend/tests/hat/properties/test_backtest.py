@@ -17,8 +17,9 @@ from app.hat.backtest.data import (
     Bar,
     MarketData,
     MarketView,
-    current_members,
     jump_skips,
+    membership_cover_refusal,
+    point_in_time_members,
     real_shares,
     stopped_trading,
 )
@@ -52,7 +53,7 @@ from app.hat.confighash import config_hash
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.portfolio.allocator import sleeve_key
-from app.hat.engine.portfolio.universe import Interval
+from app.hat.engine.portfolio.universe import Interval, members_on
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal
@@ -559,20 +560,67 @@ def test_scaled_tick_reads_the_tick_in_adjusted_units() -> None:
 # --- research mode: the universe, the sleeve weight and real shares ---------------------------
 
 
-def test_current_members_cover_the_whole_period_through_lineage() -> None:
-    """Today's members are members from the first day there is (the known gap
-    `universe_from_current_constituents`), a linked older ISIN under its chain's id, once; a
-    former member is not one."""
-    a, b, old_c, c = (uuid.UUID(int=n) for n in (1, 2, 3, 4))
+def test_point_in_time_members_enter_and_leave_on_their_dates() -> None:
+    """A stock is a member only inside its index interval: one that left is not a candidate
+    after its exclusion, one that joined is not before it; a linked older ISIN's interval
+    joins its chain's into one membership; an exclude drops a stock, an include makes one a
+    member throughout; intervals outside the run are not read."""
+    a, b, old_c, c, gone, owner = (uuid.UUID(int=n) for n in (1, 2, 3, 4, 5, 6))
     rows = [
-        Interval(a, date(2026, 10, 23)),
-        Interval(b, date(2020, 1, 1), date(2024, 1, 1)),
-        Interval(old_c, date(2026, 10, 23)),
-        Interval(c, date(2026, 10, 23)),
+        Interval(a, date(2016, 1, 1)),
+        Interval(b, date(2016, 1, 1), date(2019, 3, 29)),
+        Interval(old_c, date(2018, 4, 2), date(2021, 6, 1)),
+        Interval(c, date(2021, 6, 1)),
+        Interval(gone, date(2016, 1, 1), date(2016, 6, 1)),
     ]
-    members = current_members(rows, {str(old_c): str(c)})
-    assert [m.instrument_id for m in members] == sorted([a, c])
-    assert all(m.effective_to is None and m.effective_from <= date(2011, 1, 1) for m in members)
+    members = point_in_time_members(
+        rows,
+        include=[owner],
+        exclude=[a],
+        lineage={str(old_c): str(c)},
+        since=date(2017, 1, 2),
+        until=date(2024, 12, 31),
+    )
+    assert members == (
+        Interval(b, date(2016, 1, 1), date(2019, 3, 29)),
+        Interval(c, date(2018, 4, 2)),
+        Interval(owner, date(1900, 1, 1)),
+    )
+    assert members_on(members, date(2019, 3, 28)) == {b, c, owner}
+    assert members_on(members, date(2019, 3, 29)) == {c, owner}
+    assert members_on(members, date(2018, 3, 29)) == {b, owner}
+
+
+def test_history_first_day_members_are_members_the_night_before() -> None:
+    """A row starting on the history's first day is a member from before it, so a run starting
+    that day scans it on the night before; a row of a later change still starts on its date."""
+    a, b = uuid.UUID(int=1), uuid.UUID(int=2)
+    members = point_in_time_members(
+        [Interval(a, date(2016, 1, 1)), Interval(b, date(2016, 4, 1))],
+        include=[],
+        exclude=[],
+        lineage={},
+        since=date(2015, 12, 31),
+        until=date(2016, 12, 30),
+        history_from=date(2016, 1, 1),
+    )
+    assert members_on(members, date(2015, 12, 31)) == {a}
+    assert members_on(members, date(2016, 4, 1)) == {a, b}
+
+
+@pytest.mark.parametrize(
+    ("start", "until", "refusal"),
+    [
+        (date(2016, 1, 1), date(2026, 10, 23), None),
+        (date(2015, 12, 31), date(2026, 10, 23), "backtest_starts_before_membership@2016-01-01"),
+        (date(2016, 1, 1), date(2026, 10, 26), "backtest_ends_after_membership@2026-10-25"),
+    ],
+)
+def test_membership_cover_refusal(start: date, until: date, refusal: str | None) -> None:
+    """A run reads the history only inside its cover, naming the edge it crosses."""
+    cover = (date(2016, 1, 1), date(2026, 10, 25))
+    assert membership_cover_refusal(cover, start, until) == refusal
+    assert membership_cover_refusal(None, start, until) == "backtest_no_index_membership"
 
 
 @pytest.mark.parametrize(

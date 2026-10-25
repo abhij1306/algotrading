@@ -14,7 +14,7 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
 | Package | Holds |
 | --- | --- |
-| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data (`instruments`, symbol history `symbol_history`, broker symbols `broker_symbols`, ISIN classes `isin`) and calendar, universe, corporate actions (`corporate_actions`, the bars gate `ca_gate`, the importers' shared apply step `ca_apply`, one-off imports `ca_import`/`ca_research` (rows `ca_research_rows`)/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, notices
+| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data (`instruments`, symbol history `symbol_history`, broker symbols `broker_symbols`, ISIN classes `isin`) and calendar, universe, corporate actions (`corporate_actions`, the bars gate `ca_gate`, the importers' shared apply step `ca_apply`, one-off imports `ca_import`/`ca_research` (rows `ca_research_rows`)/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, point-in-time index membership `index_membership`, notices
 `demerger_notice`), the adjusted series' input (`chains`), ISIN lineage (`lineage`, its journal `lineage_store`, `lineage_review`, `lineage_override`, `nse_changes`), history build, features (its state and staleness `features_state`), Parquet store (`store`, its coverage reports `store_coverage`), live feed and 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library, strategy config and versions (`strategy`: `versions`, the release gate `release`, the criterion catalogue `catalogue`), scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
@@ -94,8 +94,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 
 - PostgreSQL `hat_*` tables (created by `init_db`; `hat_event` monthly-partitioned): reference
   (instruments one per ISIN, symbol history, calendar, bands, corporate actions and their
-  versions, lineage), strategy, risk and bots, portfolio, runtime (watchlist, signal, approval,
-  order, fill, position, trade result, holding baseline), ops (events, job runs, Telegram, snapshots, backtest runs).
+  versions, lineage, index membership by date), strategy, risk and bots, portfolio, runtime
+  (watchlist, signal, approval, order, fill, position, trade result, holding baseline), ops (events, job runs, Telegram, snapshots, backtest runs).
 - Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
   `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily`,
   `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's

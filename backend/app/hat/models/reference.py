@@ -28,6 +28,8 @@ __all__ = [
     "HatCorporateAction",
     "HatCorporateActionVersion",
     "HatDemergerNotice",
+    "HatIndexMember",
+    "HatIndexMembership",
     "HatIndustry",
     "HatInstrument",
     "HatInstrumentSymbolHistory",
@@ -216,6 +218,47 @@ class HatCorporateActionVersion(Base):
     available_on = Column(Date)  # NULL: unknown, never in a point-in-time selection
     band_low = Column(Ratio)  # a demerger's estimates, min..max (`ca_demergers`)
     band_high = Column(Ratio)
+
+
+class HatIndexMember(Base):
+    """One instrument's membership of an index (`NIFTY 500`) over [effective_from,
+    effective_to), from the provider's change notices (`data/index_membership.py`); open while
+    `effective_to` is NULL. The backtest reads its universe's index from it point in time."""
+
+    __tablename__ = "hat_index_member"
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to > effective_from",
+            name="ck_hat_index_member_interval",
+        ),
+    )
+
+    index_name = Column(Text, primary_key=True)
+    instrument_id = fk(INSTRUMENT_ID, primary_key=True)
+    effective_from = Column(Date, primary_key=True)
+    effective_to = Column(Date)
+    symbol = Column(Text, nullable=False)  # the symbol in the notice, as it was then
+    source_notice = Column(Text, nullable=False)
+
+
+class HatIndexMembership(Base):
+    """What one index's `hat_index_member` rows were loaded from and the days they cover:
+    every session in [covered_from, covered_to] has its members, none outside. `coverage` is
+    the loader's count check (the change dates whose member count is not the index's size)."""
+
+    __tablename__ = "hat_index_membership"
+    __table_args__ = (
+        CheckConstraint("covered_to >= covered_from", name="ck_hat_index_membership_cover"),
+    )
+
+    index_name = Column(Text, primary_key=True)
+    source = Column(Text, nullable=False)
+    digest = Column(Text, nullable=False)
+    covered_from = Column(Date, nullable=False)
+    covered_to = Column(Date, nullable=False)
+    rows = Column(Integer, nullable=False)
+    coverage = Column(JsonB, nullable=False)
+    loaded_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 
 class HatIsinLineage(Base):
