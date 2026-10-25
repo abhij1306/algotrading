@@ -804,13 +804,14 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
 
 
 def _basis(settings: HatSettings) -> RawBasis:  # pragma: no cover - real DB
-    """The stored corporate actions and the raw daily bars of the data root."""
+    """The factors the adjusted views apply (`chains.stored_adjustment`: once per chain, under
+    its current id) and the raw daily bars of the data root."""
     from app.database import db_session_scope
 
-    from .corporate_actions import stored_factors
+    from .chains import stored_adjustment
 
     with db_session_scope() as db:
-        actions = stored_factors(db)
+        actions = stored_adjustment(db).factors
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     return RawBasis(actions, store_daily(store), settings.history_envelope_tol)
 

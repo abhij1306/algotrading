@@ -12,7 +12,7 @@ An MCP action that changes no price (factor 1: a dividend, an AGM) is stored too
 debentures (`non_equity_bonus`, D1), whatever factor the MCP gives it: Fyers cancels a resting
 GTT before any ex-date, so the morning GTT check needs every ex-date of a held name
 (HAT-EXEC-145). Such a row is never
-a price factor (`stored_factors`) and never an action the rescale handles or flags.
+a price factor (`chains.stored_adjustment`) and never an action the rescale handles or flags.
 
 `lookup_actions` is the one MCP lookup, pooled on the client: the nightly ingest, the next-session
 and quarantine lookups and the history build all read actions through it, so an MCP page means
@@ -45,7 +45,7 @@ from ..notify import Notifier
 from .ca_known import CORRECTION, UNKNOWN, Known, at_ex_open
 from .ca_versions import CONFLICT, SOURCE_OWNER, Ledger
 from .mcp_client import McpClient, McpError
-from .store import FACTOR_MAX, FACTOR_MIN, ActionFactor
+from .store import FACTOR_MAX, FACTOR_MIN
 
 logger = logging.getLogger(__name__)
 
@@ -417,19 +417,6 @@ def store_actions(
                 },
             )
     return report
-
-
-def stored_factors(session: Session) -> list[ActionFactor]:
-    """Every stored action that changes prices, as the view needs it (a price-neutral row is
-    left out: its factor is 1)."""
-    return [
-        ActionFactor(row.instrument_id, row.ex_date, Decimal(row.adjustment_factor))
-        for row in session.scalars(
-            select(HatCorporateAction).where(
-                HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES)
-            )
-        )
-    ]
 
 
 # --- the owner's correction ---------------------------------------------------------------------
