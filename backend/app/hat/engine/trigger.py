@@ -23,7 +23,8 @@ Rules:
 - `price_breaks_level` breaks when the bar's high is strictly above the level and, with
   `confirm: close` (the default), its close is at or above it; the trigger price is the level.
   The level of an opening-range expression does not exist before the first bar is final, so
-  nothing fires before 09:20 (HAT-CRIT-119, HAT-BOT-071).
+  nothing fires before 09:20 (HAT-CRIT-119, HAT-BOT-071). A level with `entry_timing:
+  daily_close` (a backtest variant) never breaks live (`daily_close_not_live`).
 - The entry is a LIMIT at the larger of the level and the bar's close, rounded up to the tick, so
   it never buys below the level it broke (`entry_limit`, PR 49); `max_chase`
   checks that price.

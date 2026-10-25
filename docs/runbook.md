@@ -206,11 +206,23 @@ python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from <d>
   --risk-pct 0.005 --max-positions 10 --sleeve-weight 0.5 --slot-order score
 ```
 
-A list item is named by its index or its `rule`/`name`; `exits[+]=` appends a rule. The
-variables: the stop width cap (`playbooks[<name>].stop.max_pct`), `early_failure` (`days`,
-`min_r`), `move_stop_to_breakeven.at_r`, the trails (`trailing_swing_low`, `close_below_sma`,
-`trailing_atr` with `days` and `multiple`, each with an optional `start_r`), `partial_at_r`
-(`at_r`, `sell_fraction`) and `max_hold` (`days`). `--max-positions N` sets the account cap and
+A list item is named by its index, its `rule`/`name`, or its criterion `type`
+(`playbooks[default].setup.criteria[vcp].params.min_depth_pct=3`,
+`playbooks[default].entry_filters[max_chase].params.pct=2`); a type held twice takes `#n`, the
+n-th from 0 in config order (`criteria[rs_rank#1]`, S1's score instance), and a name that is
+missing or ambiguous is refused. `exits[+]=` appends a rule. The variables: the stop width cap
+(`playbooks[<name>].stop.max_pct`), `early_failure` (`days`, `min_r`),
+`move_stop_to_breakeven.at_r`, `step_trail` (`step_r`, `move_r`: every +`step_r` R moves the
+stop up `move_r` R from the initial stop, only up), the trails (`trailing_swing_low`,
+`close_below_sma`, `close_below_ema` with `ema`, `trailing_atr` with `days` and `multiple`, each
+with an optional `start_r`), `partial_at_r` (`at_r`, `sell_fraction`) and `max_hold` (`days`).
+The VCP (`criteria[vcp].params`): `contractions`, `pivot_window`, `min_base_bars`,
+`dryup_baseline_days`, `min_depth_pct`, `score_floor` besides the depth and dry-up limits. The
+entry (`trigger[price_breaks_level].params`): `entry_timing` `intraday_break` or `daily_close`
+(enter at the close above the level), and under `daily_close` `volume_vs_avg` with
+`volume_avg_days` (the breakout day's volume against the mean before). The regime
+(`regime.params.rising_days=0`): the close above the SMA with no slope test. A version that
+enables `volume_pace` or `daily_close` cannot be promoted on a run (known gaps). `--max-positions N` sets the account cap and
 the exposure ladder's top level to N (lower levels capped at N). The overrides are recorded in
 the run's conventions and the run counts as a trial of its family (DSR, PBO); a
 `--for-promotion` run takes none.

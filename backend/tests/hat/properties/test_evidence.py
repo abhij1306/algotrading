@@ -19,11 +19,16 @@ from app.hat.backtest.evidence import (
     unbacktested,
     unbacktested_trades,
 )
+from app.hat.backtest.overrides import Overrides
 from app.hat.backtest.report import TradeRow, compute_metrics
 from app.hat.backtest.spec import KNOWN_GAPS, membership_key, sleeve_weight
 
 D = Decimal
-S2_BOOKS = tuple(seed_config(S2).playbooks)  # breakout, episodic_pivot
+# without `volume_pace`, which the backtest does not model (`trigger_is_level_break_only`)
+NO_PACE = "playbooks[{}].trigger[volume_pace].enabled"
+S2_BOOKS = tuple(  # breakout, episodic_pivot
+    Overrides(sets=((NO_PACE.format("breakout"), False),)).apply_config(seed_config(S2)).playbooks
+)
 BREAKOUT = S2_BOOKS[:1]
 # a pre-open playbook under another name: named by what it uses, not by its name
 GAP_AND_GO = S2_BOOKS[1].model_copy(update={"name": "gap_and_go"})
@@ -115,7 +120,9 @@ def test_unbacktested() -> None:
     assert unbacktested(RunMetrics.from_json({"known_gaps": [KNOWN_GAPS[1]]}), S2_BOOKS) == ep
     assert unbacktested(RunMetrics.from_json({"known_gaps": []}), S2_BOOKS) == frozenset()  # PR 70
     assert unbacktested(None, (*BREAKOUT, GAP_AND_GO)) == frozenset({"gap_and_go"})
-    assert unbacktested(None, seed_config(S1).playbooks) == frozenset()
+    assert unbacktested(None, seed_config(S1).playbooks) == frozenset({"default"})  # volume_pace
+    paceless = Overrides(sets=((NO_PACE.format("default"), False),)).apply_config(seed_config(S1))
+    assert unbacktested(None, paceless.playbooks) == frozenset()
 
 
 def test_unbacktested_trades_by_version() -> None:

@@ -256,6 +256,15 @@ class _Series:
         ]
 
 
+_NO_VOLUMES = (np.empty(0, dtype=np.int32), np.empty(0, dtype=np.float64))
+
+
+def last_through(days: np.ndarray, values: np.ndarray, through: int, count: int) -> list[float]:
+    """The last `count` of `values` whose `days` (ascending) are on or before `through`."""
+    end = int(np.searchsorted(days, through, side="right"))
+    return [float(v) for v in values[max(0, end - count) : end]]
+
+
 def rescaled(units: int, ratio: float) -> Decimal:
     """A price of 1/10,000 units times a dividend ratio, rounded half to even to the store's 4
     places; a ratio of 1 is the price itself (a price is far below 2**53 units, so exact)."""
@@ -309,6 +318,7 @@ class MarketView:
         self.bars = data.bars
         self.series = self._series(data.skipped)
         self.raw_closes = self._raw_closes()
+        self.volumes = self._volumes()
         self.skipped: dict[str, list[date]] = {}
         for instrument_id, day in sorted(data.skipped):
             self.skipped.setdefault(instrument_id, []).append(day)
@@ -366,6 +376,20 @@ class MarketView:
             for key, part in frame.partition_by("instrument_id", as_dict=True).items()
         }
 
+    def _volumes(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        """Each instrument's (dates as days since `_EPOCH`, volumes) over every stored session,
+        whatever its prices (`_series` keeps only rows with four positive prices), so a volume
+        average never skips a session; NaN where the store has no volume."""
+        if "volume" not in self.bars.columns:
+            return {}
+        frame = self.bars.select(
+            "instrument_id", "date", pl.col("volume").cast(pl.Float64).fill_null(float("nan"))
+        )
+        return {
+            str(key[0]): (part["date"].to_physical().to_numpy(), part["volume"].to_numpy())
+            for key, part in frame.partition_by("instrument_id", as_dict=True).items()
+        }
+
     def _find(self, instrument_id: str, day: date, *, inclusive: bool) -> tuple[_Series, int]:
         """The instrument's bars and the count of them dated on or before `day` (before it, if
         not `inclusive`)."""
@@ -420,6 +444,12 @@ class MarketView:
         series, end = self._find(instrument_id, day, inclusive=inclusive)
         _, through = self._find(instrument_id, day, inclusive=True)
         return series.signal_bars(max(0, end - count), end, through - 1)
+
+    def volumes_through(self, instrument_id: str, day: date, count: int) -> list[float]:
+        """The volumes of the instrument's last `count` stored sessions on or before `day`,
+        oldest first, a session with bad prices included (NaN where the store has none)."""
+        days, volumes = self.volumes.get(instrument_id, _NO_VOLUMES)
+        return last_through(days, volumes, _ordinal(day), count)
 
     def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
         """The instrument's bars dated from `first` on and before `day`, oldest first, on the

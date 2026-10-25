@@ -11,7 +11,8 @@ Evaluation rules, as written in the spec:
   one exit of the whole open quantity, and the partials stay unfired);
 - fractions apply to the original quantity, round down to at least one share and are capped at
   the open quantity; partials that together reach the open quantity become one full exit;
-- a rule that would not raise the stop is ignored and logged, never applied;
+- a rule that would not raise the stop is ignored and logged, never applied (the step trail,
+  which acts again at each step, is simply quiet when it would not raise it);
 - an exit never waits for the user.
 """
 
@@ -24,10 +25,12 @@ from typing import Any, Literal
 
 from ..money import require_exact
 from .criteria.indicators import sma
+from .criteria.pullback import EMA_WARMUP, ema
 from .stops import lowest, mean_true_range
 from .strategy.config import (
     ExitBreakeven,
     ExitCloseAboveSma,
+    ExitCloseBelowEma,
     ExitCloseBelowSma,
     ExitEarlyFailure,
     ExitHardStop,
@@ -37,6 +40,7 @@ from .strategy.config import (
     ExitPctGainTarget,
     ExitRegime,
     ExitRule,
+    ExitStepTrail,
     ExitTimeStop,
     ExitTrailingAtr,
     ExitTrailingSwingLow,
@@ -57,6 +61,7 @@ __all__ = [
     "is_partial_rule",
     "r_multiple",
     "rule_id",
+    "step_stop",
     "history_sessions",
     "reads_peak",
     "view_from_bars",
@@ -74,10 +79,12 @@ _PHASES: dict[str, frozenset[str]] = {
 _RULE_PHASE = {
     "hard_stop": "live",
     "move_stop_to_breakeven": "live",
+    "step_trail": "live",
     "partial_at_r": "live",
     "pct_gain_target": "live",
     "partial_after_days": "close",
     "close_below_sma": "close",
+    "close_below_ema": "close",
     "close_above_sma": "close",
     "trailing_swing_low": "close",
     "trailing_atr": "close",
@@ -107,11 +114,13 @@ class ExitView:
     """Market facts at one evaluation. A fact left out makes the rules that need it not fire.
     `peak` is the best price since entry (the highs from the entry session on, and `price`), the
     level a trail's start, the early-failure exit and the ATR trail read; `atr` the mean true
-    range by length over the sessions before the decision session."""
+    range by length over the sessions before the decision session; `ema` the EMA by length with
+    `price` as the decision session's close."""
 
     price: Decimal | None
     days_held: int = 0
     sma: Mapping[int, Decimal] = field(default_factory=dict)
+    ema: Mapping[int, Decimal] = field(default_factory=dict)
     swing_low: Mapping[int, Decimal] = field(default_factory=dict)
     regime_off: bool = False
     peak: Decimal | None = None
@@ -138,6 +147,7 @@ class Evaluation:
 def history_sessions(rules: Sequence[ExitRule]) -> int:
     """How many sessions before the decision session `view_from_bars` reads for `rules`."""
     needs = [rule.sma - 1 for rule in rules if isinstance(rule, ExitVsSma)]
+    needs += [rule.ema * EMA_WARMUP - 1 for rule in rules if isinstance(rule, ExitCloseBelowEma)]
     needs += [rule.lookback_days for rule in rules if isinstance(rule, ExitTrailingSwingLow)]
     needs += [rule.days + 1 for rule in rules if isinstance(rule, ExitTrailingAtr)]
     return max(needs, default=0)
@@ -162,17 +172,20 @@ def view_from_bars(
     highs: Sequence[Decimal] = (),
     entry_highs: Sequence[Decimal] | None = None,
 ) -> ExitView:
-    """The view of a position at `price` with the SMA, swing-low and ATR levels its `rules` read,
+    """The view of a position at `price` with the SMA, EMA, swing-low and ATR levels its `rules`
+    read,
     from the `closes`, `lows` and `highs` of the sessions the instrument traded before the
     decision session (oldest first, at least `history_sessions(rules)` of them for every level to
     exist; the ATR needs the highs). `price` stands in for the decision session's close in each SMA
-    (the live price, or the backtest's daily close, HAT-EXEC-074); the swing low is the lowest of
+    and EMA (the live price, or the backtest's daily close, HAT-EXEC-074); the swing low is the
+    lowest of
     the last `lookback_days` lows before it. A level without enough sessions is left out, and its
     rule does not fire. `entry_highs`, the highs of the sessions from the entry session on before
     the decision session, give the view's `peak` with `price` (None: no peak, and the rules that
     read it do not fire). The live close phase and the backtest both build their views here, so
     the rules read the same inputs in both."""
     sma_levels: dict[int, Decimal] = {}
+    ema_levels: dict[int, Decimal] = {}
     swing: dict[int, Decimal] = {}
     atr: dict[int, Decimal] = {}
     for rule in rules:
@@ -180,6 +193,10 @@ def view_from_bars(
             prior = list(closes[-(rule.sma - 1) :]) if rule.sma > 1 else []
             if (level := sma([*prior, price], rule.sma)) is not None:
                 sma_levels[rule.sma] = level
+        elif isinstance(rule, ExitCloseBelowEma) and price is not None:
+            prior = list(closes[-(rule.ema * EMA_WARMUP - 1) :])
+            if (level := ema([*prior, price], rule.ema)) is not None:
+                ema_levels[rule.ema] = level
         elif isinstance(rule, ExitTrailingSwingLow):
             n = rule.lookback_days
             if (low := lowest(lows[-n:], n)) is not None:
@@ -192,7 +209,15 @@ def view_from_bars(
     peak = None
     if entry_highs is not None and price is not None:
         peak = max([*entry_highs, price])
-    return ExitView(price, days_held=days_held, sma=sma_levels, swing_low=swing, peak=peak, atr=atr)
+    return ExitView(
+        price,
+        days_held=days_held,
+        sma=sma_levels,
+        ema=ema_levels,
+        swing_low=swing,
+        peak=peak,
+        atr=atr,
+    )
 
 
 def rule_id(index: int, rule: ExitRule) -> str:
@@ -284,6 +309,16 @@ def _below_sma(rule: ExitCloseBelowSma, pos: PositionState, view: ExitView) -> b
     )
 
 
+def _below_ema(rule: ExitCloseBelowEma, pos: PositionState, view: ExitView) -> bool:
+    level = view.ema.get(rule.ema)
+    return (
+        view.price is not None
+        and level is not None
+        and view.price < level
+        and _trail_started(rule, pos, view)
+    )
+
+
 def _above_sma(rule: ExitCloseAboveSma, pos: PositionState, view: ExitView) -> bool:
     level = view.sma.get(rule.sma)
     return view.price is not None and level is not None and view.price > level
@@ -346,6 +381,7 @@ _SELL_TESTS: dict[type, Callable[[Any, PositionState, ExitView], bool]] = {
     ExitPartialAfterDays: _after_days,
     ExitCloseBelowSma: _below_sma,
     ExitCloseAboveSma: _above_sma,
+    ExitCloseBelowEma: _below_ema,
     ExitTrailingSwingLow: _below_swing_low,
     ExitTrailingAtr: _below_atr_trail,
     ExitTimeStop: _time_stop,
@@ -376,6 +412,19 @@ def _breakeven_due(
     if rule.after == "partial":
         return partial_done
     return rule.at_r is not None and _reached_r(view, pos, rule.at_r)
+
+
+def step_stop(rule: ExitStepTrail, pos: PositionState, price: Decimal) -> Decimal | None:
+    """The step trail's stop at `price`: the initial stop plus k x `move_r` R at the k-th step
+    of `step_r` R reached (k >= 1), or None before the first step or without positive risk."""
+    risk = pos.avg_entry - pos.initial_stop
+    if risk <= 0:
+        return None
+    step = require_exact(rule.step_r, "step_r", floats=True) * risk
+    steps = ((price - pos.avg_entry) / step).to_integral_value(rounding=ROUND_FLOOR)
+    if steps < 1:
+        return None
+    return pos.initial_stop + steps * require_exact(rule.move_r, "move_r", floats=True) * risk
 
 
 _Live = list[tuple[int, str, ExitRule]]
@@ -423,8 +472,9 @@ def _breakevens(
     view: ExitView,
     ids: tuple[str, ...],
 ) -> tuple[list[str], Decimal | None, list[tuple[str, str]]]:
-    """The breakeven moves that are due: their ids, the stop they raise to (only ever up) and
-    the ones ignored because they would not raise it (HAT-RISK-070)."""
+    """The breakeven moves that are due: their ids, the stop they and the step trails raise to
+    (only ever up) and the breakeven moves ignored because they would not raise it
+    (HAT-RISK-070). A step trail is never fired: it acts whenever its step raises the stop."""
     done = any(is_partial_rule(rules[int(rid.split(":", 1)[0])]) for rid in (*pos.fired, *ids))
     fired: list[str] = []
     ignored: list[tuple[str, str]] = []
@@ -437,6 +487,16 @@ def _breakevens(
             new_stop = pos.avg_entry
         else:
             ignored.append((rid, IGNORED_NOT_RAISING))
+    for _, _, rule in live:
+        if not isinstance(rule, ExitStepTrail) or view.price is None:
+            continue
+        level = step_stop(rule, pos, view.price)
+        if (
+            level is not None
+            and level > pos.current_stop
+            and (new_stop is None or level > new_stop)
+        ):
+            new_stop = level
     return fired, new_stop, ignored
 
 

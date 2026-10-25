@@ -3,11 +3,15 @@ without a new draft version. A leaf of the backtest package: `spec` records them
 them, and it imports neither.
 
 A config override is a path into the canonical config (`StrategyConfig.to_json`) and a JSON value,
-written `path=value` (`parse_set`): `exits[2].at_r=3`, `exits[trailing_swing_low].lookback_days=20`
-(a list item by its index, or by its `rule` or `name` when exactly one item has it),
+written `path=value` (`parse_set`): `exits[2].at_r=3`, `exits[trailing_swing_low].lookback_days=20`,
+`playbooks[default].setup.criteria[vcp].params.min_depth_pct=3`,
+`playbooks[default].entry_filters[max_chase].params.pct=2` (a list item by its index, or by its
+`rule`, `name` or criterion `type` when exactly one item has it; `rs_rank#1` is the second item
+of that type in list order, the setup's criteria in their `order`),
 `playbooks[default].stop.max_pct=12`, and `exits[+]={"rule": "max_hold", "days": 60}` appends a
-rule to the stack. A value that is not JSON is a string. The overridden config is parsed afresh
-(`parse_config`), so an override can only make a config the model accepts, risk keys refused.
+rule to the stack. A name no item has, or one more than one item has without `#n`, is refused.
+A value that is not JSON is a string. The overridden config is parsed afresh (`parse_config`),
+so an override can only make a config the model accepts, risk keys refused.
 The policy overrides are the risk per trade (`risk_pct`) and the open-position cap: the
 account's `max_open_positions` and the exposure ladder's top level become N, and its lower levels
 are capped at N (the ladder still starts low and steps up).
@@ -33,7 +37,7 @@ __all__ = ["APPEND", "OverrideError", "Overrides", "parse_set", "set_path"]
 
 APPEND = "+"
 IDENTITY_KEYS = frozenset({"bot", "market"})
-_SEGMENT = re.compile(r"([a-z_][a-z0-9_]*)(?:\[([a-z0-9_+-]+)\])?", re.ASCII)
+_SEGMENT = re.compile(r"([a-z_][a-z0-9_]*)(?:\[([a-z0-9_+-]+(?:#\d{1,2})?)\])?", re.ASCII)
 _INDEX = re.compile(r"\d{1,3}", re.ASCII)
 
 
@@ -72,18 +76,23 @@ def parse_set(text: str) -> tuple[str, Any]:
 
 
 def _pick(items: list[Any], selector: str) -> int:
-    """The index of the list item `selector` names: its index, or the one item whose `rule` or
-    `name` it is."""
+    """The index of the list item `selector` names: its index, the one item whose `rule`, `name`
+    or `type` it is, or with `#n` the n-th (from 0) of the items it names."""
     if _INDEX.fullmatch(selector):
         index = int(selector)
         if index < len(items):
             return index
         raise OverrideError("backtest_override_no_item")
+    key, nth, place = selector.partition("#")
     hits = [
         n
         for n, item in enumerate(items)
-        if isinstance(item, dict) and selector in (item.get("rule"), item.get("name"))
+        if isinstance(item, dict) and key in (item.get("rule"), item.get("name"), item.get("type"))
     ]
+    if nth:
+        if int(place) < len(hits):
+            return hits[int(place)]
+        raise OverrideError("backtest_override_no_item")
     if len(hits) != 1:
         raise OverrideError(
             "backtest_override_no_item" if not hits else "backtest_override_ambiguous"

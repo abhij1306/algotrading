@@ -19,10 +19,12 @@ type Config = Readonly<Record<string, unknown>>;
 /** The editable numbers of each exit rule (every rule but `hard_stop` can also be switched). */
 export const EXIT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   move_stop_to_breakeven: ["at_r"],
+  step_trail: ["step_r", "move_r"],
   partial_at_r: ["at_r", "sell_fraction"],
   partial_after_days: ["days", "sell_fraction"],
   close_below_sma: ["sma", "sell_fraction", "start_r"],
   close_above_sma: ["sma", "sell_fraction"],
+  close_below_ema: ["ema", "sell_fraction", "start_r"],
   trailing_swing_low: ["lookback_days", "sell_fraction", "start_r"],
   trailing_atr: ["days", "multiple", "sell_fraction", "start_r"],
   pct_gain_target: ["pct", "sell_fraction"],
@@ -46,9 +48,11 @@ export const ADDABLE: Readonly<Record<string, Readonly<Record<string, number>>>>
   max_hold: { days: 60 },
   early_failure: { days: 10, min_r: 0.5 },
   trailing_atr: { days: 14, multiple: 3 },
+  step_trail: { step_r: 1.5, move_r: 1 },
+  close_below_ema: { ema: 21 },
 };
 
-const WHOLE = new Set(["days", "sma", "lookback_days", "buffer_ticks"]);
+const WHOLE = new Set(["days", "sma", "ema", "lookback_days", "buffer_ticks"]);
 // The optional settings: a trail's start, and the stop-width cap of the rules without their own.
 const NULLABLE_STOP_CAP = new Set(["low_of_day", "atr_multiple", "swing_low"]);
 const nullable = (rule: string, name: string) =>

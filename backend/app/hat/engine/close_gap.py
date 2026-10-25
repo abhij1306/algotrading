@@ -1,7 +1,7 @@
 """The close-phase price against the official close (HAT-OPS-034): the live last trade a
-15:05-15:10 `close_below_sma` or `close_above_sma` evaluation used (continuous trading ends at
-15:15 for the closing auction), and its gap to the official close, the auction's, settled around
-15:40 and brought by the nightly ingest.
+15:05-15:10 `close_below_sma`, `close_above_sma` or `close_below_ema` evaluation used
+(continuous trading ends at 15:15 for the closing auction), and its gap to the official close,
+the auction's, settled around 15:40 and brought by the nightly ingest.
 
 Both records are events on the position (`exit.close_evaluated`, `exit.close_gap`); neither moves
 a trade's state, and nothing here reaches a broker. They work in the caller's transaction and
@@ -28,7 +28,7 @@ __all__ = ["CLOSE_EVALUATED", "CLOSE_GAP", "record_close_evaluation", "record_cl
 
 CLOSE_EVALUATED = "exit.close_evaluated"
 CLOSE_GAP = "exit.close_gap"
-CLOSE_RULES = ("close_below_sma", "close_above_sma")
+CLOSE_RULES = ("close_below_sma", "close_above_sma", "close_below_ema")
 _PRICE_PLACES = Decimal("0.0001")
 
 
@@ -40,9 +40,9 @@ def record_close_evaluation(
     trade_date: date,
     now: datetime,
 ) -> bool:
-    """Record the live price a 15:05-15:10 evaluation used for the position's SMA exit rules
-    (`exit.close_evaluated`), whether or not one fired. False, writing nothing, when the
-    position has no enabled SMA exit rule, the view has no price, or the trade date's
+    """Record the live price a 15:05-15:10 evaluation used for the position's SMA and EMA exit
+    rules (`exit.close_evaluated`), whether or not one fired. False, writing nothing, when the
+    position has no enabled such rule, the view has no price, or the trade date's
     evaluation is already recorded (a retried job)."""
     position = session.get(HatPosition, position_id)
     if position is None:
@@ -58,15 +58,21 @@ def record_close_evaluation(
         return False
     ids = [rid for rid, _ in close_rules]
     levels = {
-        str(rule.sma): str(view.sma[rule.sma])  # type: ignore[union-attr]
+        str(n): str(view.sma[n])
         for _, rule in close_rules
-        if rule.sma in view.sma  # type: ignore[union-attr]
+        if (n := getattr(rule, "sma", None)) is not None and n in view.sma
+    }
+    ema_levels = {
+        str(n): str(view.ema[n])
+        for _, rule in close_rules
+        if (n := getattr(rule, "ema", None)) is not None and n in view.ema
     }
     payload = {
         "trade_date": trade_date.isoformat(),
         "live_price": str(view.price),
         "rules": ids,
         "sma": levels,
+        **({"ema": ema_levels} if ema_levels else {}),
         "fired": [rid for rid in result.fired if rid in ids],
         "is_virtual": bool(position.is_virtual),
     }

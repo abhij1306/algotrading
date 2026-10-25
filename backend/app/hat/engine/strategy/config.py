@@ -24,7 +24,13 @@ from ...errors import HatError
 from ...risk.policy import POLICY_FIELDS, SEED_POLICY
 from ..criteria import PREOPEN, REGISTRY, UnknownCriterionError, get_type
 from ..criteria.base import STAGES
-from ..criteria.live import LEVEL_OPENING_RANGE, level_names
+from ..criteria.live import (
+    DAILY_CLOSE,
+    INTRADAY_BREAK,
+    LEVEL_OPENING_RANGE,
+    PriceBreaksLevelParams,
+    level_names,
+)
 
 PRICE_BREAKS_LEVEL = "price_breaks_level"
 
@@ -146,9 +152,12 @@ class _Rule(BaseModel):
 
 
 class CloseAboveSma(_Rule):
+    """The close above its `sma`-session SMA and, unless `rising_days` is 0 (no slope test), the
+    SMA above its value `rising_days` sessions earlier."""
+
     rule: Literal["close_above_sma_and_rising"]
     sma: int = Field(default=50, ge=2, le=400)
-    rising_days: int = Field(default=10, ge=1, le=252)
+    rising_days: int = Field(default=10, ge=0, le=252)
 
 
 class FastAboveSlow(_Rule):
@@ -273,6 +282,25 @@ class ExitBreakeven(Model):
         return self
 
 
+class ExitStepTrail(Model):
+    """A live-phase stop ratchet in R (initial risk): once the price is +k x `step_r` R above the
+    entry (k = 1, 2, ...), the stop is the initial stop plus k x `move_r` R, raised only (step 1.5,
+    move 1: -1R -> 0R at +1.5R -> +1R at +3R). `move_r` is at most `step_r`, so the stop stays at
+    least 1R under the price that set it. It never sells and never counts as fired: it acts each
+    time it would raise the stop."""
+
+    rule: Literal["step_trail"]
+    step_r: float = Field(gt=0, le=100)
+    move_r: float = Field(gt=0, le=100)
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def _check(self) -> ExitStepTrail:
+        if self.move_r > self.step_r:
+            raise ValueError("move_r_above_step_r")
+        return self
+
+
 class ExitPartialAtR(Model):
     rule: Literal["partial_at_r"]
     at_r: float = Field(gt=0, le=100)
@@ -307,6 +335,18 @@ class ExitCloseAboveSma(ExitVsSma):
     """The mean-reversion target: the price back above a short SMA (Connors' 5-day line)."""
 
     rule: Literal["close_above_sma"]
+
+
+class ExitCloseBelowEma(Model):
+    """The close-phase exit under the `ema`-session EMA (`criteria.pullback.ema`, seeded over
+    `EMA_WARMUP` x `ema` closes), the live price standing in for the session's close, as
+    `close_below_sma` reads its SMA."""
+
+    rule: Literal["close_below_ema"]
+    ema: int = Field(ge=2, le=60)
+    sell_fraction: float = Fraction
+    start_r: float | None = TrailStart
+    enabled: bool = True
 
 
 class ExitTrailingSwingLow(Model):
@@ -370,10 +410,12 @@ class ExitRegime(Model):
 ExitRule = Annotated[
     ExitHardStop
     | ExitBreakeven
+    | ExitStepTrail
     | ExitPartialAtR
     | ExitPartialAfterDays
     | ExitCloseBelowSma
     | ExitCloseAboveSma
+    | ExitCloseBelowEma
     | ExitTrailingSwingLow
     | ExitTrailingAtr
     | ExitPctGainTarget
@@ -433,6 +475,27 @@ class Playbook(Model):
             if instance.enabled:
                 found.update(dict.fromkeys(get_type(instance.type).levels))
         return tuple(found)
+
+    @property
+    def level_trigger(self) -> PriceBreaksLevelParams | None:
+        """The parameters of the playbook's enabled `price_breaks_level` trigger, None without
+        one (`one_trigger_level`: at most one)."""
+        for instance in self.trigger:
+            if instance.type == PRICE_BREAKS_LEVEL and instance.enabled:
+                return PriceBreaksLevelParams.model_validate(instance.params)
+        return None
+
+    @property
+    def entry_timing(self) -> str:
+        """When the level trigger takes the entry (`PriceBreaksLevelParams.entry_timing`):
+        `intraday_break` without one."""
+        found = self.level_trigger
+        return INTRADAY_BREAK if found is None else found.entry_timing
+
+    @property
+    def at_close(self) -> bool:
+        """The level trigger enters at the daily close (`entry_timing: daily_close`)."""
+        return self.entry_timing == DAILY_CLOSE
 
     @property
     def level_expression(self) -> str | None:

@@ -1,17 +1,20 @@
 """`vcp`: the scored volatility-contraction detector (HAT-CRIT-040), ported from the legacy
 `services/vcp/pattern.py`.
 
-What carries over unchanged is the structure search: the base starts at the first highest close
-of the last `lookback_days` sessions (and must hold at least `MIN_BASE_BARS` bars); pivots are
-bars strictly beyond their three neighbours on each side; contractions chain pivot-high to the
-next pivot-low, then to the next pivot-high after it, up to the allowed maximum. What the spec
-changes: the tightening test is the ratio rule (each depth at most `depth_ratio_max` x the
-previous one, the final depth at most `final_depth_max_pct`), the dry-up test is the final
-contraction's mean volume against the mean of the 50 sessions before the base starts
-(`dryup_vs_avg50`, PR 57), a contraction's depth
-is measured from the highest high to the lowest low of its own bars, and the result is a score
-with the pivot and the final contraction low. The legacy stage-2, RS, overhead-resistance,
-volume-slope, grade and breakout gates are other criteria's work (or dropped) and are not here.
+What carries over is the structure search: the base starts at the first highest close of the
+last `lookback_days` sessions (and must hold at least `min_base_bars` bars); pivots are bars
+strictly beyond their `pivot_window` neighbours on each side; contractions chain pivot-high to the
+next pivot-low, then to the next pivot-high after it, through the whole base. A contraction
+shallower than `min_depth_pct` (when set) is noise and does not count, and the pattern is judged
+on the most recent counted contractions, at most `contractions[1]` of them, so the final
+contraction, the pivot and the dry-up are the latest ones. What the spec changes: the tightening
+test is the ratio rule (each depth at most `depth_ratio_max` x the previous one, the final depth
+at most `final_depth_max_pct`), the dry-up test is the final contraction's mean volume against the
+mean of the `dryup_baseline_days` sessions before the base starts (`dryup_vs_avg50`, PR 57), a
+contraction's depth is measured from the highest high to the lowest low of its own bars, and the
+result is a score with the pivot and the final contraction low. The legacy stage-2, RS,
+overhead-resistance, volume-slope, grade and breakout gates are other criteria's work (or
+dropped) and are not here.
 
 PR 57 (research G25-G27) adds three structural rules, each off by default for backtest sweeps:
 level highs (`max_high_spread_pct`), a minimum first depth (`min_first_depth_pct`) and a minimum
@@ -22,7 +25,7 @@ template-only variant still has a breakout level.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -42,18 +45,31 @@ from .base import (
 )
 from .indicators import dsum, last
 
-PIVOT_WINDOW = 3
-MIN_BASE_BARS = 15
-AVG_VOLUME_DAYS = 50
-CONTRACTION_CAP = 6
+# The most contractions `contractions[1]` may name; the chain itself is not capped.
+MAX_CONTRACTIONS = 12
+
+
+def _unless(default: object) -> Callable[[object], bool]:
+    """An `exclude_if` that leaves a parameter at its default out of the canonical form, so the
+    stored configs' hashes do not change when a parameter is added."""
+    return lambda value: value == default
 
 
 class VcpParams(ParamModel):
     contractions: list[int] = Field(default_factory=lambda: [2, 6], min_length=2, max_length=2)
     depth_ratio_max: float = Field(default=0.75, gt=0, le=1)
     final_depth_max_pct: float = Field(default=10.0, gt=0, le=100)
-    lookback_days: int = Field(default=120, ge=MIN_BASE_BARS, le=252)
+    lookback_days: int = Field(default=120, ge=2, le=252)
     dryup_vs_avg50: float = Field(default=0.7, gt=0, le=10)
+    # The swing definition: a pivot is strictly beyond this many bars on each side.
+    pivot_window: int = Field(default=3, ge=1, le=10, exclude_if=_unless(3))
+    min_base_bars: int = Field(default=15, ge=2, le=252, exclude_if=_unless(15))
+    # The dry-up baseline: the sessions before the base start whose mean volume it is read against.
+    dryup_baseline_days: int = Field(default=50, ge=5, le=252, exclude_if=_unless(50))
+    # A contraction shallower than this (percent) is noise and does not count (None: all count).
+    min_depth_pct: float | None = Field(default=None, gt=0, le=100, exclude_if=_unless(None))
+    # Each tightness sub-score at its pass limit; 1 at the tightest value (`vcp_score`).
+    score_floor: float = Field(default=0.5, ge=0, lt=1, exclude_if=_unless(0.5))
     # PR 57, each off (None) by default: every contraction high within this % of the highest one,
     # the first contraction at least this deep, and every contraction at least this many bars.
     max_high_spread_pct: float | None = Field(default=None, gt=0, le=100)
@@ -65,8 +81,10 @@ class VcpParams(ParamModel):
     @model_validator(mode="after")
     def _check(self) -> VcpParams:
         low, high = self.contractions
-        if not 2 <= low <= high <= CONTRACTION_CAP:
-            raise ValueError("contractions is [min, max] with 2 <= min <= max <= 6")
+        if not 2 <= low <= high <= MAX_CONTRACTIONS:
+            raise ValueError("contractions is [min, max] with 2 <= min <= max <= 12")
+        if self.lookback_days < self.min_base_bars:
+            raise ValueError("lookback_days_below_min_base_bars")
         return self
 
 
@@ -96,7 +114,7 @@ def base_start(close: Sequence[float | None], lookback: int) -> int | None:
 
 
 def pivot_points(
-    high: Sequence[float], low: Sequence[float], window: int = PIVOT_WINDOW
+    high: Sequence[float], low: Sequence[float], window: int
 ) -> tuple[list[int], list[int]]:
     """(pivot-high indices, pivot-low indices): bars strictly beyond `window` neighbours on each
     side."""
@@ -112,11 +130,11 @@ def pivot_points(
 
 
 def contraction_chain(
-    high: Sequence[float], low: Sequence[float], limit: int
+    high: Sequence[float], low: Sequence[float], window: int
 ) -> list[tuple[int, int]]:
-    """The (pivot-high, pivot-low) index pairs of the successive pullbacks, at most `limit`. The
-    first pullback starts at the base's first bar."""
-    pivot_highs, pivot_lows = pivot_points(high, low)
+    """The (pivot-high, pivot-low) index pairs of every successive pullback of the base, oldest
+    first, pivots `window` bars wide. The first pullback starts at the base's first bar."""
+    pivot_highs, pivot_lows = pivot_points(high, low, window)
     chain: list[tuple[int, int]] = []
     start = 0
     while True:
@@ -125,7 +143,7 @@ def contraction_chain(
             break
         chain.append((start, ends[0]))
         starts = [i for i in pivot_highs if i > ends[0]]
-        if not starts or len(chain) >= limit:
+        if not starts:
             break
         start = starts[0]
     return chain
@@ -139,16 +157,35 @@ def build_contractions(
     ]
 
 
+def recent_contractions(
+    contractions: Sequence[Contraction], params: VcpParams
+) -> list[Contraction]:
+    """The contractions the pattern is judged on: those at least `min_depth_pct` deep (all when
+    unset), the most recent `contractions[1]` of them, oldest first."""
+    floor = params.min_depth_pct
+    counted = [c for c in contractions if floor is None or c.depth_pct >= dec(floor)]
+    return counted[-params.contractions[1] :]
+
+
 def vcp_score(
     count: int, max_ratio: float, final_depth: float, dryup: float, params: VcpParams
 ) -> float:
-    """The mean of four sub-scores, each 1 at the tightest value and 0 at its parameter limit:
-    whether the count is in range, the worst depth ratio, the final depth and the dry-up."""
+    """The mean of four sub-scores: whether the count is in range (1 or 0), and the worst depth
+    ratio, the final depth and the dry-up, each 1 at the tightest value (0) falling linearly to
+    `score_floor` at its parameter limit, so a pattern that passes every rule never scores 0 on
+    one of them (0 beyond the limit, where the pattern fails anyway)."""
     low, high = params.contractions
     in_range = 1.0 if low <= count <= high else 0.0
-    ratio = clamp01(1.0 - max_ratio / params.depth_ratio_max)
-    depth = clamp01(1.0 - final_depth / params.final_depth_max_pct)
-    quiet = clamp01(1.0 - dryup / params.dryup_vs_avg50)
+    floor = params.score_floor
+
+    def tight(value: float, limit: float) -> float:
+        if value > limit:
+            return 0.0
+        return floor + (1.0 - floor) * clamp01(1.0 - value / limit)
+
+    ratio = tight(max_ratio, params.depth_ratio_max)
+    depth = tight(final_depth, params.final_depth_max_pct)
+    quiet = tight(dryup, params.dryup_vs_avg50)
     return (in_range + ratio + depth + quiet) / 4.0
 
 
@@ -181,7 +218,8 @@ def _pattern_fault(
 
 @dataclass(frozen=True)
 class _Base:
-    """The base's bars (from its start to the date) and the volumes of the 50 sessions before."""
+    """The base's bars (from its start to the date) and the volumes of the `dryup_baseline_days`
+    sessions before."""
 
     dates: list[date]
     highs: list[float]
@@ -191,17 +229,17 @@ class _Base:
 
 
 def _read_base(ctx: EvalContext, params: VcpParams) -> _Base | CriterionResult:
-    """The base, or the failing result: `no_data` without a start, the 50 sessions before it
-    or a complete base, `base_too_short` under `MIN_BASE_BARS`."""
+    """The base, or the failing result: `no_data` without a start, the baseline sessions before
+    it or a complete base, `base_too_short` under `min_base_bars`."""
     bars = ctx.history
     start = base_start(bars.close, params.lookback_days)
     if start is None:
         return no_data()
-    baseline = last(bars.volume, AVG_VOLUME_DAYS, offset=len(bars) - start)
+    baseline = last(bars.volume, params.dryup_baseline_days, offset=len(bars) - start)
     if baseline is None:
         return no_data()
     high, low, volume = bars.high[start:], bars.low[start:], bars.volume[start:]
-    if len(high) < MIN_BASE_BARS:
+    if len(high) < params.min_base_bars:
         return verdict(False, None, "base_too_short")
     if any(v is None for v in (*high, *low, *volume)):
         return no_data()
@@ -216,7 +254,7 @@ def _read_base(ctx: EvalContext, params: VcpParams) -> _Base | CriterionResult:
 
 def _dryup(base: _Base, final: Contraction) -> Decimal | None:
     """The final contraction's mean volume over the baseline mean, or None on a zero baseline."""
-    mean_avg = dsum(base.baseline) / AVG_VOLUME_DAYS
+    mean_avg = dsum(base.baseline) / len(base.baseline)
     if mean_avg <= 0:
         return None
     mean_final = dsum(base.volumes[final.start : final.end + 1]) / (final.end - final.start + 1)
@@ -265,19 +303,18 @@ def vcp(ctx: EvalContext, params: VcpParams) -> CriterionResult:
     """HAT-CRIT-040. Passes with the score, the contraction list, `pivot` (the highest high of
     the final contraction) and `final_contraction_low` (its lowest low), or fails with the first
     rule broken as the reason. A base is the bars from the first highest close of the lookback
-    to the date, at least `MIN_BASE_BARS` long (`base_too_short`) with the 50 sessions before it
-    (`no_data` without them), which are the dry-up baseline. With `pivot_source: base_high` every
-    base passes: the score is the pattern's when it holds and 0 when not (`pattern` names the
-    rule broken), `pivot` is the base's highest high, and `final_contraction_low` the last
-    contraction's low (the base's lowest low without one); a base whose low equals its high
-    fails `flat_base`, so the low is always below the pivot."""
+    to the date, at least `min_base_bars` long (`base_too_short`) with the `dryup_baseline_days`
+    sessions before it (`no_data` without them), which are the dry-up baseline. The pattern is
+    judged on the latest counted contractions (`recent_contractions`). With `pivot_source:
+    base_high` every base passes: the score is the pattern's when it holds and 0 when not
+    (`pattern` names the rule broken), `pivot` is the base's highest high, and
+    `final_contraction_low` the last contraction's low (the base's lowest low without one); a
+    base whose low equals its high fails `flat_base`, so the low is always below the pivot."""
     base = _read_base(ctx, params)
     if isinstance(base, CriterionResult):
         return base
-    _, hi_count = params.contractions
-    contractions = build_contractions(
-        base.highs, base.lows, contraction_chain(base.highs, base.lows, hi_count)
-    )
+    chain = contraction_chain(base.highs, base.lows, params.pivot_window)
+    contractions = recent_contractions(build_contractions(base.highs, base.lows, chain), params)
     depths = [c.depth_pct for c in contractions]
     ratios = [b / a for a, b in zip(depths, depths[1:], strict=False) if a > 0]
     fault = _pattern_fault(contractions, ratios, params)
