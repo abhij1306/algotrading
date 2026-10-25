@@ -124,3 +124,41 @@ def test_execution__a_sales_stop_is_cancelled_only_once_the_broker_shows_it(
         session.refresh(row)
         assert row.status == "cancelled"
         assert not any(name.startswith("place") for name, _ in fake.calls)
+
+
+def test_execution__a_stop_lost_to_an_unanswered_cancel_is_placed_again(
+    conn: Connection,
+) -> None:
+    """The cancel's answer is lost and no read shows the stop: the sale waits, URGENT
+    `stop.cancel_unacked` goes, and the stop is restored. Asked to modify to its own trigger, the
+    broker refuses (the stop is gone), so the row ends cancelled and `protect` places a new stop."""
+    w = b.world(conn)
+    held = b.signal(conn, w)
+    position = b.position(conn, w, held, is_virtual=False)
+    row_id = _real_order(
+        conn,
+        w,
+        held,
+        purpose="stop_day",
+        side="sell",
+        order_type="sl_m",
+        broker_order_id="S-1",
+        position_id=position,
+        trigger_price=Decimal("95"),
+        tag=encode_tag(held, "stop_day", 0),
+    )
+    fake = FakeBroker(
+        orders=[],
+        cancel_reply={"s": "error", "message": "Fyers cancel timeout/unavailable"},
+        modify_reply={"s": "error", "message": "Order already cancelled"},
+    )
+    notifier = RecordingNotifier()
+    with session_on(conn) as session:
+        assert not _desk(fake, notifier).make_room(session, position, 0, NOW)
+        row = session.get(HatOrder, row_id)
+        assert row is not None
+        assert row.status == "cancelled"
+        assert [code for code, _, _ in notifier.alerts][0] == ALERT_STOP_CANCEL_UNACKED
+        names = [name for name, _ in fake.calls]
+        assert names.index("cancel_order") < names.index("modify_order")
+        assert any(name.startswith("place") for name in names[names.index("modify_order") :])

@@ -77,10 +77,12 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   nightly and against the GTT book at 08:40 and each fill sync; a dropped GTT is replaced at once;
   a lost broker answer is settled against the broker's book, never left frozen. Fyers cannot
   modify an SL-M stop into a MARKET order, so a market sale over a day stop cancels it first and
-  is sent only once the broker's book shows the stop cancelled, within a bounded wait; with no
-  acknowledgement the sale waits, the stop stays the working stop and the owner is told URGENT
-  (`stop.cancel_unacked`). A lost sale of
-  an earlier session is settled from the holdings net of the owner's own shares (the holding
+  is sent only once the broker acknowledges the cancel, within a bounded wait: the book shows the
+  stop cancelled, or the cancel was answered ok and no read showed the stop (spent or
+  rate-limited reads never hold a sale over a stop already gone). Otherwise the sale waits and
+  the owner is told URGENT (`stop.cancel_unacked`); a stop whose cancel answer was lost is
+  probed with a modify to its own trigger and, refused, placed again at once. A lost sale of an
+  earlier session is settled from the holdings net of the owner's own shares (the holding
   baseline a reconciliation recorded before the sale); with no baseline the position sells
   nothing until the owner books that sale. A lost entry of an earlier session is never rejected
   on today's book: it ends only when the holdings show no shares beyond HAT's other open

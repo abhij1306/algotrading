@@ -14,10 +14,11 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
   broker (`entry_cancel.EntryCancel`, which also cancels an entry nothing of which filled).
 - **A sale over a day stop** (`make_room`, `await_cancel`): Fyers cannot modify an SL-M stop
   into a MARKET order, so a market sale of shares a day stop covers cancels the stop first and
-  goes only once the broker acknowledges the cancel: its book shows the stop cancelled, read
-  again for a bounded wait (`CANCEL_ACK_READS`). With no acknowledgement the sale is not sent,
-  the owner is told URGENT (`stop.cancel_unacked`) and the stop is restored: it stays the
-  position's working stop, and the fill sync places another if the broker shows it gone.
+  goes only once the broker acknowledges the cancel (`CancelAck`): its book shows the stop
+  cancelled, read again for a bounded wait (`CANCEL_ACK_READS`), or it answered the cancel ok
+  and no read showed the stop. With no acknowledgement the sale is not sent and the owner is
+  told URGENT (`stop.cancel_unacked`); a stop whose cancel answer was lost is restored
+  (`_restore`): probed with a modify to its own trigger, and placed again when that is refused.
 - **When the stop rises** (`follow`): the working stop is modified up to the new price (day:
   `modify_order`; GTT: `modify_gtt`, event `gtt.refreshed`), never down (`raise_only`), at the
   stop rounded down to the tick (`broker_trigger`).
@@ -57,6 +58,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from enum import StrEnum
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -68,8 +70,8 @@ from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, Hat
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState, before_continuous_end
 from ..time import IST, day_bounds, trade_date_of, utc_now
-from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import (
+    CODE_REJECTED,
     AckResult,
     BrokerUnavailableError,
     GttModify,
@@ -77,6 +79,7 @@ from .broker import (
     OrderType,
     Side,
 )
+from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .entry_cancel import EntryCancel
 from .gtt import gtt_limit_price
 from .guard import ExecutionGuard
@@ -185,6 +188,15 @@ REPLACED = "replaced"
 UNVERIFIED = "unverified"
 
 
+class CancelAck(StrEnum):
+    """What came of a sale's stop cancel (`await_cancel`)."""
+
+    ACKED = "acked"  # the stop is cancelled: the sale may go
+    RESTING = "resting"  # the stop still rests (shown working, or the cancel refused or unsent)
+    TRIGGERED = "triggered"  # the stop sold shares: the fill sync books the sale
+    UNKNOWN = "unknown"  # the cancel's answer lost and no read showed the stop
+
+
 def await_cancel(
     broker: HatBroker,
     broker_order_id: str,
@@ -193,18 +205,20 @@ def await_cancel(
     sleep: Callable[[float], None] = time.sleep,
     reads: int = CANCEL_ACK_READS,
     every: float = CANCEL_ACK_EVERY,
-) -> bool:
+) -> CancelAck:
     """Cancel the day stop `broker_order_id` (HT tag `tag`) and wait for the broker to
-    acknowledge it: True once its order book shows the stop cancelled with nothing filled,
-    read up to `reads` times `every` seconds apart; the cancel always goes before the first
-    read. False when no acknowledgement came by then: no write may go (`write_refusal`: the
-    circuit or the day's calls; nothing is sent), the book shows the stop still working or
-    filled (it triggered: the fill sync books the sale), or the book could not be read. A
-    cancel reply that was lost or refused is read for like an ok one, since the stop may be
-    cancelled all the same."""
+    acknowledge it, reading its order book up to `reads` times `every` seconds apart; the cancel
+    always goes before the first read. ACKED: the book shows the stop cancelled with nothing
+    filled, or the broker answered the cancel ok and no read in the wait showed the stop (the
+    book unreadable, its reads spent, or lagging): its success answer is the acknowledgement
+    then, so a spent read share never holds a sale over a stop already gone. RESTING: no write
+    may go (`write_refusal`; nothing is sent), the book still shows the stop working, or the
+    broker refused the cancel and no read showed it cancelled. TRIGGERED: the book shows it
+    filled. UNKNOWN: the cancel's answer was lost and no read showed the stop."""
     if broker.write_refusal() is not None:
-        return False
-    broker.cancel_order(broker_order_id)
+        return CancelAck.RESTING
+    ack = broker.cancel_order(broker_order_id)
+    seen = False  # a read showed the stop
     for attempt in range(reads):
         if attempt:
             sleep(every)
@@ -214,11 +228,16 @@ def await_cancel(
             continue
         if found is None or found.tag != tag:
             continue  # the book can lag behind the cancel
+        seen = True
         if found.filled_qty > 0:
-            return False
+            return CancelAck.TRIGGERED
         if found.status == "cancelled":
-            return True
-    return False
+            return CancelAck.ACKED
+    if seen:
+        return CancelAck.RESTING
+    if ack.ok:
+        return CancelAck.ACKED
+    return CancelAck.RESTING if ack.code == CODE_REJECTED else CancelAck.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -801,19 +820,38 @@ class StopDesk:
         broker is cancelled only through `await_cancel`: Fyers cannot modify an SL-M into a
         MARKET order, and a sale sent while the stop still rests is refused, or, when the owner
         holds shares of the symbol, sells them too. With no acknowledgement in the bounded wait
-        the stop is restored (left the position's working stop, never marked cancelled; the
-        fill sync protects the position again if the broker shows it gone), the owner is told
-        URGENT `stop.cancel_unacked` and False holds the sale back. Any other stop is `cancel`."""
+        the owner is told URGENT `stop.cancel_unacked`, False holds the sale back and the stop is
+        restored (`_restore`); a triggered stop is the fill sync's. Any other stop is `cancel`."""
         if row.purpose != STOP_DAY or row.broker_order_id is None or row.placed_at is None:
             return self.cancel(session, target, row, now)
-        if not await_cancel(self._broker, row.broker_order_id, row.tag, sleep=self._sleep):
-            logger.error("stop %s not shown cancelled: the sale waits, the stop stays", row.tag)
+        outcome = await_cancel(self._broker, row.broker_order_id, row.tag, sleep=self._sleep)
+        if outcome is not CancelAck.ACKED:
+            logger.error("stop %s not shown cancelled (%s): the sale waits", row.tag, outcome)
             self.alert(ALERT_STOP_CANCEL_UNACKED, target, now, CODE_NO_CANCEL_ACK)
+            if outcome is CancelAck.UNKNOWN:
+                self._restore(session, target, row, now)
             return False
         row.status = "cancelled"
         self.order_event(session, row, target, "order.cancelled", now)
         session.commit()
         return True
+
+    def _restore(self, session: Session, target: StopTarget, row: HatOrder, now: datetime) -> None:
+        """A sale's day stop whose cancel answer was lost and that no read showed: ask the
+        broker to modify it to its own trigger. Taken, it still rests and stays the working
+        stop. Refused, it is gone: it ends `cancelled` and a new stop is placed at once
+        (`protect`), unless the owner holds shares of the symbol (a second stop beside one that
+        rests would sell them), when the fill sync settles it from the book. Unanswered, it stays
+        the working stop until the fill sync reads the book."""
+        ack = self._broker.modify_order(
+            str(row.broker_order_id), order_type=OrderType.SL_M, trigger_price=row.trigger_price
+        )
+        if ack.ok or ack.code != CODE_REJECTED or self.owner_holds(session, target, now):
+            return
+        row.status = "cancelled"
+        self.order_event(session, row, target, "order.cancelled", now)
+        session.commit()
+        self.protect(session, target.position.id, now)
 
     def cancel(self, session: Session, target: StopTarget, row: HatOrder, now: datetime) -> bool:
         if row.status == "pending" and row.placed_at is None:

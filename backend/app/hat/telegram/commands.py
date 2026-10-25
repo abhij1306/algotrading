@@ -33,6 +33,8 @@ from ..read.sessions import account_label
 from ..risk import kill, kill_ops
 from ..risk.bots import pause_bot, resume_bot
 from ..risk.modes import ModeChangeError, plan_mode_change
+from ..risk.policy import effective_version
+from ..risk.policy_service import load_versions
 from ..risk.sessions import SessionCalendar, SessionState
 from ..settings import load_settings, process_env
 from ..time import as_utc, trade_date_of
@@ -299,13 +301,20 @@ def _arm(ctx: CommandContext, session: Session, args: Sequence[str]) -> Reply:
     if not trips:
         return refused(NOTHING_TRIPPED, "No kill switch to re-arm")
     names = read_bots.labels(session, (r.bot_id for r in trips if r.bot_id is not None))
+    policy = effective_version(load_versions(session, load_settings().user_id), ctx.now)
     lines = [
-        render.kill_line(
-            ACCOUNT if r.bot_id is None else names.get(r.bot_id, str(r.bot_id)[:8]),
-            r.reason,
-            r.tripped_at,
-        )
-        for r in trips
+        render.drawdown_line(
+            None if policy is None else policy.policy.account_drawdown_pct,
+            None if policy is None else policy.policy.bot_drawdown_pct,
+        ),
+        *(
+            render.kill_line(
+                ACCOUNT if r.bot_id is None else names.get(r.bot_id, str(r.bot_id)[:8]),
+                r.reason,
+                r.tripped_at,
+            )
+            for r in trips
+        ),
     ]
     if not arm_fits(lines, as_utc(ctx.now) + CONFIRM_WINDOW):
         return refused(

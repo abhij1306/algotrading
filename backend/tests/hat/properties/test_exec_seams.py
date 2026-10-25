@@ -32,7 +32,12 @@ from app.hat.execution.position_desk import (
     Verdict,
     second_absence,
 )
-from app.hat.execution.protect import CANCEL_ACK_EVERY, CANCEL_ACK_READS, await_cancel
+from app.hat.execution.protect import (
+    CANCEL_ACK_EVERY,
+    CANCEL_ACK_READS,
+    CancelAck,
+    await_cancel,
+)
 from app.hat.execution.tags import encode_tag
 from app.hat.ops.scheduler import ScheduledJob, due, starts_at, window_end
 from app.hat.risk.sessions import (
@@ -288,7 +293,7 @@ def test_a_sale_waits_for_its_stop_cancel_to_show_in_the_book() -> None:
             fake.orders = [stop_row(1)]
 
     adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
-    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=sleep)
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=sleep) is CancelAck.ACKED
     assert [name for name, _ in fake.calls] == [
         "cancel_order",
         "fetch_orderbook",
@@ -299,20 +304,20 @@ def test_a_sale_waits_for_its_stop_cancel_to_show_in_the_book() -> None:
 
 
 @pytest.mark.parametrize(
-    ("book", "cancel_reply"),
+    ("book", "cancel_reply", "outcome"),
     [
-        ([stop_row(6)], {"s": "ok", "message": "Cancelled"}),  # never shown cancelled
-        ([stop_row(2, filled=10)], {"s": "error", "message": "rejected"}),  # it triggered
-        (BrokerUnavailableError("down"), CANCEL_TIMEOUT),  # the answer and the book lost
+        ([stop_row(6)], {"s": "ok", "message": "Cancelled"}, CancelAck.RESTING),  # still working
+        ([stop_row(2, filled=10)], {"s": "error", "message": "rejected"}, CancelAck.TRIGGERED),
+        (BrokerUnavailableError("down"), CANCEL_TIMEOUT, CancelAck.UNKNOWN),  # all lost
     ],
 )
 def test_no_cancel_ack_in_the_bounded_wait_holds_the_sale(
-    book: object, cancel_reply: object
+    book: object, cancel_reply: object, outcome: CancelAck
 ) -> None:
     fake = FakeBroker(orders=book, cancel_reply=cancel_reply)
     waits: list[float] = []
     adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
-    assert not await_cancel(adapter, "S-1", STOP_TAG, sleep=waits.append)
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=waits.append) is outcome
     assert fake.calls[0] == ("cancel_order", "S-1")
     assert not any(name == "place_order" for name, _ in fake.calls)
     assert len(waits) <= CANCEL_ACK_READS - 1
@@ -321,5 +326,38 @@ def test_no_cancel_ack_in_the_bounded_wait_holds_the_sale(
 def test_no_cancel_is_sent_while_writes_are_refused() -> None:
     fake = FakeBroker(orders=[stop_row(1)], circuit_open=True)
     adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
-    assert not await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None)
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None) is CancelAck.RESTING
+    assert fake.calls == []
+
+
+class _Spent:
+    """A call budget with its writes or its day spent."""
+
+    def __init__(self, *, writes: bool, day: bool) -> None:
+        self.writes, self.day = writes, day
+
+    def writes_spent(self) -> bool:
+        return self.writes
+
+    def day_spent(self) -> bool:
+        return self.day
+
+
+def test_spent_reads_never_hold_a_sale_over_a_cancelled_stop() -> None:
+    """The broker answered the cancel ok but the book cannot be read (the day's reads spent, or
+    rate limited): the ok answer is the acknowledgement, so the sale is not held while the
+    position sits with no stop at the broker."""
+    fake = FakeBroker(orders=[stop_row(6)], budget=_Spent(writes=False, day=True))
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None) is CancelAck.ACKED
+    assert fake.calls[0] == ("cancel_order", "S-1")
+
+
+def test_spent_writes_send_no_cancel() -> None:
+    """A budget whose writes are spent refuses unsent, as `FyersBroker` does with its circuit
+    closed: the stop rests and no cancel reaches the broker."""
+    fake = FakeBroker(orders=[stop_row(1)], budget=_Spent(writes=True, day=False))
+    adapter = FyersHatBroker(fake, instruments=lambda: [("TCS", "NSE:TCS-EQ")])
+    assert adapter.write_refusal() is not None
+    assert await_cancel(adapter, "S-1", STOP_TAG, sleep=lambda _s: None) is CancelAck.RESTING
     assert fake.calls == []

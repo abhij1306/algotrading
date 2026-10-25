@@ -3,6 +3,7 @@ Bot API refusals are permanent, the reply to a Take, and the approval tokens' si
 
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
+from decimal import Decimal
 
 import pytest
 from hypothesis import example, given
@@ -197,3 +198,10 @@ def test_approval_signer_sign_verify_tamper_expiry() -> None:
     assert SIGNER.verify("x" + SIGNER.button(TAKE, signal, EXPIRES)[1:]) is None
     with pytest.raises(HatConfigError):
         ApprovalSigner(b"short")
+
+
+def test_the_arm_question_names_the_thresholds_in_force() -> None:
+    assert render.drawdown_line(Decimal("0.10"), Decimal("0.075")) == (
+        "Drawdown thresholds: account 10%, bot 7.5%"
+    )
+    assert "no risk policy" in render.drawdown_line(None, None)

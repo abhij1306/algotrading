@@ -11,7 +11,7 @@ The rules are the pure ones in `kill.py`. Nothing here commits.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, Decimal
 
@@ -224,31 +224,36 @@ def _unfunded(session: Session, bot_id: uuid.UUID, funded: date, cut: datetime) 
     )
 
 
-def fill_cash(session: Session, signal_id: uuid.UUID) -> Decimal:
-    """The net cash of a position's fills: sales less purchases, less fees (negative while
-    held; `write_result` sums the same fills once it closes)."""
-    cash = Decimal(0)
-    for side, qty, price, fee in session.execute(
-        select(HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
+def fill_cash(session: Session, signal_ids: Collection[uuid.UUID]) -> dict[uuid.UUID, Decimal]:
+    """The net cash of each signal's fills, in one query: sales less purchases, less fees
+    (negative while held; `write_result` sums the same fills once it closes). A signal without
+    a fill is 0."""
+    cash = dict.fromkeys(signal_ids, Decimal(0))
+    if not cash:
+        return cash
+    for signal_id, side, qty, price, fee in session.execute(
+        select(HatOrder.signal_id, HatOrder.side, HatFill.qty, HatFill.price, HatFill.fees)
         .join(HatOrder, HatOrder.id == HatFill.order_id)
-        .where(HatOrder.signal_id == signal_id)
+        .where(HatOrder.signal_id.in_(cash))
     ):
-        cash += (1 if side == "sell" else -1) * qty * Decimal(price) - Decimal(fee)
+        cash[signal_id] += (1 if side == "sell" else -1) * qty * Decimal(price) - Decimal(fee)
     return cash
 
 
 def _holdings(session: Session, bot_id: uuid.UUID, marks: Marks) -> list[kill.Holding]:
     """The bot's open real positions as `kill.open_pnl` marks them: the net cash of each one's
     fills (`fill_cash`), its stop, its latest trade and its previous close."""
-    out = []
-    for position in session.scalars(
+    positions = session.scalars(
         select(HatPosition).where(
             HatPosition.bot_id == bot_id,
             HatPosition.is_virtual.is_(False),
             HatPosition.closed_at.is_(None),
         )
-    ):
-        cash = fill_cash(session, position.signal_id)
+    ).all()
+    cash_of = fill_cash(session, {position.signal_id for position in positions})
+    out = []
+    for position in positions:
+        cash = cash_of[position.signal_id]
         price, fresh, close = marks(position.instrument_id)
         out.append(
             kill.Holding(

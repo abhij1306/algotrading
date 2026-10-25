@@ -139,7 +139,8 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
 
 ### First live session checks (O2 day)
 
-Read-only checks on the first session with a real Fyers account; note each in the Check log.
+Checks on the first session with a real Fyers account; note each in the Check log. They place
+no order, though `onboard-account` writes the account row and its capabilities.
 Fyers' reply fields here are assumed from its documentation until read on the live account.
 
 - GTT fields and tags: a placed GTT shows its HT `orderTag`; its sale carries the tag.
@@ -298,10 +299,11 @@ advisory lock; `features` does not take it, so run it after they finish.
   (still protective); the stored stop or tick is wrong: a bug to report.
 - **`stop.cancel_unacked`:** URGENT, once a day per position. A sale over a day stop waited for
   the broker to show the stop cancelled and it did not (Fyers cannot turn an SL-M into a market
-  order, so the stop is cancelled before the sale). The sale was not sent and the stop is still
-  HAT's working stop. Check the Fyers order book: the stop still resting is protective (the exit
-  tries again); the stop cancelled leaves the position bare until the next fill sync places a
-  new one, so decide on `/flatten`.
+  order, so the stop is cancelled before the sale). The sale was not sent. A stop still shown
+  working, or a cancel the broker refused, stays HAT's working stop; a cancel whose answer was
+  lost is probed with a modify to the stop's own trigger, and a refused probe (the stop gone)
+  places a new stop at once. Check the Fyers order book: the stop resting is protective (the
+  exit tries again); no stop resting means decide on `/flatten`.
 - **`position.series_changed`:** exits continue under the new symbol; `unmapped` means none run:
   decide whether to sell at Fyers.
 - **`exits.view_failed`:** URGENT, once a day per position. Building the position's exit view

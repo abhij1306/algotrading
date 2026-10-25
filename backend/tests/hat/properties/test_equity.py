@@ -8,6 +8,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.hat.daily.accounts import _one_book
 from app.hat.execution import fyers_payloads, kite_payloads
 from app.hat.execution.broker import BrokerFunds, BrokerHolding, BrokerPosition
 from app.hat.execution.equity import OpenCost, account_equity, book_equity
@@ -127,3 +128,29 @@ def test_book_equity_holds_hats_open_positions_at_cost() -> None:
         [hat],
     )
     assert trade_date == settled == CASH + 4 * Decimal("1450")
+
+
+class _Moving:
+    """A broker whose positions answer from `books` in turn, the last one ever after."""
+
+    def __init__(self, *books: list[BrokerPosition]) -> None:
+        self.books = list(books)
+
+    def positions(self) -> list[BrokerPosition]:
+        return self.books.pop(0) if len(self.books) > 1 else self.books[0]
+
+    def holdings(self) -> list[BrokerHolding]:
+        return []
+
+    def funds(self) -> BrokerFunds:
+        return BrokerFunds(available=CASH, used=Decimal(0))
+
+
+def test_the_three_reads_are_one_book_or_none() -> None:
+    """Funds, positions and holdings are three calls: a fill between them is caught by reading
+    the positions again after the funds, and the whole read is taken once more."""
+    held = [BrokerPosition("TCS", QTY, COST, "CNC", COST)]
+    _, positions, _ = _one_book(_Moving([], held, held))  # type: ignore[arg-type]
+    assert positions == held
+    with pytest.raises(ValueError):
+        _one_book(_Moving([], held, [], held))  # type: ignore[arg-type]

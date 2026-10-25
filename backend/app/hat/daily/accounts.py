@@ -39,7 +39,14 @@ from sqlalchemy.sql.expression import Exists
 from ..clock import SYSTEM_CLOCK, Clock
 from ..engine.entries import TokenIssuer
 from ..errors import HatConfigError
-from ..execution.broker import Capabilities, HatBroker, SessionStatus
+from ..execution.broker import (
+    BrokerFunds,
+    BrokerHolding,
+    BrokerPosition,
+    Capabilities,
+    HatBroker,
+    SessionStatus,
+)
 from ..execution.entry_timeout import EntryWatch
 from ..execution.equity import OpenCost, book_equity
 from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
@@ -272,6 +279,25 @@ def reconcile_down(
     return last_success is not None and now - last_success >= wait
 
 
+def _one_book(
+    broker: HatBroker,
+) -> tuple[BrokerFunds, list[BrokerPosition], list[BrokerHolding]]:
+    """The funds, positions and holdings as one book: three reads, so the positions are read
+    again after the funds and the whole read once more when a fill moved them in between (the
+    cash and the shares of one book, never of two). Raises ValueError when they moved twice."""
+    for _ in range(2):
+        positions = broker.positions()
+        holdings = broker.holdings()
+        funds = broker.funds()
+        if _shares(broker.positions()) == _shares(positions):
+            return funds, positions, holdings
+    raise ValueError("positions moved during the equity read")
+
+
+def _shares(positions: list[BrokerPosition]) -> list[tuple[str, int, str]]:
+    return sorted((p.symbol, p.qty, p.product) for p in positions)
+
+
 def _open_costs(session: Session, account_id: uuid.UUID) -> list[OpenCost]:
     """The account's open real positions (its bots'), each with its symbol, shares and fill
     cash (`drawdown.fill_cash`)."""
@@ -284,10 +310,9 @@ def _open_costs(session: Session, account_id: uuid.UUID) -> list[OpenCost]:
             HatPosition.is_virtual.is_(False),
             HatPosition.closed_at.is_(None),
         )
-    )
-    return [
-        OpenCost(str(symbol), qty, fill_cash(session, signal_id)) for signal_id, qty, symbol in rows
-    ]
+    ).all()
+    cash = fill_cash(session, {signal_id for signal_id, _, _ in rows})
+    return [OpenCost(str(symbol), qty, cash[signal_id]) for signal_id, qty, symbol in rows]
 
 
 def _holds_real_positions() -> Exists:
@@ -535,10 +560,7 @@ class Desks:
             try:
                 with self._session_factory() as session:
                     hat_open = _open_costs(session, account_id)
-                broker = desk.broker
-                total += book_equity(
-                    broker.funds(), broker.positions(), broker.holdings(), hat_open
-                )
+                total += book_equity(*_one_book(desk.broker), hat_open)
             except Exception as exc:
                 logger.exception("equity of account %s unreadable", account_id)
                 raise JobError("equity_unavailable") from exc
