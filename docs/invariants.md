@@ -91,8 +91,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 - **Corporate-action locks.** A position whose prices may be on the wrong scale gets no exit
   evaluation and its instrument no entry; its broker stop rests and `/flatten` still sells it:
   a stored split or bonus not yet rescaled, an action the rescale cannot handle, and a held name
-  whose live price is at or below 0.6 of the previous raw close with no action stored since
-  (URGENT `position.split_gap`, until the owner stores the action or resolves it), and a position
+  whose live price is at or below 0.6 of the previous raw close with no action stored since (a
+  dividend explains none; a rights entitlement is not watched) (URGENT `position.split_gap`, until the owner stores the action or resolves it), and a position
   held across an ISIN change (a `linked` lineage row from its instrument, effective after it
   opened: URGENT `position.isin_changed`, until the owner resolves it). No instrument of the
   lineage chain of a locked position takes an entry. A real position is rescaled only once its

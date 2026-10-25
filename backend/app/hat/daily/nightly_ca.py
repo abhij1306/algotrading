@@ -61,12 +61,12 @@ class CaAdjust:
         stored. A failure there is only logged: the quarantine was alerted already and stands.
         After the lineage refresh each position held across an ISIN change is flagged
         (`_isin_changes`, Q4).
-        Then the dividends of the day's corporate-action file go in with their amounts
-        (`_dividends`, CA4), its demergers become notices and the positions held into them are
-        alerted (`_demergers`, CA8), and every closed trade's dividends are brought up to the
-        stored ones (`restate_dividends`, R-DIV: a trade closed on tonight's ex-date was written
-        without it). The stored actions are checked against the version ledger (`_projection`,
-        CA6). Then the factors are checked to load into the adjusted view
+        Then the day's corporate-action file is kept (`_archive_bc`), its dividends go in with
+        their amounts (`_dividends`, CA4), its demergers become notices and the positions held
+        into them are alerted (`_demergers`, CA8), and every closed trade's dividends are
+        brought up to the stored ones (`restate_dividends`, R-DIV: a trade closed on tonight's
+        ex-date was written without it). The stored actions are checked against the version
+        ledger (`_projection`, CA6). Then the factors are checked to load into the adjusted view
         (`cumulative_segments`, no connection) before the features read it."""
         try:
             self._next_session_actions(day)
@@ -79,6 +79,7 @@ class CaAdjust:
         try:
             text = self._corporate_action_file(day)
             if text is not None:
+                self._archive_bc(day, text)
                 self._dividends(day, text)
         except Exception:
             # The series stays without tonight's dividends (a drop it does not pay back) until
@@ -197,6 +198,17 @@ class CaAdjust:
         """The night's `bc` file of NSE's PR archive; None when no source is configured."""
         source = self.deps.sources.corporate_actions
         return None if source is None else source(day)()
+
+    def _archive_bc(self, day: date, text: str) -> None:
+        """Keep tonight's `bc` file under the data root (`DataStore.store_bc`, owner 2026-10-25),
+        so a later check can see which nights NSE listed a demerger. A failure is only logged:
+        the night's imports read the text either way."""
+        try:
+            kept = self.deps.store.store_bc(day, text)
+        except Exception:
+            logger.exception("tonight's bc file was not archived")
+            return
+        logger.info("bc file of %s kept at %s", day, kept.name)
 
     def _demergers(self, day: date, text: str | None) -> None:
         """The demergers the night's `bc` file lists become notices dated tonight, a stored notice

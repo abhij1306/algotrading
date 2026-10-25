@@ -90,6 +90,19 @@ def test_split_like(price: str, previous: str, split: bool) -> None:
 
 
 @pytest.mark.parametrize(
+    ("isin", "watched"),
+    [
+        ("INE234I01028", True),  # equity shares
+        ("INE0ABC20012", False),  # a rights entitlement (type 20, the -RE symbols)
+        (None, True),  # an unknown instrument stays watched
+    ],
+)
+def test_split_gap_watched(isin: str | None, watched: bool) -> None:
+    """The split-gap guard skips only rights entitlements (owner 2026-10-25)."""
+    assert rescale.split_gap_watched(isin) is watched
+
+
+@pytest.mark.parametrize(
     ("qty", "f", "held"),
     [
         (100, Fraction(1, 2), 200),  # a 1:2 split

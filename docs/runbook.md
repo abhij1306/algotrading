@@ -188,7 +188,7 @@ Alerts:
 - URGENT `corporate_action.unhandled`: `/flatten` a real position; a virtual one, outside market
   hours: `$ADMIN resolve-action --position <id> --action <ex-date>:<type> --close-at <price>`.
 - URGENT `position.split_gap` (symbol, previous close, price): a held name gapped like a split
-  with no stored action. A split or bonus: add it (`correct-actions`, op add), and the next
+  with no stored action (a stored dividend does not count). A split or bonus: add it (`correct-actions`, op add), and the next
   `ca.rescale` rescales the position. A real crash: `/flatten` a real position; a virtual one,
   outside market hours: `$ADMIN resolve-action --position <id> --action <day>:split_gap
   --close-at <price>`.

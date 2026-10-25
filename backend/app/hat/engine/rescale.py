@@ -34,7 +34,9 @@ two, is taken for an unstored split (Q3): the exits record one URGENT `position.
 (`flag_split_gap`) and the position is manage-only (`open_guards`) until the owner stores the
 action (it is then rescaled or flagged unhandled as above) or resolves the gap (`resolve_action`,
 `<day>:split_gap`; a real position is sold by `/flatten`). A real crash of 40% waits for the
-owner too, by decision.
+owner too, by decision. A stored dividend never explains a gap, however large (owner
+2026-10-25), and a rights entitlement (`-RE`) is never watched: it trades on its own terms and
+gaps without any action (`split_gap_watched`).
 
 A position held across an ISIN change (an open position on the old side of a `linked` lineage
 row that took effect after it opened) is manage-only the same way (Q4): its old instrument gets
@@ -60,6 +62,7 @@ from sqlalchemy.orm import Session
 
 from ..data.chains import LINKED, chain_members, stored_links
 from ..data.corporate_actions import PRICE_NEUTRAL_TYPES, TYPE_BONUS, TYPE_SPLIT
+from ..data.isin import rights_entitlement
 from ..errors import HatError
 from ..events import record
 from ..models import (
@@ -102,6 +105,7 @@ __all__ = [
     "resolve_action",
     "scale_position",
     "scale_qty",
+    "split_gap_watched",
     "split_like",
     "unhandled_actions",
 ]
@@ -265,9 +269,17 @@ def split_like(price: Decimal, previous_close: Decimal) -> bool:
     return previous_close > 0 and price <= SPLIT_GAP_RATIO * previous_close
 
 
+def split_gap_watched(isin: str | None) -> bool:
+    """Whether the split-gap guard watches an instrument of this ISIN: every one but a rights
+    entitlement (`-RE`), which trades on its own terms (owner 2026-10-25). An unknown ISIN is
+    watched."""
+    return isin is None or not rights_entitlement(isin)
+
+
 def actions_between(session: Session, instrument_id: uuid.UUID, after: date, through: date) -> bool:
     """Whether a price-changing action of the instrument is stored with its ex-date after
-    `after` and on or before `through`."""
+    `after` and on or before `through`. A dividend is price-neutral here: it never explains a
+    split-like gap until the dividend feed is reviewed (owner 2026-10-25)."""
     found = session.scalar(
         select(HatCorporateAction.id)
         .where(
