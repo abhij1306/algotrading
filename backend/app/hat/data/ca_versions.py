@@ -4,7 +4,7 @@ overwritten, with the date a backtest could first have used it.
 An event is (instrument, ex-date, type). Each write of an action appends a row to
 `hat_corporate_action_version` in the write's own transaction (`Ledger`): a load's new row and
 its conflicting later values, the owner's corrections and list lines (a delete is a version too),
-a dividend amount filled in, a research or file import, CA5's back-fill of `known_on`. A version
+a dividend amount filled in, a research or file import. A version
 carries its `seq` (1, 2, ... per event: the precedence, later wins), its `status`:
 
 - `accepted`: a value the event had; `deleted`: from here on the event has none (the owner
@@ -29,8 +29,7 @@ highest precedence among those available on or before D; an unknown date never q
 backtest keeps one hindsight series and skips the days it is not point in time
 (`pending_days`): from the ex-date, every day with no value available yet or with an as-of value
 other than the series'. A version added later, available after D, changes nothing on a day up to
-D, so a run as of D ignores later facts; only pending days can be added by a back-fill of facts
-that were always there.
+D, so a run as of D ignores later facts.
 """
 
 from __future__ import annotations
@@ -45,12 +44,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from fractions import Fraction
-from typing import Any
 
 from sqlalchemy import select as sql_select
 from sqlalchemy.orm import Session
 
-from ..models import HatCorporateAction, HatCorporateActionVersion, HatEvent
+from ..models import HatCorporateAction, HatCorporateActionVersion
 from ..money import require_exact
 
 ACCEPTED = "accepted"
@@ -168,9 +166,9 @@ class Ledger:
     """The one writer of `hat_corporate_action` and its versions, in the caller's transaction,
     under the reference-data lock its writer holds. A row is inserted (`insert`), changed
     (`accept`) or deleted (`vacate`) together with the version that records it, so the row stays
-    the projection of its versions; `add` appends a version alone (a conflict, a cross-check, a
-    back-fill of the ledger). `seq` follows the event's stored versions. Built for the
-    instruments a write touches (`open`)."""
+    the projection of its versions; `add` appends a version alone (a conflict, a cross-check).
+    `seq` follows the event's stored versions. Built for the instruments a write touches
+    (`open`)."""
 
     session: Session
     seqs: dict[Key, int] = field(default_factory=dict)
@@ -375,7 +373,7 @@ def digest(session: Session) -> tuple[str, int]:
 
 @dataclass(frozen=True)
 class Stored:
-    """A stored row, as the projection check and the back-fill read it."""
+    """A stored row, as the projection check reads it."""
 
     key: Key
     factor: Decimal
@@ -420,150 +418,3 @@ def projection_mismatches(
         if key not in stored and select(vs, None) is not None:
             found.append((key, "not_stored"))
     return found
-
-
-# --- the back-fill ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Correction:
-    """One `corporate_action.corrected` journal entry."""
-
-    at: datetime
-    instrument_id: str
-    ex_date: date
-    before: Mapping[str, Any]
-    after: Mapping[str, Any]
-    note: str
-
-
-@dataclass(frozen=True)
-class Planned:
-    """A version the back-fill appends."""
-
-    key: Key
-    status: str
-    factor: Decimal
-    cash: Decimal | None
-    available: date | None
-    basis: str | None
-    source: str
-    text: str
-    observed_at: datetime | None  # None: now
-    origin: str  # "row" (a stored row), "before" (a journalled before state), "delete"
-
-
-def plan_backfill(
-    rows: Sequence[Stored],
-    corrections: Sequence[Correction],
-    imported: Mapping[Key, tuple[datetime, str]],
-    versioned: set[Key],
-) -> list[Planned]:
-    """The versions of every event with none yet (not in `versioned`): each journalled `before`
-    state of an owner's correction (its date unknown: it was stored before CA5 and no journal
-    kept one) and a delete where the correction vacated the key, then the stored row (its
-    `known_on`). `first_observed_at` is the journal's: the import (`imported`: the first
-    `corporate_action.imported` of the event and its source) or the correction that wrote the
-    value, else None (now)."""
-    writer: dict[Key, tuple[datetime, str]] = dict(imported)
-    planned: list[Planned] = []
-    for c in sorted(corrections, key=lambda c: c.at):
-        before_type = str(c.before.get("type", ""))
-        key = (c.instrument_id, c.ex_date, before_type)
-        if key not in versioned and before_type and not c.before.get("absent"):
-            factor, cash = require_exact(c.before["factor"], "factor"), _cash(c.before.get("cash"))
-            at, source = writer.get(key, (c.at, "unknown"))
-            planned.append(
-                Planned(
-                    key, ACCEPTED, factor, cash, None, None, source, "journal before", at, "before"
-                )
-            )
-            if (
-                c.after.get("deleted")
-                or c.after.get("kept_stored")
-                or (c.after.get("type") != before_type)
-            ):
-                planned.append(
-                    Planned(
-                        key, DELETED, factor, cash, None, None, SOURCE_OWNER, c.note, c.at, "delete"
-                    )
-                )
-        written = c.after.get("type")
-        if written and not c.after.get("deleted") and not c.after.get("kept_stored"):
-            writer[(c.instrument_id, c.ex_date, str(written))] = (c.at, SOURCE_OWNER)
-    for r in rows:
-        if r.key in versioned:
-            continue
-        at = writer.get(r.key, (None, ""))[0]
-        planned.append(
-            Planned(
-                r.key, ACCEPTED, r.factor, r.cash, r.known_on, r.basis, r.source, r.text, at, "row"
-            )
-        )
-    return planned
-
-
-def journal(session: Session) -> tuple[list[Correction], dict[Key, tuple[datetime, str]]]:
-    """The owner's corrections and each event's first import, from the journal."""
-    from .ca_gate import EVENT_IMPORTED
-    from .corporate_actions import EVENT_CORRECTED
-
-    corrections = []
-    imported: dict[Key, tuple[datetime, str]] = {}
-    for e in session.scalars(
-        sql_select(HatEvent)
-        .where(HatEvent.event_type.in_((EVENT_CORRECTED, EVENT_IMPORTED)))
-        .order_by(HatEvent.occurred_at)
-    ):
-        p = e.payload
-        if e.event_type == EVENT_CORRECTED:
-            corrections.append(
-                Correction(
-                    e.occurred_at,
-                    str(e.aggregate_id),
-                    date.fromisoformat(p["ex_date"]),
-                    p.get("before", {}),
-                    p.get("after", {}),
-                    str(p.get("note", "")),
-                )
-            )
-        elif "type" in p and "ex_date" in p:
-            key = (str(e.aggregate_id), date.fromisoformat(p["ex_date"]), str(p["type"]))
-            imported.setdefault(key, (e.occurred_at, str(p.get("source", "unknown"))))
-    return corrections, imported
-
-
-def versioned_keys(session: Session) -> set[Key]:
-    """The events with an accepted or deleted version (a conflict alone, appended by a load
-    before the back-fill ran, leaves its event to the back-fill)."""
-    return {
-        _key(i, ex, kind)
-        for i, ex, kind in session.execute(
-            sql_select(
-                HatCorporateActionVersion.instrument_id,
-                HatCorporateActionVersion.ex_date,
-                HatCorporateActionVersion.action_type,
-            )
-            .where(HatCorporateActionVersion.status.in_(SELECTED))
-            .distinct()
-        )
-    }
-
-
-def apply_backfill(session: Session, planned: Sequence[Planned]) -> int:
-    """Append the planned versions (the caller holds the reference-data lock)."""
-    ledger = Ledger.open(session, {p.key[0] for p in planned})
-    for p in planned:
-        ledger.add(
-            p.key,
-            status=p.status,
-            factor=p.factor,
-            cash=p.cash,
-            available=p.available,
-            basis=p.basis,
-            source=p.source,
-            text=p.text,
-            observed_at=p.observed_at,
-        )
-    session.flush()
-    return len(planned)

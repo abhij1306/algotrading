@@ -3,7 +3,6 @@ the series applies. Plain examples; no database, no bars. The pending sessions a
 `test_ca_versions`'."""
 
 from datetime import date
-from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 
@@ -27,7 +26,7 @@ from app.hat.data.ca_known import (
 from app.hat.data.ca_research import Priced, demerger_known, research_supplied
 from app.hat.data.ca_research_rows import ResultingLeg, Source
 from app.hat.data.corporate_actions import correction_known, default_known
-from app.hat.data.point_in_time import Row, classify, log_path, series_events
+from app.hat.data.point_in_time import log_path, series_events
 
 EX = date(2024, 9, 20)  # ROSSELLIND's demerger, a Friday
 # the sessions from the Thursday before: Monday 23 to Friday 27 follow the ex-date
@@ -121,54 +120,6 @@ def test_research_supplied_rights_terms() -> None:
     )
     cut = "Rights 9:20 @ Premium Rs 10/- [research c: 9:20 @ 20.0000; face val"
     assert research_supplied(cut)  # a tag cut at TEXT_MAX may have lost its markers
-
-
-def _row(
-    action_type: str, source: str, text: str, factor: str = "0.5", *, demerger: bool = False
-) -> Row:
-    return Row(
-        "r", "i", "INE000A01010", EX, action_type, Decimal(factor), text, source, None, demerger
-    )
-
-
-def test_classify_backfills_from_what_is_stored() -> None:
-    gap = (Fraction(2892, 10000), DAYS)
-    settle = Known(date(2024, 9, 26), SETTLED_CLOSE)
-    assert classify(_row("split", "mcp", "Split"), owner=False, derived="", market=None) == Known(
-        EX, EX_OPEN
-    )
-    assert classify(_row("other", "mcp", "?"), owner=False, derived="", market=None) == UNKNOWN
-    rights = _row("other", "nse_ca_file", "Rights 1:10 @ Premium Rs 95/-")
-    assert classify(rights, owner=False, derived="", market=None) == Known(EX, EX_OPEN)
-    child = "resulting X INE1 first close 66.45 on 2024-12-09 -> factor 0.8445"
-    demerger = _row("other", "nse_ca_file", "Demerger 1:1", demerger=True)
-    assert classify(demerger, owner=False, derived=child, market=gap) == Known(
-        date(2024, 12, 9), RESULTING_FIRST_CLOSE
-    )
-    gap_only = "no resulting listing found: the ex-date gap is the factor"
-    assert classify(demerger, owner=False, derived=gap_only, market=gap) == settle
-    research = _row("other", "ca_research", "Demerger 1:1 X [research market_gap]", demerger=True)
-    assert classify(research, owner=False, derived="", market=gap) == settle
-    # the owner's market-gap demerger, and an owner value that is not the gap
-    owner = _row("other", "owner", "ex-date per bars", "0.2892", demerger=True)
-    assert classify(owner, owner=True, derived="", market=gap) == settle
-    assert classify(
-        _row("other", "owner", "Demerger", "0.5", demerger=True), owner=True, derived="", market=gap
-    ) == (UNKNOWN)
-    # the flag, not the text, makes a demerger: a rights note naming one is still rights
-    named = _row("other", "nse_ca_file", "Rights 1:10, after the demerger")
-    assert classify(named, owner=False, derived=gap_only, market=gap) == Known(EX, EX_OPEN)
-    # an owner's split the ex-date gap confirms, and a public-only bonus it cannot
-    split = (Fraction(1046, 10000), DAYS)
-    assert classify(
-        _row("split", "owner", "FV 10 to 1", "0.1"), owner=True, derived="", market=split
-    ) == (Known(EX, EX_OPEN))
-    near_one = (Fraction(101, 100), DAYS)  # the market rose: no gap confirms it
-    assert classify(
-        _row("bonus", "owner", "public only", "0.9705"), owner=True, derived="", market=near_one
-    ) == (UNKNOWN)
-    dist = _row("dividend", "ca_research", "Dividend bonus_instrument 30: (research f high)", "1")
-    assert classify(dist, owner=False, derived="", market=None) == UNKNOWN
 
 
 def test_log_path_stays_under_the_working_directory(

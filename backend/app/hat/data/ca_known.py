@@ -29,8 +29,7 @@ its ex-date on. A linked ISIN succession records the last bar its rules read
 (`hat_isin_lineage.known_on`), reported beside the actions but not a pending window: the rules
 read what bars there are, so a nightly build can link a chain after its first session.
 
-The pending sessions, the back-fill of rows stored before CA5 and the lag report are
-`point_in_time`'s.
+The pending sessions and the lag report are `point_in_time`'s.
 """
 
 from __future__ import annotations
