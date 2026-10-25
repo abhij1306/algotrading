@@ -3,7 +3,7 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 
 `GttUpkeep` runs over an account's `StopDesk` and its write steps:
 
-- **At ~15:25** (`swap`): the GTT is placed first and the intraday stop is cancelled only once
+- **At 15:10** (`swap`): the GTT is placed first and the intraday stop is cancelled only once
   the GTT is confirmed placed; a GTT that fails leaves the intraday stop working and raises
   `gtt.swap_failed`. A position with a working exit order is not swapped (its exit comes first).
 - **Nightly** (`verify`): every open real position's GTT is refreshed to the current stop

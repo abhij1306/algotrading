@@ -9,8 +9,10 @@ view (opening range, day volume). Nothing here reads a clock, the database or th
 Rules:
 
 - A trigger is evaluated only on a final bar (the builder hands over a bar at its end + 2 s),
-  and only when that instant lies in [09:20, 15:20] IST; the trigger's time is the bar's final
-  instant (HAT-EXEC-120).
+  and only when that instant lies in the trigger window: from 5 minutes after the session open to
+  10 minutes before its continuous trading ends ([09:20, 15:05] IST in a regular session, the
+  closing auction ending continuous trading at 15:15), both from the day's own hours (`in_window`);
+  the trigger's time is the bar's final instant (HAT-EXEC-120).
 - A playbook triggers when every enabled trigger criterion passes on the same bar (HAT-EXEC-121).
   A trigger type over daily bars (`neglect`) is evaluated once, on the bars before the trade
   date, when the candidate is built (`daily_trigger_results`); without that result it fails
@@ -53,6 +55,7 @@ from ..data.bars import Bar
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..money import exact, require_exact
 from ..risk.caps import effective_max_chase_pct
+from ..risk.sessions import CLOSING_AUCTION
 from ..time import IST
 from .criteria import CriterionResult, EvalContext, evaluate, evaluate_live, get_type
 from .criteria.live import CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE, LEVEL_PIVOT, LiveContext
@@ -97,7 +100,8 @@ __all__ = [
     "watchlist_levels",
 ]
 
-TRIGGER_WINDOW = (time(9, 20), time(15, 20))
+# The trigger window's ends against the session's open and its continuous-trading end.
+TRIGGER_WINDOW = (timedelta(minutes=5), timedelta(minutes=10))
 MAX_CHASE = "max_chase"
 CATALYST = "catalyst_attached"
 PRICE_BREAKS_LEVEL = "price_breaks_level"
@@ -111,6 +115,10 @@ class BarView(Protocol):
     """What the monitor reads from the bar builder besides the bar itself."""
 
     def opening_range(self, symbol: str, day: date) -> tuple[Decimal, Decimal] | None: ...
+
+    def session_start(self, day: date) -> datetime: ...
+
+    def session_end(self, day: date) -> datetime: ...
 
     def day_volume(self, symbol: str, day: date) -> int: ...
 
@@ -534,10 +542,13 @@ def evaluate_entry_filters(
     return failed, tuple(outcomes)
 
 
-def in_window(at: datetime) -> bool:
-    """Whether a trigger may fire at `at`: inside [09:20, 15:20] IST (HAT-EXEC-120)."""
-    local = at.astimezone(IST).time()
-    return TRIGGER_WINDOW[0] <= local <= TRIGGER_WINDOW[1]
+def in_window(at: datetime, opens: datetime, closes: datetime) -> bool:
+    """Whether a trigger may fire at `at` in a session open from `opens` to `closes`: from 5
+    minutes after the open to 10 minutes before continuous trading ends (`CLOSING_AUCTION` before
+    the close), both inclusive ([09:20, 15:05] IST in a regular session, HAT-EXEC-120)."""
+    first = opens + TRIGGER_WINDOW[0]
+    last = closes - CLOSING_AUCTION - TRIGGER_WINDOW[1]
+    return first <= at <= last
 
 
 # --- the monitor ------------------------------------------------------------------------------
@@ -605,7 +616,12 @@ class TriggerMonitor:
             bar_high=bar.high,
             bar_close=bar.close,
             cum_volume=self._view.day_volume(candidate.symbol, day),
-            elapsed=elapsed_fraction(bar.final_at),  # the instant the day volume is read
+            # the instant the day volume is read, against the day's own session (Muhurat)
+            elapsed=elapsed_fraction(
+                bar.final_at,
+                session_open=self._view.session_start(day).astimezone(IST).time(),
+                session_close=self._view.session_end(day).astimezone(IST).time(),
+            ),
             open_price=candidate.open_price,
             announcements=candidate.announcements,
         )
@@ -613,7 +629,7 @@ class TriggerMonitor:
     def on_bar(self, bar: Bar) -> list[Trigger]:
         """Evaluate every unfired candidate of the bar's symbol; return the triggers fired."""
         day = bar.start.astimezone(IST).date()
-        if not in_window(bar.final_at):
+        if not in_window(bar.final_at, self._view.session_start(day), self._view.session_end(day)):
             return []
         fired: list[Trigger] = []
         for key, candidate in sorted(

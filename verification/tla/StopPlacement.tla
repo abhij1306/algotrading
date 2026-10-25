@@ -4,7 +4,7 @@
 (*                                                                         *)
 (* An entry fill gets an intraday stop order before anything else touches  *)
 (* the position (a stop that already rests is resized instead). The stop   *)
-(* follows `current_stop` up, never down. Around 15:25 a GTT is placed and *)
+(* follows `current_stop` up, never down. Around 15:10 a GTT is placed and *)
 (* the intraday stop cancelled only once the GTT is confirmed; at the      *)
 (* close the broker expires any intraday stop. Each night the GTT is       *)
 (* refreshed to the current stop, or alerted and placed again. A GTT can   *)
@@ -24,7 +24,7 @@
 (*                                                                         *)
 (* Bounds: MaxQty = 2 entry fills (a partial fill, then the rest); MaxStop *)
 (*   = 3 stop levels (the stop rises at most twice); sessions repeat       *)
-(*   without bound through four phases (open, swap from 15:25, after the   *)
+(*   without bound through four phases (open, swap from 15:10, after the   *)
 (*   close, night).                                                        *)
 (* Assumptions: each action is one database transaction plus at most one   *)
 (*   broker call, or one change of the environment; the database and the   *)
@@ -78,7 +78,7 @@ VARIABLES
                     \* (not reached: HAT makes it a market sale); marketed = HAT had that sale
                     \* made a market sale;
                     \* gone = triggered, its sale ended unfilled, not yet seen by HAT
-    phase,          \* open | swap (from 15:25) | after (the close) | night
+    phase,          \* open | swap (from 15:10) | after (the close) | night
     pc,             \* idle | protecting (a fill whose stop work has not run yet)
     acted,          \* another HAT action on the position ran while it was protecting
     alerted,        \* a health alert names the position and no stop was placed since
@@ -199,7 +199,7 @@ EntryEnds ==
                    lostGtt, saleRefused, bqty, exited, cancelAsked>>
 
 \* code: backend/app/hat/execution/protect.py:StopDesk.protect  (a resting stop is resized; with
-\* none, a day stop in the session before 15:25 or a GTT from then on; a failure is alerted; a
+\* none, a day stop in the session before 15:10 or a GTT from then on; a failure is alerted; a
 \* GTT whose answer is lost is alerted and may or may not have landed)
 Protect ==
     /\ pc = "protecting"

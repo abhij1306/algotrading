@@ -39,6 +39,7 @@ from .strategy.config import (
 )
 
 __all__ = [
+    "CLOSE_PHASE_RULES",
     "IGNORED_NOT_RAISING",
     "Evaluation",
     "ExitAction",
@@ -56,7 +57,7 @@ __all__ = [
 
 Phase = Literal["live", "close", "nightly"]
 IGNORED_NOT_RAISING = "would_not_raise_stop"
-# The phases whose rules an evaluation in a given phase reads: the 15:25 check also sees the
+# The phases whose rules an evaluation in a given phase reads: the 15:05-15:10 check also sees the
 # live price, so it reads live rules too.
 _PHASES: dict[str, frozenset[str]] = {
     "live": frozenset({"live"}),
@@ -75,6 +76,8 @@ _RULE_PHASE = {
     "time_stop": "close",
     "regime_exit": "nightly",
 }
+# The rules the close phase runs: an exit by one of them is priced at the close-phase price.
+CLOSE_PHASE_RULES = frozenset(rule for rule, phase in _RULE_PHASE.items() if phase == "close")
 
 
 @dataclass(frozen=True)

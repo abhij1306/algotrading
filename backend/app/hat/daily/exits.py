@@ -6,7 +6,7 @@ virtual positions.
   that position's exit rules are off (only its resting broker stop protects it), and each loop
   goes on to the next position.
 - `ShadowExits`: the live exit rules of every virtual position (a `TradeManager` runs the live
-  rules of real positions only), and the 15:20-15:25 rules of the virtual positions of bots whose
+  rules of real positions only), and the 15:05-15:10 rules of the virtual positions of bots whose
   account has no `TradeManager` (its `exits.close` covers its virtual positions too). That close
   pass first closes every virtual position whose demerger exit falls on the day (CA8,
   `engine/demerger_exit.py`), whatever its account.
@@ -166,7 +166,7 @@ class ExitViews:
 
 class ShadowExits:
     """The exit rules of the virtual positions: live rules on each pass for all of them (no
-    `TradeManager` runs them), and the close-phase rules once in the 15:20-15:25 window for those
+    `TradeManager` runs them), and the close-phase rules once in the 15:05-15:10 window for those
     no `exits.close` handles (with the evaluation record the nightly close gap reads)."""
 
     def __init__(
@@ -242,7 +242,7 @@ class ShadowExits:
 
     def close(self, now: datetime, shift: timedelta = timedelta(0)) -> int:
         """The close-phase pass (the day's demerger exits first); nothing outside the close
-        window (15:20-15:25 IST in a regular session, moved by the session's `shift` from the
+        window (15:05-15:10 IST in a regular session, moved by the session's `shift` from the
         regular close, `in_close_window`)."""
         if not in_close_window(now, shift):
             return 0

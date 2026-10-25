@@ -193,7 +193,7 @@ class Reports:
     def daily_report(self) -> JobResult:
         """15:40: per bot open risk, realised R and equity vs peak from its latest
         `hat_daily_bot_snapshot`; the last night's `gtt.verify` runs; the close gaps (live
-        price at 15:25 against the official close) recorded for the previous trading day."""
+        price at 15:05-15:10 against the official close) recorded for the previous trading day."""
         day = trade_date_of(utc_now(self._clock))
         with self._factory() as session:
             calendar = session_calendar(session)

@@ -14,11 +14,20 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    unknown, 30 s old or outside the day's price band. An exit view may act on an older last
    trade of the day only while the feed itself is fresh (an illiquid name), never an entry.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
-   lacks is no trading day; a special session has only its stored hours, else it is closed. The
-   close phase (`exits.close`, the GTT swap, the sales' cut-off, the session end) is set against
-   the session's stored close, 10, 5 and 0 minutes before it, and the open phase (`live.prepare`,
-   `modes.apply`, the gap scan, the regime gate, the pre-open capture, the bar grid) against its
-   stored open, so both follow an early close or a Muhurat session.
+   lacks is no trading day; a special session has only its stored hours, else it is closed.
+   Continuous trading ends 15 minutes before the stored close (15:15 IST; NSE's closing auction
+   takes the rest). The close phase is set against that end: `exits.close` (real and shadow) 10
+   to 5 minutes before it, the GTT swap 5 minutes before it, the trigger window ends 10 minutes
+   before it, and no sale goes out from it on; the session end is set against the stored close.
+   The open phase (`live.prepare`, `modes.apply`, the gap scan, the regime gate, the pre-open
+   capture, the bar grid, the trigger window's start) is set against the stored open, so both
+   follow an early close or a Muhurat session. A close-phase decision (MA exits,
+   `close_above_sma`, failed-break closes, time stops) uses the live last trade or the last
+   finished 5-minute bar at decision time, never the official close: that is the closing
+   auction's, settled around 15:40. What needs the official close (the nightly ingest, the
+   recorded gap between the exit price and the official close, features) runs after 15:40. The
+   backtest's close-phase rules decide and fill on the daily close, which stands in for that live
+   price (`close_rules_decided_on_official_close`).
 6. `max_chase` always applies, even if a config deletes the criterion.
 7. No entry is placed, and no Take passes, once its break failed: a final 5-minute bar after the
    trigger bar closed below the level. An unfilled entry whose break failed is cancelled, and its

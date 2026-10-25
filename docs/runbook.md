@@ -184,7 +184,8 @@ Alerts:
   `PR<ddmmyy>.zip`'s `bc<ddmmyyyy>.csv`, then `python -m app.hat.data.ca_dividends --bc <file>
   --day YYYY-MM-DD [--apply]`.
 - URGENT `corporate_action.demerger_exit` (symbol, `sell_by_close_of`): `/flatten` the real
-  position by that close; HAT sells nothing for it (a virtual one closes itself).
+  position on that day before 15:15 (continuous trading ends there); HAT sells nothing for it (a
+  virtual one closes itself).
   `corporate_action.demerger_late`: the notice came too late or the position is still open; it
   is handled as `unhandled` once the factor is stored. `demerger.unchecked`: tonight's notices
   failed; read the log.
@@ -248,7 +249,10 @@ advisory lock; `features` does not take it, so run it after they finish.
 - **`broker_rate_limited`:** nothing was sent. After a plan change set
   `HAT_BROKER_CALLS_PER_SECOND`/`_PER_MINUTE`/`_PER_DAY` to the plan's limits and restart.
 - **`feed.stale`:** no triggers for those symbols. If it persists, restart with `--force --reason
-  "feed stale"`; stale at the 15:20 MA exits is an incident.
+  "feed stale"`; stale at the 15:05-15:10 MA exits is an incident: they decide on the live last
+  trade, continuous trading ends at 15:15 (NSE's closing auction), and HAT sends no sale from
+  then on, so an exit missed by 15:15 waits for the next session (or the owner's `/flatten`
+  before 15:15).
 - **`order.rejected`:** retried once. Fix the cause (band, margin, freeze, IP); never place by
   hand.
 - **`relay.skipped`:** Telegram refused a message for good; read the event. A skipped card expires.

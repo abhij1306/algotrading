@@ -1,5 +1,5 @@
-"""The trade-management jobs of the daily cycle (job table: `exits.close` 15:20-15:25,
-`gtt.swap` ~15:25, `gtt.verify` nightly; HAT-EXEC-061, -063, -074, HAT-OPS-024). PR 15 holds
+"""The trade-management jobs of the daily cycle (job table: `exits.close` 15:05-15:10,
+`gtt.swap` 15:10, `gtt.verify` nightly; HAT-EXEC-061, -063, -074, HAT-OPS-024). PR 15 holds
 their logic; PR 17 registers them with the scheduler for each broker account. `gtt.check`
 (08:40, HAT-EXEC-145, P1) is the day's first read of the broker's GTT book (the fill sync reads it
 every few minutes after); it is retried every minute until it succeeds.
@@ -9,8 +9,9 @@ step is incomplete, so `run_job` records the failure and the scheduler tries aga
 job's `retry_after`: a minute for the two close jobs. A job's name carries its broker account
 (`exits.close:<account id>`), since a run is kept once per (name, trade date) and each account
 needs its own. `exits.close` has a window and is never
-started from 15:25 on (`ScheduledJob.until`); its body also refuses to run outside it. Both close
-jobs move with a session that closes at another time than 15:30 (`ScheduledJob.shift`).
+started from 15:10 on, 5 minutes before continuous trading ends for the closing auction
+(`ScheduledJob.until`); its body also refuses to run outside it. Both close jobs move with a
+session that closes at another time than 15:30 (`ScheduledJob.shift`).
 """
 
 from __future__ import annotations

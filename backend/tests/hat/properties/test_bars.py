@@ -737,7 +737,7 @@ def test_symbol_silence_resubscribes_and_alerts(
 def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: int) -> None:
     """The trigger monitor sees only final bars. With prints
     arriving late or out of order, a pivot breakout fires once, at the final instant (end + 2 s)
-    of the first final bar in [09:20, 15:20] whose high is above the pivot and whose close is at
+    of the first final bar in [09:20, 15:05] whose high is above the pivot and whose close is at
     or above it (`confirm: close`, the default), never on a print
     inside a bar that is still open, never from a late print the bar never took, and never at
     an instant before the bar was handed over. Harm: an entry fires on a print the 5-minute bar
@@ -772,7 +772,7 @@ def test_trigger_only_on_final_bars(script: list[tuple[int, int, int]], pivot: i
         finals.append((end, bar))
         fired.extend((end, t) for t in monitor.on_bar(bar))
     level = Decimal(pivot).scaleb(-2)
-    last_in_window = datetime.combine(DAY, time(15, 20), tzinfo=IST)
+    last_in_window = datetime.combine(DAY, time(15, 5), tzinfo=IST)
     expected = next(
         (
             bar

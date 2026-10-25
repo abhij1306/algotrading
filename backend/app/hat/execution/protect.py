@@ -5,7 +5,7 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 
 - **On a fill** (`protect`): with no working stop, an intraday stop order (purpose `stop_day`,
   SL-M SELL CNC for the open quantity at the position's stop) while the market is open and
-  before the 15:25 swap, a GTT stop (`stop_gtt`) otherwise (a day stop placed after the swap
+  before the 15:10 swap, a GTT stop (`stop_gtt`) otherwise (a day stop placed after the swap
   would expire at the close with no GTT behind it); a working stop for another quantity is
   resized. A rejected stop is retried once with the next tag, then alerted (`stop.not_placed`);
   the next sync tries again. A closed position's working stops are cancelled.
@@ -15,7 +15,7 @@ HAT-OPS-024; the model is `verification/tla/StopPlacement.tla`).
 - **When the stop rises** (`follow`): the working stop is modified up to the new price (day:
   `modify_order`; GTT: `modify_gtt`, event `gtt.refreshed`), never down (`raise_only`), at the
   stop rounded down to the tick (`broker_trigger`).
-- **The GTT upkeep** (`gtt_upkeep.GttUpkeep`): the 15:25 swap, the nightly verify and the
+- **The GTT upkeep** (`gtt_upkeep.GttUpkeep`): the 15:10 swap, the nightly verify and the
   check against the broker's GTT book, over the write steps below.
 - **A series change** (`target`, HAT-EXEC-146): a position whose instrument moved to another
   series (EQ to BE) after it opened has its stops placed under the instrument's current symbol
@@ -47,7 +47,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -58,7 +58,7 @@ from ..errors import HatError
 from ..events import record
 from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
-from ..risk.sessions import SessionCalendar, SessionState
+from ..risk.sessions import SessionCalendar, SessionState, before_continuous_end
 from ..time import IST, day_bounds, trade_date_of, utc_now
 from .broker import CODE_UNAVAILABLE as BROKER_UNAVAILABLE
 from .broker import (
@@ -124,7 +124,7 @@ ENTRY = "entry"
 EVENT_GTT_REFRESHED = "gtt.refreshed"
 EVENT_GTT_TRIGGERED = "gtt.triggered"
 MAX_STOP_REJECTIONS = 2  # the original and one retry (HAT-OPS-032)
-SWAP_AT = time(15, 25)  # IST: from here on a new stop is a GTT (HAT-EXEC-061)
+SWAP_AT = before_continuous_end(5)  # 15:10 IST: from here on a new stop is a GTT (HAT-EXEC-061)
 CODE_SERIES_UNMAPPED = "series_unmapped"  # the new series has no Fyers symbol
 NO_TICK = "no_tick"  # the instrument's tick is unknown: a GTT has no limit price
 # a lost stop found in the book with shares sold: the fill sync records its fills
@@ -340,7 +340,7 @@ class StopDesk:
         )
 
     def _day_stop_time(self, now: datetime) -> bool:
-        """In the session and before the swap (15:25 IST, moved with a session that closes at
+        """In the session and before the swap (15:10 IST, moved with a session that closes at
         another time): a new stop is an intraday order."""
         if self._calendar is None or self._calendar.state(now) is not SessionState.OPEN:
             return False

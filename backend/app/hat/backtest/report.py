@@ -7,7 +7,7 @@ import io
 import math
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 
 from ..confighash import config_hash
 from ..data.demerger_notice import CLOSE_REASON
+from ..engine.exits import CLOSE_PHASE_RULES
 from ..engine.portfolio.allocator import Allocation
 from . import metrics as bt_metrics
 from .dsr import ReturnStats, return_stats
@@ -33,7 +34,9 @@ __all__ = [
     "SignalRow",
     "TradeRow",
     "WatchRow",
+    "auction_risk_summary",
     "compute_metrics",
+    "flag_auction_risk",
     "trades_parquet",
 ]
 
@@ -100,6 +103,8 @@ class TradeRow:
     risk_policy_version_id: uuid.UUID
     score: Decimal | None = None  # the watchlist row's score (PR 65, N10)
     dividends: Decimal = Decimal(0)  # the cash dividends in `realized_pnl` and R (R-DIV)
+    # an exit priced at a daily close far from live's pre-15:15 price (`auction_days`): its tags
+    auction_risk: str | None = None
 
 
 @dataclass(frozen=True)
@@ -256,6 +261,39 @@ def compute_metrics(
     }
 
 
+# The exits priced at the day's close: the close-phase rules, and the forced exits the loop fills
+# at the session's close (a demerger, a delisting). A stop fills at its own price; the end of the
+# period is a mark, not an exit decision.
+CLOSE_PRICED = CLOSE_PHASE_RULES | {DEMERGER, DELISTED}
+
+
+def flag_auction_risk(
+    trades_: Sequence[TradeRow], days: Mapping[date, str]
+) -> tuple[TradeRow, ...]:
+    """`trades_` with `auction_risk` set on each close-priced exit dated on a flagged session
+    (`auction_days.auction_risk_days`: its tags), so the run can discount them."""
+    return tuple(
+        replace(t, auction_risk=days.get(t.exit_date) if t.exit_reason in CLOSE_PRICED else None)
+        for t in trades_
+    )
+
+
+def auction_risk_summary(trades_: Sequence[TradeRow]) -> dict[str, Any]:
+    """The run summary's count of flagged exits, in all and by tag, with their sum of R."""
+    flagged = [t for t in trades_ if t.auction_risk]
+    by_tag: dict[str, int] = {}
+    for t in flagged:
+        for tag in (t.auction_risk or "").split(","):
+            by_tag[tag] = by_tag.get(tag, 0) + 1
+    return {
+        "rule": "close-priced exits on an F&O monthly expiry or the session before an index"
+        " reconstitution takes effect (`auction_days`)",
+        "exits": len(flagged),
+        "by_tag": dict(sorted(by_tag.items())),
+        "sum_r": _ratio(sum((t.r_multiple for t in flagged), _ZERO)),
+    }
+
+
 def forced_exits(trades_: Sequence[TradeRow], reason: str) -> dict[str, Any]:
     """The trades the loop closed for `reason` (the CA8 demerger exits), counted apart: how
     many, their net P&L and their sum of R (both inside the run's totals too)."""
@@ -292,6 +330,8 @@ TRADE_SCHEMA = pa.schema(
         ("risk_policy_version_id", pa.string()),
         # the watchlist score (PR 65, N10): a float of the scorer, null without a watchlist row
         ("score", pa.float64()),
+        # `fo_expiry`/`index_rebalance` for an exit priced at that day's auction close, else null
+        ("auction_risk", pa.string()),
     ]
 )
 
