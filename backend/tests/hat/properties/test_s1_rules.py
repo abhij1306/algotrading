@@ -1,11 +1,12 @@
 """The S1 research rules at their seams: the step trail and the EMA exit (`engine.exits`), the
 override selector by type (`backtest.overrides`), the close entry's breakout volume test
 (`backtest.fillrules`), the regime without a slope test, the level trigger's entry timing and
-the known gaps that name a playbook. Small examples; no run of the loop."""
+the known gaps that name a playbook, and a pivot used once (`engine.scan`). Small examples; no
+run of the loop."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import numpy as np
@@ -19,9 +20,11 @@ from app.hat.backtest.overrides import OverrideError, Overrides
 from app.hat.backtest.spec import GAP_PLAYBOOKS
 from app.hat.engine import exits
 from app.hat.engine.criteria import evaluate_live
+from app.hat.engine.criteria.base import Bars
 from app.hat.engine.criteria.live import LiveContext, PriceBreaksLevelParams
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.regime_gate import close_above_sma_and_rising
+from app.hat.engine.scan import pivot_date, setup_taken
 from app.hat.engine.strategy.config import (
     CloseAboveSma,
     ExitCloseBelowEma,
@@ -218,3 +221,36 @@ def test_regime_rising_days_zero_is_close_above_sma_only() -> None:
     assert close_above_sma_and_rising(falling, flat)
     assert not close_above_sma_and_rising(falling, sloped)
     assert not close_above_sma_and_rising([*falling[:-1], D(104)], flat)  # close below the SMA
+
+
+def _highs(*highs: float | None) -> Bars:
+    days = [date(2021, 3, d) for d in range(1, len(highs) + 1)]
+    empty = [None] * len(highs)
+    return Bars(days, list(highs), empty, empty, empty, empty, empty)
+
+
+def test_pivot_date_is_the_latest_bar_with_that_high() -> None:
+    bars = _highs(101.5, 104.25, None, 99.0, 104.25, 98.0)
+    assert pivot_date(bars, D("104.25")) == date(2021, 3, 5)
+    assert pivot_date(bars, D("101.5")) == date(2021, 3, 1)
+
+
+def test_pivot_date_without_a_bar_at_the_pivot() -> None:
+    bars = _highs(101.5, 104.25)
+    assert pivot_date(bars, D("104.2")) is None  # a level no high made, e.g. a close
+    assert pivot_date(bars, None) is None
+
+
+def test_held_instrument_is_never_republished() -> None:
+    pivot_on = date(2021, 3, 5)
+    assert setup_taken("A", pivot_on, {"A"}, ())
+    assert setup_taken("A", None, {"A"}, ())
+    assert not setup_taken("B", pivot_on, {"A"}, ())
+
+
+def test_a_used_pivot_needs_a_new_one() -> None:
+    used = {("A", date(2021, 3, 5))}
+    assert setup_taken("A", date(2021, 3, 5), (), used)  # same setup after the exit
+    assert not setup_taken("A", date(2021, 4, 9), (), used)  # a new final contraction
+    assert not setup_taken("B", date(2021, 3, 5), (), used)  # another name's pivot
+    assert not setup_taken("A", None, (), used)  # no pivot date: the held rule only

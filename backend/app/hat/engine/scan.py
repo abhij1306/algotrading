@@ -10,6 +10,11 @@ A symbol reaches a later stage only after passing every earlier one, and the sta
 is never evaluated, so a stock removed from the universe produces no watchlist row from its
 effective date (HAT-PORT-023). A pre-open playbook (`Playbook.preopen`, such as the episodic
 pivot) is not scanned here: its setup is built live from the gap scan (HAT-BOT-052).
+
+A setup is entered once (decisions.md "A pivot is used once"): no row is published for an
+instrument the bot holds (`ScanInputs.held`), nor for a setup whose pivot an earlier position of
+the bot was opened on (`ScanInputs.used_pivots`). A setup is named by its pivot's bar
+(`pivot_date`), stored in `criteria_results` as `pivot_date`.
 """
 
 from __future__ import annotations
@@ -24,7 +29,8 @@ import polars as pl
 
 from ..data.ticks import scaled_tick, tick_for_date
 from ..money import exact
-from .criteria import CONTRACTION_LOW, EvalContext
+from .criteria import CONTRACTION_LOW, PIVOT, EvalContext
+from .criteria.base import Bars
 from .regime_gate import regime_allows_longs
 from .stops import SeriesHistory, StopInputs, history_inputs, plan_stop_at_pivot
 from .strategy.config import Playbook, StopBelowFinalContractionLow, StrategyConfig
@@ -36,7 +42,9 @@ __all__ = [
     "ScanResult",
     "WatchRow",
     "criteria_results",
+    "pivot_date",
     "scan_bot",
+    "setup_taken",
 ]
 
 
@@ -48,7 +56,9 @@ class ScanInputs:
     `close`, `volume`, optional `traded_value`) with `raw_close`, the unadjusted close the
     rules on a rupee price read (`criteria.base.EvalContext`); `features` the date's feature rows
     (`instrument_id`, `rs_pct`, `adtr20`, ...). `regime_closes` are the regime index's closes
-    up to `as_of`, oldest first."""
+    up to `as_of`, oldest first. `held` are the instruments the bot has an open position in (any
+    state) and `used_pivots` the (instrument, pivot date) of every setup a position of the bot
+    was opened on (`setup_taken`)."""
 
     as_of: date
     members: Collection[str]
@@ -57,6 +67,8 @@ class ScanInputs:
     features: pl.DataFrame | None = None
     series: Mapping[str, str] = field(default_factory=dict)
     price_bands: Mapping[str, Sequence[tuple[date, float | None]]] = field(default_factory=dict)
+    held: Collection[str] = frozenset()
+    used_pivots: Collection[tuple[str, date]] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -106,12 +118,47 @@ def setup_levels(playbook: Playbook, evaluation: PlaybookEvaluation) -> dict[str
     return {k: v for k in playbook.setup_levels if (v := _extra(evaluation, k)) is not None}
 
 
-def criteria_results(playbook: Playbook, evaluation: PlaybookEvaluation) -> dict[str, Any]:
+def criteria_results(
+    playbook: Playbook, evaluation: PlaybookEvaluation, pivot_on: date | None = None
+) -> dict[str, Any]:
     """The stored `criteria_results`: the stages in stage order, stopping at the first that
-    failed (HAT-CRIT-010), and the setup levels (`setup_levels`, text decimals, a level the
-    setup did not expose left out)."""
+    failed (HAT-CRIT-010), the setup levels (`setup_levels`, text decimals, a level the setup
+    did not expose left out) and, when known, the setup's `pivot_date` (ISO)."""
     levels = {k: str(v) for k, v in setup_levels(playbook, evaluation).items()}
-    return {"stages": [_stage_json(s) for s in evaluation.stages], "levels": levels}
+    results: dict[str, Any] = {
+        "stages": [_stage_json(s) for s in evaluation.stages],
+        "levels": levels,
+    }
+    if pivot_on is not None:
+        results["pivot_date"] = pivot_on.isoformat()
+    return results
+
+
+def pivot_date(history: Bars, pivot: Decimal | None) -> date | None:
+    """The date of the latest bar whose high is the setup's `pivot`: the bar that set it, which
+    names the setup. It does not move when a later dividend rescales the history (the level
+    does), and a new final contraction or box has a new one. None without a pivot or when no
+    bar's high is it (a pivot that is not a bar's high, such as `rsi_below`'s close)."""
+    if pivot is None:
+        return None
+    for day, high in zip(reversed(history.dates), reversed(history.high), strict=True):
+        if high is not None and exact(high, floats=True) == pivot:
+            return day
+    return None
+
+
+def setup_taken(
+    instrument_id: str,
+    pivot_on: date | None,
+    held: Collection[str],
+    used_pivots: Collection[tuple[str, date]],
+) -> bool:
+    """Whether a setup is kept off the watchlist: the bot holds the instrument, or a position of
+    the bot was already opened on this pivot of it (a pivot is used once). A setup without a
+    `pivot_date` is judged by the held rule only."""
+    if instrument_id in held:
+        return True
+    return pivot_on is not None and (instrument_id, pivot_on) in used_pivots
 
 
 def _extra(evaluation: PlaybookEvaluation, key: str) -> Decimal | None:
@@ -200,15 +247,19 @@ def _scan_playbook(
         evaluation = evaluate_playbook(config, playbook.name, ctx, regime_allows_longs=True)
         if not evaluation.passed:
             continue
-        pivot = daily_level(playbook, dict(setup_levels(playbook, evaluation)))
+        levels = setup_levels(playbook, evaluation)
+        pivot = daily_level(playbook, dict(levels))
         if pivot is None and needs_setup_level(playbook):
             continue  # set up on score without the level its trigger breaks
+        pivot_on = pivot_date(ctx.history, levels.get(PIVOT))
+        if setup_taken(instrument_id, pivot_on, inputs.held, inputs.used_pivots):
+            continue
         rows.append(
             WatchRow(
                 playbook=playbook.name,
                 instrument_id=instrument_id,
                 score=evaluation.stages[-1].score,
-                criteria_results=criteria_results(playbook, evaluation),
+                criteria_results=criteria_results(playbook, evaluation, pivot_on),
                 pivot=pivot,
                 planned_stop=_planned_stop(playbook, evaluation, pivot, ctx),
                 adtr=exact(adtr.get(instrument_id), floats=True),
