@@ -54,7 +54,7 @@ from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
 from ..risk.policy import PolicyVersion, effective_version
 from ..risk.service import evaluate_signal
-from ..time import as_utc
+from ..time import as_utc, trade_date_of
 from . import journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
 from .confidence import LABELS, UNKNOWN_LABEL, Confidence
@@ -308,7 +308,9 @@ def _route_accepted(
         # The router places the real order after this transaction commits (HAT-BRK-101).
         return EntryOutcome(signal.id, signal.state, decision, None, mode=mode)
     qty, stop = int(decision.quantity or 0), decision.stop or _ZERO
-    position = open_virtual(session, trade, qty, stop, fills.fill("buy", qty, entry), now)
+    position = open_virtual(
+        session, trade, qty, stop, fills.fill("buy", qty, entry, trade_date_of(now)), now
+    )
     return EntryOutcome(signal.id, signal.state, decision, position.id, mode=mode)
 
 

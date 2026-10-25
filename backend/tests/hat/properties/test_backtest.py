@@ -51,7 +51,7 @@ from app.hat.backtest.spec import (
     sleeve_weight,
 )
 from app.hat.confighash import config_hash
-from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
+from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.portfolio.allocator import sleeve_key
 from app.hat.engine.portfolio.universe import Interval, members_on
@@ -238,8 +238,8 @@ def test_fill_conventions_recorded_digest(a: tuple, b: tuple) -> None:
         weight: D | None,
         regime_rule: str,
     ) -> str:
-        fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_model(), D(0))
-        fills = BacktestFills(fills.model, bps)
+        fills = s.zero_fills() if model == "zero" else BacktestFills(load_cost_schedule(), D(0))
+        fills = BacktestFills(fills.schedule, bps)
         base = s.spec(s.config(), DAYS, fills=fills)
         run = dataclasses.replace(
             base,
@@ -458,7 +458,7 @@ def test_promotion_conventions_refused(fields: dict, slippage: D, code: str) -> 
     """A run flagged for promotion is refused at construction under any convention live does
     not trade by; the same conventions make a sensitivity run."""
     conventions = dataclasses.replace(PROMOTED, **fields)
-    fills = BacktestFills(load_cost_model(), slippage)
+    fills = BacktestFills(load_cost_schedule(), slippage)
     config = s.config()
     with pytest.raises(BacktestError, match=code):
         s.spec(config, DAYS, fills=fills, conventions=conventions, for_promotion=True)
@@ -681,7 +681,7 @@ def test_research_run_sizes_an_unweighted_sleeve_and_promotion_refuses_it() -> N
     run = s.spec(s.config(), DAYS, policy=unweighted)
     assert sleeve_weight(run) == RESEARCH_SLEEVE_WEIGHT
     assert run.recorded_conventions()["sleeve_weight"] == "0.5"
-    fills = BacktestFills(load_cost_model(), DEFAULT_SLIPPAGE_BPS)
+    fills = BacktestFills(load_cost_schedule(), DEFAULT_SLIPPAGE_BPS)
     with pytest.raises(BacktestError, match="backtest_no_base_weight"):
         s.spec(
             s.config(),

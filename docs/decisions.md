@@ -103,6 +103,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Shadow fills pay costs (QA4).** A virtual fill carries the backtest's default model: 20 bps
   slippage against the trade, then the versioned statutory charges (`costs.py`), so shadow
   results are net of what real trading pays.
+- **Dated cost schedule.** A fill is charged under the file of its cost-model version in force on
+  its trade date (`cost_models/cnc-delivery-1/`, from 2016-01-01, the backtest window's start);
+  a run records the digest of every file in force in its window. Sources per file: STT 0.1% on
+  delivery buys and sells (Finance Act 2013); NSE transaction charges 0.00325%, 0.00345% from
+  2021-01-01, 0.00325% from 2023-04-01 (NSE press release 2023-03-24), 0.00322% from 2024-04-01
+  (NSE, 2024-03-12), 0.00297% from 2024-10-01 (SEBI true-to-label circular, 2024-07-01); SEBI
+  fee Rs 10 per crore, Rs 5 from 2020-06-01 to 2021-03-31 (SEBI PR 24/2020); service tax 14.5%,
+  15% from 2016-06-01 (Krishi Kalyan cess), GST 18% from 2017-07-01; brokerage 0. Stamp duty
+  before 2020-07-01 was a state levy: HAT charges the Maharashtra rate, 0.005% on both sides
+  (Maharashtra Stamp Act Sch. I Art. 5); from 2020-07-01 the uniform 0.015% on buys. The DP
+  charge is a flat Rs 14.75 per instrument per sell day (Rs 12.50 + 18% GST, today's tariff,
+  used for the whole window): the first sale of an instrument on a trade date pays it, later
+  sales that day do not (shadow: per broker account). NSE's IPFT contribution is not modelled.
 
 ## Data
 

@@ -26,7 +26,7 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
+from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
 from ..execution.tags import encode_tag
 from ..governance import Mode
 from ..ids import uuid7
@@ -39,6 +39,7 @@ from ..models import (
     HatSignal,
     HatWatchlistEntry,
 )
+from ..time import day_bounds, trade_date_of
 from . import exits, journal, lifecycle
 from .botlock import lock_bot
 from .positions import Trade, TradeError, evaluate_stack, fill_payload, record_sale, trade_of
@@ -57,16 +58,21 @@ __all__ = [
 
 class FillModel(Protocol):
     """How a virtual fill is priced: (fill price, fees) for `qty` shares at the reference
-    `price` on `side` ("buy" or "sell")."""
+    `price` on `side` ("buy" or "sell") on trade date `day`, under the charges in force on it; a
+    sale of an instrument already `sold_today` pays no second DP charge."""
 
-    def fill(self, side: str, qty: int, price: Decimal, /) -> tuple[Decimal, Decimal]: ...
+    def fill(
+        self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
+    ) -> tuple[Decimal, Decimal]: ...
 
 
 # Shadow trading's fills carry the backtest's default cost model (QA4): the default slippage
 # against the trade, then the statutory charges, so a virtual result is net of what a real one
 # pays. A backtest run passes its own (its slippage and cost model); both fill through the same
 # functions (HAT-BT-010).
-SHADOW_FILLS: FillModel = BacktestFills(load_cost_model(DEFAULT_COST_MODEL), DEFAULT_SLIPPAGE_BPS)
+SHADOW_FILLS: FillModel = BacktestFills(
+    load_cost_schedule(DEFAULT_COST_MODEL), DEFAULT_SLIPPAGE_BPS
+)
 
 
 def _next_tag(session: Session, signal_id: uuid.UUID, purpose: str) -> str:
@@ -208,7 +214,7 @@ def open_veto_trade(session: Session, signal_id: uuid.UUID, now: datetime) -> Ha
     bot = session.get(HatBot, signal.bot_id)
     if bot is None:
         raise TradeError("unknown_bot")
-    fill = SHADOW_FILLS.fill("buy", signal.qty, entry_price_of(session, signal))
+    fill = SHADOW_FILLS.fill("buy", signal.qty, entry_price_of(session, signal), trade_date_of(now))
     trade = Trade(signal, bot, None, veto=True)
     return open_virtual(session, trade, signal.qty, Decimal(signal.stop_price), fill, now)
 
@@ -297,6 +303,29 @@ class _Marks:
     low: Decimal | None
 
 
+def _sold_on(session: Session, trade: Trade, day: date) -> bool:
+    """Whether the trade's broker account already sold the instrument virtually on `day`: the
+    DP charge is one debit per instrument per sell day, however many sales."""
+    position = trade.position
+    if position is None:
+        return False
+    start, end = day_bounds(day)
+    earlier = (
+        select(HatOrder.id)
+        .join(HatPosition, HatPosition.id == HatOrder.position_id)
+        .where(
+            HatOrder.broker_account_id == trade.bot.broker_account_id,
+            HatOrder.side == "sell",
+            HatOrder.is_virtual.is_(True),
+            HatPosition.instrument_id == position.instrument_id,
+            HatOrder.placed_at >= start,
+            HatOrder.placed_at < end,
+        )
+        .limit(1)
+    )
+    return session.scalar(earlier) is not None
+
+
 def _virtual_exit(
     session: Session, trade: Trade, sale: _Sale, price: Decimal, now: datetime, marks: _Marks
 ) -> None:
@@ -305,7 +334,9 @@ def _virtual_exit(
     if trade.position is None:
         raise TradeError("no_open_position")  # an exit sells from the open position
     purpose = "exit_full" if sale.full else "exit_partial"
-    fill = marks.fills.fill("sell", sale.qty, price)
+    day = trade_date_of(now)
+    sold = _sold_on(session, trade, day)
+    fill = marks.fills.fill("sell", sale.qty, price, day, sold_today=sold)
     order, _ = _virtual_order(
         session, trade, purpose=purpose, side="sell", qty=sale.qty, fill=fill, now=now
     )

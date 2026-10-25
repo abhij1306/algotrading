@@ -2,6 +2,7 @@
 `app.hat.costs` on generated cost models and fills, in Decimal and compared exactly,
 against the rules written out here."""
 
+from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -14,9 +15,10 @@ from app.hat.costs import (
     BacktestFills,
     CashBoundFills,
     CostError,
+    CostSchedule,
     charges,
     check_slippage,
-    load_cost_model,
+    load_cost_schedule,
     parse_cost_model,
     slipped,
 )
@@ -29,6 +31,7 @@ QTY = st.integers(1, 100_000)
 BPS = st.integers(0, 9_999).map(D) | st.integers(0, 99_990).map(lambda n: D(n) / 10)
 SIDE = st.sampled_from(["buy", "sell"])
 RATE = st.integers(0, 50_000).map(lambda n: str(D(n) / 10_000_000))  # 0 .. 0.5%
+DAY = date(2025, 1, 10)  # under the 2024-10-01 schedule
 
 
 @st.composite
@@ -47,7 +50,13 @@ def models(draw: st.DrawFn) -> dict[str, Any]:
         if draw(st.booleans()):
             component["cap"] = str(D(draw(st.integers(0, 10_000))) / 100)
         components.append(component)
-    return {"version": "gen", "gst_rate": draw(RATE), "components": components}
+    return {
+        "version": "gen",
+        "effective_from": "2016-01-01",
+        "gst_rate": draw(RATE),
+        "dp_per_sell_day": "0",
+        "components": components,
+    }
 
 
 def _money(value: D) -> D:
@@ -74,12 +83,12 @@ def test_slippage_adverse(price: D, side: str, bps: D) -> None:
 def test_slippage_adverse_net(entry: D, exit_: D, qty: int, low: D, high: D) -> None:
     """The net P&L of a round trip is non-increasing in slippage."""
     low, high = sorted((low, high))
-    model = load_cost_model()
+    schedule = load_cost_schedule()
 
     def net(bps: D) -> D:
-        fills = BacktestFills(model, bps)
-        bought, buy_fees = fills.fill("buy", qty, entry)
-        sold, sell_fees = fills.fill("sell", qty, exit_)
+        fills = BacktestFills(schedule, bps)
+        bought, buy_fees = fills.fill("buy", qty, entry, DAY)
+        sold, sell_fees = fills.fill("sell", qty, exit_, DAY)
         return (sold - bought) * qty - buy_fees - sell_fees
 
     assert net(high) <= net(low)
@@ -131,7 +140,15 @@ def test_charges_contract_float_rates(rate: object) -> None:
     """A rate written as a float (or a boolean, or nothing) is refused: binary rounding never
     reaches money."""
     with pytest.raises(CostError):
-        parse_cost_model({"version": "x", "gst_rate": rate, "components": []})
+        parse_cost_model(
+            {
+                "version": "x",
+                "effective_from": "2016-01-01",
+                "gst_rate": rate,
+                "dp_per_sell_day": "0",
+                "components": [],
+            }
+        )
 
 
 @pytest.mark.parametrize(
@@ -148,25 +165,90 @@ def test_charges_contract_float_rates(rate: object) -> None:
 def test_affordable_is_the_largest_quantity_whose_outlay_fits(cash: D, price: D, bps: D) -> None:
     """The cash a backtest entry is sized on is net of its slippage and charges: the quantity
     `affordable` returns fits the cash with both, and one more share does not."""
-    fills = BacktestFills(load_cost_model(), bps)
-    qty = fills.affordable(cash, price)
+    fills = BacktestFills(load_cost_schedule(), bps)
+    qty = fills.affordable(cash, price, DAY)
     assert qty >= 0
     if qty:
-        filled, fees = fills.fill("buy", qty, price)
-        assert fills.outlay(qty, price) == filled * qty + fees <= cash
-    assert fills.outlay(qty + 1, price) > cash
+        filled, fees = fills.fill("buy", qty, price, DAY)
+        assert fills.outlay(qty, price, DAY) == filled * qty + fees <= cash
+    assert fills.outlay(qty + 1, price, DAY) > cash
     assert qty <= max(cash, D(0)) // price  # never more than the cash term without the reserve
 
 
 def test_cash_bound_fills_refuse_an_overdraw() -> None:
     """A buy whose value plus charges exceeds the cash is refused, as the broker refuses it; a
     buy that fits and every sell fill as the run's fills do."""
-    fills = BacktestFills(load_cost_model(), D(20))
+    fills = BacktestFills(load_cost_schedule(), D(20))
     price = D("100")
-    qty = fills.affordable(D("10000"), price)
+    qty = fills.affordable(D("10000"), price, DAY)
     bound = fills.within(D("10000"))
     assert isinstance(bound, CashBoundFills)
-    assert bound.fill("buy", qty, price) == fills.fill("buy", qty, price)
-    assert bound.fill("sell", qty + 1, price) == fills.fill("sell", qty + 1, price)
+    assert bound.fill("buy", qty, price, DAY) == fills.fill("buy", qty, price, DAY)
+    assert bound.fill("sell", qty + 1, price, DAY) == fills.fill("sell", qty + 1, price, DAY)
     with pytest.raises(CostError, match="cost_cash_overdraw"):
-        bound.fill("buy", qty + 1, price)
+        bound.fill("buy", qty + 1, price, DAY)
+
+
+@pytest.mark.parametrize(
+    ("day", "effective_from"),
+    [
+        (date(2016, 1, 1), date(2016, 1, 1)),
+        (date(2017, 6, 30), date(2016, 6, 1)),
+        (date(2017, 7, 1), date(2017, 7, 1)),
+        (date(2024, 9, 30), date(2024, 4, 1)),
+        (date(2024, 10, 1), date(2024, 10, 1)),
+        (date(2026, 10, 23), date(2024, 10, 1)),
+    ],
+)
+def test_schedule_picks_the_file_in_force(day: date, effective_from: date) -> None:
+    """A fill is charged under the latest file effective on or before its trade date."""
+    assert load_cost_schedule().on(day).effective_from == effective_from
+
+
+def test_schedule_refuses_a_day_before_its_first_file_and_records_the_window() -> None:
+    """No charges exist before the first file; a run records each file in force in its window."""
+    schedule = load_cost_schedule()
+    with pytest.raises(CostError, match="cost_no_schedule"):
+        schedule.on(date(2015, 12, 31))
+    recorded = schedule.to_json(date(2020, 5, 4), date(2021, 2, 1))
+    assert recorded["version"] == "cnc-delivery-1"
+    assert [s["effective_from"] for s in recorded["schedules"]] == [
+        "2017-07-01",
+        "2020-06-01",
+        "2020-07-01",
+        "2021-01-01",
+    ]
+    with pytest.raises(CostError, match="cost_bad_schedule"):
+        CostSchedule("x", ())
+
+
+@pytest.mark.parametrize(
+    ("day", "side", "price", "want"),
+    [
+        # 100 x 500 = 50,000 on 2025-01-10: STT 50.00, stamp 7.50, NSE 1.485 -> 1.49,
+        # SEBI 0.05, GST 18% of 1.54 = 0.2772 -> 0.28
+        (date(2025, 1, 10), "buy", D(500), D("59.32")),
+        # 100 x 550 = 55,000: STT 55.00, NSE 1.6335 -> 1.63, SEBI 0.055 -> 0.06,
+        # GST 18% of 1.69 = 0.3042 -> 0.30, DP 14.75
+        (date(2025, 1, 10), "sell", D(550), D("71.74")),
+        # 2016-03-01: STT 55.00, Maharashtra stamp 0.005% 2.75 on the sell too, NSE 0.00325%
+        # 1.7875 -> 1.79, SEBI 0.06, service tax 14.5% of 1.85 = 0.26825 -> 0.27, DP 14.75
+        (date(2016, 3, 1), "sell", D(550), D("74.62")),
+    ],
+)
+def test_charges_hand_worked(day: date, side: str, price: D, want: D) -> None:
+    """The charges of a 100-share fill, worked by hand from the file in force."""
+    fills = BacktestFills(load_cost_schedule(), D(0))
+    assert fills.fill(side, 100, price, day) == (price, want)
+
+
+def test_dp_once_per_instrument_per_sell_day() -> None:
+    """A sell pays the flat DP charge; a later sale of the instrument the same day does not, and
+    a buy never does."""
+    fills = BacktestFills(load_cost_schedule(), D(0))
+    _, first = fills.fill("sell", 10, D(550), DAY)
+    _, again = fills.fill("sell", 10, D(550), DAY, sold_today=True)
+    assert first - again == D("14.75")
+    _, buy = fills.fill("buy", 10, D(550), DAY)
+    _, buy_flagged = fills.fill("buy", 10, D(550), DAY, sold_today=True)
+    assert buy == buy_flagged

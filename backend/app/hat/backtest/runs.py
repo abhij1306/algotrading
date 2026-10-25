@@ -34,7 +34,7 @@ from ..costs import (
     BacktestFills,
     CostError,
     check_slippage,
-    load_cost_model,
+    load_cost_schedule,
 )
 from ..data.store import DataStore, atomic_replace
 from ..engine.confidence import buckets
@@ -494,8 +494,9 @@ def _target(session: Session, request: RunRequest) -> _Target:
     config = parse_config(version.config)
     try:
         fills = BacktestFills(
-            load_cost_model(request.cost_model), check_slippage(request.slippage_bps)
+            load_cost_schedule(request.cost_model), check_slippage(request.slippage_bps)
         )
+        fills.schedule.on(request.start)  # a run's first day has charges in force
     except CostError as exc:
         raise BacktestError(exc.code) from None
     table = stored_regime_table(session, market_id_of(session), regime_profile(config.bot))
