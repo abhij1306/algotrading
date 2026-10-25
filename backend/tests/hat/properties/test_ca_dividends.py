@@ -59,8 +59,9 @@ def test_payouts_reads_one_amount_per_kind() -> None:
 )
 def test_interim_typos_read_as_interim(text: str) -> None:
     assert payouts(text) == (_p(KIND_INTERIM, "2"),)
-    both = payouts("Dividend - Interm Rs 2 And Special Re 1 Per Share")
-    assert both == (_p(KIND_INTERIM, "2"), _p(KIND_SPECIAL, "1"))
+    for typo in ("Interm", "Int"):
+        both = payouts(f"Dividend - {typo} Rs 2 And Special Re 1 Per Share")
+        assert both == (_p(KIND_INTERIM, "2"), _p(KIND_SPECIAL, "1"))
 
 
 def test_interest_elsewhere_is_no_interim() -> None:

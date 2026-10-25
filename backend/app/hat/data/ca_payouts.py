@@ -102,7 +102,7 @@ _SEP = re.compile(r"/(?!-)|\band\b|&|\+|;|,")
 # a bonus of debentures or preference shares in a feed purpose (`named_bonus_dates`)
 _BONUS_INSTRUMENT = re.compile(r"bonus\b.*\b(?:debentures?|deb|ncds?|n?c?rps|pref\w*)\b")
 _PREFERENCE = re.compile(r"preference|\bpref\b|\bc?n?c?rps\b|\bcps\b")
-_KIND = re.compile(r"\b(final|special|interim|interm)\b")
+_KIND = re.compile(r"\b(final|special|interim|interm|int)\b")
 _KIND_STOP = re.compile(r"[0-9%/]")
 
 
