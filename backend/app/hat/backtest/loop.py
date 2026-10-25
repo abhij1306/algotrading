@@ -156,7 +156,7 @@ from ..models import (
     HatTradeResult,
     HatWatchlistEntry,
 )
-from ..money import dividend_credit, exact
+from ..money import dividend_credit
 from ..risk.decision import SignalContext
 from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
@@ -241,14 +241,21 @@ def _at(day: date, moment: time, offset: int = 0) -> datetime:
 @dataclass(frozen=True)
 class _EntryPlan:
     """A trigger's entry: price, stop, the day's low after the entry (None: none below the
-    break's), the upper-circuit state and the first failing entry filter (None: all passed)."""
+    break's), the upper-circuit state, the first failing entry filter (None: all passed) and the
+    level that broke."""
 
     price: Decimal
     stop: Decimal
     dip: Decimal | None
     locked: bool | None
     skip: str | None
+    level: Decimal
     filters: tuple[dict[str, object], ...] = ()
+
+
+def _levels(row: HatWatchlistEntry) -> dict[str, Decimal | None]:
+    """The setup levels the scan stored with the row (`trigger.watchlist_levels`)."""
+    return trigger.watchlist_levels((row.criteria_results or {}).get("levels", {}))
 
 
 @dataclass
@@ -557,8 +564,7 @@ class _Run:
     ) -> StopPlan:
         """The initial stop for an entry at `entry` (HAT-BOT-062), planned as live plans it
         (`trigger.entry_stop`): `low` is the day's low before the entry."""
-        levels = (row.criteria_results or {}).get("levels", {})
-        contraction = exact(levels.get("final_contraction_low"), floats=True, positive=True)
+        contraction = _levels(row).get(trigger.CONTRACTION_LOW)
         return trigger.entry_stop(playbook, daily, entry, (low,), contraction)
 
     def _equity_now(self) -> tuple[Decimal, Decimal]:
@@ -584,7 +590,7 @@ class _Run:
             industry=industry_on(self.data, instrument_id, row.trade_date),
             entry_price=plan.price,
             stop_price=plan.stop,
-            trigger_level=Decimal(row.pivot),
+            trigger_level=plan.level,
             locked_upper_circuit=plan.locked,
             configured_max_chase_pct=self.chase[row.playbook],
             equity=capital,
@@ -608,9 +614,10 @@ class _Run:
 
         def rank(row: HatWatchlistEntry) -> tuple[int, Decimal]:
             bar = self.view.bar(str(row.instrument_id), day)
-            pivot = None if row.pivot is None else Decimal(row.pivot)
             return trigger_rank(
-                None if bar is None else bar.open, pivot, self.spec.conventions.entry_fill_rule
+                None if bar is None else bar.open,
+                self._level(row),
+                self.spec.conventions.entry_fill_rule,
             )
 
         return order_slots(self._watchlist(day), self.spec.conventions.slot_order, day, rank)
@@ -627,13 +634,16 @@ class _Run:
             bar = self.view.bar(instrument_id, day)
             if bar is None:
                 continue  # no session today: the level cannot break
-            price = self._fill(row, bar, day)
+            level = self._level(row)
+            if level is None:
+                self._skip(SKIP_NO_LEVEL)
+                continue
+            price = self._fill(row, bar, day, level)
             if isinstance(price, str):
                 self._skip(price)
                 continue
             if price is None:
                 continue  # the level did not break: the row expires at the session end
-            level = Decimal(row.pivot)
             playbook = self.config.playbook(row.playbook)
             lows = self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
             if isinstance(lows, str):
@@ -651,16 +661,20 @@ class _Run:
             failed, filters = self._entry_filters(
                 playbook, row, daily, (price, stop, level, locked), at
             )
-            plan = _EntryPlan(price, stop, dip, locked, failed, filters)
+            plan = _EntryPlan(price, stop, dip, locked, failed, level, filters)
             self._enter(row, bar, plan, prev, at)
 
-    def _fill(self, row: HatWatchlistEntry, bar: Bar, day: date) -> Decimal | str | None:
-        """The entry fill of the row's level under the run's entry fill rule, None when the
-        level did not break, or the skip reason when there is no level or no tick to penetrate
-        by (HAT-BT-020)."""
-        if row.pivot is None:
-            return SKIP_NO_LEVEL
-        level = Decimal(row.pivot)
+    def _level(self, row: HatWatchlistEntry) -> Decimal | None:
+        """The row's trigger level: its playbook's level expression over the row's setup levels
+        on daily bars (`trigger.daily_level`, the opening range unavailable, HAT-BT-025)."""
+        return trigger.daily_level(self.config.playbook(row.playbook), _levels(row))
+
+    def _fill(
+        self, row: HatWatchlistEntry, bar: Bar, day: date, level: Decimal
+    ) -> Decimal | str | None:
+        """The entry fill of the row's `level` under the run's entry fill rule, None when the
+        level did not break, or the skip reason when there is no tick to penetrate by
+        (HAT-BT-020)."""
         rule = self.spec.conventions.entry_fill_rule
         # The tick matters only to a penetration from below; read it only then.
         tick = None
@@ -698,9 +712,8 @@ class _Run:
         nightly inputs and setup levels (`trigger.daily_context`, `entry_filter_context`), without
         the bar's intraday values: `entry` is (price, stop, level, locked)."""
         price, stop, level, locked = entry
-        levels = trigger.watchlist_levels(row.pivot, (row.criteria_results or {}).get("levels", {}))
         ctx = trigger.entry_filter_context(
-            trigger.daily_context(at, daily, levels),
+            trigger.daily_context(at, daily, _levels(row)),
             entry=price,
             stop=stop,
             level=level,
@@ -812,13 +825,19 @@ class _Run:
     # --- the close, delistings, the period end ------------------------------------------------
 
     def _close_view(self, position: HatPosition, bar: Bar, day: date) -> exits.ExitView:
+        """The position's view at the day's close, the stand-in for live's pre-15:15 price
+        (`exits.view_from_bars`, as live builds it)."""
         held = self.held[position.id]
-        return exits.view_from_rules(
+        rules = self.config.exits
+        before = self.view.bars_through(
+            held.instrument_id, day, exits.history_sessions(rules), inclusive=False
+        )
+        return exits.view_from_bars(
             bar.close,
-            self.config.exits,
+            rules,
             self.index[day] - self.index[held.entry_day],
-            lambda length: self.view.sma_through(held.instrument_id, day, length),
-            lambda lookback: self.view.lowest_low_before(held.instrument_id, day, lookback),
+            [b.close for b in before],
+            [b.low for b in before],
         )
 
     def _close_phase(self, day: date) -> None:

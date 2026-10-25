@@ -2,11 +2,12 @@
 (HAT-BOT-060/070/072/080).
 
 Every save creates a new `hat_strategy_version` (a draft) numbered 1, 2, 3 without gaps, with
-`parent_version_id` set; `publish_version` freezes a draft by moving it to `backtested`, after
-which the config never changes (the database trigger refuses it, and so does this module).
-A save is refused inside a market session and when the config does not validate: no row is
-written then. Nothing here commits; the caller's transaction decides. What a version does after
-`backtested` (shadow, live, the sleeves that run it) is the release gate in `release`.
+`parent_version_id` set; `publish_version` freezes a draft by moving it to `frozen`, after which
+the config never changes (the database trigger refuses it, and so does this module). A save is
+refused inside a market session and when the config does not validate: no row is written then.
+Nothing here commits; the caller's transaction decides. What a version does once `frozen` (its
+trial, its release, the sleeves that run it) is the release gate in `release`; the version states
+(`governance.VersionStatus`) are named apart from a sleeve's lifecycle states.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 from ...backtest.evidence import RunMetrics
 from ...errors import HatError
 from ...events import record
+from ...governance import VersionStatus
 from ...models import HatBacktestRun, HatMarket, HatStrategy, HatStrategyVersion
 from ...risk.sessions import SessionCalendar, SessionState
 from .catalogue import sync_criterion_types
@@ -67,7 +69,7 @@ def _new_version(
         id=uuid.uuid4(),
         strategy_id=strategy.id,
         version=(existing[-1].version if existing else 0) + 1,
-        status="draft",
+        status=VersionStatus.DRAFT,
         config=config.to_json(),
         config_hash=config.hash(),
         parent_version_id=parent,
@@ -118,14 +120,15 @@ def save_draft(
 def publish_version(
     session: Session, version_id: uuid.UUID, *, backtest_run_id: uuid.UUID
 ) -> HatStrategyVersion:
-    """Freeze a draft: it becomes `backtested` against a completed run of that version, which
+    """Freeze a draft: it becomes `frozen` against a completed run of that version, which
     evidences it (HAT-BT-061), and its config can no longer change. Any other starting status, or
     a run of another version, one not completed or one not flagged for promotion (PR 62), is
     refused."""
-    row = session.get(HatStrategyVersion, version_id)
+    # locked, so two publishes of one draft serialise and the second sees it frozen
+    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
     if row is None:
         raise VersionError("unknown_version")
-    if row.status != "draft":
+    if row.status != VersionStatus.DRAFT:
         raise VersionError("not_a_draft")
     run = session.get(HatBacktestRun, backtest_run_id)
     if run is None:
@@ -138,7 +141,7 @@ def publish_version(
         # O5 (PR 62): only a run flagged for promotion evidences; `RunSpec` records one only
         # under the conventions live trades by (never at perfect fills, slots in trigger order)
         raise VersionError("run_not_for_promotion")
-    row.status = "backtested"
+    row.status = VersionStatus.FROZEN
     row.backtest_run_id = backtest_run_id
     session.flush()
     return row

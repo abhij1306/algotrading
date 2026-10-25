@@ -32,6 +32,16 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 7. No entry is placed, and no Take passes, once its break failed: a final 5-minute bar after the
    trigger bar closed below the level. An unfilled entry whose break failed is cancelled, and its
    `order.cancelled` carries the reason.
+8. Only ordinary equity shares enter (ISIN `IN` + `E` or `9` + issuer + type `01`), in the live
+   entries, the gap scan, the nightly scan and the backtest alike: one universe read
+   (`watchlist._tradable_members`); ETFs, funds, InvITs, REITs and rights entitlements keep their
+   prices but never trade.
+9. A trigger breaks the level its playbook's one enabled `price_breaks_level` expression names (a
+   level, or `max` of several) over the levels its setup criteria declare, live and in the
+   backtest alike (`resolve_level`); a config naming a level its setup does not expose, or with
+   two such triggers, is refused. A setup that passes without the level its trigger names (a score
+   criterion failed) is not watchlisted. On daily bars the opening range is unavailable: it drops
+   out of a `max`, and a level of it alone never breaks.
 
 ## Money safety
 

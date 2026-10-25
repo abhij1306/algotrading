@@ -54,7 +54,7 @@ from ..data.store import (
 from ..data.ticks import scaled_tick, tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
-from ..engine.stops import lowest, mean_true_range, sma
+from ..engine.stops import mean_true_range
 from ..models import HatCorporateAction, HatIndustry, HatInstrument, HatUniverseMember
 from ..money import exact
 from .spec import BacktestError
@@ -174,6 +174,9 @@ class MarketData:
     # before a demerger whose record date was announced before that session
     # (`demerger_notice.exit_day`); a demerger never dated holds through.
     demerger_exits: frozenset[tuple[str, date]] = frozenset()
+    # Each member's ISIN, by instrument id, so the ledger's instruments are classed as live's are
+    # (decisions.md "Stocks only", `watchlist._tradable_members`).
+    isins: Mapping[str, str] = field(default_factory=dict)
 
 
 def classifications(data: MarketData, instrument_id: str) -> list[tuple[date, str]]:
@@ -414,16 +417,6 @@ class MarketView:
         last = through - 1
         return scaled_tick(tick, _exact(closes.adjusted[last]), _exact(closes.raw[last]))
 
-    def sma_through(self, instrument_id: str, day: date, length: int) -> Decimal | None:
-        """The `length`-session SMA of the closes up to `day`."""
-        bars = self.bars_through(instrument_id, day, length)
-        return sma([b.close for b in bars], length)
-
-    def lowest_low_before(self, instrument_id: str, before: date, lookback: int) -> Decimal | None:
-        """The lowest low of the `lookback` sessions the instrument traded before `before`."""
-        bars = self.bars_through(instrument_id, before, lookback, inclusive=False)
-        return lowest([b.low for b in bars], lookback)
-
     def atr(self, instrument_id: str, day: date, length: int) -> Decimal | None:
         """The mean true range of the `length` sessions up to `day`."""
         window = self.bars_through(instrument_id, day, length + 1)
@@ -566,6 +559,15 @@ def chain_industries(
         if chain in wanted:
             found.setdefault(str(chain), []).append((effective_from, industry))
     return {k: sorted(v) for k, v in found.items()}
+
+
+def _isins(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, str]:
+    wanted = set(instruments)
+    return {
+        str(row.id): row.isin
+        for row in session.execute(select(HatInstrument.id, HatInstrument.isin))
+        if row.id in wanted
+    }
 
 
 def _delisted(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, date]:
@@ -845,6 +847,7 @@ def load_market(
         pending=pending,
         dividends=dict(dividends),
         demerger_exits=exits,
+        isins=_isins(session, instruments),
     )
     snapshot = {
         "store_first": window[0].isoformat(),

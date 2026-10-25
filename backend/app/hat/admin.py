@@ -32,11 +32,11 @@ Commands, in first-deploy order:
                                               and given to the sleeves (default: all of them)
     save-draft --strategy ID --config YAML    a new draft version, outside market hours
                                               (HAT-BOT-084)
-    publish-version --version ID --run ID     draft -> backtested on a completed run (HAT-BT-061)
+    publish-version --version ID --run ID     draft -> frozen on a completed run (HAT-BT-061)
     assign-version --bot ID --version ID      the version a sleeve scans and trades with
-    shadow-version --version ID               backtested -> shadow; starts the 20 sessions
+    trial-version --version ID                frozen -> trial; starts the 20 paper sessions
     promote --bot ID --to STATE               a lifecycle edge, under its guard (HAT-PORT-060)
-    promote-version --version ID              shadow -> live after 20 sessions (HAT-BOT-084)
+    release-version --version ID              trial -> released after 20 sessions (HAT-BOT-084)
     resolve-action --position ID --action KEY --close-at PRICE
                                               closes a virtual position a corporate action
                                               locked, at PRICE (HAT-EXEC-144; a real one is
@@ -66,7 +66,7 @@ Input files (`--constituents`, `--config`, `--list`, `--dump`) are names inside
 `<HAT_DATA_ROOT>/admin/`: a path that leaves that folder, or a file without the expected suffix, is
 refused (`file_outside_admin`).
 
-`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `promote-version`, `resolve-action`,
+`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `release-version`, `resolve-action`,
 `resolve-sale`, `correct-action`, `correct-actions` and `repair-symbol-history` are the owner's
 acts: their
 events carry `actor = user`, the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
@@ -211,7 +211,7 @@ def _parser() -> argparse.ArgumentParser:
     assign = commands.add_parser("assign-version")
     assign.add_argument("--bot", type=uuid.UUID, required=True)
     assign.add_argument("--version", type=uuid.UUID, required=True)
-    for name in ("shadow-version", "promote-version"):
+    for name in ("trial-version", "release-version"):
         commands.add_parser(name).add_argument("--version", type=uuid.UUID, required=True)
     promote = commands.add_parser("promote")
     promote.add_argument("--bot", type=uuid.UUID, required=True)
@@ -458,8 +458,8 @@ def _release(
     if command == "publish-version":
         row = versions.publish_version(session, args.version, backtest_run_id=args.run)
         return {"version_id": str(row.id), "status": row.status}
-    if command == "shadow-version":
-        row = release.start_shadow(session, args.version, calendar=_calendar(session), now=now)
+    if command == "trial-version":
+        row = release.start_trial(session, args.version, calendar=_calendar(session), now=now)
         return {"version_id": str(row.id), "status": row.status}
     return None
 
@@ -467,7 +467,7 @@ def _release(
 def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
-    """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote-version`,
+    """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `release-version`,
     `resolve-action`, `resolve-sale`, `correct-action`, `correct-actions`,
     `repair-symbol-history` and `promote`) under the allowlisted chat id."""
     try:
@@ -526,8 +526,8 @@ def _owner(
         fill = BrokerFill(args.qty, args.price, args.note, args.at, args.fees)
         position = resolve_sale(session, args.tag, fill, args.note, owner)
         return {"position_id": str(position.id), "closed": position.closed_at is not None}
-    if args.command == "promote-version":
-        row = release.promote_version(session, args.version, owner)
+    if args.command == "release-version":
+        row = release.release_version(session, args.version, owner)
         return {"version_id": str(row.id), "status": row.status}
     bot = sleeve_service.owner_transition(
         session, args.bot, args.to, _policy(session, deps.user_id, now), owner

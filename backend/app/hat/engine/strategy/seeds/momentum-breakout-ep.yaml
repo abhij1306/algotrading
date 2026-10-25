@@ -55,4 +55,4 @@ exits:
   - {rule: hard_stop}
   - {rule: partial_after_days, days: 3, sell_fraction: 0.33, only_if_profit: true}
   - {rule: move_stop_to_breakeven, after: partial}
-  - {rule: close_below_sma, sma: 10, sell_fraction: 1.0, when: "15:25"}   # 20 for slower stocks
+  - {rule: close_below_sma, sma: 10, sell_fraction: 1.0}   # 20 for slower stocks

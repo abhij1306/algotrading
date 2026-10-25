@@ -3,12 +3,14 @@
 import uuid
 from datetime import UTC, datetime, timedelta
 
+import hat_db_builders as b
 import hat_db_rules as rules
 import pytest
 from sqlalchemy import Engine, select, text
 from sqlalchemy.orm import Session
 
 from app.database import init_db
+from app.hat.confighash import config_hash
 from app.hat.models import HatRiskPolicyVersion
 from app.hat.risk.policy import OLD_SEED_POLICY, SEED_POLICY
 from app.hat.schema import ensure_hat_schema
@@ -108,3 +110,77 @@ def _old_seed_superseded(pg_engine: Engine) -> None:
             (2, "initial", True),
         ]
         assert rows[0].superseded_at == rows[1].effective_from
+
+
+_OLD_VERSION_SCHEMA = (
+    "ALTER TABLE hat_strategy_version DROP CONSTRAINT hat_strategy_version_status_check",
+    "ALTER TABLE hat_strategy_version DROP CONSTRAINT hat_strategy_version_release_evidence_check",
+    "DROP INDEX hat_one_released_version",
+    "ALTER TABLE hat_strategy_version ADD CONSTRAINT ck_hat_strategy_version_status"
+    " CHECK (status IN ('draft', 'backtested', 'shadow', 'live', 'retired'))",
+    "ALTER TABLE hat_strategy_version ADD CONSTRAINT ck_hat_strategy_version_live_evidence"
+    " CHECK (status <> 'live' OR (backtest_run_id IS NOT NULL AND shadow_started_at IS NOT NULL))",
+    "CREATE UNIQUE INDEX hat_one_live_version ON hat_strategy_version (strategy_id)"
+    " WHERE status = 'live'",
+)
+
+
+@pytest.mark.postgres
+def test_migration__version_states_renamed(pg_engine: Engine) -> None:
+    """A database with the old version states and exits carrying the unread `when` (hat_live)
+    comes out of `ensure_hat_schema` with the new states, the models' catalog, no `when` and each
+    hash recomputed from its config, its immutability trigger on again; a second run changes
+    nothing. Postgres DDL is transactional, so it all rolls back and leaves no rows behind."""
+    before = rules.catalog(pg_engine)
+    with pg_engine.connect() as connection:
+        transaction = connection.begin()
+        try:
+            for statement in _OLD_VERSION_SCHEMA:
+                connection.execute(text(statement))
+            market = b.market(connection)
+            strategy = b.strategy(connection, market)
+            run = b.backtest_run(
+                connection, b.strategy_version(connection, strategy, 9), b.risk_policy(connection)
+            )
+            exits = [{"rule": "close_below_sma", "sma": 50, "when": "15:25"}, {"rule": "hard_stop"}]
+            config = {"bot": "s", "exits": exits}
+            ids = {}
+            for number, status in enumerate(("draft", "backtested", "shadow", "live", "retired")):
+                evidence = {"backtest_run_id": run, "shadow_started_at": b.NOW}
+                ids[status] = b.strategy_version(
+                    connection,
+                    strategy,
+                    number + 1,
+                    status=status,
+                    config=config,
+                    config_hash=config_hash(config),
+                    **(evidence if status == "live" else {}),
+                )
+            ensure_hat_schema(connection)
+            ensure_hat_schema(connection)
+            stripped = {"bot": "s", "exits": [{"rule": "close_below_sma", "sma": 50}, exits[1]]}
+            rows = {
+                r.id: r
+                for r in connection.execute(
+                    text("SELECT id, status, config, config_hash FROM hat_strategy_version")
+                )
+            }
+            renamed = {"draft": "draft", "backtested": "frozen", "shadow": "trial"}
+            renamed |= {"live": "released", "retired": "superseded"}
+            for old, new in renamed.items():
+                row = rows[ids[old]]
+                assert (row.status, row.config, row.config_hash) == (
+                    new,
+                    stripped,
+                    config_hash(stripped),
+                )
+            enabled = connection.execute(
+                text(
+                    "SELECT tgenabled FROM pg_trigger"
+                    " WHERE tgname = 'hat_strategy_version_immutable_guard'"
+                )
+            ).scalar_one()
+            assert enabled == "O"
+            assert rules.catalog_of(connection) == before
+        finally:
+            transaction.rollback()

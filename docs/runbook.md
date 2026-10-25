@@ -51,8 +51,6 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    ```
    Retention never truncates or drops event partitions (`ops/retention.py` deletes only the two
    chat tables).
-8. `DROP TABLE hat_drawdown_base;` (a re-arm no longer restarts the drawdown peak, QA10) and
-   remove it from `DRIFT_ALLOWED_TABLES` in `app/hat/schema.py`.
 
 ## Running it
 
@@ -123,17 +121,22 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    [--exclude S]` (unknown symbols or ISINs are listed; nothing written).
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
    <bot> --version <v> --from 2011-06-22 --to <last trading day> --for-promotion --regime-mult
-   policy`; then `publish-version --version <v> --run <run_id>` and `assign-version --bot <bot>
-   --version <v>`.
+   policy`; then `publish-version --version <v> --run <run_id>` (the version is `frozen`) and
+   `assign-version --bot <bot> --version <v>`.
 5. `promote --bot <bot> --to backtested` (`backtest_gate`), `promote --to shadow` and
-   `shadow-version --version <v>` the same evening.
-6. After 20 sessions: `promote-version --version <v>`, then `promote --bot <bot> --to live`.
+   `trial-version --version <v>` the same evening. Versions move draft -> frozen -> trial ->
+   released -> superseded; sleeves move research -> backtested -> shadow -> live (`promote`).
+6. After 20 sessions the shadow sleeve ran the version (each a published watchlist naming it; the
+   calendar alone is not enough): `release-version --version <v>`, then `promote --bot <bot> --to
+   live`.
    Orders stay virtual until GTT delivery, DDPI and `weights_confirmed`; `/status` shows the gate.
    DDPI active: `confirm-ddpi --account <a> --since <date> --note "<what>"`; withdrawn:
    `revoke-ddpi --account <a> --note "<why>"`. `/mode <bot> auto` for auto.
-7. New version: `save-draft --strategy <s> --config <file.yaml>`, step 4, `shadow-version`, and
-   after 20 sessions `promote-version` (moves the old version's sleeves; open trades keep theirs).
-   On a separate sleeve: `add-sleeve`, `assign-version`, step 5's `promote`s; one Live sleeve per
+7. New version: `save-draft --strategy <s> --config <file.yaml>`, step 4's backtest and
+   `publish-version`. A Live or Probation sleeve takes only a released version, so the trial runs
+   on a paper sleeve: `add-sleeve`, `assign-version` of the frozen version, step 5's `promote`s to
+   shadow and `trial-version`. After 20 sessions it ran the version, `release-version` (supersedes
+   the old version and moves the Live sleeve onto it; open trades keep theirs). One Live sleeve per
    strategy.
 8. Recovered Probation sleeve: `promote --bot <bot> --to live`.
 

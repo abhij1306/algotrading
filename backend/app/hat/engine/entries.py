@@ -58,10 +58,12 @@ from ..time import as_utc
 from . import journal, lifecycle, rescale
 from .botlock import lock_bot, lock_owner
 from .confidence import LABELS, UNKNOWN_LABEL, Confidence
+from .criteria import REGISTRY
 from .positions import Trade, TradeError
 from .shadow import SHADOW_FILLS, FillModel, open_virtual
 from .snapshot import day_counts, last_hard_stop, owner_slots
 from .stops import SKIP_BAD_INPUT, SKIP_NOT_BELOW_ENTRY, SKIP_TOO_NARROW, SKIP_TOO_WIDE
+from .trigger import SKIP_NO_LEVEL, SKIP_NO_PRICE
 from .watchlist import bot_universe_members
 
 __all__ = [
@@ -82,21 +84,21 @@ DECIDE = Callable[[SignalContext], RiskDecision]
 APPROVAL_WINDOW = timedelta(minutes=5)
 # Issues an approval card's token from (signal id, expires_at); `telegram.tokens.ApprovalSigner`.
 TokenIssuer = Callable[[uuid.UUID, datetime], str]
-# Why a trigger was skipped before the risk check: the initial stop could not be set, or an entry
-# filter failed (HAT-EXEC-122). They are stored as the signal's REJECT reason, like a risk reason.
+# Why a trigger was skipped before the risk check: the initial stop could not be set, the level or
+# the price was unknown, or an entry filter failed, its reason being the filter's type
+# (HAT-EXEC-122). They are stored as the signal's REJECT reason, like a risk reason.
 ENTRY_SKIP_REASONS = frozenset(
     {
         SKIP_BAD_INPUT,
         SKIP_NOT_BELOW_ENTRY,
         SKIP_TOO_WIDE,
         SKIP_TOO_NARROW,
-        "adtr_filter",
-        "max_chase",
-        "level_undefined",
-        "no_live_price",
+        SKIP_NO_LEVEL,
+        SKIP_NO_PRICE,
         rescale.SKIP_ACTION_PENDING,
         SKIP_DEMERGER_PENDING,
     }
+    | {t.code for t in REGISTRY.values() if t.stage == "entry_filter"}
 )
 _ZERO = Decimal(0)
 SIGNAL_TRIGGERED = journal.SIGNAL_TRIGGERED

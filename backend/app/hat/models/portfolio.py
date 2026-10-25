@@ -15,7 +15,7 @@ from sqlalchemy import (
 
 from ...base import Base
 from ._types import (
-    VERSION_STATUSES,
+    UNIVERSE_VERSION_STATUSES,
     Currency,
     JsonB,
     Money,
@@ -56,7 +56,7 @@ class HatUniverseVersion(Base):
     __table_args__ = (
         UniqueConstraint("universe_id", "version"),
         CheckConstraint(
-            in_values("status", VERSION_STATUSES), name="ck_hat_universe_version_status"
+            in_values("status", UNIVERSE_VERSION_STATUSES), name="ck_hat_universe_version_status"
         ),
         Index(
             "hat_one_live_universe_version",

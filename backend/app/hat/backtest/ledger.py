@@ -18,6 +18,7 @@ from sqlalchemy.pool import StaticPool
 
 from ...base import Base
 from ..data.corporate_actions import TYPE_DIVIDEND
+from ..governance import VersionStatus
 from ..models import (
     HatBot,
     HatCorporateAction,
@@ -75,7 +76,7 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
         id=spec.strategy_version_id,
         strategy_id=strategy.id,
         version=1,
-        status="shadow",
+        status=VersionStatus.TRIAL,
         config=spec.config.to_json(),
         config_hash=spec.config.hash(),
     )
@@ -94,14 +95,14 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
                 reason="constituent",
             )
         )
-    # The live scan and entry read only active instruments trading under a Fyers series (D210):
-    # each member gets a row, its series set point in time each night by `set_series`.
+    # The live scan and entry read only active stocks trading under a Fyers series (D210): each
+    # member gets a row with its ISIN, its series set point in time each night by `set_series`.
     for instrument_id in sorted({str(i.instrument_id) for i in data.members}):
         session.add(
             HatInstrument(
                 id=uuid.UUID(instrument_id),
                 market_id=market.id,
-                isin=instrument_id,
+                isin=data.isins.get(instrument_id, instrument_id),
                 series=_NO_SERIES,
                 symbol=instrument_id,
                 name=instrument_id,

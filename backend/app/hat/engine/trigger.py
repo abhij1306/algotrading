@@ -57,8 +57,15 @@ from ..money import exact, require_exact
 from ..risk.caps import effective_max_chase_pct
 from ..risk.sessions import CLOSING_AUCTION
 from ..time import IST
-from .criteria import CriterionResult, EvalContext, evaluate, evaluate_live, get_type
-from .criteria.live import CONSOLIDATION_HIGH, LEVEL_OPENING_RANGE, LEVEL_PIVOT, LiveContext
+from .criteria import (
+    CONTRACTION_LOW,
+    CriterionResult,
+    EvalContext,
+    evaluate,
+    evaluate_live,
+    get_type,
+)
+from .criteria.live import LEVEL_OPENING_RANGE, LiveContext, level_names, resolve_level
 from .stops import (
     SKIP_BAD_INPUT,
     SeriesHistory,
@@ -71,6 +78,7 @@ from .stops import (
 from .strategy.config import Instance, Playbook, StopRule, StrategyConfig
 
 __all__ = [
+    "CONTRACTION_LOW",
     "TRIGGER_WINDOW",
     "BarView",
     "Candidate",
@@ -97,6 +105,7 @@ __all__ = [
     "lower_circuit_price",
     "plan_entry",
     "upper_circuit_price",
+    "daily_level",
     "watchlist_levels",
 ]
 
@@ -197,7 +206,8 @@ def daily_inputs(
 class Candidate:
     """One (bot, playbook, instrument) the monitor watches on `trade_date`.
 
-    `levels` holds the watchlist's `pivot` and `consolidation_high`; `open_price` is the day's
+    `levels` holds the setup levels stored with the watchlist row (`watchlist_levels`), which the
+    playbook's level expression reads with the opening range; `open_price` is the day's
     open from the pre-open capture (EP); `announcements` are the `published_at` instants matched
     to the instrument. `configured_max_chase_pct` is the playbook's last configured max-chase
     percentage across the bot's versions (None when it never had one). `daily_results` holds the
@@ -411,8 +421,8 @@ def evaluate_trigger(
             result = evaluate_live(instance.type, instance.params, ctx)
         blocking = instance.type != CATALYST or mode in instance.params.get("required_in", ())
         outcomes.append(CriterionOutcome(instance.type, instance.order, blocking, result))
-        if instance.type == PRICE_BREAKS_LEVEL and result.passed:
-            level = result.extras.get("level")
+        if instance.type == PRICE_BREAKS_LEVEL and result.passed and level is None:
+            level = result.extras.get("level")  # the one enabled instance (`one_trigger_level`)
     blocking_results = [o.result.passed for o in outcomes if o.blocking]
     fired = bool(blocking_results) and all(blocking_results)
     return TriggerEvaluation(fired, tuple(outcomes), level)
@@ -458,13 +468,30 @@ def plan_entry(
     return EntryPlan(entry, level, planned.stop, locked, planned.skip or failed, outcomes)
 
 
-def watchlist_levels(pivot: object, stored: Mapping[str, object]) -> dict[str, Decimal | None]:
-    """The trigger levels of a watchlist row: its `pivot` and the setup's `consolidation_high`
-    (`criteria_results.levels`), a level that is not a positive price None."""
-    return {
-        LEVEL_PIVOT: exact(pivot, floats=True, positive=True),
-        CONSOLIDATION_HIGH: exact(stored.get(CONSOLIDATION_HIGH), floats=True, positive=True),
-    }
+def watchlist_levels(stored: Mapping[str, object]) -> dict[str, Decimal | None]:
+    """The setup levels of a watchlist row (`criteria_results.levels`, every level its setup
+    criteria exposed), a level that is not a positive price None."""
+    return {name: exact(value, floats=True, positive=True) for name, value in stored.items()}
+
+
+def daily_level(playbook: Playbook, levels: Mapping[str, Decimal | None]) -> Decimal | None:
+    """The playbook's trigger level on daily data: its `price_breaks_level` expression over the
+    setup `levels`, the opening range unavailable (`resolve_level(daily=True)`). The scan stores
+    it as the row's `pivot` (the overnight stop plan, the watchlist); the backtest breaks, chases
+    and ranks on it. None without such a trigger or without its levels."""
+    expression = playbook.level_expression
+    return None if expression is None else resolve_level(expression, levels, daily=True)
+
+
+def needs_setup_level(playbook: Playbook) -> bool:
+    """The playbook's trigger level names a setup level, not only the opening range. A setup can
+    pass on score while the score criterion that exposes that level failed, so the scan keeps
+    such a candidate off the watchlist (`daily_level` None): every candidate the live trigger and
+    the backtest read then has its trigger level."""
+    expression = playbook.level_expression
+    return expression is not None and any(
+        name != LEVEL_OPENING_RANGE for name in level_names(expression)
+    )
 
 
 def daily_context(
@@ -606,8 +633,7 @@ class TriggerMonitor:
         day = candidate.trade_date
         opening = self._view.opening_range(candidate.symbol, day)
         levels = {
-            LEVEL_PIVOT: candidate.levels.get(LEVEL_PIVOT),
-            CONSOLIDATION_HIGH: candidate.levels.get(CONSOLIDATION_HIGH),
+            **candidate.levels,
             LEVEL_OPENING_RANGE: None if opening is None else opening[0],
         }
         return replace(

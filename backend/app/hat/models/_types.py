@@ -36,7 +36,7 @@ def fk(target: str, *, nullable: bool = False, primary_key: bool = False) -> Col
     return Column(Uuid, ForeignKey(target), nullable=nullable, primary_key=primary_key)
 
 
-VERSION_STATUSES = ("draft", "backtested", "shadow", "live", "retired")
+UNIVERSE_VERSION_STATUSES = ("draft", "backtested", "shadow", "live", "retired")
 
 
 def in_values(column: str, values: Iterable[str]) -> str:

@@ -44,7 +44,6 @@ __all__ = [
     "pct_below_entry",
     "plan_stop",
     "plan_stop_at_pivot",
-    "sma",
     "swing_low",
 ]
 
@@ -151,14 +150,6 @@ def mean_true_range(
         for i in range(start, len(closes))
     )
     return sum(ranges, _ZERO) / length
-
-
-def sma(closes: Sequence[Decimal], length: int) -> Decimal | None:
-    """The mean of the last `length` closes (oldest first), or None with fewer than `length`.
-    The close-phase exits of the live loop and the backtest both read the SMA from here."""
-    if length < 1 or len(closes) < length:
-        return None
-    return sum(closes[-length:], _ZERO) / length
 
 
 def lowest(lows: Sequence[Decimal], length: int) -> Decimal | None:

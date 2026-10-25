@@ -12,6 +12,8 @@ from pydantic import ValidationError
 
 from app.hat.data.ticks import reference_close, tick_for_date, tick_size
 from app.hat.engine import stops
+from app.hat.engine.criteria import REGISTRY
+from app.hat.engine.criteria.indicators import sma
 from app.hat.engine.entries import ENTRY_SKIP_REASONS
 from app.hat.engine.stops import StopInputs, plan_stop
 from app.hat.engine.strategy.config import (
@@ -252,13 +254,28 @@ def close_histories(draw: st.DrawFn) -> tuple[list[date], list[Decimal | None], 
     return dates, closes, trade
 
 
+def test_entry_filter_rejections_keep_their_reason() -> None:
+    """Every entry-filter type of the registry is a stored skip reason, a new one included, so
+    its rejection is never stored as `invalid_input`."""
+    filters = {t.code for t in REGISTRY.values() if t.stage == "entry_filter"}
+    assert filters
+    assert filters <= ENTRY_SKIP_REASONS
+    assert {"adtr_filter", "max_chase"} <= filters
+
+
 def test_sma() -> None:
-    """The mean of the last n closes; None with fewer than n."""
+    """The mean of the last n closes; None with fewer than n, or a null or NaN close in the
+    window (the one SMA, `indicators.sma`)."""
     closes = [Decimal("10"), Decimal("11"), Decimal("13"), Decimal("12")]
-    assert stops.sma(closes, 2) == Decimal("12.5")
-    assert stops.sma(closes, 4) == Decimal("11.5")
-    assert stops.sma(closes, 5) is None
-    assert stops.sma([], 1) is None
+    assert sma(closes, 2) == Decimal("12.5")
+    assert sma(closes, 4) == Decimal("11.5")
+    assert sma(closes, 5) is None
+    assert sma([], 1) is None
+    assert sma([10.0, 11.0], 2) == Decimal("10.5")
+    assert sma([None, 11.0], 2) is None
+    assert sma([float("nan"), 11.0], 2) is None
+    assert sma([Decimal("NaN"), Decimal("11")], 2) is None
+    assert sma([Decimal("NaN"), Decimal("11")], 1) == Decimal("11")
 
 
 def test_lowest() -> None:

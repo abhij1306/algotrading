@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
 from app.hat.engine.criteria import REGISTRY
+from app.hat.engine.criteria.live import LiveContext
 from app.hat.engine.strategy.config import (
     ConfigError,
     Instance,
@@ -35,6 +36,7 @@ from app.hat.engine.strategy.versions import (
     seed_text,
 )
 from app.hat.engine.strategy.yamlio import import_yaml
+from app.hat.engine.trigger import daily_level, evaluate_trigger, needs_setup_level
 from app.hat.risk.policy import POLICY_FIELDS, SEED_POLICY
 from app.hat.schema import seed_hat_reference
 
@@ -195,6 +197,7 @@ def test_close_vs_pivot_needs_vcp(
     """PBT config.close_vs_pivot_needs_vcp: a setup with an enabled
     `close_vs_pivot` is valid exactly when an enabled `vcp` comes before it (S1's seed setup
     with the two moved, removed or switched off), and `close_vs_pivot` is refused in score mode.
+    Without an enabled `vcp` S1's trigger names a level no setup criterion exposes.
     Harm: a config whose gate can never pass is saved, and the playbook silently stops trading;
     a scored gate only lowers the score, so a stale breakout still publishes."""
     raw = yaml.safe_load(seed_text("stage2-contraction-breakout"))
@@ -213,10 +216,12 @@ def test_close_vs_pivot_needs_vcp(
     )
     if scored:
         assert "close_vs_pivot_not_hard" in codes_of(raw)
-    elif valid:
+    elif not valid:
+        assert codes_of(raw) == {"close_vs_pivot_needs_vcp"}
+    elif vcp_at is not None and vcp_on:
         parse_config(raw)
     else:
-        assert codes_of(raw) == {"close_vs_pivot_needs_vcp"}
+        assert codes_of(raw) == {"level_not_exposed"}
 
 
 @given(raw_configs())
@@ -407,3 +412,88 @@ def test_preopen_playbook_triggers_on_the_opening_range_only() -> None:
             instance["params"]["level"] = "pivot"
     with pytest.raises(ValueError, match="preopen_level_not_opening_range"):
         Playbook.model_validate(raw)
+
+
+def test_trigger_level_must_be_exposed() -> None:
+    """A `price_breaks_level` names only levels its playbook's enabled setup criteria expose
+    (`CriterionType.levels`) or the opening range, so a playbook that could never trigger is
+    refused when saved. Harm: the backtest triggered on whatever `pivot` held."""
+    raw = seed_config("momentum-breakout-ep").playbook("breakout").model_dump(mode="json")
+    assert Playbook.model_validate(raw).setup_levels == ("consolidation_high",)
+    for instance in raw["trigger"]:
+        if instance["type"] == "price_breaks_level":
+            instance["params"]["level"] = "pivot"  # no setup criterion of S2's breakout has one
+    with pytest.raises(ValueError, match="level_not_exposed"):
+        Playbook.model_validate(raw)
+    for instance in raw["setup"]["criteria"]:
+        if instance["type"] == "consolidation":
+            instance["enabled"] = False
+    for instance in raw["trigger"]:
+        if instance["type"] == "price_breaks_level":
+            instance["params"]["level"] = "consolidation_high"  # its criterion is disabled
+    with pytest.raises(ValueError, match="level_not_exposed"):
+        Playbook.model_validate(raw)
+
+
+def test_one_trigger_level() -> None:
+    """A playbook has one enabled `price_breaks_level`: live read the last passing one and the
+    scan and backtest the first, so two naming different levels gave different entries. A second,
+    disabled one is allowed; the live trigger's level is the one `daily_level` reads."""
+    raw = seed_config("momentum-breakout-ep").playbook("breakout").model_dump(mode="json")
+    extra = {
+        "type": "price_breaks_level",
+        "stage": "trigger",
+        "order": 9,
+        "params": {"level": "consolidation_high", "bar": "5m"},
+    }
+    with pytest.raises(ValueError, match="one_trigger_level"):
+        Playbook.model_validate({**raw, "trigger": [*raw["trigger"], extra]})
+    book = Playbook.model_validate(
+        {**raw, "trigger": [*raw["trigger"], {**extra, "enabled": False}]}
+    )
+    levels = {"consolidation_high": Decimal(100), "opening_range_high": Decimal(90)}
+    ctx = LiveContext(
+        at=datetime(2026, 10, 21, 4, 0, tzinfo=UTC),
+        price=Decimal(101),
+        bar_high=Decimal(102),
+        bar_close=Decimal(101),
+        levels=levels,
+    )
+    level = evaluate_trigger(book, ctx, "confirm").level
+    assert level == daily_level(book, levels) == Decimal(100)
+
+
+def test_score_level_source_needs_its_level() -> None:
+    """S1's pivot comes from a score-mode `vcp` and S2's breakout level from a score-mode
+    `consolidation`: either can fail while the setup passes, and that candidate has no trigger
+    level, so the scan does not watchlist it (`needs_setup_level` with `daily_level` None). An
+    opening-range-only playbook needs no setup level."""
+    s1 = seed_config("stage2-contraction-breakout").playbook("default")
+    s2 = seed_config("momentum-breakout-ep")
+    assert any(i.mode == "score" and i.type == "vcp" for i in s1.setup.criteria)
+    assert needs_setup_level(s1)
+    assert daily_level(s1, {}) is None
+    assert needs_setup_level(s2.playbook("breakout"))
+    assert daily_level(s2.playbook("breakout"), {"consolidation_high": None}) is None
+    assert not needs_setup_level(s2.playbook("episodic_pivot"))
+
+
+def test_seed_trigger_levels() -> None:
+    """Each seed playbook's level expression and the setup levels the scan stores for it."""
+    found = {
+        (name, p.name): (p.level_expression, p.setup_levels)
+        for name in STRATEGIES
+        for p in seed_config(name).playbooks
+    }
+    pivot = ("pivot", ("pivot", "final_contraction_low"))
+    assert found == {
+        ("stage2-contraction-breakout", "default"): pivot,
+        ("momentum-breakout-ep", "breakout"): (
+            "max(consolidation_high, opening_range_high)",
+            ("consolidation_high",),
+        ),
+        ("momentum-breakout-ep", "episodic_pivot"): ("opening_range_high", ()),
+        ("darvas-box-breakout", "default"): pivot,
+        ("trend-pullback-ema", "default"): pivot,
+        ("rsi2-uptrend-reversion", "default"): ("pivot", ("pivot",)),
+    }

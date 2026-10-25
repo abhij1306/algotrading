@@ -97,6 +97,15 @@ def sessions_after(sessions: Iterable[date], start: date, end: date) -> int:
     return len({d for d in sessions if start < d <= end})
 
 
+def paper_sessions(
+    published: Iterable[date], sessions: Iterable[date], started_on: date, today: date
+) -> int:
+    """How many trading sessions after `started_on` and up to `today` a sleeve actually ran the
+    version on paper: the trade dates its watchlist was published with it (`published`) that are
+    sessions on `hat_trading_calendar`. A version no sleeve ran has none."""
+    return sessions_after(set(published) & set(sessions), started_on, today)
+
+
 def shadow_gate(sessions: Iterable[date], started_on: date | None, today: date) -> bool:
     """Shadow -> Live: at least 20 trading sessions on `hat_trading_calendar` since the sleeve
     entered Shadow; weekends and holidays are not sessions (HAT-PORT-062)."""

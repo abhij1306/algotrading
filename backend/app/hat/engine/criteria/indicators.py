@@ -6,6 +6,7 @@ as for the feature columns. Sums are `Decimal` over `dec(value)`, so every compa
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from decimal import Decimal
 
@@ -28,10 +29,23 @@ def dsum(values: Sequence[float]) -> Decimal:
     return sum((dec(v) for v in values), Decimal(0))
 
 
-def sma_sum(close: Sequence[float | None], n: int, *, offset: int = 0) -> Decimal | None:
-    """The sum of the `n` closes ending `offset` rows back: the mean is this over `n`."""
-    window = last(close, n, offset=offset)
-    return None if window is None else dsum(window)
+def sma_sum(values: Sequence[float | Decimal | None], n: int, *, offset: int = 0) -> Decimal | None:
+    """The exact sum of the `n` values ending `offset` rows back: the SMA is this over `n`. None
+    unless that window exists and holds only finite values (a null or NaN has no SMA). The one
+    SMA of HAT: the criteria, the regime gate, the portfolio regime and the exits all read it."""
+    end = len(values) - offset
+    if n < 1 or offset < 0 or end < n:
+        return None
+    chunk = values[end - n : end]
+    if any(v is None or not math.isfinite(v) for v in chunk):
+        return None
+    return sum((dec(v) for v in chunk if v is not None), Decimal(0))
+
+
+def sma(values: Sequence[float | Decimal | None], n: int) -> Decimal | None:
+    """The `n`-session simple moving average of the last `n` values (`sma_sum` over `n`)."""
+    total = sma_sum(values, n)
+    return None if total is None else total / n
 
 
 def mean_gt(sum_a: Decimal, n_a: int, sum_b: Decimal, n_b: int) -> bool:

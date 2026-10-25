@@ -11,7 +11,7 @@ from hypothesis import strategies as st
 from app.hat.engine import regime_gate
 from app.hat.engine.portfolio import regime
 from app.hat.engine.portfolio.regime import RegimeError
-from app.hat.engine.strategy.config import Regime
+from app.hat.engine.strategy.config import CloseAboveSma, FastAboveSlow, Regime
 
 D = Decimal
 RANK = {regime.BULL_QUIET: 0, regime.BULL_VOLATILE: 1, regime.CORRECTION: 2, regime.BEAR: 3}
@@ -177,7 +177,7 @@ def sma(closes: list[Decimal], n: int, back: int = 0) -> Decimal | None:
     return sum(closes[end - n : end], D(0)) / n
 
 
-@given(CLOSES, st.integers(1, 10), st.integers(1, 5))
+@given(CLOSES, st.integers(2, 10), st.integers(1, 5))
 def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None:
     """Close_above_sma_and_rising is true iff close_t > SMA_t and SMA_t >
     SMA_{t-rising}; sma_fast_above_slow_both_rising is true iff SMA_fast > SMA_slow and both are
@@ -188,7 +188,8 @@ def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None
     flips on one down tick."""
     now, before = sma(closes, window), sma(closes, window, rising)
     want = now is not None and before is not None and closes[-1] > now and now > before
-    assert regime_gate.close_above_sma_and_rising(closes, window, rising) is want
+    above = CloseAboveSma(rule="close_above_sma_and_rising", sma=window, rising_days=rising)
+    assert regime_gate.close_above_sma_and_rising(closes, above) is want
     fast, slow = window, window + 5
 
     def fast_slow(back: int) -> bool:
@@ -196,18 +197,16 @@ def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None
         s0, s1 = sma(closes, slow), sma(closes, slow, back)
         return None not in (f0, f1, s0, s1) and f0 > s0 and f0 > f1 and s0 > s1  # type: ignore[operator]
 
-    assert regime_gate.sma_fast_above_slow_both_rising(closes, fast, slow, rising) is fast_slow(
-        rising
+    pair = FastAboveSlow(
+        rule="sma_fast_above_slow_both_rising", fast=fast, slow=slow, rising_days=rising
     )
-    if fast >= 2:
-        for params, back in (
-            ({"fast": fast, "slow": slow}, 3),
-            ({"fast": fast, "slow": slow, "rising_days": rising}, rising),
-        ):
-            regime = Regime(
-                index="NIFTY 500", rule="sma_fast_above_slow_both_rising", params=params
-            )
-            assert regime_gate.regime_allows_longs(regime, closes) is fast_slow(back)
+    assert regime_gate.sma_fast_above_slow_both_rising(closes, pair) is fast_slow(rising)
+    for params, back in (
+        ({"fast": fast, "slow": slow}, 3),
+        ({"fast": fast, "slow": slow, "rising_days": rising}, rising),
+    ):
+        regime = Regime(index="NIFTY 500", rule="sma_fast_above_slow_both_rising", params=params)
+        assert regime_gate.regime_allows_longs(regime, closes) is fast_slow(back)
 
 
 GENTLE = {

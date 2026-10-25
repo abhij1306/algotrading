@@ -184,7 +184,10 @@ LiveEvaluator = Callable[[Any, Any], CriterionResult]
 class CriterionType:
     """One catalogue entry: the parameter model (its JSON Schema is `hat_criterion_type`'s
     `param_schema`), the stage, the data it needs and its function: `evaluate` over daily bars,
-    or `evaluate_live` over a `LiveContext` for a live trigger or entry filter."""
+    or `evaluate_live` over a `LiveContext` for a live trigger or entry filter. `levels` names the
+    prices a setup criterion exposes in its `extras` when it passes (such as `vcp`'s `pivot`):
+    the scan stores them with the watchlist row, and a `price_breaks_level` expression or a stop
+    rule may read them."""
 
     code: str
     stage: Stage
@@ -194,6 +197,7 @@ class CriterionType:
     version: int = 1
     extra_stages: tuple[Stage, ...] = ()  # other sections that may hold this type
     evaluate_live: LiveEvaluator | None = None
+    levels: tuple[str, ...] = ()
 
     def param_schema(self) -> dict[str, Any]:
         return self.params.model_json_schema()

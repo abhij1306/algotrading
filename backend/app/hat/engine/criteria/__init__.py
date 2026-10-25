@@ -31,6 +31,9 @@ BARS = "bars_daily"
 PREOPEN = "preopen"
 NOT_EVALUABLE = "not_evaluable"
 FEATURES = "features_daily"
+# The setup levels the library's criteria expose (`CriterionType.levels`).
+PIVOT = "pivot"
+CONTRACTION_LOW = "final_contraction_low"
 
 
 class UnknownCriterionError(HatError):
@@ -45,9 +48,17 @@ def _t(
     evaluate: Evaluator | None = None,
     extra_stages: tuple[Stage, ...] = (),
     live_fn: LiveEvaluator | None = None,
+    levels: tuple[str, ...] = (),
 ) -> CriterionType:
     return CriterionType(
-        code, stage, params, needs, evaluate, extra_stages=extra_stages, evaluate_live=live_fn
+        code,
+        stage,
+        params,
+        needs,
+        evaluate,
+        extra_stages=extra_stages,
+        evaluate_live=live_fn,
+        levels=levels,
     )
 
 
@@ -78,8 +89,15 @@ _TYPES = (
     _t("pct_from_52w_high", "setup", setup.PctFrom52wHighParams, (BARS,), setup.pct_from_52w_high),
     _t("rs_rank", "setup", setup.RsRankParams, (FEATURES,), setup.rs_rank),
     _t("momentum_rank", "setup", setup.MomentumRankParams, (FEATURES,), setup.momentum_rank),
-    _t("vcp", "setup", vcp.VcpParams, (BARS,), vcp.vcp),
-    _t("consolidation", "setup", setup.ConsolidationParams, (BARS,), setup.consolidation),
+    _t("vcp", "setup", vcp.VcpParams, (BARS,), vcp.vcp, levels=(PIVOT, CONTRACTION_LOW)),
+    _t(
+        "consolidation",
+        "setup",
+        setup.ConsolidationParams,
+        (BARS,),
+        setup.consolidation,
+        levels=("consolidation_high",),
+    ),
     _t("ma_surf", "setup", setup.MaSurfParams, (BARS,), setup.ma_surf),
     _t("prior_move", "setup", setup.PriorMoveParams, (BARS,), setup.prior_move),
     _t(
@@ -90,9 +108,30 @@ _TYPES = (
         setup.earnings_growth,
     ),
     _t("close_vs_pivot", "setup", setup.CloseVsPivotParams, (BARS,), setup.close_vs_pivot),
-    _t("darvas_box", "setup", darvas.DarvasBoxParams, (BARS,), darvas.darvas_box),
-    _t("ema_pullback", "setup", pullback.EmaPullbackParams, (BARS,), pullback.ema_pullback),
-    _t("rsi_below", "setup", reversion.RsiBelowParams, (BARS,), reversion.rsi_below),
+    _t(
+        "darvas_box",
+        "setup",
+        darvas.DarvasBoxParams,
+        (BARS,),
+        darvas.darvas_box,
+        levels=(PIVOT, CONTRACTION_LOW),
+    ),
+    _t(
+        "ema_pullback",
+        "setup",
+        pullback.EmaPullbackParams,
+        (BARS,),
+        pullback.ema_pullback,
+        levels=(PIVOT, CONTRACTION_LOW),
+    ),
+    _t(
+        "rsi_below",
+        "setup",
+        reversion.RsiBelowParams,
+        (BARS,),
+        reversion.rsi_below,
+        levels=(PIVOT,),
+    ),
     _live("gap_up", "trigger", live.GapUpParams, (PREOPEN, "live_bars"), live.gap_up),
     _live("volume_pace", "trigger", live.VolumePaceParams, ("live_bars", BARS), live.volume_pace),
     _live(
@@ -157,6 +196,8 @@ def evaluate_live(
 
 
 __all__ = [
+    "CONTRACTION_LOW",
+    "PIVOT",
     "PREOPEN",
     "REGISTRY",
     "STAGES",

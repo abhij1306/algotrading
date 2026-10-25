@@ -24,9 +24,8 @@ from ..data.chains import stored_adjustment
 from ..data.instruments import current_band
 from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
-from ..engine.exits import ExitView, view_from_rules
+from ..engine.exits import ExitView, history_sessions, view_from_bars
 from ..engine.scan import ScanInputs
-from ..engine.stops import lowest, sma
 from ..engine.strategy.config import ExitRule, StopRule
 from ..engine.trigger import DailyFeeds, DailyInputs, daily_inputs
 from ..models import HatInstrument
@@ -197,14 +196,6 @@ class DailyData:
     def feature(self, instrument_id: uuid.UUID, name: str) -> Decimal | None:
         return exact(self._features.get(self.chain_key(instrument_id), {}).get(name), floats=True)
 
-    def _closes(self, instrument_id: uuid.UUID) -> list[Decimal]:
-        frame = self.bars(instrument_id)
-        return (
-            [require_exact(v, "close", floats=True) for v in frame["close"].to_list()]
-            if frame.height
-            else []
-        )
-
     def daily(
         self, session: Session, instrument_id: uuid.UUID, stop: StopRule | None = None
     ) -> DailyInputs:
@@ -223,18 +214,6 @@ class DailyData:
         )
         return daily_inputs(frame, self.trade_date, feeds, stop)
 
-    def sma(self, instrument_id: uuid.UUID, length: int, live: Decimal) -> Decimal | None:
-        """The `length`-session SMA with the live price standing in for today's close (the
-        close-phase rules read the live price as the close proxy)."""
-        closes = self._closes(instrument_id)[-(length - 1) :] if length > 1 else []
-        return sma([*closes, live], length)
-
-    def swing_low(self, instrument_id: uuid.UUID, lookback: int) -> Decimal | None:
-        """The lowest low of the `lookback` sessions before the trade date."""
-        frame = self.bars(instrument_id).tail(lookback)
-        lows = frame["low"].to_list() if frame.height else []
-        return lowest([require_exact(v, "low", floats=True) for v in lows], lookback)
-
     def exit_view(
         self,
         instrument_id: uuid.UUID,
@@ -242,13 +221,17 @@ class DailyData:
         rules: Sequence[ExitRule],
         days_held: int,
     ) -> ExitView:
-        """The view of a position at the live `price` under its pinned exit `rules`."""
-        return view_from_rules(
+        """The view of a position at the live `price` under its pinned exit `rules`, from the
+        sessions before the trade date (`view_from_bars`, as the backtest builds it)."""
+        frame = self.bars(instrument_id).tail(history_sessions(rules))
+        closes = frame["close"].to_list() if frame.height else []
+        lows = frame["low"].to_list() if frame.height else []
+        return view_from_bars(
             price,
             rules,
             days_held,
-            lambda length: self.sma(instrument_id, length, price),
-            lambda lookback: self.swing_low(instrument_id, lookback),
+            [require_exact(v, "close", floats=True) for v in closes],
+            [require_exact(v, "low", floats=True) for v in lows],
         )
 
 

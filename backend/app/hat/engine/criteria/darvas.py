@@ -4,8 +4,14 @@ Darvas (How I Made $2,000,000 in the Stock Market, 1960) bought a stock making n
 settled into a "box": the top is a high the next sessions do not exceed, the bottom the low formed
 after it that the next sessions do not undercut, each confirmed by `confirm_days` sessions (three
 in the usual codification of his rules). The box top is the breakout level and the stop goes just
-under the box bottom. Here the top is the highest high of the `lookback_days` window, so the box
-is the one at the 52-week high and a break of it is a new high.
+under the box bottom.
+
+In HAT, plainly: the box top is the highest high of the last `lookback_days` sessions, and the box
+must be at most `max_box_days` sessions old (the top's session is one of the last `max_box_days`,
+the date's own counting as 1). A box whose top is older does not pass, however well it was
+confirmed. Both are parameters: the defaults and the S3 seed use 252 (the 52-week high) and 60, so
+a seed break of the top is a new 52-week high made from a recent box; a version may set a shorter
+lookback (5 to 252) or an older box limit (up to its lookback).
 
 The criterion exposes the top as `pivot` and the bottom as `final_contraction_low`, the levels the
 trigger (`price_breaks_level: pivot`) and the stop rule (`below_final_contraction_low`) read.

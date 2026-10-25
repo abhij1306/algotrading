@@ -7,6 +7,8 @@ from typing import Any
 
 from hypothesis import strategies as st
 
+from app.hat.engine.criteria import REGISTRY
+from app.hat.engine.criteria.live import LEVEL_OPENING_RANGE as ORH
 from app.hat.governance import Mode
 
 NUM = st.floats(0.5, 90, allow_nan=False, allow_infinity=False)
@@ -110,9 +112,7 @@ PARAMS: dict[str, st.SearchStrategy[dict[str, Any]]] = {
     ),
     "price_breaks_level": st.fixed_dictionaries(
         {
-            "level": st.sampled_from(
-                ["pivot", "opening_range_high", "max(consolidation_high, opening_range_high)"]
-            ),
+            "level": st.just("opening_range_high"),  # set from the setup in `playbook_body`
             "bar": st.just("5m"),
         }
     ),
@@ -193,7 +193,6 @@ EXITS = st.one_of(  # beside the one enabled hard_stop every config has
             "rule": st.sampled_from(["close_below_sma", "close_above_sma"]),
             "sma": SMAS,
             "sell_fraction": FRACTION,
-            "when": st.sampled_from(["15:25", "09:30", "00:00"]),
             "enabled": st.booleans(),
         }
     ),
@@ -228,10 +227,20 @@ def playbook_body(draw: st.DrawFn) -> dict[str, Any]:
     if draw(st.booleans()):
         setup["threshold"] = draw(st.sampled_from([0.0, 0.3, 0.6, 1.0]))
     trigger = draw(instance_list(TRIGGER_TYPES, "trigger", scored=False, max_size=3))
-    if any(i["type"] == "gap_up" for i in trigger):  # a pre-open playbook has no setup levels
-        for instance in trigger:
-            if instance["type"] == "price_breaks_level":
-                instance["params"]["level"] = "opening_range_high"
+    # a level is one the setup exposes or the opening range; a pre-open playbook has no setup
+    # levels (its candidates come from the gap scan)
+    exposed = sorted(
+        {n for i in setup["criteria"] if i.get("enabled", True) for n in REGISTRY[i["type"]].levels}
+    )
+    preopen = any(i["type"] == "gap_up" for i in trigger)
+    # one enabled `price_breaks_level` per playbook: the rest are drawn disabled
+    breaks = [i for i in trigger if i["type"] == "price_breaks_level" and i.get("enabled", True)]
+    for instance in breaks[1:]:
+        instance["enabled"] = False
+    for instance in trigger:
+        if instance["type"] == "price_breaks_level":
+            choices = [ORH] if preopen else [ORH, *exposed, *(f"max({n}, {ORH})" for n in exposed)]
+            instance["params"]["level"] = draw(st.sampled_from(choices))
     return {
         "setup": setup,
         "trigger": trigger,
