@@ -128,7 +128,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   minute history is converted to raw with the factors as of its fetch day; a day that does not
   fit the raw daily bar is ledgered (`bars_5m_rejects`), never written.
 - **Adjustment.** Adjusted prices are raw times cumulative factors, each action applied once per
-  ISIN chain; two ISINs share a history only through a `linked` lineage row. Price rules on
+  ISIN chain; two ISINs share a history only through a `linked` lineage row, and a pair that
+  gains or loses that link is journalled (`lineage.changed`). Price rules on
   absolute rupees (`min_price`, the tick slab) read the raw close of their date; ratio and
   indicator rules read adjusted bars. A bonus of preference shares or debentures is
   price-neutral (a dividend when worth at least 1% of the previous close).

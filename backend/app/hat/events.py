@@ -55,6 +55,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         # the owner's corrections of stored reference data (D1)
         "corporate_action.corrected",
         "lineage.overridden",
+        "lineage.changed",  # a lineage build linked or unlinked a pair
         "corporate_action.imported",  # the corporate-action file import (CA1)
         "symbol_history.repaired",  # the one-off repair of overlapping symbol intervals (DB6)
         # the nightly store coverage check and the owner's acknowledged index gaps (DB2)

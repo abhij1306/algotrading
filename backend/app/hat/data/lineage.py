@@ -51,7 +51,6 @@ import argparse
 import json
 import re
 import sys
-import uuid
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
@@ -65,7 +64,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import HatConfigError
-from ..models import HatInstrument, HatIsinLineage, HatLineageOverride
+from ..models import HatInstrument, HatLineageOverride
 from .calendar import recorded_history, session_calendar
 from .chains import (
     LINKED,
@@ -79,6 +78,7 @@ from .chains import (
 )
 from .corporate_actions import TYPE_SPLIT, lock_reference_data
 from .lineage_review import JUMP_KINDS, JUMP_TOL, review_report, show_chains
+from .lineage_store import BuildReport, save_decisions
 from .nse_changes import (
     NAME_CHANGES_URL,
     SYMBOL_CHANGES_URL,
@@ -538,65 +538,6 @@ def read_spans(store: DataStore) -> list[Span]:
             Span(str(iid), isin, first, last, first_symbol, last_symbol, prev_close, head, tail)
         )
     return out
-
-
-@dataclass
-class BuildReport:
-    linked: int = 0
-    review: int = 0
-    created: int = 0
-    updated: int = 0
-    unchanged: int = 0
-    removed: int = 0
-    unknown: int = 0  # candidates naming an instrument id the database does not have
-    reasons: dict[str, int] = field(default_factory=dict)
-    new_review: list[str] = field(default_factory=list)  # "OLDISIN>NEWISIN", new on the list
-
-
-def save_decisions(session: Session, decisions: Sequence[Decision], report: BuildReport) -> None:
-    """Make `hat_isin_lineage` hold exactly `decisions`: a pair's row is created, updated when
-    its verdict or evidence changed, left alone when not, and a stored pair no longer found is
-    deleted. Deletes run first, so a pair that changes sides never trips the one-link index."""
-    stored = {
-        (str(r.old_instrument_id), str(r.new_instrument_id)): r
-        for r in session.scalars(select(HatIsinLineage))
-    }
-    wanted = {(d.old_id, d.new_id): d for d in decisions}
-    for key, row in stored.items():
-        if key not in wanted:
-            session.delete(row)
-            report.removed += 1
-    session.flush()
-    # a link demoted first, then the rest: the partial unique indexes see no transient fork
-    ordered = sorted(wanted.values(), key=lambda d: d.status == LINKED)
-    for decision in ordered:
-        row = stored.get((decision.old_id, decision.new_id))
-        values = {
-            "effective_date": decision.effective,
-            "status": decision.status,
-            "reason": decision.reason,
-            "evidence": decision.evidence,
-            "known_on": decision.known_on,
-        }
-        if decision.status == REVIEW and (row is None or row.status != REVIEW):
-            evidence = decision.evidence
-            report.new_review.append(f"{evidence['old_isin']}>{evidence['new_isin']}")
-        if row is None:
-            session.add(
-                HatIsinLineage(
-                    old_instrument_id=uuid.UUID(decision.old_id),
-                    new_instrument_id=uuid.UUID(decision.new_id),
-                    **values,
-                )
-            )
-            report.created += 1
-        elif all(getattr(row, k) == v for k, v in values.items()):
-            report.unchanged += 1
-        else:
-            for k, v in values.items():
-                setattr(row, k, v)
-            report.updated += 1
-        session.flush()
 
 
 def build_lineage(
