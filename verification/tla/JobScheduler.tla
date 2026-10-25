@@ -7,10 +7,10 @@
 (* scheduler, which exists only when HAT is enabled.                       *)
 (*                                                                         *)
 (* A second, independent part models the windowed job `exits.close` of    *)
-(* one trade date (HAT-EXEC-074, B18): the clock passes 15:20, 15:25 and   *)
-(* 15:30; the scheduler starts the job only inside its window and retries  *)
+(* one trade date (HAT-EXEC-074, B18): the clock passes 15:05, 15:10 and   *)
+(* 15:15; the scheduler starts the job only inside its window and retries  *)
 (* a failure there; the body refuses outside the window; a sale it decides *)
-(* is sent only while the clock at sending is before 15:30.                *)
+(* is sent only while the clock at sending is before 15:15.                *)
 (*                                                                         *)
 (* A third part models the Telegram day (PR 16): its clock passes   *)
 (* 08:30, 09:05 and 15:30; the broker login comes and goes; the 08:30      *)
@@ -30,8 +30,8 @@
 (*   Restart action, after which the body runs again (see verify-scheduler *)
 (*   "Known window").                                                      *)
 (*                                                                         *)
-(*   The clock moves forward through four spans (before 15:20, the window  *)
-(*   to 15:25, 15:25 to 15:30, after 15:30) at any point between actions;  *)
+(*   The clock moves forward through four spans (before 15:05, the window  *)
+(*   to 15:10, 15:10 to 15:15, after 15:15) at any point between actions;  *)
 (*   a run of exits.close and each of its sales are atomic steps that read *)
 (*   the clock once. The Telegram clock is a second, independent one with  *)
 (*   four spans (before 08:30, to 09:05, to 15:30, after the close); the   *)
@@ -46,7 +46,7 @@ EXTENDS Naturals, FiniteSets
 
 CONSTANTS NWorkers, MaxCalls, MaxRestarts
 
-\* The spans of the exits.close day: before 15:20, the window, 15:25-15:30, after 15:30.
+\* The spans of the exits.close day: before 15:05, the window, 15:10-15:15, after 15:15 (continuous trading ends).
 Spans == <<"before", "window", "closing", "after">>
 
 Workers == 1..NWorkers
@@ -67,8 +67,8 @@ VARIABLES
     closeStarts,   \* exits.close bodies started
     closeOk,       \* exits.close successes recorded
     salesDue,      \* sales the last body decided and has not sent yet
-    ranOutside,    \* an exits.close body evaluated outside 15:20-15:25
-    sentLate,      \* an exits.close sale reached the broker from 15:30 on
+    ranOutside,    \* an exits.close body evaluated outside 15:05-15:10
+    sentLate,      \* an exits.close sale reached the broker from 15:15 on
     trading,       \* the Telegram day is a trading day of hat_trading_calendar
     tspan,         \* the Telegram clock: 1 before 08:30, 2 to 09:05, 3 to 15:30, 4 after
     loggedIn,      \* the broker session is live for the day
@@ -188,7 +188,7 @@ ClockTick ==
                    refusedFailed, closeRow, closeStarts, closeOk, salesDue, ranOutside, sentLate>>
     /\ UNCHANGED tgVars
 
-\* The scheduler starts exits.close at or after 15:20 and never from 15:25 on (its `until`).
+\* The scheduler starts exits.close at or after 15:05 and never from 15:10 on (its `until`).
 CloseDue == span = 2
 
 \* code: backend/app/hat/execution/manage.py:TradeManager.close_exits  (the body refuses outside
@@ -211,7 +211,7 @@ CloseRun ==
     /\ UNCHANGED tgVars
 
 \* code: backend/app/hat/execution/manage.py:TradeManager._sell  (the clock is read when the sale
-\* is sent: from 15:30 on it is not placed and is alerted)
+\* is sent: from 15:15 on it is not placed and is alerted)
 CloseSell ==
     /\ salesDue > 0
     /\ salesDue' = salesDue - 1
@@ -307,8 +307,8 @@ FailedJobRetryable == ~refusedFailed
 \* With HAT disabled, no job is ever started.
 NoJobWhenDisabled == ~enabled => (~schedulerUp /\ ~started)
 
-\* HAT-EXEC-074, HAT-DEC-B18: exits.close evaluates only between 15:20 and 15:25, succeeds at
-\* most once a day, and none of its sales reaches the broker from 15:30 on.
+\* HAT-EXEC-074, HAT-DEC-B18: exits.close evaluates only between 15:05 and 15:10, succeeds at
+\* most once a day, and none of its sales reaches the broker from 15:15 on.
 ExitsCloseInWindow ==
     /\ ~ranOutside
     /\ closeOk <= 1

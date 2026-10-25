@@ -20,10 +20,24 @@ from ..time import IST, as_utc, trade_date_of
 # The regular session (IST). The open-phase times (`live.prepare`, `modes.apply`, the gap scan,
 # the regime gate, the pre-open capture) are set against its open and move with a session that
 # opens at another time (`open_shift`); the close-phase times (`exits.close`, the GTT swap, the
-# order cut-off, the session end) against its close (`close_shift`): an early close, or a
+# sales' cut-off, the end of the trigger window) against its continuous-trading end, and the
+# session end against its close, both moving with the close (`close_shift`): an early close, or a
 # special (Muhurat) session.
 REGULAR_OPEN = time(9, 15)
 REGULAR_CLOSE = time(15, 30)
+# NSE's closing auction session is live for every stock (owner 2026-10-25): continuous trading
+# ends this long before the session close (the auction and its closing window), 15:15 in a regular
+# session, and HAT's square-off finishes before it. The price then is not the close: the official
+# close is the auction's, settled around 15:40, so a close-phase rule decides on the live last
+# trade and only the nightly work (ingest, close gaps, features) reads the official close.
+CLOSING_AUCTION = timedelta(minutes=15)
+REGULAR_CONTINUOUS_END = (datetime.combine(date.min, REGULAR_CLOSE) - CLOSING_AUCTION).time()
+
+
+def before_continuous_end(minutes: int) -> time:
+    """The IST wall time `minutes` before the regular session's continuous-trading end (15:05
+    for 10); a job set at it moves with the session's close (`close_shift`)."""
+    return (datetime.combine(date.min, REGULAR_CONTINUOUS_END) - timedelta(minutes=minutes)).time()
 
 
 class SessionState(StrEnum):
@@ -90,8 +104,15 @@ class SessionCalendar:
             return None
         return as_utc(row.close_at)
 
+    def continuous_end_on(self, day: date) -> datetime | None:
+        """When `day`'s continuous trading ends (`CLOSING_AUCTION` before its close, 15:15 IST in
+        a regular session); None unless the calendar holds the day's times."""
+        closes = self.close_on(day)
+        return None if closes is None else closes - CLOSING_AUCTION
+
     def close_shift(self, day: date) -> timedelta:
-        """How far `day`'s session close is from the regular close (`close_shift`)."""
+        """How far `day`'s session close, and so its continuous-trading end, is from the regular
+        one (`close_shift`)."""
         return close_shift(day, self.close_on(day))
 
     def open_shift(self, day: date) -> timedelta:

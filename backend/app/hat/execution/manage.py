@@ -10,13 +10,15 @@ entries. It runs the exit stack on real positions and the jobs around the close:
   user and never check a kill switch or pause. `hard_stop` is the broker's: while a stop
   rests at the broker the engine sends no sale of its own for it (two sales would oversell); a
   position without a working broker stop is sold by the engine.
-- **`exits.close`** (`close_exits`, 15:20-15:25 IST, moved with a session that closes at
-  another time, HAT-EXEC-074): every open position of the
+- **`exits.close`** (`close_exits`, 15:05-15:10 IST, 10 to 5 minutes before continuous trading
+  ends at 15:15 for the closing auction, moved with a session that closes at another time,
+  HAT-EXEC-074): every open position of the
   account's bots, virtual and real, is evaluated on the live price in the close phase, and each
   `close_below_sma` evaluation is recorded with its live price (`exit.close_evaluated`,
-  HAT-OPS-034). The body refuses to run outside the window and sends no sale after the session's
-  close.
-- **`gtt.swap`** (`swap_stops`, ~15:25) and **`gtt.verify`** (`verify_stops`, nightly): through
+  HAT-OPS-034). The live price is the last trade then, never the official close (the auction
+  settles it around 15:40). The body refuses to run outside the window and sends no sale from the
+  end of continuous trading on.
+- **`gtt.swap`** (`swap_stops`, 15:10) and **`gtt.verify`** (`verify_stops`, nightly): through
   the `StopDesk`; the verify first reads the broker's fills so a position the GTT sold is closed.
 - **`gtt.check`** (`check_gtts`, 08:40, HAT-EXEC-145, P1): the day's first read of the broker's
   GTT book, by the fill sync's own GTT check (`FillSync` step 6c, every few minutes after): a GTT
@@ -56,7 +58,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from time import monotonic
@@ -77,7 +79,12 @@ from ..models import (
     HatSignal,
 )
 from ..notify import LogNotifier, Notifier
-from ..risk.sessions import SessionCalendar, SessionState
+from ..risk.sessions import (
+    REGULAR_CONTINUOUS_END,
+    SessionCalendar,
+    SessionState,
+    before_continuous_end,
+)
 from ..time import IST, as_utc, trade_date_of
 from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, Side
 from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
@@ -142,11 +149,11 @@ logger = logging.getLogger(__name__)
 ENTRY = "entry"
 EXIT_FULL = "exit_full"
 EXIT_PARTIAL = "exit_partial"
-# HAT-EXEC-074, HAT-DEC-B18: the close-phase rules run between 15:20 and 15:25 IST on the live
-# price, and their sales go out before the 15:30 close.
-EXITS_CLOSE_FROM = time(15, 20)
-EXITS_CLOSE_UNTIL = time(15, 25)
-ORDERS_UNTIL = time(15, 30)
+# HAT-EXEC-074, HAT-DEC-B18: the close-phase rules run between 15:05 and 15:10 IST on the live
+# price, and their sales go out before continuous trading ends at 15:15 (the closing auction).
+EXITS_CLOSE_FROM = before_continuous_end(10)
+EXITS_CLOSE_UNTIL = before_continuous_end(5)
+ORDERS_UNTIL = REGULAR_CONTINUOUS_END
 ALERT_SALE_REJECTED = "order.rejected"
 ENTRY_NOT_FOUND = "entry_not_found"
 BAND_LIMIT = "band_limit"  # alert code: a sale refused twice sent as a limit at the lower band
@@ -194,8 +201,9 @@ def earlier_sale_verdict(qty_open: int, broker_held: int, row_qty: int) -> str:
 
 
 def in_close_window(now: datetime, shift: timedelta = timedelta(0)) -> bool:
-    """15:20 <= now < 15:25 IST, moved by the session's `shift` from the regular close
-    (`SessionCalendar.close_shift`): 10 to 5 minutes before the session's close."""
+    """15:05 <= now < 15:10 IST, moved by the session's `shift` from the regular close
+    (`SessionCalendar.close_shift`): 10 to 5 minutes before the session's continuous trading
+    ends."""
     local = (now - shift).astimezone(IST).time()
     return EXITS_CLOSE_FROM <= local < EXITS_CLOSE_UNTIL
 
@@ -380,8 +388,8 @@ class TradeManager:
         return list(session.scalars(query.order_by(HatPosition.opened_at, HatPosition.id)))
 
     def orders_allowed(self, now: datetime) -> bool:
-        """A sale goes out only inside the calendar session and before its close (15:30 IST in a
-        regular session)."""
+        """A sale goes out only inside the calendar session and before its continuous trading ends
+        (15:15 IST in a regular session, `SessionCalendar.continuous_end_on`)."""
         return self._orders_allowed(now)
 
     def _orders_allowed(self, now: datetime) -> bool:
@@ -404,8 +412,8 @@ class TradeManager:
         return self._evaluate(session, position_id, view, "live", now, self._sending_clock(now))
 
     def _sending_clock(self, now: datetime) -> Clock:
-        """The clock a run reads at each sale: a close run that started at 15:24 and is still
-        sending at 15:30 sends nothing more (HAT-EXEC-074)."""
+        """The clock a run reads at each sale: a close run that started at 15:09 and is still
+        sending at 15:15 sends nothing more (HAT-EXEC-074)."""
         if self._sending is not None:
             return self._sending
         return _RunClock(now, self._ticker)
@@ -633,8 +641,8 @@ class TradeManager:
             or bool(self._desk.triggered_gtts(session, position.id, now))
         )
         through = through and not busy
-        # Checked at the moment of sending: a close job that started at 15:24 still sends
-        # nothing from 15:30 on (HAT-EXEC-074).
+        # Checked at the moment of sending: a close job that started at 15:09 still sends
+        # nothing from 15:15 on (HAT-EXEC-074).
         open_now = through and self._orders_allowed(sending.now())
         rejected = rejected_sales(session, signal.id, order.purpose, now) if open_now else 0
         floor = self._floor(session, position, now) if open_now else None
@@ -932,7 +940,7 @@ class TradeManager:
             },
         )
 
-    # --- exits.close (15:20-15:25) ------------------------------------------------------------
+    # --- exits.close (15:05-15:10) ------------------------------------------------------------
 
     def close_exits(
         self, session: Session, account_id: uuid.UUID, views: ViewSource, now: datetime
@@ -940,7 +948,7 @@ class TradeManager:
         """The `exits.close` job body: the close-phase rules of every open position of the
         account's bots on the live price (HAT-EXEC-074), each `close_below_sma` evaluation
         recorded with that price (HAT-OPS-034). Refused outside the session or its close window
-        (15:20-15:25 IST in a regular session, `in_close_window`)."""
+        (15:05-15:10 IST in a regular session, `in_close_window`)."""
         report = CloseReport()
         if not in_close_window(
             now, self.close_shift(trade_date_of(now))
@@ -983,7 +991,7 @@ class TradeManager:
             report.recorded += 1
         session.commit()
 
-    # --- gtt.swap (~15:25) and gtt.verify (nightly) -------------------------------------------
+    # --- gtt.swap (15:10) and gtt.verify (nightly) -------------------------------------------
 
     def swap_stops(self, session: Session, account_id: uuid.UUID, now: datetime) -> StopsReport:
         """The `gtt.swap` job body: every open real position's intraday stop becomes a GTT."""

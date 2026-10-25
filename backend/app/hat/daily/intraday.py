@@ -9,7 +9,7 @@
   pre-open playbooks (`Playbook.preopen`, such as the episodic pivot) and are subscribed; the
   gappers and their opens are recorded (`gapscan.completed`) for a restart; the scan alerts when
   it finished at or after 09:20.
-- `exits.close_shadow` (15:20-15:25): the close-phase exits of the virtual positions no broker
+- `exits.close_shadow` (15:05-15:10): the close-phase exits of the virtual positions no broker
   account's `TradeManager` handles.
 - `watchlist.expire` (15:30, the session close): today's Watchlisted rows that never triggered end
   as Expired (HAT-EXEC-041).
@@ -340,7 +340,7 @@ class Intraday:
         calendar = self._calendar()
         return calendar.open_shift(day) if calendar is not None else timedelta(0)
 
-    # --- 15:20-15:25 --------------------------------------------------------------------------
+    # --- 15:05-15:10 --------------------------------------------------------------------------
 
     def close_shift(self, day: date) -> timedelta:
         """How far `day`'s session closes from the regular close (the close jobs move with it)."""

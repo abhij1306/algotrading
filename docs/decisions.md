@@ -54,9 +54,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
   50/50 (S3, S4, S5 0). A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.
-- **Exits.** Intraday stop on fill, swapped to a GTT around 15:25; MA exits 15:20-15:25 on the
+- **Exits.** Intraday stop on fill, swapped to a GTT at 15:10; MA exits 15:05-15:10 on the
   live price (a known gap to the official close, logged nightly); an ordered exit stack where
   stops only tighten.
+- **Square-off before the closing auction (owner 2026-10-25).** NSE's closing auction session is
+  live for every stock, so continuous trading ends 15 minutes before the session close (15:15 in
+  a regular session) and HAT's square-off finishes before it: `exits.close` (real and shadow)
+  15:05-15:10, the GTT swap 15:10, the trigger window ends 15:05, and no sale goes out from 15:15
+  on (`SessionCalendar.continuous_end_on`; an early close or a Muhurat session moves them with its
+  close). 15:15 is not the closing price: the official close is the auction's, settled around
+  15:40. Every close-phase decision (MA exits, `close_above_sma`, failed-break closes, time stops)
+  uses the live last trade or the last finished 5-minute bar at decision time, never the official
+  close; what needs the official close (the nightly ingest, the close gaps, features) runs after
+  15:40.
 - **Shadow fills pay costs (QA4).** A virtual fill carries the backtest's default model: 20 bps
   slippage against the trade, then the versioned statutory charges (`costs.py`), so shadow
   results are net of what real trading pays.
@@ -115,6 +125,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `regime` profile, read when the run starts and recorded in its hashed conventions.
 - **Backtest gaps are listed.** Behaviours the backtest does not model are in `KNOWN_GAPS`
   (`backtest/spec.py`) and reported by every run; no fixture pins a result.
+- **The backtest's close phase decides on the daily close (owner 2026-10-25).** The backtest's
+  close-phase rules decide and fill on the daily close, simple and the same over all history; no
+  5-minute bars and no count of estimated exits. The daily close (the auction price) stands in for
+  the price live acts on before the 15:15 cut-off: a small, consistent bias, the known gap
+  `close_rules_decided_on_official_close`.
 
 ## Operations
 

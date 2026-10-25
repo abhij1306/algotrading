@@ -8,16 +8,18 @@ job starts only on a trading day of `hat_trading_calendar`, HAT-OPS-012), job or
 HAT-PORT-053) and concurrent runs (the nightly ingest waits for its data for up to four hours, and
 the other jobs must not wait behind it). Bodies run on the scheduler's own threads, one per
 registered job: a job runs at most once at a time, so a body never waits for a thread, and a
-restart at 15:19 that catches up the morning's jobs cannot hold `exits.close` past its window
+restart at 15:04 that catches up the morning's jobs cannot hold `exits.close` past its window
 (audit money-safety-engine-ops F12). The loop calls `run_job`, which is idempotent, so a tick
 that fires twice cannot run a body twice.
 
 A job with a window (`until`, PR 15c) is never started at or after its end: `exits.close` runs
-between 15:20 and 15:25 IST or not at all that day (HAT-EXEC-074, TLA
+between 15:05 and 15:10 IST (before continuous trading ends for the closing auction) or not at
+all that day (HAT-EXEC-074, TLA
 `JobScheduler!ExitsCloseInWindow`), and a failed run is tried again `retry_after` after the
 failed run ended, which fits inside the window. A job with a `shift` (the close-phase jobs) moves
 its time and window with a session that closes at another time than 15:30 (an early close, a
-special session): 10 to 5 minutes before that session's close.
+special session): `exits.close` runs 10 to 5 minutes before that session's continuous trading
+ends.
 
 A chained job (`after`, no window) of the night before still starts after IST midnight, under
 that night's trade date, until `CARRY_UNTIL`: a nightly chain whose head finished late (the

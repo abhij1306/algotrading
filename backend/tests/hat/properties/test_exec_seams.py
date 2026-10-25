@@ -17,13 +17,14 @@ from app.hat.daily.exits import ExitViews, ShadowExits
 from app.hat.data.bars import BarBuilder
 from app.hat.data.gapscan import is_late
 from app.hat.data.preopen import GapSource, PreopenGaps
+from app.hat.engine.trigger import in_window
 from app.hat.execution.broker import (
     CODE_UNAVAILABLE,
     GttRequest,
 )
 from app.hat.execution.fyers_adapter import FyersHatBroker
 from app.hat.execution.fyers_payloads import parse_trade_book
-from app.hat.execution.manage import in_close_window
+from app.hat.execution.manage import EXITS_CLOSE_FROM, EXITS_CLOSE_UNTIL, in_close_window
 from app.hat.execution.position_desk import (
     PositionDesk,
     Verdict,
@@ -31,7 +32,12 @@ from app.hat.execution.position_desk import (
 )
 from app.hat.execution.tags import encode_tag
 from app.hat.ops.scheduler import ScheduledJob, due, starts_at, window_end
-from app.hat.risk.sessions import SessionCalendar, close_shift, open_shift
+from app.hat.risk.sessions import (
+    SessionCalendar,
+    before_continuous_end,
+    close_shift,
+    open_shift,
+)
 from app.hat.time import IST
 
 DAY = date(2026, 11, 9)
@@ -131,28 +137,38 @@ def test_close_shift_follows_the_session_close() -> None:
     assert calendar(ist(DAY, 19, 15)).close_shift(DAY + timedelta(days=1)) == timedelta(0)
 
 
+def test_the_close_window_ends_before_the_closing_auction() -> None:
+    # continuous trading ends 15 minutes before the close; the window is 10 to 5 minutes before
+    assert before_continuous_end(10) == time(15, 5)
+    assert calendar(ist(DAY, 15, 30)).continuous_end_on(DAY) == ist(DAY, 15, 15)
+    assert calendar(ist(DAY, 15, 30)).continuous_end_on(DAY + timedelta(days=1)) is None
+    assert not in_close_window(ist(DAY, 15, 4))
+    assert in_close_window(ist(DAY, 15, 5))
+    assert not in_close_window(ist(DAY, 15, 10))
+
+
 def test_the_close_window_moves_with_a_muhurat_session() -> None:
     shift = calendar(ist(DAY, 19, 15)).close_shift(DAY)
-    assert in_close_window(ist(DAY, 15, 22))
-    assert not in_close_window(ist(DAY, 15, 22), shift)
-    assert in_close_window(ist(DAY, 19, 5), shift)
-    assert not in_close_window(ist(DAY, 19, 10), shift)
+    assert in_close_window(ist(DAY, 15, 7))
+    assert not in_close_window(ist(DAY, 15, 7), shift)
+    assert in_close_window(ist(DAY, 18, 50), shift)
+    assert not in_close_window(ist(DAY, 18, 55), shift)
 
 
 def test_a_shifted_job_starts_and_ends_with_the_session() -> None:
     shift = calendar(ist(DAY, 14, 0)).close_shift
     job = ScheduledJob(
-        "exits.close", time(15, 20), lambda _d: None, until=time(15, 25), shift=shift
+        "exits.close", EXITS_CLOSE_FROM, lambda _d: None, until=EXITS_CLOSE_UNTIL, shift=shift
     )
-    assert starts_at(job, DAY) == ist(DAY, 13, 50)
+    assert starts_at(job, DAY) == ist(DAY, 13, 35)
 
     def is_due(at: datetime) -> bool:
         return due(job, at, trading=lambda _d: True, succeeded=(), attempted=None)
 
-    assert not is_due(ist(DAY, 13, 49))
-    assert is_due(ist(DAY, 13, 50))
-    assert not is_due(ist(DAY, 13, 55))
-    assert not is_due(ist(DAY, 15, 20))
+    assert not is_due(ist(DAY, 13, 34))
+    assert is_due(ist(DAY, 13, 35))
+    assert not is_due(ist(DAY, 13, 40))
+    assert not is_due(ist(DAY, 15, 5))
 
 
 def test_the_shadow_close_pass_runs_only_in_the_shifted_window() -> None:
@@ -164,10 +180,10 @@ def test_the_shadow_close_pass_runs_only_in_the_shifted_window() -> None:
 
     shadow = ShadowExits(no_session, cast("ExitViews", None), set)
     muhurat = timedelta(hours=3, minutes=45)  # an 18:00-19:15 session
-    assert shadow.close(ist(DAY, 15, 22), muhurat) == 0
-    assert shadow.close(ist(DAY, 19, 12), muhurat) == 0
+    assert shadow.close(ist(DAY, 15, 7), muhurat) == 0
+    assert shadow.close(ist(DAY, 18, 57), muhurat) == 0
     with pytest.raises(LookupError):
-        shadow.close(ist(DAY, 19, 7), muhurat)
+        shadow.close(ist(DAY, 18, 52), muhurat)
 
 
 def test_a_settled_order_forgets_its_first_absent_read() -> None:
@@ -221,3 +237,16 @@ def test_muhurat_bars_and_preopen_follow_the_session() -> None:
     found = gaps.observe(tick, ist(MUHURAT, 14, 10))
     assert found is not None
     assert found.source is GapSource.PREOPEN
+
+
+def test_the_trigger_window_ends_before_the_closing_auction() -> None:
+    """From 5 minutes after the open to 10 minutes before continuous trading ends (15:15)."""
+    opens, closes = ist(DAY, 9, 15), ist(DAY, 15, 30)
+    assert not in_window(ist(DAY, 9, 19), opens, closes)
+    assert in_window(ist(DAY, 9, 20), opens, closes)
+    assert in_window(ist(DAY, 15, 5), opens, closes)
+    assert not in_window(ist(DAY, 15, 6), opens, closes)
+    muhurat_open, muhurat_close = ist(MUHURAT, 14, 20), ist(MUHURAT, 15, 30)
+    assert not in_window(ist(MUHURAT, 14, 24), muhurat_open, muhurat_close)
+    assert in_window(ist(MUHURAT, 14, 25), muhurat_open, muhurat_close)
+    assert not in_window(ist(MUHURAT, 15, 6), muhurat_open, muhurat_close)

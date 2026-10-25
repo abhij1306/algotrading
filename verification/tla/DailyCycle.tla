@@ -12,7 +12,7 @@
 (* Bounds: one trade date; the clock is eleven slots, one per scheduled    *)
 (*   time (0 before 08:30, 1 08:30 login.prompt, 2 08:45 live.prepare, 3   *)
 (*   09:00 preopen.gaps, 4 09:16 gapscan, 5 09:20 first bar final and the  *)
-(*   regime-gate refresh, 6 15:20 exits.close, 7 15:25 gtt.swap, 8 15:30   *)
+(*   regime-gate refresh, 6 15:05 exits.close, 7 15:10 gtt.swap, 8 15:30   *)
 (*   trade.end_session, 9 15:40 reports, 10 18:00 the nightly chain);      *)
 (*   MaxEntries = 2 entry orders in the day; one open position held from   *)
 (*   an earlier day.                                                       *)
@@ -26,7 +26,7 @@
 (*   reports) is not modelled; the gate refresh, exits.close, regime and   *)
 (*   allocate succeed or fail and a failed one may run again inside its    *)
 (*   window; the broker session comes and goes at any time; an             *)
-(*   exits.close run that started at 15:24 and still runs at 15:25 is      *)
+(*   exits.close run that started at 15:09 and still runs at 15:10 is      *)
 (*   outside this model (each run is one step): gtt.swap leaves a          *)
 (*   position whose exit sale is working and tries it again                *)
 (*   (gtt_upkeep.py swap, EXIT_WORKING). The ingest, gate, adjustment      *)
@@ -64,12 +64,12 @@ At(j) ==
 Until(j) ==
     CASE j = "preopen" -> 4           \* 09:00-09:08, before the 09:16 slot
       [] j = "gate" -> 6              \* refreshed before the trigger window ends
-      [] j = "exits" -> 7             \* 15:20-15:25
+      [] j = "exits" -> 7             \* 15:05-15:10
       [] OTHER -> Never
 
 Pos(j) == CHOOSE i \in 1..Len(Chain) : Chain[i] = j
 
-\* The first slot of the trigger window (the 09:20 bar is final) and its end (15:20).
+\* The first slot of the trigger window (the 09:20 bar is final) and its end (15:05).
 TriggerFrom == 5
 TriggerUntil == 6
 
@@ -81,7 +81,7 @@ VARIABLES
     entries,         \* entry orders placed today
     outOfOrder,      \* ghost: a job of Chain started after a later job of Chain had started
     exitsAfterSwap,  \* ghost: an exits.close run started after gtt.swap had started
-    badEntry,        \* ghost: an entry was placed before 09:20, from 15:20, without today's
+    badEntry,        \* ghost: an entry was placed before 09:20, from 15:05, without today's
                      \*   gate refresh or without a live broker session
     posQty,          \* the open position's quantity (1 when opened)
     posStop,         \* the open position's stop (1 when opened)
@@ -137,7 +137,7 @@ RunIntraday(j) ==
     /\ UNCHANGED <<t, loggedIn, entries, badEntry, posQty, posStop, weight>>
 
 \* code: backend/app/hat/execution/router.py:placement_refusal  (a trigger fired on a final
-\* 5-minute bar (engine/trigger.py in_window) is placed as an entry order: inside 09:20-15:20,
+\* 5-minute bar (engine/trigger.py in_window) is placed as an entry order: inside 09:20-15:05,
 \* with today's gate refresh on record and a live broker session)
 Entry ==
     /\ entries < MaxEntries
@@ -189,7 +189,7 @@ TypeOK ==
 
 \* The intraday jobs start in the order (login prompt, live preparation, pre-open gap
 \* capture, gap scan, the 09:20 gate refresh, MA exits, GTT swap, session end, reports); no
-\* exits.close run starts once gtt.swap has; every entry order is placed inside 09:20-15:20,
+\* exits.close run starts once gtt.swap has; every entry order is placed inside 09:20-15:05,
 \* after today's gate refresh and with a live broker session.
 IntradayOrder ==
     /\ ~outOfOrder

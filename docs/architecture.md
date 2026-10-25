@@ -47,7 +47,7 @@ Intraday (one `LiveFeed`, one Fyers data socket):
 ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   -> ExecutionRouter by mode: shadow (virtual fill) | confirm (card, Take/Skip) | auto
   -> reserve_order -> send_order -> HatBroker -> fill sync -> StopDesk.protect (stop, then GTT)
-  -> TradeManager: exit stack, 15:20-15:25 MA exits
+  -> TradeManager: exit stack, 15:05-15:10 MA exits
 ```
 
 ## Key seams
@@ -111,14 +111,15 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 | 08:30, 09:05 | Telegram login prompts |
 | 08:40-08:45 | ca.rescale, gtt.check, live.prepare |
 | 09:15-09:20 | modes.apply, gapscan |
-| 09:20-15:20 | triggers, routing, stops on fill |
-| 15:20-15:25 | exits.close; 15:25 gtt.swap |
+| 09:20-15:05 | triggers, routing, stops on fill |
+| 15:05-15:10 | exits.close; 15:10 gtt.swap; 15:15 sales cut-off (continuous trading ends, closing auction) |
 | 15:30-15:45 | watchlist.expire, trade.end_session, reports and digests |
 
 The session's own stored hours move the times: live.prepare, modes.apply, gapscan, the regime
 gate, the pre-open capture and the bar grid follow its open (a 14:20 Muhurat open: prepare 13:50,
-modes 14:20, gapscan 14:21-14:25); exits.close, gtt.swap, the sales' cut-off,
-exits.close_shadow, watchlist.expire and trade.end_session follow its close.
+modes 14:20, gapscan 14:21-14:25); exits.close, exits.close_shadow, gtt.swap, the sales'
+cut-off and the trigger window's end follow its continuous-trading end (15 minutes before its
+close, for NSE's closing auction), and watchlist.expire and trade.end_session its close.
 | 18:00 on | the nightly chain |
 | 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots |
 

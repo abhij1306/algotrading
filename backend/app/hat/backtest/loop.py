@@ -10,7 +10,8 @@ code live trading runs, in the same order:
 3. entries: each watchlist row whose level the day breaks becomes a trigger, the stop comes from
    `trigger.entry_stop`, and `entries.open_entry` decides it with `evaluate_signal` (caps, max
    chase, sizing) and fills it with the shadow engine's virtual fills;
-4. the 15:25 close rules at the official close, then the session-end expiry of the watchlist
+4. the 15:05-15:10 close rules at the day's official close, then the session-end expiry of the
+   watchlist
    (`shadow.expire_watchlist`).
 
 Those functions work on a database session, so the loop keeps a private ledger (`ledger`): an
@@ -102,10 +103,11 @@ Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-
 measured in shadow: among them, the trigger is the break of the level alone
 (`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the pre-open playbooks
 (`Playbook.preopen`, the episodic pivot) are not backtested (the scan publishes no row of
-theirs), close-based exits fill at the official close, kill switches are not simulated (the
-exposure ladder is), a sleeve's health multiplier is 1 (its regime multiplier too, unless
-the run applies the policy's), and the run is one sleeve, so the account-level caps never bind
-across sleeves.
+theirs), close-based exits decide on and fill at the daily close (the auction price), which
+stands in for the price live acts on before the 15:15 cut-off (owner 2026-10-25), kill switches
+are not simulated (the exposure ladder is), a sleeve's health multiplier is 1 (its regime
+multiplier too, unless the run applies the policy's), and the run is one sleeve, so the
+account-level caps never bind across sleeves.
 
 Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one sleeve
 with the live allocator (`portfolio.allocator.allocate`) over the account's equity at the night's
@@ -204,9 +206,12 @@ _AT_LOW = time(9, 20)
 _AT_ENTRY = time(9, 30)
 _AT_DIP = time(9, 45)  # the entry day's low after the entry
 _AT_HIGH = time(10, 0)
-_AT_FALL = time(15, 20)
-_AT_CLOSE = time(15, 25)
-_AT_END = time(15, 29)
+# The close phase at live's times (`exits.close` 15:05-15:10, before the 15:15 cut-off), deciding
+# and filling on the daily close, which stands in for the price live acts on then (owner
+# 2026-10-25, `close_rules_decided_on_official_close`).
+_AT_FALL = time(15, 5)
+_AT_CLOSE = time(15, 10)
+_AT_END = time(15, 14)
 
 
 @dataclass(frozen=True)

@@ -5,9 +5,10 @@ Each body is the PR's job logic called with its real inputs: the ingest polls th
 `features` → `regime` → `allocate` → `scan` → `watchlist.digest` run one after the other through
 the scheduler's `after` chain (HAT-OPS-021), each for the same trade date. `snapshot.bots` follows
 `allocate` (the drawdown kills read it, and the 15:40 report reads the latest snapshot), and the
-gaps between the 15:25 exits and the official closes are recorded once the ingest has the day's
-closes (HAT-OPS-034). Housekeeping (calendar, reference data, bands, event partitions, the chat
-log purge) runs on its own schedule.
+gaps between the live prices of the 15:05-15:10 exits and the official closes (the closing
+auction's, settled around 15:40) are recorded once the ingest has the day's closes
+(HAT-OPS-034). Housekeeping (calendar, reference data, bands, event partitions, the chat log
+purge) runs on its own schedule.
 
 The bodies take everything outside themselves through `NightlyDeps`, so the simulated day runs
 them over fixture data, a recorded MCP transport and fake text sources.

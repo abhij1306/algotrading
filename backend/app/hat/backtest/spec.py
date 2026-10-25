@@ -64,6 +64,9 @@ KNOWN_GAPS = (
     "trigger_is_level_break_only",  # volume_pace and the opening range need intraday bars
     "episodic_pivot_not_backtested",  # every pre-open playbook (`GAP_PLAYBOOKS`)
     "close_exits_at_official_close",
+    # the close rules decide and fill on the daily close: the auction price stands in for the
+    # price live acts on before the 15:15 cut-off, a small, consistent bias (owner 2026-10-25)
+    "close_rules_decided_on_official_close",
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",  # live fills at the first tick after the open
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)

@@ -139,7 +139,8 @@ class ManagerFlattener:
         self._managers = managers
 
     def orders_open(self, now: datetime) -> bool:
-        """Some account can sell now (inside the session, before 15:30)."""
+        """Some account can sell now (inside the session, before continuous trading ends at
+        15:15)."""
         return any(manager.orders_allowed(now) for _account, manager in self._managers())
 
     def flatten(self, session: Session, now: datetime) -> FlattenReport:

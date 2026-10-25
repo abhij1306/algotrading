@@ -4,10 +4,11 @@ A position whose instrument has a demerger notice (NSE's `bc` file listed it, th
 `ca.adjust` stored it) exits at the close of the last session before the ex-date, when the
 notice was read before that session (on a night before it) (`demerger_notice.exit_day`):
 
-- a virtual position is closed at that session's close pass (15:20-15:25,
+- a virtual position is closed at that session's close pass (15:05-15:10,
   `daily/exits.ShadowExits`) at the live price, exit reason `demerger` (`close_due`);
 - a real position is never sold by HAT for it: the nightly records one URGENT
-  `corporate_action.demerger_exit` telling the owner to sell by that close (`flag_positions`).
+  `corporate_action.demerger_exit` telling the owner to sell on that day before continuous
+  trading ends (15:15, `flag_positions`).
   The owner's sale goes through `/flatten` as any other;
 - a notice read too late (after that session's close) or a position still open after it is
   recorded once as URGENT `corporate_action.demerger_late`, and the position keeps today's

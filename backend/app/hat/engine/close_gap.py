@@ -1,6 +1,7 @@
-"""The 15:25 close against the official close (HAT-OPS-034): the live price a 15:20-15:25
-`close_below_sma` or `close_above_sma` evaluation used, and its gap to the official close the
-nightly ingest brings.
+"""The close-phase price against the official close (HAT-OPS-034): the live last trade a
+15:05-15:10 `close_below_sma` or `close_above_sma` evaluation used (continuous trading ends at
+15:15 for the closing auction), and its gap to the official close, the auction's, settled around
+15:40 and brought by the nightly ingest.
 
 Both records are events on the position (`exit.close_evaluated`, `exit.close_gap`); neither moves
 a trade's state, and nothing here reaches a broker. They work in the caller's transaction and
@@ -39,7 +40,7 @@ def record_close_evaluation(
     trade_date: date,
     now: datetime,
 ) -> bool:
-    """Record the live price a 15:20-15:25 evaluation used for the position's SMA exit rules
+    """Record the live price a 15:05-15:10 evaluation used for the position's SMA exit rules
     (`exit.close_evaluated`), whether or not one fired. False, writing nothing, when the
     position has no enabled SMA exit rule, the view has no price, or the trade date's
     evaluation is already recorded (a retried job)."""

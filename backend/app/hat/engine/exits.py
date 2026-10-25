@@ -56,7 +56,7 @@ __all__ = [
 
 Phase = Literal["live", "close", "nightly"]
 IGNORED_NOT_RAISING = "would_not_raise_stop"
-# The phases whose rules an evaluation in a given phase reads: the 15:25 check also sees the
+# The phases whose rules an evaluation in a given phase reads: the 15:05-15:10 check also sees the
 # live price, so it reads live rules too.
 _PHASES: dict[str, frozenset[str]] = {
     "live": frozenset({"live"}),
