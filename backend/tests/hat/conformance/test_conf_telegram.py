@@ -27,7 +27,9 @@ TEXT_PATH = (
     "app.hat.telegram.store",
     "app.hat.telegram.client",
 )
-AUTH_BASES = ("/api/hat/auth/fyers/", "/api/hat/auth/zerodha/")  # the only writing routes: logins
+# The only writing routes: the logins, and the backtest job start (a research run in a child
+# process, which touches no live position, signal or order).
+WRITE_BASES = ("/api/hat/auth/fyers/", "/api/hat/auth/zerodha/", "/api/hat/backtests")
 # The only execution modules the text path may reach: the mode gates `/mode` reads and the queue
 # `/auto` writes. Every other execution module (orders, brokers, stops, reconciliation) is
 # forbidden, so a new one is forbidden by default.
@@ -135,8 +137,8 @@ def test_gov__lever_catalogue() -> None:
     exits one position. Commands take at most a bot or broker name and a mode word; the buttons
     are Take, Skip and Confirm, and Take carries only the signal (the engine sizes it); the
     only confirmable actions are flatten (all positions), arm and auto; the API writes only
-    through the Fyers login routes (every other route is a read, CONF
-    `hat_routes_read_only`)."""
+    through the broker login routes and the backtest job start (every other route is a read,
+    CONF `hat_routes_read_only`)."""
     for command, (_fewest, most) in commands._ARITY.items():
         assert not RISK_WORDS.search(command[1:]), command
         assert most <= 2, command
@@ -154,7 +156,7 @@ def test_gov__lever_catalogue() -> None:
     for path, methods in _routes():
         if methods <= READS:
             continue
-        base = next((b for b in AUTH_BASES if path.startswith(b)), None)
+        base = next((b for b in WRITE_BASES if path.startswith(b)), None)
         assert base is not None, path
         assert not RISK_WORDS.search(path.removeprefix(base)), path
 

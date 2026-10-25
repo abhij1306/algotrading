@@ -23,6 +23,11 @@
   --color-warning-bg: #fdf6ea;
   --color-mode: #6b55c7;
   --color-scrim: rgb(23 23 26 / 0.28);
+  /* Chart series in fixed order (validated for colour-vision deficiency); NIFTY 500 is muted. */
+  --color-chart-1: #2a78d6;
+  --color-chart-2: #eb6834;
+  --color-chart-3: #1baf7a;
+  --color-chart-4: #eda100;
 
   --font-*: initial;
   --font-sans: "Geist Variable", system-ui, -apple-system, "Segoe UI", sans-serif;
@@ -61,6 +66,10 @@
   --color-warning-bg: #231c10;
   --color-mode: #a99bf0;
   --color-scrim: rgb(0 0 0 / 0.5);
+  --color-chart-1: #3987e5;
+  --color-chart-2: #d95926;
+  --color-chart-3: #199e70;
+  --color-chart-4: #c98500;
 }
 
 @layer base {

@@ -112,7 +112,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     `--set` (repeatable), `--risk-pct` and `--max-positions` override the version's config and
     the policy for this run only (`overrides`), recorded in its conventions; a promotion run
     takes none. `--variants FILE` (YAML or JSON, `runs.parse_variants`) runs each variant over
-    one load of the market, on top of the options given here, and prints one line per variant;
+    one load of the market, on top of the options given here, and prints one line per variant as
+    it finishes;
     a file argparse cannot open is a usage error, one that does not parse is refused
     (`backtest_sweep_bad_variants`).
     """
@@ -171,16 +172,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
             if args.variants is not None:
                 variants = parse_variants(_variants_doc(args.variants), request.conventions)
-                outcomes = sweep_bot(
-                    session,
-                    store,
-                    request,
-                    variants,
-                    root=settings.data_root,
-                    after=session.commit,
-                )
-                for outcome in outcomes:
+
+                def after(outcome: SweepOutcome) -> None:
+                    session.commit()
                     sys.stdout.write(json.dumps(_outcome_json(outcome)) + "\n")
+                    sys.stdout.flush()
+
+                sweep_bot(session, store, request, variants, root=settings.data_root, after=after)
                 return 0
             run = backtest_bot(session, store, request, root=settings.data_root)
         except BacktestError as exc:

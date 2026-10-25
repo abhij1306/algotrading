@@ -1,9 +1,12 @@
-import { Link } from "react-router";
+import { Link, NavLink } from "react-router";
 import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/atoms/button";
 import { LoginButton } from "@/components/organisms/login-button";
 import { useBrokerStatus } from "@/lib/queries/auth";
 import { useTheme } from "@/lib/theme";
+
+const navClass = ({ isActive }: { isActive: boolean }) =>
+  isActive ? "text-sm text-foreground" : "text-sm text-foreground-muted hover:text-foreground";
 
 export function AppHeader() {
   const { isDark, toggleTheme } = useTheme();
@@ -14,12 +17,20 @@ export function AppHeader() {
   return (
     <header className="sticky top-0 z-40 bg-background/90 backdrop-blur">
       <div className="mx-auto flex h-16 w-full max-w-[1440px] items-center justify-between gap-4 px-4 md:px-10">
-        <Link
-          to="/hat"
-          className="text-base font-medium tracking-tight text-foreground hover:text-accent"
-        >
-          HAT
-        </Link>
+        <nav aria-label="Pages" className="flex items-baseline gap-6">
+          <Link
+            to="/hat"
+            className="text-base font-medium tracking-tight text-foreground hover:text-accent"
+          >
+            HAT
+          </Link>
+          <NavLink to="/hat" end className={navClass}>
+            Dashboard
+          </NavLink>
+          <NavLink to="/hat/backtests" className={navClass}>
+            Backtests
+          </NavLink>
+        </nav>
         <div className="flex items-center gap-3 md:gap-5">
           <LoginButton />
           {zerodhaActive ? <LoginButton broker="zerodha" /> : null}

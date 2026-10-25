@@ -7,8 +7,8 @@ The map. Rules: `invariants.md`. Decisions: `decisions.md`. Operations: `runbook
 One FastAPI process (`backend/app/main.py`), one PostgreSQL database, Parquet under
 `HAT_DATA_ROOT`. All of HAT is `backend/app/hat/`, which imports only `app.base`,
 `app.database`, `app.paths` and `app.utils.env_loader`. The runtime starts only with
-`HAT_ENABLED=true`. The frontend (`frontend/`) is a read-only dashboard whose components sit in
-atomic layers under `frontend/components/`: `atoms/` and `molecules/` take props only,
+`HAT_ENABLED=true`. The frontend (`frontend/`) is a read-only dashboard and a Backtests page (read,
+compare and start research runs) whose components sit in atomic layers under `frontend/components/`: `atoms/` and `molecules/` take props only,
 `organisms/` own the query hooks, `templates/` lay out the shell and page. Telegram is the control
 surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
@@ -103,6 +103,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
 - `backtests/run_id=<id>/` holds a completed run's `trades.parquet`, `returns.parquet` (daily
   returns, the PBO input) and `report.json` (what the results page charts, `backtest/report_data.py`).
+  `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
+  stderr (`backtest/jobs.py`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features
   (`backtest_features_stale`).
@@ -160,8 +162,10 @@ Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET 
 under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
 dashboard under `/api/hat` (`/status`, `/watchlist`, `/signals`, `/positions`,
 `/allocations`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes;
-the read-only backtests under `/api/hat/backtests` (the runs, `/{run_id}` with its metrics and
-report data, `/{run_id}/trades`; the response shape is documented in `app/hat/api/backtests.py`).
+the backtests under `/api/hat/backtests` (the runs, `/{run_id}` with its metrics and report data,
+`/{run_id}/trades`, `/options`, `/jobs`, and `POST` to start a research run or a sweep as a job:
+the backtest command line in a child process, one at a time, never a promotion run; documented in
+`app/hat/api/backtests.py`), read and started from `frontend/app/hat/backtests/` (charts: Recharts).
 A panel whose poll fails keeps its last good read on screen, dimmed, under a stale notice; when several
 reads fail together the page shows one banner instead. The page header shows the backend's `as_of` in IST; the broker login status polls on the same cadence. The design
 tokens live only in `frontend/app/globals.css` `@theme`, which resets Tailwind's palette, type scale

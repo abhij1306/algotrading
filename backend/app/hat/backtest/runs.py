@@ -633,15 +633,16 @@ def sweep_bot(
     variants: Sequence[Variant],
     *,
     root: Path,
-    after: Callable[[], None] = lambda: None,
+    after: Callable[[SweepOutcome], None] = lambda outcome: None,
 ) -> list[SweepOutcome]:
     """Run each variant of `request` (its conventions in place of the request's) over one load of
     the market, in order, each recorded as a trial of the family with its label and the sweep's
     id in `metrics.variant` (so a later run sees the earlier ones in its DSR trial count and PBO
-    variants); `after` runs after each variant (the command line commits there, so a later
-    failure keeps the earlier trials). A variant refused before it is recorded (a bad override,
-    a missing weight) is skipped with its code; the request-wide refusals, and a sweep whose
-    variants read different regime indices, raise `BacktestError` before any run."""
+    variants); `after` takes each variant's outcome as it is decided, in order, refused ones
+    too (the command line commits and prints it there, so a later failure keeps the earlier
+    trials and a reader sees the sweep's progress). A variant refused before it is recorded (a
+    bad override, a missing weight) is skipped with its code; the request-wide refusals, and a
+    sweep whose variants read different regime indices, raise `BacktestError` before any run."""
     if not variants or len({v.label for v in variants}) != len(variants):
         raise BacktestError("backtest_sweep_bad_variants")
     target = _target(session, request)
@@ -653,13 +654,17 @@ def sweep_bot(
             specs.append((variant, exc.code))
     runnable = [spec for _, spec in specs if isinstance(spec, RunSpec)]
     if not runnable:
-        return [SweepOutcome(v.label, None, str(code)) for v, code in specs]
+        refused = [SweepOutcome(v.label, None, str(code)) for v, code in specs]
+        for outcome in refused:
+            after(outcome)
+        return refused
     data, snapshot = _load(session, store, request, target, runnable)
     sweep_id = str(uuid.uuid4())
     out: list[SweepOutcome] = []
     for variant, spec in specs:
         if not isinstance(spec, RunSpec):
             out.append(SweepOutcome(variant.label, None, spec))
+            after(out[-1])
             continue
         run, error = _record(
             session,
@@ -671,5 +676,5 @@ def sweep_bot(
             variant={"label": variant.label, "sweep_id": sweep_id},
         )
         out.append(SweepOutcome(variant.label, run, None if error is None else error.code))
-        after()
+        after(out[-1])
     return out

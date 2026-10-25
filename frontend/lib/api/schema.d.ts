@@ -218,6 +218,50 @@ export interface paths {
      */
     get: operations["list_runs_api_hat_backtests_get"];
     put?: never;
+    /**
+     * Start Job
+     * @description Start a research run or a sweep as a background job (`backtest.jobs`).
+     */
+    post: operations["start_job_api_hat_backtests_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/backtests/jobs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * List Jobs
+     * @description The jobs started since the server started, newest first.
+     */
+    get: operations["list_jobs_api_hat_backtests_jobs_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/hat/backtests/options": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Options
+     * @description The strategy versions a job can run, with their exits, stops and universes.
+     */
+    get: operations["get_options_api_hat_backtests_options_get"];
+    put?: never;
     post?: never;
     delete?: never;
     options?: never;
@@ -483,6 +527,77 @@ export interface components {
       /** Win Rate */
       win_rate: number;
     };
+    /** BacktestJob */
+    BacktestJob: {
+      /** Code */
+      code: string | null;
+      /**
+       * End
+       * Format: date
+       */
+      end: string;
+      /** Finished At */
+      finished_at: string | null;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Labels */
+      labels: string[];
+      /** Outcomes */
+      outcomes: components["schemas"]["BacktestJobOutcome"][];
+      /**
+       * Start
+       * Format: date
+       */
+      start: string;
+      /**
+       * Started At
+       * Format: date-time
+       */
+      started_at: string;
+      /** Status */
+      status: string;
+      /**
+       * Strategy Version Id
+       * Format: uuid
+       */
+      strategy_version_id: string;
+      /** Sweep */
+      sweep: boolean;
+      /** Total */
+      total: number;
+      /** Universe */
+      universe: string;
+    };
+    /** BacktestJobOutcome */
+    BacktestJobOutcome: {
+      /** Code */
+      code: string | null;
+      /** Label */
+      label: string | null;
+      /** Run Id */
+      run_id: string | null;
+      /** Status */
+      status: string | null;
+    };
+    /** BacktestOptions */
+    BacktestOptions: {
+      /** Max Variants */
+      max_variants: number;
+      /** Versions */
+      versions: components["schemas"]["BacktestVersionOption"][];
+    };
+    /** BacktestPlaybookStop */
+    BacktestPlaybookStop: {
+      /** Name */
+      name: string;
+      /** Stop */
+      stop: {
+        [key: string]: unknown;
+      };
+    };
     /** BacktestRPoint */
     BacktestRPoint: {
       /**
@@ -574,6 +689,40 @@ export interface components {
       strategy_version_id: string;
       variant: components["schemas"]["BacktestVariant"] | null;
     };
+    /** BacktestSet */
+    BacktestSet: {
+      /** Path */
+      path: string;
+      value: components["schemas"]["JsonValue"];
+    };
+    /**
+     * BacktestStart
+     * @description A research run (one variant) or a sweep (two or more); never a promotion run.
+     */
+    BacktestStart: {
+      /**
+       * End
+       * Format: date
+       */
+      end: string;
+      /**
+       * Start
+       * Format: date
+       */
+      start: string;
+      /**
+       * Strategy Version Id
+       * Format: uuid
+       */
+      strategy_version_id: string;
+      /**
+       * Universe Id
+       * Format: uuid
+       */
+      universe_id: string;
+      /** Variants */
+      variants: components["schemas"]["BacktestVariantStart"][];
+    };
     /** BacktestTrade */
     BacktestTrade: {
       /** Auction Risk */
@@ -619,12 +768,62 @@ export interface components {
       /** Symbol */
       symbol: string | null;
     };
+    /** BacktestUniverse */
+    BacktestUniverse: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+    };
     /** BacktestVariant */
     BacktestVariant: {
       /** Label */
       label: string;
       /** Sweep Id */
       sweep_id: string;
+    };
+    /** BacktestVariantStart */
+    BacktestVariantStart: {
+      /**
+       * Label
+       * @default run
+       */
+      label: string;
+      /** Max Positions */
+      max_positions?: number | null;
+      /** Risk Pct */
+      risk_pct?: string | null;
+      /** Sets */
+      sets?: components["schemas"]["BacktestSet"][];
+      /** Sleeve Weight */
+      sleeve_weight?: string | null;
+      /** Slot Order */
+      slot_order?: string | null;
+    };
+    /** BacktestVersionOption */
+    BacktestVersionOption: {
+      /** Exits */
+      exits: {
+        [key: string]: unknown;
+      }[];
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Playbooks */
+      playbooks: components["schemas"]["BacktestPlaybookStop"][];
+      /** Status */
+      status: string;
+      /** Strategy */
+      strategy: string;
+      /** Universes */
+      universes: components["schemas"]["BacktestUniverse"][];
+      /** Version */
+      version: number;
     };
     /** BacktestYear */
     BacktestYear: {
@@ -766,6 +965,7 @@ export interface components {
        */
       trade_date: string;
     };
+    JsonValue: unknown;
     /** KillSwitchView */
     KillSwitchView: {
       /** Bot Id */
@@ -1355,6 +1555,119 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["HTTPValidationError"];
         };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  start_job_api_hat_backtests_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["BacktestStart"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BacktestJob"];
+        };
+      };
+      /** @description Another backtest job is running */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The request was refused: a fixed code */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The job could not be started */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  list_jobs_api_hat_backtests_jobs_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BacktestJob"][];
+        };
+      };
+    };
+  };
+  get_options_api_hat_backtests_options_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BacktestOptions"];
+        };
+      };
+      /** @description No such run */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
       };
       /** @description The read failed */
       500: {
