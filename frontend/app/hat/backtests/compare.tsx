@@ -100,7 +100,8 @@ export default function BacktestComparePage() {
   const [params] = useSearchParams();
   const ids = (params.get("ids") ?? "").split(",").filter(Boolean).slice(0, MAX_COMPARE);
   const queries = useBacktestRunsById(ids);
-  const failed = queries.find((query) => query.error);
+  // Only a run that never loaded is a failure: a failed refetch keeps its last good read.
+  const failed = queries.find((query) => query.error && query.data === undefined);
   const details = queries.flatMap((query) => (query.data ? [query.data] : []));
   const loaded = details.length === ids.length;
   const reports = details.map((detail) => detail.report);
