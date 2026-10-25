@@ -99,7 +99,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 - Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
   `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily`,
   `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
-  NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable).
+  NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable; a later, different copy of that
+  date is kept beside it as `bc_<trade date>_<sha256>.csv`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features
   (`backtest_features_stale`).

@@ -99,6 +99,7 @@ __all__ = [
     "flag_unhandled",
     "held_and_watchlisted",
     "manage_only",
+    "open_gaps",
     "open_guards",
     "pending_actions",
     "rescale_open_positions",
@@ -332,23 +333,40 @@ def chain_of(session: Session, instrument_id: uuid.UUID) -> set[uuid.UUID]:
     return {instrument_id, *(uuid.UUID(iid) for iid in members)}
 
 
+def open_gaps(
+    payloads: Sequence[dict], resolved: set[str], isin: str | None
+) -> list[tuple[str, date]]:
+    """(key, previous session) of each `position.split_gap` payload the owner has not resolved;
+    none for an instrument the guard does not watch (`split_gap_watched`), so a gap recorded
+    before a rights entitlement was excluded holds it no longer."""
+    if not split_gap_watched(isin):
+        return []
+    return [
+        (key, date.fromisoformat(str(p.get("previous_day"))))
+        for p in payloads
+        if (key := str(p.get("action"))) not in resolved
+    ]
+
+
 def open_guards(session: Session, position: HatPosition) -> list[str]:
     """The keys of the position's locks the owner has not resolved (`corporate_action.resolved`):
     each `position.split_gap` no action stored since explains (a stored action ex in the gap's
-    sessions takes the gap over: rescaled, or unhandled), and an ISIN change it is held across
-    (`isin_successor`). None for a closed position."""
+    sessions takes the gap over: rescaled, or unhandled; none of a rights entitlement,
+    `open_gaps`), and an ISIN change it is held across (`isin_successor`). None for a closed
+    position."""
     if position.closed_at is not None:
         return []
     resolved = {str(p.get("action")) for p in _payloads(session, position.id, EVENT_RESOLVED)}
+    isin = session.scalar(
+        select(HatInstrument.isin).where(HatInstrument.id == position.instrument_id)
+    )
     keys = [
         key
-        for p in _payloads(session, position.id, EVENT_SPLIT_GAP)
-        if (key := str(p.get("action"))) not in resolved
-        and not actions_between(
-            session,
-            position.instrument_id,
-            date.fromisoformat(str(p.get("previous_day"))),
-            date.fromisoformat(key.split(":")[0]),
+        for key, previous_day in open_gaps(
+            _payloads(session, position.id, EVENT_SPLIT_GAP), resolved, isin
+        )
+        if not actions_between(
+            session, position.instrument_id, previous_day, date.fromisoformat(key.split(":")[0])
         )
     ]
     link = isin_successor(session, position)

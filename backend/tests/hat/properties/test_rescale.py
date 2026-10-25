@@ -4,6 +4,7 @@ live price that reads as an unstored split. Pure functions, no database."""
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from fractions import Fraction
 
@@ -100,6 +101,20 @@ def test_split_like(price: str, previous: str, split: bool) -> None:
 def test_split_gap_watched(isin: str | None, watched: bool) -> None:
     """The split-gap guard skips only rights entitlements (owner 2026-10-25)."""
     assert rescale.split_gap_watched(isin) is watched
+
+
+def test_open_gaps_skip_rights_entitlements() -> None:
+    """An unresolved split gap holds an equity position, but not a rights entitlement's, even
+    when it was recorded before the exclusion (owner 2026-10-25); a resolved one holds neither."""
+    gaps = [
+        {"action": "2026-06-02:split_gap", "previous_day": "2026-06-01"},
+        {"action": "2026-06-05:split_gap", "previous_day": "2026-06-04"},
+    ]
+    resolved = {"2026-06-05:split_gap"}
+    assert rescale.open_gaps(gaps, resolved, "INE878E01021") == [
+        ("2026-06-02:split_gap", date(2026, 6, 1))
+    ]
+    assert rescale.open_gaps(gaps, resolved, "INE0ABC20012") == []
 
 
 @pytest.mark.parametrize(

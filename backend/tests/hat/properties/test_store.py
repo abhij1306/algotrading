@@ -2,6 +2,7 @@
 (instrument, date) in `bars_daily`, and a missing day that stays missing. Real `DataStore` on a
 temporary directory; no network."""
 
+import hashlib
 import random
 import tempfile
 import uuid
@@ -82,7 +83,8 @@ def test_bc_kept_by_date(tmp_path: Path) -> None:
     assert store.store_bc(day, "SERIES,SYMBOL\nEQ,A\n") == first
     second = store.store_bc(day, "SERIES,SYMBOL\nEQ,B\n")
     assert second.parent == first.parent
-    assert second != first
+    digest = hashlib.sha256(b"SERIES,SYMBOL\nEQ,B\n").hexdigest()
+    assert second.name == f"bc_2026-10-23_{digest}.csv"
     assert first.read_text() == "SERIES,SYMBOL\nEQ,A\n"
     assert second.read_text() == "SERIES,SYMBOL\nEQ,B\n"
     assert len(list(first.parent.iterdir())) == 2

@@ -73,7 +73,6 @@ DATASET_BREADTH = "breadth_daily"  # one row per day (HAT-DATA-076)
 DATASET_MARKET_BREADTH = "market_breadth"  # advances and declines, one row per day (HAT-DATA-044)
 RAW_DIR = "raw"
 BC_DIR = "ca_bc"  # the nightly bc files, kept as fetched: bc_<trade date>.csv
-BC_HASH_CHARS = 12  # of a second, different bc file of one day
 SOURCES = frozenset({"bhavcopy", "mcp"})  # adjusted values have no source: they are never stored
 
 PRICE_TYPE = pa.decimal128(18, 4)
@@ -561,14 +560,14 @@ class DataStore:
     def store_bc(self, day: date, text: str) -> Path:
         """Keep the night's `bc` file of NSE's PR archive untouched under `ca_bc/`, dated by its
         trade date (owner 2026-10-25: so moved demerger notices can later be checked against
-        the files NSE listed each night). A second, different file of the same day is kept
-        beside the first under its hash; the identical file is kept once. The kept path."""
+        the files NSE listed each night). A later, different file of the same day is kept beside
+        the first under its full SHA-256; the identical file is kept once. The kept path."""
         data = text.encode("utf-8")
         path = self._under_root(self.root / BC_DIR / f"bc_{day.isoformat()}.csv")
         try:
             _keep_once(path, data)
         except StoreError:
-            digest = hashlib.sha256(data).hexdigest()[:BC_HASH_CHARS]
+            digest = hashlib.sha256(data).hexdigest()
             path = path.with_name(f"bc_{day.isoformat()}_{digest}.csv")
             _keep_once(path, data)
         return path
