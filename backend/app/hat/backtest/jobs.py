@@ -280,7 +280,8 @@ class Jobs:
                 (folder / "out.jsonl").open("wb") as out,
                 (folder / "err.log").open("wb") as err,
             ):
-                child = subprocess.Popen(  # noqa: S603 - our own interpreter and module, no shell
+                # our own interpreter and module, no shell
+                child = subprocess.Popen(  # noqa: S603
                     [self._python, "-m", "app.hat.backtest", *args],
                     cwd=PROJECT_ROOT / "backend",
                     env={**os.environ, "HAT_DATA_ROOT": str(root)},

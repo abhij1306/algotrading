@@ -1,7 +1,14 @@
+import type { ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import { Text } from "@/components/atoms/text";
-import { TableCell, TableHead, TableRow } from "@/components/atoms/table";
-import { Table, TableBody, TableHeader } from "@/components/atoms/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/atoms/table";
 import {
   CompareEquityChart,
   CompareYearlyChart,
@@ -100,6 +107,22 @@ export default function BacktestComparePage() {
   // A run without report data keeps its colour slot but draws no series.
   const names = details.map((detail) => (detail.report ? runName(detail.run) : null));
   const missing = details.filter((detail) => !detail.report).map((d) => runName(d.run));
+  let notice: ReactNode = null;
+  if (ids.length < 2) {
+    notice = <Text tone="muted">Pick two to four runs in the list to compare them.</Text>;
+  } else if (failed?.error) {
+    notice = (
+      <Text role="alert" tone="loss">
+        Could not load a run: {failed.error.message}
+      </Text>
+    );
+  } else if (!loaded) {
+    notice = (
+      <Text tone="muted" aria-busy="true">
+        Loading…
+      </Text>
+    );
+  }
   return (
     <PageLayout
       title="Compare runs"
@@ -110,17 +133,7 @@ export default function BacktestComparePage() {
         </Link>
       }
     >
-      {ids.length < 2 ? (
-        <Text tone="muted">Pick two to four runs in the list to compare them.</Text>
-      ) : failed?.error ? (
-        <Text role="alert" tone="loss">
-          Could not load a run: {failed.error.message}
-        </Text>
-      ) : !loaded ? (
-        <Text tone="muted" aria-busy="true">
-          Loading…
-        </Text>
-      ) : (
+      {notice ?? (
         <div className="space-y-14">
           <MetricsTable details={details} />
           {missing.length > 0 ? (

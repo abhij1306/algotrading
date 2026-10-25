@@ -93,7 +93,7 @@ function Filters({
   return (
     <div className="flex flex-wrap items-end gap-4">
       <label className="flex flex-col gap-1 text-xs text-foreground-muted">
-        Family
+        <span>Family</span>
         <select
           className={fieldClass}
           value={family ?? ""}
@@ -108,7 +108,7 @@ function Filters({
         </select>
       </label>
       <label className="flex flex-col gap-1 text-xs text-foreground-muted">
-        Sweep
+        <span>Sweep</span>
         <select
           className={fieldClass}
           value={sweep ?? ""}

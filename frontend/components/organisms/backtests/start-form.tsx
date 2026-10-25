@@ -111,7 +111,7 @@ function SettingInput({
           checked={value === "true"}
           onChange={(e) => set(e.target.checked ? "true" : "false")}
         />
-        enabled
+        <span>enabled</span>
       </label>
     );
   }
@@ -300,7 +300,7 @@ function StartFormBody({
       <div className="space-y-5">
         <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Variants">
           {drafts.map((d, index) => (
-            <span key={index} className="flex items-center">
+            <span key={d.id} className="flex items-center">
               <Button
                 size="sm"
                 role="tab"

@@ -122,6 +122,7 @@ export function addableRules(version: VersionOption): string[] {
 /** One variant as typed. `values` holds an edited field's text by path; an added rule's
  * parameters are keyed `+<rule>.<name>`. */
 export type Draft = {
+  id: string; // stable across edits, for the variant tabs
   label: string;
   sleeveWeight: string;
   riskPct: string;
@@ -134,6 +135,7 @@ export type Draft = {
 
 export function newDraft(label: string): Draft {
   return {
+    id: crypto.randomUUID(),
     label,
     sleeveWeight: "",
     riskPct: "",
@@ -147,7 +149,13 @@ export function newDraft(label: string): Draft {
 
 /** A copy of `draft` under a new label, for the next variant of a sweep. */
 export function copyDraft(draft: Draft, label: string): Draft {
-  return { ...draft, label, values: { ...draft.values }, added: [...draft.added] };
+  return {
+    ...draft,
+    id: crypto.randomUUID(),
+    label,
+    values: { ...draft.values },
+    added: [...draft.added],
+  };
 }
 
 type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };

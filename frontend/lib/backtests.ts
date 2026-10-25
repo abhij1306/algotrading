@@ -64,7 +64,9 @@ export type Sweep = Readonly<{ id: string; label: string; runs: number }>;
 
 /** The families and sweeps among `runs`, for the list's filters (families sorted, sweeps newest first). */
 export function runFacets(runs: readonly RunSummary[]): { families: string[]; sweeps: Sweep[] } {
-  const families = [...new Set(runs.map((run) => run.family_key))].sort();
+  const families = [...new Set(runs.map((run) => run.family_key))].sort((a, b) =>
+    a.localeCompare(b),
+  );
   const sweeps = new Map<string, { label: string; runs: number }>();
   for (const run of runs) {
     if (!run.variant) continue;

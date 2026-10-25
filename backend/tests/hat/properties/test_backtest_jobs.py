@@ -176,9 +176,10 @@ def test_a_job_runs_one_at_a_time_and_records_how_its_child_ended(tmp_path: Path
     )
     registry = Jobs(python=python)
     variants = [JobVariant(label="a"), JobVariant(label="b")]
-    job = registry.start(tmp_path, VERSION, "u", date(2020, 1, 1), date(2021, 1, 1), variants)
+    window = (date(2020, 1, 1), date(2021, 1, 1))
+    job = registry.start(tmp_path, VERSION, "u", *window, variants)
     with pytest.raises(BacktestError) as busy:
-        registry.start(tmp_path, VERSION, "u", date(2020, 1, 1), date(2021, 1, 1), variants)
+        registry.start(tmp_path, VERSION, "u", *window, variants)
     assert busy.value.code == JOB_BUSY
     assert (job.folder / "variants.json").is_file()
     done = _finished(registry)
