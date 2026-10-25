@@ -186,8 +186,14 @@ the run's conventions and the run counts as a trial of its family (DSR, PBO); a
 A sweep runs several variants over one load of the market: `--variants sweep.yaml` on top of the
 options given, a list of `{label, set: [path=value, ...], risk_pct, max_positions,
 sleeve_weight, slot_order}`. It prints one JSON line per variant (run id, status, trades,
-expectancy, DSR, PBO); each run carries `metrics.variant` (label, sweep id), and the runs and
-their report data read at `/api/hat/backtests?sweep_id=<id>`.
+expectancy, DSR, PBO) as each finishes; each run carries `metrics.variant` (label, sweep id), and
+the runs and their report data read at `/api/hat/backtests?sweep_id=<id>`.
+
+The app's Backtests page (`/hat/backtests`) starts the same research run or a sweep of up to
+eight variants (New run or sweep): it runs this command line in a child process, one job at a
+time, and shows its progress until the runs land in the list. A job's files are under
+`HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds the child's stderr). The job list is
+in memory: after a restart it is empty, and a child still running finishes and records its runs.
 
 ### First live session checks (O2 day)
 

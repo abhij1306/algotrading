@@ -1,6 +1,6 @@
 """CONF check of HAT's HTTP surface: the dashboard is read-only and Telegram is the
-control surface. Every route of every router under `app/hat/api` is a GET, except the Fyers login
-routes listed in WRITE_ROUTES, and no GET route reaches a database write.
+control surface. Every route of every router under `app/hat/api` is a GET, except the broker login
+routes and the backtest job start listed in WRITE_ROUTES, and no GET route reaches a database write.
 
 The app itself is never built here (`app.main` is out of bounds for `tests/hat`): the check reads
 the routers of the `app.hat.api` modules and the source of each GET endpoint. From an endpoint it
@@ -31,9 +31,11 @@ import app.hat.api
 import app.hat.read
 from app.hat.api import guard
 
-# The only routes that are not GET: the daily Fyers login. It writes the token
-# file, never a HAT table, and each route depends on the write guard.
+# The only routes that are not GET: the daily broker logins, which write the token file, never
+# a HAT table, and the backtest job start, which starts the backtest command line in a child
+# process (`backtest.jobs`). Each route depends on the write guard.
 WRITE_ROUTES = {
+    ("POST", "/api/hat/backtests"),
     ("POST", "/api/hat/auth/fyers/token"),
     ("POST", "/api/hat/auth/fyers/disconnect"),
     ("POST", "/api/hat/auth/zerodha/token"),

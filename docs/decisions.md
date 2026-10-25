@@ -173,7 +173,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   (`kite_adapter.KITE_CAPABILITIES`), so a Zerodha account runs shadow until a live check of its
   GTT stops, order tags and reply shapes (published Kite v3 shapes only so far) sets it.
 - **No API auth.** Loopback bind behind the VPN, read-only routes; the broker login writes (Fyers
-  and Zerodha) need the `X-HAT-Request` header and a frontend `Origin` (`api/guard.py`).
+  and Zerodha) and the backtest job start (research runs only) need the `X-HAT-Request` header
+  and a frontend `Origin` (`api/guard.py`).
 - **Engine.** In-process scheduler with jobs in Postgres, one async session owner per broker
   account, one engine for backtest and live, so the backtest tests the code that trades.
 - **A runtime that lost its lock writes nothing.** When another runtime holds the runtime lock,
