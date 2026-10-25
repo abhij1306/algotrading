@@ -8,10 +8,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
-
-import numpy as np
 
 from app.hat.backtest.data import last_through
 from app.hat.backtest.evidence import RunMetrics, unbacktested
