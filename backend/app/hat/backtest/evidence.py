@@ -72,7 +72,7 @@ from ..risk.policy import (
 from ..risk.policy_upkeep import load_versions
 from ..time import as_utc, utc_now
 from .dsr import Deflated, ReturnStats, family_deflated_sharpe, trial_variance
-from .spec import GAP_PLAYBOOKS, KNOWN_GAPS, BacktestError
+from .spec import GAP_PLAYBOOKS, KNOWN_GAPS, BacktestError, membership_key
 
 __all__ = [
     "COMPLETED",
@@ -88,6 +88,7 @@ __all__ = [
     "signal_confidence",
     "unbacktested",
     "unbacktested_trades",
+    "universe_live_version",
     "universe_of",
 ]
 
@@ -236,6 +237,20 @@ def universe_of(session: Session, bot: HatBot) -> uuid.UUID | None:
     return None if version is None else version.universe_id
 
 
+def universe_live_version(
+    session: Session, universe_id: uuid.UUID | None
+) -> HatUniverseVersion | None:
+    """The universe's live version (None without a universe or a live version): the members a
+    sleeve's scans and backtests read."""
+    if universe_id is None:
+        return None
+    return session.scalars(
+        select(HatUniverseVersion).where(
+            HatUniverseVersion.universe_id == universe_id, HatUniverseVersion.status == "live"
+        )
+    ).first()
+
+
 def _cooldown_of(policy: PolicyVersion | None) -> int:
     """The `cooldown_sessions` of a policy version (0 without one)."""
     return 0 if policy is None else policy.policy.cooldown_sessions
@@ -245,14 +260,18 @@ def evidence_run(
     session: Session, bot: HatBot, cooldown: int, at: datetime | None = None
 ) -> tuple[HatBacktestRun, RunMetrics] | None:
     """The sleeve's evidence run and its metrics: the newest completed run (by completion time,
-    the id breaking a tie) of the bot's live version on the bot's universe, flagged for
+    the id breaking a tie) of the bot's live version on the bot's universe, over the member set
+    its live universe version defines now (the snapshot's `membership.universe_key`, so a run
+    over another index, other includes or excludes, or today's list is not), flagged for
     promotion and run under `cooldown`, the cooldown in force when the evidence is read
     (HAT-RISK-036): a `--cooldown-sessions` sweep, or a run made before the cooldown changed,
     traded another rule. A run without a readable completion time is never the evidence. Given
     `at`, only a run completed at or before it is (PR 71): a signal processed late never reads
     results that did not exist when it triggered."""
     universe_id = universe_of(session, bot)
-    if bot.live_version_id is None or universe_id is None:
+    live = universe_live_version(session, universe_id)
+    key = None if live is None else membership_key(live.definition)
+    if bot.live_version_id is None or universe_id is None or key is None:
         return None
     cutoff = None if at is None else as_utc(at)
     found: list[tuple[datetime, uuid.UUID, HatBacktestRun, RunMetrics]] = []
@@ -267,6 +286,7 @@ def evidence_run(
         done = metrics.completed_at
         if (
             done is not None
+            and _membership_of(run) == key
             and (cutoff is None or done <= cutoff)
             and metrics.for_promotion
             and metrics.cooldown_sessions == cooldown
@@ -276,6 +296,12 @@ def evidence_run(
         return None
     _, _, run, metrics = max(found, key=lambda item: (item[0], item[1]))
     return run, metrics
+
+
+def _membership_of(run: HatBacktestRun) -> object:
+    """The member-set key the run recorded (None for a run without one)."""
+    membership = (run.data_snapshot or {}).get("membership")
+    return membership.get("universe_key") if isinstance(membership, dict) else None
 
 
 def _recorded(session: Session, run: HatBacktestRun) -> HatBacktestRun:

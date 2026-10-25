@@ -8,15 +8,15 @@ after it (CA3). The run fills, marks and pays dividends on the price basis; ever
 scan's window, the SMA, swing low and ATR) is the total-return series rescaled to the day it is read
 for (`MarketView`), as live reads it that day, so an ex-date drop is no signal and a held position
 earns the cash (`MarketData.dividends`). Features come from the `features_daily` partitions the
-nightly job wrote, the regime index from `index_daily`, and membership is the universe's current
-members over the whole period (`current_members`, a known gap). Nothing else is filtered by what
-happened later: the day loop
-reads each input only up to the date it decides for (`MarketView`). The features must be the ones
-the nightly job wrote for the corporate actions the bars are adjusted with: the job's stored inputs
-digest must equal the digest of the stored actions over the whole store (HAT-DATA-077, PR 67). A run
-under the `policy` regime rule also reads the regime engine's inputs: the NIFTY 500 and India VIX
-closes and the features job's breadth of each session (PR 68). A name is not scanned or entered on
-the days its adjusted history shows a factor not yet knowable (CA5, `MarketData.pending`).
+nightly job wrote, the regime index from `index_daily`, and membership is the universe's index
+members as of each session (`point_in_time_members`, from `hat_index_member`). Nothing else is
+filtered by what happened later: the day loop reads each input only up to the date it decides for
+(`MarketView`). The features must be the ones the nightly job wrote for the corporate actions the
+bars are adjusted with: the job's stored inputs digest must equal the digest of the stored actions
+over the whole store (HAT-DATA-077, PR 67). A run under the `policy` regime rule also reads the
+regime engine's inputs: the NIFTY 500 and India VIX closes and the features job's breadth of each
+session (PR 68). A name is not scanned or entered on the days its adjusted history shows a factor
+not yet knowable (CA5, `MarketData.pending`).
 """
 
 from __future__ import annotations
@@ -57,9 +57,16 @@ from ..data.ticks import scaled_tick, tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..engine.stops import mean_true_range
-from ..models import HatCorporateAction, HatIndustry, HatInstrument, HatUniverseMember
+from ..models import (
+    HatCorporateAction,
+    HatIndexMember,
+    HatIndexMembership,
+    HatIndustry,
+    HatInstrument,
+    HatUniverseVersion,
+)
 from ..money import exact
-from .spec import BacktestError
+from .spec import BacktestError, membership_key
 
 __all__ = [
     "JUMP_SKIP_SESSIONS",
@@ -69,11 +76,13 @@ __all__ = [
     "MarketData",
     "MarketView",
     "classifications",
-    "current_members",
     "industry_on",
     "jump_skips",
     "load_market",
+    "membership_cover_refusal",
+    "point_in_time_members",
     "real_shares",
+    "scan_night_members",
     "stopped_trading",
 ]
 
@@ -118,8 +127,8 @@ class MarketData:
     a rupee price read (`min_price`, the tick slab), as doubles, for the scan, and `open_e4` ..
     `close_e4`, the exact 4-place prices as integers of 1/10,000, for the day loop's Decimals).
     `features`: the daily features (`date`, `instrument_id`, columns). `index_closes`:
-    per index name, (date, close) oldest first. `members`: the universe's current members, each
-    a member over the whole period (`current_members`). `industries`: each instrument's
+    per index name, (date, close) oldest first. `members`: the universe's membership intervals,
+    point in time, by chain id (`point_in_time_members`). `industries`: each instrument's
     industry, either one name or its classifications as (effective_from, industry), read point
     in time. `series`: each instrument's series as change points (first day, series) from its
     bars, so a scan reads the series of its own day (`identity.series_on`), not today's.
@@ -541,15 +550,51 @@ WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 
 
 def _members(
-    session: Session, universe_id: uuid.UUID, lineage: Mapping[str, str]
-) -> tuple[Interval, ...]:
-    """The universe's members over the whole run (`current_members`)."""
-    rows = session.scalars(
-        select(HatUniverseMember).where(HatUniverseMember.universe_id == universe_id)
-    ).all()
-    return current_members(
-        (Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows), lineage
+    session: Session,
+    universe_version_id: uuid.UUID,
+    lineage: Mapping[str, str],
+    since: date,
+    start: date,
+    until: date,
+) -> tuple[tuple[Interval, ...], dict[str, Any]]:
+    """The universe's members over `since..until` (`since` the first scan's night, `start` the
+    first session), point in time (`point_in_time_members`), and what they were read from (the
+    snapshot's `membership`). The universe version names its index; `backtest_universe_no_index`
+    when it names none, and the index's loaded history must cover `start..until`
+    (`membership_cover_refusal`): never today's list in its place."""
+    version = session.get(HatUniverseVersion, universe_version_id)
+    definition = {} if version is None else version.definition
+    index_name = definition.get("index")
+    if not index_name:
+        raise BacktestError("backtest_universe_no_index")
+    record = session.get(HatIndexMembership, index_name)
+    refusal = membership_cover_refusal(
+        None if record is None else (record.covered_from, record.covered_to), start, until
     )
+    if refusal is not None:
+        raise BacktestError(refusal)
+    rows = session.scalars(select(HatIndexMember).where(HatIndexMember.index_name == index_name))
+    members = point_in_time_members(
+        (Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows),
+        include=[uuid.UUID(i) for i in definition.get("include", ())],
+        exclude=[uuid.UUID(i) for i in definition.get("exclude", ())],
+        lineage=lineage,
+        since=since,
+        until=until,
+        history_from=record.covered_from,
+    )
+    source = {
+        "index": index_name,
+        "source": record.source,
+        "digest": record.digest,
+        "rows": record.rows,
+        "covered_from": record.covered_from.isoformat(),
+        "covered_to": record.covered_to.isoformat(),
+        "off_size_dates": len(record.coverage.get("off_size", {})),
+        "universe_version_id": str(universe_version_id),
+        "universe_key": membership_key(definition),
+    }
+    return members, source
 
 
 def real_shares(qty: int, factor: float) -> int | None:
@@ -564,15 +609,83 @@ def real_shares(qty: int, factor: float) -> int | None:
     return math.floor(qty * factor + _SHARE_SLACK)
 
 
-def current_members(rows: Iterable[Interval], lineage: Mapping[str, str]) -> tuple[Interval, ...]:
-    """The universe's current members (an interval without an end), each a member from the first
-    day there is, by instrument id: the known gap `universe_from_current_constituents`, today's
-    list over the whole period, until a constituents history exists. A published list starts
-    on its `as_of` date, so read point in time it would leave every earlier session empty. A
-    linked older ISIN is its chain's, whose id its bars carry in `bars_daily`; a former member
-    is not in the run."""
-    current = {_chain_id(r.instrument_id, lineage) for r in rows if r.effective_to is None}
-    return tuple(Interval(i, _ALWAYS) for i in sorted(current))
+def membership_cover_refusal(
+    cover: tuple[date, date] | None, start: date, until: date
+) -> str | None:
+    """Why a run over `start..until` cannot read an index history covering `cover` (first and
+    last day), or None when it can: `backtest_no_index_membership` without a history,
+    `backtest_starts_before_membership@<first day>` for a run starting before the history (the
+    NIFTY 500's starts 2016-01-01; earlier bars still warm the indicators up), and
+    `backtest_ends_after_membership@<last day>` for one ending after it."""
+    if cover is None:
+        return "backtest_no_index_membership"
+    if start < cover[0]:
+        return f"backtest_starts_before_membership@{cover[0].isoformat()}"
+    if until > cover[1]:
+        return f"backtest_ends_after_membership@{cover[1].isoformat()}"
+    return None
+
+
+def point_in_time_members(
+    rows: Iterable[Interval],
+    *,
+    include: Iterable[uuid.UUID],
+    exclude: Iterable[uuid.UUID],
+    lineage: Mapping[str, str],
+    since: date,
+    until: date,
+    history_from: date | None = None,
+) -> tuple[Interval, ...]:
+    """The universe's members: the index's membership intervals that overlap `since..until`,
+    plus the owner's includes (members from the first day there is), less the excludes, by
+    chain id (a linked older ISIN is its chain's, whose id its bars carry in `bars_daily`). One
+    chain's intervals that touch or overlap are merged, so a move to a new ISIN on a day the
+    stock stays in the index is one membership. A stock is a candidate only inside an interval:
+    it enters on its effective date and leaves on its exclusion's. An interval starting on
+    `history_from`, the history's first day, is a member from before it (no change starts on
+    that day), so the first scan's night before it reads it too."""
+    dropped = {_chain_id(i, lineage) for i in exclude}
+    spans: dict[uuid.UUID, list[tuple[date, date | None]]] = defaultdict(list)
+    for r in rows:
+        if r.effective_from <= until and (r.effective_to is None or r.effective_to > since):
+            start = _ALWAYS if r.effective_from == history_from else r.effective_from
+            spans[_chain_id(r.instrument_id, lineage)].append((start, r.effective_to))
+    for i in include:
+        spans[_chain_id(i, lineage)].append((_ALWAYS, None))
+    out: list[Interval] = []
+    for chain in sorted(spans.keys() - dropped):
+        merged: list[tuple[date, date | None]] = []
+        for start, end in sorted(spans[chain], key=lambda s: s[0]):
+            if merged and (merged[-1][1] is None or merged[-1][1] >= start):
+                first, last = merged[-1]
+                merged[-1] = (first, None if last is None or end is None else max(last, end))
+            else:
+                merged.append((start, end))
+        out.extend(Interval(chain, start, end) for start, end in merged)
+    return tuple(out)
+
+
+def scan_night_members(members: Iterable[Interval], days: Sequence[date]) -> tuple[Interval, ...]:
+    """The members as the run's universe stores them: the scan for trade date D runs on the
+    night of the session before D and reads the universe on that night (the loop's `prev`), so
+    each interval moves back to the night before its first and its end session (`days`, the
+    sessions in order). The scan for D then reads exactly D's members: an entrant effective D
+    is on D's watchlist, and a stock excluded on D is not. The entry gate reads the trade date
+    on the same rows, so a stock is not newly entered on its last session as a member (the
+    conservative side of the one-day boundary). An interval from before the first session
+    keeps its start; one that moves to nothing is dropped."""
+
+    def night(day: date) -> date:
+        at = bisect_left(days, day)
+        return day if at == 0 else days[at - 1]
+
+    out = []
+    for m in members:
+        start = m.effective_from if m.effective_from == _ALWAYS else night(m.effective_from)
+        end = None if m.effective_to is None else night(m.effective_to)
+        if end is None or end > start:
+            out.append(Interval(m.instrument_id, start, end))
+    return tuple(out)
 
 
 def _chain_id(instrument_id: uuid.UUID, lineage: Mapping[str, str]) -> uuid.UUID:
@@ -804,7 +917,7 @@ def load_market(
     store: DataStore,
     session: Session,
     *,
-    universe_id: uuid.UUID,
+    universe_version_id: uuid.UUID,
     index: str,
     start: date,
     end: date,
@@ -828,7 +941,10 @@ def load_market(
     window = days[max(0, first - LOOKBACK_SESSIONS) :]
     adjustment = stored_adjustment(session)
     expected = inputs_digest(adjustment)
-    members = _members(session, universe_id, adjustment.lineage)
+    # the first scan runs on the night before the first session (the loop's `prev`)
+    members, membership = _members(
+        session, universe_version_id, adjustment.lineage, days[max(0, first - 1)], days[first], end
+    )
     instruments = {m.instrument_id for m in members}
     wanted = sorted(str(i) for i in instruments)
     with store.connect(adjustment) as con:
@@ -914,7 +1030,8 @@ def load_market(
             if regime_inputs
             else {}
         ),
-        "members": len(members),
+        "members": len({m.instrument_id for m in members}),
+        "membership": membership,
         "dividends": sum(len(v) for v in dividends.values()),
         "last_traded": len(last_traded),
         "jump_skip": {

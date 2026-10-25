@@ -49,6 +49,7 @@ from ..models import (
     HatStrategy,
     HatStrategyVersion,
     HatUniverse,
+    HatUniverseVersion,
 )
 from ..money import exact, require_exact
 from ..risk.policy import PolicyVersion, effective_version
@@ -56,7 +57,15 @@ from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from .data import MarketData, load_market
 from .dsr import MIN_TRIALS, PBO_BLOCKS, VARIANCE_FLOOR, Deflated, pbo
-from .evidence import COMPLETED, DSR_DIGITS, RunMetrics, family_key, run_dsr, universe_of
+from .evidence import (
+    COMPLETED,
+    DSR_DIGITS,
+    RunMetrics,
+    family_key,
+    run_dsr,
+    universe_live_version,
+    universe_of,
+)
 from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_set
 from .report import BacktestResult
@@ -406,10 +415,11 @@ class RunRequest:
 
 def _sleeve_of(
     session: Session, request: RunRequest
-) -> tuple[HatStrategyVersion, uuid.UUID, uuid.UUID]:
-    """The run's strategy version, universe id and owner (whose risk policy sizes it): the
-    bot's, or in research mode the version's and the named universe's. A request naming both a
-    bot and a universe, or neither, is refused `backtest_bad_request`."""
+) -> tuple[HatStrategyVersion, HatUniverseVersion, uuid.UUID]:
+    """The run's strategy version, universe version and owner (whose risk policy sizes it):
+    the bot's, or in research mode the version's and the named universe's; the universe version
+    is the universe's live one (a sleeve reads the universe its pinned version belongs to). A
+    request naming both a bot and a universe, or neither, is refused `backtest_bad_request`."""
     if (request.bot_id is None) == (request.universe is None):
         raise BacktestError("backtest_bad_request")
     if request.bot_id is not None:
@@ -419,10 +429,10 @@ def _sleeve_of(
         version = session.get(HatStrategyVersion, request.version_id or bot.live_version_id)
         if version is None or version.strategy_id != bot.strategy_id:
             raise BacktestError("backtest_unknown_version")
-        universe_id = universe_of(session, bot)
-        if universe_id is None:
+        live = universe_live_version(session, universe_of(session, bot))
+        if live is None:
             raise BacktestError("backtest_no_universe")
-        return version, universe_id, bot.user_id
+        return version, live, bot.user_id
     version = (
         None if request.version_id is None else session.get(HatStrategyVersion, request.version_id)
     )
@@ -430,9 +440,10 @@ def _sleeve_of(
     if version is None or strategy is None:
         raise BacktestError("backtest_unknown_version")
     universe = _universe_named(session, request.universe or "", strategy.user_id)
-    if universe is None:
+    live = universe_live_version(session, None if universe is None else universe.id)
+    if live is None:
         raise BacktestError("backtest_no_universe")
-    return version, universe.id, strategy.user_id
+    return version, live, strategy.user_id
 
 
 def _universe_named(session: Session, text: str, user_id: uuid.UUID) -> HatUniverse | None:
@@ -455,6 +466,7 @@ class _Target:
     config: StrategyConfig
     policy: PolicyVersion
     universe_id: uuid.UUID
+    universe_version_id: uuid.UUID
     fills: BacktestFills
     regime_table: Mapping[str, Decimal]
 
@@ -462,7 +474,7 @@ class _Target:
 def _target(session: Session, request: RunRequest) -> _Target:
     """The request's version, universe (`_sleeve_of`), owner's policy (under its cooldown) and
     fills; refusals raise `BacktestError` and record nothing."""
-    version, universe_id, user_id = _sleeve_of(session, request)
+    version, universe, user_id = _sleeve_of(session, request)
     policy = effective_version(load_versions(session, user_id), utc_now())
     if policy is None:
         raise BacktestError("backtest_no_policy")
@@ -476,7 +488,7 @@ def _target(session: Session, request: RunRequest) -> _Target:
     except CostError as exc:
         raise BacktestError(exc.code) from None
     table = stored_regime_table(session, market_id_of(session), regime_profile(config.bot))
-    return _Target(version.id, config, policy, universe_id, fills, table)
+    return _Target(version.id, config, policy, universe.universe_id, universe.id, fills, table)
 
 
 def _spec(target: _Target, request: RunRequest, conventions: RunConventions) -> RunSpec:
@@ -520,7 +532,7 @@ def _load(
     return load_market(
         store,
         session,
-        universe_id=target.universe_id,
+        universe_version_id=target.universe_version_id,
         index=indices.pop(),
         start=request.start,
         end=request.end,

@@ -27,11 +27,18 @@ Commands, in first-deploy order:
                                               account's demat (HAT-GOV-085), outside market hours
     revoke-ddpi --account ID --note TEXT      withdraws it, at any time: the account's bots run
                                               shadow from their next routing decision
-    publish-universe --constituents CSV --as-of DATE [--name N] [--include S]... [--exclude S]...
-                     [--bot ID]...            a universe version from an NSE index CSV, made live
+    publish-universe --constituents CSV --as-of DATE [--name N] [--index I] [--include S]...
+                     [--exclude S]... [--bot ID]...
+                                              a universe version from an NSE index CSV, made live
                                               and given to the sleeves (default: all of them);
                                               stocks only (a REIT or placeholder row is skipped),
-                                              and an --exclude drops its row before resolving
+                                              and an --exclude drops its row before resolving;
+                                              --index (default NIFTY 500) names the index whose
+                                              point-in-time members a backtest of it reads
+    load-index-membership --csv CSV --as-of DATE [--size N] [--apply]
+                                              an index's membership history (QA5): replaces the
+                                              file's index's rows; without --apply a dry run that
+                                              writes nothing
     save-draft --strategy ID --config YAML    a new draft version, outside market hours
                                               (HAT-BOT-084)
     publish-version --version ID --run ID     draft -> frozen on a completed run (HAT-BT-061)
@@ -64,7 +71,7 @@ Commands, in first-deploy order:
                                               raw bars' first days (audit M3, one-off);
                                               without --apply a dry run that writes nothing
 
-Input files (`--constituents`, `--config`, `--list`, `--dump`) are names inside
+Input files (`--constituents`, `--csv`, `--config`, `--list`, `--dump`) are names inside
 `<HAT_DATA_ROOT>/admin/`: a path that leaves that folder, or a file without the expected suffix, is
 refused (`file_outside_admin`).
 
@@ -96,6 +103,7 @@ from .data.broker_symbols import refresh_kite_symbols
 from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
 from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
+from .data.index_membership import NIFTY_500, load_membership, parse_membership_csv
 from .data.kite_symbols import KiteSymbolData
 from .data.reference import parse_industry_csv
 from .data.renames import symbol_first_bars
@@ -201,6 +209,7 @@ def _parser() -> argparse.ArgumentParser:
     universe.add_argument("--constituents", required=True)
     universe.add_argument("--as-of", type=date.fromisoformat, required=True)
     universe.add_argument("--name", default="nifty500")
+    universe.add_argument("--index", default=NIFTY_500)
     universe.add_argument("--include", action="append", default=[])
     universe.add_argument("--exclude", action="append", default=[])
     universe.add_argument("--bot", type=uuid.UUID, action="append", default=[])
@@ -247,6 +256,11 @@ def _parser() -> argparse.ArgumentParser:
     correct.add_argument("--as", dest="as_type", choices=ACTION_TYPES)
     correct.add_argument("--note", required=True)
     correct.add_argument("--known-on", type=date.fromisoformat)
+    membership = commands.add_parser("load-index-membership")
+    membership.add_argument("--csv", required=True)
+    membership.add_argument("--as-of", type=date.fromisoformat, required=True)
+    membership.add_argument("--size", type=int, default=500)
+    membership.add_argument("--apply", action="store_true")
     corrections = commands.add_parser("correct-actions")
     corrections.add_argument("--list", required=True)
     corrections.add_argument("--apply", action="store_true")
@@ -356,6 +370,7 @@ def _publish_universe(
         include=include,
         exclude=exclude,
         as_of=args.as_of,
+        index=" ".join(args.index.upper().split()),
     )
     live = universe_service.publish_version(session, draft.id, now)
     bot_ids = args.bot or [
@@ -446,6 +461,19 @@ def _setup(
         return {"bot_id": str(bot.id), "lifecycle_state": bot.lifecycle_state}
     if command == "publish-universe":
         return _publish_universe(session, args, deps, now)
+    if command == "load-index-membership":  # reference data: any time, no calendar
+        index_name, members = parse_membership_csv(
+            _read(deps.files, args.csv, (".csv",), "membership_unreadable")
+        )
+        return load_membership(
+            session,
+            members,
+            index_name=index_name,
+            as_of=args.as_of,
+            size=args.size,
+            source=Path(args.csv).name,
+            apply=args.apply,
+        )
     return None
 
 

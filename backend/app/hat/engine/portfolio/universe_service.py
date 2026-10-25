@@ -175,11 +175,15 @@ def seed_universe_version(
     include: Collection[uuid.UUID] = (),
     exclude: Collection[uuid.UUID] = (),
     as_of: date,
+    index: str | None = None,
 ) -> HatUniverseVersion:
     """A new draft version of the MVP universe: the index constituents plus the includes minus
-    the excludes as of `as_of` (HAT-PORT-022). The draft only records its member list: the
-    universe's membership intervals change when the version is published, so a draft is never
-    seen by `members_of`. Each edit of the lists is a new version (HAT-PORT-020)."""
+    the excludes as of `as_of` (HAT-PORT-022). `index` names the index the constituents are of:
+    a backtest of the universe reads that index's members point in time (`hat_index_member`)
+    with the same includes and excludes, and refuses a version that names none. The draft only
+    records its member list: the universe's membership intervals change when the version is
+    published, so a draft is never seen by `members_of`. Each edit of the lists is a new
+    version (HAT-PORT-020)."""
     target = universe.effective_members(constituents, include, exclude)
     reasons = sorted(str(i) for i in include if i not in set(constituents))
     previous = session.scalars(
@@ -194,6 +198,7 @@ def seed_universe_version(
         "members": len(target),
         "member_ids": sorted(str(i) for i in target),
         "included_by_owner": reasons,
+        **({} if index is None else {"index": index}),
     }
     row = HatUniverseVersion(
         universe_id=universe_id,

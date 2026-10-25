@@ -90,6 +90,18 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   a new ISIN for the same shares is linked by evidence (`hat_isin_lineage`), never by name, and
   restructurings stay separate. A bad link corrupts every backtest, a missing one only shows as a
   review case.
+- **Point-in-time index membership** (owner, 2026-10-25). Every backtest uses the index members
+  as of each session, never today's list: a stock is a candidate from its inclusion's effective
+  date until its exclusion's. NSE publishes only today's list, so the history is rebuilt outside
+  the repo from the NSE Indices change notices, undone from today's list, checked against the
+  member count and archived lists, and loaded as data (`hat_index_member`). A window the loaded
+  history does not cover is refused, never filled with today's list. Demerger dummies (a
+  resulting company held at zero price until it lists) are not modelled: they cannot be scanned.
+- **Backtests from 2016-01-01** (owner, 2026-10-25). The NIFTY 500 history starts 2016-01-01:
+  the 2011-2015 notices are incomplete (they do not fit the archived lists of 2014 and 2015).
+  Until that membership is resolved, a backtest's first session is 2016-01-01 or later; a run
+  starting earlier is refused `backtest_starts_before_membership@2016-01-01`. Bars before 2016
+  still warm the indicators up.
 - **Total return for signals, price basis for money.** Signals read dividend-adjusted series so a
   dividend never looks like a fall; fills and orders use the prices the broker sees. Every
   dividend counts: leaving small ones out biases returns down.
@@ -245,10 +257,7 @@ rule (for the S4 exit research).
 
 Chosen where the owner has not ruled; the code implements them.
 
-- Universe: NIFTY 500 plus liquidity criteria. The membership is today's list, not point in time:
-  the backtest takes the universe's current members over its whole window (through lineage) and
-  reports the survivorship bias as the known gap `universe_from_current_constituents` until a
-  constituents history exists (QA5).
+- Universe: NIFTY 500 plus liquidity criteria.
 - Confidence: the 30 trades, the band edges (0.60/0.75/0.90) and the raw (undiscounted) mean.
 - Regime: first day bootstraps confirmed; percentile over the trailing 252 values; precedence
   Bear > Correction > Bull volatile > Bull quiet.

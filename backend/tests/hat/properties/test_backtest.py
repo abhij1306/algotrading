@@ -17,9 +17,11 @@ from app.hat.backtest.data import (
     Bar,
     MarketData,
     MarketView,
-    current_members,
     jump_skips,
+    membership_cover_refusal,
+    point_in_time_members,
     real_shares,
+    scan_night_members,
     stopped_trading,
 )
 from app.hat.backtest.fillrules import (
@@ -52,7 +54,7 @@ from app.hat.confighash import config_hash
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_model
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.portfolio.allocator import sleeve_key
-from app.hat.engine.portfolio.universe import Interval
+from app.hat.engine.portfolio.universe import Interval, members_on
 from app.hat.engine.stops import floor_to_tick
 
 D = Decimal
@@ -559,20 +561,97 @@ def test_scaled_tick_reads_the_tick_in_adjusted_units() -> None:
 # --- research mode: the universe, the sleeve weight and real shares ---------------------------
 
 
-def test_current_members_cover_the_whole_period_through_lineage() -> None:
-    """Today's members are members from the first day there is (the known gap
-    `universe_from_current_constituents`), a linked older ISIN under its chain's id, once; a
-    former member is not one."""
-    a, b, old_c, c = (uuid.UUID(int=n) for n in (1, 2, 3, 4))
+def test_point_in_time_members_enter_and_leave_on_their_dates() -> None:
+    """A stock is a member only inside its index interval: one that left is not a candidate
+    after its exclusion, one that joined is not before it; a linked older ISIN's interval
+    joins its chain's into one membership; an exclude drops a stock, an include makes one a
+    member throughout; intervals outside the run are not read."""
+    a, b, old_c, c, gone, owner = (uuid.UUID(int=n) for n in (1, 2, 3, 4, 5, 6))
     rows = [
-        Interval(a, date(2026, 10, 23)),
-        Interval(b, date(2020, 1, 1), date(2024, 1, 1)),
-        Interval(old_c, date(2026, 10, 23)),
-        Interval(c, date(2026, 10, 23)),
+        Interval(a, date(2016, 1, 1)),
+        Interval(b, date(2016, 1, 1), date(2019, 3, 29)),
+        Interval(old_c, date(2018, 4, 2), date(2021, 6, 1)),
+        Interval(c, date(2021, 6, 1)),
+        Interval(gone, date(2016, 1, 1), date(2016, 6, 1)),
     ]
-    members = current_members(rows, {str(old_c): str(c)})
-    assert [m.instrument_id for m in members] == sorted([a, c])
-    assert all(m.effective_to is None and m.effective_from <= date(2011, 1, 1) for m in members)
+    members = point_in_time_members(
+        rows,
+        include=[owner],
+        exclude=[a],
+        lineage={str(old_c): str(c)},
+        since=date(2017, 1, 2),
+        until=date(2024, 12, 31),
+    )
+    assert members == (
+        Interval(b, date(2016, 1, 1), date(2019, 3, 29)),
+        Interval(c, date(2018, 4, 2)),
+        Interval(owner, date(1900, 1, 1)),
+    )
+    assert members_on(members, date(2019, 3, 28)) == {b, c, owner}
+    assert members_on(members, date(2019, 3, 29)) == {c, owner}
+    assert members_on(members, date(2018, 3, 29)) == {b, owner}
+
+
+def test_history_first_day_members_are_members_the_night_before() -> None:
+    """A row starting on the history's first day is a member from before it, so a run starting
+    that day scans it on the night before; a row of a later change still starts on its date."""
+    a, b = uuid.UUID(int=1), uuid.UUID(int=2)
+    members = point_in_time_members(
+        [Interval(a, date(2016, 1, 1)), Interval(b, date(2016, 4, 1))],
+        include=[],
+        exclude=[],
+        lineage={},
+        since=date(2015, 12, 31),
+        until=date(2016, 12, 30),
+        history_from=date(2016, 1, 1),
+    )
+    assert members_on(members, date(2015, 12, 31)) == {a}
+    assert members_on(members, date(2016, 4, 1)) == {a, b}
+
+
+def test_scan_night_members_read_the_trade_dates_members() -> None:
+    """The scan for trade date D runs on the session before D: stored as of that night, an
+    entrant effective D is a member when D's watchlist is scanned and a stock excluded on D is
+    not; an effective date off the calendar moves to the session before it; a member from
+    before the history keeps its start; an interval that moves to nothing is dropped."""
+    days = [date(2024, 1, d) for d in (1, 2, 3, 4, 5, 8, 9)]
+    joins, leaves, held, weekend, before = (uuid.UUID(int=n) for n in (1, 2, 3, 4, 5))
+    stored = scan_night_members(
+        [
+            Interval(joins, date(2024, 1, 4)),
+            Interval(leaves, date(1900, 1, 1), date(2024, 1, 4)),
+            Interval(held, date(2024, 1, 2), date(2024, 1, 9)),
+            Interval(weekend, date(2024, 1, 6), date(2024, 1, 7)),
+            Interval(before, date(2023, 12, 1)),
+        ],
+        days,
+    )
+    assert stored == (
+        Interval(joins, date(2024, 1, 3)),
+        Interval(leaves, date(1900, 1, 1), date(2024, 1, 3)),
+        Interval(held, date(2024, 1, 1), date(2024, 1, 8)),
+        Interval(before, date(2023, 12, 1)),
+    )
+    # the night of Jan 3 scans the watchlist for Jan 4
+    assert members_on(stored, date(2024, 1, 3)) == {joins, held, before}
+    assert members_on(stored, date(2024, 1, 2)) == {leaves, held, before}
+    # the night of Jan 8 scans Jan 9, the day `held` has left
+    assert members_on(stored, date(2024, 1, 8)) == {joins, before}
+
+
+@pytest.mark.parametrize(
+    ("start", "until", "refusal"),
+    [
+        (date(2016, 1, 1), date(2026, 10, 23), None),
+        (date(2015, 12, 31), date(2026, 10, 23), "backtest_starts_before_membership@2016-01-01"),
+        (date(2016, 1, 1), date(2026, 10, 26), "backtest_ends_after_membership@2026-10-25"),
+    ],
+)
+def test_membership_cover_refusal(start: date, until: date, refusal: str | None) -> None:
+    """A run reads the history only inside its cover, naming the edge it crosses."""
+    cover = (date(2016, 1, 1), date(2026, 10, 25))
+    assert membership_cover_refusal(cover, start, until) == refusal
+    assert membership_cover_refusal(None, start, until) == "backtest_no_index_membership"
 
 
 @pytest.mark.parametrize(

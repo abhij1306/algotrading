@@ -77,6 +77,7 @@ _REFERENCE = {
     "hat_broker_symbol",
     "hat_price_band",
     "hat_industry",
+    "hat_index_membership",
     "hat_corporate_action",
     "hat_trading_calendar",
     "hat_announcement",
@@ -231,7 +232,7 @@ def test_schema__sqlite_create_all() -> None:
     Base.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
     assert set(MODEL) <= names
-    assert len(MODEL) == 48
+    assert len(MODEL) == 50
     inspector = sa.inspect(engine)
     for name, table in MODEL.items():
         declared = {(f.parent.name, f.column.table.name) for f in table.foreign_keys}

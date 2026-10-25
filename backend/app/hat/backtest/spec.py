@@ -13,6 +13,8 @@ conventions live does not trade by. Every run records its conventions and hashes
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -56,6 +58,7 @@ __all__ = [
     "RunConventions",
     "RunSpec",
     "known_gaps",
+    "membership_key",
     "sleeve_weight",
     "with_cooldown",
 ]
@@ -81,9 +84,6 @@ KNOWN_GAPS = (
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)
     "multipliers_fixed_at_one",  # health is 1; regime too unless `regime_mult` is `policy`
     "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
-    # the NIFTY 500 membership is today's list over the whole period, not point in time: a
-    # survivorship bias accepted until a constituents history exists (QA5)
-    "universe_from_current_constituents",
     # no regime table is fitted to each style: S1-S3 name the `momentum` profile
     # (`registry.Strategy.regime`), and the EMA pullback (S4) and RSI(2) mean-reversion (S5)
     # profiles have no stored row, so they size under the most conservative one (today momentum's)
@@ -300,3 +300,22 @@ def with_cooldown(policy: PolicyVersion, sessions: int) -> PolicyVersion:
     return PolicyVersion(
         policy.version_id, policy.version, policy.effective_from, policy.superseded_at, changed
     )
+
+
+def membership_key(definition: Mapping[str, Any]) -> str | None:
+    """What fixes a universe version's backtest member set: its index and the owner's includes
+    and excludes (the constituents list it was published from does not, as the run reads the
+    index point in time), as a digest a run records and its evidence must match. None for a
+    version naming no index."""
+    index = definition.get("index")
+    if not index:
+        return None
+    text = json.dumps(
+        {
+            "index": index,
+            "include": sorted(definition.get("include", ())),
+            "exclude": sorted(definition.get("exclude", ())),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(text.encode()).hexdigest()
