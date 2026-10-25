@@ -205,26 +205,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/hat/bots": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Hat Bots
-     * @description Every bot with its execution mode and why it is manage-only, if it is.
-     */
-    get: operations["hat_bots_api_hat_bots_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/hat/events": {
     parameters: {
       query?: never;
@@ -257,26 +237,6 @@ export interface paths {
      * @description The open positions, oldest first.
      */
     get: operations["hat_positions_api_hat_positions_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/hat/regime": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /**
-     * Hat Regime
-     * @description The regime history, newest trade date first.
-     */
-    get: operations["hat_regime_api_hat_regime_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -404,10 +364,16 @@ export interface components {
     };
     /** BotView */
     BotView: {
-      /** Effective Mode */
-      effective_mode: string;
-      /** Execution Mode */
-      execution_mode: string;
+      /**
+       * Effective Mode
+       * @enum {string}
+       */
+      effective_mode: "shadow" | "confirm" | "auto";
+      /**
+       * Execution Mode
+       * @enum {string}
+       */
+      execution_mode: "shadow" | "confirm" | "auto";
       /**
        * Id
        * Format: uuid
@@ -424,7 +390,7 @@ export interface components {
       /** Pending From */
       pending_from: string | null;
       /** Pending Mode */
-      pending_mode: string | null;
+      pending_mode: ("shadow" | "confirm" | "auto") | null;
       /** Reasons */
       reasons: string[];
       /** Risk Cluster */
@@ -436,8 +402,7 @@ export interface components {
     BrokerSessionView: {
       /** Account */
       account: string;
-      /** Status */
-      status: string;
+      status: components["schemas"]["SessionStatus"];
     };
     /** BrokerStatusResponse */
     BrokerStatusResponse: {
@@ -452,6 +417,17 @@ export interface components {
       error?: string | null;
       /** User Id */
       user_id?: string | null;
+    };
+    /**
+     * ConfidenceBasis
+     * @description What the dashboard shows of a signal's `confidence_basis`: the reason code and the
+     *     backtest trades of its bucket, each null when the stored basis has none.
+     */
+    ConfidenceBasis: {
+      /** Reason */
+      reason: string | null;
+      /** Trades */
+      trades: number | null;
     };
     /** EventView */
     EventView: {
@@ -521,12 +497,18 @@ export interface components {
     KillSwitchView: {
       /** Bot Id */
       bot_id: string | null;
-      /** Channel */
-      channel: string;
+      /**
+       * Channel
+       * @enum {string}
+       */
+      channel: "risk" | "health";
       /** Scope */
       scope: string;
-      /** State */
-      state: string;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "tripped" | "armed";
     };
     /** LoginUrlResponse */
     LoginUrlResponse: {
@@ -578,14 +560,23 @@ export interface components {
     RegimeView: {
       /** Confirmed */
       confirmed: boolean;
-      /** State */
-      state: string;
+      /**
+       * State
+       * @enum {string}
+       */
+      state: "bull_quiet" | "bull_volatile" | "correction" | "bear";
       /**
        * Trade Date
        * Format: date
        */
       trade_date: string;
     };
+    /**
+     * SessionStatus
+     * @description Whether the broker session can place orders. Only LIVE can.
+     * @enum {string}
+     */
+    SessionStatus: "live" | "expired" | "missing" | "unknown";
     /** SignalView */
     SignalView: {
       /** Bot */
@@ -596,29 +587,40 @@ export interface components {
        */
       bot_id: string;
       /** Confidence */
-      confidence?: string | null;
-      /**
-       * Confidence Basis
-       * @default {}
-       */
-      confidence_basis: {
-        [key: string]: unknown;
-      };
+      confidence?: ("high" | "medium" | "low") | null;
+      confidence_basis: components["schemas"]["ConfidenceBasis"];
       /**
        * Id
        * Format: uuid
        */
       id: string;
-      /** Mode */
-      mode: string;
+      /**
+       * Mode
+       * @enum {string}
+       */
+      mode: "shadow" | "confirm" | "auto";
       /** Playbook */
       playbook: string;
       /** Qty */
       qty: number;
       /** Risk Amount */
       risk_amount: string;
-      /** State */
-      state: string;
+      /**
+       * State
+       * @enum {string}
+       */
+      state:
+        | "Watchlisted"
+        | "Triggered"
+        | "AwaitingApproval"
+        | "EntryPlaced"
+        | "Open"
+        | "PartiallyExited"
+        | "ExitPending"
+        | "Closed"
+        | "Rejected"
+        | "Expired"
+        | "Cancelled";
       /** Stop Price */
       stop_price: string;
       /** Symbol */
@@ -1043,40 +1045,6 @@ export interface operations {
       };
     };
   };
-  hat_bots_api_hat_bots_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["BotView"][];
-        };
-      };
-      /** @description The read failed */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description The database could not be read */
-      503: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
   hat_events_api_hat_events_get: {
     parameters: {
       query?: {
@@ -1138,51 +1106,6 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["PositionView"][];
-        };
-      };
-      /** @description The read failed */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description The database could not be read */
-      503: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  hat_regime_api_hat_regime_get: {
-    parameters: {
-      query?: {
-        limit?: number;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["RegimeView"][];
-        };
-      };
-      /** @description Validation Error */
-      422: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HTTPValidationError"];
         };
       };
       /** @description The read failed */

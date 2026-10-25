@@ -12,16 +12,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal, get_args
 
 from app.hat.errors import HatError
 
-BULL_QUIET = "bull_quiet"
-BULL_VOLATILE = "bull_volatile"
-CORRECTION = "correction"
-BEAR = "bear"
 # Least to most defensive: the order the classifier is monotone in (HAT-PORT-032).
-STATES = (BULL_QUIET, BULL_VOLATILE, CORRECTION, BEAR)
+RegimeState = Literal["bull_quiet", "bull_volatile", "correction", "bear"]
+STATES: tuple[RegimeState, ...] = get_args(RegimeState)
+BULL_QUIET, BULL_VOLATILE, CORRECTION, BEAR = STATES
 
 # The series the inputs read (HAT-PORT-031): the regime job and the backtest read these names.
 INDEX_NAME = "NIFTY 500"

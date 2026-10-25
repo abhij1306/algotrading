@@ -14,7 +14,6 @@ import app.hat
 
 HAT_ROOT = APP_ROOT / "hat"
 CRITERIA_FORBIDDEN = (
-    "app.brokers",
     "app.hat.execution",
     "app.database",
     "sqlalchemy.orm",
@@ -22,7 +21,6 @@ CRITERIA_FORBIDDEN = (
     "fastapi",
 )
 BROKER_FORBIDDEN = (
-    "app.brokers",
     "app.hat.execution.broker",
     "app.hat.execution.fyers_adapter",
     "app.hat.execution.kite_adapter",
@@ -134,9 +132,12 @@ def test_no_private_imports() -> None:
         if bad := private_imports(module, path.read_text(encoding="utf-8")):
             found[str(path.relative_to(HAT_ROOT))] = bad
     assert found == {}
-    # the checker can fail: a relative and an absolute private import, a private attribute of an
-    # imported HAT module (by alias, by `import app.hat.x`, through a package, by `getattr`); a
-    # module's own private names and a non-HAT one pass
+
+
+def test_private_imports__example() -> None:
+    """A relative and an absolute private import, a private attribute of an imported HAT module
+    (by alias, by `import app.hat.x`, through a package, by `getattr`) are found; a module's own
+    private names and a non-HAT one are not."""
     bad = (
         "from .entries import _emit, open_entry\n"
         "from app.hat.time import _parse\n"

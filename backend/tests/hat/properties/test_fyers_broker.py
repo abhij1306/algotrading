@@ -5,6 +5,7 @@ exactly. Runs on the real `FyersBroker` (the transport) over a recording SDK sta
 
 import json
 import math
+import re
 import threading
 import time
 import uuid
@@ -47,7 +48,13 @@ from app.hat.execution.fyers_broker import (
     day_refused,
     limits_from,
 )
-from app.hat.execution.fyers_payloads import parse_funds, parse_positions
+from app.hat.execution.fyers_payloads import (
+    gtt_payload,
+    parse_funds,
+    parse_gtt_row,
+    parse_order_book,
+    parse_positions,
+)
 from app.hat.execution.tags import encode_tag
 
 # SDK payloads as the adapter builds them (the transport sends them as they are)
@@ -182,15 +189,61 @@ def test_only_an_explicit_error_is_a_rejection(place: str, reply: object) -> Non
     assert len(sdk.calls) == 1
 
 
+WRITES_FIXTURE = Path(__file__).parents[1] / "fixtures" / "fyers_live_writes.json"
+RECORDED_WRITES = json.loads(WRITES_FIXTURE.read_text("utf-8"))["calls"]
+# A PAN (5 letters, 4 digits, a letter), Fyers' "C-" RMS client code, an IPv4 address
+_ACCOUNT_IDS = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b|\bC-[A-Z0-9]{5,}|\b\d{1,3}(\.\d{1,3}){3}\b")
+
+
+def _recorded(method: str) -> list[dict]:
+    return [c for c in RECORDED_WRITES if c["method"] == method]
+
+
 # The reply Fyers gave a limit buy outside the circuit band (recorded 2026-10-22): an explicit
 # error that still carries the ids of the order it created and refused (RMS, status 5).
-REFUSED_WITH_ID = next(
-    call["reply"]
-    for call in json.loads(
-        (Path(__file__).parents[1] / "fixtures" / "fyers_live_writes.json").read_text("utf-8")
-    )["calls"]
-    if call["method"] == "place_order"
-)
+REFUSED_WITH_ID = _recorded("place_order")[0]["reply"]
+
+
+def test_recorded_writes__parsed() -> None:
+    """The Fyers write replies recorded live on 2026-10-22: the GTT place payload HAT builds for
+    each recorded request is the one Fyers accepted (with HAT's `orderTag`) and its reply reads
+    as submitted with Fyers' id; the GTT book rows (live keys `tran_side`, `product_type`,
+    `ordertag` "1:GTT<tag>" or "2:GTTUntagged") read as resting sell GTTs with their tag, and
+    cancelled ones as None; the two orders placed under one tag and refused by RMS (Fyers does
+    not enforce tag uniqueness) each read as a rejection. The fixture carries no account id."""
+    text = WRITES_FIXTURE.read_text(encoding="utf-8")
+    assert {m.group(0) for m in _ACCOUNT_IDS.finditer(text)} <= {"XXXXX0000X"}
+    stop_tag = encode_tag(uuid.UUID(int=24), "stop_gtt", 0)
+    for call in _recorded("place_gtt_order"):
+        sdk = RecordingSdk(call["reply"])
+        leg = call["args"]["orderInfo"]["leg1"]
+        request = GttRequest(
+            "SBIN",
+            leg["qty"],
+            Decimal(str(leg["triggerPrice"])),
+            Decimal(str(leg["price"])),
+            tag=stop_tag,
+        )
+        symbol = call["args"]["symbol"]
+        payload = gtt_payload(request, lambda _symbol, symbol=symbol: symbol)
+        assert payload == {**call["args"], "orderTag": stop_tag}
+        reply = broker_over(sdk).place_gtt(payload)
+        assert sdk.calls == [("place_gtt_order", payload)]
+        assert (reply["status"], reply["order_id"]) == ("SUBMITTED", call["reply"]["id"])
+    tag = encode_tag(uuid.UUID(int=25), "stop_gtt", 0)
+    for call in _recorded("gtt_orderbook"):
+        for raw in call["reply"]["orderBook"]:
+            row = {**raw, "ordertag": raw["ordertag"].replace("HATTEST1", tag)}
+            gtt = parse_gtt_row(row)
+            if row["ord_status"] == 1:  # cancelled
+                assert gtt is None
+                continue
+            assert gtt is not None
+            assert gtt.side.value == "sell"
+            assert gtt.qty == row["qty"]
+            assert gtt.tag == (tag if "GTT" + tag in row["ordertag"] else None)
+    orders = parse_order_book(_recorded("orderbook")[-1]["reply"]["orderBook"])
+    assert [(o.tag, o.status) for o in orders] == [("HATTEST2", "rejected")] * 2
 
 
 @pytest.mark.parametrize(
@@ -489,8 +542,11 @@ def test_writes_go_ahead_of_reads(op: str) -> None:
     Harm: the 5-second fill sync's reads take the calls a stop placement waits for, and the
     position sits unprotected."""
     budget = CallBudget(CallLimits(100, 5, None))  # reads get 4 of the minute's 5 calls
-    while budget.take(READ, time.monotonic(), BUDGET_DAY) == 0:
-        pass
+    for _ in range(5):  # the reads' share is 4 calls
+        if budget.take(READ, time.monotonic(), BUDGET_DAY) != 0:
+            break
+    else:
+        pytest.fail("reads were never refused")
     sdk = RecordingSdk()
     adapter = _adapter_over(FyersBroker(lambda: sdk, breaker=CircuitBreaker(), budget=budget))
     if op in ("orders", "gtts"):
@@ -508,7 +564,9 @@ def test_writes_go_ahead_of_reads(op: str) -> None:
     granted: list[bool] = []
     writer = threading.Thread(target=lambda: granted.append(gated.acquire(WRITE, 3.0)), daemon=True)
     writer.start()
+    deadline = time.monotonic() + 5
     while not gated._writers:  # the write is waiting
+        assert time.monotonic() < deadline, "the write never waited"
         time.sleep(0.001)
     now = 1.0  # the next second's call is free
     read_granted = gated.acquire(READ, 0.0)

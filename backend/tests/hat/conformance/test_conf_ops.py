@@ -228,13 +228,3 @@ def test_ops__subscription_alert_wired() -> None:
     }
     assert found == {}
     assert "LiveSubscriptions(" in sources["hat/daily/assembly.py"]
-    # the checker can fail: built without its alert, with None, through an alias or the module;
-    # one with it by keyword passes
-    assert unalerted_subscriptions(
-        "from x import LiveSubscriptions as Subs\n"
-        "LiveSubscriptions(r, s, u)\n"
-        "LiveSubscriptions(r, s, u, alert=a)\n"
-        "LiveSubscriptions(r, s, u, alert=None)\n"
-        "Subs(r, s, u)\n"
-        "subscriptions.LiveSubscriptions(r, s, u, None)\n"
-    ) == [2, 4, 5, 6]

@@ -184,8 +184,7 @@ def _cancel_start(runtime: HatRuntime, reached: threading.Event, go: threading.E
         await asyncio.to_thread(reached.wait, 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.sleep(0.05)  # the shielded stop finishes
+            await task  # returns once the shielded stop has finished
         early = runtime._lock is not None
         go.set()
         return early
@@ -233,17 +232,22 @@ def test_second_cancel_during_the_stop_still_releases_the_lock() -> None:
         go.wait(5)
 
     class Feed:
+        def __init__(self) -> None:
+            self.stopping = asyncio.Event()
+
         async def stop(self) -> None:
+            self.stopping.set()
             await asyncio.Event().wait()  # never stops
 
     runtime = _enabled_runtime(lambda: lock, parts)
-    runtime._feed = Feed()  # type: ignore[assignment]
 
     async def run() -> bool:
+        feed = Feed()
+        runtime._feed = feed  # type: ignore[assignment]
         task = asyncio.ensure_future(runtime.start())
         await asyncio.to_thread(reached.wait, 5)
         task.cancel()
-        await asyncio.sleep(0.05)  # the stop is now waiting on the feed
+        await asyncio.wait_for(feed.stopping.wait(), 5)  # the stop is waiting on the feed
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

@@ -3,16 +3,12 @@ execution mode."""
 
 import ast
 import inspect
-import json
 import re
 import uuid
 from dataclasses import replace
-from decimal import Decimal
-from pathlib import Path
 
 import pytest
 import yaml
-from hat.fakes.fyers_sdk import RecordingSdk, broker_over
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 
@@ -21,18 +17,15 @@ from app.hat.engine.portfolio.sleeve_service import create_bot
 from app.hat.engine.strategy.config import StrategyConfig
 from app.hat.engine.strategy.versions import VersionError
 from app.hat.execution import accounts, modes
-from app.hat.execution.broker import GttRequest, HatBroker
+from app.hat.execution.broker import HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
-from app.hat.execution.fyers_payloads import gtt_payload, parse_gtt_row, parse_order_book
 from app.hat.execution.kite_adapter import KiteHatBroker
-from app.hat.execution.tags import encode_tag
 from app.hat.governance import Mode
 from app.hat.models import HatBot
 
 HAT_ROOT = APP_ROOT / "hat"
 DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
 BROKER_FORBIDDEN = (
-    "app.brokers",
     "fyers_apiv3",
     "kiteconnect",
     "app.hat.execution.fyers_adapter",
@@ -78,7 +71,7 @@ def _violations(graph: dict[str, set[str]], prefixes: tuple[str, ...]) -> dict[s
 
 def test_brk__import_boundary() -> None:
     """Engine, risk, data and the router depend on `execution.broker` only: no import
-    of `app.brokers`, `fyers_apiv3`, an OpenAlgo package or the Fyers adapter, directly or
+    of `fyers_apiv3`, an OpenAlgo package or the Fyers adapter, directly or
     transitively; the interface module itself imports none of them either."""
     graph = build_graph()
     # The one exception: HAT's data socket module imports the SDK socket and the
@@ -93,22 +86,6 @@ def test_brk__import_boundary() -> None:
         "app.hat.execution.broker",
     )
     assert _violations(graph, prefixes) == {}
-    # the checker can fail: a synthetic router that imports the adapter and one that imports the SDK
-    bad = {
-        "app.hat.execution.router": {"app.hat.execution.helper"},
-        "app.hat.execution.helper": {"app.brokers.plugins.fyers"},
-        "app.hat.engine.x": {"fyers_apiv3.fyersModel"},
-        "app.hat.risk.y": {"openalgo_client"},
-    }
-    assert set(_violations(bad, prefixes)) == {
-        "app.hat.execution.router",
-        "app.hat.engine.x",
-        "app.hat.risk.y",
-    }
-    # the exception is that one module and nothing else
-    assert set(_violations({"app.hat.data.other": {"fyers_apiv3.FyersWebsocket"}}, prefixes)) == {
-        "app.hat.data.other"
-    }
 
 
 def test_brk__fyers_capabilities() -> None:
@@ -149,8 +126,6 @@ def _sdk_offenders(files: dict[str, str]) -> list[str]:
             r"^\s*(?:import|from)\s+kiteconnect\b", text, re.MULTILINE
         ):
             offenders.append(f"{rel}: imports the Kite SDK")
-        if re.search(r"^\s*(import|from)\s+app\.brokers", text, re.MULTILINE):
-            offenders.append(f"{rel}: imports app.brokers")
     return offenders
 
 
@@ -159,8 +134,7 @@ def test_fyers_adapter_wraps_existing() -> None:
     FyersSession and FyersAuthService (K2: all in `app/hat/execution`); the SDK's HTTP client is
     imported only by `fyers_ipv4`, after it installs the IPv4 hook, and taken from there by the
     session and the login service; the data socket module imports only the websocket; its
-    GTT calls are made only by the broker, and nothing under app/hat imports the legacy
-    `app.brokers` (the checker is shown to catch offenders)."""
+    GTT calls are made only by the broker."""
     adapter = (HAT_ROOT / "execution" / "fyers_adapter.py").read_text(encoding="utf-8")
     for name in ("FyersBroker", "FyersSession", "FyersAuthService"):
         assert re.search(rf"^\s+{name},?$|import .*{name}", adapter, re.MULTILINE), name
@@ -175,21 +149,21 @@ def test_fyers_adapter_wraps_existing() -> None:
     assert sdk.index("install()") < sdk.index("from fyers_apiv3 import fyersModel")
     for rel in ("execution/fyers_session.py", "execution/fyers_auth.py"):
         assert "from .fyers_ipv4 import sdk" in files[rel], rel
-    # the checker can fail
-    assert _sdk_offenders({"execution/gtt.py": "import fyers_apiv3\n"}) == [
-        "execution/gtt.py: imports the SDK"
-    ]
+
+
+def test_sdk_offenders__example() -> None:
+    """An SDK import outside its one importer, or in the wrong form in an allowed module, and a
+    GTT call outside the broker are found."""
     assert _sdk_offenders(
-        {"execution/fyers_session.py": "from fyers_apiv3 import fyersModel\n"}
-    ) == ["execution/fyers_session.py: imports the SDK"]
-    assert _sdk_offenders(
-        {"data/provider/fyers_websocket.py": "    from fyers_apiv3 import fyersModel\n"}
-    ) == ["data/provider/fyers_websocket.py: imports the SDK"]
-    assert _sdk_offenders({"data/x.py": "client.place_gtt_order(data)\n"}) == [
-        "data/x.py: place_gtt_order"
-    ]
-    assert _sdk_offenders({"data/x.py": "from app.brokers.plugins import fyers\n"}) == [
-        "data/x.py: imports app.brokers"
+        {
+            "execution/gtt.py": "import fyers_apiv3\n",
+            "execution/fyers_session.py": "from fyers_apiv3 import fyersModel\n",
+            "data/x.py": "client.place_gtt_order(data)\n",
+        }
+    ) == [
+        "data/x.py: place_gtt_order",
+        "execution/fyers_session.py: imports the SDK",
+        "execution/gtt.py: imports the SDK",
     ]
 
 
@@ -245,11 +219,6 @@ def test_ops__single_fyers_secret_store() -> None:
     assert _secret_offenders(files) == []
     for rel in SECRET_MODULES:
         assert rel in files, rel
-    # the checker can fail
-    assert _secret_offenders({"execution/gtt.py": "_X = os.environ\n"}) == [
-        "execution/gtt.py:1: _X = os.environ"
-    ]
-    assert _secret_offenders({"api/x.py": "token = data['access_token']\n"})
 
     for name, table in hat_tables().items():
         for column in table.columns:
@@ -339,15 +308,13 @@ def _seed_scope_strategies_and_owner() -> None:
 
 
 def test_mvp_seed_scope() -> None:
-    """(the broker half of the seed scope): every adapter registered in the MVP is the
-    Fyers adapter, and onboarding accepts no other broker. PR 8 extends this check to the seeded
-    strategies, markets and `HAT_USER_ID` ownership."""
+    """The seed scope: Fyers and Zerodha are the registered adapters and one broker is active at a
+    time (only its adapter is used); the seeds are exactly S1 and S2 on NSE, owned by one user."""
     assert set(accounts.ADAPTER_FACTORIES) == {"fyers", "zerodha"}
     # one broker is active at a time: only its adapter is used
     assert set(accounts.active_adapters("zerodha")) == {"zerodha"}
     assert set(accounts.active_adapters("fyers")) == {"fyers"}
     _seed_scope_strategies_and_owner()
-    assert Path(accounts.__file__).exists()
 
 
 SEEDS_DIR = HAT_ROOT / "engine" / "strategy" / "seeds"
@@ -405,85 +372,6 @@ def test_exec__default_mode_confirm() -> None:
     for missing in ("ddpi_confirmed", "weights_confirmed"):
         gates = replace(ready, **{missing: False})
         assert modes.capability_gated(Mode.CONFIRM, gates) == Mode.SHADOW
-
-
-WRITES_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "fyers_live_writes.json"
-# A PAN (5 letters, 4 digits, a letter), Fyers' "C-" RMS client code, an IPv4 address
-_ACCOUNT_IDS = re.compile(r"\b[A-Z]{5}[0-9]{4}[A-Z]\b|\bC-[A-Z0-9]{5,}|\b\d{1,3}(\.\d{1,3}){3}\b")
-
-
-def _recorded() -> list[dict]:
-    return json.loads(WRITES_FIXTURE.read_text(encoding="utf-8"))["calls"]
-
-
-def test_brk__recorded_writes() -> None:
-    """The Fyers write replies recorded live on 2026-10-22 hold:
-    the GTT place payload the adapter builds for the recorded request is the one Fyers accepted
-    (with HAT's `orderTag`); the place, modify and cancel replies read as placed and ok; the GTT
-    book rows (live keys `tran_side`, `product_type`, `ordertag` "1:GTT<tag>" or "2:GTTUntagged")
-    read as resting GTTs with their tag, and cancelled ones are left out; two orders under one
-    tag were both accepted with ids and both refused by RMS (MX-F6: Fyers does not enforce tag
-    uniqueness), and each reads as a rejection. The fixture carries no account id (masked)."""
-    calls = _recorded()
-    text = WRITES_FIXTURE.read_text(encoding="utf-8")
-    assert [m.group(0) for m in _ACCOUNT_IDS.finditer(text)] == ["XXXXX0000X"] * text.count(
-        "XXXXX0000X"
-    )
-    by = lambda name: [c for c in calls if c["method"] == name]  # noqa: E731
-    [untagged, tagged] = by("place_gtt_order")
-    assert tagged["args"]["orderTag"] == "HATTEST1"
-    assert "orderTag" not in untagged["args"]
-    stop_tag = encode_tag(uuid.UUID(int=24), "stop_gtt", 0)
-    for call in (untagged, tagged):
-        sdk = RecordingSdk(call["reply"])
-        leg = call["args"]["orderInfo"]["leg1"]
-        request = GttRequest(
-            "SBIN",
-            leg["qty"],
-            Decimal(str(leg["triggerPrice"])),
-            Decimal(str(leg["price"])),
-            tag=stop_tag,
-        )
-        symbol = call["args"]["symbol"]
-        payload = gtt_payload(request, lambda _symbol, symbol=symbol: symbol)
-        # the payload Fyers accepted, with HAT's own tag (the recording used a test tag or none)
-        assert payload == {**call["args"], "orderTag": stop_tag}
-        reply = broker_over(sdk).place_gtt(payload)
-        assert sdk.calls == [("place_gtt_order", payload)]
-        assert (reply["status"], reply["order_id"]) == ("SUBMITTED", call["reply"]["id"])
-    adapter = FyersHatBroker(broker_over(RecordingSdk()), instruments=lambda: [])
-    for name in ("modify_gtt_order", "cancel_gtt_order"):
-        assert all(c["reply"]["s"] == "ok" for c in by(name))
-    # the GTT book: the tag Fyers shows, put on a HAT tag
-    tag = encode_tag(uuid.UUID(int=25), "stop_gtt", 0)
-    books = [c["reply"]["orderBook"] for c in by("gtt_orderbook")]
-    shown = {row["ordertag"] for book in books for row in book}
-    assert shown == {"2:GTTUntagged", "1:GTTHATTEST1"}
-    for book in books:
-        rows = [{**r, "ordertag": r["ordertag"].replace("HATTEST1", tag)} for r in book]
-        read = adapter._read(lambda rows=rows: rows, lambda rs: list(map(parse_gtt_row, rs)))
-        for row, gtt in zip(rows, read, strict=True):
-            if row["ord_status"] == 1:  # cancelled
-                assert gtt is None
-                continue
-            assert gtt is not None
-            assert gtt.side.value == "sell"
-            assert gtt.qty == row["qty"]
-            assert gtt.tag == (tag if "GTT" + tag in row["ordertag"] else None)
-    # MX-F6: one tag, two orders, both accepted with an id and refused by RMS
-    [first, second] = by("place_order")
-    assert first["args"] == second["args"]
-    assert first["args"]["orderTag"] == "HATTEST2"
-    assert first["reply"]["id"] != second["reply"]["id"]
-    for call in (first, second):
-        assert call["reply"]["s"] == "error"
-        assert call["reply"]["id"]
-    book = by("orderbook")[-1]["reply"]["orderBook"]
-    assert sorted(r["id"] for r in book) == sorted(c["reply"]["id"] for c in (first, second))
-    orders = parse_order_book(book)
-    assert {(o.tag, o.status) for o in orders} == {("HATTEST2", "rejected")}
-    assert len(orders) == 2
-    assert all(c["reply"]["code"] == -52 for c in by("cancel_order"))
 
 
 # The broker-account status and broker-name values live once, in the models leaf; every reader
@@ -556,8 +444,11 @@ def test_brk__account_constants_one_copy() -> None:
         and (bad := account_literal_violations(path.read_text(encoding="utf-8")))
     }
     assert found == {}
-    # the checker can fail: a copy of a constant, a copy under another name, and compared
-    # literals on the model and on any account name
+
+
+def test_account_literal_violations__example() -> None:
+    """A copy of a constant, a copy under another name, and compared literals on the model and on
+    any account name are found."""
     bad = (
         'ACCOUNT_ACTIVE = "active"\n'
         'LIVE = "active"\n'

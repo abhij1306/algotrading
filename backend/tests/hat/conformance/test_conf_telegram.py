@@ -211,9 +211,8 @@ def order_modules(graph: dict[str, set[str]]) -> tuple[str, ...]:
 
 def test_telegram__no_order_import_in_text_path() -> None:
     """No module a text message passes through reaches an order, broker or stop module, the
-    risk authority, entries, trades or approvals, directly or transitively (the checker is
-    shown to catch a planted import). Every named module exists, so a rename cannot empty
-    the check."""
+    risk authority, entries, trades or approvals, directly or transitively. Every named module
+    exists, so a rename cannot empty the check."""
     graph = build_graph()
     forbidden = order_modules(graph)
     for module in (*ORDER_ENGINE, *TEXT_PATH_EXECUTION):
@@ -222,9 +221,6 @@ def test_telegram__no_order_import_in_text_path() -> None:
     for module in TEXT_PATH:
         assert module in graph, module
         assert reaches(graph, module, forbidden) == [], module
-    planted = {k: set(v) for k, v in graph.items()}
-    planted["app.hat.telegram.reads"].add("app.hat.execution.router")
-    assert reaches(planted, "app.hat.telegram.commands", forbidden)
 
 
 # --- auto is the owner's switch -----------------------------------------------

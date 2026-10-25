@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.hat.data.store import DATASET_BREADTH, DATASET_INDEX, DATASET_MARKET_BREADTH, DataStore
 from app.hat.errors import HatError
+from app.hat.money import exact
 from app.hat.ops.jobs import JobError, JobResult
 
 from . import regime
@@ -49,8 +50,7 @@ def read_breadth(store: DataStore, day: date) -> Decimal | None:
     frame = store.read_partition(DATASET_BREADTH, day)
     if frame.height == 0:
         return None
-    value = frame["breadth_pct"][0]
-    return None if value is None else Decimal(str(value))
+    return exact(frame["breadth_pct"][0], floats=True)
 
 
 def read_ad_ratio(store: DataStore, day: date) -> Decimal | None:
@@ -59,11 +59,7 @@ def read_ad_ratio(store: DataStore, day: date) -> Decimal | None:
     frame = store.read_partition(DATASET_MARKET_BREADTH, day)
     if frame.height == 0:
         return None
-    value = frame["ad_ratio"][0]
-    if value is None:
-        return None
-    number = Decimal(str(value))
-    return number if number.is_finite() else None
+    return exact(frame["ad_ratio"][0], floats=True)
 
 
 def regime_job(session: Session, store: DataStore, trade_date: date) -> JobResult:

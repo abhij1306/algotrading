@@ -1,4 +1,4 @@
-"""CONF money.one_decimal_boundary (PR 75c, architecture A-F7): `app/hat/money.py`
+"""CONF money.one_decimal_boundary: `app/hat/money.py`
 is the one place HAT turns an untrusted number into a Decimal (`exact`, `require_exact`)."""
 
 import ast
@@ -6,14 +6,6 @@ from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[3]
 BOUNDARY = "app/hat/money.py"
-# Lane E's files, left to its own PR (PR 75c follow-ups); each moves to `money.exact` with it and
-# leaves this set in the same change.
-LANE_E = {
-    "app/hat/backtest/__main__.py",
-    "app/hat/backtest/data.py",
-    "app/hat/backtest/runs.py",
-    "app/hat/engine/portfolio/jobs.py",
-}
 _TEXT = {"str", "repr", "float"}
 
 
@@ -51,7 +43,7 @@ def hand_coercions() -> dict[str, list[int]]:
     found = {}
     for path in sorted((BACKEND / "app" / "hat").rglob("*.py")):
         rel = path.relative_to(BACKEND).as_posix()
-        if rel == BOUNDARY or rel in LANE_E:
+        if rel == BOUNDARY:
             continue
         lines = _coercions(ast.parse(path.read_text(encoding="utf-8"), filename=rel))
         if lines:
@@ -63,7 +55,5 @@ def test_money__one_decimal_boundary() -> None:
     """No HAT module outside `money.py` reads a number into a Decimal by hand, so every reader
     keeps one rule for floats, text, signs and rounding. Harm: the next author copies the nearest
     private `_dec`, and two readers of one tick or reply disagree (a NaN passes one, a numpy
-    float breaks the other). Lane E's files are listed and must leave the list when they move."""
+    float breaks the other)."""
     assert hand_coercions() == {}
-    for rel in sorted(LANE_E):  # an entry with nothing left to move is stale
-        assert _coercions(ast.parse((BACKEND / rel).read_text(encoding="utf-8"))), rel

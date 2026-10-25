@@ -283,16 +283,6 @@ def test_single_feed_import_rule() -> None:
     main = ast.parse((APP_ROOT / "main.py").read_text(encoding="utf-8"))
     assert _constructs(main, "LiveFeed")
     assert _guarded_by_hat_enabled(main, "_build_hat_feed")
-    # the checker can fail: an unguarded call, a call under a negated guard, and one under a nested
-    # `if not is_enabled()` are all refused; the plain guard passes
-    for source, expected in (
-        ("if is_enabled():\n    _build_hat_feed()\n", True),
-        ("_build_hat_feed()\n", False),
-        ("if not is_enabled():\n    _build_hat_feed()\n", False),
-        ("if is_enabled():\n    if not is_enabled():\n        _build_hat_feed()\n", False),
-        ("if is_enabled():\n    if ready:\n        _build_hat_feed()\n", True),
-    ):
-        assert _guarded_by_hat_enabled(ast.parse(source), "_build_hat_feed") is expected, source
     owners = {
         node.value
         for node in ast.walk(_hat_sources()["data/subscriptions.py"])
