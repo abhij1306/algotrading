@@ -165,17 +165,20 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   NIFTY 500-neutralised gap is applied only with the owner's approval. A position held into a
   demerger whose record date was public (`announced_on`) strictly before the last session before
   the ex-date exits at that session's close (exit reason `demerger`), in backtest and live; a
-  real position is only alerted, never sold by HAT. Undated or late, it holds through. A name
-  with a demerger notice takes no entry from that session until the demerger's factor is stored
-  (`demerger_pending`; the backtest skips that session, and `factor_pending` covers the rest). A
-  stored notice is never retired by a load: one the night's `bc` file stops listing is alerted.
+  real position is only alerted, never sold by HAT. Undated or late, it holds through. A stored
+  `announced_on` is replaced only by an earlier date from a sourced reviewed line, journalled
+  (`corporate_action.announced`). A name with a demerger notice takes no entry from that
+  session until the demerger's factor is stored (`demerger_pending`; the backtest skips that
+  session, and `factor_pending` covers the rest). A stored notice is never retired by a load: one
+  the night's `bc` file stops listing is alerted.
 - **Dividends.** Every cash dividend counts, none guessed: one without an amount is alerted and
   listed until one is stored. Signals read the total-return series (`bars_daily`); fills, marks,
   ticks, bands, the rescale and orders read the price basis (`bars_daily_cap`). A closed trade's
   P&L and R include the dividends its shares earned (ex-date in the holding, shares held at the
   ex-date's open), in backtest, shadow and live alike; the nightly `ca.adjust` restates them from
   the stored amounts, each change with a `position.dividends_restated` event of the figures
-  before and after.
+  before and after. An import row whose symbol and ISIN name different companies goes to review
+  (`symbol_isin_disagree`), never stored by its ISIN alone.
 - **Versions and `known_on`.** Every write of a corporate action appends a version in the same
   transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
   hindsight projection, checked every night by `ca.adjust` (alert `corporate_action.projection`). Each action records when its value became knowable (`known_on`; NULL when

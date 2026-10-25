@@ -27,7 +27,10 @@ Splits and bonuses keep their rescale and rights their manage-only lock.
   ex-date the history waits for the factor (the backtest's `factor_pending`).
 - History: the stored demergers' `announced_on` comes from a dated public source (a record-date
   intimation), given as a reviewed file (`read_announced`, `plan_announced`): never guessed, and
-  an unknown date stays NULL.
+  an unknown date stays NULL. A stored date is replaced only on request (`replace`) and only by
+  an earlier one; each write is journalled as `corporate_action.announced` with the date before,
+  the source and the note. The version ledger holds no `announced_on`, so its projection is
+  untouched.
 """
 
 from __future__ import annotations
@@ -39,12 +42,13 @@ import sys
 import uuid
 from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime
 
-from sqlalchemy import and_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import events
 from ..errors import HatError
 from ..models import (
     HatCorporateAction,
@@ -77,6 +81,7 @@ SKIP_DEMERGER_PENDING = "demerger_pending"  # an entry skipped from the exit ses
 ANNOUNCED_COLUMNS = ("isin", "ex_date", "announced_on", "source_url", "note")
 MAX_FILE_BYTES = 2_000_000
 NSE_CODE = "NSE"  # the market a `bc` file lists
+EVENT_ANNOUNCED = "corporate_action.announced"  # a stored demerger's announced_on written
 
 
 def exit_day(sessions: Sequence[date], ex_date: date, announced_on: date | None) -> date | None:
@@ -321,44 +326,76 @@ def stored_demergers(session: Session) -> list[Demerger]:
 
 @dataclass(frozen=True)
 class AnnouncedPlan:
-    """What the file would write: the stored demergers it dates (action id -> date), the lines
-    naming no stored demerger, and the ones whose stored date differs (left as they are)."""
+    """What the file would write: the stored demergers it dates (action id -> line), the dated
+    ones whose date an earlier line replaces (action id -> (stored, line)), the lines naming no
+    stored demerger, and the ones whose stored date differs and stays."""
 
     dated: Mapping[str, AnnouncedRow]
     unmatched: Sequence[AnnouncedRow]
     differing: Sequence[tuple[Demerger, AnnouncedRow]]
+    replaced: Mapping[str, tuple[Demerger, AnnouncedRow]] = field(default_factory=dict)
 
 
-def plan_announced(demergers: Sequence[Demerger], rows: Sequence[AnnouncedRow]) -> AnnouncedPlan:
+def plan_announced(
+    demergers: Sequence[Demerger], rows: Sequence[AnnouncedRow], *, replace: bool = False
+) -> AnnouncedPlan:
     """Match each line to the stored demerger of its (ISIN, ex-date): an undated one takes the
-    date, a dated one keeps its own (listed when the file's differs)."""
+    date; a dated one keeps its own (listed when the file's differs), unless `replace` and the
+    line's date is earlier (a line always has a source: `read_announced`)."""
     by_key = {(d.isin, d.ex_date): d for d in demergers}
     dated: dict[str, AnnouncedRow] = {}
     unmatched: list[AnnouncedRow] = []
     differing: list[tuple[Demerger, AnnouncedRow]] = []
+    replaced: dict[str, tuple[Demerger, AnnouncedRow]] = {}
     for row in rows:
         found = by_key.get((row.isin, row.ex_date))
         if found is None:
             unmatched.append(row)
         elif found.announced_on is None:
             dated[found.action_id] = row
+        elif replace and row.announced_on < found.announced_on and row.source_url:
+            replaced[found.action_id] = (found, row)
         elif found.announced_on != row.announced_on:
             differing.append((found, row))
-    return AnnouncedPlan(dated, unmatched, differing)
+    return AnnouncedPlan(dated, unmatched, differing, replaced)
 
 
-def apply_announced(session: Session, plan: AnnouncedPlan) -> int:
-    """Write the plan's dates to the rows still undated; returns how many were written."""
+def apply_announced(session: Session, plan: AnnouncedPlan, *, now: datetime) -> int:
+    """Write the plan's dates to the rows still as planned (undated, or holding the date a line
+    replaces) and journal each as `corporate_action.announced` in the caller's transaction;
+    returns how many were written."""
+    expected: dict[str, tuple[date | None, AnnouncedRow]] = {
+        **{k: (None, row) for k, row in plan.dated.items()},
+        **{k: (d.announced_on, row) for k, (d, row) in plan.replaced.items()},
+    }
     written = 0
     for action in session.scalars(
-        select(HatCorporateAction).where(
-            and_(
-                HatCorporateAction.id.in_(list(plan.dated)),
-                HatCorporateAction.announced_on.is_(None),
-            )
-        )
+        select(HatCorporateAction)
+        .where(HatCorporateAction.id.in_([uuid.UUID(k) for k in expected]))
+        .with_for_update()
     ):
-        action.announced_on = plan.dated[str(action.id)].announced_on
+        before, row = expected[str(action.id)]
+        if action.announced_on != before:
+            continue  # changed since the plan was read
+        action.announced_on = row.announced_on
+        events.record(
+            session,
+            aggregate_type="instrument",
+            aggregate_id=action.instrument_id,
+            event_type=EVENT_ANNOUNCED,
+            actor="engine",
+            payload={
+                "via": "cli",
+                "isin": row.isin,
+                "ex_date": row.ex_date.isoformat(),
+                "before": before.isoformat() if before else None,
+                "announced_on": row.announced_on.isoformat(),
+                "source_url": row.source_url,
+                "note": row.note[:500],
+                "line": row.line,
+            },
+            occurred_at=now,
+        )
         written += 1
     session.flush()
     return written
@@ -389,18 +426,20 @@ def exit_lines(demergers: Sequence[Demerger], sessions: Sequence[date]) -> list[
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
-    """python -m app.hat.data.demerger_notice announced FILE.tsv [--apply]
+    """python -m app.hat.data.demerger_notice announced FILE.tsv [--replace] [--apply]
     python -m app.hat.data.demerger_notice exits [SYMBOL ...]
 
     `announced` dates the stored demergers' `announced_on` from the reviewed file (under the
     working directory): a dry run without `--apply`; with it, one transaction under the
-    reference-data lock, writing only rows still undated. `exits` lists each stored demerger
-    (or those of the symbols) with the session its forced exit falls on, from the sessions of
-    the bars under `HAT_DATA_ROOT`."""
+    reference-data lock, writing only rows still undated, and with `--replace` also the dated
+    ones whose line gives an earlier date; each write is journalled. `exits` lists each stored
+    demerger (or those of the symbols) with the session its forced exit falls on, from the
+    sessions of the bars under `HAT_DATA_ROOT`."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.demerger_notice")
     sub = parser.add_subparsers(dest="command", required=True)
     announced = sub.add_parser("announced")
     announced.add_argument("file")
+    announced.add_argument("--replace", action="store_true")
     announced.add_argument("--apply", action="store_true")
     sub.add_parser("exits").add_argument("symbols", nargs="*")
     args = parser.parse_args(argv)
@@ -429,16 +468,22 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             return 0
         if args.apply:  # no correction or import lands between the plan and its write
             lock_reference_data(session)
-        plan = plan_announced(stored_demergers(session), rows)
-        write(f"lines {len(rows)}, to date {len(plan.dated)}\n")
+        plan = plan_announced(stored_demergers(session), rows, replace=args.replace)
+        write(f"lines {len(rows)}, to date {len(plan.dated)}, to replace {len(plan.replaced)}\n")
         for row in plan.unmatched:
             write(f"  no stored demerger: line {row.line} {row.isin} {row.ex_date}\n")
         for d, row in plan.differing:
             write(f"  stored {d.announced_on} kept: line {row.line} {d.symbol} {d.ex_date}\n")
+        verb = "replaced" if args.apply else "would replace"
+        for d, row in plan.replaced.values():
+            write(
+                f"  {verb} stored {d.announced_on} with {row.announced_on}:"
+                f" line {row.line} {d.symbol} {d.ex_date}\n"
+            )
         if args.apply:
-            written = apply_announced(session, plan)
+            written = apply_announced(session, plan, now=datetime.now(UTC))
             session.commit()
-            write(f"applied: {written} demergers dated\n")
+            write(f"applied: {written} demergers dated or replaced\n")
         else:
             session.rollback()
     return 0
