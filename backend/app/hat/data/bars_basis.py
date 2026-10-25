@@ -127,6 +127,10 @@ class RawBasis:
     def factor(self, instrument_id: str, day: date, fetched_on: date) -> Decimal:
         return fyers_factor(self._actions.get(instrument_id, ()), day, fetched_on)
 
+    def actions(self, instrument_id: str) -> list[tuple[date, Decimal]]:
+        """The (ex-date, factor) of the chain's stored actions."""
+        return list(self._actions.get(instrument_id, ()))
+
 
 _DAILY_SQL = f"""
 SELECT CAST(instrument_id AS VARCHAR), date, open, high, low, close FROM {RAW_LATEST}
