@@ -129,13 +129,13 @@ _BARE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:/-\s*)?per\s*(?:equity\s*)?s
 
 
 # NSE's typos of "interim" in the words before "Dividend": "Interm", "Int", "Interest Dividend"
-_INTERIM = re.compile(r"interim|\binterm\b|\bint\b|\binterest\s*$")
+_INTERIM = re.compile(r"interim|\b(?:interm|int)\b")
 
 
 def _kind(words: str) -> str:
     if "special" in words:
         return KIND_SPECIAL
-    if _INTERIM.search(words.strip()):
+    if _INTERIM.search(words) or words.split()[-1:] == ["interest"]:
         return KIND_INTERIM
     return KIND_FINAL  # "Dividend" at an AGM, or "Final Dividend"
 
