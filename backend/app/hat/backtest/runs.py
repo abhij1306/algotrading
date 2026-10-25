@@ -385,15 +385,14 @@ def _sleeve_of(
 
 
 def _universe_named(session: Session, text: str, user_id: uuid.UUID) -> HatUniverse | None:
-    """The universe a research run names: by id, or by name among the user's universes (None
-    when no universe, or more than one, has it)."""
+    """The universe a research run names among the user's universes, by id or by name (None
+    when none of them, or more than one, has it): another owner's universe is never read."""
     try:
-        return session.get(HatUniverse, uuid.UUID(text))
+        named = HatUniverse.id == uuid.UUID(text)
     except ValueError:
-        found = session.scalars(
-            select(HatUniverse).where(HatUniverse.user_id == user_id, HatUniverse.name == text)
-        ).all()
-        return found[0] if len(found) == 1 else None
+        named = HatUniverse.name == text
+    found = session.scalars(select(HatUniverse).where(HatUniverse.user_id == user_id, named)).all()
+    return found[0] if len(found) == 1 else None
 
 
 def backtest_bot(
