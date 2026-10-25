@@ -66,7 +66,7 @@ from ..models import (
     HatUniverseVersion,
 )
 from ..money import exact
-from .spec import BacktestError
+from .spec import BacktestError, membership_key
 
 __all__ = [
     "JUMP_SKIP_SESSIONS",
@@ -82,6 +82,7 @@ __all__ = [
     "membership_cover_refusal",
     "point_in_time_members",
     "real_shares",
+    "scan_night_members",
     "stopped_trading",
 ]
 
@@ -591,6 +592,7 @@ def _members(
         "covered_to": record.covered_to.isoformat(),
         "off_size_dates": len(record.coverage.get("off_size", {})),
         "universe_version_id": str(universe_version_id),
+        "universe_key": membership_key(definition),
     }
     return members, source
 
@@ -660,6 +662,29 @@ def point_in_time_members(
             else:
                 merged.append((start, end))
         out.extend(Interval(chain, start, end) for start, end in merged)
+    return tuple(out)
+
+
+def scan_night_members(members: Iterable[Interval], days: Sequence[date]) -> tuple[Interval, ...]:
+    """The members as the run's universe stores them: the scan for trade date D runs on the
+    night of the session before D and reads the universe on that night (the loop's `prev`), so
+    each interval moves back to the night before its first and its end session (`days`, the
+    sessions in order). The scan for D then reads exactly D's members: an entrant effective D
+    is on D's watchlist, and a stock excluded on D is not. The entry gate reads the trade date
+    on the same rows, so a stock is not newly entered on its last session as a member (the
+    conservative side of the one-day boundary). An interval from before the first session
+    keeps its start; one that moves to nothing is dropped."""
+
+    def night(day: date) -> date:
+        at = bisect_left(days, day)
+        return day if at == 0 else days[at - 1]
+
+    out = []
+    for m in members:
+        start = m.effective_from if m.effective_from == _ALWAYS else night(m.effective_from)
+        end = None if m.effective_to is None else night(m.effective_to)
+        if end is None or end > start:
+            out.append(Interval(m.instrument_id, start, end))
     return tuple(out)
 
 

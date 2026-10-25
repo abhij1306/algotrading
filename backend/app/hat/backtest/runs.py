@@ -57,7 +57,15 @@ from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from .data import MarketData, load_market
 from .dsr import MIN_TRIALS, PBO_BLOCKS, VARIANCE_FLOOR, Deflated, pbo
-from .evidence import COMPLETED, DSR_DIGITS, RunMetrics, family_key, run_dsr, universe_of
+from .evidence import (
+    COMPLETED,
+    DSR_DIGITS,
+    RunMetrics,
+    family_key,
+    run_dsr,
+    universe_live_version,
+    universe_of,
+)
 from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_set
 from .report import BacktestResult
@@ -421,7 +429,7 @@ def _sleeve_of(
         version = session.get(HatStrategyVersion, request.version_id or bot.live_version_id)
         if version is None or version.strategy_id != bot.strategy_id:
             raise BacktestError("backtest_unknown_version")
-        live = _live_version(session, universe_of(session, bot))
+        live = universe_live_version(session, universe_of(session, bot))
         if live is None:
             raise BacktestError("backtest_no_universe")
         return version, live, bot.user_id
@@ -432,21 +440,10 @@ def _sleeve_of(
     if version is None or strategy is None:
         raise BacktestError("backtest_unknown_version")
     universe = _universe_named(session, request.universe or "", strategy.user_id)
-    live = _live_version(session, None if universe is None else universe.id)
+    live = universe_live_version(session, None if universe is None else universe.id)
     if live is None:
         raise BacktestError("backtest_no_universe")
     return version, live, strategy.user_id
-
-
-def _live_version(session: Session, universe_id: uuid.UUID | None) -> HatUniverseVersion | None:
-    """The universe's live version (None without a universe or a live version)."""
-    if universe_id is None:
-        return None
-    return session.scalars(
-        select(HatUniverseVersion).where(
-            HatUniverseVersion.universe_id == universe_id, HatUniverseVersion.status == "live"
-        )
-    ).first()
 
 
 def _universe_named(session: Session, text: str, user_id: uuid.UUID) -> HatUniverse | None:

@@ -21,6 +21,7 @@ from app.hat.backtest.data import (
     membership_cover_refusal,
     point_in_time_members,
     real_shares,
+    scan_night_members,
     stopped_trading,
 )
 from app.hat.backtest.fillrules import (
@@ -606,6 +607,36 @@ def test_history_first_day_members_are_members_the_night_before() -> None:
     )
     assert members_on(members, date(2015, 12, 31)) == {a}
     assert members_on(members, date(2016, 4, 1)) == {a, b}
+
+
+def test_scan_night_members_read_the_trade_dates_members() -> None:
+    """The scan for trade date D runs on the session before D: stored as of that night, an
+    entrant effective D is a member when D's watchlist is scanned and a stock excluded on D is
+    not; an effective date off the calendar moves to the session before it; a member from
+    before the history keeps its start; an interval that moves to nothing is dropped."""
+    days = [date(2024, 1, d) for d in (1, 2, 3, 4, 5, 8, 9)]
+    joins, leaves, held, weekend, before = (uuid.UUID(int=n) for n in (1, 2, 3, 4, 5))
+    stored = scan_night_members(
+        [
+            Interval(joins, date(2024, 1, 4)),
+            Interval(leaves, date(1900, 1, 1), date(2024, 1, 4)),
+            Interval(held, date(2024, 1, 2), date(2024, 1, 9)),
+            Interval(weekend, date(2024, 1, 6), date(2024, 1, 7)),
+            Interval(before, date(2023, 12, 1)),
+        ],
+        days,
+    )
+    assert stored == (
+        Interval(joins, date(2024, 1, 3)),
+        Interval(leaves, date(1900, 1, 1), date(2024, 1, 3)),
+        Interval(held, date(2024, 1, 1), date(2024, 1, 8)),
+        Interval(before, date(2023, 12, 1)),
+    )
+    # the night of Jan 3 scans the watchlist for Jan 4
+    assert members_on(stored, date(2024, 1, 3)) == {joins, held, before}
+    assert members_on(stored, date(2024, 1, 2)) == {leaves, held, before}
+    # the night of Jan 8 scans Jan 9, the day `held` has left
+    assert members_on(stored, date(2024, 1, 8)) == {joins, before}
 
 
 @pytest.mark.parametrize(

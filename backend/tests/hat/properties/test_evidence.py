@@ -20,7 +20,7 @@ from app.hat.backtest.evidence import (
     unbacktested_trades,
 )
 from app.hat.backtest.report import TradeRow, compute_metrics
-from app.hat.backtest.spec import KNOWN_GAPS, sleeve_weight
+from app.hat.backtest.spec import KNOWN_GAPS, membership_key, sleeve_weight
 
 D = Decimal
 S2_BOOKS = tuple(seed_config(S2).playbooks)  # breakout, episodic_pivot
@@ -146,3 +146,18 @@ def test_history_holds() -> None:
     assert not history_holds(good, ())
     assert not history_holds(dataclasses.replace(good, ambiguous_days=11), breakout)
     assert not history_holds(dataclasses.replace(good, ambiguous_days=None), breakout)
+
+
+def test_membership_key_is_the_index_and_the_owner_lists() -> None:
+    """A run is evidence only over the member set the live universe version defines: its index,
+    includes and excludes fix the key (in any order); the constituents list and its date, which
+    a point-in-time run does not read, do not; a version naming no index has none."""
+    base = {"index": "NIFTY 500", "include": ["b", "a"], "exclude": ["c"], "as_of": "2026-04-01"}
+    key = membership_key(base)
+    assert key is not None
+    assert membership_key({**base, "include": ["a", "b"], "member_ids": ["x"]}) == key
+    assert membership_key({**base, "as_of": "2026-10-01"}) == key
+    assert membership_key({**base, "exclude": []}) != key
+    assert membership_key({**base, "include": ["a"]}) != key
+    assert membership_key({**base, "index": "NIFTY 100"}) != key
+    assert membership_key({"members": []}) is None

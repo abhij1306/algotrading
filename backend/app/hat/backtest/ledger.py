@@ -38,7 +38,7 @@ from ..models import (
     HatWatchlistEntry,
 )
 from ..time import as_utc, trade_date_of
-from .data import MarketData, classifications
+from .data import MarketData, classifications, scan_night_members
 from .report import FillRow, TradeRow, WatchRow
 from .spec import RunSpec
 
@@ -85,7 +85,7 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     )
     session.add_all([version, universe_version])
     session.flush()
-    for interval in data.members:
+    for interval in scan_night_members(data.members, data.days):
         session.add(
             HatUniverseMember(
                 universe_id=universe.id,

@@ -55,7 +55,9 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    `hat_index_membership`), copy the NIFTY 500 history CSV into `<HAT_DATA_ROOT>/admin/` and load
    it (Index membership), then republish the universe (`publish-universe`, step 3 of First deploy)
    so its live version names its index: until then a backtest of it is refused
-   `backtest_universe_no_index`.
+   `backtest_universe_no_index`. Runs made before this, over today's list, are no longer any
+   sleeve's evidence: backtest each sleeve again (First deploy step 4) before its next
+   promotion.
 
 ## Running it
 
@@ -128,7 +130,7 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    `DUMMYHEG`) are skipped and listed under `not_stocks`; an `--exclude` drops its row before
    symbols resolve. Any other unknown symbol or ISIN is listed and nothing is written.
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
-   <bot> --version <v> --from 2011-06-22 --to <last trading day> --for-promotion --regime-mult
+   <bot> --version <v> --from 2016-01-01 --to <last trading day> --for-promotion --regime-mult
    policy`; then `publish-version --version <v> --run <run_id>` (the version is `frozen`) and
    `assign-version --bot <bot> --version <v>`.
 5. `promote --bot <bot> --to backtested` (`backtest_gate`), `promote --to shadow` and

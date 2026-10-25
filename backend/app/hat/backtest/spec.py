@@ -13,6 +13,8 @@ conventions live does not trade by. Every run records its conventions and hashes
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -56,6 +58,7 @@ __all__ = [
     "RunConventions",
     "RunSpec",
     "known_gaps",
+    "membership_key",
     "sleeve_weight",
     "with_cooldown",
 ]
@@ -297,3 +300,22 @@ def with_cooldown(policy: PolicyVersion, sessions: int) -> PolicyVersion:
     return PolicyVersion(
         policy.version_id, policy.version, policy.effective_from, policy.superseded_at, changed
     )
+
+
+def membership_key(definition: Mapping[str, Any]) -> str | None:
+    """What fixes a universe version's backtest member set: its index and the owner's includes
+    and excludes (the constituents list it was published from does not, as the run reads the
+    index point in time), as a digest a run records and its evidence must match. None for a
+    version naming no index."""
+    index = definition.get("index")
+    if not index:
+        return None
+    text = json.dumps(
+        {
+            "index": index,
+            "include": sorted(definition.get("include", ())),
+            "exclude": sorted(definition.get("exclude", ())),
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(text.encode()).hexdigest()

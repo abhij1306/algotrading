@@ -191,13 +191,18 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   nothing: the earlier version stays what is read before then (accepted, QA1).
 - **Point-in-time membership.** A backtest's universe is its version's index (`definition.index`)
   read from `hat_index_member` as of each session, through ISIN lineage, plus the version's
-  includes and less its excludes (`backtest/data.point_in_time_members`): a stock enters the
-  scan on its inclusion's effective date and is never entered after its exclusion's; a position
-  held then follows the ordinary exits and the delisting rule. A version naming no index, an
+  includes and less its excludes (`backtest/data.point_in_time_members`). The scan for trade
+  date D reads D's members (stored as of the night before, `scan_night_members`): a stock is on
+  the watchlist from its inclusion's effective date, never after its exclusion's, and is not
+  newly entered after it has left; a position held then follows the ordinary exits and the
+  delisting rule. A version naming no index, an
   index with no loaded history, or a run starting before or ending after the history's cover
   (`hat_index_membership`; the NIFTY 500's starts 2016-01-01) is refused
   (`backtest/data.membership_cover_refusal`); the run's `data_snapshot` records the membership's
-  source, digest and cover.
+  source, digest, cover and the version's member-set key (`spec.membership_key`: index,
+  includes, excludes). A run is a sleeve's evidence only when that key is its live universe
+  version's (`evidence.evidence_run`): a run over another member set, or over today's list, is
+  not.
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
   InvITs and REITs get features but no rank.
