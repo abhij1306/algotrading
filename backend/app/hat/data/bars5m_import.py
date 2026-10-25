@@ -118,13 +118,22 @@ def read_universe(path: Path) -> dict[str, str]:
         return {row[0].strip(): row[1].strip() for row in csv.reader(handle) if len(row) > 1}
 
 
+SHARE_SERIES = frozenset({"EQ", "BE", "BZ", "SM", "ST"})  # the scrip master's share groups
+
+
 def read_scrips(path: Path) -> dict[str, set[str]]:
-    """The scrip master's cash-market rows -> symbol to the ISINs listed for it."""
+    """The scrip master's cash-market share rows -> symbol to the ISINs listed for it (a
+    company's bonds share its symbol under their own ISIN)."""
     out: dict[str, set[str]] = {}
     with path.open(encoding="utf-8", newline="") as handle:
         for row in csv.DictReader(handle):
             symbol, isin = (row.get("pSymbolName") or "").strip(), (row.get("pISIN") or "").strip()
-            if symbol and isin and row.get("pExchSeg") == "nse_cm":
+            if (
+                symbol
+                and isin
+                and row.get("pExchSeg") == "nse_cm"
+                and row.get("pGroup") in SHARE_SERIES
+            ):
                 out.setdefault(symbol, set()).add(isin)
     return out
 
