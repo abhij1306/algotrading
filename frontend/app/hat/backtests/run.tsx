@@ -21,7 +21,7 @@ import {
 } from "@/components/organisms/backtests/run-parts";
 import { PageLayout } from "@/components/templates/page-layout";
 import {
-  BENCHMARK_NAME,
+  benchmarkName,
   equityRows,
   formatMetric,
   groupRows,
@@ -100,20 +100,21 @@ function ReportView({ runId, report }: Readonly<{ runId: string; report: Report 
   const trades = useBacktestTrades(runId, true);
   const rows = equityRows(report);
   const bench = report.benchmark;
+  const benchmark = benchmarkName(report);
   return (
     <>
       <Block
         title="Equity and drawdown"
         note={
           bench
-            ? `${BENCHMARK_NAME}: return ${formatMetric(bench.total_return, "pct")}, CAGR ${formatMetric(bench.cagr, "pct")}, max drawdown ${formatMetric(bench.max_drawdown, "pct")}`
-            : `No ${BENCHMARK_NAME} closes for this window`
+            ? `${benchmark}: return ${formatMetric(bench.total_return, "pct")}, CAGR ${formatMetric(bench.cagr, "pct")}, max drawdown ${formatMetric(bench.max_drawdown, "pct")}`
+            : `No ${benchmark} closes for this window`
         }
       >
         <div className="grid gap-x-12 gap-y-10 lg:grid-cols-2">
-          <EquityChart rows={rows} />
-          <DrawdownChart rows={rows} />
-          <YearlyChart yearly={report.yearly} />
+          <EquityChart rows={rows} benchmark={benchmark} />
+          <DrawdownChart rows={rows} benchmark={benchmark} />
+          <YearlyChart yearly={report.yearly} benchmark={benchmark} />
         </div>
       </Block>
       <TradeQuality report={report} trades={trades} />

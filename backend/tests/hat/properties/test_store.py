@@ -27,6 +27,7 @@ from app.hat.data.store import (
     DataStore,
     StoreError,
     ex_prev_factor,
+    ex_total_factors,
     latest_rows,
     newest,
 )
@@ -239,3 +240,17 @@ def test_ex_prev_factor_adjusts_an_unadjusted_prev_close_only() -> None:
     assert ex_prev_factor(None, Decimal("637.00"), half) == half
     assert ex_prev_factor(Decimal("637.00"), None, half) == half
     assert ex_prev_factor(Decimal(0), Decimal("637.00"), half) == half
+
+
+def test_a_dividend_without_a_bar_on_its_ex_date_reaches_the_next_session() -> None:
+    """A dividend's prev_close factor sits on the chain's first session on or after its
+    ex-date, multiplied into a price factor of the same session."""
+    ex, session, other = date(2024, 3, 8), date(2024, 3, 11), date(2024, 5, 2)
+    price = {("c", session): Decimal("0.5")}
+    paid = [
+        ("c", ex, date(2024, 3, 7), Decimal(2), Decimal(100), Decimal("0.98")),
+        ("c", other, date(2024, 4, 30), Decimal(1), Decimal(100), Decimal("0.99")),
+    ]
+    total = ex_total_factors(price, paid, {("c", ex): session, ("c", other): other})
+    assert total == {("c", session): Decimal("0.490"), ("c", other): Decimal("0.99")}
+    assert price == {("c", session): Decimal("0.5")}  # the price basis is untouched

@@ -16,7 +16,14 @@ export type Funnel = Schemas["BacktestFunnel"];
 
 /** The most runs the compare view shows side by side. */
 export const MAX_COMPARE = 4;
+/** The benchmark a report from now on is drawn against; the label when a report has none. */
 export const BENCHMARK_NAME = "NIFTY 500 TRI";
+
+/** The index a report's benchmark is: its own recorded name (an older report's is the NIFTY 500
+ * price index), else `BENCHMARK_NAME`. */
+export function benchmarkName(report: Pick<Report, "benchmark">): string {
+  return report.benchmark?.name ?? BENCHMARK_NAME;
+}
 
 /** A decimal string (or number) as a number for display; null when missing or not finite. */
 export function num(value: unknown): number | null {
@@ -102,12 +109,12 @@ export function toggleSelection(selected: readonly string[], id: string): string
 export type EquityRow = {
   date: string;
   strategy: number | null; // equity rebased to 1 at the first session
-  benchmark: number | null; // NIFTY 500 TRI rebased to 1
+  benchmark: number | null; // the benchmark index rebased to 1
   drawdown: number; // <= 0, from the initial equity's running peak
-  benchmarkDrawdown: number | null; // NIFTY 500 TRI's from its running peak
+  benchmarkDrawdown: number | null; // the benchmark's from its running peak
 };
 
-/** One row per session: equity and NIFTY 500 both rebased to 1, and both drawdowns. */
+/** One row per session: equity and the benchmark both rebased to 1, and both drawdowns. */
 export function equityRows(report: Report): EquityRow[] {
   const first = num(report.equity[0]?.equity);
   let peak: number | null = null;

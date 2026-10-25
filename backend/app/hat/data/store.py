@@ -697,9 +697,7 @@ class DataStore:
         ):
             _load(con, table, segment_table(cumulative_segments(actions)))
         ex_price = _ex_prev_factors(con, adjustment.factors)
-        ex_total = dict(ex_price)
-        for chain, ex, *_, factor in priced:
-            ex_total[(chain, ex)] = ex_total.get((chain, ex), Decimal(1)) * factor
+        ex_total = ex_total_factors(ex_price, priced, _ex_sessions(con, [p[:2] for p in priced]))
         _load(con, "ex_cap", ex_day_table(ex_price))
         _load(con, "ex_tr", ex_day_table(ex_total))
         for view, segment, ex_day, latest in _ADJ_VIEWS:
@@ -841,6 +839,55 @@ def _ex_prev_factors(
         if factor != 1:
             out[key] = factor
     return out
+
+
+_DIVIDEND_SESSION_SQL = """
+WITH day AS (
+    SELECT DISTINCT COALESCE(l.chain_id, r.instrument_id) AS chain, r.date
+    FROM bars_daily_raw r LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
+    WHERE COALESCE(l.chain_id, r.instrument_id) IN (SELECT chain FROM ex_in)
+)
+SELECT e.k, s.date FROM ex_in e ASOF JOIN day s ON s.chain = e.chain AND s.date >= e.ex
+"""
+
+
+def _ex_sessions(
+    con: duckdb.DuckDBPyConnection, keys: Sequence[tuple[str, date]]
+) -> dict[tuple[str, date], date]:
+    """(chain, ex-date) -> the chain's first session on or after the ex-date (none without one)."""
+    keys = sorted(set(keys))
+    if not keys:
+        return {}
+    _load(
+        con,
+        "ex_in",
+        pa.table(
+            {
+                "k": pa.array(range(len(keys)), pa.int32()),
+                "chain": pa.array([c for c, _ in keys], pa.string()),
+                "ex": pa.array([ex for _, ex in keys], pa.date32()),
+            }
+        ),
+    )
+    found = {keys[k]: day for k, day in con.execute(_DIVIDEND_SESSION_SQL).fetchall()}
+    con.execute("DROP TABLE ex_in")
+    return found
+
+
+def ex_total_factors(
+    ex_price: Mapping[tuple[str, date], Decimal],
+    dividends: Sequence[tuple[str, date, date, Decimal, Decimal, Decimal]],
+    sessions: Mapping[tuple[str, date], date],
+) -> dict[tuple[str, date], Decimal]:
+    """The total-return series' (chain, ex-session) -> prev_close factor: the price factor of
+    the session times each priced dividend's factor, keyed to its ex-session (`sessions`: the
+    chain's first bar on or after the ex-date, so a dividend whose ex-date has no bar reaches
+    the next bar's prev_close, as a price action does)."""
+    total = dict(ex_price)
+    for chain, ex, *_, factor in dividends:
+        key = (chain, sessions.get((chain, ex), ex))
+        total[key] = total.get(key, Decimal(1)) * factor
+    return total
 
 
 def ex_day_table(factors: Mapping[tuple[str, date], Decimal]) -> pa.Table:

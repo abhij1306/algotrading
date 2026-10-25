@@ -363,8 +363,11 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 
 After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
 factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is
-never needed for it. The writers of actions, lineage and symbol history share the `hat_reference_data`
-advisory lock; `features` does not take it, so run it after they finish.
+never needed for it. A release that changes a feature formula or the adjusted views bumps
+`FEATURES_RULE` (`features_state.py`), which makes the next run, scheduled or manual, recompute
+every date (`inputs_changed`); `features --full` does the same at once. The writers of actions,
+lineage and symbol history share the `hat_reference_data` advisory lock; `features` does not take
+it, so run it after they finish.
 
 ## Alerts and failures
 

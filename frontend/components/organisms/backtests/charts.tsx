@@ -17,7 +17,6 @@ import {
   YAxis,
 } from "recharts";
 import {
-  BENCHMARK_NAME,
   seriesKey,
   type EquityRow,
   type GroupRow,
@@ -89,9 +88,12 @@ export function ChartFrame({
 }
 
 /** Equity and NIFTY 500 TRI, both rebased to the first session, as growth in percent. */
-export function EquityChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
+export function EquityChart({
+  rows,
+  benchmark,
+}: Readonly<{ rows: EquityRow[]; benchmark: string }>) {
   return (
-    <ChartFrame title={`Equity vs ${BENCHMARK_NAME}`} note="growth from the first session">
+    <ChartFrame title={`Equity vs ${benchmark}`} note="growth from the first session">
       <LineChart data={rows}>
         {grid}
         <XAxis dataKey="date" {...axis} tickFormatter={monthYear} minTickGap={48} />
@@ -100,7 +102,7 @@ export function EquityChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
         {legend}
         <Line name="Strategy" dataKey="strategy" stroke={SERIES[0]} strokeWidth={2} dot={false} />
         <Line
-          name={BENCHMARK_NAME}
+          name={benchmark}
           dataKey="benchmark"
           stroke={BENCH}
           strokeWidth={2}
@@ -113,9 +115,12 @@ export function EquityChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
 }
 
 /** Drawdown of the strategy (from its initial equity's peak) and of NIFTY 500 TRI. */
-export function DrawdownChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
+export function DrawdownChart({
+  rows,
+  benchmark,
+}: Readonly<{ rows: EquityRow[]; benchmark: string }>) {
   return (
-    <ChartFrame title={`Drawdown vs ${BENCHMARK_NAME}`}>
+    <ChartFrame title={`Drawdown vs ${benchmark}`}>
       <AreaChart data={rows}>
         {grid}
         <XAxis dataKey="date" {...axis} tickFormatter={monthYear} minTickGap={48} />
@@ -131,7 +136,7 @@ export function DrawdownChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
           strokeWidth={2}
         />
         <Area
-          name={BENCHMARK_NAME}
+          name={benchmark}
           dataKey="benchmarkDrawdown"
           stroke={BENCH}
           fill="none"
@@ -144,7 +149,10 @@ export function DrawdownChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
 }
 
 /** Calendar-year returns of the strategy beside NIFTY 500 TRI's. */
-export function YearlyChart({ yearly }: Readonly<{ yearly: Report["yearly"] }>) {
+export function YearlyChart({
+  yearly,
+  benchmark,
+}: Readonly<{ yearly: Report["yearly"]; benchmark: string }>) {
   return (
     <ChartFrame title="Yearly returns">
       <BarChart data={yearly} barGap={2}>
@@ -155,7 +163,7 @@ export function YearlyChart({ yearly }: Readonly<{ yearly: Report["yearly"] }>) 
         <Tooltip {...tooltipStyle} formatter={pct} cursor={{ fill: "var(--color-hover)" }} />
         {legend}
         <Bar name="Strategy" dataKey="return" fill={SERIES[0]} radius={[4, 4, 0, 0]} />
-        <Bar name={BENCHMARK_NAME} dataKey="benchmark" fill={BENCH} radius={[4, 4, 0, 0]} />
+        <Bar name={benchmark} dataKey="benchmark" fill={BENCH} radius={[4, 4, 0, 0]} />
       </BarChart>
     </ChartFrame>
   );
