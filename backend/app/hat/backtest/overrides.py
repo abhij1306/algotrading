@@ -12,9 +12,12 @@ of that type in list order, the setup's criteria in their `order`),
 rule to the stack. A name no item has, or one more than one item has without `#n`, is refused.
 A value that is not JSON is a string. The overridden config is parsed afresh (`parse_config`),
 so an override can only make a config the model accepts, risk keys refused.
-The policy overrides are the risk per trade (`risk_pct`) and the open-position cap: the
-account's `max_open_positions` and the exposure ladder's top level become N, and its lower levels
-are capped at N (the ladder still starts low and steps up).
+The policy overrides are the risk per trade (`risk_pct`), the open-position cap (the account's
+`max_open_positions` and the exposure ladder's top level become N, and its lower levels are capped
+at N: the ladder still starts low and steps up), the per-industry cap
+(`max_positions_per_industry`), and the flat ladder (`flat_ladder`): every ladder level holds the
+run's open-position cap at risk multiplier 1, so the run trades at one size from its first day.
+The policy's other limits stay as written.
 
 A run's overrides are recorded in its conventions and hashed into its `config_digest`, and the
 run stays a trial of its family (HAT-BT-030), so a sweep of variants raises the family's DSR trial
@@ -131,16 +134,27 @@ def set_path(doc: dict[str, Any], path: str, value: object) -> None:
 
 @dataclass(frozen=True)
 class Overrides:
-    """A run's overrides: config `sets` applied in order, and the policy's risk per trade and
-    open-position cap (None: the policy's)."""
+    """A run's overrides: config `sets` applied in order, and the policy's risk per trade,
+    open-position and per-industry caps (None: the policy's) and the flat ladder."""
 
     sets: tuple[tuple[str, Any], ...] = ()
     risk_pct: Decimal | None = None
     max_positions: int | None = None
+    max_per_industry: int | None = None
+    flat_ladder: bool = False
 
     @property
     def empty(self) -> bool:
-        return not self.sets and self.risk_pct is None and self.max_positions is None
+        return not self.sets and not self.touches_policy
+
+    @property
+    def touches_policy(self) -> bool:
+        return (
+            self.risk_pct is not None
+            or self.max_positions is not None
+            or self.max_per_industry is not None
+            or self.flat_ladder
+        )
 
     def touches_identity(self) -> bool:
         """Whether a set names the config's `bot` or `market`: a run's sleeve, sizing and family
@@ -161,10 +175,10 @@ class Overrides:
             raise OverrideError("backtest_override_invalid") from None
 
     def apply_policy(self, version: PolicyVersion) -> PolicyVersion:
-        """`version` with its policy's `risk_pct` and open-position cap replaced (the module
+        """`version` with its policy's `risk_pct`, caps and ladder replaced (the module
         docstring), parsed afresh (`backtest_override_invalid` for a value the policy schema
         refuses); the version id is unchanged, and the run records the overrides."""
-        if self.risk_pct is None and self.max_positions is None:
+        if not self.touches_policy:
             return version
         doc = version.policy.to_json()
         if self.risk_pct is not None:
@@ -176,6 +190,14 @@ class Overrides:
                 cap = self.max_positions if level == LEVELS[-1] else None
                 row = ladder[level]
                 row["max_positions"] = cap or min(row["max_positions"], self.max_positions)
+        if self.max_per_industry is not None:
+            doc["max_positions_per_industry"] = self.max_per_industry
+        if self.flat_ladder:
+            for level in LEVELS:
+                doc["exposure_ladder"][level] = {
+                    "max_positions": doc["max_open_positions"],
+                    "risk_mult": "1",
+                }
         try:
             changed = parse_policy(doc)
         except PolicyError:
@@ -191,4 +213,8 @@ class Overrides:
             out["risk_pct"] = format(self.risk_pct.normalize(), "f")
         if self.max_positions is not None:
             out["max_positions"] = self.max_positions
+        if self.max_per_industry is not None:
+            out["max_per_industry"] = self.max_per_industry
+        if self.flat_ladder:
+            out["flat_ladder"] = True
         return out

@@ -580,14 +580,24 @@ class Variant:
 
 
 VARIANT_KEYS = frozenset(
-    {"label", "set", "risk_pct", "max_positions", "sleeve_weight", "slot_order"}
+    {
+        "label",
+        "set",
+        "risk_pct",
+        "max_positions",
+        "max_per_industry",
+        "flat_ladder",
+        "sleeve_weight",
+        "slot_order",
+    }
 )
 
 
 def parse_variants(doc: object, base: RunConventions) -> list[Variant]:
     """A sweep's variants from its file's document: a list of mappings, each a unique `label`
     and any of `set` (a list of `path=value` strings, `overrides.parse_set`, after the base's),
-    `risk_pct`, `max_positions`, `sleeve_weight` and `slot_order` (each replacing the base's).
+    `risk_pct`, `max_positions`, `max_per_industry`, `flat_ladder` (a boolean), `sleeve_weight`
+    and `slot_order` (each replacing the base's).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
     conventions or override raise."""
     if not isinstance(doc, list) or not doc:
@@ -609,6 +619,8 @@ def parse_variants(doc: object, base: RunConventions) -> list[Variant]:
             sets=(*base.overrides.sets, *parsed),
             risk_pct=_number(item, "risk_pct", base.overrides.risk_pct),
             max_positions=_count(item, "max_positions", base.overrides.max_positions),
+            max_per_industry=_count(item, "max_per_industry", base.overrides.max_per_industry),
+            flat_ladder=_flag(item, "flat_ladder", base.overrides.flat_ladder),
         )
         conventions = replace(
             base,
@@ -627,6 +639,13 @@ def _number(item: Mapping[str, object], key: str, default: Decimal | None) -> De
         return default
     found = exact(item[key], floats=True)
     if found is None:
+        raise BacktestError("backtest_sweep_bad_variants")
+    return found
+
+
+def _flag(item: Mapping[str, object], key: str, default: bool) -> bool:
+    found = item.get(key, default)
+    if not isinstance(found, bool):
         raise BacktestError("backtest_sweep_bad_variants")
     return found
 

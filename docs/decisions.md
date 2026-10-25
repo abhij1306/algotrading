@@ -319,7 +319,9 @@ Chosen where the owner has not ruled; the code implements them.
   since entry from the highs of the sessions from the entry session on and the decision price; a
   run's report reads the regime at entry as NIFTY 500 above a rising SMA200 on the session before
   (`report_data.REGIME_RULE`), not the regime engine's state; `--max-positions N` sets the account
-  cap and the exposure ladder's top level to N and caps its lower levels at N.
+  cap and the exposure ladder's top level to N and caps its lower levels at N; `--flat-ladder`
+  sets every level to the run's cap at risk multiplier 1 (owner, 2026-10-25: measure S1 at a fixed
+  size, since at a ~35% win rate the ladder rarely leaves L1), the other limits as the policy says.
 - VCP (S1): `min_depth_pct` off (every 3-bar swing counts) until the owner picks a noise floor;
   each tightness sub-score is `score_floor` 0.5 at its pass limit, so a pattern that only just
   passes scores 0.625, not 0.25 (the S1 threshold 0.6 then gates on RS and the tighter patterns).
