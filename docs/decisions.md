@@ -133,6 +133,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   member count and archived lists, and loaded as data (`hat_index_member`). A window the loaded
   history does not cover is refused, never filled with today's list. Demerger dummies (a
   resulting company held at zero price until it lists) are not modelled: they cannot be scanned.
+- **5-minute history from the broker's export** (owner, 2026-10-25). `bars_5m` takes the
+  broker's 5-minute history (five years, the NIFTY 500 members of 2026-10-23) through
+  `bars5m_import`. Precedence: a stored (instrument, day) is kept; the import fills only the
+  days the store lacks (missing, or refused by the minute download), so it overwrites nothing.
+  The history labels a bar by its end through 2022-01-21 and by its start after; rows outside
+  `[09:15, 15:30)` (flat pre-open rows, a post-close placeholder) are dropped, as the live
+  builder drops those prints, and zero-volume rows are kept (`REJECT_RULES` has no such rule). It
+  carries most splits, bonuses and rights but not most demergers (nor a few splits and bonuses),
+  so each stored action is judged carried or not from the sessions before its ex-date, and every
+  day must still fit the raw daily bar. Known gap: for 213 of the 497 symbols (the first
+  downloaded) the days from 2026-08-03 have no 15:15-15:25 bars. Those days are written when they
+  fit; the stored Fyers days cover them to 2026-10-21. A rule that needs the closing bars (the
+  close's volume, a last-bar exit) must treat a day without a 15:25 bar as incomplete.
 - **Backtests from 2016-01-01** (owner, 2026-10-25). The NIFTY 500 history starts 2016-01-01:
   the 2011-2015 notices are incomplete (they do not fit the archived lists of 2014 and 2015).
   Until that membership is resolved, a backtest's first session is 2016-01-01 or later; a run
@@ -295,7 +308,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 ## Planned, not built
 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
-adapter, Kite market data, multi-user; minute history older than Fyers' 365 days; PDF summaries on cards and a chat
+adapter, Kite market data, multi-user; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
 live trading of `entry_timing: daily_close`.
 

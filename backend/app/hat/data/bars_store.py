@@ -137,6 +137,14 @@ class BarStore:
         path = self.path(day)
         return pq.read_table(path, schema=SCHEMA) if path.is_file() else SCHEMA.empty_table()
 
+    def instruments(self, day: date) -> set[str]:
+        """The instruments with a stored bar on `day` (reads only that column)."""
+        path = self.path(day)
+        if not path.is_file():
+            return set()
+        column = pq.read_table(path, columns=["instrument_id"])["instrument_id"]
+        return {str(i) for i in pc.unique(column).to_pylist()}
+
     def days(self) -> list[date]:
         """The trade dates that have a stored file, oldest first."""
         base = self._root / DATASET

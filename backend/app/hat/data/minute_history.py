@@ -74,6 +74,7 @@ __all__ = [
     "load_minute_history",
     "main",
     "rebase_stored",
+    "run_lock",
 ]
 
 _PLAN_REFUSAL = "historical data available for your plan"
@@ -562,7 +563,7 @@ def rebase_stored(
 
 
 @contextmanager
-def _run_lock(path: Path) -> Iterator[None]:
+def run_lock(path: Path) -> Iterator[None]:
     """One download at a time per data root: a second run would share the progress file, the
     call budget and the day partitions. The OS lock goes with the process, so a crash leaves
     nothing to clean up."""
@@ -649,7 +650,7 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
         raise MinuteHistoryError("history_bad_period")
     logging.basicConfig(level=logging.INFO)
     root = settings.data_root
-    with _run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
+    with run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
         basis = _basis(settings)
         if args.rebase_into is not None:
             return _rebase(args, root, basis)

@@ -362,6 +362,7 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `point_in_time report` / `pending SYMBOL` | Lagged and undated actions, version ledger (projection check must be 0); factor-pending sessions |
 | `index_history backfill [--from D] [--to D] [--apply]` | Fill the bar days `index_daily` lacks: the nightly indices from NSE's day files, then niftyindices' copy, then its price history; NIFTY 500 TRI from niftyindices (a year per request). A day no source has stays missing and is listed (exit 1; India VIX has 5 such days), never the last close carried. The nightly ingest does not fetch TRI: run it before a research run so the benchmark reaches the last session (a run with a missing day has no benchmark) |
 | `renames` | Seed symbol history from renames |
+| `bars5m_import --source DIR [--batch N] [--apply]` | The broker's 5-minute history (`DIR/<SYMBOL>.parquet`, ISINs from `../universe_raw.csv` and `../nse_cm_scrips.csv`) into `bars_5m`: adds only the (instrument, day) pairs not stored, ledgers refused rows and days in `bars_5m_rejects`, resumes from `bars5m_import/progress.json`; reads the database, holds the minute-history lock. Summary also in `bars5m_import/report-<day>.txt` |
 | `$ADMIN repair-symbol-history [--apply]` | Close overlapping symbol intervals |
 
 After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
