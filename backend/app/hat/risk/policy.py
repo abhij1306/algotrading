@@ -320,6 +320,21 @@ def effective_version(versions: Iterable[PolicyVersion], at: datetime) -> Policy
     return max(candidates, key=lambda v: (as_utc(v.effective_from), v.version))
 
 
+def withdrawn_by_decrease(versions: Iterable[PolicyVersion], at: datetime) -> list[PolicyVersion]:
+    """The versions a decrease requested at `at` withdraws: every one still pending then (its
+    `effective_from` later, not superseded). A decrease is at most as permissive as each of them
+    (else it is an increase), so the owner's latest ask stands and an increase in its cooling-off
+    never lifts risk above it once its day comes (audit A2 F5)."""
+    moment = as_utc(at)
+    return [v for v in versions if as_utc(v.effective_from) > moment and v.superseded_at is None]
+
+
+def withdrawn(effective_from: datetime, superseded_at: datetime | None) -> bool:
+    """A version superseded before its own `effective_from`: withdrawn while pending, it never
+    takes effect."""
+    return superseded_at is not None and as_utc(superseded_at) <= as_utc(effective_from)
+
+
 # --- Increase or decrease (HAT-GOV-090, HAT-GOV-093) -----------------------------------------
 
 

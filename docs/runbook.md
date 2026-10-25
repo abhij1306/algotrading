@@ -76,7 +76,8 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
   `select pid, client_addr, backend_start from pg_stat_activity where application_name =
   'hat_runtime_lock';` and stop it; `pg_terminate_backend(<pid>)` only if the process is gone. A
   running backend that loses the lock alerts `runtime.lock_lost` and opens no entry until
-  restarted.
+  restarted; when another runtime took it (the alert's `halted`), it also stops its jobs and
+  sends no stop or sale: stop that backend.
 - `[ERROR] Schema drift at <db>`: run the listed DDL as the owner (a `--` line is an object the
   models lack: drop it or model it), then start again.
 

@@ -17,9 +17,12 @@ from functools import cached_property
 
 from ..time import IST, as_utc, trade_date_of
 
-# The regular session's close (IST). The close-phase times (`exits.close`, the GTT swap, the
-# order cut-off) are set against it and move with a session that closes at another time
-# (`close_shift`): an early close, or a special (Muhurat) session.
+# The regular session (IST). The open-phase times (`live.prepare`, `modes.apply`, the gap scan,
+# the regime gate, the pre-open capture) are set against its open and move with a session that
+# opens at another time (`open_shift`); the close-phase times (`exits.close`, the GTT swap, the
+# order cut-off, the session end) against its close (`close_shift`): an early close, or a
+# special (Muhurat) session.
+REGULAR_OPEN = time(9, 15)
 REGULAR_CLOSE = time(15, 30)
 
 
@@ -91,6 +94,18 @@ class SessionCalendar:
         """How far `day`'s session close is from the regular close (`close_shift`)."""
         return close_shift(day, self.close_on(day))
 
+    def open_shift(self, day: date) -> timedelta:
+        """How far `day`'s session open is from the regular open (`open_shift`)."""
+        return open_shift(day, self.open_on(day))
+
+    def hours(self, day: date) -> tuple[time, time]:
+        """`day`'s session open and close as IST wall times; the regular session when the
+        calendar does not hold the day's times."""
+        opens, closes = self.open_on(day), self.close_on(day)
+        if opens is None or closes is None:
+            return REGULAR_OPEN, REGULAR_CLOSE
+        return opens.astimezone(IST).time(), closes.astimezone(IST).time()
+
     def next_open_after(self, at: datetime) -> datetime | None:
         """The `open_at` of the first trading day whose open is strictly after `at`, or None when
         the calendar holds no such day."""
@@ -142,6 +157,14 @@ def close_shift(day: date, close_at: datetime | None) -> timedelta:
     if close_at is None:
         return timedelta(0)
     return as_utc(close_at) - as_utc(datetime.combine(day, REGULAR_CLOSE, tzinfo=IST))
+
+
+def open_shift(day: date, open_at: datetime | None) -> timedelta:
+    """How far a session opening at `open_at` opens from `REGULAR_OPEN` on `day` (5 h 05 min for
+    a 14:20 Muhurat open); none when the open is unknown, so the regular times stand."""
+    if open_at is None:
+        return timedelta(0)
+    return as_utc(open_at) - as_utc(datetime.combine(day, REGULAR_OPEN, tzinfo=IST))
 
 
 def is_trading_day(calendar: SessionCalendar | None, day: date) -> bool:

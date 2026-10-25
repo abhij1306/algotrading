@@ -29,7 +29,7 @@ import logging
 import uuid
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -294,14 +294,16 @@ class LiveData:
         exchange_range: bool = False,
         silence: SilenceWatch | None = None,
         watched: Callable[[], Collection[str]] = frozenset,
+        hours: Callable[[date], tuple[time, time]] | None = None,
     ) -> None:
         self._clock = clock
-        self.builder = builder or BarBuilder()
+        # `hours`: each day's own session (the trading calendar's): bars and the pre-open follow it
+        self.builder = builder or BarBuilder(hours=hours)
         self.staleness = StalenessMonitor(health, is_open)
         self.silence = silence
         self._watched = watched
         self._exchange_range = exchange_range
-        self.gaps = PreopenGaps()
+        self.gaps = PreopenGaps(None if hours is None else lambda day: hours(day)[0])
         self._store = store
         self._instrument_ids = instrument_ids
         self._last_volume: dict[str, tuple[date, int]] = {}

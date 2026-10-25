@@ -136,6 +136,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   and Zerodha) need the `X-HAT-Request` header and a frontend `Origin` (`api/guard.py`).
 - **Engine.** In-process scheduler with jobs in Postgres, one async session owner per broker
   account, one engine for backtest and live, so the backtest tests the code that trades.
+- **A runtime that lost its lock writes nothing.** When another runtime holds the runtime lock,
+  this one stops its jobs, its periodic order steps and its broker sessions (stops and sales
+  too) and alerts `runtime.lock_lost`: the lock holder owns exits, so two runtimes never manage
+  one position. While the lock is merely unreachable (the database down) it only refuses entries
+  and tries again each minute.
 - **Verification on real data.** See `CLAUDE.md`.
 
 ## Execution safety

@@ -35,6 +35,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Sequence
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -52,11 +53,12 @@ from ..execution.modes import bot_mode
 from ..governance import Mode
 from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
 from ..money import exact
+from ..notify import Notifier
 from ..risk import kill_ops
 from ..risk.decision import SignalContext
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
-from ..time import IST, utc_now
+from ..time import IST, trade_date_of, utc_now
 from . import entries, lifecycle, positions
 from .criteria import CriterionResult, EvalContext
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
@@ -89,6 +91,12 @@ logger = logging.getLogger(__name__)
 ACTIVE = "active"
 FEED_HEALTH = "feed_health"  # the feed's own health reason: its recovery never clears the gate
 _INSTANT = timedelta(microseconds=1)
+ALERT_FEED_HEALTH_UNWRITTEN = "feed_health.unwritten"
+# Their own threads, apart from the loop's default pool (the Telegram long poll, the relay, the
+# scheduler's reads): a trigger write routes a real auto entry, so a slow database step
+# elsewhere never queues it (audit A3 F6). The feed-health kill writes one at a time.
+TRIGGER_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="hat-trigger")
+HEALTH_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hat-health")
 
 # one instrument's `DailyInputs`, with the stop history of the candidate's own rule
 DailySource = Callable[[uuid.UUID, StopRule], DailyInputs]
@@ -421,9 +429,9 @@ class TriggerService:
         return fired
 
     @staticmethod
-    def _submit(work: Callable[[], None]) -> None:
+    def _submit(work: Callable[[], None], pool: Executor = TRIGGER_POOL) -> None:
         try:
-            asyncio.get_running_loop().run_in_executor(None, work)
+            asyncio.get_running_loop().run_in_executor(pool, work)
         except RuntimeError:  # no loop (a plain thread or a check): write inline
             work()
 
@@ -451,22 +459,29 @@ class DataHealthKill:
     """`EventFeedHealth`'s `on_change`: a stale feed trips the account's `feed_health` kill (every
     bot manage-only, exits untouched); recovery clears that reason by itself (HAT-RISK-063), never
     the quality gate's `data_health` trip (HAT-DATA-065). The write
-    runs on a worker thread when called from the loop. Changes are numbered when they happen
+    runs on its own worker thread when called from the loop. Changes are numbered when they happen
     and written one at a time; a change that reaches the database after a newer one is dropped,
-    so the kill always ends in the state of the latest change, whatever order the workers run."""
+    so the kill always ends in the state of the latest change, whatever order the workers run.
+    A failed write leaves its change pending (audit A2 F6): `retry` (housekeeping, every minute)
+    writes the latest pending change again, and the first failure of a run of them is alerted
+    (`feed_health.unwritten`) once."""
 
     def __init__(
         self,
         session_factory: Callable[[], Session],
         clock: Clock = SYSTEM_CLOCK,
         submit: Callable[[Callable[[], None]], None] | None = None,
+        notifier: Notifier | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
-        self._submit = submit or TriggerService._submit
+        self._submit = submit or (lambda work: TriggerService._submit(work, HEALTH_POOL))
+        self._notifier = notifier
         self._last: datetime | None = None
         self._seq = 0
         self._written = 0
+        self._latest: tuple[bool, datetime, int] | None = None
+        self._alerted = False
         self._lock = threading.Lock()
 
     def __call__(self, stale: bool) -> None:
@@ -478,16 +493,40 @@ class DataHealthKill:
         self._last = at
         self._seq += 1
         seq = self._seq
+        self._latest = (stale, at, seq)
         self._submit(lambda: self.write(stale, at, seq))
 
-    def write(self, stale: bool, at: datetime, seq: int) -> None:
+    def write(self, stale: bool, at: datetime, seq: int) -> bool:
+        """Write change `seq` unless a newer one is written; True when it is (or a newer one)."""
         with self._lock:
             if seq <= self._written:
-                return  # a newer change is already written
+                return True  # a newer change is already written
+            if not self._write(stale, at):
+                self._alert_once(stale)
+                return False
             self._written = seq
-            self._write(stale, at)
+            self._alerted = False
+            return True
 
-    def _write(self, stale: bool, at: datetime) -> None:
+    def retry(self) -> bool:
+        """Write the latest change again when it is still pending; True when nothing is."""
+        latest = self._latest
+        return latest is None or self.write(*latest)
+
+    def _alert_once(self, stale: bool) -> None:
+        if self._alerted or self._notifier is None:
+            return
+        self._alerted = True
+        try:
+            self._notifier.alert(
+                ALERT_FEED_HEALTH_UNWRITTEN,
+                trade_date_of(utc_now(self._clock)),
+                {"state": "stale" if stale else "fresh"},
+            )
+        except Exception:
+            logger.exception("alert %s not sent", ALERT_FEED_HEALTH_UNWRITTEN)
+
+    def _write(self, stale: bool, at: datetime) -> bool:
         try:
             with self._session_factory() as session:
                 kill_ops.sync_health(
@@ -501,3 +540,5 @@ class DataHealthKill:
                 session.commit()
         except Exception:
             logger.exception("data health kill update failed")
+            return False
+        return True

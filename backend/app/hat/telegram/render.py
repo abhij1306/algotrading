@@ -57,7 +57,8 @@ __all__ = [
 # PR 36: a trade whose stored state is not the fold of its events (the nightly journal check).
 # P5: a job that failed, missed its deadline or hangs; a calendar about to run out; a drawdown
 # kill tripped (bots manage-only). A8: a periodic loop (live exits, housekeeping) stopped.
-# DB4b: the runtime lock was lost and not taken again (no new entry until a restart).
+# DB4b: the runtime lock was lost and not taken again (no new entry until a restart; no order
+# at all when another runtime holds it).
 # Q8: a position `ca.rescale` could not rescale stays manage-only (`corporate_action.pending`).
 # An exit view that raised: that position's exit rules are off until it reads again.
 # Q11: the broker calls of the day are spent: no new entry until the next trade date.

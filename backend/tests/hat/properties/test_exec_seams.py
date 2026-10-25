@@ -1,6 +1,6 @@
 """Seams of the execution path's robustness rules: an unreadable foreign trade row, a failed
-symbol read, the second absent read of a lost stop or sale,
-and the close-phase times of a session that closes at another time. Pure functions and the
+symbol read, the second absent read of a lost stop or sale, and the close- and open-phase
+times of a session that closes or opens at another time. Pure functions and the
 adapter over a recording SDK; no broker is called."""
 
 import uuid
@@ -14,6 +14,9 @@ from sqlalchemy.orm import Session
 
 from app.hat.clock import FixedClock
 from app.hat.daily.exits import ExitViews, ShadowExits
+from app.hat.data.bars import BarBuilder
+from app.hat.data.gapscan import is_late
+from app.hat.data.preopen import GapSource, PreopenGaps
 from app.hat.execution.broker import (
     CODE_UNAVAILABLE,
     GttRequest,
@@ -27,8 +30,8 @@ from app.hat.execution.position_desk import (
     second_absence,
 )
 from app.hat.execution.tags import encode_tag
-from app.hat.ops.scheduler import ScheduledJob, due, starts_at
-from app.hat.risk.sessions import SessionCalendar, close_shift
+from app.hat.ops.scheduler import ScheduledJob, due, starts_at, window_end
+from app.hat.risk.sessions import SessionCalendar, close_shift, open_shift
 from app.hat.time import IST
 
 DAY = date(2026, 11, 9)
@@ -175,3 +178,46 @@ def test_a_settled_order_forgets_its_first_absent_read() -> None:
     assert desk.verdict(sent, True, tag="C", filled_qty=5) is Verdict.WAIT  # found, shares sold
     clock.advance(SETTLE)
     assert desk.verdict(sent, False, tag="C") is Verdict.WAIT  # a first read again
+
+
+# --- the open phase of a session that opens at another time (Muhurat, 14:20-15:30) -------------
+
+MUHURAT = date(2026, 11, 8)
+
+
+def muhurat() -> SessionCalendar:
+    return SessionCalendar.from_rows([(MUHURAT, True, ist(MUHURAT, 14, 20), ist(MUHURAT, 15, 30))])
+
+
+def test_open_shift_and_hours_follow_the_session() -> None:
+    assert open_shift(DAY, ist(DAY, 9, 15)) == timedelta(0)
+    assert open_shift(DAY, None) == timedelta(0)
+    assert muhurat().open_shift(MUHURAT) == timedelta(hours=5, minutes=5)
+    assert muhurat().close_shift(MUHURAT) == timedelta(0)
+    assert muhurat().hours(MUHURAT) == (time(14, 20), time(15, 30))
+    assert muhurat().hours(DAY) == (time(9, 15), time(15, 30))  # unknown: the regular session
+
+
+def test_the_open_jobs_start_with_a_muhurat_open() -> None:
+    shift = muhurat().open_shift
+    prepare = ScheduledJob("live.prepare", time(8, 45), lambda _d: None, shift=shift)
+    scan = ScheduledJob("gapscan", time(9, 16), lambda _d: None, until=time(9, 20), shift=shift)
+    assert starts_at(prepare, MUHURAT) == ist(MUHURAT, 13, 50)
+    assert starts_at(scan, MUHURAT) == ist(MUHURAT, 14, 21)
+    assert window_end(scan, MUHURAT) == ist(MUHURAT, 14, 25)
+    assert is_late(ist(MUHURAT, 14, 25), MUHURAT, shift(MUHURAT))
+    assert not is_late(ist(MUHURAT, 14, 24), MUHURAT, shift(MUHURAT))
+
+
+def test_muhurat_bars_and_preopen_follow_the_session() -> None:
+    cal = muhurat()
+    builder = BarBuilder(hours=cal.hours)
+    assert builder.bar_start(ist(MUHURAT, 14, 22)) == ist(MUHURAT, 14, 20)
+    assert builder.bar_start(ist(MUHURAT, 14, 19)) is None
+    assert builder.bar_start(ist(DAY, 9, 17)) == ist(DAY, 9, 15)
+    gaps = PreopenGaps(lambda day: cal.hours(day)[0])
+    tick = {"symbol": "TCS", "prev_close_price": 100, "indicative_open_price": 104}
+    assert gaps.observe(tick, ist(MUHURAT, 9, 5)) is None  # the regular pre-open: shut
+    found = gaps.observe(tick, ist(MUHURAT, 14, 10))
+    assert found is not None
+    assert found.source is GapSource.PREOPEN

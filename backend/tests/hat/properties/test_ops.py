@@ -26,6 +26,7 @@ from app.hat.daily.assembly import ALERT_POOL, subscription_alert
 from app.hat.daily.periodic import PERIODIC_STALLED, STALL_AFTER, Heartbeats, stalled
 from app.hat.daily.runtime import HatRuntime, after_restore
 from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
+from app.hat.engine.live_entry import DataHealthKill
 from app.hat.errors import HatConfigError
 from app.hat.execution.session import (
     BACKOFF_CAP_SECONDS,
@@ -40,6 +41,7 @@ from app.hat.ops.jobs import (
     JobError,
     RunStatus,
 )
+from app.hat.ops.runtime_lock import RuntimeLockHeldError
 from app.hat.ops.scheduler import (
     JOB_MISSED,
     JOB_RUNNING_LONG,
@@ -270,33 +272,70 @@ def test_failed_start_keeps_the_lock_for_the_callers_stop() -> None:
     assert lock.released.is_set()
 
 
-def _watched(take: object) -> tuple[HatRuntime, RecordingNotifier, threading.Event]:
-    notifier, lost = RecordingNotifier(), threading.Event()
+class _Assembly:
+    """What `watch_lock` reads of the assembly: its notifier, the two events and `halt`."""
+
+    def __init__(self) -> None:
+        self.notifier = RecordingNotifier()
+        self.lock_lost = threading.Event()
+        self.halted = threading.Event()
+
+    def halt(self) -> None:
+        self.lock_lost.set()
+        self.halted.set()
+
+
+def _watched(take: object) -> tuple[HatRuntime, _Assembly]:
     runtime = _enabled_runtime(take, lambda: None)
     runtime._lock = _Lock(alive=False)  # type: ignore[assignment]
-    runtime.assembly = mock.Mock(notifier=notifier, lock_lost=lost)
-    return runtime, notifier, lost
+    assembly = _Assembly()
+    runtime.assembly = assembly  # type: ignore[assignment]
+    return runtime, assembly
 
 
 def test_lost_lock_taken_again_keeps_entries() -> None:
     fresh = _Lock()
-    runtime, notifier, lost = _watched(lambda: fresh)
+    runtime, assembly = _watched(lambda: fresh)
     runtime.watch_lock(datetime(2026, 10, 26, 5, tzinfo=UTC))
-    assert not lost.is_set()
-    assert notifier.alerts == []
+    assert not assembly.lock_lost.is_set()
+    assert assembly.notifier.alerts == []
     runtime.watch_lock(datetime(2026, 10, 26, 5, 1, tzinfo=UTC))  # alive: nothing to do
     assert not fresh.released.is_set()
 
 
-def test_lost_lock_held_elsewhere_stops_entries_and_alerts_once() -> None:
-    def held() -> None:
-        raise HatConfigError("another HAT runtime holds the runtime lock")
+def test_lost_lock_held_elsewhere_halts_orders_and_alerts_once() -> None:
+    """Another runtime holds the lock: no entry and no order here (audit A3 F8), one alert, and
+    the lock is never tried again."""
+    tries: list[int] = []
 
-    runtime, notifier, lost = _watched(held)
+    def held() -> None:
+        tries.append(1)
+        raise RuntimeLockHeldError("another HAT runtime holds the runtime lock")
+
+    runtime, assembly = _watched(held)
     for minute in range(3):
         runtime.watch_lock(datetime(2026, 10, 26, 5, minute, tzinfo=UTC))
-    assert lost.is_set()
-    assert [code for code, _day, _detail in notifier.alerts] == ["runtime.lock_lost"]
+    assert assembly.lock_lost.is_set()
+    assert assembly.halted.is_set()
+    assert [code for code, _day, _detail in assembly.notifier.alerts] == ["runtime.lock_lost"]
+    assert len(tries) == 1
+
+
+def test_lost_lock_unreachable_stops_entries_and_tries_again() -> None:
+    """The database is unreachable: no new entry, one alert, not halted, tried every check."""
+    tries: list[int] = []
+
+    def unreachable() -> None:
+        tries.append(1)
+        raise ConnectionError("database unreachable")
+
+    runtime, assembly = _watched(unreachable)
+    for minute in range(3):
+        runtime.watch_lock(datetime(2026, 10, 26, 5, minute, tzinfo=UTC))
+    assert assembly.lock_lost.is_set()
+    assert not assembly.halted.is_set()
+    assert [code for code, _day, _detail in assembly.notifier.alerts] == ["runtime.lock_lost"]
+    assert len(tries) == 3
 
 
 # ---------------------------------------------------------------------------------------
@@ -792,3 +831,29 @@ def test_a_failure_noted_outside_the_scheduler_waits_its_retry() -> None:
     scheduler.note_failed(job.name, day, failed)
     assert scheduler.due_jobs(failed + timedelta(seconds=30), {day: set()}) == []
     assert scheduler.due_jobs(failed + timedelta(minutes=1), {day: set()}) == [(job, day)]
+
+
+def test_a_failed_feed_health_write_stays_pending_and_alerts_once() -> None:
+    """Audit A2 F6: a failed kill write is not counted written; `retry` writes the latest change
+    again, and only the first failure of a run is alerted."""
+
+    class Scripted(DataHealthKill):
+        def __init__(self, results: list[bool], notifier: RecordingNotifier) -> None:
+            super().__init__(lambda: None, FixedClock(datetime(2026, 10, 26, 5, tzinfo=UTC)),
+                             submit=lambda work: work(), notifier=notifier)  # fmt: skip
+            self.results, self.written = results, []
+
+        def _write(self, stale: bool, at: datetime) -> bool:
+            ok = self.results.pop(0)
+            if ok:
+                self.written.append(stale)
+            return ok
+
+    notifier = RecordingNotifier()
+    kill = Scripted([False, False, True], notifier)
+    kill(True)  # the trip fails
+    assert not kill.retry()  # fails again: no second alert
+    assert kill.retry()  # written
+    assert kill.retry()  # nothing pending: no write
+    assert kill.written == [True]
+    assert [code for code, _day, _detail in notifier.alerts] == ["feed_health.unwritten"]

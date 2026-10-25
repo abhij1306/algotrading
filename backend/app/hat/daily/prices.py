@@ -69,6 +69,10 @@ class PriceBook:
             )
             self._symbols = {**self._symbols, **dict(found.all())}
 
+    def tracks(self, instrument_id: uuid.UUID) -> bool:
+        """Whether the instrument's price is read by id (`track_session` added it)."""
+        return instrument_id in self._symbols
+
     def reset(self) -> None:
         """A new trading day: yesterday's prices are not today's."""
         self._prices = {}

@@ -15,8 +15,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    trade of the day only while the feed itself is fresh (an illiquid name), never an entry.
 5. No order outside the session in `hat_trading_calendar` (09:15-15:30 IST). A date the calendar
    lacks is no trading day; a special session has only its stored hours, else it is closed. The
-   close phase (`exits.close`, the GTT swap, the sales' cut-off) is set against the session's
-   stored close, 10, 5 and 0 minutes before it, so it follows an early close or a Muhurat session.
+   close phase (`exits.close`, the GTT swap, the sales' cut-off, the session end) is set against
+   the session's stored close, 10, 5 and 0 minutes before it, and the open phase (`live.prepare`,
+   `modes.apply`, the gap scan, the regime gate, the pre-open capture, the bar grid) against its
+   stored open, so both follow an early close or a Muhurat session.
 6. `max_chase` always applies, even if a config deletes the criterion.
 7. No entry is placed, and no Take passes, once its break failed: a final 5-minute bar after the
    trigger bar closed below the level. An unfilled entry whose break failed is cancelled, and its
@@ -93,12 +95,14 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   account kill before it sells. An entry fill landing after a flatten sold its position is sold
   under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
-  evidence gate; policy and strategy versions are immutable. The gate counts the live trades
+  evidence gate; a decrease withdraws every pending version, so a later decrease is never
+  overridden; policy and strategy versions are immutable. The gate counts the live trades
   closed since the version in force took effect, so any change, a decrease too, restarts that
   window; every sleeve's evidence run must pass the lifecycle's span, gap and ambiguity
   conditions (QA8), and the gate reads only the runs and trades that existed when it was asked.
 - **One owner per resource.** One live socket, one session owner per broker account, one token
-  store, one fake broker, one risk authority, one HAT runtime per database.
+  store, one fake broker, one risk authority, one HAT runtime per database. A runtime whose
+  lock another runtime took writes no order (no entry, stop or sale) until it is restarted.
 - **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
   logged, returned or committed.
 - **Events.** Every state change and its event commit in one transaction; `hat_event` is

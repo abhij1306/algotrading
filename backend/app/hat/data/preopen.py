@@ -1,6 +1,7 @@
 """Pre-open gap capture (HAT-DATA-118).
 
-From 09:00 to 09:08 IST the indicative open of each subscribed symbol is recorded against its
+From 09:00 to 09:08 IST (15 to 7 minutes before the session open: a special session's own
+pre-open, given by `hours`) the indicative open of each subscribed symbol is recorded against its
 previous close. When the feed carries no pre-open field (an `[A]` validated during the build),
 the open of the first tick of the session is used instead. Each record says which source
 supplied the open. Records are kept per (symbol, trade date), and the first-tick open is taken
@@ -12,9 +13,9 @@ session's (PR 22).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from enum import StrEnum
 from fractions import Fraction
@@ -37,6 +38,8 @@ __all__ = [
 
 PREOPEN_START = time(9, 0)
 PREOPEN_END = time(9, 8)
+_START_BEFORE_OPEN = timedelta(minutes=15)  # 09:00 before the 09:15 open
+_END_BEFORE_OPEN = timedelta(minutes=7)  # 09:08
 # [A] Fyers fields that may carry an indicative pre-open price; validated during the build.
 INDICATIVE_OPEN_FIELDS = ("indicative_open_price", "pre_open_price")
 OPEN_FIELD = "open_price"
@@ -87,8 +90,20 @@ class PreopenGaps:
     """One gap record per symbol per trade date: the latest indicative open in the pre-open
     window, else the open of the first in-session tick."""
 
-    def __init__(self) -> None:
+    def __init__(self, opens: Callable[[date], time] | None = None) -> None:
         self._records: dict[tuple[str, date], GapRecord] = {}
+        self._opens = opens  # a day's own session open (IST); default the regular one
+
+    def _window(self, day: date) -> tuple[time, time, time]:
+        """`day`'s pre-open start, end and session open, IST wall times."""
+        if self._opens is None:
+            return PREOPEN_START, PREOPEN_END, SESSION_OPEN
+        opens = datetime.combine(day, self._opens(day))
+        return (
+            (opens - _START_BEFORE_OPEN).time(),
+            (opens - _END_BEFORE_OPEN).time(),
+            opens.time(),
+        )
 
     def records(self, day: date) -> dict[str, GapRecord]:
         """The records of trade date `day`, by symbol."""
@@ -103,13 +118,14 @@ class PreopenGaps:
         if prev_close is None:
             return None
         local = require_aware(now).astimezone(IST)
+        start, end, session_open = self._window(local.date())
         indicative = _price(payload, INDICATIVE_OPEN_FIELDS)
-        if indicative is not None and PREOPEN_START <= local.time() <= PREOPEN_END:
+        if indicative is not None and start <= local.time() <= end:
             return self.record(symbol, indicative, prev_close, GapSource.PREOPEN, now)
         opened = _price(payload, (OPEN_FIELD,))
         if (
             opened is not None
-            and local.time() >= SESSION_OPEN
+            and local.time() >= session_open
             and (symbol, local.date()) not in self._records
         ):
             return self.record(symbol, opened, prev_close, GapSource.FIRST_TICK, now)

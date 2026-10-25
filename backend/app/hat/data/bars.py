@@ -6,10 +6,10 @@ contract: the live service calls it only from the event-loop thread.
 
 Rules ("Bar builder rules"):
 
-- A bar starts at the session open (09:15 IST) plus a whole number of 5-minute widths. A tick at
-  exchange time `t` belongs to exactly the bar starting at `open + 5 min * floor((t - open) /
-  5 min)`. The session is half-open, `[open, close)`: a print stamped at or after the close, or
-  before the open, belongs to no bar.
+- A bar starts at the session open (09:15 IST, or the day's own open from `hours`) plus a whole
+  number of 5-minute widths. A tick at exchange time `t` belongs to exactly the bar starting at
+  `open + 5 min * floor((t - open) / 5 min)`. The session is half-open, `[open, close)`: a print
+  stamped at or after the close, or before the open, belongs to no bar.
 - A bar is final at `end + 2 s`. A tick that arrives (`now`) at or after that instant is *late*:
   it is counted and dropped, so a final bar never changes. A tick that arrives earlier is in
   time even when it is out of order: open and close are chosen by exchange time (arrival order
@@ -41,7 +41,7 @@ Rules ("Bar builder rules"):
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -160,6 +160,9 @@ class BarBuilder:
 
     session_open: time = SESSION_OPEN
     session_close: time = SESSION_CLOSE
+    # a day's own session (IST open, close): the trading calendar's, so a special session
+    # (Muhurat) builds its bars, opening range and volume pace from its own hours
+    hours: Callable[[date], tuple[time, time]] | None = None
     late_ticks: int = 0
     _open_bars: dict[tuple[str, datetime], _OpenBar] = field(default_factory=dict)
     _opening: dict[tuple[str, date], tuple[Decimal, Decimal]] = field(default_factory=dict)
@@ -175,11 +178,16 @@ class BarBuilder:
         if self.session_open >= self.session_close:
             raise ValueError("the session must open before it closes")
 
+    def _hours(self, day: date) -> tuple[time, time]:
+        return (
+            self.hours(day) if self.hours is not None else (self.session_open, self.session_close)
+        )
+
     def session_start(self, day: date) -> datetime:
-        return datetime.combine(day, self.session_open, tzinfo=IST)
+        return datetime.combine(day, self._hours(day)[0], tzinfo=IST)
 
     def session_end(self, day: date) -> datetime:
-        return datetime.combine(day, self.session_close, tzinfo=IST)
+        return datetime.combine(day, self._hours(day)[1], tzinfo=IST)
 
     def bar_start(self, at: datetime) -> datetime | None:
         """Start of the bar a print at `at` belongs to, or None outside `[open, close)`."""
@@ -415,9 +423,8 @@ class BarBuilder:
         state = self._days.get((symbol, day))
         if state is None or state.ticks == 0:
             return None
-        return volume_pace(
-            state.volume, at, session_open=self.session_open, session_close=self.session_close
-        )
+        opens, closes = self._hours(day)
+        return volume_pace(state.volume, at, session_open=opens, session_close=closes)
 
     def open_bar_count(self) -> int:
         return len(self._open_bars)

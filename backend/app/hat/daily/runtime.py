@@ -20,7 +20,8 @@ second one refuses to start) and starts in the restart-safe order of HAT-OPS-003
 `stop` ends them in reverse, each step even if another failed, and releases the lock last. A
 start that fails stops through its caller (the lifespan's shutdown); a cancelled one (or an
 interrupt) stops itself, and a lock its worker thread takes after that is released at once.
-While it runs, the housekeeping checks the lock's connection every minute (`watch_lock`).
+While it runs, the housekeeping checks the lock's connection every minute (`watch_lock`); a
+runtime whose lock another runtime took writes no order from then on (`Assembly.halt`).
 `assembly` is None until the assembly is built; a start that failed before then stops only the
 feed.
 """
@@ -45,7 +46,7 @@ from ..ops.jobs import (
     reopen,
     run_job,
 )
-from ..ops.runtime_lock import RuntimeLock
+from ..ops.runtime_lock import RuntimeLock, RuntimeLockHeldError
 from ..settings import HatSettings, require_postgres
 from ..telegram.service import run_relay
 from ..time import IST, trade_date_of, utc_now
@@ -195,9 +196,16 @@ class HatRuntime:
 
     def watch_lock(self, now: datetime) -> None:
         """The housekeeping's check of the lock: when its connection is gone (a Postgres restart,
-        a terminated backend) take it again on a new one. When that fails another runtime may
-        hold it: set `lock_lost`, which refuses every new entry until a restart (stops and exits
-        keep running), and alert `runtime.lock_lost` once."""
+        a terminated backend) take it again on a new one. When that fails, set `lock_lost`
+        (no new entry until a restart) and alert `runtime.lock_lost` once. When it fails because
+        another runtime holds the lock (`RuntimeLockHeldError`), that runtime owns the accounts:
+        halt this one (`Assembly.halt`: no job, no periodic order step, the desks released, so it
+        sends no stop or sale beside the other, audit A3 F8) and stop watching. Any other failure
+        (the database still unreachable, so nothing here can reserve an order either) is tried
+        again at the next check."""
+        assembly = self.assembly
+        if assembly is not None and assembly.halted.is_set():
+            return  # halted: never take the lock back from the runtime that holds it
         with self._lock_guard:
             lock = self._lock
         if lock is None or lock.alive():
@@ -206,31 +214,40 @@ class HatRuntime:
         try:
             self._take_lock()
         except Exception as exc:
-            reason = type(exc).__name__
+            reason, held = type(exc).__name__, isinstance(exc, RuntimeLockHeldError)
         else:
             logger.warning("HAT runtime lock connection was lost; the lock is taken again")
             return
-        if self.assembly is not None:
-            self.assembly.lock_lost.set()
-        logger.error("HAT runtime lock lost and not taken again (%s): no new entry", reason)
-        if self._lock_alerted or self.assembly is None:
+        if assembly is not None:
+            assembly.lock_lost.set()
+            if held:
+                assembly.halt()
+        logger.error(
+            "HAT runtime lock lost and not taken again (%s): no new entry%s",
+            reason,
+            ", no order (another runtime holds it)" if held else "",
+        )
+        if assembly is None or (self._lock_alerted and not held):
             return
         self._lock_alerted = True
         try:
-            self.assembly.notifier.alert(LOCK_LOST, trade_date_of(now), {"reason": reason})
+            assembly.notifier.alert(
+                LOCK_LOST, trade_date_of(now), {"reason": reason, "halted": held}
+            )
         except Exception:
             logger.exception("alert %s not sent", LOCK_LOST)
 
     async def _recover(self, assembly: Assembly) -> None:
         """HAT-OPS-003: reconcile and read fills (the entries left in Triggered wait for a fresh
         feed: `resume_entries`), then arm a day already under way (a restart after 08:45 on a
-        trading day): restore the day's bars, then arm it, even when the restore failed
-        (`after_restore`)."""
+        trading day, moved with a session that opens at another time): restore the day's bars,
+        then arm it, even when the restore failed (`after_restore`)."""
         now = self._now()
         await asyncio.to_thread(watch_sessions, assembly, now)
         await asyncio.to_thread(assembly.desks.recover, now)
         today = trade_date_of(now)
-        if self.calendar.trading(today) and now.astimezone(IST).time() >= PREPARE_AT:
+        prepare_at = datetime.combine(today, PREPARE_AT, tzinfo=IST)
+        if self.calendar.trading(today) and now >= prepare_at + assembly.intraday.open_shift(today):
             # before the feed starts (the bar builder is the loop thread's once it does): the
             # bars stored before the restart give back the opening ranges and day volumes
             status, error = await asyncio.to_thread(self._restore, assembly, today)

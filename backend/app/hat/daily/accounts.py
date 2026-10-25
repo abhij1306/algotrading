@@ -84,7 +84,7 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 END_SESSION = "trade.end_session"
-END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill
+END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill; moves with the close
 RECONCILE_FAILED = "reconcile.failed"
 BUDGET_SPENT = "broker.budget_spent"
 BROKER_HEALTH = "broker_health"
@@ -667,6 +667,7 @@ def account_jobs(
                 END_SESSION_AT,
                 end,
                 retry_after=timedelta(minutes=5),
+                shift=manager.close_shift,
             )
         )
     return tuple(jobs)
