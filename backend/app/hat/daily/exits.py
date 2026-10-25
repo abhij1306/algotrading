@@ -20,7 +20,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -241,8 +241,10 @@ class ShadowExits:
         return closed
 
     def close(self, now: datetime) -> int:
-        """The close-phase pass (the day's demerger exits first); nothing outside 15:20-15:25
-        IST."""
-        if not in_close_window(now):
+        """The close-phase pass (the day's demerger exits first); nothing outside the close
+        window (15:20-15:25 IST in a regular session, `in_close_window`)."""
+        calendar = self._calendar()
+        shift = calendar.close_shift(trade_date_of(now)) if calendar is not None else timedelta(0)
+        if not in_close_window(now, shift):
             return 0
         return self.demergers(now) + self.run(now, "close")

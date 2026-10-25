@@ -204,9 +204,9 @@ def test_fyers_payload_mapping(intent: OrderIntent) -> None:
 def test_order_goes_out_under_the_stored_broker_symbol(
     intent: OrderIntent, series: str, readable: bool
 ) -> None:
-    """An order is sent under the broker symbol stored for its
-    instrument (`-BE` for a trade-for-trade stock), and under the converted `-EQ` symbol when the
-    stored symbols cannot be read."""
+    """An order is sent under the broker symbol stored for its instrument (`-BE` for a
+    trade-for-trade stock). When the stored symbols cannot be read it is refused unsent with a
+    not-sent code, never guessed as the `-EQ` symbol (which takes no order for a BE stock)."""
     sdk = RecordingSdk()
     stored = f"NSE:{intent.symbol}-{series}"
 
@@ -216,8 +216,11 @@ def test_order_goes_out_under_the_stored_broker_symbol(
         return [(intent.symbol, stored)]
 
     result = FyersHatBroker(broker_over(sdk), instruments=source).place_order(intent)
+    if not readable:
+        assert (result.status, result.code, sdk.calls) == ("rejected", "broker_unavailable", [])
+        return
     assert result.status == "placed"
-    assert sdk.calls[0][1]["symbol"] == (stored if readable else SYMBOLS[intent.symbol])
+    assert sdk.calls[0][1]["symbol"] == stored
 
 
 bad_values = st.sampled_from([0, -1, None, True, 1.5, "10", Decimal("NaN"), Decimal("Infinity")])
@@ -388,9 +391,11 @@ def _failing_fake(kind: str) -> FakeBroker:
         fake.available = error
     elif kind == "garbage":
         row = {"id": SECRET}  # a row missing every other field
-        fake.tradebook, fake.holdings = [row], [row]
-        # an untagged order row that cannot be read is skipped (D118); an HT-tagged one fails
-        fake.orders = [{**row, "orderTag": encode_tag(uuid.UUID(int=7), "entry", 0)}]
+        fake.holdings = [row]
+        # an untagged order or trade row that cannot be read is skipped (D118); an HT-tagged one
+        # fails the read
+        tagged = {**row, "orderTag": encode_tag(uuid.UUID(int=7), "entry", 0)}
+        fake.orders = fake.tradebook = [tagged]
         fake.positions = [{"symbol": SECRET}]
         fake.available = funds_reply(SECRET)
     return fake

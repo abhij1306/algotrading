@@ -15,6 +15,10 @@
   the broker's book. One the book shows with shares already sold waits for the fill sync
   (`found_verdict`), which adopts it with its fills: adopted bare, a stop or sale would leave
   shares HAT still counts with no stop over them, and a new stop would go over shares sold.
+  Fyers' order book can lag a placed order, so a lost day stop or sale is taken as never landed
+  only on a second absent read at least `settle_after` after the first (`AbsentReads`): a
+  second sell beside one that landed is refused by the broker only when HAT owns every share of
+  the symbol, and the owner may hold some (the holding baseline).
 """
 
 from __future__ import annotations
@@ -34,10 +38,12 @@ from ..time import as_utc, trade_date_of
 
 __all__ = [
     "LOST_ANSWER_SETTLE",
+    "AbsentReads",
     "PositionDesk",
     "Verdict",
     "found_verdict",
     "serialised",
+    "second_absence",
     "settle_verdict",
 ]
 
@@ -73,19 +79,54 @@ def settle_verdict(
     settle_after: timedelta,
     *,
     filled_qty: int = 0,
-    sale: bool = False,
+    from_holdings: bool = False,
 ) -> Verdict:
     """What a good read of the broker's book (`found`: it holds the order, with `filled_qty`
-    shares sold) says about a stop or sale whose answer was lost, sent at `placed_at` (None:
-    never sent). A sale (`sale`) of an earlier trade date is STALE, settled from the holdings,
-    since a DAY market sale cannot still rest and the order book is today's."""
+    shares sold) says about an order whose answer was lost, sent at `placed_at` (None: never
+    sent). A sale or an entry (`from_holdings`) of an earlier trade date is STALE, settled from
+    the holdings, since a DAY order cannot still rest and the books are today's: they can never
+    show it."""
     if found:
         return found_verdict(filled_qty)
     if young(placed_at, now, settle_after):
         return Verdict.WAIT
-    if sale and placed_at is not None and trade_date_of(as_utc(placed_at)) < trade_date_of(now):
+    if (
+        from_holdings
+        and placed_at is not None
+        and trade_date_of(as_utc(placed_at)) < trade_date_of(now)
+    ):
         return Verdict.STALE
     return Verdict.EXPIRE
+
+
+def second_absence(first_absent: datetime, now: datetime, settle_after: timedelta) -> bool:
+    """Whether an absent read at `now` confirms the one at `first_absent`: at least
+    `settle_after` later, so a book that lagged the order at the first read has caught up."""
+    return now - first_absent >= settle_after
+
+
+class AbsentReads:
+    """When each lost day stop or sale was first read absent from a good read of the order book
+    (by its tag). `confirmed` is True only for a second absent read `settle_after` after the
+    first; a read that finds the order forgets the first. Held in memory: after a restart the
+    first read is taken again, which only waits longer."""
+
+    def __init__(self, settle_after: timedelta) -> None:
+        self._settle_after = settle_after
+        self._first: dict[str, datetime] = {}
+        self._lock = threading.Lock()
+
+    def confirmed(self, tag: str, now: datetime) -> bool:
+        with self._lock:
+            first = self._first.setdefault(tag, now)
+            if not second_absence(first, now, self._settle_after):
+                return False
+            del self._first[tag]
+            return True
+
+    def found(self, tag: str) -> None:
+        with self._lock:
+            self._first.pop(tag, None)
 
 
 class PositionDesk:
@@ -98,6 +139,7 @@ class PositionDesk:
     ) -> None:
         self.settle_after = settle_after
         self.clock = clock
+        self.absent = AbsentReads(settle_after)
         self._locks: dict[uuid.UUID, threading.RLock] = {}
         self._locks_guard = threading.Lock()
 
@@ -120,12 +162,32 @@ class PositionDesk:
         return young(placed_at, self.clock.now(), self.settle_after)
 
     def verdict(
-        self, placed_at: datetime | None, found: bool, *, filled_qty: int = 0, sale: bool = False
+        self,
+        placed_at: datetime | None,
+        found: bool,
+        *,
+        filled_qty: int = 0,
+        from_holdings: bool = False,
+        tag: str | None = None,
     ) -> Verdict:
-        """`settle_verdict` now."""
-        return settle_verdict(
-            placed_at, found, self.clock.now(), self.settle_after, filled_qty=filled_qty, sale=sale
+        """`settle_verdict` now. With the order's `tag` (a day stop or sale in the session), an
+        EXPIRE stands only on a second absent read (`AbsentReads`); the first is WAIT."""
+        now = self.clock.now()
+        verdict = settle_verdict(
+            placed_at,
+            found,
+            now,
+            self.settle_after,
+            filled_qty=filled_qty,
+            from_holdings=from_holdings,
         )
+        if tag is None:
+            return verdict
+        if found:
+            self.absent.found(tag)
+        elif verdict is Verdict.EXPIRE and not self.absent.confirmed(tag, now):
+            return Verdict.WAIT
+        return verdict
 
 
 class _Positioned(Protocol):

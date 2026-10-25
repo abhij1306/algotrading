@@ -6,8 +6,9 @@ invalid intent raises `InvalidIntentError` before any broker call. Every raw rep
 its amounts through `money.require_exact` and its share counts as whole numbers
 (`parse_positions`, `parse_funds`, `parse_holdings`, `parse_trade`, `parse_order_book`,
 `parse_gtt_row`): a field HAT reads that is missing or not a number fails the read (one of
-`UNREADABLE`), never reads as 0. Nothing here holds state or calls the SDK: `FyersHatBroker`
-(`fyers_adapter.py`) does.
+`UNREADABLE`), never reads as 0. A book row outside HAT's scope that cannot be read is skipped
+and counted (`parse_order_book`, `parse_trade_book`). Nothing here holds state or calls the SDK:
+`FyersHatBroker` (`fyers_adapter.py`) does.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from .broker import (
     OrderIntent,
     OrderType,
     Side,
+    TradeBook,
 )
 from .fyers_broker import (
     BROKER_CIRCUIT_OPEN,
@@ -69,6 +71,7 @@ __all__ = [
     "parse_order_row",
     "parse_positions",
     "parse_trade",
+    "parse_trade_book",
     "place_result",
     "reply_count",
     "reply_id",
@@ -374,6 +377,28 @@ def parse_trade(row: dict[str, Any]) -> BrokerTrade:
     )
 
 
+def parse_trade_book(rows: Iterable[Any]) -> TradeBook:
+    """Every row of the trade book. A trade without an HT tag (or one of HAT's GTT tags) that
+    cannot be read is skipped and counted, as in the order book (a manual or foreign trade must
+    not stop the fill sync, D118); a HAT-tagged one that cannot be read raises, so the read fails
+    instead of missing one of HAT's fills."""
+    book = TradeBook()
+    for row in rows:
+        try:
+            book.append(parse_trade(row))
+        except UNREADABLE:
+            if _is_hat_row(row):
+                raise
+            book.skipped += 1
+    return book
+
+
+def _is_hat_row(row: object) -> bool:
+    """Whether a raw book row carries an HT tag or one of HAT's GTT tags."""
+    own, gtt_tag = _row_tags(row.get("orderTag") if isinstance(row, dict) else None)
+    return is_hat_tag(own) or gtt_tag is not None
+
+
 def _side(value: object) -> Side:
     return {1: Side.BUY, -1: Side.SELL}[reply_count(value, "side", minimum=None)]
 
@@ -516,9 +541,7 @@ def parse_order_book(rows: Iterable[Any]) -> OrderBook:
         try:
             book.append(parse_order_row(row))
         except UNREADABLE:
-            tag = row.get("orderTag") if isinstance(row, dict) else None
-            own, gtt_tag = _row_tags(tag)
-            if is_hat_tag(own) or gtt_tag is not None:
+            if _is_hat_row(row):
                 raise
             book.skipped += 1
     return book

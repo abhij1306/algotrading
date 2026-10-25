@@ -15,7 +15,9 @@ that fires twice cannot run a body twice.
 A job with a window (`until`, PR 15c) is never started at or after its end: `exits.close` runs
 between 15:20 and 15:25 IST or not at all that day (HAT-EXEC-074, TLA
 `JobScheduler!ExitsCloseInWindow`), and a failed run is tried again `retry_after` after the
-failed run ended, which fits inside the window.
+failed run ended, which fits inside the window. A job with a `shift` (the close-phase jobs) moves
+its time and window with a session that closes at another time than 15:30 (an early close, a
+special session): 10 to 5 minutes before that session's close.
 
 A chained job (`after`, no window) of the night before still starts after IST midnight, under
 that night's trade date, until `CARRY_UNTIL`: a nightly chain whose head finished late (the
@@ -89,7 +91,9 @@ class ScheduledJob:
     (Monday 0) limits the job to one day of the week; `on_finish` is passed to `run_job`;
     `carry` lets a job with no `after` (and no window) carry past midnight as a chained one does
     (`carries_over`; `snapshot.bots`, PR 33); `deadline` is how long after `at` the run has to
-    have succeeded before the owner is told (`overdue`)."""
+    have succeeded before the owner is told (`overdue`). `shift` moves `at` and `until` on a
+    date by how far its session closes from the regular close (`SessionCalendar.close_shift`):
+    the close-phase jobs follow an early close or a special session."""
 
     name: str
     at: time
@@ -102,6 +106,21 @@ class ScheduledJob:
     on_finish: Callable[[date], OnFinish] | None = None
     carry: bool = False
     deadline: timedelta = DEFAULT_DEADLINE
+    shift: Callable[[date], timedelta] | None = None
+
+
+def starts_at(job: ScheduledJob, day: date) -> datetime:
+    """When `job` becomes due on `day`: its `at` (IST), moved by its `shift`."""
+    at = datetime.combine(day, job.at, tzinfo=IST)
+    return at + job.shift(day) if job.shift is not None else at
+
+
+def window_end(job: ScheduledJob, day: date) -> datetime | None:
+    """The end of `job`'s window on `day` (`until`, moved by its `shift`), or None."""
+    if job.until is None:
+        return None
+    end = datetime.combine(day, job.until, tzinfo=IST)
+    return end + job.shift(day) if job.shift is not None else end
 
 
 def runs_on(job: ScheduledJob, day: date, trading: TradingDay) -> bool:
@@ -142,8 +161,8 @@ def due(
     if job.name in succeeded or not runs_on(job, day, trading):
         return False
     if day == today:
-        local = now.astimezone(IST).time()
-        if local < job.at or (job.until is not None and local >= job.until):
+        end = window_end(job, day)
+        if now < starts_at(job, day) or (end is not None and now >= end):
             return False
     elif not carries_over(job, day, now):
         return False
@@ -167,7 +186,7 @@ def overdue(
     else (never started, failed and waiting for a retry) is `job.missed`."""
     if succeeded or not runs_on(job, day, trading):
         return None
-    if now < datetime.combine(day, job.at, tzinfo=IST) + job.deadline:
+    if now < starts_at(job, day) + job.deadline:
         return None
     return JOB_RUNNING_LONG if running else JOB_MISSED
 
@@ -312,7 +331,7 @@ class HatScheduler:
         self._alerted = {key for key in self._alerted if key[1] >= today - ONE_DAY}
         for day in (today, today - ONE_DAY):
             for job in self._jobs:
-                at = timedelta(hours=job.at.hour, minutes=job.at.minute)
+                at = starts_at(job, day) - datetime.combine(day, time(0), tzinfo=IST)
                 if day != today and at + job.deadline < ONE_DAY:
                     continue  # a deadline before midnight was the night before's to sweep
                 done = succeeded.get(day, ())
@@ -333,7 +352,7 @@ class HatScheduler:
         """Whether `job` runs for `day` and started before its deadline: one started after it
         (a late process) has missed it, not hung."""
         started = self._attempted.get((job.name, day))
-        deadline = datetime.combine(day, job.at, tzinfo=IST) + job.deadline
+        deadline = starts_at(job, day) + job.deadline
         return self._running_day.get(job.name) == day and started is not None and started < deadline
 
     def _alert(self, name: str, day: date, code: str, error: str | None) -> None:

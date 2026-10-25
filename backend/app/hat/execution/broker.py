@@ -48,6 +48,7 @@ __all__ = [
     "PlaceResult",
     "SessionStatus",
     "Side",
+    "TradeBook",
     "write_refusal",
 ]
 
@@ -236,6 +237,13 @@ class BrokerTrade:
     gtt_tag: str | None = None  # as BrokerOrder.gtt_tag
 
 
+class TradeBook(list[BrokerTrade]):
+    """The broker's trade book as read: the readable rows, plus how many trades outside HAT's
+    scope (no HT tag, no tag of one of HAT's GTTs) could not be read and were skipped (D118)."""
+
+    skipped: int = 0
+
+
 @dataclass(frozen=True)
 class BrokerPosition:
     symbol: str
@@ -299,7 +307,7 @@ class HatBroker(Protocol):
 
     def orders(self) -> OrderBook: ...
 
-    def trades(self) -> list[BrokerTrade]: ...
+    def trades(self) -> TradeBook: ...
 
     def positions(self) -> list[BrokerPosition]: ...
 

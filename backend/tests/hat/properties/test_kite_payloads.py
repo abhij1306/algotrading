@@ -295,6 +295,18 @@ def test_trades_take_their_order_tags() -> None:
         parse_trades(FIXTURE["trades"], FIXTURE["orders"][:1], same)
 
 
+def test_an_unreadable_foreign_trade_is_skipped_and_a_hat_one_fails_the_read() -> None:
+    """One unreadable trade of an order without an HT tag must not stop the fill sync; one of
+    HAT's must fail the read rather than miss a fill."""
+    bad = {**FIXTURE["trades"][0], "trade_id": "1", "order_id": "9", "average_price": 0}
+    foreign = [*FIXTURE["orders"], {"order_id": "9", "tag": None}]
+    trades = parse_trades([*FIXTURE["trades"], bad], foreign, same)
+    assert (len(trades), trades.skipped) == (2, 1)
+    own = [*FIXTURE["orders"], {"order_id": "9", "tag": ENTRY_TAG}]
+    with pytest.raises(ValueError):
+        parse_trades([*FIXTURE["trades"], bad], own, same)
+
+
 def test_positions_holdings_funds() -> None:
     positions = parse_positions(FIXTURE["positions"], same)
     assert [(p.symbol, p.qty, p.avg_price, p.product) for p in positions] == [

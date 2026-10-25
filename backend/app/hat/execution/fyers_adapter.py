@@ -35,7 +35,6 @@ from .broker import (
     BrokerGtt,
     BrokerHolding,
     BrokerPosition,
-    BrokerTrade,
     BrokerUnavailableError,
     Capabilities,
     GttModify,
@@ -46,6 +45,7 @@ from .broker import (
     OrderType,
     PlaceResult,
     SessionStatus,
+    TradeBook,
 )
 from .fyers_auth import (
     FyersAuthService,
@@ -71,7 +71,7 @@ from .fyers_payloads import (
     parse_holdings,
     parse_order_book,
     parse_positions,
-    parse_trade,
+    parse_trade_book,
     place_result,
 )
 from .fyers_session import FyersSession, get_fyers_session
@@ -202,16 +202,21 @@ class FyersHatBroker:
 
     def _fyers_symbol(self, symbol: str) -> str:
         """The Fyers symbol orders for `symbol` go out under: the stored broker symbol (`-BE` for a
-        trade-for-trade stock), else the converted `-EQ` one."""
+        trade-for-trade stock), else the converted `-EQ` one (an instrument HAT never mapped).
+        `BrokerUnavailableError` when the stored symbols cannot be read: the `-EQ` name of a
+        trade-for-trade stock takes no order, so no name is guessed."""
         try:
             stored = dict(self._instruments()).get(symbol_master.to_db(symbol))
         except Exception:
-            logger.warning("Stored Fyers symbols unreadable; converting %s", symbol)
-            stored = None
+            logger.exception("Stored Fyers symbols unreadable: %s not sent", symbol)
+            raise BrokerUnavailableError(CODE_UNAVAILABLE) from None
         return stored or symbol_master.to_fyers(symbol)
 
     def place_order(self, intent: OrderIntent) -> PlaceResult:
-        order = order_payload(intent, self._fyers_symbol)
+        try:
+            order = order_payload(intent, self._fyers_symbol)
+        except BrokerUnavailableError as error:
+            return PlaceResult("rejected", None, error.code)  # the lookup failed: nothing sent
         try:
             reply = self._broker.place_order(order)
         except Exception:
@@ -247,7 +252,10 @@ class FyersHatBroker:
             return AckResult(ok=False, code=CODE_UNAVAILABLE)
 
     def place_gtt_stop(self, request: GttRequest) -> GttResult:
-        gtt = gtt_payload(request, self._fyers_symbol)
+        try:
+            gtt = gtt_payload(request, self._fyers_symbol)
+        except BrokerUnavailableError as error:
+            return GttResult("rejected", None, error.code)  # the lookup failed: nothing sent
         try:
             reply = self._broker.place_gtt(gtt)
         except Exception:
@@ -302,8 +310,8 @@ class FyersHatBroker:
     def orders(self) -> OrderBook:
         return self._read(self._broker.fetch_orderbook, parse_order_book)
 
-    def trades(self) -> list[BrokerTrade]:
-        return self._read(self._broker.fetch_tradebook, lambda rows: [parse_trade(r) for r in rows])
+    def trades(self) -> TradeBook:
+        return self._read(self._broker.fetch_tradebook, parse_trade_book)
 
     def positions(self) -> list[BrokerPosition]:
         return self._read(self._broker.fetch_positions, parse_positions)

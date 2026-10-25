@@ -9,7 +9,8 @@ step is incomplete, so `run_job` records the failure and the scheduler tries aga
 job's `retry_after`: a minute for the two close jobs. A job's name carries its broker account
 (`exits.close:<account id>`), since a run is kept once per (name, trade date) and each account
 needs its own. `exits.close` has a window and is never
-started from 15:25 on (`ScheduledJob.until`); its body also refuses to run outside it.
+started from 15:25 on (`ScheduledJob.until`); its body also refuses to run outside it. Both close
+jobs move with a session that closes at another time than 15:30 (`ScheduledJob.shift`).
 """
 
 from __future__ import annotations
@@ -58,7 +59,8 @@ def trade_jobs(
     views: ViewSource,
     clock: Clock,
 ) -> tuple[ScheduledJob, ...]:
-    """The jobs of one broker account, at their times."""
+    """The jobs of one broker account, at their times; the close-phase ones move with a session
+    that closes at another time (`TradeManager.close_shift`)."""
 
     def close(_day: date) -> JobResult:
         with session_factory() as session:
@@ -100,7 +102,14 @@ def trade_jobs(
             close,
             until=EXITS_CLOSE_UNTIL,
             retry_after=CLOSE_RETRY,
+            shift=manager.close_shift,
         ),
-        ScheduledJob(job_name(GTT_SWAP, account_id), GTT_SWAP_AT, swap, retry_after=CLOSE_RETRY),
+        ScheduledJob(
+            job_name(GTT_SWAP, account_id),
+            GTT_SWAP_AT,
+            swap,
+            retry_after=CLOSE_RETRY,
+            shift=manager.close_shift,
+        ),
         ScheduledJob(job_name(GTT_VERIFY, account_id), GTT_VERIFY_AT, verify),
     )

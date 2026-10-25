@@ -565,7 +565,7 @@ def test_stop_confirmed(
 
 
 @pytest.mark.parametrize(
-    ("placed_ago", "found", "sale", "verdict"),
+    ("placed_ago", "found", "from_holdings", "verdict"),
     [
         (timedelta(minutes=5), True, False, Verdict.ADOPT),  # held: adopted
         (timedelta(seconds=10), True, True, Verdict.ADOPT),  # held, even when young
@@ -574,22 +574,27 @@ def test_stop_confirmed(
         (timedelta(seconds=59), False, True, Verdict.WAIT),
         (LOST_ANSWER_SETTLE, False, False, Verdict.EXPIRE),  # absent, old enough: never landed
         (timedelta(minutes=5), False, True, Verdict.EXPIRE),
-        (timedelta(days=1), False, True, Verdict.STALE),  # a sale of an earlier session
-        (timedelta(days=1), False, False, Verdict.EXPIRE),  # a stop or entry of one
+        (timedelta(days=1), False, True, Verdict.STALE),  # a sale or entry of an earlier session
+        (timedelta(days=1), False, False, Verdict.EXPIRE),  # a stop of one
         (None, False, True, Verdict.EXPIRE),  # never sent
     ],
 )
 def test_settle_verdict(
-    placed_ago: timedelta | None, found: bool, sale: bool, verdict: Verdict
+    placed_ago: timedelta | None, found: bool, from_holdings: bool, verdict: Verdict
 ) -> None:
     placed_at = None if placed_ago is None else READ_AT - placed_ago
-    assert settle_verdict(placed_at, found, READ_AT, LOST_ANSWER_SETTLE, sale=sale) is verdict
+    assert (
+        settle_verdict(placed_at, found, READ_AT, LOST_ANSWER_SETTLE, from_holdings=from_holdings)
+        is verdict
+    )
 
 
-@pytest.mark.parametrize("sale", [False, True])
-def test_settle_verdict_waits_on_shares_sold(sale: bool) -> None:
+@pytest.mark.parametrize("from_holdings", [False, True])
+def test_settle_verdict_waits_on_shares_sold(from_holdings: bool) -> None:
     """A stop or sale found with shares sold waits for the fill sync to adopt it with its fills,
     however old it is."""
     placed_at = READ_AT - timedelta(minutes=5)
-    found = settle_verdict(placed_at, True, READ_AT, LOST_ANSWER_SETTLE, filled_qty=40, sale=sale)
+    found = settle_verdict(
+        placed_at, True, READ_AT, LOST_ANSWER_SETTLE, filled_qty=40, from_holdings=from_holdings
+    )
     assert found is Verdict.WAIT

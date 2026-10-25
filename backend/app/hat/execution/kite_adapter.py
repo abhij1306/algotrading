@@ -55,7 +55,6 @@ from .broker import (
     BrokerGtt,
     BrokerHolding,
     BrokerPosition,
-    BrokerTrade,
     BrokerUnavailableError,
     Capabilities,
     GttModify,
@@ -67,6 +66,7 @@ from .broker import (
     OrderType,
     PlaceResult,
     SessionStatus,
+    TradeBook,
 )
 from .fyers_adapter import CODE_INVALID_RESPONSE, TOKEN_CHECK_SECONDS, map_session
 from .kite_auth import KiteAuthService, get_kite_auth, kite_credentials_from_env
@@ -364,7 +364,7 @@ class KiteHatBroker:
         to_db = self._to_db()
         return self._read(self._broker.fetch_orders, lambda rows: parse_order_book(rows, to_db))
 
-    def trades(self) -> list[BrokerTrade]:
+    def trades(self) -> TradeBook:
         """The day's trades with their orders' tags: the trades are read first, so every order
         they name is in the order book read after them."""
         to_db = self._to_db()

@@ -11,11 +11,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from functools import cached_property
 
-from ..time import as_utc, trade_date_of
+from ..time import IST, as_utc, trade_date_of
+
+# The regular session's close (IST). The close-phase times (`exits.close`, the GTT swap, the
+# order cut-off) are set against it and move with a session that closes at another time
+# (`close_shift`): an early close, or a special (Muhurat) session.
+REGULAR_CLOSE = time(15, 30)
 
 
 class SessionState(StrEnum):
@@ -74,6 +79,18 @@ class SessionCalendar:
             return None
         return as_utc(row.open_at)
 
+    def close_on(self, day: date) -> datetime | None:
+        """The session close of `day`; None unless the calendar holds it as a trading day with
+        its times."""
+        row = self.days.get(day)
+        if row is None or not row.is_trading or row.open_at is None or row.close_at is None:
+            return None
+        return as_utc(row.close_at)
+
+    def close_shift(self, day: date) -> timedelta:
+        """How far `day`'s session close is from the regular close (`close_shift`)."""
+        return close_shift(day, self.close_on(day))
+
     def next_open_after(self, at: datetime) -> datetime | None:
         """The `open_at` of the first trading day whose open is strictly after `at`, or None when
         the calendar holds no such day."""
@@ -117,6 +134,14 @@ class SessionCalendar:
             if day.is_trading and day.open_at is not None and as_utc(day.open_at) >= moment
         ]
         return min(opens) if opens else None
+
+
+def close_shift(day: date, close_at: datetime | None) -> timedelta:
+    """How far a session closing at `close_at` closes from `REGULAR_CLOSE` on `day` (negative for
+    an early close); none when the close is unknown, so the regular times stand."""
+    if close_at is None:
+        return timedelta(0)
+    return as_utc(close_at) - as_utc(datetime.combine(day, REGULAR_CLOSE, tzinfo=IST))
 
 
 def is_trading_day(calendar: SessionCalendar | None, day: date) -> bool:
