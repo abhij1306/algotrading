@@ -616,7 +616,12 @@ class TriggerMonitor:
             bar_high=bar.high,
             bar_close=bar.close,
             cum_volume=self._view.day_volume(candidate.symbol, day),
-            elapsed=elapsed_fraction(bar.final_at),  # the instant the day volume is read
+            # the instant the day volume is read, against the day's own session (Muhurat)
+            elapsed=elapsed_fraction(
+                bar.final_at,
+                session_open=self._view.session_start(day).astimezone(IST).time(),
+                session_close=self._view.session_end(day).astimezone(IST).time(),
+            ),
             open_price=candidate.open_price,
             announcements=candidate.announcements,
         )

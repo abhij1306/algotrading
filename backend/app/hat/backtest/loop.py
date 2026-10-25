@@ -162,6 +162,7 @@ from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import IST, as_utc
+from .auction_days import auction_risk_days
 from .data import Bar, MarketData, MarketView, industry_on
 from .fillrules import first_trigger, lower_circuit_locked, pre_break_low, upper_circuit_locked
 from .fills import (
@@ -182,7 +183,9 @@ from .report import (
     END_OF_PERIOD,
     BacktestResult,
     SignalRow,
+    auction_risk_summary,
     compute_metrics,
+    flag_auction_risk,
 )
 from .slots import order_slots, trigger_rank
 from .spec import REGIME_MULT_ONE, BacktestError, RunSpec, sleeve_weight
@@ -971,7 +974,10 @@ class _Run:
 
     def _result(self) -> BacktestResult:
         watch_rows = ledger_watch_rows(self.session, self.bot_id)
-        trade_rows = ledger_trade_rows(self.session, self.bot_id, watch_rows)
+        trade_rows = flag_auction_risk(
+            ledger_trade_rows(self.session, self.bot_id, watch_rows),
+            auction_risk_days(self.view.days),
+        )
         equity = tuple(self.equity)
         skips = dict(sorted(self.skips.items()))
         invested = tuple(self.invested)
@@ -985,6 +991,7 @@ class _Run:
             ambiguous_days=len(self.ambiguous_days),
             lower_circuit_days=len(self.lower_circuit_days),
         )
+        metrics["auction_risk_exits"] = auction_risk_summary(trade_rows)
         metrics["dividend_income"] = str(self.dividend_cash)
         metrics["dividend_credits"] = self.dividend_credits
         result = BacktestResult(

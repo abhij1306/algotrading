@@ -129,7 +129,12 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   close-phase rules decide and fill on the daily close, simple and the same over all history; no
   5-minute bars and no count of estimated exits. The daily close (the auction price) stands in for
   the price live acts on before the 15:15 cut-off: a small, consistent bias, the known gap
-  `close_rules_decided_on_official_close`.
+  `close_rules_decided_on_official_close`. It is not symmetric: on an F&O monthly expiry and on
+  the close before an index reconstitution takes effect the auction close can sit much further
+  from the 15:05 price, so the run flags each close-priced exit on those days (`auction_risk` per
+  trade, `auction_risk_exits` in the summary) to be discounted, the known gap
+  `close_bias_large_on_expiry_and_rebalance_days`. Both kinds of day are derived by rule from the
+  stored sessions (`backtest/auction_days.py`, sources there).
 
 ## Operations
 

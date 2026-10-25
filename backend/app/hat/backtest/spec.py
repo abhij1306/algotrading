@@ -67,6 +67,10 @@ KNOWN_GAPS = (
     # the close rules decide and fill on the daily close: the auction price stands in for the
     # price live acts on before the 15:15 cut-off, a small, consistent bias (owner 2026-10-25)
     "close_rules_decided_on_official_close",
+    # that bias is not symmetric: on an F&O expiry or an index-rebalance close the auction close
+    # can sit far further from the 15:05 price than usual; those exits are flagged per trade
+    # (`auction_risk`) and counted (`auction_risk_exits`) so they can be discounted
+    "close_bias_large_on_expiry_and_rebalance_days",
     "kill_switches_not_simulated",
     "gap_over_fills_at_open",  # live fills at the first tick after the open
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)

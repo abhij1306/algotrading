@@ -39,6 +39,7 @@ from .strategy.config import (
 )
 
 __all__ = [
+    "CLOSE_PHASE_RULES",
     "IGNORED_NOT_RAISING",
     "Evaluation",
     "ExitAction",
@@ -75,6 +76,8 @@ _RULE_PHASE = {
     "time_stop": "close",
     "regime_exit": "nightly",
 }
+# The rules the close phase runs: an exit by one of them is priced at the close-phase price.
+CLOSE_PHASE_RULES = frozenset(rule for rule, phase in _RULE_PHASE.items() if phase == "close")
 
 
 @dataclass(frozen=True)

@@ -621,7 +621,7 @@ class TradeManager:
             position_id=position.id,
             rule_ids=order.rule_ids,
         )
-        return self._send_sale(session, _Sale(order, signal, request), gate, now)
+        return self._send_sale(session, _Sale(order, signal, request), gate, now, sending)
 
     def _gate(
         self,
@@ -837,7 +837,7 @@ class TradeManager:
         )
 
     def _send_sale(
-        self, session: Session, sale: _Sale, gate: SaleGate, now: datetime
+        self, session: Session, sale: _Sale, gate: SaleGate, now: datetime, sending: Clock
     ) -> SendOutcome | None:
         """Carry out a SEND gate: the market sale for each attempt left in the rejection budget
         (each refusal alerted), then, refused that often with the lower band known, once as a
@@ -847,7 +847,7 @@ class TradeManager:
         room for it is put back."""
         sent: SendOutcome | None = None
         for _ in range(gate.attempts):
-            outcome, done = self._attempt(session, sale, sale.request, now)
+            outcome, done = self._attempt(session, sale, sale.request, now, sending)
             sent = outcome or sent
             if done:
                 return sent
@@ -858,7 +858,7 @@ class TradeManager:
                 {**self._detail(sale), "code": BAND_LIMIT},
             )
             limit = replace(sale.request, order_type=OrderType.LIMIT, price=gate.floor)
-            outcome, done = self._attempt(session, sale, limit, now)
+            outcome, done = self._attempt(session, sale, limit, now, sending)
             sent = outcome or sent
             if done:
                 return sent
@@ -872,11 +872,18 @@ class TradeManager:
         sale: _Sale,
         request: OrderRequest,
         now: datetime,
+        sending: Clock,
     ) -> tuple[SendOutcome | None, bool]:
         """One send of `request`: its outcome (None when nothing was sent), and whether the sale
         is done (out, unknown, or refused before the broker took it); a sale the broker rejected
-        is alerted and not done."""
+        is alerted and not done. The session's cut-off is read on the run's clock right before
+        the send: stop changes and earlier attempts may have taken the run past 15:15, and no
+        sale goes out in the closing auction (HAT-EXEC-074)."""
         signal, position = sale.signal, sale.order.position
+        if not self._orders_allowed(sending.now()):
+            self._not_placed(signal, position, "market_closed", now)
+            self._desk.protect(session, position.id, now)  # the stop made room for it
+            return None, True
         try:
             tag = reserve_order(session, request)
             sent = send_order(session, self._sender, tag, rule=sale.order.rule)
@@ -950,13 +957,17 @@ class TradeManager:
         recorded with that price (HAT-OPS-034). Refused outside the session or its close window
         (15:05-15:10 IST in a regular session, `in_close_window`)."""
         report = CloseReport()
-        if not in_close_window(
-            now, self.close_shift(trade_date_of(now))
-        ) or not self._orders_allowed(now):
+        shift = self.close_shift(trade_date_of(now))
+        if not in_close_window(now, shift) or not self._orders_allowed(now):
             report.refused = "outside_close_window"
             return report
         sending = self._sending_clock(now)
         for position in self.open_positions(session, account_id, real_only=False):
+            if not in_close_window(sending.now(), shift):
+                # The window ended while the run was going (on the run's clock): no close rule
+                # decides after 15:10; the positions left unevaluated fail the job (alerted).
+                report.refused = "close_window_ended"
+                break
             try:
                 self._close_one(session, position, views, now, sending, report)
             except Exception:
