@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from ..errors import HatError
 from ..models import HatInstrument, HatInstrumentSymbolHistory
 from .chains import chain_members, stored_links
-from .store import DataStore
+from .store import DataStore, newest
 
 EVENT_IMPORTED = "corporate_action.imported"
 # The gate: NSE's widest daily price band is 20%, so the ex-date open of a real action is within
@@ -162,21 +162,20 @@ class Bar:
 # The latest ingest run's row of each instrument and day, for the instruments each proposal
 # can mean, within BAR_DAYS of its ex-date (an equi-join on the instrument first, so DuckDB
 # never compares every bar with every proposal).
-_WINDOW_SQL = """
-SELECT w.k, r.instrument_id, r.date, arg_max(r.isin, r.ingest_run_id),
-       arg_max(r.open, r.ingest_run_id), arg_max(r.close, r.ingest_run_id)
+_WINDOW_SQL = f"""
+SELECT w.k, r.instrument_id, r.date, {newest("isin")}, {newest("open")}, {newest("close")}
 FROM want w JOIN bars_daily_raw r ON r.instrument_id = w.instrument_id
 WHERE r.date BETWEEN w.ex - ? AND w.ex + ?
 GROUP BY w.k, r.instrument_id, r.date
-"""
+"""  # noqa: S608
 
 
-_FIRST_SQL = """
+_FIRST_SQL = f"""
 WITH span AS (SELECT instrument_id, min(date) AS first_day FROM bars_daily_raw GROUP BY 1)
-SELECT r.instrument_id, r.date, arg_max(r.close, r.ingest_run_id)
+SELECT r.instrument_id, r.date, {newest("close")}
 FROM bars_daily_raw r JOIN span s ON r.instrument_id = s.instrument_id AND r.date = s.first_day
 GROUP BY r.instrument_id, r.date
-"""
+"""  # noqa: S608
 
 
 def read_windows(

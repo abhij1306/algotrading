@@ -25,7 +25,8 @@ Views, per connection from `DataStore.connect`:
   close before it). Volume and `raw_close` are the price basis's: a dividend changes no share
   count.
 - `bars_daily` and `bars_daily_cap`: those views with one row per (instrument_id, date), from the
-  latest ingest run (run ids are uuid v7, so byte order is time order).
+  latest ingest run (`LATEST_ROW`: run ids are uuid v7, so byte order is time order), and
+  `bars_daily_raw_latest` the raw bars so.
 - `index_daily`: index levels.
 - Both adjusted views are hindsight: every factor and link as stored now, whatever date a bar
   has (CA6). A backtest reads them and skips the days they are not point in time
@@ -47,7 +48,7 @@ import fcntl
 import os
 import uuid
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
@@ -243,15 +244,6 @@ def dividend_factor(amount: Decimal, previous_close: Decimal) -> Decimal | None:
 NO_ADJUSTMENT = Adjustment()  # raw prices: the views without factors or lineage
 
 
-@dataclass
-class PartitionReport:
-    """Which expected days have data (HAT-DATA-091, 096). A missing day stays missing."""
-
-    row_counts: dict[date, int] = field(default_factory=dict)
-    missing: list[date] = field(default_factory=list)
-    unexpected: list[date] = field(default_factory=list)  # data on a day that is not expected
-
-
 def _money(value: Decimal | None) -> Decimal | None:
     if value is None:
         return None
@@ -344,6 +336,9 @@ def cumulative_segments(
 # and INVERSE_PLACES); the views are constants so no text is ever built into SQL. `lineage` maps a
 # linked older ISIN's id to its chain's id. `ca_segment` holds the price basis's factors,
 # `tr_segment` those times the dividends' (its inverse is unused: volume keeps the price basis's).
+# The open-ended first segment's NULL `from_date` is read as the first day there is rather than
+# with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
+# (24 s of CPU for five years of bars), the equality as a hash join (DB1).
 _SEGMENT_TABLES = ("ca_segment", "tr_segment", "div_segment")
 _ADJ_VIEW_SQL = """
 CREATE VIEW {view} AS
@@ -375,22 +370,34 @@ _ADJ_VIEWS = (
     ("bars_daily_cap_adj", "ca_segment", "no_dividend", "bars_daily_cap"),
     ("bars_daily_adj", "tr_segment", "dividend", "bars_daily"),
 )
-_LATEST_VIEW_SQL = """
-CREATE VIEW {latest} AS
-SELECT * FROM {view}
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-"""
+# One (instrument, date) written by more than one ingest run reads as the latest run's row: run
+# ids are uuid v7, so byte order is time order. `LATEST_ROW` keeps that row of a select (DuckDB
+# applies a date or instrument filter before it); `newest` is the same rule inside an aggregate,
+# for a reader that joins first. `bars_daily_raw_latest` is the raw bars with the rule applied.
+LATEST_ROW = (
+    "QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1"
+)
+RAW_LATEST = "bars_daily_raw_latest"
+
+
+def newest(column: str, alias: str = "r") -> str:
+    """`column` of the latest ingest run's row, in an aggregate over `alias` (`LATEST_ROW`):
+    `arg_max_null`, as plain `arg_max` skips a NULL and would return an older run's value."""
+    return f"arg_max_null({alias}.{column}, {alias}.ingest_run_id)"
+
+
+_LATEST_VIEW_SQL = "CREATE VIEW {latest} AS SELECT * FROM {view} " + LATEST_ROW  # noqa: S608
 # Each dividend's chain id, the raw close and date of the chain's last session in the 30 days
 # before its ex-date (the latest ingest run's row) and whether the chain has a bar on or after
 # the ex-date (a dividend ahead of the bars is not priced in).
-_DIVIDEND_CLOSE_SQL = """
+_DIVIDEND_CLOSE_SQL = f"""
 WITH chained AS (
     SELECT COALESCE(l.chain_id, r.instrument_id) AS chain, r.date, r.close, r.ingest_run_id
     FROM bars_daily_raw r LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
     WHERE COALESCE(l.chain_id, r.instrument_id) IN (SELECT chain FROM div_in)
 ),
 day_close AS (
-    SELECT d.k, c.date, arg_max(c.close, c.ingest_run_id) AS close
+    SELECT d.k, c.date, {newest("close", "c")} AS close
     FROM div_in d JOIN chained c ON c.chain = d.chain AND c.date BETWEEN d.ex - 30 AND d.ex - 1
     GROUP BY d.k, c.date
 ),
@@ -400,14 +407,7 @@ FROM div_in d
 JOIN day_close dc ON dc.k = d.k
 JOIN last_day ld ON ld.chain = d.chain AND ld.last_date >= d.ex
 GROUP BY d.k
-"""
-# The open-ended first segment's NULL `from_date` is read as the first day there is rather than
-# with an `OR`: DuckDB plans an `OR` in the condition as a nested-loop join over every segment
-# (24 s of CPU for five years of bars), the equality as a hash join (DB1).
-_COUNT_SQL = {
-    DATASET_BARS: "SELECT date, count(*) FROM bars_daily_raw GROUP BY date ORDER BY date",
-    DATASET_INDEX: "SELECT date, count(*) FROM index_daily GROUP BY date ORDER BY date",
-}
+"""  # noqa: S608
 
 
 def atomic_replace(
@@ -629,6 +629,7 @@ class DataStore:
             config={"memory_limit": self.memory_limit, "temp_directory": str(self.temp_dir)},
         )
         self._dataset_view(con, DATASET_BARS, "bars_daily_raw")
+        con.execute(_LATEST_VIEW_SQL.format(latest=RAW_LATEST, view="bars_daily_raw"))
         self._dataset_view(con, DATASET_INDEX, "index_daily")
         # Loaded from Arrow tables: row-by-row inserts of ~1,500 segments cost half a second.
         links = sorted(adjustment.lineage.items())
@@ -765,44 +766,3 @@ def _duck_type(arrow_type: pa.DataType) -> str:
     if pa.types.is_int64(arrow_type):
         return "BIGINT"
     return "VARCHAR"
-
-
-def partition_report(
-    store: DataStore, dataset: str, expected_days: Collection[date]
-) -> PartitionReport:
-    """Row count per day found, the expected days with no rows (missing) and the days with data
-    that are not expected. Missing days are reported and left empty (HAT-DATA-091)."""
-    report = PartitionReport()
-    con = store.connect()
-    try:
-        for day, count in con.execute(_COUNT_SQL[dataset]).fetchall():
-            report.row_counts[day] = count
-    finally:
-        con.close()
-    expected = set(expected_days)
-    report.missing = sorted(d for d in expected if report.row_counts.get(d, 0) == 0)
-    report.unexpected = sorted(d for d in report.row_counts if d not in expected)
-    return report
-
-
-def index_coverage(
-    store: DataStore, trading_days: Collection[date], starts: dict[str, date]
-) -> dict[str, list[date]]:
-    """Per index, the trading days on or after its start date that have no row (HAT-DATA-095).
-    Raises when an index has more than one row on a day."""
-    con = store.connect()
-    try:
-        counts = {
-            (name, day): n
-            for name, day, n in con.execute(
-                "SELECT index_name, date, count(*) FROM index_daily GROUP BY index_name, date"
-            ).fetchall()
-        }
-    finally:
-        con.close()
-    if any(n > 1 for n in counts.values()):
-        raise StoreError("store_duplicate_key")
-    return {
-        name: sorted(d for d in trading_days if d >= start and (name, d) not in counts)
-        for name, start in starts.items()
-    }

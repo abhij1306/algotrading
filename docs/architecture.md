@@ -14,14 +14,14 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
 | Package | Holds |
 | --- | --- |
-| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data and calendar, universe, corporate actions (`corporate_actions`, the importers' kernel `ca_gate`, one-off imports `ca_import`/`ca_research`/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, notices
-`demerger_notice`), the adjusted series' input (`chains`), ISIN lineage (`lineage`, `lineage_review`, `lineage_override`, `nse_changes`), history build, features, Parquet store (`store`), live feed and 5-minute bars, gap scan, announcements |
+| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data (`instruments`, symbol history `symbol_history`, broker symbols `broker_symbols`, ISIN classes `isin`) and calendar, universe, corporate actions (`corporate_actions`, the bars gate `ca_gate`, the importers' shared apply step `ca_apply`, one-off imports `ca_import`/`ca_research` (rows `ca_research_rows`)/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, notices
+`demerger_notice`), the adjusted series' input (`chains`), ISIN lineage (`lineage`, its journal `lineage_store`, `lineage_review`, `lineage_override`, `nse_changes`), history build, features (its state and staleness `features_state`), Parquet store (`store`, its coverage reports `store_coverage`), live feed and 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library, strategy config and versions (`strategy`: `versions`, the release gate `release`, the criterion catalogue `catalogue`), scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
 | `execution` | `HatBroker` and its adapters (Fyers `fyers_*`, Zerodha `kite_*`: payloads, transport, session, tokens, login, IPv4 pin), router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock |
-| `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies |
+| `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`) |
 | `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run records. `engine` and `risk` import only `spec` and `evidence` |
 | `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
 
@@ -37,7 +37,8 @@ Nightly (jobs chained with `after`, keyed `(job, trade_date)`):
 ingest.nightly (NSE MCP from 18:00, bhavcopy 22:00) -> raw bars + index/breadth, then each after it:
   quality.gate ─┐
   ca.adjust ────┴> features -> regime -> allocate -> scan -> watchlist digest
-  (ca.adjust: corporate actions, the day's dividends and demerger notices, lineage, trade dividends)
+  (ca.adjust: corporate actions, the day's dividends and demerger notices, lineage, trade dividends,
+  the version-ledger projection check)
   coverage.check, exits.close_gaps
 ```
 

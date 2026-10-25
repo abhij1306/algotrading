@@ -4,8 +4,9 @@ check of a day's 5-minute bars against the raw daily bar of the same day.
 Fyers answers its history with prices adjusted for every split and bonus up to the day of the
 request; `bars_daily_raw` and the live `BarBuilder` are raw. A candle of day `d` fetched on day `D`
 is on the basis `raw x F`, where `F` is the product of the price factors of the stored corporate
-actions with `d < ex_date <= D` (the factors `bars_daily_cap_adj` multiplies by, HAT-DATA-053;
-dividends are not in them). `to_raw` divides prices by `F` and multiplies the volume by it (the
+actions with `d < ex_date <= D`: the factors `bars_daily_cap_adj` multiplies by
+(`chains.stored_adjustment`, once per ISIN chain under its current id, HAT-DATA-053; dividends are
+not in them). `to_raw` divides prices by `F` and multiplies the volume by it (the
 inverse of the adjusted view's volume rule), so the store holds one basis whatever day a symbol was
 downloaded.
 
@@ -28,7 +29,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from ..money import MONEY_SCALE
 from .bars import Bar
-from .store import ActionFactor, DataStore
+from .store import RAW_LATEST, ActionFactor, DataStore
 
 __all__ = [
     "BASIS_MISMATCH",
@@ -111,8 +112,8 @@ def check_day(bars: Sequence[Bar], daily: DailyRange | None, tolerance: Decimal)
 
 
 class RawBasis:
-    """The stored corporate actions (by instrument id) and the raw daily bars the loader
-    converts and checks against."""
+    """The adjusted views' factors (by chain id) and the raw daily bars the loader converts and
+    checks against."""
 
     def __init__(
         self, actions: Iterable[ActionFactor], daily: DailySource, tolerance: Decimal
@@ -127,11 +128,10 @@ class RawBasis:
         return fyers_factor(self._actions.get(instrument_id, ()), day, fetched_on)
 
 
-_DAILY_SQL = """
-SELECT CAST(instrument_id AS VARCHAR), date, open, high, low, close FROM bars_daily_raw
+_DAILY_SQL = f"""
+SELECT CAST(instrument_id AS VARCHAR), date, open, high, low, close FROM {RAW_LATEST}
 WHERE date BETWEEN ? AND ? AND list_contains(?, CAST(instrument_id AS VARCHAR))
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
-"""
+"""  # noqa: S608
 
 
 def store_daily(store: DataStore) -> DailySource:

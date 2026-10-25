@@ -19,8 +19,8 @@ repeat stores nothing.
 A stored amount moves the total-return series the signals read (`store.bars_daily`) and pays
 the cash a backtest position (and a live or shadow trade, `engine/trade_dividends.py`) earns on
 the ex-date; the price basis (`bars_daily_cap`), the rescale and the GTT check read only the
-price-changing rows. After `--apply`, run `lineage build` and `features --full`: the stored
-features' inputs digest covers the dividends.
+price-changing rows. After `--apply`, run `lineage build` and `features`: the features state
+keeps the dividends, so the run recomputes the chains whose dividends changed.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ from datetime import date
 from pathlib import Path
 
 from ..money import exact
+from .ca_apply import digest, input_path
 from .ca_bc import FeedRow, any_date, cell, read_bc
 from .ca_gate import CONFLICT, REVIEW, STATUSES, STORED, CaFileError, nse_date
 from .ca_nightly import bc_journal, nightly_window
@@ -251,18 +252,6 @@ def report_lines(outcomes: Sequence[Outcome], *, applied: bool, everything: bool
 # --- command line -------------------------------------------------------------------------------
 
 
-def input_path(name: str, *, directory: bool = False, suffix: str = "") -> Path:
-    """A path named on the command line, under the working directory (a directory, or a file with
-    `suffix`): anything else is refused before it is opened."""
-    base = Path.cwd().resolve()
-    target = (base / name).resolve()
-    if not target.is_relative_to(base) or (not directory and target.suffix.lower() != suffix):
-        raise CaFileError("ca_file_outside_cwd")
-    if not (target.is_dir() if directory else target.is_file()):
-        raise CaFileError("ca_file_missing")
-    return target
-
-
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     """python -m app.hat.data.ca_dividends (--feed DIR [--bonus F.csv] | --bc F.csv --day DATE)
     [--apply] [--all]
@@ -315,9 +304,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 else {"source": SOURCE_FEED, "feed_sha256": feed_sha}
             )
             if bonus_path is not None:
-                journal["research_sha256"] = {
-                    "f": hashlib.sha256(bonus_path.read_bytes()).hexdigest()
-                }
+                journal["research_sha256"] = {"f": digest(bonus_path)}
             created, added = apply(session, outcomes, journal=journal, now=utc_now())
             session.commit()
             sys.stdout.write(f"applied: {created} rows, {added} amounts added\n")

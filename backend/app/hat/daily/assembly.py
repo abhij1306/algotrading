@@ -29,13 +29,13 @@ from ..clock import Clock
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
-from ..data.instruments import symbol_ids
 from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY
 from ..data.staleness import SilenceWatch
 from ..data.store import DataStore
 from ..data.subscriptions import HAT_OWNER, LiveSubscriptions, SubscriptionRegistry
+from ..data.symbol_history import symbol_ids
 from ..engine.live_entry import DataHealthKill, TriggerService
 from ..engine.portfolio.jobs import ALLOCATE_JOB, REGIME_JOB
 from ..engine.trigger import TriggerMonitor, locked_upper_circuit

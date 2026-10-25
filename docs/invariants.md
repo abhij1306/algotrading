@@ -128,7 +128,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   minute history is converted to raw with the factors as of its fetch day; a day that does not
   fit the raw daily bar is ledgered (`bars_5m_rejects`), never written.
 - **Adjustment.** Adjusted prices are raw times cumulative factors, each action applied once per
-  ISIN chain; two ISINs share a history only through a `linked` lineage row. Price rules on
+  ISIN chain; two ISINs share a history only through a `linked` lineage row, and a pair that
+  gains or loses that link is journalled (`lineage.changed`). Price rules on
   absolute rupees (`min_price`, the tick slab) read the raw close of their date; ratio and
   indicator rules read adjusted bars. A bonus of preference shares or debentures is
   price-neutral (a dividend when worth at least 1% of the previous close).
@@ -159,7 +160,7 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   before and after.
 - **Versions and `known_on`.** Every write of a corporate action appends a version in the same
   transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
-  hindsight projection. Each action records when its value became knowable (`known_on`; NULL when
+  hindsight projection, checked every night by `ca.adjust` (alert `corporate_action.projection`). Each action records when its value became knowable (`known_on`; NULL when
   unknown, never guessed). A backtest neither scans nor enters a name on a session where no
   version was available or the available one differs from the series' (`factor_pending`); a
   version available later never changes what a backtest reads before it. A correction that

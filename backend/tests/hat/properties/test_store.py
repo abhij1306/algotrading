@@ -9,6 +9,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import duckdb
 import polars as pl
 import pytest
 from hat_bhav_support import bar
@@ -18,14 +19,16 @@ from hypothesis import strategies as st
 from app.hat.data.bhavcopy import weekdays
 from app.hat.data.store import (
     DATASET_BARS,
+    LATEST_ROW,
     ActionFactor,
     Adjustment,
     BarRow,
     DataStore,
     StoreError,
     latest_rows,
-    partition_report,
+    newest,
 )
+from app.hat.data.store_coverage import partition_report
 from app.hat.ids import Uuid7Generator, uuid7
 
 DAYS = weekdays(date(2024, 3, 1), date(2024, 4, 30))[:20]
@@ -157,6 +160,22 @@ def test_latest_rows_keeps_the_latest_run_per_day_in_read_order() -> None:
     # one day's partition read with two runs (`read_bars`, audit L5): per instrument
     day = frame.filter(pl.col("date") == d1).drop("date")
     assert latest_rows(day, ("instrument_id",))["close"].to_list() == [1.0, 4.0]
+
+
+def test_newest_takes_the_latest_runs_value_even_when_null() -> None:
+    con = duckdb.connect()
+    con.execute(
+        "CREATE TABLE r AS SELECT * FROM (VALUES ('a', DATE '2024-01-02', 1, 10.0),"
+        " ('a', DATE '2024-01-02', 2, NULL), ('b', DATE '2024-01-02', 1, 5.0))"
+        " t(instrument_id, date, ingest_run_id, prev_close)"
+    )
+    by_aggregate = con.execute(
+        f"SELECT instrument_id, {newest('prev_close')} FROM r GROUP BY 1, date ORDER BY 1"  # noqa: S608
+    ).fetchall()
+    by_window = con.execute(
+        f"SELECT instrument_id, prev_close FROM r {LATEST_ROW} ORDER BY 1"  # noqa: S608
+    ).fetchall()
+    assert by_aggregate == by_window == [("a", None), ("b", Decimal("5.0"))]
 
 
 def test_fingerprints_change_with_a_new_run_and_the_view_reads_by_glob() -> None:

@@ -9,6 +9,7 @@ from hat_mcp_support import security
 from sqlalchemy import Connection, func, select
 from sqlalchemy.orm import Session
 
+from app.hat.data import broker_symbols, symbol_history
 from app.hat.data import instruments as inst
 from app.hat.data.symbols import symbol_master
 from app.hat.models import (
@@ -43,11 +44,11 @@ def test_reference__refresh_on_postgres(conn: Connection) -> None:
     day = date(2026, 1, 5)
     first = [security("INE000000001", "EQ", "AAA"), security("INE000000002", "EQ", "BBB")]
     inst.upsert_instruments(session, market.id, first, today=day)
-    inst.refresh_fyers_symbols(session, symbol_master, market.id)
+    broker_symbols.refresh_fyers_symbols(session, symbol_master, market.id)
     # a rename keeps the id; the other stock is delisted and its broker row removed
     renamed = [security("INE000000001", "EQ", "CCC")]
     inst.upsert_instruments(session, market.id, renamed, today=date(2026, 1, 12))
-    inst.refresh_fyers_symbols(session, symbol_master, market.id)
+    broker_symbols.refresh_fyers_symbols(session, symbol_master, market.id)
     # the symbol AAA now belongs to a different company: the broker unique key must not trip
     inst.upsert_instruments(
         session,
@@ -55,7 +56,7 @@ def test_reference__refresh_on_postgres(conn: Connection) -> None:
         [*renamed, security("INE000000003", "EQ", "AAA")],
         today=date(2026, 1, 19),
     )
-    inst.refresh_fyers_symbols(session, symbol_master, market.id)
+    broker_symbols.refresh_fyers_symbols(session, symbol_master, market.id)
     assert session.scalar(select(func.count()).select_from(HatInstrument)) - held == 3
     mine = select(HatInstrument.id).where(HatInstrument.isin.like("INE00000000%"))
     rows = session.scalars(
@@ -81,9 +82,9 @@ def test_reference__bars_rename_date_wins_over_the_masters_day(conn: Connection)
     inst.upsert_instruments(
         session, market.id, [security("INE000000009", "EQ", "NEWX")], today=date(2026, 10, 22)
     )
-    rename = inst.SymbolRename("OLDX", "NEWX", date(2025, 10, 24), "INE000000009")
+    rename = symbol_history.SymbolRename("OLDX", "NEWX", date(2025, 10, 24), "INE000000009")
     for _ in range(2):  # idempotent
-        inst.seed_symbol_history(session, market.id, [rename])
+        symbol_history.seed_symbol_history(session, market.id, [rename])
         session.flush()
         rows = session.scalars(
             select(HatInstrumentSymbolHistory)

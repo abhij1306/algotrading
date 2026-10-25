@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
-from app.hat.data.instruments import resolve_symbol
+from app.hat.data.symbol_history import resolve_symbol
 from app.hat.models import HatBot, HatUniverse, HatUniverseMember, HatUniverseVersion
 from app.hat.risk.sessions import SessionCalendar, SessionState
 

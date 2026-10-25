@@ -130,7 +130,7 @@ From `backend/` with the venv active:
 ```bash
 python -m app.hat.data.history_cli [--from 2011-06-22] [--to YYYY-MM-DD] [--resume]
 python -m app.hat.data.lineage build      # link ISIN changes into one history per company
-python -m app.hat.data.features --full    # compute the scan features for every date
+python -m app.hat.data.features           # the scan features (the first run computes every date)
 ```
 
 After that the nightly cycle keeps everything current. `lineage report` and `lineage show SYMBOL`

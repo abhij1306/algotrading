@@ -1,7 +1,7 @@
 """Versioned point-in-time factors (CA6): the selection, the dates, the pending sessions, the
 demerger band and the regression rule. Plain examples; no database, no bars."""
 
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 from fractions import Fraction
 
@@ -11,13 +11,11 @@ from app.hat.data.ca_versions import (
     CONFLICT,
     CROSS_CHECK,
     DELETED,
-    Correction,
     Stored,
     Version,
     available_on,
     band,
     pending_days,
-    plan_backfill,
     projection_mismatches,
     select,
 )
@@ -136,30 +134,6 @@ def test_ratio_from_the_import_journal() -> None:
 
 def _stored(key: tuple[str, date, str], factor: str, known: date | None) -> Stored:
     return Stored(key, Decimal(factor), None, known, "ex_open" if known else None, "mcp", "t")
-
-
-def test_backfill_keeps_the_journalled_before_states_and_deletes() -> None:
-    at = datetime(2026, 10, 24, tzinfo=UTC)
-    replaced, moved = ("i", EX, "bonus"), ("i", date(2024, 9, 23), "bonus")
-    corrections = [
-        Correction(at, "i", EX, {"type": "bonus", "factor": "0.5"}, {"type": "bonus"}, "fix"),
-        Correction(
-            at, "i", date(2024, 9, 23), {"type": "bonus", "factor": "0.4"}, {"deleted": True}, "mv"
-        ),
-    ]
-    rows = [_stored(replaced, "0.6667", EX)]
-    imported = {replaced: (datetime(2026, 1, 1, tzinfo=UTC), "mcp")}
-    planned = plan_backfill(rows, corrections, imported, set())
-    by_key = {
-        k: [(p.status, p.factor, p.available) for p in planned if p.key == k]
-        for k in (replaced, moved)
-    }
-    assert by_key[replaced] == [(ACCEPTED, Decimal("0.5"), None), (ACCEPTED, Decimal("0.6667"), EX)]
-    assert by_key[moved] == [(ACCEPTED, Decimal("0.4"), None), (DELETED, Decimal("0.4"), None)]
-    first = next(p for p in planned if p.key == replaced)
-    assert first.observed_at == datetime(2026, 1, 1, tzinfo=UTC)
-    assert first.source == "mcp"
-    assert plan_backfill(rows, corrections, imported, {replaced, moved}) == []  # rerun: nothing
 
 
 def test_projection_mismatches() -> None:

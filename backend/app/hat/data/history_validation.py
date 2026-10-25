@@ -10,7 +10,7 @@ from decimal import Decimal
 
 from ..money import exact
 from .mcp_client import McpClient, McpError, parse_data_date
-from .store import DataStore
+from .store import LATEST_ROW, DataStore
 
 SAMPLE_SIZE = 50
 
@@ -65,14 +65,14 @@ class ValidationReport:
         return bool(self.mismatches)
 
 
-_SAMPLE_SQL = """
+_SAMPLE_SQL = f"""
 SELECT symbol, date, close FROM (
     SELECT instrument_id, symbol, date, close, ingest_run_id,
         sha256(concat(?, ':', instrument_id, ':', CAST(date AS VARCHAR))) AS h
     FROM bars_daily_raw ORDER BY h, ingest_run_id DESC LIMIT ?)
-QUALIFY row_number() OVER (PARTITION BY instrument_id, date ORDER BY ingest_run_id DESC) = 1
+{LATEST_ROW}
 ORDER BY h LIMIT ?
-"""
+"""  # noqa: S608
 
 
 def validate_build(

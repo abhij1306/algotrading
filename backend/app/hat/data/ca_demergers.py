@@ -5,7 +5,7 @@ again, so a demerger CA7 adds is picked up by the next run.
 For each stored demerger (`hat_corporate_action.demerger`):
 
 - the raw gap: the ex open over the previous close, divided by any other factor ex between the two
-  sessions (`point_in_time.ex_gaps`);
+  sessions (`ex_gaps`);
 - the index-neutralised gap: the raw gap over `NEUTRAL_INDEX`'s move across the same night (its
   ex-session open over its previous-session close, `index_daily`), so the market's move that
   morning is not read as the action; without the index's two sessions there is none and the raw
@@ -25,7 +25,7 @@ The applied value stays the raw market gap. Only when the owner approved the neu
 (`--neutral`, with `--apply`) does each demerger whose applied value is the raw gap take the
 neutralised gap, as the owner's correction (`correct_action`: journalled
 `corporate_action.corrected` under the owner's chat, a new accepted version, known on the gap's
-date with basis `correction`); the features then need `features --full`.
+date with basis `correction`); the next `features` run recomputes the chains it changed.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ import math
 import re
 import sys
 import uuid
+from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -48,7 +49,7 @@ from sqlalchemy.orm import Session
 
 from ..errors import HatConfigError
 from ..models import HatCorporateAction, HatEvent, HatInstrument
-from .ca_gate import EVENT_IMPORTED, read_first_closes, same_factor
+from .ca_gate import EVENT_IMPORTED, Bar, around, read_first_closes, read_windows, same_factor
 from .ca_import import CHILD_DAYS
 from .ca_known import settle_known
 from .ca_research import ratio_factor
@@ -62,8 +63,14 @@ from .ca_versions import (
     band,
     log_apart,
 )
-from .corporate_actions import Correction, correct_action, factor_to_decimal, lock_reference_data
-from .point_in_time import ExGap, Row, ex_gaps
+from .chains import chain_neighbours, stored_links
+from .corporate_actions import (
+    PRICE_NEUTRAL_TYPES,
+    Correction,
+    correct_action,
+    factor_to_decimal,
+    lock_reference_data,
+)
 from .store import DataStore
 
 NEUTRAL_INDEX = "NIFTY 500"
@@ -158,6 +165,69 @@ class Demerger:
     @property
     def applies_gap(self) -> bool:
         return self.raw is not None and same_factor(Decimal(self.row.factor), self.raw)
+
+
+@dataclass(frozen=True)
+class Row:
+    """A stored demerger, as the estimates read it."""
+
+    id: str
+    instrument_id: str
+    isin: str
+    ex_date: date
+    action_type: str
+    factor: Decimal
+    text: str
+    source: str
+    cash: Decimal | None
+    demerger: bool = False
+
+
+@dataclass(frozen=True)
+class ExGap:
+    """A row's ex-date gap from the raw bars: the gap, the ex instrument's sessions near it and
+    the two sessions it reads (the previous close's, the ex open's)."""
+
+    gap: Fraction
+    days: Sequence[date]
+    previous: date
+    ex: date
+
+
+def ex_gaps(store: DataStore, rows: Sequence[Row], session: Session) -> dict[str, ExGap]:
+    """Each row's ex-date gap (ex open over the previous close, divided by the other stored
+    factors ex between the two sessions, as CA1's gate reads it), by row id."""
+    near = chain_neighbours(stored_links(session))
+    wanted = {k: (r.ex_date, {r.instrument_id, *near[r.instrument_id]}) for k, r in enumerate(rows)}
+    stored: dict[str, list[tuple[date, str, Decimal]]] = defaultdict(list)
+    for iid, ex, kind, factor in session.execute(
+        select(
+            HatCorporateAction.instrument_id,
+            HatCorporateAction.ex_date,
+            HatCorporateAction.action_type,
+            HatCorporateAction.adjustment_factor,
+        ).where(HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES))
+    ):
+        stored[str(iid)].append((ex, kind, Decimal(factor)))
+    windows = read_windows(store, wanted)
+    out = {}
+    for k, r in enumerate(rows):
+        bars: Sequence[Bar] = windows.get(k, ())
+        pair = around(bars, r.ex_date, r.isin)
+        if isinstance(pair, str) or pair[0].close <= 0:
+            continue
+        before, on = pair
+        others = {
+            (ex, kind): factor
+            for iid in wanted[k][1]
+            for ex, kind, factor in stored[iid]
+            if before.day < ex <= on.day and (ex, kind) != (r.ex_date, r.action_type)
+        }
+        same_day = math.prod((Fraction(f) for f in others.values()), start=Fraction(1))
+        days = sorted(b.day for b in bars if b.instrument_id == on.instrument_id)
+        gap = Fraction(on.open) / Fraction(before.close) / same_day
+        out[r.id] = ExGap(gap, days, before.day, on.day)
+    return out
 
 
 def _rows(session: Session) -> list[tuple[str, Row, date | None]]:
@@ -356,8 +426,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     Lists every stored demerger's estimates, band and review list (a dry run); `--apply` appends
     the versions not stored yet in one transaction under the reference-data lock; `--neutral`
     (with `--apply`, only once the owner approved it) makes the neutralised gap the applied value
-    as the owner's correction (the owner's chat id), after which
-    `python -m app.hat.data.features --full` must run. Bars and index under `HAT_DATA_ROOT`."""
+    as the owner's correction (the owner's chat id), after which `python -m app.hat.data.features`
+    recomputes the chains it changed. Bars and index under `HAT_DATA_ROOT`."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.ca_demergers")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--neutral", action="store_true")
@@ -392,7 +462,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             session.commit()
             write(f"applied: {appended} versions appended, {changed} factors changed")
             if changed:
-                write("the factors changed: run `python -m app.hat.data.features --full`")
+                write("the factors changed: run `python -m app.hat.data.features`")
     return 0
 
 

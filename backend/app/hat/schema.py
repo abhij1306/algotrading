@@ -377,8 +377,7 @@ CREATE OR REPLACE TRIGGER hat_event_no_truncate
     "CREATE INDEX IF NOT EXISTS hat_mode_change_bot ON hat_mode_change (bot_id)",
     "CREATE INDEX IF NOT EXISTS hat_telegram_message_sent_at ON hat_telegram_message (sent_at)",
     "CREATE INDEX IF NOT EXISTS hat_command_log_received_at ON hat_command_log (received_at)",
-    # CA5: a database created before the columns (hat_live) gains them; `ca_known backfill`
-    # then fills them
+    # CA5: a database created before the columns (hat_live) gains them
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS announced_on date",
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_on date",
     "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",

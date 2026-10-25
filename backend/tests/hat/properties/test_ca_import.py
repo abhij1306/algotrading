@@ -8,20 +8,13 @@ from fractions import Fraction
 
 import pytest
 
+from app.hat.data.ca_apply import Leg, Outcome, Proposal, RightsTerms, Stored, dedupe, plan_legs
 from app.hat.data.ca_gate import ALREADY, REVIEW, SKIPPED, STORED, gate, nse_date, same_factor
 from app.hat.data.ca_import import (
-    Leg,
-    Outcome,
-    Proposal,
-    RightsTerms,
-    Stored,
     _split_bonus,
-    dedupe,
     demerger_factor,
-    equity_share_isin,
     name_key,
     parse_ratio,
-    plan_legs,
     rights_factor,
     rights_terms,
     split_bonus_legs,
@@ -162,10 +155,7 @@ def test_same_factor_allows_the_mcp_rounding() -> None:
     assert not same_factor(Decimal("0.5"), Fraction(1, 5))
 
 
-def test_equity_share_isin_and_name_key() -> None:
-    assert equity_share_isin("INE0CU601026")
-    assert not equity_share_isin("INE932X20018")  # a rights entitlement
-    assert not equity_share_isin("INF769K01QV2")  # an ETF
+def test_name_key() -> None:
     assert name_key("The Tata Power Company Limited") == "TATA"
     assert name_key("GMR Power and Urban Infra Limited") == "GMR"
     assert name_key("") == ""

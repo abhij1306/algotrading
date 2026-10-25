@@ -30,12 +30,8 @@ previous session's close (NSE's PREVCLOSE in these bars is not adjusted, so the 
 only witness) must be within `GATE_TOL` of the factor (times any factor already stored on that
 day) and at least twice as close to it as to 1, so a gap that could be a plain session move is
 ambiguous, not a confirmation. A confirmed factor is stored as a new row of its own type
-(`split`, `bonus`, or `other` for rights and demergers) on the instrument that holds the
-history before the ex-date, source `nse_ca_file`, through `load_actions` (a stored key is never
-rewritten: a different factor is a conflict, fixed with `correct_action`; a key the owner
-vacated is never re-created) and journalled `corporate_action.imported`. An action already
-stored within `NEAR_DAYS` under the same company's other ISIN, symbol or lineage chain is not
-stored again. Repeating an import stores nothing.
+(`split`, `bonus`, or `other` for rights and demergers), source `nse_ca_file`, by the shared
+apply step (`ca_apply`). Repeating an import stores nothing.
 
 Each row records when its factor became knowable (CA5, `ca_known`): a split, bonus, ETF split or
 rights factor at the ex-date open, a demerger priced from its resulting company at that
@@ -45,42 +41,45 @@ company's first close, and a gap-only demerger at the close `SETTLE_SESSIONS` on
 from __future__ import annotations
 
 import argparse
-import hashlib
 import math
 import re
 import sqlite3
 import sys
-import uuid
-from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
-from decimal import Decimal
+from dataclasses import replace
+from datetime import date, timedelta
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import events
-from ..models import HatCorporateAction
 from ..money import exact
+from .ca_apply import (
+    KIND_DEMERGER,
+    Context,
+    Leg,
+    Outcome,
+    Proposal,
+    RightsTerms,
+    apply,
+    dedupe,
+    digest,
+    drop_vacated,
+    input_path,
+    near_actions,
+    report_lines,
+    settle,
+    stored_price_actions,
+)
 from .ca_gate import (
-    ALREADY,
-    CONFLICT,
-    EVENT_IMPORTED,
     REVIEW,
     SKIPPED,
-    STATUSES,
-    STORED,
     TEXT_MAX,
     Bar,
     CaFileError,
     Instrument,
-    Reference,
-    Verdict,
     around,
     fmt4,
     gate,
@@ -88,29 +87,21 @@ from .ca_gate import (
     nse_date,
     read_first_closes,
     read_windows,
-    same_factor,
 )
 from .ca_known import RESULTING_FIRST_CLOSE, UNKNOWN, Known, at_ex_open, settle_known
 from .corporate_actions import (
-    PRICE_NEUTRAL_TYPES,
     TYPE_BONUS,
     TYPE_OTHER,
     TYPE_SPLIT,
-    ActionRecord,
-    factor_to_decimal,
-    load_actions,
-    lock_reference_data,
     non_equity_bonus,
-    owner_vacated,
     parse_action_text,
 )
-from .store import FACTOR_MIN, DataStore
+from .isin import voting_equity
+from .store import DataStore
 
 SOURCE_FILE = "nse_ca_file"
-NEAR_DAYS = 5  # a stored action this close to the ex-date is the same event (sources differ)
 CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
 DEMERGER_MIN_DROP = Fraction(1, 10)  # a gap-only demerger factor needs a drop beyond 10%
-KIND_DEMERGER = "demerger"  # a stored `other` row that is a demerger (`Stored.kind`)
 T_SPLITS = "splits_bonus"
 T_RIGHTS = "rights_issues"
 T_DEMERGERS = "demergers"
@@ -147,15 +138,6 @@ def parse_ratio(raw: str) -> tuple[Fraction, Fraction] | None:
     return (a, b) if a > 0 and b > 0 else None
 
 
-@dataclass(frozen=True)
-class Leg:
-    """One factor a row proposes, of a stored type (an `other` that is a demerger flagged)."""
-
-    action_type: str
-    factor: Fraction
-    demerger: bool = False
-
-
 _SPLIT_START = re.compile(r"face\s*val\w*\s*split|split|sub-?\s*division")
 
 
@@ -180,15 +162,6 @@ def split_bonus_legs(text: str) -> tuple[Leg, ...] | None:
     if bonus is None or bonus.action_type != TYPE_BONUS:
         return None
     return (Leg(TYPE_BONUS, bonus.factor), Leg(TYPE_SPLIT, split.factor))
-
-
-@dataclass(frozen=True)
-class RightsTerms:
-    """`new` shares for every `held`, issued at `price` (face value plus premium)."""
-
-    new: Fraction
-    held: Fraction
-    price: Fraction
 
 
 _RIGHTS_RATIO = re.compile(rf"\brights?\b(?:\s*issue)?[\s:@-]*{_NUMBER}\s*:\s*{_NUMBER}")
@@ -280,34 +253,6 @@ def read_file(path: Path) -> dict[str, list[dict[str, str]]]:
     except sqlite3.Error as exc:
         raise CaFileError("ca_file_unreadable") from exc
     return out
-
-
-def file_digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-@dataclass(frozen=True)
-class Proposal:
-    """One file row, as far as the text alone decides it. `legs` is empty for a rights issue or a
-    demerger, whose factor needs the bars; `status`/`reason` are set when the row ends here."""
-
-    table: str
-    rowid: str
-    symbol: str
-    isin: str
-    ex_date: date | None
-    text: str
-    hint: str = ""
-    legs: tuple[Leg, ...] = ()
-    note: str = ""  # a demerger's curated ratio note: names the resulting company
-    rights: RightsTerms | None = None
-    demerger: tuple[Fraction, Fraction] | None = None
-    sme: bool = False
-    status: str = ""
-    reason: str = ""
-
-    def ends(self, status: str, reason: str) -> Proposal:
-        return replace(self, status=status, reason=reason)
 
 
 # "Bonus - 1 Debenture For 1 Equity Share Held": `non_equity_bonus` wants the word next to "bonus"
@@ -407,70 +352,6 @@ def proposals(tables: Mapping[str, Sequence[Mapping[str, str]]]) -> list[Proposa
 
 # --- deciding -----------------------------------------------------------------------------------
 
-
-@dataclass(frozen=True)
-class Stored:
-    instrument_id: str
-    ex_date: date
-    action_type: str
-    factor: Decimal
-    demerger: bool = False
-
-    @property
-    def kind(self) -> str:
-        """The type, with a demerger told apart from the other `other` rows (rights)."""
-        return KIND_DEMERGER if self.demerger else self.action_type
-
-
-@dataclass
-class Outcome:
-    proposal: Proposal
-    status: str
-    reason: str = ""
-    detail: str = ""
-    records: list[ActionRecord] = field(default_factory=list)
-    evidence: dict[str, Any] = field(default_factory=dict)
-
-
-def plan_legs(
-    legs: Sequence[Leg], near: Sequence[Stored]
-) -> tuple[list[Leg], list[Leg], list[tuple[Leg, Stored]]]:
-    """Each leg against the price-changing actions stored near its ex-date for the same company:
-    to store (none of its type), already stored (the same factor), or a conflict (another)."""
-    new, already, conflicts = [], [], []
-    for leg in legs:
-        same = [s for s in near if s.action_type == leg.action_type]
-        if not same:
-            new.append(leg)
-        elif any(same_factor(s.factor, leg.factor) for s in same):
-            already.append(leg)
-        else:
-            conflicts.append((leg, same[0]))
-    return new, already, conflicts
-
-
-@dataclass
-class Context:
-    reference: Reference
-    stored: dict[str, list[Stored]]  # instrument -> its price-changing actions
-    first_closes: dict[str, tuple[date, Decimal]]
-
-
-def near_actions(ctx: Context, ids: Iterable[str], ex_date: date) -> list[Stored]:
-    seen: dict[tuple[date, str, Decimal], Stored] = {}
-    for iid in ids:
-        for s in ctx.stored.get(iid, ()):
-            if abs((s.ex_date - ex_date).days) <= NEAR_DAYS:
-                seen.setdefault((s.ex_date, s.action_type, s.factor), s)  # chain copies once
-    return sorted(seen.values(), key=lambda s: (s.ex_date, s.action_type, s.instrument_id))
-
-
-def equity_share_isin(isin: str) -> bool:
-    """An Indian company's equity share ISIN (INE, issuer, security type 01): not an ETF unit
-    (INF), a rights entitlement (type 20) or a debt security."""
-    return len(isin) == 12 and isin.startswith("INE") and isin[7:9] == "01"
-
-
 _NOTE_SKIP = {"SHARE", "SHARES", "RESULTING", "COMPANY", "LIMITED", "EQUITY", "DEMERGER"}
 
 
@@ -491,7 +372,7 @@ def resulting_company(
             iid == parent.id
             or iid in ctx.reference.successors
             or iid not in ctx.reference.instruments
-            or not equity_share_isin(ctx.reference.instruments[iid].isin)
+            or not voting_equity(ctx.reference.instruments[iid].isin)
         ):
             continue
         child = ctx.reference.instruments[iid]
@@ -579,54 +460,6 @@ def decide(
     )
 
 
-def settle(
-    p: Proposal,
-    before: Bar,
-    legs: Sequence[Leg],
-    near: Sequence[Stored],
-    verdict: Verdict,
-    detail: str,
-    evidence: dict[str, Any],
-    *,
-    source: str = SOURCE_FILE,
-    accept: frozenset[str] = frozenset(),
-    known: Known = UNKNOWN,
-) -> Outcome:
-    """The plan of `legs` against the same-kind actions stored `near` the ex-date, given the
-    gate's verdict: store, already, conflict or review. A verdict whose reason is in `accept`
-    still stores (the research import's rights, `price_unconfirmed`); the row goes on the
-    instrument of the bar `before` the ex-date, known on `known` (CA5)."""
-    new, already, conflicts = plan_legs(legs, near)
-    if conflicts:
-        text = "; ".join(
-            f"{leg.action_type} file {fmt4(leg.factor)} vs stored {s.factor} on {s.ex_date}"
-            for leg, s in conflicts
-        )
-        bars_say = "the bars confirm the file" if verdict.confirmed else f"file {verdict.reason}"
-        return Outcome(p, CONFLICT, "stored_factor_differs", f"{detail}; {text}; {bars_say}")
-    if not new:
-        return Outcome(p, ALREADY, "", detail)
-    if not verdict.confirmed and verdict.reason not in accept:
-        return Outcome(p, REVIEW, verdict.reason, detail)
-    if p.ex_date is None or any(not FACTOR_MIN <= factor_to_decimal(leg.factor) < 1 for leg in new):
-        return Outcome(p, REVIEW, "factor_out_of_range", detail)
-    records = [
-        ActionRecord(
-            uuid.UUID(before.instrument_id),
-            p.ex_date,
-            leg.action_type,
-            factor_to_decimal(leg.factor),
-            p.text,
-            source,
-            known=known,
-            demerger=leg.demerger,
-        )
-        for leg in new
-    ]
-    reason = "other legs stored" if already else verdict.reason
-    return Outcome(p, STORED, reason, detail, records, evidence)
-
-
 def _demerger_leg(
     p: Proposal,
     ctx: Context,
@@ -668,40 +501,6 @@ def _demerger_leg(
     return None, "gap_too_small_no_resulting", how, UNKNOWN
 
 
-def dedupe(outcomes: list[Outcome]) -> None:
-    """Two rows of the file (NSE keeps revisions as separate rows) that store the same key: the
-    same factor is stored once, by the first row (a later row keeps its other legs); different
-    factors for the key put every row naming it in review, since the file contradicts itself."""
-    by_key: dict[tuple, list[tuple[Outcome, ActionRecord]]] = defaultdict(list)
-    for o in outcomes:
-        for r in o.records:
-            by_key[r.key].append((o, r))
-    disagree: set[int] = set()
-    for group in by_key.values():
-        if len({r.factor for _, r in group}) > 1:
-            disagree.update(id(o) for o, _ in group)
-        else:
-            for o, r in group[1:]:
-                o.records = [kept for kept in o.records if kept is not r]
-    for o in outcomes:
-        if id(o) in disagree:
-            o.status, o.reason, o.records = REVIEW, "file_disagrees_with_itself", []
-        elif o.status == STORED and not o.records:
-            o.status, o.reason = ALREADY, "duplicate_in_file"
-
-
-def stored_price_actions(session: Session) -> dict[str, list[Stored]]:
-    out: dict[str, list[Stored]] = defaultdict(list)
-    for row in session.scalars(
-        select(HatCorporateAction).where(HatCorporateAction.action_type.not_in(PRICE_NEUTRAL_TYPES))
-    ):
-        iid = str(row.instrument_id)
-        out[iid].append(
-            Stored(iid, row.ex_date, row.action_type, Decimal(row.adjustment_factor), row.demerger)
-        )
-    return out
-
-
 def evaluate(
     session: Session, store: DataStore, tables: Mapping[str, Sequence[Mapping[str, str]]]
 ) -> list[Outcome]:
@@ -722,126 +521,11 @@ def evaluate(
     windows = read_windows(store, wanted)
     outcomes = [decide(p, ctx, windows.get(k, ())) for k, p in enumerate(props)]
     dedupe(outcomes)
-    held = owner_vacated(session, {r.instrument_id for o in outcomes for r in o.records})
-    for o in outcomes:
-        if any(r.key in held for r in o.records):
-            o.status, o.reason, o.records = SKIPPED, "owner_vacated", []
+    drop_vacated(session, outcomes)
     return outcomes
 
 
-def apply(
-    session: Session, outcomes: Sequence[Outcome], *, journal: Mapping[str, Any], now: datetime
-) -> int:
-    """Store every confirmed record (`load_actions`) and journal each new row as
-    `corporate_action.imported` in the same transaction, `journal` (the source and the input
-    files' digests) in every payload; returns the rows created. Raises when the database
-    disagrees with the plan (a row appeared meanwhile): nothing is then kept."""
-    lock_reference_data(session)
-    run_id = str(uuid.uuid4())
-    records = [r for o in outcomes for r in o.records]
-    report = load_actions(session, records)
-    if report.created != len(records) or report.conflicts or report.held:
-        raise CaFileError("ca_import_raced")
-    for o in outcomes:
-        for r in o.records:
-            events.record(
-                session,
-                aggregate_type="instrument",
-                aggregate_id=r.instrument_id,  # type: ignore[arg-type]
-                event_type=EVENT_IMPORTED,
-                actor="engine",
-                payload={
-                    **journal,
-                    "run_id": run_id,
-                    "table": o.proposal.table,
-                    "row": o.proposal.rowid,
-                    "symbol": o.proposal.symbol,
-                    "isin": o.proposal.isin,
-                    "ex_date": r.ex_date.isoformat(),
-                    "type": r.action_type,
-                    "factor": str(r.factor),
-                    "text": r.raw_text[:500],
-                    "check": o.evidence,
-                },
-                occurred_at=now,
-            )
-    session.flush()
-    return report.created
-
-
-def report_lines(
-    outcomes: Sequence[Outcome],
-    *,
-    applied: bool,
-    everything: bool,
-    tables: Sequence[str] = tuple(COLUMNS),
-) -> list[str]:
-    """Counts per table and status, then the stored, conflict and review rows with their
-    reasons (every row when `everything`)."""
-    counts: Counter[tuple[str, str]] = Counter((o.proposal.table, o.status) for o in outcomes)
-    rows = Counter(r.action_type for o in outcomes for r in o.records)
-    label = {STORED: "stored" if applied else "to_store"}
-    lines = [
-        "table               " + " ".join(f"{label.get(s, s):>9}" for s in STATUSES) + "    total",
-    ]
-    for table in tables:
-        cells = [counts[(table, s)] for s in STATUSES]
-        lines.append(f"{table:<20}" + " ".join(f"{c:>9}" for c in cells) + f" {sum(cells):>8}")
-    lines.append(
-        "rows "
-        + ("written" if applied else "to write")
-        + ": "
-        + ", ".join(f"{k} {v}" for k, v in sorted(rows.items()))
-    )
-    for table in tables:
-        reasons = Counter(
-            (o.status, o.reason)
-            for o in outcomes
-            if o.proposal.table == table and o.status in (REVIEW, SKIPPED)
-        )
-        lines.append(
-            f"reasons {table}: "
-            + ", ".join(f"{s}/{r} {n}" for (s, r), n in sorted(reasons.items()))
-        )
-    shown = STATUSES if everything else (STORED, CONFLICT, REVIEW)
-    for status in shown:
-        for o in outcomes:
-            if o.status != status:
-                continue
-            p = o.proposal
-            factors = " ".join(f"{r.action_type}={r.factor.normalize()}" for r in o.records)
-            lines.append(
-                "\t".join(
-                    [
-                        label.get(o.status, o.status).upper(),
-                        o.reason,
-                        p.table,
-                        p.symbol,
-                        p.isin,
-                        p.ex_date.isoformat() if p.ex_date else "-",
-                        factors,
-                        p.text[:120],
-                        o.detail,
-                        p.hint[:160],
-                    ]
-                )
-            )
-    return lines
-
-
 # --- command line -------------------------------------------------------------------------------
-
-
-def input_file(name: str) -> Path:
-    """The file named on the command line, under the working directory with a `.db` suffix:
-    anything resolving outside it, or with another suffix, is refused before it is opened."""
-    base = Path.cwd().resolve()
-    target = (base / name).resolve()
-    if not target.is_relative_to(base) or target.suffix.lower() != ".db":
-        raise CaFileError("ca_file_outside_cwd")
-    if not target.is_file():
-        raise CaFileError("ca_file_missing")
-    return target
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
@@ -852,14 +536,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     run) or, with `--apply`, stores it in one transaction. The report goes to stdout (redirect
     it to a file outside the repo); `--all` lists every row, not only the stored, conflict and
     review ones. After an apply, rebuild the lineage (`python -m app.hat.data.lineage build`)
-    and the features (`features --full`)."""
+    and run `features`, which recomputes the chains whose factors changed."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.ca_import")
     parser.add_argument("--db", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--all", action="store_true")
     args = parser.parse_args(argv)
     try:
-        path = input_file(args.db)
+        path = input_path(args.db, ".db")
         tables = read_file(path)
     except CaFileError as exc:
         sys.stderr.write(f"refused: {exc.code}\n")
@@ -875,14 +559,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     with HatSessionLocal() as session:
         outcomes = evaluate(session, store, tables)
         if args.apply:
-            journal = {"source": SOURCE_FILE, "file_sha256": file_digest(path)}
+            journal = {"source": SOURCE_FILE, "file_sha256": digest(path)}
             created = apply(session, outcomes, journal=journal, now=utc_now())
             session.commit()
             sys.stdout.write(f"applied: {created} rows\n")
         else:
             session.rollback()
-    sys.stdout.write("\n".join(report_lines(outcomes, applied=args.apply, everything=args.all)))
-    sys.stdout.write("\n")
+    lines = report_lines(outcomes, applied=args.apply, everything=args.all, tables=tuple(COLUMNS))
+    sys.stdout.write("\n".join(lines) + "\n")
     return 0
 
 

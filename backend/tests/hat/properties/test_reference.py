@@ -12,7 +12,14 @@ from hat_mcp_support import (
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from app.hat.data.instruments import (
+from app.hat.data.mcp_client import McpClient
+from app.hat.data.reference import (
+    BAND_VALUES,
+    band_from_circuit_limits,
+    page_listing,
+    parse_band_value,
+)
+from app.hat.data.symbol_history import (
     SKIP_NO_BARS,
     SKIP_SAME_FIRST_BAR,
     Interval,
@@ -20,13 +27,6 @@ from app.hat.data.instruments import (
     overlapping_pairs,
     repair_plan,
     symbol_ids,
-)
-from app.hat.data.mcp_client import McpClient
-from app.hat.data.reference import (
-    BAND_VALUES,
-    band_from_circuit_limits,
-    page_listing,
-    parse_band_value,
 )
 
 # --- prefix paging -------------------------------------------------------------

@@ -193,6 +193,9 @@ Alerts:
   longer lists a stored notice before its ex-date (a moved or withdrawn record date). The notice
   stands and its exit still fires; check NSE's announcement and sell or hold by hand.
 - `dividend.trades_stale`: the closed-trade dividend restatement failed; read the log.
+- `corporate_action.projection` (`mismatches`, the first `keys`): a stored action is not what its
+  version ledger selects (a writer skipped `Ledger`), or the check failed (`unchecked`); `point_in_time
+  report` lists every key. A backtest selects from the versions, so fix the writer first.
 - `lineage.unchecked`, `lineage.review`: see `lineage report`.
 
 Owner corrections (journalled; no load rewrites them):
@@ -223,8 +226,9 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `renames` | Seed symbol history from renames |
 | `$ADMIN repair-symbol-history [--apply]` | Close overlapping symbol intervals |
 
-After an import or correction: `lineage build`, then `features` (`--full` after dividends or
-`--neutral`). The writers of actions, lineage and symbol history share the `hat_reference_data`
+After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
+factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is
+never needed for it. The writers of actions, lineage and symbol history share the `hat_reference_data`
 advisory lock; `features` does not take it, so run it after they finish.
 
 ## Alerts and failures

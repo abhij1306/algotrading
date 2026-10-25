@@ -120,7 +120,7 @@ KITE_CAPABILITIES = Capabilities(gtt_delivery=False)
 def _stored_instruments() -> list[tuple[str, str]]:
     """(database symbol, Kite trading symbol) of the active instruments with a zerodha mapping."""
     from app.database import HatSessionLocal  # deferred: importing it connects the engine
-    from app.hat.data.instruments import kite_instruments
+    from app.hat.data.broker_symbols import kite_instruments
 
     with HatSessionLocal() as session:
         return kite_instruments(session)

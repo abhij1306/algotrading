@@ -47,7 +47,8 @@ from .index_history import (
     load_index_history,
 )
 from .pacing import Pacer
-from .store import DATASET_BARS, DataStore, PartitionReport, index_coverage, partition_report
+from .store import DATASET_BARS, DataStore
+from .store_coverage import PartitionReport, index_coverage, partition_report
 
 # --- instruments ---------------------------------------------------------------------------------
 

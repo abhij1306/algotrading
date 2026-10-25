@@ -59,6 +59,7 @@ from app.hat.data.lineage_review import (
     jump_counts,
     jump_kind,
 )
+from app.hat.data.lineage_store import link_changes
 from app.hat.data.store import BarRow, DataStore
 from app.hat.ids import uuid7
 
@@ -469,3 +470,16 @@ def test_chain_members() -> None:
     assert members["a"] == members["d"] == frozenset("abcd")
     assert members["y"] == frozenset("xy")
     assert "z" not in members
+
+
+def test_link_changes_lists_only_pairs_that_gain_or_lose_a_link() -> None:
+    """A link created, removed or demoted is journalled; a review case appearing, a link kept or
+    a review case dropped changes no series and is not."""
+    before = {("a", "b"): LINKED, ("c", "d"): LINKED, ("e", "f"): REVIEW, ("g", "h"): LINKED}
+    after = {("a", "b"): LINKED, ("c", "d"): REVIEW, ("i", "j"): LINKED, ("k", "l"): REVIEW}
+    assert link_changes(before, after) == [
+        (("c", "d"), LINKED, REVIEW),
+        (("g", "h"), LINKED, None),
+        (("i", "j"), None, LINKED),
+    ]
+    assert link_changes(after, after) == []
