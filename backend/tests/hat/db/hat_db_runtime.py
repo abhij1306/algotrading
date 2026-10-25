@@ -71,10 +71,12 @@ def check_runtime__signal_unique_concurrent(engine: Engine) -> None:
     outcomes: list[str] = []
     first_in = threading.Event()
     release = threading.Event()
+    pids: dict[bool, int] = {}  # each worker's backend, by `hold`
 
     def worker(hold: bool) -> None:
         with engine.connect() as connection:
             transaction = connection.begin()
+            pids[hold] = connection.execute(text("SELECT pg_backend_pid()")).scalar_one()
             try:
                 if not hold:
                     first_in.wait(5)
@@ -95,14 +97,15 @@ def check_runtime__signal_unique_concurrent(engine: Engine) -> None:
         holder.start()
         racer.start()
         deadline = time.monotonic() + 5
-        waiting = text(
-            "SELECT count(*) FROM pg_stat_activity"
-            " WHERE wait_event_type = 'Lock' AND datname = current_database()"
-        )
+        # the racer itself is blocked by the holder, not any other session's lock wait
+        blocked = text("SELECT CAST(:holder AS int) = ANY(pg_blocking_pids(:racer))")
         while True:
-            with engine.connect() as probe:
-                if probe.execute(waiting).scalar_one() >= 1:
-                    break
+            if len(pids) == 2:
+                with engine.connect() as probe:
+                    if probe.execute(
+                        blocked, {"holder": pids[True], "racer": pids[False]}
+                    ).scalar():
+                        break
             assert time.monotonic() < deadline, "the racer never waited on the holder's lock"
             time.sleep(0.05)  # noqa: ASYNC251
         release.set()
