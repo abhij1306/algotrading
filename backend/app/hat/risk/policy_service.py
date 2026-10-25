@@ -4,7 +4,10 @@ A change is requested as a new `hat_risk_policy_version`: a decrease takes effec
 session open, an increase no sooner than 7 days after the request and only with gate evidence,
 which by default comes from the backtest runs (`backtest.evidence.gate_evidence`, HAT-GOV-091).
 Requesting writes `risk.change_requested`; a version taking effect writes `risk.change_effective`
-and marks the version it replaces `superseded_at`, in the same transaction. Nothing commits here.
+and marks the version it replaces `superseded_at`, in the same transaction. A decrease withdraws
+every version still pending (`risk.change_withdrawn`, `superseded_at` before its own
+`effective_from`), so a later decrease is never overridden by an earlier increase. Nothing commits
+here.
 """
 
 from __future__ import annotations
@@ -22,10 +25,18 @@ from ..errors import HatError
 from ..governance import COOLING_OFF
 from ..models import HatEvent, HatRiskPolicyVersion
 from ..time import as_utc
-from .policy import SEED_POLICY, RiskPolicy, classify_direction, require_increase_gate
+from .policy import (
+    SEED_POLICY,
+    RiskPolicy,
+    classify_direction,
+    require_increase_gate,
+    withdrawn,
+    withdrawn_by_decrease,
+)
 from .policy_upkeep import (
     EVENT_EFFECTIVE,
     EVENT_REQUESTED,
+    EVENT_WITHDRAWN,
     next_version,
     record_policy_event,
 )
@@ -90,7 +101,8 @@ def request_policy_change(
     """Queue `proposed` as the next version (`risk.change_requested`), outside market hours only.
 
     The direction is `increase` when `proposed` is more permissive than the version in force or
-    than any pending one, else `decrease`. A decrease takes effect at the next session open; an
+    than any pending one, else `decrease`. A decrease takes effect at the next session open and
+    withdraws every pending version (`withdrawn_by_decrease`, `risk.change_withdrawn`); an
     increase at the first session open at least 7 days after the request, and `GateError` is
     raised unless the evidence `evidence` reads (by default the backtest runs) passes the gate.
     Raises `PolicyChangeError` for the owner's request (`actor = user`) without the allowlisted
@@ -141,6 +153,13 @@ def request_policy_change(
     session.add(row)
     session.flush()
     record_policy_event(session, row, EVENT_REQUESTED, actor, chat_id, requested_at)
+    if direction == "decrease":
+        ids = {v.version_id for v in withdrawn_by_decrease(versions, requested_at)}
+        for old in session.scalars(
+            select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.id.in_(ids))
+        ):
+            old.superseded_at = as_utc(requested_at)
+            record_policy_event(session, old, EVENT_WITHDRAWN, actor, chat_id, requested_at)
     return row
 
 
@@ -160,7 +179,13 @@ def apply_due_versions(session: Session, user_id: uuid.UUID, now: datetime) -> i
         ).all()
     )
     due = sorted(
-        (r for r in rows if as_utc(r.effective_from) <= as_utc(now) and r.id not in announced),
+        (
+            r
+            for r in rows
+            if as_utc(r.effective_from) <= as_utc(now)
+            and r.id not in announced
+            and not withdrawn(r.effective_from, r.superseded_at)
+        ),
         key=lambda r: (as_utc(r.effective_from), r.version),
     )
     for row in due:

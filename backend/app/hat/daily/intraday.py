@@ -17,6 +17,15 @@
 The pre-open gap capture (09:00-09:08) is not a job: `LiveData` records each symbol's gap from the
 feed's ticks. The trigger window opens at 09:20 with the first final 5-minute bar, and the regime
 gate is evaluated then (`GateBoard`).
+
+The times are the regular session's. The open-phase jobs (`live.prepare`, `modes.apply`, the gap
+scan) move with a session that opens at another time (`open_shift`: a 14:20 Muhurat open runs
+them at 13:50, 14:20 and 14:21-14:25), the close-phase ones (`exits.close_shadow`,
+`watchlist.expire`) with one that closes at another time (`close_shift`).
+
+`track_positions` (housekeeping, every minute in the session) prices and subscribes an open
+position that `live.prepare` did not know: a late fill on a name not on the day's watchlist is
+marked and exited on its own price, not yesterday's close.
 """
 
 from __future__ import annotations
@@ -229,7 +238,7 @@ class Intraday:
             universe=self._in_a_universe(day),
             on_candidates=lambda found, opens: self.on_gappers(day, found, opens),
         )()
-        if is_late(self._now(), day):
+        if is_late(self._now(), day, self.open_shift(day)):
             self._notifier.alert(ALERT_LATE, day, {})
         return result
 
@@ -299,6 +308,37 @@ class Intraday:
         if self._subs is not None and candidates:
             self._subs.add_candidates({c.symbol for c in candidates})
         return len(candidates)
+
+    # --- during the session (housekeeping) ------------------------------------------------------
+
+    def track_positions(self, now: datetime) -> int:
+        """Price and subscribe each open position's instrument that is not yet priced by id or
+        not in the subscriptions' inputs (opened after `live.prepare`, audit A3 F5); each is
+        checked on its own, so an instrument priced earlier but no longer subscribed rejoins the
+        feed. Returns how many instruments needed either; nothing outside an open session."""
+        calendar = self._calendar()
+        if calendar is None or not calendar.is_open(now):
+            return 0
+        with self._session_factory() as session:
+            held = _open_position_symbols(session)
+            unpriced = {iid for iid in held if not self._prices.tracks(iid)}
+            if unpriced:
+                self._prices.track_session(session, unpriced)
+        wanted = self._subs.desired() if self._subs is not None else frozenset(held.values())
+        unsubscribed = {iid for iid, symbol in held.items() if symbol not in wanted}
+        if self._subs is not None and unsubscribed:
+            self._subs.add_positions({held[iid] for iid in unsubscribed})
+        added = unpriced | unsubscribed
+        if added:
+            logger.info("tracking %d positions opened after the day was armed", len(added))
+        return len(added)
+
+    # --- the session's shifts -----------------------------------------------------------------
+
+    def open_shift(self, day: date) -> timedelta:
+        """How far `day`'s session opens from the regular open (the open jobs move with it)."""
+        calendar = self._calendar()
+        return calendar.open_shift(day) if calendar is not None else timedelta(0)
 
     # --- 15:20-15:25 --------------------------------------------------------------------------
 
@@ -393,10 +433,32 @@ def _day_instruments(session: Session, day: date) -> set[uuid.UUID]:
     return {*watched, *held}
 
 
+def _open_position_symbols(session: Session) -> dict[uuid.UUID, str]:
+    """Each open position's instrument with its symbol (virtual ones too, as `load_inputs`)."""
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.symbol)
+        .join(HatPosition, HatPosition.instrument_id == HatInstrument.id)
+        .where(HatPosition.closed_at.is_(None))
+    )
+    return dict(rows.tuples().all())
+
+
 def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
     return (
-        ScheduledJob(LIVE_PREPARE, PREPARE_AT, intraday.prepare, retry_after=ONE_MINUTE),
-        ScheduledJob(MODES_APPLY, MODES_AT, intraday.apply_modes, retry_after=ONE_MINUTE),
+        ScheduledJob(
+            LIVE_PREPARE,
+            PREPARE_AT,
+            intraday.prepare,
+            retry_after=ONE_MINUTE,
+            shift=intraday.open_shift,
+        ),
+        ScheduledJob(
+            MODES_APPLY,
+            MODES_AT,
+            intraday.apply_modes,
+            retry_after=ONE_MINUTE,
+            shift=intraday.open_shift,
+        ),
         ScheduledJob(
             GAPSCAN,
             GAPSCAN_AT,
@@ -404,6 +466,7 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
             until=GAPSCAN_UNTIL,
             retry_after=ONE_MINUTE,
             after=(LIVE_PREPARE,),
+            shift=intraday.open_shift,
         ),
         ScheduledJob(
             EXITS_CLOSE_SHADOW,
@@ -418,5 +481,6 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
             WATCHLIST_EXPIRE_AT,
             intraday.expire_watchlist,
             retry_after=ONE_MINUTE,
+            shift=intraday.close_shift,
         ),
     )

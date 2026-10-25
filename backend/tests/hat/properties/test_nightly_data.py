@@ -26,6 +26,12 @@ def test_recorded_history_reads_holidays_and_sessions() -> None:
     holiday_years = {d.year for d, day in days.items() if not day.is_trading}
     assert holiday_years == set(range(2010, 2026))
     assert days[date(2026, 2, 1)].is_trading  # the Sunday Budget session NSE's list leaves out
+    sunday = days[date(2026, 11, 8)]  # Muhurat, NSE circular of 2026-10-19
+    assert (sunday.is_trading, sunday.open_at, sunday.close_at) == (
+        True,
+        time(14, 20),
+        time(15, 30),
+    )
     assert not days[date(2010, 1, 26)].is_trading
     # NSE closed on 15 Nov 2013 where BSE closed on the 14th; the archive has a file for the 14th
     assert not days[date(2013, 11, 15)].is_trading

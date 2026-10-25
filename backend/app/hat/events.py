@@ -113,6 +113,7 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "strategy.promoted",
         "risk.change_requested",
         "risk.change_effective",
+        "risk.change_withdrawn",
     ),
     "Portfolio": (
         "sleeve.lifecycle_changed",

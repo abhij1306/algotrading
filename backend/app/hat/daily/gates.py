@@ -1,8 +1,9 @@
 """The entry gates of the trading day (PR 17): each bot's regime gate and whether last night's
 quality gate passed for the data the day trades on.
 
-`GateBoard` evaluates each bot's regime gate at or after 09:20 IST of the trade date and keeps it
-for the day; before 09:20 it is unknown, so no entry is accepted (HAT-RISK-051). An unknown gate
+`GateBoard` evaluates each bot's regime gate at or after 09:20 IST of the trade date (moved with a
+session that opens at another time, `SessionCalendar.open_shift`) and keeps it for the day; before
+then it is unknown, so no entry is accepted (HAT-RISK-051). An unknown gate
 or quality state leaves the entry alone (the risk check rejects an entry with a missing input).
 """
 
@@ -12,7 +13,7 @@ import logging
 import threading
 import uuid
 from collections.abc import Callable
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -39,14 +40,17 @@ class GateBoard:
     """Each bot's regime gate for the trade date, evaluated once at or after 09:20 IST on the
     index closes before the trade date (HAT-RISK-051), and the quality-gate state of the day."""
 
-    def __init__(self, store: DataStore) -> None:
+    def __init__(self, store: DataStore, calendar: CalendarSource | None = None) -> None:
         self._store = store
+        self._calendar = calendar
         self._gates: dict[tuple[uuid.UUID, date], bool] = {}
         self._lock = threading.Lock()
 
     def gate_on(self, session: Session, bot_id: uuid.UUID, at: datetime) -> bool | None:
         day = trade_date_of(at)
-        if at.astimezone(IST).time() < GATE_AT:
+        calendar = self._calendar() if self._calendar is not None else None
+        shift = calendar.open_shift(day) if calendar is not None else timedelta(0)
+        if (at - shift).astimezone(IST).time() < GATE_AT:
             return None
         key = (bot_id, day)
         with self._lock:

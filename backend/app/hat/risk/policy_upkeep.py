@@ -40,6 +40,7 @@ def load_versions(session: Session, user_id: uuid.UUID) -> list[PolicyVersion]:
 
 EVENT_REQUESTED = "risk.change_requested"
 EVENT_EFFECTIVE = "risk.change_effective"
+EVENT_WITHDRAWN = "risk.change_withdrawn"  # a pending version a decrease withdrew
 
 
 def record_policy_event(

@@ -229,6 +229,17 @@ class LiveSubscriptions:
                 )
             )
 
+    def add_positions(self, symbols: Collection[str]) -> None:
+        """Add the symbols of positions opened after the day's sync (`Intraday.track_positions`)
+        to the current inputs."""
+        with self._update:
+            inputs = self._inputs
+            self.sync(
+                SubscriptionInputs(
+                    inputs.watchlist, inputs.positions | frozenset(symbols), inputs.candidates
+                )
+            )
+
     def release_all(self) -> None:
         """HAT stops: drop the owner; the provider unsubscribes only unheld symbols."""
         with self._lock:

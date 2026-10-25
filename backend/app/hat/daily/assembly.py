@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -47,7 +47,7 @@ from ..notify import Notifier
 from ..ops.jobs import SessionFactory
 from ..ops.scheduler import DEFAULT_DEADLINE, HatScheduler, ScheduledJob
 from ..ops.trade_jobs import EXITS_CLOSE, GTT_CHECK, GTT_SWAP, GTT_VERIFY
-from ..risk.sessions import SessionCalendar, is_trading_day
+from ..risk.sessions import REGULAR_CLOSE, REGULAR_OPEN, SessionCalendar, is_trading_day
 from ..settings import HatSettings
 from ..telegram.callbacks import ManagerFlattener, RouterDesk
 from ..telegram.client import BotClient, TelegramTransport
@@ -273,6 +273,12 @@ class TradingCalendar:
         calendar = self._calendar
         return calendar is not None and calendar.is_open(at)
 
+    def hours(self, day: date) -> tuple[time, time]:
+        """`day`'s session open and close (IST); the regular session while the calendar is
+        unknown (no session is open then, so nothing trades on it)."""
+        calendar = self._calendar
+        return calendar.hours(day) if calendar is not None else (REGULAR_OPEN, REGULAR_CLOSE)
+
 
 @dataclass(frozen=True)
 class TakeInputs:
@@ -321,6 +327,18 @@ class Assembly:
     scheduler: HatScheduler
     feed_stale: Callable[[], bool]
     lock_lost: threading.Event  # set by `HatRuntime.watch_lock`: no new entry until a restart
+    health_kill: DataHealthKill  # its pending write is retried by the housekeeping
+    halted: threading.Event = dataclasses.field(default_factory=threading.Event)
+
+    def halt(self) -> None:
+        """Another runtime holds the lock (`HatRuntime.watch_lock`, audit A3 F8): it owns the
+        accounts, so this one writes no order from now on until a restart. No new entry
+        (`lock_lost`), no scheduled job, no periodic order step (`halted`), and the desks'
+        broker sessions are released, so any broker call still in reach is refused."""
+        self.lock_lost.set()
+        self.halted.set()
+        self.scheduler.halt()
+        self.desks.release()
 
 
 def build(
@@ -341,11 +359,12 @@ def build(
     notifier = TelegramNotifier(client, sf)
     book = DailyBook(parts.store, sf)
     prices = PriceBook()
-    gates = GateBoard(parts.store)
+    gates = GateBoard(parts.store, calendar)
     subscribe, unsubscribe = threadsafe_provider(parts.feed, loop)
     registry = parts.feed.registry
+    health_kill = DataHealthKill(sf, clock, notifier=notifier)
     live = LiveData(
-        health=EventFeedHealth(sf, DataHealthKill(sf, clock)),
+        health=EventFeedHealth(sf, health_kill),
         is_open=calendar.is_open,
         clock=clock,
         store=parts.bar_store,
@@ -358,6 +377,7 @@ def build(
             silent_after=timedelta(seconds=settings.symbol_silent_seconds),
         ),
         watched=lambda: registry.symbols_of(HAT_OWNER),
+        hours=calendar.hours,
     )
     live.add_tick_listener(prices.on_tick)
     desks = Desks(
@@ -477,4 +497,5 @@ def build(
         scheduler=scheduler,
         feed_stale=feed_stale,
         lock_lost=lock_lost,
+        health_kill=health_kill,
     )

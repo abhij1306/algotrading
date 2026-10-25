@@ -6,13 +6,17 @@ step of one never delays another:
   its own, so a shadow failure never holds up a real exit), the drawdown
   kills on equity marked to market (every minute) and the stale-entry cancels. They read prices,
   the database and the managers;
-- `housekeeping`: the calendar check, the runtime lock check (`HatRuntime.watch_lock`), and on a
-  trading day the session watch, the fill sync,
-  the approval expiry, the reconciliation (every 5 minutes) and the resume of stranded entries;
+- `housekeeping`: the calendar check, the runtime lock check (`HatRuntime.watch_lock`), the retry of
+  a feed-health kill write that failed, and on a trading day the session watch, the fill sync,
+  the approval expiry, the reconciliation (every 5 minutes), the resume of stranded entries and
+  the tracking of positions opened after the day was armed (`Intraday.track_positions`);
 - `announcements`, when the parts give a fetch: the NSE announcements poll (up to two feeds of
   `FETCH_TIMEOUT_SECONDS` each).
 
-Each loop runs one pass off the event loop, then waits `STEP_SECONDS`; each step fails alone.
+Each loop runs one pass on its own thread (never the loop's default pool, which the Telegram poll
+and the relay share: audit A3 F6), then waits `STEP_SECONDS`; each step fails alone. Once the
+runtime is halted (it lost its lock to another runtime, `Assembly.halt`) the exits pass and the
+trading-day housekeeping steps do nothing: the runtime holding the lock owns the accounts.
 Every loop beats a heartbeat at the start of each pass, and the scheduler's tick calls
 `Heartbeats.check`: a loop whose heartbeat is older than `STALL_AFTER` while the market is open
 raises `periodic.stalled` once per session (a pass of `announcements` takes at most two fetches of
@@ -34,6 +38,7 @@ import contextlib
 import logging
 import threading
 from collections.abc import Callable, Coroutine, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -177,20 +182,27 @@ class Periodic:
         return work
 
     async def _loop(self, name: str, step: Callable[[datetime], None], stop: asyncio.Event) -> None:
-        while not stop.is_set():
-            now = utc_now(self._clock)
-            self._a.heartbeats.beat(name, now)
-            try:
-                await asyncio.to_thread(step, now)
-            except Exception:
-                logger.exception("periodic loop %s failed", name)
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), STEP_SECONDS)
+        thread = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"hat-{name}")
+        loop = asyncio.get_running_loop()
+        try:
+            while not stop.is_set():
+                now = utc_now(self._clock)
+                self._a.heartbeats.beat(name, now)
+                try:
+                    await loop.run_in_executor(thread, step, now)
+                except Exception:
+                    logger.exception("periodic loop %s failed", name)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), STEP_SECONDS)
+        finally:
+            thread.shutdown(wait=False)
 
     # --- the passes (blocking: each runs off the loop) -------------------------------------
 
     def exits(self, now: datetime) -> None:
         a = self._a
+        if a.halted.is_set():
+            return
         if not (a.calendar.trading(trade_date_of(now)) and a.calendar.is_open(now)):
             return
         steps: list[Step] = [
@@ -207,9 +219,14 @@ class Periodic:
         if self._watch_lock is not None:
             watch = self._watch_lock
             steps.append(("lock", MINUTE, lambda: watch(now)))
+        if a.halted.is_set():
+            _run_steps(steps, self._housekeeping, now)
+            return
+        steps.append(("feed_health", MINUTE, a.health_kill.retry))
         if a.calendar.trading(trade_date_of(now)):
             steps += [
                 ("sessions", MINUTE, lambda: watch_sessions(a, now)),
+                ("track", MINUTE, lambda: a.intraday.track_positions(now)),
                 ("sync", timedelta(0), lambda: a.desks.sync_due(now)),
                 ("expire", MINUTE, lambda: a.desks.expire_all(now)),
                 ("reconcile", RECONCILE_EVERY, lambda: a.desks.reconcile_all(now)),

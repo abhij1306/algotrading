@@ -22,7 +22,7 @@ import logging
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -117,9 +117,10 @@ def select_gappers(items: Iterable[Gapper], minimum_pct: Decimal = EP_MIN_GAP_PC
     return [item.row.symbol for item in items if is_candidate(item, minimum_pct)]
 
 
-def is_late(finished_at: datetime, trade_date: date) -> bool:
-    """Whether a run finished at or after 09:20:00 IST on `trade_date`."""
-    deadline = datetime.combine(trade_date, GAP_SCAN_DEADLINE, tzinfo=IST)
+def is_late(finished_at: datetime, trade_date: date, shift: timedelta = timedelta(0)) -> bool:
+    """Whether a run finished at or after 09:20:00 IST on `trade_date`, moved by `shift` (how far
+    the day's session opens from the regular open)."""
+    deadline = datetime.combine(trade_date, GAP_SCAN_DEADLINE, tzinfo=IST) + shift
     return as_utc(finished_at) >= deadline
 
 

@@ -112,15 +112,22 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 | 08:40-08:45 | ca.rescale, gtt.check, live.prepare |
 | 09:15-09:20 | modes.apply, gapscan |
 | 09:20-15:20 | triggers, routing, stops on fill |
-| 15:20-15:25 | exits.close; 15:25 gtt.swap (both move with a session's stored close) |
+| 15:20-15:25 | exits.close; 15:25 gtt.swap |
 | 15:30-15:45 | watchlist.expire, trade.end_session, reports and digests |
+
+The session's own stored hours move the times: live.prepare, modes.apply, gapscan, the regime
+gate, the pre-open capture and the bar grid follow its open (a 14:20 Muhurat open: prepare 13:50,
+modes 14:20, gapscan 14:21-14:25); exits.close, gtt.swap, the sales' cut-off,
+exits.close_shadow, watchlist.expire and trade.end_session follow its close.
 | 18:00 on | the nightly chain |
 | 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots |
 
 Each job has a deadline (`JOB_DEADLINES`); failing, missing or overrunning it raises one URGENT
 alert. Periodic loops (`daily/periodic.py`, every 5 s): live exits and intraday drawdown kills;
 housekeeping (session watch, fill sync, approval expiry, reconciliation every 5 min, stranded
-entries); announcements. A stalled loop alerts `periodic.stalled`. Broker calls have timeouts and
+entries, positions opened after live.prepare priced and subscribed, a failed feed-health kill
+write retried); announcements. Each loop, the scheduler's jobs and the trigger writes run on
+their own threads, never the loop's default pool. A stalled loop alerts `periodic.stalled`. Broker calls have timeouts and
 a circuit breaker; every DB transaction runs under a 120 s `statement_timeout`.
 
 ## Verification and CI

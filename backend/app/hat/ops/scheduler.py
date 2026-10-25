@@ -33,6 +33,9 @@ these is the only one: the run row's `alerted_at` keeps it across retries and re
 scheduler's memory covers a job that has no row yet (so a restart may repeat that one). An alert
 never raises into the loop.
 
+`halt` (the runtime lost its lock to another runtime) stops the scheduler starting anything, and
+sends no alert from then on: the runtime holding the lock runs the jobs.
+
 A8 (audit R5): each tick also calls the runtime's `watch` (`daily/periodic.py:Heartbeats.check`,
 `periodic.stalled` for a periodic loop that stopped beating); it never raises into the loop.
 """
@@ -228,6 +231,7 @@ class HatScheduler:
         self._running: dict[str, asyncio.Task[None]] = {}
         self._running_day: dict[str, date] = {}
         self._stopping = False
+        self._halted = False
         self._task: asyncio.Task[None] | None = None
         # One thread per job, apart from the loop's default pool that other work shares.
         self._threads = ThreadPoolExecutor(
@@ -293,7 +297,9 @@ class HatScheduler:
             self._running_day.pop(job.name, None)
 
     async def tick(self) -> list[asyncio.Task[None]]:
-        """Start every due job as its own task; return the tasks started."""
+        """Start every due job as its own task; return the tasks started. Nothing once halted."""
+        if self._halted:
+            return []
         now = utc_now(self._clock)
         today = trade_date_of(now)
         days = (today, today - ONE_DAY)
@@ -401,6 +407,12 @@ class HatScheduler:
     def start(self) -> None:
         if self._task is None:
             self._task = asyncio.get_running_loop().create_task(self._loop())
+
+    def halt(self) -> None:
+        """Start no job from now on, and alert nothing (a body still running ends on its own);
+        the runtime lost its lock to another runtime, which runs the jobs (audit A3 F8)."""
+        self._halted = True
+        self._stopping = True
 
     def begin_stop(self) -> None:
         """From now on a failed run is not alerted: the stop ends long bodies by failing them."""
