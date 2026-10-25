@@ -16,6 +16,7 @@ An unknown price never fires anything.
 from __future__ import annotations
 
 import logging
+import threading
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -47,11 +48,13 @@ class PriceBook:
     """The last traded price per instrument from the feed, with the exchange time of its tick.
     `on_tick` runs on the loop thread with ticks `LiveData` already parsed (a symbol and a
     finite positive price); `quote` and `price` may be read from any thread (a dict read of an
-    immutable value)."""
+    immutable value). `track_session` and `reset` replace the id map under a lock: the scheduler's
+    jobs and the housekeeping track from different threads, and neither may drop the other's."""
 
     def __init__(self) -> None:
         self._prices: dict[str, Quote] = {}
         self._symbols: dict[uuid.UUID, str] = {}
+        self._track = threading.Lock()
 
     def on_tick(self, tick: Tick) -> None:
         # A print older than the one kept (by exchange time) arrived late: keep the newer one.
@@ -67,15 +70,20 @@ class PriceBook:
                     HatInstrument.id.in_(instrument_ids)
                 )
             )
-            self._symbols = {**self._symbols, **dict(found.all())}
+            rows = dict(found.all())
+            with self._track:
+                self._symbols = {**self._symbols, **rows}
 
     def tracks(self, instrument_id: uuid.UUID) -> bool:
         """Whether the instrument's price is read by id (`track_session` added it)."""
         return instrument_id in self._symbols
 
     def reset(self) -> None:
-        """A new trading day: yesterday's prices are not today's."""
-        self._prices = {}
+        """A new trading day: yesterday's prices and tracked instruments are not today's
+        (`live.prepare` tracks the day's own right after)."""
+        with self._track:
+            self._prices = {}
+            self._symbols = {}
 
     def quote(self, instrument_id: uuid.UUID) -> Quote | None:
         symbol = self._symbols.get(instrument_id)

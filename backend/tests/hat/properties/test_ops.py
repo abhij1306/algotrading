@@ -11,6 +11,7 @@ import re
 import shutil
 import tempfile
 import threading
+import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -24,6 +25,7 @@ from hypothesis import strategies as st
 from app.hat.clock import FixedClock
 from app.hat.daily.assembly import ALERT_POOL, subscription_alert
 from app.hat.daily.periodic import PERIODIC_STALLED, STALL_AFTER, Heartbeats, stalled
+from app.hat.daily.prices import PriceBook
 from app.hat.daily.runtime import HatRuntime, after_restore
 from app.hat.data.subscriptions import LiveSubscriptions, SubscriptionInputs, SubscriptionRegistry
 from app.hat.engine.live_entry import DataHealthKill
@@ -857,3 +859,15 @@ def test_a_failed_feed_health_write_stays_pending_and_alerts_once() -> None:
     assert kill.retry()  # nothing pending: no write
     assert kill.written == [True]
     assert [code for code, _day, _detail in notifier.alerts] == ["feed_health.unwritten"]
+
+
+def test_price_book_forgets_tracked_instruments_on_reset() -> None:
+    """CodeAnt on #255: an instrument tracked on an earlier day is not tracked after the day's
+    reset, so a position on it is priced and subscribed again."""
+    iid = uuid.uuid4()
+    rows = mock.Mock(**{"execute.return_value.all.return_value": [(iid, "TCS")]})
+    book = PriceBook()
+    book.track_session(rows, {iid})
+    assert book.tracks(iid)
+    book.reset()
+    assert not book.tracks(iid)

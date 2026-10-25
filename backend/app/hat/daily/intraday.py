@@ -312,22 +312,26 @@ class Intraday:
     # --- during the session (housekeeping) ------------------------------------------------------
 
     def track_positions(self, now: datetime) -> int:
-        """Price and subscribe each open position's instrument that is not tracked yet (opened
-        after `live.prepare`, audit A3 F5). Returns how many were added; nothing outside an open
-        session or before the day was armed (`live.prepare` tracks the day's own)."""
+        """Price and subscribe each open position's instrument that is not yet priced by id or
+        not in the subscriptions' inputs (opened after `live.prepare`, audit A3 F5); each is
+        checked on its own, so an instrument priced earlier but no longer subscribed rejoins the
+        feed. Returns how many instruments needed either; nothing outside an open session."""
         calendar = self._calendar()
         if calendar is None or not calendar.is_open(now):
             return 0
         with self._session_factory() as session:
             held = _open_position_symbols(session)
-            new = {iid for iid in held if not self._prices.tracks(iid)}
-            if new:
-                self._prices.track_session(session, new)
-        if self._subs is not None and new:
-            self._subs.add_positions({held[iid] for iid in new})
-        if new:
-            logger.info("tracking %d positions opened after the day was armed", len(new))
-        return len(new)
+            unpriced = {iid for iid in held if not self._prices.tracks(iid)}
+            if unpriced:
+                self._prices.track_session(session, unpriced)
+        wanted = self._subs.desired() if self._subs is not None else frozenset(held.values())
+        unsubscribed = {iid for iid, symbol in held.items() if symbol not in wanted}
+        if self._subs is not None and unsubscribed:
+            self._subs.add_positions({held[iid] for iid in unsubscribed})
+        added = unpriced | unsubscribed
+        if added:
+            logger.info("tracking %d positions opened after the day was armed", len(added))
+        return len(added)
 
     # --- the session's shifts -----------------------------------------------------------------
 
