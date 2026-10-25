@@ -13,8 +13,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
-from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import yaml
 
@@ -64,13 +63,14 @@ def _risk_pct_arg(text: str) -> Decimal:  # pragma: no cover - the command line
     return number
 
 
-def _variants_doc(path: Path) -> object:  # pragma: no cover - the command line
-    """The variants file's document; `backtest_sweep_bad_variants` when it cannot be read or
-    parsed."""
-    try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        raise BacktestError("backtest_sweep_bad_variants") from None
+def _variants_doc(file: TextIO) -> object:  # pragma: no cover - the command line
+    """The variants file's document (argparse opened it); `backtest_sweep_bad_variants` when it
+    cannot be read or parsed."""
+    with file:
+        try:
+            return yaml.safe_load(file)
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            raise BacktestError("backtest_sweep_bad_variants") from None
 
 
 def _outcome_json(outcome: SweepOutcome) -> dict[str, Any]:  # pragma: no cover - the database
@@ -113,7 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     the policy for this run only (`overrides`), recorded in its conventions; a promotion run
     takes none. `--variants FILE` (YAML or JSON, `runs.parse_variants`) runs each variant over
     one load of the market, on top of the options given here, and prints one line per variant;
-    an unreadable variants file is refused (`backtest_sweep_bad_variants`).
+    a file argparse cannot open is a usage error, one that does not parse is refused
+    (`backtest_sweep_bad_variants`).
     """
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
     parser.add_argument("--bot", type=uuid.UUID, default=None)
@@ -134,7 +135,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
     parser.add_argument("--risk-pct", type=_risk_pct_arg, default=None)
     parser.add_argument("--max-positions", type=int, default=None)
-    parser.add_argument("--variants", type=Path, default=None)
+    parser.add_argument("--variants", type=argparse.FileType("r", encoding="utf-8"), default=None)
     args = parser.parse_args(argv)
     settings = operator_settings()
     refused: str | None = None
