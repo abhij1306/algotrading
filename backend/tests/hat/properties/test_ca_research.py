@@ -5,26 +5,28 @@ rights override. Plain examples from the research files' real rows; no database,
 from datetime import date
 from fractions import Fraction
 
+from app.hat.data.ca_apply import Proposal, RightsTerms
 from app.hat.data.ca_gate import REVIEW
-from app.hat.data.ca_import import Proposal, RightsTerms
 from app.hat.data.ca_research import (
+    agrees,
+    coa_factor,
+    isin_for,
+    market_factor,
+    match_rows,
+    ratio_factor,
+    rights_override,
+)
+from app.hat.data.ca_research_rows import (
     FILE_A,
     FILE_C,
     FILE_D,
     ResultingLeg,
     RightsResearch,
     Source,
-    agrees,
-    coa_factor,
     date_check,
-    isin_for,
     leading_number,
-    market_factor,
-    match_rows,
     merge_events,
     premium_in,
-    ratio_factor,
-    rights_override,
     same_company,
     stated_dates,
 )

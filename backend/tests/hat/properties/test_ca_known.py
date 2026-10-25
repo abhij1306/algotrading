@@ -24,13 +24,8 @@ from app.hat.data.ca_known import (
     settle_day,
     settle_known,
 )
-from app.hat.data.ca_research import (
-    Priced,
-    ResultingLeg,
-    Source,
-    demerger_known,
-    research_supplied,
-)
+from app.hat.data.ca_research import Priced, demerger_known, research_supplied
+from app.hat.data.ca_research_rows import ResultingLeg, Source
 from app.hat.data.corporate_actions import correction_known, default_known
 from app.hat.data.point_in_time import Row, classify, log_path, series_events
 

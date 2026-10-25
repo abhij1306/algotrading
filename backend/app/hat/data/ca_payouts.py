@@ -32,14 +32,13 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import events
 from ..models import HatCorporateAction
 from ..money import require_exact
+from .ca_apply import journal_imported, store_new
 from .ca_bc import SME_SERIES, SOURCE_BC, FeedRow
 from .ca_gate import (
     ALREADY,
     CONFLICT,
-    EVENT_IMPORTED,
     REVIEW,
     SKIPPED,
     STORED,
@@ -55,13 +54,8 @@ from .ca_gate import (
 )
 from .ca_known import RESEARCH_SOURCE_DATE, UNKNOWN, at_ex_open, from_sources, latest
 from .ca_versions import Ledger
-from .corporate_actions import (
-    TYPE_DIVIDEND,
-    ActionRecord,
-    load_actions,
-    lock_reference_data,
-    owner_vacated,
-)
+from .corporate_actions import TYPE_DIVIDEND, ActionRecord, owner_vacated
+from .isin import ordinary_equity
 from .store import DATASET_BARS, DataStore
 
 SOURCE_FEED = "nse_ca_feed"
@@ -252,9 +246,9 @@ def payouts(text: str) -> tuple[Payout, ...] | str:
 
 
 def equity_row_isin(isin: str) -> bool:
-    """An equity share's ISIN as the feed gives it: INE (ordinary) or IN9 (DVR shares), or none
-    (matched by symbol); not an ETF unit (INF) or a debt security."""
-    return not isin or (len(isin) == 12 and isin[:3] in ("INE", "IN9"))
+    """An equity share's ISIN as the feed gives it (`isin.ordinary_equity`: not an ETF unit, a
+    rights entitlement or a debt security), or none (matched by symbol)."""
+    return not isin or ordinary_equity(isin)
 
 
 def total(parts: Iterable[Payout]) -> Decimal:
@@ -694,13 +688,10 @@ def apply(
     and journal each as `corporate_action.imported` in the same transaction; returns (rows
     created, amounts added). Raises when the database disagrees with the plan (a row appeared or
     got an amount meanwhile): nothing is then kept."""
-    lock_reference_data(session)  # before the stored rows it fills are read
-    run_id = str(uuid.uuid4())
     new = [o for o in outcomes if o.status == STORED and o.record is not None and o.fill is None]
     fills = [o for o in outcomes if o.status == STORED and o.fill is not None]
-    report = load_actions(session, [o.record for o in new if o.record is not None])
-    if report.created != len(new) or report.conflicts or report.held:
-        raise CaFileError("ca_import_raced")
+    # under the reference-data lock, taken before the stored rows it fills are read
+    created = store_new(session, [o.record for o in new if o.record is not None])
     ledger = Ledger.open(session, {o.fill.instrument_id for o in fills if o.fill is not None})
     for o in fills:
         assert o.fill is not None
@@ -720,31 +711,20 @@ def apply(
         values = {"cash_amount": o.record.cash_amount, "known_on": known.on}
         values["known_basis"] = known.basis
         ledger.accept(row, values, source=o.record.source, text=o.record.raw_text)
+    journal = {**journal, "run_id": str(uuid.uuid4())}
     for o in [*new, *fills]:
         r = o.record
         assert r is not None
         instrument = uuid.UUID(o.fill.instrument_id) if o.fill is not None else r.instrument_id
-        events.record(
-            session,
-            aggregate_type="instrument",
-            aggregate_id=instrument,  # type: ignore[arg-type]
-            event_type=EVENT_IMPORTED,
-            actor="engine",
-            payload={
-                **journal,
-                "run_id": run_id,
-                "table": o.proposal.table,
-                "row": o.proposal.rowid,
-                "symbol": o.proposal.symbol,
-                "isin": o.proposal.isin,
-                "ex_date": r.ex_date.isoformat(),
-                "type": r.action_type,
-                "cash_amount": str(r.cash_amount),
-                "amount_added": o.fill is not None,
-                "text": r.raw_text[:500],
-                "check": o.evidence,
-            },
-            occurred_at=now,
+        imported = {
+            "ex_date": r.ex_date.isoformat(),
+            "type": r.action_type,
+            "cash_amount": str(r.cash_amount),
+            "amount_added": o.fill is not None,
+            "text": r.raw_text,
+        }
+        journal_imported(
+            session, instrument, o.proposal, imported, journal=journal, evidence=o.evidence, now=now
         )
     session.flush()
-    return report.created, len(fills)
+    return created, len(fills)
