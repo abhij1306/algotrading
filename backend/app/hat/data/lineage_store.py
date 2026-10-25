@@ -109,7 +109,9 @@ def _journal_links(
     after = {pair: d.status for pair, d in wanted.items()}
     for pair, was, now in link_changes(before, after):
         row, decision = stored.get(pair), wanted.get(pair)
-        evidence = decision.evidence if decision is not None else (row.evidence if row else {})
+        evidence = row.evidence if row is not None else {}
+        if decision is not None:
+            evidence = decision.evidence
         record(
             session,
             aggregate_type="instrument",
