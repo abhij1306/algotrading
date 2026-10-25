@@ -67,6 +67,16 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   exit, the entry timing with its breakout volume, and the regime without a slope test. The VCP is
   judged on its most recent contractions (at most `contractions[1]`), so the final contraction,
   pivot and dry-up are current.
+- **A pivot is used once (2026-10-25).** The nightly scan, live and backtest alike, publishes
+  no row for an instrument the bot holds (an open position in any state, virtual or real), and
+  none for a setup a position of the bot was already opened on: a re-entry needs a new setup.
+  A setup is named by (instrument, `pivot_date`): the date of the latest bar whose high is the
+  setup's `pivot`, stored in `criteria_results` (`scan.pivot_date`, `scan.setup_taken`). A date,
+  not the level, because a dividend rescales the history the level is read on; a new final
+  contraction or box has a new pivot bar. The rule spans playbooks and versions of the bot. A
+  setup whose pivot is no bar's high (`rsi_below`'s close) has no `pivot_date` and keeps only the
+  held rule. Without it a held name was republished on its stale pivot (refused as
+  `add_to_loser`) and re-entered on it after the exit. No parameter.
 - **Entry timing and volume (owner 2026-10-25).** A level trigger enters on the intraday break
   (`entry_timing: intraday_break`, live's 5-minute trigger) or, as a backtest variant, at the daily
   close above the level (`daily_close`), filled at the official close as the close-phase exits are.

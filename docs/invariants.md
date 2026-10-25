@@ -47,6 +47,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    never breaks live; the backtest enters it at the daily close above the level. A volume test
    reads only volume known at its decision: the breakout day's at that day's close, never the
    full day's volume for an intraday break (`breakout_volume_needs_daily_close`).
+10. The nightly scan, live and backtest alike, watchlists no instrument the bot holds and no
+    setup a position of the bot was opened on, by (instrument, `pivot_date`) (`scan.setup_taken`,
+    decisions.md "A pivot is used once").
 
 ## Money safety
 
