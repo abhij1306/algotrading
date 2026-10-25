@@ -1,29 +1,36 @@
-"""Index history: NIFTY 50, NIFTY 500, Smallcap 250 and India VIX (HAT-DATA-095).
+"""Index history: NIFTY 50, NIFTY 500, Smallcap 250 and India VIX (HAT-DATA-095), and the
+NIFTY 500 total-return index the backtest report charts against.
 
 The MCP's `get_index_history` keeps about two years; NSE's daily index archive
-(`ind_close_all_DDMMYYYY.csv`) fills the days before. The history build loads both
-(`load_index_history`), and the nightly ingest reads the archive file's levels for one day
-(`parse_index_archive_csv`).
+(`ind_close_all_DDMMYYYY.csv`) fills the days before, and niftyindices' copy of the same files
+fills the days NSE's archive lacks (some regular sessions and most special ones). The history
+build loads them (`load_index_history`), and the nightly ingest reads the archive file's levels
+for one day (`parse_index_archive_csv`). The TRI comes from niftyindices' total-return series
+(`TriIndexSource`), close only. `backfill` loads the bar days an index lacks; a day no source
+has stays missing, never carried.
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
 import logging
+import sys
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from ..errors import HatError
 from ..money import exact
-from .bhavcopy import Fetcher
+from .bhavcopy import BROWSER_HEADERS, Fetcher, FetchResult
 from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .pacing import Pacer
 from .store import DATASET_BARS, DataStore, IndexRow, atomic_replace
+from .store_coverage import index_coverage
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +39,16 @@ NIFTY_500 = "NIFTY 500"
 INDIA_VIX = "INDIA VIX"
 INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", INDIA_VIX)
 MCP_HISTORY_MONTHS = 12
+NIFTY_500_TRI = "NIFTY 500 TRI"
 # [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
 INDEX_ARCHIVE_URL = "https://nsearchives.nseindia.com/content/indices/"
+# [A] niftyindices' copy of the same files (byte-identical where both have a day), which also
+# holds days NSE's archive answers 404 for; a file it lacks comes back as an HTML page.
+INDEX_MIRROR_URL = "https://www.niftyindices.com/Daily_Snapshot/"
+# [A] niftyindices' total-return series: a JSON list of {"Date": "09 Oct 2013",
+# "TotalReturnsIndex": "6419.91", ...} for a date range, no login. Each TRI by its price index.
+TRI_URL = "https://www.niftyindices.com/Backpage/getTotalReturnIndexString"
+TRI_INDICES = {NIFTY_500_TRI: NIFTY_500}
 # [A] Each index's first day in the archive (the first row of the first file holding it, read
 # from the stored archive on 2026-10-23): no source reaches further back, so coverage starts here.
 INDEX_STARTS = {
@@ -41,6 +56,7 @@ INDEX_STARTS = {
     NIFTY_500: date(2012, 2, 21),
     "NIFTY SMALLCAP 250": date(2019, 1, 14),
     "INDIA VIX": date(2014, 5, 14),
+    NIFTY_500_TRI: date(2012, 2, 21),  # from its price index's first day, as the regime reads it
 }
 # [A] Names the archive used before NSE's 2015 renaming; read as today's names.
 INDEX_ALIASES = {
@@ -179,8 +195,9 @@ class NotFoundMemo:
 class ArchiveIndexSource:
     """Index rows from NSE's daily `ind_close_all_DDMMYYYY.csv`, for the days that have bars.
     One file serves every index: it is fetched at most once per run, on the bhavcopy
-    downloader's pacer (the same host), and kept untouched under `raw/` so a later run reads it
-    from disk. A day NSE has no file for stays missing, and is remembered in `memo` so a resume
+    downloader's pacer (the same host), from NSE's archive or, when that has none, from
+    niftyindices' copy, and kept untouched under `raw/` so a later run reads it
+    from disk. A day neither has a file for stays missing, and is remembered in `memo` so a resume
     does not ask again; it and a file without the index's row are that index's `absent` days
     (the coverage reports them apart). A failed fetch, or an answer with no index row (never
     kept, so the next run asks again), fails the indices that needed it."""
@@ -233,6 +250,11 @@ class ArchiveIndexSource:
         self._pacer.wait()
         self.requested.append(day)
         result = self._fetch(INDEX_ARCHIVE_URL + name)
+        if result.status == "not_found":
+            self._pacer.wait()
+            result = self._fetch(INDEX_MIRROR_URL + name)
+            if result.status == "ok" and not self._parse(result.data, day):
+                result = FetchResult("not_found")  # the mirror's page for a file it lacks
         if result.status == "not_found":
             self.not_found.append(day)
             if self._memo is not None:
@@ -310,3 +332,195 @@ def load_index_history(
         report.days_written += 1
         report.points += len(by_day[day])
     return report
+
+
+Poster = Callable[[str, bytes], FetchResult]
+
+
+def http_poster(timeout: float = 60.0) -> Poster:  # pragma: no cover - the real network
+    """The operator's JSON POST: browser-like headers, one request per call. Never used by tests."""
+
+    def post(url: str, body: bytes) -> FetchResult:
+        import requests  # deferred: only a real load needs the HTTP stack
+
+        headers = {**BROWSER_HEADERS, "Content-Type": "application/json; charset=UTF-8"}
+        try:
+            response = requests.post(url, data=body, headers=headers, timeout=timeout)
+        except requests.RequestException:
+            return FetchResult("error")
+        if response.status_code != 200 or not response.content:
+            return FetchResult("error")
+        return FetchResult("ok", response.content)
+
+    return post
+
+
+def tri_request(index: str, start: date, end: date) -> bytes:
+    """The body of a `TRI_URL` request for `index`'s total-return series from `start` to `end`."""
+    cinfo = (
+        f"{{'name':'{index}','startDate':'{start:%d-%b-%Y}',"
+        f"'endDate':'{end:%d-%b-%Y}','indexName':'{index}'}}"
+    )
+    return json.dumps({"cinfo": cinfo}).encode()
+
+
+def parse_tri_json(data: bytes, name: str) -> list[IndexPoint] | None:
+    """A `TRI_URL` answer as points of `name`, the close in all four columns (the series has a
+    close only); a row without a date or a positive value is skipped. None when the answer is no
+    JSON list (a login or error page)."""
+    try:
+        rows = json.loads(data.decode("utf-8-sig", errors="replace"))
+    except ValueError:
+        return None
+    if not isinstance(rows, list):
+        return None
+    points = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        try:
+            day = datetime.strptime(str(row.get("Date", "")).strip(), "%d %b %Y").date()
+        except ValueError:
+            continue
+        close = exact(row.get("TotalReturnsIndex"), floats=True, positive=True, grouped=True)
+        if close is not None:
+            points.append(IndexPoint(day, IndexRow(name, close, close, close, close)))
+    return points
+
+
+class TriIndexSource:
+    """The total-return indices of `TRI_INDICES` from niftyindices, one request per calendar
+    year of the range on `pacer`; any other index has no rows here. A failed request or an
+    answer that is no series fails the index after the rows already given."""
+
+    def __init__(self, post: Poster, pacer: Pacer) -> None:
+        self._post = post
+        self._pacer = pacer
+
+    def __call__(self, name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        base = TRI_INDICES.get(name.upper())
+        cursor = start
+        while base is not None and cursor <= end:
+            stop = min(end, date(cursor.year, 12, 31))
+            self._pacer.wait()
+            result = self._post(TRI_URL, tri_request(base, cursor, stop))
+            points = parse_tri_json(result.data, name.upper()) if result.status == "ok" else None
+            if points is None:
+                raise IndexArchiveError(CODE_INDEX_ARCHIVE)
+            yield from (p for p in points if cursor <= p.day <= stop)
+            cursor = stop + timedelta(days=1)
+
+
+BACKFILL_NAMES = (*INDEX_NAMES, NIFTY_500_TRI)
+
+
+def only_days(source: IndexSource, days: Mapping[str, Collection[date]]) -> IndexSource:
+    """`source` asked only for each index's `days`, one call per calendar year holding any, and
+    giving only their points."""
+
+    def wrapped(name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        wanted = {d for d in days.get(name, ()) if start <= d <= end}
+        for year in sorted({d.year for d in wanted}):
+            in_year = sorted(d for d in wanted if d.year == year)
+            yield from (p for p in source(name, in_year[0], in_year[-1]) if p.day in wanted)
+
+    return wrapped
+
+
+@dataclass
+class BackfillReport:
+    missing: dict[str, list[date]]  # the bar days each index had no row for
+    found: dict[str, list[IndexPoint]] = field(default_factory=dict)
+    failed: dict[str, str] = field(default_factory=dict)  # index -> stable code
+    left: dict[str, list[date]] = field(default_factory=dict)  # still no row: never carried
+
+
+def missing_index_days(
+    store: DataStore, start: date, end: date, names: Sequence[str] = BACKFILL_NAMES
+) -> dict[str, list[date]]:
+    """Per index, the bar days from its start (`INDEX_STARTS`) in [start, end] with no row."""
+    bar_days = [d for d in store.days(DATASET_BARS) if start <= d <= end]
+    starts = {name: max(start, INDEX_STARTS.get(name, start)) for name in names}
+    return {name: days for name, days in index_coverage(store, bar_days, starts).items() if days}
+
+
+def backfill(
+    store: DataStore, source: IndexSource, start: date, end: date, *, apply: bool
+) -> BackfillReport:
+    """Fill each index's missing bar days from `source` (`only_days`): without `apply` only read
+    what it would write; with it, merge them into each day as `load_index_history` does.
+    The days no source has stay missing (`left`): an index day is never carried forward."""
+    report = BackfillReport(missing_index_days(store, start, end))
+    wanted = only_days(source, report.missing)
+    for name, days in report.missing.items():
+        try:
+            report.found[name] = list(wanted(name, days[0], days[-1]))
+        except Exception as exc:  # one index never stops the others
+            code = getattr(exc, "code", None)
+            report.failed[name] = code if isinstance(code, str) else "index_source_failed"
+    if apply:
+        for day in sorted({p.day for points in report.found.values() for p in points}):
+            store.upsert_index(
+                day, [p.row for ps in report.found.values() for p in ps if p.day == day]
+            )
+        left = missing_index_days(store, start, end)
+        report.left = {name: left[name] for name in report.missing if name in left}
+    else:
+        for name, days in report.missing.items():
+            have = {p.day for p in report.found.get(name, [])}
+            if rest := [d for d in days if d not in have]:
+                report.left[name] = rest
+    return report
+
+
+def _print_backfill(report: BackfillReport, apply: bool) -> None:  # pragma: no cover - output
+    out = sys.stdout
+    out.write(f"index backfill ({'applied' if apply else 'dry run'})\n")
+    for name, days in report.missing.items():
+        found = sorted(report.found.get(name, []), key=lambda p: p.day)
+        out.write(f"{name}: missing {len(days)}, found {len(found)}")
+        if name in report.failed:
+            out.write(f", failed {report.failed[name]}")
+        out.write("\n")
+        if len(found) <= 40:
+            for p in found:
+                r = p.row
+                out.write(f"  {p.day} {p.day:%a} O {r.open} H {r.high} L {r.low} C {r.close}\n")
+        else:
+            out.write(
+                f"  {found[0].day} .. {found[-1].day} (first C {found[0].row.close}, "
+                f"last C {found[-1].row.close})\n"
+            )
+        if left := report.left.get(name):
+            out.write(f"  still missing {len(left)}: {', '.join(str(d) for d in left)}\n")
+
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the network
+    parser = argparse.ArgumentParser(prog="python -m app.hat.data.index_history")
+    commands = parser.add_subparsers(dest="command", required=True)
+    fill = commands.add_parser("backfill", help="fill the bar days an index has no row for")
+    fill.add_argument("--from", dest="start", type=date.fromisoformat, default=date(2011, 1, 1))
+    fill.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
+    fill.add_argument("--interval", type=float, default=2.0, help="seconds between requests")
+    fill.add_argument("--apply", action="store_true")
+    args = parser.parse_args(argv)
+    from ..settings import operator_settings
+    from .bhavcopy import http_fetcher
+
+    logging.basicConfig(level=logging.INFO)
+    settings = operator_settings()
+    store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+    pacer = Pacer(min_interval=args.interval)
+    archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
+    tri = TriIndexSource(http_poster(), pacer)
+
+    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        return (tri if name.upper() in TRI_INDICES else archive)(name, start, end)
+
+    report = backfill(store, source, args.start, args.end or date.today(), apply=args.apply)
+    _print_backfill(report, args.apply)
+    return 1 if report.failed or report.left else 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

@@ -147,13 +147,17 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 ## Data
 
 - **Gate and point in time.** Scans never run on data that failed the quality gate; features use
-  bars up to the scan date only; raw bars (`bars_daily_raw`, `bars_5m`) are immutable. Broker
-  minute history is converted to raw with the factors as of its fetch day; a day that does not
-  fit the raw daily bar is ledgered (`bars_5m_rejects`), never written.
+  bars up to the scan date only, and only those since the instrument's last series break (a gap
+  of more than `SERIES_BREAK_DAYS`); raw bars (`bars_daily_raw`, `bars_5m`) are immutable. An
+  index day no source has stays missing: no close is carried over it. Broker minute history is
+  converted to raw with the factors as of its fetch day; a day that does not fit the raw daily bar
+  is ledgered (`bars_5m_rejects`), never written.
 - **Adjustment.** Adjusted prices are raw times cumulative factors, each action applied once per
   ISIN chain; two ISINs share a history only through a `linked` lineage row, and a pair that
-  gains or loses that link is journalled (`lineage.changed`). Price rules on
-  absolute rupees (`min_price`, the tick slab) read the raw close of their date; ratio and
+  gains or loses that link is journalled (`lineage.changed`). An ex-session's adjusted
+  prev_close is on the previous adjusted close's basis: NSE's ex-date PREVCLOSE is nearly always
+  the previous raw close, so it takes the day's factors too (none when NSE restated it). Price
+  rules on absolute rupees (`min_price`, the tick slab) read the raw close of their date; ratio and
   indicator rules read adjusted bars. A bonus of preference shares or debentures is
   price-neutral (a dividend when worth at least 1% of the previous close).
 - **Stored factors are bar-confirmed.** An imported split, bonus or rights factor is stored only

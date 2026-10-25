@@ -124,7 +124,7 @@ function ReportView({ runId, report }: Readonly<{ runId: string; report: Report 
             { title: "By hold time (sessions)", rows: groupRows(report.hold_time) },
             {
               title: "By regime at entry",
-              note: `${BENCHMARK_NAME} trend reading: ${report.regime_rule}`,
+              note: `NIFTY 500 trend reading: ${report.regime_rule}`,
               rows: groupRows(report.regime),
             },
           ].map((group) => (

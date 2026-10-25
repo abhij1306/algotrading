@@ -26,6 +26,7 @@ from app.hat.data.store import (
     BarRow,
     DataStore,
     StoreError,
+    ex_prev_factor,
     latest_rows,
     newest,
 )
@@ -224,3 +225,17 @@ def test_fingerprints_change_with_a_new_run_and_the_view_reads_by_glob() -> None
             ("i1", DAYS[1], Decimal("100.00")),
             ("i2", DAYS[1], Decimal("100.00")),
         ]
+
+
+def test_ex_prev_factor_adjusts_an_unadjusted_prev_close_only() -> None:
+    """NSE's ex-date PREVCLOSE is mostly the previous raw close (old basis: take the day's
+    factor); when NSE restated it (new basis) it takes nothing; without a close, the factor."""
+    half, tenth = Decimal("0.5"), Decimal("0.1")
+    assert ex_prev_factor(Decimal("637.00"), Decimal("637.00"), half) == half  # bonus 1:1
+    assert ex_prev_factor(Decimal("63.70"), Decimal("637.00"), tenth) == 1  # restated by NSE
+    assert ex_prev_factor(Decimal("13.83"), Decimal("138.30"), Decimal(10)) == 10  # consolidation
+    assert ex_prev_factor(Decimal("138.30"), Decimal("13.83"), Decimal(10)) == 1
+    assert ex_prev_factor(Decimal("641.10"), Decimal("637.00"), half) == half  # NSE's own close
+    assert ex_prev_factor(None, Decimal("637.00"), half) == half
+    assert ex_prev_factor(Decimal("637.00"), None, half) == half
+    assert ex_prev_factor(Decimal(0), Decimal("637.00"), half) == half

@@ -26,7 +26,7 @@ import {
 } from "@/lib/backtests";
 import { formatNumber, PLACEHOLDER } from "@/lib/format";
 
-/** Series colours in fixed order (globals.css); NIFTY 500 is the muted ink, dashed. */
+/** Series colours in fixed order (globals.css); NIFTY 500 TRI is the muted ink, dashed. */
 export const SERIES = [
   "var(--color-chart-1)",
   "var(--color-chart-2)",
@@ -88,10 +88,10 @@ export function ChartFrame({
   );
 }
 
-/** Equity and NIFTY 500, both rebased to the first session, as growth in percent. */
+/** Equity and NIFTY 500 TRI, both rebased to the first session, as growth in percent. */
 export function EquityChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
   return (
-    <ChartFrame title="Equity vs NIFTY 500" note="growth from the first session">
+    <ChartFrame title={`Equity vs ${BENCHMARK_NAME}`} note="growth from the first session">
       <LineChart data={rows}>
         {grid}
         <XAxis dataKey="date" {...axis} tickFormatter={monthYear} minTickGap={48} />
@@ -112,10 +112,10 @@ export function EquityChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
   );
 }
 
-/** Drawdown of the strategy (from its initial equity's peak) and of NIFTY 500. */
+/** Drawdown of the strategy (from its initial equity's peak) and of NIFTY 500 TRI. */
 export function DrawdownChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
   return (
-    <ChartFrame title="Drawdown vs NIFTY 500">
+    <ChartFrame title={`Drawdown vs ${BENCHMARK_NAME}`}>
       <AreaChart data={rows}>
         {grid}
         <XAxis dataKey="date" {...axis} tickFormatter={monthYear} minTickGap={48} />
@@ -143,7 +143,7 @@ export function DrawdownChart({ rows }: Readonly<{ rows: EquityRow[] }>) {
   );
 }
 
-/** Calendar-year returns of the strategy beside NIFTY 500's. */
+/** Calendar-year returns of the strategy beside NIFTY 500 TRI's. */
 export function YearlyChart({ yearly }: Readonly<{ yearly: Report["yearly"] }>) {
   return (
     <ChartFrame title="Yearly returns">

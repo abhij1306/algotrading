@@ -53,6 +53,7 @@ from typing import Protocol
 import polars as pl
 
 from ..data.bars import Bar
+from ..data.series_break import segment_start
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..money import exact, require_exact
 from ..risk.caps import effective_max_chase_pct
@@ -173,8 +174,10 @@ def daily_inputs(
     `volume`) and its `feeds`: the previous close is the last close before `trade_date`
     (HAT-CRIT-115), the average volume the mean of the last 50 sessions' volume before it
     (HAT-DATA-115; None with fewer than 50), and the ATR and swing lows those of the `stop`
-    rule at its own length (`stops.history_inputs`; none without a rule)."""
+    rule at its own length (`stops.history_inputs`; none without a rule), all from the bars since
+    the last series break (`series_break`)."""
     prior = bars.filter(pl.col("date") < trade_date).sort("date")
+    prior = prior.slice(segment_start(prior["date"].to_list(), trade_date))  # since a series break
     closes = [exact(v, floats=True) for v in prior["close"].to_list()] if prior.height else []
     volumes = [exact(v, floats=True) for v in prior["volume"].to_list()] if prior.height else []
     recent = volumes[-AVG_VOLUME_DAYS:]

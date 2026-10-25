@@ -70,7 +70,7 @@ from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_set
 from .report import BacktestResult
 from .report import trades_parquet as encode_trades
-from .report_data import build_report, write_report
+from .report_data import BENCHMARK, build_report, write_report
 from .spec import REGIME_MULT_POLICY, BacktestError, RunConventions, RunSpec, with_cooldown
 
 __all__ = [
@@ -262,10 +262,12 @@ def complete_run(
     *,
     root: Path,
     benchmark: Sequence[tuple[date, Decimal]] = (),
+    regime_closes: Sequence[tuple[date, Decimal]] = (),
     variant: Mapping[str, str] | None = None,
 ) -> HatBacktestRun:
     """Write the run's `trades.parquet`, `returns.parquet` and `report.json` (`report_data`,
-    charted against the `benchmark` NIFTY 500 closes) and store its metrics with the DSR at this
+    charted against the `benchmark` NIFTY 500 TRI closes, trades split by the regime of the
+    `regime_closes` NIFTY 500 ones) and store its metrics with the DSR at this
     moment's family trial count and variance, the family's PBO with this run among its variants,
     the completion time and, for a sweep's run, its `variant` (label and sweep id)."""
     if session.get(HatBacktestRun, run.id) is not run:
@@ -279,7 +281,9 @@ def complete_run(
         returns_path(root, run.id), lambda tmp: tmp.write_bytes(_returns_parquet(result))
     )
     initial = RunMetrics.from_json(result.metrics).initial_equity
-    write_report(root, run.id, build_report(result, initial or Decimal(0), benchmark))
+    write_report(
+        root, run.id, build_report(result, initial or Decimal(0), benchmark, regime_closes)
+    )
     # everything is computed before the one change of status, so nothing can fail in between
     deflated, trials, variance = run_dsr(session, run, RunMetrics.from_json(result.metrics))
     metrics = {
@@ -378,8 +382,15 @@ def _record(
     )
     try:
         result = run_backtest(spec, data)
-        benchmark = data.index_closes.get(INDEX_NAME, ())
-        complete_run(session, run, result, root=root, benchmark=benchmark, variant=variant)
+        complete_run(
+            session,
+            run,
+            result,
+            root=root,
+            benchmark=data.index_closes.get(BENCHMARK, ()),
+            regime_closes=data.index_closes.get(INDEX_NAME, ()),
+            variant=variant,
+        )
     except BacktestError as exc:
         fail_run(session, run, exc.code, variant)
         return run, exc

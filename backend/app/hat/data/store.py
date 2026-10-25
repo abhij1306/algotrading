@@ -12,8 +12,10 @@ computed from corporate actions (HAT-DATA-053, 054).
 Views, per connection from `DataStore.connect`:
 - `bars_daily_raw`: every raw row, with the partition's `date`.
 - `bars_daily_cap_adj`: the price basis: raw x the cumulative factor of the price-changing
-  corporate actions (splits, bonuses, rights, demergers), prev_close by the factor of its own
-  day (NSE's ex-date PREVCLOSE is already the adjusted close, F14); volume is divided by the same
+  corporate actions (splits, bonuses, rights, demergers); prev_close by the factor of its own
+  day, and on an action's ex-session (the chain's first bar on or after its ex-date) by the
+  previous session's factor as well when NSE's PREVCLOSE is the previous raw close, which it
+  is on nearly every ex-date (`ex_prev_factor`); volume is divided by the same
   factor (multiplied by its reciprocal, rounded to 12 places); `raw_close` keeps the unadjusted
   close for the rules on an absolute rupee price (`min_price`, the NSE tick slab). A bar of an
   older ISIN linked by the ISIN lineage (`data/lineage.py`) carries the id of its chain's current
@@ -35,9 +37,10 @@ Views, per connection from `DataStore.connect`:
 - Both adjusted views carry `div_factor`: the cumulative factor of the dividends after the
   bar's date (the total-return price over the price-basis one), so a reader can rescale a
   series to any day's scale (`features`, the backtest's `MarketView`).
-- tables `div_segment` (that factor per instrument and date range) and `dividend` (each priced
+- tables `div_segment` (that factor per instrument and date range), `dividend` (each priced
   dividend: chain, ex-date, the session before, the cash, that session's raw close and the
-  factor).
+  factor), and `ex_cap` / `ex_tr` (per chain and session, what its prev_close takes on top of
+  the day's own factor on each basis).
 
 Nothing here opens a network connection.
 """
@@ -363,15 +366,16 @@ LEFT JOIN div_segment d ON d.instrument_id = COALESCE(l.chain_id, r.instrument_i
      AND r.date >= COALESCE(d.from_date, DATE '0001-01-01') AND r.date < d.to_date
 LEFT JOIN {segment} p ON p.instrument_id = COALESCE(l.chain_id, r.instrument_id)
      AND r.date >= COALESCE(p.from_date, DATE '0001-01-01') AND r.date < p.to_date
-LEFT JOIN {ex_dividends} x ON x.instrument_id = COALESCE(l.chain_id, r.instrument_id)
+LEFT JOIN {ex_day} x ON x.instrument_id = COALESCE(l.chain_id, r.instrument_id)
      AND x.ex_date = r.date
 """
-# (view, its price segment table, the dividends going ex on a bar's date, the one-row-per-day
-# view over it). NSE's PREVCLOSE on an ex-dividend date is the previous raw close, so on the
-# total-return series it takes that day's dividend factor too, as the previous bar's close has.
+# (view, its price segment table, what an ex-session's prev_close takes on top of its own
+# factor, the one-row-per-day view over it). NSE's PREVCLOSE on an ex-date is mostly the previous
+# raw close, so it takes the factor the previous bar's close has: the day's price actions'
+# (`ex_prev_factor`) and, on the total-return series, its dividends'.
 _ADJ_VIEWS = (
-    ("bars_daily_cap_adj", "ca_segment", "no_dividend", "bars_daily_cap"),
-    ("bars_daily_adj", "tr_segment", "dividend", "bars_daily"),
+    ("bars_daily_cap_adj", "ca_segment", "ex_cap", "bars_daily_cap"),
+    ("bars_daily_adj", "tr_segment", "ex_tr", "bars_daily"),
 )
 # One (instrument, date) written by more than one ingest run reads as the latest run's row: run
 # ids are uuid v7, so byte order is time order. `LATEST_ROW` keeps that row of a select (DuckDB
@@ -410,6 +414,25 @@ FROM div_in d
 JOIN day_close dc ON dc.k = d.k
 JOIN last_day ld ON ld.chain = d.chain AND ld.last_date >= d.ex
 GROUP BY d.k
+"""  # noqa: S608
+# Each price action's ex-session (the chain's first session on or after its ex-date), that
+# session's raw prev_close and the raw close of the chain's session before it (NULL when there is
+# none), on the latest ingest run's rows; an action ahead of the bars has no row.
+_EX_SESSION_SQL = f"""
+WITH chained AS (
+    SELECT COALESCE(l.chain_id, r.instrument_id) AS chain, r.date, r.close, r.prev_close,
+           r.ingest_run_id
+    FROM bars_daily_raw r LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
+    WHERE COALESCE(l.chain_id, r.instrument_id) IN (SELECT chain FROM ex_in)
+),
+day AS (
+    SELECT chain, date, {newest("close", "c")} AS close, {newest("prev_close", "c")} AS prev_close
+    FROM chained c GROUP BY chain, date
+)
+SELECT e.k, s.date, s.prev_close, p.close
+FROM ex_in e
+ASOF JOIN day s ON s.chain = e.chain AND s.date >= e.ex
+ASOF LEFT JOIN day p ON p.chain = e.chain AND p.date < e.ex
 """  # noqa: S608
 
 
@@ -673,9 +696,14 @@ class DataStore:
             _SEGMENT_TABLES, (adjustment.factors, (*adjustment.factors, *paid), paid), strict=True
         ):
             _load(con, table, segment_table(cumulative_segments(actions)))
-        con.execute("CREATE TABLE no_dividend AS SELECT * FROM dividend WHERE false")
-        for view, segment, ex_dividends, latest in _ADJ_VIEWS:
-            con.execute(_ADJ_VIEW_SQL.format(view=view, segment=segment, ex_dividends=ex_dividends))
+        ex_price = _ex_prev_factors(con, adjustment.factors)
+        ex_total = dict(ex_price)
+        for chain, ex, *_, factor in priced:
+            ex_total[(chain, ex)] = ex_total.get((chain, ex), Decimal(1)) * factor
+        _load(con, "ex_cap", ex_day_table(ex_price))
+        _load(con, "ex_tr", ex_day_table(ex_total))
+        for view, segment, ex_day, latest in _ADJ_VIEWS:
+            con.execute(_ADJ_VIEW_SQL.format(view=view, segment=segment, ex_day=ex_day))
             con.execute(_LATEST_VIEW_SQL.format(latest=latest, view=view))
         return con
 
@@ -753,6 +781,80 @@ def dividend_table(rows: Sequence[tuple[str, date, date, Decimal, Decimal, Decim
             "prev_close": pa.array([_places(r[4], 4) for r in rows], pa.decimal128(18, 4)),
             "factor": pa.array(
                 [_places(r[5], FACTOR_PLACES) for r in rows], pa.decimal128(20, FACTOR_PLACES)
+            ),
+        }
+    )
+
+
+def ex_prev_factor(
+    prev_close: Decimal | None, previous_close: Decimal | None, day_factor: Decimal
+) -> Decimal:
+    """What an ex-session's raw prev_close takes on top of the session's own cumulative factor,
+    for the price actions going ex on it (their factors' product `day_factor`): `day_factor` when
+    NSE's PREVCLOSE is the previous session's raw close (nearly every ex-date: then it is on the
+    old basis), 1 when NSE restated it to the new basis (nearer the previous close times
+    `day_factor`, by ratio). Without a positive prev_close or previous close: `day_factor`."""
+    if not prev_close or not previous_close or prev_close <= 0 or previous_close <= 0:
+        return day_factor
+    with localcontext() as ctx:
+        ctx.prec = 40
+        as_raw = abs((prev_close / previous_close).ln())
+        as_restated = abs((prev_close / (previous_close * day_factor)).ln())
+    return Decimal(1) if as_restated < as_raw else day_factor
+
+
+def _ex_prev_factors(
+    con: duckdb.DuckDBPyConnection, factors: Sequence[ActionFactor]
+) -> dict[tuple[str, date], Decimal]:
+    """(chain, ex-session) -> `ex_prev_factor` of the price actions going ex on that session,
+    for each session where it is not 1."""
+    per_day: dict[tuple[str, date], Decimal] = defaultdict(lambda: Decimal(1))
+    for a in factors:
+        per_day[(str(a.instrument_id), a.ex_date)] *= a.factor
+    if not per_day:
+        return {}
+    keys = sorted(per_day)
+    _load(
+        con,
+        "ex_in",
+        pa.table(
+            {
+                "k": pa.array(range(len(keys)), pa.int32()),
+                "chain": pa.array([c for c, _ in keys], pa.string()),
+                "ex": pa.array([ex for _, ex in keys], pa.date32()),
+            }
+        ),
+    )
+    sessions: dict[tuple[str, date], list[Decimal]] = {}
+    for k, session, prev_close, previous_close in con.execute(_EX_SESSION_SQL).fetchall():
+        chain, ex = keys[k]
+        held = sessions.setdefault((chain, session), [Decimal(1), prev_close, previous_close])
+        held[0] *= per_day[(chain, ex)]  # actions whose ex-dates share a session go ex together
+    con.execute("DROP TABLE ex_in")
+    out = {}
+    for key, (day_factor, prev_close, previous_close) in sessions.items():
+        factor = ex_prev_factor(
+            None if prev_close is None else Decimal(prev_close),
+            None if previous_close is None else Decimal(previous_close),
+            day_factor,
+        )
+        if factor != 1:
+            out[key] = factor
+    return out
+
+
+def ex_day_table(factors: Mapping[tuple[str, date], Decimal]) -> pa.Table:
+    """(chain, ex-session) -> factor as the Arrow table of the connection's `ex_cap` / `ex_tr`."""
+    keys = sorted(factors)
+    for key in keys:
+        if not FACTOR_MIN <= factors[key] < FACTOR_MAX:
+            raise StoreError("store_factor_range")  # would overflow the view's decimals
+    return pa.table(
+        {
+            "instrument_id": pa.array([c for c, _ in keys], pa.string()),
+            "ex_date": pa.array([ex for _, ex in keys], pa.date32()),
+            "factor": pa.array(
+                [_places(factors[k], FACTOR_PLACES) for k in keys], pa.decimal128(20, FACTOR_PLACES)
             ),
         }
     )

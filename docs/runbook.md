@@ -349,6 +349,7 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `demerger_notice announced F.tsv [--replace]` | Date stored demergers' `announced_on` from a reviewed file (`isin ex_date announced_on source_url note`); `--replace` also moves a stored date to an earlier sourced one; journalled `corporate_action.announced` |
 | `demerger_notice exits [SYMBOL...]` | The session each stored demerger's forced exit falls on, or why it holds |
 | `point_in_time report` / `pending SYMBOL` | Lagged and undated actions, version ledger (projection check must be 0); factor-pending sessions |
+| `index_history backfill [--from D] [--to D] [--apply]` | Fill the bar days `index_daily` lacks for the NIFTY indices (NSE archive, then the niftyindices mirror) and NIFTY 500 TRI (niftyindices, a year per request); a day no source has stays missing (exit 1), never the last close carried. The nightly ingest does not fetch TRI: run it before a research run so the benchmark reaches the last session (a run with a missing day has no benchmark) |
 | `renames` | Seed symbol history from renames |
 | `$ADMIN repair-symbol-history [--apply]` | Close overlapping symbol intervals |
 

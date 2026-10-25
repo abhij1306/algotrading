@@ -25,6 +25,7 @@ from typing import Any, Literal, NamedTuple
 import polars as pl
 from pydantic import BaseModel, ConfigDict
 
+from ...data.series_break import segment_start
 from ...money import require_exact
 
 Stage = Literal["universe", "setup", "trigger", "entry_filter"]
@@ -115,6 +116,11 @@ def _bars(frame: pl.DataFrame) -> Bars:
     return Bars(frame["date"].to_list(), **columns)
 
 
+def _since_break(frame: pl.DataFrame, until: date | None = None) -> pl.DataFrame:
+    """The rows of `frame` (sorted by date) in the series of its last row, or of `until`."""
+    return frame.slice(segment_start(frame["date"].to_list(), until))
+
+
 @dataclass(eq=False)
 class EvalContext:
     """What a criterion may read, for one instrument on one evaluation date.
@@ -155,23 +161,24 @@ class EvalContext:
 
     @property
     def history(self) -> Bars:
-        """The bars dated on or before `as_of`, sorted by date; empty without a bar on `as_of`
-        itself (an instrument that did not trade that day has no features for it either)."""
+        """The bars dated on or before `as_of` since the instrument's last series break
+        (`series_break`), sorted by date; empty without a bar on `as_of` itself (an instrument
+        that did not trade that day has no features for it either)."""
         if "history" not in self._read:
             frame = self.bars.filter(pl.col("date") <= self.as_of).sort("date")
             if frame.is_empty() or frame["date"][-1] != self.as_of:
                 self._read["history"] = EMPTY_BARS
             else:
-                self._read["history"] = _bars(frame)
+                self._read["history"] = _bars(_since_break(frame))
         return self._read["history"]
 
     @property
     def previous_history(self) -> Bars:
-        """The bars dated strictly before `as_of` (live criteria read the previous session)."""
+        """The bars dated strictly before `as_of` (live criteria read the previous session),
+        since the last series break; empty when `as_of` itself starts a new series."""
         if "previous" not in self._read:
-            self._read["previous"] = _bars(
-                self.bars.filter(pl.col("date") < self.as_of).sort("date")
-            )
+            frame = self.bars.filter(pl.col("date") < self.as_of).sort("date")
+            self._read["previous"] = _bars(_since_break(frame, self.as_of))
         return self._read["previous"]
 
 

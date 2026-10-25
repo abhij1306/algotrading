@@ -17,6 +17,7 @@ from pathlib import Path
 
 from ..money import require_exact
 from .isin import ORDINARY_EQUITY
+from .series_break import SERIES_BREAK_DAYS
 from .store import (
     DATASET_BARS,
     DATASET_BREADTH,
@@ -34,9 +35,9 @@ STATE_VERSION = 2
 # The ranked universe (D257) is the rows whose own ISIN is an equity share (`isin.ORDINARY_EQUITY`):
 # point in time, with no reference data (a symbol suffix is a convention; `hat_instrument` keeps
 # no security type and lacks some short-lived entitlements).
-# What else besides the adjustment changes every date: the universe rule and the formulas. A
-# change here rebuilds every date (the state records it).
-FEATURES_RULE = f"v3|universe:{ORDINARY_EQUITY}"
+# What else besides the adjustment changes every date: the universe rule, the formulas and the
+# series break. A change here rebuilds every date (the state records it).
+FEATURES_RULE = f"v4|universe:{ORDINARY_EQUITY}|break:{SERIES_BREAK_DAYS}"
 DIVIDEND_LINE = "dividend:"  # a dividend's value in `adjustment_lines`
 
 

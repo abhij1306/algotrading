@@ -28,6 +28,7 @@ from app.hat.data.features_state import (
     stale_days,
     write_state,
 )
+from app.hat.data.series_break import SERIES_BREAK_DAYS, segment_start
 from app.hat.data.store import (
     BREADTH_SCHEMA,
     DATASET_BARS,
@@ -201,6 +202,41 @@ def test_flat_series_is_not_above_its_own_mean() -> None:
     assert last["above_sma50"] == 0
     assert last["with_sma50"] == 2
     assert ABOVE_MARGIN < 1e-9
+
+
+def test_a_series_break_restarts_every_window() -> None:
+    """Rows after a gap of more than `SERIES_BREAK_DAYS` start a new series: SMA20 is null until
+    20 new rows exist, and the first new row's true range ignores the prev close from before the
+    gap (a gap of exactly `SERIES_BREAK_DAYS` is no break)."""
+
+    def rows(days: list[date]) -> list[dict]:
+        return [
+            {
+                "date": d,
+                "high": Decimal(11 + n % 3),
+                "low": Decimal(9),
+                "close": Decimal(10 + n % 3),
+                "prev_close": Decimal(100),
+                "volume": 10,
+                "traded_value": None,
+            }
+            for n, d in enumerate(days)
+        ]
+
+    before = [EPOCH + timedelta(days=i) for i in range(30)]
+    broken = before + [before[-1] + timedelta(days=SERIES_BREAK_DAYS + 1 + i) for i in range(20)]
+    joined = before + [before[-1] + timedelta(days=SERIES_BREAK_DAYS + i) for i in range(20)]
+    features, _ = compute_features(frame([Series("a", rows(broken)), Series("b", rows(joined))]))
+    a = features.filter(pl.col("instrument_id") == "a").sort("date")
+    b = features.filter(pl.col("instrument_id") == "b").sort("date")
+    assert a["sma20"][30:49].is_null().all()
+    assert a["sma20"][49] is not None
+    assert abs(a["adtr20"][49] - (19 * 91 + 2) / 20) < 1e-9  # prev close 100, but not at the break
+    assert b["sma20"][30:50].is_not_null().all()
+    assert segment_start(broken) == 30
+    assert segment_start(joined) == 0
+    assert segment_start(broken[:30], broken[30]) == 30
+    assert segment_start([]) == 0
 
 
 # --- the ranked universe (D257) --------------------------------------------------------------

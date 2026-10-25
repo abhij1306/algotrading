@@ -12,6 +12,7 @@ import pytest
 
 from app.hat.backtest.overrides import OverrideError, Overrides, parse_set, set_path
 from app.hat.backtest.report_data import (
+    _benchmark_on,
     drawdowns,
     group_stats,
     hold_bucket,
@@ -288,3 +289,11 @@ def test_group_stats() -> None:
 def test_drawdown_counts_from_the_initial_equity() -> None:
     assert drawdowns([90.0, 120.0, 60.0], 100.0) == pytest.approx([-0.1, 0.0, -0.5])
     assert drawdowns([90.0, 99.0]) == pytest.approx([0.0, 0.0])  # no start: the first is the peak
+
+
+def test_benchmark_is_never_carried_over_a_missing_session() -> None:
+    """The benchmark is the index's close on each run session; one missing session gives none."""
+    d1, d2, d3 = date(2015, 2, 2), date(2015, 2, 3), date(2015, 2, 4)
+    closes = [(d1, D(100)), (d3, D(102))]
+    assert _benchmark_on(closes, [d1, d3]) == [D(100), D(102)]
+    assert _benchmark_on(closes, [d1, d2, d3]) == []
