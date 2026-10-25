@@ -9,13 +9,14 @@ import sys
 import uuid
 from collections.abc import Sequence
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import Any
 
 from app.database import db_session_scope
 
 from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS
 from ..data.store import DataStore
+from ..money import exact
 from ..settings import operator_settings
 from .fills import (
     AMBIGUOUS_OPTIMISTIC,
@@ -36,10 +37,10 @@ def _slot_order_arg(text: str) -> str:  # pragma: no cover - the command line
 
 
 def _sleeve_weight_arg(text: str) -> Decimal:  # pragma: no cover - the command line
-    try:
-        return Decimal(text)
-    except InvalidOperation:
-        raise argparse.ArgumentTypeError("a decimal in (0, 1], e.g. 0.5") from None
+    number = exact(text)
+    if number is None:
+        raise argparse.ArgumentTypeError("a decimal in (0, 1], e.g. 0.5")
+    return number
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database

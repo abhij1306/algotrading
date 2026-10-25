@@ -31,6 +31,9 @@ from sqlalchemy.orm import Session
 
 from ...database import get_db
 from ..engine.confidence import stored_basis
+from ..engine.portfolio.regime import RegimeState
+from ..execution.broker import SessionStatus
+from ..governance import ModeField
 from ..events import recorded_for
 from ..models import (
     HatAllocationDaily,
@@ -38,6 +41,7 @@ from ..models import (
     HatJobRun,
     HatSignal,
 )
+from ..models.runtime import SignalConfidence, TradeState
 from ..read import bots as read_bots
 from ..read import kill as read_kill
 from ..read import positions as read_positions
@@ -100,10 +104,10 @@ def _money(value: Decimal | int | str) -> str:
 class BotView(BaseModel):
     id: uuid.UUID
     name: str
-    execution_mode: str  # the mode asked for (`hat_bot.execution_mode` or a change now due)
-    effective_mode: str  # the mode an entry is routed by now
+    execution_mode: ModeField  # the mode asked for (`hat_bot.execution_mode` or a change now due)
+    effective_mode: ModeField  # the mode an entry is routed by now
     mode_reason: str | None  # why they differ: `sleeve_<state>` or a gate's code (HAT-GOV-085)
-    pending_mode: str | None  # a queued change still waiting for its session open
+    pending_mode: ModeField | None  # a queued change still waiting for its session open
     pending_from: datetime | None
     status: str
     lifecycle_state: str
@@ -115,19 +119,19 @@ class BotView(BaseModel):
 class KillSwitchView(BaseModel):
     scope: str
     bot_id: uuid.UUID | None
-    channel: str
-    state: str
+    channel: kill.KillChannel
+    state: kill.SwitchState
 
 
 class RegimeView(BaseModel):
     trade_date: date
-    state: str
+    state: RegimeState
     confirmed: bool
 
 
 class BrokerSessionView(BaseModel):
     account: str
-    status: str
+    status: SessionStatus
 
 
 class JobRunView(BaseModel):
@@ -165,6 +169,14 @@ class WatchlistView(BaseModel):
     entries: list[WatchlistItem]
 
 
+class ConfidenceBasis(BaseModel):
+    """What the dashboard shows of a signal's `confidence_basis`: the reason code and the
+    backtest trades of its bucket, each null when the stored basis has none."""
+
+    reason: str | None
+    trades: int | None
+
+
 class SignalView(BaseModel):
     id: uuid.UUID
     bot_id: uuid.UUID
@@ -177,11 +189,11 @@ class SignalView(BaseModel):
     stop_price: str
     qty: int
     risk_amount: str
-    mode: str
-    state: str
-    # the label and its backtest bucket (D132); null on a signal stored before PR 71
-    confidence: str | None = None
-    confidence_basis: dict[str, Any] = {}
+    mode: ModeField
+    state: TradeState
+    # the label and its backtest bucket (D132); null on a signal stored without one
+    confidence: SignalConfidence | None = None
+    confidence_basis: ConfidenceBasis
 
 
 class PositionView(BaseModel):
@@ -248,7 +260,7 @@ def _bot_view(row: read_bots.BotRow) -> BotView:
     )
 
 
-def _bots(session: Session, now: datetime, rows: list[kill.KillRow] | None = None) -> list[BotView]:
+def _bots(session: Session, now: datetime, rows: list[kill.KillRow]) -> list[BotView]:
     return [_bot_view(row) for row in read_bots.bot_rows(session, now, rows)]
 
 
@@ -277,11 +289,14 @@ def _kill_switches(rows: list[kill.KillRow]) -> list[KillSwitchView]:
     ]
 
 
-def _regimes(session: Session, limit: int) -> list[RegimeView]:
-    return [
-        RegimeView(trade_date=r.trade_date, state=r.state, confirmed=r.confirmed)
-        for r in latest_regimes(session, limit)
-    ]
+def _regime(session: Session) -> RegimeView | None:
+    """The latest regime row, if any."""
+    found = latest_regimes(session, 1)
+    if not found:
+        return None
+    return RegimeView(
+        trade_date=found[0].trade_date, state=found[0].state, confirmed=found[0].confirmed
+    )
 
 
 def _jobs(session: Session, day: date) -> list[JobRunView]:
@@ -319,13 +334,12 @@ def _feed_stale_at(session: Session, day: date) -> datetime | None:
 def _status(session: Session, now: datetime) -> StatusResponse:
     day = trade_date_of(now)
     rows = read_kill.kill_rows(session)
-    regime = _regimes(session, 1)
     return StatusResponse(
         as_of=now,
         trade_date=day,
         kill_account=read_kill.account_tripped(rows),
         feed_stale_at=_feed_stale_at(session, day),
-        regime=regime[0] if regime else None,
+        regime=_regime(session),
         bots=_bots(session, now, rows),
         kill_switches=_kill_switches(rows),
         sessions=_sessions(session, day),
@@ -356,6 +370,15 @@ def _watchlists(session: Session, now: datetime) -> list[WatchlistView]:
     return out
 
 
+def _basis(raw: object) -> ConfidenceBasis:
+    basis = stored_basis(raw)
+    reason, trades = basis.get("reason"), basis.get("trades")
+    return ConfidenceBasis(
+        reason=reason if isinstance(reason, str) else None,
+        trades=trades if isinstance(trades, int) and not isinstance(trades, bool) else None,
+    )
+
+
 def _signals(session: Session, limit: int) -> list[SignalView]:
     rows = list(
         session.scalars(
@@ -380,7 +403,7 @@ def _signals(session: Session, limit: int) -> list[SignalView]:
             mode=s.mode,
             state=s.state,
             confidence=s.confidence,
-            confidence_basis=stored_basis(s.confidence_basis),
+            confidence_basis=_basis(s.confidence_basis),
         )
         for s in rows
     ]
@@ -464,12 +487,6 @@ def hat_status(db: Db, now: Now) -> StatusResponse:
     return _read("status", lambda: _status(db, now))
 
 
-@router.get("/bots", responses=ERRORS)
-def hat_bots(db: Db, now: Now) -> list[BotView]:
-    """Every bot with its execution mode and why it is manage-only, if it is."""
-    return _read("bots", lambda: _bots(db, now))
-
-
 @router.get("/watchlist", responses=ERRORS)
 def hat_watchlist(db: Db, now: Now) -> list[WatchlistView]:
     """Each bot's latest watchlist on or before today, best score first."""
@@ -492,12 +509,6 @@ def hat_positions(db: Db) -> list[PositionView]:
 def hat_allocations(db: Db) -> AllocationsResponse:
     """The latest nightly allocation, one row per bot."""
     return _read("allocations", lambda: _allocations(db))
-
-
-@router.get("/regime", responses=ERRORS)
-def hat_regime(db: Db, limit: Limit = DEFAULT_LIMIT) -> list[RegimeView]:
-    """The regime history, newest trade date first."""
-    return _read("regime", lambda: _regimes(db, limit))
 
 
 @router.get("/events", responses=ERRORS)

@@ -156,8 +156,8 @@ the runtime, then the engine.
 Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET /status`, `GET
 /url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`), and the same four
 under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
-dashboard under `/api/hat` (`/status`, `/bots`, `/watchlist`, `/signals`, `/positions`,
-`/allocations`, `/regime`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes.
+dashboard under `/api/hat` (`/status`, `/watchlist`, `/signals`, `/positions`,
+`/allocations`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes.
 A panel whose poll fails keeps its last good read on screen, dimmed, under a stale notice; when several
 reads fail together the page shows one banner instead. The page header shows the backend's `as_of` in IST; the broker login status polls on the same cadence. The design
 tokens live only in `frontend/app/globals.css` `@theme`, which resets Tailwind's palette, type scale

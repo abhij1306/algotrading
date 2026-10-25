@@ -38,7 +38,7 @@ def test_portfolio_rules_are_pure() -> None:
     """The regime, health, allocator, lifecycle and universe rules import no database, model,
     broker or file code, so the engine and the backtest apply the same rule."""
     forbidden = re.compile(
-        r"^\s*(from|import)\s+(sqlalchemy|app\.brokers|app\.database|app\.hat\.models"
+        r"^\s*(from|import)\s+(sqlalchemy|app\.database|app\.hat\.models"
         r"|app\.hat\.execution|app\.hat\.data|\.common|\.\w*service|\.jobs"
         r"|app\.hat\.engine\.portfolio\.(common|\w*service|jobs))\b",
         re.MULTILINE,

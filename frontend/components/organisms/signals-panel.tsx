@@ -24,19 +24,23 @@ const COLUMNS = [
   { label: "Confidence" },
 ];
 
-const CONFIDENCE_TONE: Record<string, Tone> = { high: "profit", medium: "warning", low: "muted" };
+const CONFIDENCE_TONE: Record<NonNullable<Signal["confidence"]>, Tone> = {
+  high: "profit",
+  medium: "warning",
+  low: "muted",
+};
 
 /** Why the signal got its label: the reason code, and the backtest trades of its bucket. */
 function basisText(signal: Signal): string {
   const { reason, trades } = signal.confidence_basis;
-  const why = typeof reason === "string" ? reason : PLACEHOLDER;
-  return typeof trades === "number" ? `${why} · ${trades} trades` : why;
+  const why = reason ?? PLACEHOLDER;
+  return trades === null ? why : `${why} · ${trades} trades`;
 }
 
 function ConfidenceBadge({ signal }: Readonly<{ signal: Signal }>) {
   const label = signal.confidence;
   if (label == null) return <span className="text-foreground-muted">{PLACEHOLDER}</span>;
-  return <Badge tone={CONFIDENCE_TONE[label] ?? "muted"}>{label}</Badge>;
+  return <Badge tone={CONFIDENCE_TONE[label]}>{label}</Badge>;
 }
 
 function Money({ value }: Readonly<{ value: string }>) {

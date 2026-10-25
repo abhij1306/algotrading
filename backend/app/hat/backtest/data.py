@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import math
 import uuid
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
@@ -57,6 +56,7 @@ from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..engine.stops import lowest, mean_true_range, sma
 from ..models import HatCorporateAction, HatIndustry, HatInstrument, HatUniverseMember
+from ..money import exact
 from .spec import BacktestError
 
 __all__ = [
@@ -76,7 +76,7 @@ __all__ = [
 # The scan reads at most 652 sessions back (a 400-session SMA compared 252 sessions earlier);
 # the window it is given holds more, so its watchlist equals a scan of the full history.
 LOOKBACK_SESSIONS = 700
-_PRICE_PLACES = Decimal("0.0001")
+_PRICE_DIGITS = 4
 _ZERO_CASH = Decimal(0)
 _ALWAYS = date(1900, 1, 1)
 _EPOCH = date(1970, 1, 1)  # polars' Date is days since this day
@@ -192,17 +192,7 @@ def industry_on(data: MarketData, instrument_id: str, day: date) -> str:
 
 def _price(value: object) -> Decimal | None:
     """A stored price as an exact Decimal of the store's 4 places; None when absent."""
-    if value is None or isinstance(value, bool):
-        return None
-    if isinstance(value, Decimal):
-        number = value
-    elif isinstance(value, int | float):
-        if isinstance(value, float) and not math.isfinite(value):
-            return None
-        number = Decimal(repr(value))
-    else:
-        return None
-    return number.quantize(_PRICE_PLACES) if number.is_finite() else None
+    return exact(value, floats=True, places=_PRICE_DIGITS)
 
 
 @dataclass(frozen=True)
@@ -692,8 +682,9 @@ def _breadth(store: DataStore, days: Iterable[date]) -> dict[date, Decimal]:
     found: dict[date, Decimal] = {}
     for day in days:
         frame = store.read_partition(DATASET_BREADTH, day)
-        if frame.height and frame["breadth_pct"][0] is not None:
-            found[day] = Decimal(str(frame["breadth_pct"][0]))
+        value = exact(frame["breadth_pct"][0], floats=True) if frame.height else None
+        if value is not None:
+            found[day] = value
     return found
 
 

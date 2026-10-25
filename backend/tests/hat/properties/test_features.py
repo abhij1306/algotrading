@@ -28,7 +28,15 @@ from app.hat.data.features_state import (
     stale_days,
     write_state,
 )
-from app.hat.data.store import DATASET_BARS, DATASET_BREADTH, DATASET_FEATURES, DataStore
+from app.hat.data.store import (
+    BREADTH_SCHEMA,
+    DATASET_BARS,
+    DATASET_BREADTH,
+    DATASET_FEATURES,
+    FEATURE_NAMES,
+    FEATURES_SCHEMA,
+    DataStore,
+)
 from app.hat.ids import uuid7
 
 EPOCH = date(2020, 1, 6)
@@ -199,7 +207,8 @@ def test_flat_series_is_not_above_its_own_mean() -> None:
 
 
 def test_only_ordinary_equity_is_ranked_and_counted() -> None:
-    """A fund row on the same day gets no percentile and is not in the breadth counts."""
+    """A fund row on the same day gets no percentile and is not in the breadth counts. The frames
+    have the columns `write_day` stores (`date`, then the dataset's schema), every feature a float."""
     rows = [
         {
             "date": EPOCH + timedelta(days=i),
@@ -222,6 +231,9 @@ def test_only_ordinary_equity_is_ranked_and_counted() -> None:
     assert last["rs_pct"].to_list() == [100.0, None]
     assert last["mom_rank"].to_list() == [100.0, None]
     assert breadth.filter(pl.col("date") == rows[-1]["date"])["universe_size"].to_list() == [1]
+    assert features.columns == ["date", *FEATURES_SCHEMA.names]
+    assert all(features[name].dtype == pl.Float64 for name in FEATURE_NAMES)
+    assert breadth.columns == ["date", *BREADTH_SCHEMA.names]
 
 
 # --- what a run recomputes (DB5) -------------------------------------------------------------

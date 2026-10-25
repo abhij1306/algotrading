@@ -8,6 +8,8 @@ can be replayed and explained. `hat_position.current_stop` is guarded by the Pos
 
 from __future__ import annotations
 
+from typing import Literal, get_args
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -33,6 +35,8 @@ __all__ = [
     "ORDER_SIDES",
     "ORDER_STATUSES",
     "SIGNAL_CONFIDENCES",
+    "SignalConfidence",
+    "TradeState",
     "HatApproval",
     "HatFill",
     "HatHoldingBaseline",
@@ -48,15 +52,16 @@ BOT_ID = "hat_bot.id"
 INSTRUMENT_ID = "hat_instrument.id"
 SIGNAL_ID = "hat_signal.id"
 
-# `app.hat.engine.confidence.LABELS` (D132, PR 71)
-SIGNAL_CONFIDENCES = ("high", "medium", "low")
+# `app.hat.engine.confidence.LABELS` (D132)
+SignalConfidence = Literal["high", "medium", "low"]
+SIGNAL_CONFIDENCES: tuple[SignalConfidence, ...] = get_args(SignalConfidence)
 ORDER_PURPOSES = ("entry", "stop_day", "stop_gtt", "exit_partial", "exit_full", "flatten")
 ORDER_SIDES = ("buy", "sell")
 APPROVAL_DECISIONS = ("take", "skip", "expired")
 # The 11 trade-lifecycle states (D18, Q16) in table order; a position holds the last four
 # active ones and Closed. `app.hat.engine.lifecycle` owns the transitions (CONF
 # `lifecycle_transitions_match_spec` compares them).
-TRADE_STATES = (
+TradeState = Literal[
     "Watchlisted",
     "Triggered",
     "AwaitingApproval",
@@ -68,7 +73,8 @@ TRADE_STATES = (
     "Rejected",
     "Expired",
     "Cancelled",
-)
+]
+TRADE_STATES: tuple[TradeState, ...] = get_args(TradeState)
 POSITION_STATES = ("Open", "PartiallyExited", "ExitPending", "Closed")
 # Owner-pending default (HAT-SCH-058): derived from the event catalogue and SUBMIT_UNCONFIRMED.
 ORDER_STATUSES = (

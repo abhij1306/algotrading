@@ -95,11 +95,15 @@ def check_runtime__signal_unique_concurrent(engine: Engine) -> None:
         holder.start()
         racer.start()
         deadline = time.monotonic() + 5
-        waiting = text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
-        while time.monotonic() < deadline:
+        waiting = text(
+            "SELECT count(*) FROM pg_stat_activity"
+            " WHERE wait_event_type = 'Lock' AND datname = current_database()"
+        )
+        while True:
             with engine.connect() as probe:
                 if probe.execute(waiting).scalar_one() >= 1:
                     break
+            assert time.monotonic() < deadline, "the racer never waited on the holder's lock"
             time.sleep(0.05)  # noqa: ASYNC251
         release.set()
         holder.join(10)

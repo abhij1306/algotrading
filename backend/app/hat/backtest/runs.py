@@ -42,6 +42,7 @@ from ..engine.portfolio.common import market_id_of
 from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
 from ..engine.strategy.config import parse_config
 from ..models import HatBacktestBucket, HatBacktestRun, HatBot, HatStrategyVersion
+from ..money import require_exact
 from ..risk.policy import effective_version
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
@@ -70,7 +71,6 @@ __all__ = [
 ]
 
 RUNNING = "running"
-DSR_PLACES = Decimal(1).scaleb(-DSR_DIGITS)
 FAILED = "failed"
 
 
@@ -144,7 +144,7 @@ def _completed(session: Session, family: str) -> list[HatBacktestRun]:
 
 def _dsr_json(deflated: Deflated, trials: int, variance: float) -> dict[str, Any]:
     return {
-        "prob": str(Decimal(repr(deflated.prob)).quantize(DSR_PLACES)),
+        "prob": str(require_exact(deflated.prob, "dsr_prob", floats=True, places=DSR_DIGITS)),
         "sr0": deflated.sr0,
         "reason": deflated.reason,
         "trials": trials,
@@ -198,7 +198,7 @@ def family_pbo(
         return {**out, "reason": "pbo_unscorable"}
     return {
         **out,
-        "prob": str(Decimal(repr(found.prob)).quantize(DSR_PLACES)),
+        "prob": str(require_exact(found.prob, "pbo_prob", floats=True, places=DSR_DIGITS)),
         "splits": found.splits,
     }
 

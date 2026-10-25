@@ -19,19 +19,22 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, localcontext
+from typing import Final, Literal
 from uuid import UUID
 
 from ..time import as_utc
 from .sizing import MissingInputError, exact_input
 
-TRIPPED = "tripped"
-ARMED = "armed"
+SwitchState = Literal["tripped", "armed"]
+KillChannel = Literal["risk", "health"]
+TRIPPED: Final = "tripped"
+ARMED: Final = "armed"
 HEALTH_REASONS = ("data_health", "feed_health", "broker_health")
 RISK_REASONS = ("drawdown_account", "drawdown_bot", "manual")
 REASONS = (*RISK_REASONS, *HEALTH_REASONS)
 
 
-def channel_of(reason: str) -> str:
+def channel_of(reason: str) -> KillChannel:
     """`health` for a reason that clears by itself, else `risk`."""
     return "health" if reason in HEALTH_REASONS else "risk"
 
@@ -84,7 +87,7 @@ def current_state(
     channel: str | None = None,
     *,
     stream: str | None = None,
-) -> str:
+) -> SwitchState:
     """The state of (scope, bot) from its rows: `tripped` when any stream of the key is
     tripped (each stream is read from its latest row), else `armed`. With `channel` set, only
     that channel's streams are read; with `stream` set, only that stream. A key with no rows is

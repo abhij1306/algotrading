@@ -124,7 +124,7 @@ const SIGNALS = [
     mode: "shadow",
     state: "Open",
     confidence: null,
-    confidence_basis: {},
+    confidence_basis: { reason: null, trades: null },
   },
 ];
 
