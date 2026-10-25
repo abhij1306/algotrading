@@ -132,9 +132,10 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    Orders stay virtual until GTT delivery, DDPI and `weights_confirmed`; `/status` shows the gate.
    DDPI active: `confirm-ddpi --account <a> --since <date> --note "<what>"`; withdrawn:
    `revoke-ddpi --account <a> --note "<why>"`. `/mode <bot> auto` for auto.
-7. New version: `save-draft --strategy <s> --config <file.yaml>`, step 4, `trial-version`, and
-   after 20 sessions `release-version` (supersedes the old version and moves its sleeves; open
-   trades keep theirs).
+7. New version: `save-draft --strategy <s> --config <file.yaml>`, step 4's backtest and
+   `publish-version` (no `assign-version`: a Live or Probation sleeve takes only a released
+   version), `trial-version`, and after 20 sessions `release-version` (supersedes the old version
+   and moves its sleeves; open trades keep theirs).
    On a separate sleeve: `add-sleeve`, `assign-version`, step 5's `promote`s; one Live sleeve per
    strategy.
 8. Recovered Probation sleeve: `promote --bot <bot> --to live`.

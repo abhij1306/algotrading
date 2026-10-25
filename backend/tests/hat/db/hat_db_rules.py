@@ -847,10 +847,15 @@ CATALOG_QUERIES = {
 
 def catalog(engine: Engine) -> dict[str, list[tuple]]:
     with engine.connect() as connection:
-        return {
-            name: [tuple(row) for row in connection.execute(text(sql)).all()]
-            for name, sql in CATALOG_QUERIES.items()
-        }
+        return catalog_of(connection)
+
+
+def catalog_of(connection: Connection) -> dict[str, list[tuple]]:
+    """The catalog as `connection` sees it, inside its open transaction."""
+    return {
+        name: [tuple(row) for row in connection.execute(text(sql)).all()]
+        for name, sql in CATALOG_QUERIES.items()
+    }
 
 
 def check_migration__ensure_idempotent(

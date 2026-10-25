@@ -130,7 +130,7 @@ def test_migration__version_states_renamed(pg_engine: Engine) -> None:
     """A database with the old version states and exits carrying the unread `when` (hat_live)
     comes out of `ensure_hat_schema` with the new states, the models' catalog, no `when` and each
     hash recomputed from its config, its immutability trigger on again; a second run changes
-    nothing."""
+    nothing. Postgres DDL is transactional, so it all rolls back and leaves no rows behind."""
     before = rules.catalog(pg_engine)
     with pg_engine.connect() as connection:
         transaction = connection.begin()
@@ -181,8 +181,6 @@ def test_migration__version_states_renamed(pg_engine: Engine) -> None:
                 )
             ).scalar_one()
             assert enabled == "O"
-            transaction.commit()
-            assert rules.catalog(pg_engine) == before
+            assert rules.catalog_of(connection) == before
         finally:
-            if transaction.is_active:
-                transaction.rollback()
+            transaction.rollback()

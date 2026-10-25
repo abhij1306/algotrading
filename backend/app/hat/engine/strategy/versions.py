@@ -124,7 +124,8 @@ def publish_version(
     evidences it (HAT-BT-061), and its config can no longer change. Any other starting status, or
     a run of another version, one not completed or one not flagged for promotion (PR 62), is
     refused."""
-    row = session.get(HatStrategyVersion, version_id)
+    # locked, so two publishes of one draft serialise and the second sees it frozen
+    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
     if row is None:
         raise VersionError("unknown_version")
     if row.status != VersionStatus.DRAFT:
