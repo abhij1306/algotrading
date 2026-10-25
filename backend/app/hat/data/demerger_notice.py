@@ -36,12 +36,13 @@ import argparse
 import csv
 import io
 import sys
+import uuid
 from bisect import bisect_left
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
@@ -49,11 +50,12 @@ from ..models import (
     HatCorporateAction,
     HatDemergerNotice,
     HatInstrument,
-    HatInstrumentSymbolHistory,
+    HatMarket,
 )
+from .ca_apply import input_path
 from .ca_bc import SOURCE_BC, FeedRow
-from .ca_dividends import input_path
 from .corporate_actions import PRICE_NEUTRAL_TYPES, lock_reference_data
+from .symbol_history import holders
 
 __all__ = [
     "CLOSE_REASON",
@@ -74,6 +76,7 @@ CLOSE_REASON = "demerger"  # the exit reason of a position closed before a demer
 SKIP_DEMERGER_PENDING = "demerger_pending"  # an entry skipped from the exit session (Q5)
 ANNOUNCED_COLUMNS = ("isin", "ex_date", "announced_on", "source_url", "note")
 MAX_FILE_BYTES = 2_000_000
+NSE_CODE = "NSE"  # the market a `bc` file lists
 
 
 def exit_day(sessions: Sequence[date], ex_date: date, announced_on: date | None) -> date | None:
@@ -131,28 +134,15 @@ def demerger_rows(rows: Iterable[FeedRow]) -> list[FeedRow]:
     return [found[k] for k in sorted(found)]
 
 
-def _instruments_of(session: Session, symbol: str, day: date) -> list[HatInstrument]:
-    """The instruments trading as `symbol` on `day`: by the symbol history, else the active
-    instrument with that symbol now (a parent often hands its symbol on after a demerger)."""
-    by_history = list(
-        session.scalars(
-            select(HatInstrument)
-            .join(
-                HatInstrumentSymbolHistory,
-                HatInstrumentSymbolHistory.instrument_id == HatInstrument.id,
-            )
-            .where(
-                HatInstrumentSymbolHistory.symbol == symbol,
-                HatInstrumentSymbolHistory.valid_from <= day,
-                or_(
-                    HatInstrumentSymbolHistory.valid_to.is_(None),
-                    HatInstrumentSymbolHistory.valid_to > day,
-                ),
-            )
-        )
-    )
-    if by_history:
-        return by_history
+def _instruments_of(
+    session: Session, market_id: uuid.UUID | None, symbol: str, day: date
+) -> list[HatInstrument]:
+    """The instrument trading as `symbol` on `day` by the symbol history (`holders`, the
+    preferred one), else the active instruments with that symbol now (a parent often hands its
+    symbol on after a demerger)."""
+    held = holders(session, market_id, symbol, day)[:1] if market_id is not None else []
+    if held:
+        return held
     return list(
         session.scalars(
             select(HatInstrument).where(
@@ -162,17 +152,23 @@ def _instruments_of(session: Session, symbol: str, day: date) -> list[HatInstrum
     )
 
 
+def _nse(session: Session) -> uuid.UUID | None:
+    """The market the `bc` file is NSE's list for."""
+    return session.scalar(select(HatMarket.id).where(HatMarket.code == NSE_CODE))
+
+
 def store_notices(session: Session, rows: Iterable[FeedRow], day: date) -> int:
     """Store each demerger of the night's `bc` rows not stored yet for its instrument and
     ex-date, announced on `day` (the night HAT first read it); a symbol HAT does not know is left
     out. Returns how many were stored. Works in the caller's transaction, under the
     reference-data lock, so no rename lands between the symbol's mapping and the write."""
     lock_reference_data(session)
+    market_id = _nse(session)
     stored = 0
     for row in demerger_rows(rows):
         if row.ex_date is None:  # demerger_rows keeps dated rows only
             continue
-        for instrument in _instruments_of(session, row.symbol, day):
+        for instrument in _instruments_of(session, market_id, row.symbol, day):
             taken = session.scalar(
                 select(HatDemergerNotice.id).where(
                     HatDemergerNotice.instrument_id == instrument.id,
@@ -200,10 +196,11 @@ def unlisted_notices(
 ) -> list[HatDemergerNotice]:
     """The stored `bc` notices with an ex-date after `day` that the night's `bc` rows no longer
     list for their instrument (a moved or withdrawn record date), oldest ex-date first."""
+    market_id = _nse(session)
     listed = {
         (instrument.id, row.ex_date)
         for row in demerger_rows(rows)
-        for instrument in _instruments_of(session, row.symbol, day)
+        for instrument in _instruments_of(session, market_id, row.symbol, day)
     }
     notices = session.scalars(
         select(HatDemergerNotice)

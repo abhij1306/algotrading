@@ -90,14 +90,15 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .clock import SYSTEM_CLOCK, Clock
+from .data.broker_symbols import refresh_kite_symbols
 from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
 from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
-from .data.instruments import refresh_kite_symbols, repair_symbol_history
 from .data.kite_symbols import KiteSymbolData
 from .data.reference import parse_industry_csv
 from .data.renames import symbol_first_bars
 from .data.store import DataStore
+from .data.symbol_history import repair_symbol_history
 from .engine.live_trades import BrokerFill, resolve_sale
 from .engine.owner import OwnerCommand
 from .engine.portfolio import lifecycle, sleeve_service, universe_service

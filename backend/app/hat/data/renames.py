@@ -3,7 +3,7 @@
 HAT reads no legacy table. A bhavcopy row names its security by ISIN and series and gives the
 symbol it traded under that day, so a symbol that changes for one (ISIN, series) between two days
 in `bars_daily_raw` is a rename, effective on the first day of the new symbol. The records go to
-`instruments.seed_symbol_history` (as the `renames` source of `reference.weekly`), which places
+`symbol_history.seed_symbol_history` (as the `renames` source of `reference.weekly`), which places
 them in `hat_instrument_symbol_history`, and to the history build (D1). The instrument master
 places a rename on the day it first lists the new symbol; the bars give the day it took effect.
 
@@ -23,8 +23,8 @@ from datetime import date
 
 from sqlalchemy import select
 
-from .instruments import SymbolRename, seed_symbol_history
 from .store import DataStore
+from .symbol_history import SymbolRename, seed_symbol_history
 
 _RENAMES_SQL = """
 WITH seen AS (
@@ -53,7 +53,7 @@ def renames_from_bars(store: DataStore) -> list[SymbolRename]:
 
 def symbol_first_bars(store: DataStore) -> dict[tuple[uuid.UUID, str], date]:
     """Each (instrument, symbol)'s first raw bar: who took a symbol when, for the symbol
-    history repair (`instruments.repair_symbol_history`)."""
+    history repair (`symbol_history.repair_symbol_history`)."""
     con = store.connect()
     try:
         rows = con.execute(

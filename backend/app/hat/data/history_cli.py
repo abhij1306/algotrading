@@ -84,9 +84,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
     from . import calendar as hat_calendar
     from .bhavcopy import http_fetcher
-    from .instruments import resolve_symbol, seed_symbol_history
     from .mcp_client import client_from_env
     from .renames import renames_from_bars
+    from .symbol_history import resolve_symbol, seed_symbol_history
 
     logging.basicConfig(level=logging.INFO)
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)

@@ -4,7 +4,7 @@ cut-down successor of the legacy `SymbolMaster`, HAT-DATA-024).
 Formats: the database format is the bare NSE ticker (`SBIN`, `M&M`); the Fyers format is
 `EXCHANGE:TICKER-SERIES` (`NSE:SBIN-EQ`). The conversion is pure: it holds no state, reads no
 table and knows nothing about which stocks exist. Which instruments HAT trades comes from
-`hat_instrument` and `hat_broker_symbol` (`instruments.fyers_instruments`), never from here.
+`hat_instrument` and `hat_broker_symbol` (`broker_symbols.fyers_instruments`), never from here.
 """
 
 from __future__ import annotations

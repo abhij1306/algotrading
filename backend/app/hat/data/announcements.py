@@ -34,7 +34,7 @@ from app.hat.time import IST
 from ..errors import HatError
 from ..models import HatAnnouncement, HatInstrument, HatMarket
 from ..time import as_utc
-from .instruments import resolve_symbol
+from .symbol_history import resolve_symbol
 
 __all__ = [
     "FEEDS",

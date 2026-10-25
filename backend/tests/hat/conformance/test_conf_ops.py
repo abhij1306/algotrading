@@ -95,7 +95,8 @@ ADMIN_IMPORTS = {
     "app.hat.data.calendar",
     "app.hat.data.ca_corrections",
     "app.hat.data.corporate_actions",
-    "app.hat.data.instruments",  # the symbol history repair (DB6)
+    "app.hat.data.symbol_history",  # the symbol history repair (DB6)
+    "app.hat.data.broker_symbols",  # the zerodha symbol refresh
     "app.hat.data.kite_symbols",  # the zerodha symbol refresh's inputs
     "app.hat.data.reference",
     "app.hat.data.renames",

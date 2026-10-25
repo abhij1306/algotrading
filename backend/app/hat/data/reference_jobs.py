@@ -19,8 +19,8 @@ from sqlalchemy.orm import Session
 
 from ..models import HatMarket
 from ..ops.jobs import JobError, JobResult, SessionFactory
+from . import broker_symbols, instruments, symbol_history
 from . import calendar as hat_calendar
-from . import instruments
 from .kite_symbols import KiteSymbolData
 from .mcp_client import McpClient, McpError
 from .reference import (
@@ -76,7 +76,7 @@ def reference_weekly(
     session_factory: SessionFactory,
     master: SymbolMaster,
     today: date,
-    renames: Callable[[], Iterable[instruments.SymbolRename]] | None = None,
+    renames: Callable[[], Iterable[symbol_history.SymbolRename]] | None = None,
     kite_symbols: Callable[[], KiteSymbolData] | None = None,
 ) -> Callable[[], JobResult]:
     """Weekly: instrument master, symbol history, Fyers symbols and industries; and the Kite
@@ -106,8 +106,8 @@ def reference_weekly(
                 still_listed={(u.symbol, u.series) for u in build.unresolved},
             )
             if renames is not None:
-                instruments.seed_symbol_history(session, market_id, renames())
-            brokers = instruments.refresh_fyers_symbols(session, master, market_id)
+                symbol_history.seed_symbol_history(session, market_id, renames())
+            brokers = broker_symbols.refresh_fyers_symbols(session, master, market_id)
             rows = report.created + report.updated + report.delisted + brokers.written
             if industry_list is not None:
                 try:
@@ -135,7 +135,7 @@ def refresh_kite(session_factory: SessionFactory, source: Callable[[], KiteSymbo
         raise JobError("kite_symbols_unavailable") from exc
     with session_factory() as session:
         try:
-            report = instruments.refresh_kite_symbols(
+            report = broker_symbols.refresh_kite_symbols(
                 session, _market_id(session), nse_tokens, listings
             )
         except instruments.ReferenceDataError as exc:

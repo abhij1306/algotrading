@@ -24,7 +24,7 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.instruments import FYERS_SERIES
+from ..data.broker_symbols import FYERS_SERIES
 from ..events import record, recorded_for
 from ..models import (
     HatBot,
