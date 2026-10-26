@@ -68,7 +68,7 @@ whose audit warns or fails):
 | `missing_sessions` | members miss > 2% of their member sessions overall | a member misses > 5% |
 | `survivorship` | a leaver with no bars, or no leaver in a window of a year or more | a leaver with bars on < 95% of its member days |
 | `corporate_actions` | an adjustment factor that is not a positive number | an adjusted move > 20% on an ex-date; an action-shaped raw move (a split or bonus ratio) with no factor |
-| `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D | a session whose previous session has no index close or breadth (the gates read D-1) |
+| `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D; a sampled member day with a bar and no feature row | a session whose previous session has no index close or breadth (the gates read D-1) |
 | `unique_keys` | a duplicate bar, features row or index close | |
 | `bars_5m` | (when the run reads them) bars off the IST 5-minute grid or outside the daily bar | the same, while no run reads them |
 
