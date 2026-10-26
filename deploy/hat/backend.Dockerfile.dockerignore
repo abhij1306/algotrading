@@ -3,6 +3,7 @@
 !backend
 !scripts
 !docs/backtests/run.schema.json
+!docs/backtests/golden-sample.schema.json
 backend/tests/
 backend/**/__pycache__/
 scripts/**/__pycache__/

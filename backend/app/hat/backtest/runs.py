@@ -47,6 +47,7 @@ from ..costs import (
     load_cost_schedule,
 )
 from ..data import audit as data_audit
+from ..data import golden
 from ..data.index_history import NIFTY_500_TRI
 from ..data.store import DataStore
 from ..engine.portfolio.common import market_id_of
@@ -332,7 +333,12 @@ def _load(
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
     )
     used_5m = bool(data.intraday)
-    key = data_audit.cache_key(str(snapshot["content_digest"]), *period, used_5m=used_5m)
+    key = data_audit.cache_key(
+        str(snapshot["content_digest"]),
+        *period,
+        used_5m=used_5m,
+        golden_digest=golden.current(root),
+    )
     audit, _ = data_audit.cached(
         root,
         key,

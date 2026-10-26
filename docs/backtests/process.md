@@ -41,7 +41,9 @@ Rerun any run exactly from its folder: `python -m app.hat.backtest --rerun <run_
 based on the old one; refused `backtest_rerun_snapshot_differs` when the data changed).
 
 Step 1 also runs inside every run (cached by data snapshot and window, so a sweep audits once);
-`--refresh` recomputes it. Step 6: hand `review_request.md` to an independent review agent, which
+`--refresh` recomputes it. Step 1 includes the golden sample check (`golden-sample.md`; run it
+alone with `python -m app.hat.data.golden check`). When a deliberate data fix moves golden
+values, rebase them with a reason (`golden rebase`); never edit a golden file. Step 6: hand `review_request.md` to an independent review agent, which
 writes `audit_report.md` beside it with a `promote`, `hold` or `reject` verdict. A candidate goes
 to step 7 only if it meets every criterion of rule 1, its audits pass or each warning is
 explained, its plateau holds, and the review says `promote`.
@@ -71,6 +73,7 @@ whose audit warns or fails):
 | `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D; a sampled member day with a bar and no feature row | a session whose previous session has no index close or breadth (the gates read D-1) |
 | `unique_keys` | a duplicate bar, features row or index close | |
 | `bars_5m` | (when the run reads them) bars off the IST 5-minute grid or outside the daily bar | the same, while no run reads them |
+| `golden` | a golden sample value drifted or missing; an unreadable golden file | an unresolvable key; a recorded mismatch still open; no golden file yet |
 
 ### Run audit (`audit.json`, `app/hat/backtest/run_audit.py`)
 
