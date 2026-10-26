@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -36,11 +37,13 @@ from typing import Any
 BRANCH_PREFIX = "hat/"
 AGENT_ARGS = ("--kind", "claude")
 CLAUDE_ARGS = ("--permission-mode", "auto")
+# words of letters and digits joined by one '-', '_' or '.': a valid git ref component
+SLUG = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
 
 
 def branch_of(slug: str) -> str:
-    if not slug or slug.startswith("-") or not all(c.isalnum() or c in "-_." for c in slug):
-        raise ValueError(f"bad slug {slug!r}: letters, digits, '-', '_' and '.' only")
+    if not SLUG.fullmatch(slug) or slug.endswith(".lock"):
+        raise ValueError(f"bad slug {slug!r}: words of letters and digits joined by '-', '_', '.'")
     return BRANCH_PREFIX + slug
 
 
@@ -97,6 +100,9 @@ def start(r: Runner, slug: str, brief: str, worktrees: Path) -> None:
     branch, wt = branch_of(slug), worktrees / slug
     r.run("git", "fetch", "origin")
     if wt.exists():
+        on = r.read("git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD").strip()
+        if on != branch:
+            sys.exit(f"{wt} exists but is on {on or 'no branch'}, not {branch}")
         print(f"reusing {wt}")
     elif _remote_has(r, branch):
         r.run("git", "worktree", "add", "-B", branch, str(wt), f"origin/{branch}")

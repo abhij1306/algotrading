@@ -297,7 +297,8 @@ def test_merge__secret_hits_on_added_lines_only() -> None:
 
 def test_builder__branch_of() -> None:
     assert builder.branch_of("repo-tooling") == "hat/repo-tooling"
-    for bad in ("", "-x", "a b", "a/b", "a;rm"):
+    assert builder.branch_of("pr.75e_fix") == "hat/pr.75e_fix"
+    for bad in ("", "-x", "a b", "a/b", "a;rm", "task.", "a..b", "x.lock", "a--b"):
         with pytest.raises(ValueError, match="bad slug"):
             builder.branch_of(bad)
 
