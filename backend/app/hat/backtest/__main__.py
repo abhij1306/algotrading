@@ -22,6 +22,7 @@ from app.database import db_session_scope
 from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS
 from ..data.store import DataStore
 from ..money import exact
+from ..risk.policy import RiskPolicy
 from ..settings import operator_settings
 from .fills import (
     AMBIGUOUS_OPTIMISTIC,
@@ -30,7 +31,7 @@ from .fills import (
     PENETRATION,
     SUSPENSION_SESSIONS,
 )
-from .overrides import OverrideError, Overrides, parse_set
+from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
 from .runs import RunRequest, SweepOutcome, backtest_bot, parse_variants, sweep_bot
 from .slots import SLOT_ORDER_TIME, is_slot_order
 from .spec import REGIME_MULT_ONE, REGIME_MULT_RULES, BacktestError, RunConventions
@@ -54,6 +55,24 @@ def _set_arg(text: str) -> tuple[str, Any]:  # pragma: no cover - the command li
         return parse_set(text)
     except OverrideError as exc:
         raise argparse.ArgumentTypeError(f"path=value, e.g. exits[2].at_r=3 ({exc.code})") from None
+
+
+def _policy_set_arg(text: str) -> tuple[str, Any]:  # pragma: no cover - the command line
+    try:
+        return parse_policy_set(text)
+    except OverrideError as exc:
+        raise argparse.ArgumentTypeError(
+            f"path=value, e.g. kill.bot_drawdown_pct=0.15 ({exc.code})"
+        ) from None
+
+
+def _policy_arg(text: str) -> RiskPolicy:  # pragma: no cover - the command line
+    try:
+        return read_policy_file(text)
+    except OverrideError as exc:
+        raise argparse.ArgumentTypeError(
+            f"a whole risk policy, YAML or JSON ({exc.code})"
+        ) from None
 
 
 def _risk_pct_arg(text: str) -> Decimal:  # pragma: no cover - the command line
@@ -95,7 +114,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
     [--regime-mult 1|policy] [--for-promotion] [--set PATH=VALUE ...] [--risk-pct P]
-    [--max-positions N] [--max-per-industry N] [--flat-ladder] [--variants FILE]
+    [--max-positions N] [--max-per-industry N] [--flat-ladder] [--policy FILE]
+    [--set-policy PATH=VALUE ...] [--variants FILE]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
     mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
@@ -111,7 +131,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
     `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
     `--flat-ladder` override the version's config and the policy for this run only
-    (`overrides`), recorded in its conventions; a promotion run takes none. `--variants FILE`
+    (`overrides`), recorded in its conventions; a promotion run takes none. `--policy FILE`
+    (YAML or JSON, e.g. from `python -m app.hat.admin show-policy`) sizes the run under that
+    whole candidate policy instead of the version in force, and `--set-policy` (repeatable) sets
+    one policy field by its dotted path; the other policy overrides apply on top. `--variants FILE`
     (YAML or JSON, `runs.parse_variants`) runs each variant over one load of the market, on top
     of the options given here, and prints one line per variant as it finishes; a file argparse
     cannot open is a usage error, one that does not parse is refused
@@ -138,6 +161,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--max-positions", type=int, default=None)
     parser.add_argument("--max-per-industry", type=int, default=None)
     parser.add_argument("--flat-ladder", action="store_true")
+    parser.add_argument("--policy", type=_policy_arg, default=None)
+    parser.add_argument(
+        "--set-policy", dest="policy_sets", type=_policy_set_arg, action="append", default=[]
+    )
     parser.add_argument("--variants", type=argparse.FileType("r", encoding="utf-8"), default=None)
     args = parser.parse_args(argv)
     settings = operator_settings()
@@ -170,6 +197,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                         max_positions=args.max_positions,
                         max_per_industry=args.max_per_industry,
                         flat_ladder=args.flat_ladder,
+                        policy=args.policy,
+                        policy_sets=tuple(args.policy_sets),
                     ),
                 ),
             )

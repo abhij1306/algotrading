@@ -135,6 +135,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   closed since the version in force took effect, so any change, a decrease too, restarts that
   window; every sleeve's evidence run must pass the lifecycle's span, gap and ambiguity
   conditions (QA8), and the gate reads only the runs and trades that existed when it was asked.
+  Pre-trading reset: until a real order, position or closed trade exists, `set-policy` replaces
+  the policy at once; after, it is refused.
 - **One owner per resource.** One live socket, one session owner per broker account, one token
   store, one fake broker, one risk authority, one HAT runtime per database. A runtime whose
   lock another runtime took writes no order (no entry, stop or sale) until it is restarted.

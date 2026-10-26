@@ -52,7 +52,7 @@ from ..models import (
     HatUniverseVersion,
 )
 from ..money import exact, require_exact
-from ..risk.policy import PolicyVersion, effective_version
+from ..risk.policy import PolicyVersion, RiskPolicy, effective_version
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from .data import MarketData, load_market
@@ -67,7 +67,7 @@ from .evidence import (
     universe_of,
 )
 from .loop import run_backtest
-from .overrides import OverrideError, Overrides, parse_set
+from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
 from .report import BacktestResult
 from .report import trades_parquet as encode_trades
 from .report_data import BENCHMARK, build_report, write_report
@@ -587,17 +587,25 @@ VARIANT_KEYS = frozenset(
         "max_positions",
         "max_per_industry",
         "flat_ladder",
+        "policy",
+        "policy_set",
         "sleeve_weight",
         "slot_order",
     }
 )
 
 
-def parse_variants(doc: object, base: RunConventions) -> list[Variant]:
+def parse_variants(
+    doc: object,
+    base: RunConventions,
+    read_policy: Callable[[str], RiskPolicy] = read_policy_file,
+) -> list[Variant]:
     """A sweep's variants from its file's document: a list of mappings, each a unique `label`
     and any of `set` (a list of `path=value` strings, `overrides.parse_set`, after the base's),
-    `risk_pct`, `max_positions`, `max_per_industry`, `flat_ladder` (a boolean), `sleeve_weight`
-    and `slot_order` (each replacing the base's).
+    `policy_set` (likewise, `overrides.parse_policy_set`), `policy` (a policy file's path,
+    relative to the working directory, read by `read_policy`), `risk_pct`, `max_positions`,
+    `max_per_industry`, `flat_ladder` (a boolean), `sleeve_weight` and `slot_order` (each
+    replacing the base's).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
     conventions or override raise."""
     if not isinstance(doc, list) or not doc:
@@ -606,17 +614,23 @@ def parse_variants(doc: object, base: RunConventions) -> list[Variant]:
     for item in doc:
         if not isinstance(item, dict) or not set(item) <= VARIANT_KEYS:
             raise BacktestError("backtest_sweep_bad_variants")
-        label, sets = item.get("label"), item.get("set", [])
-        if not isinstance(label, str) or not label or not isinstance(sets, list):
+        label = item.get("label")
+        if not isinstance(label, str) or not label:
             raise BacktestError("backtest_sweep_bad_variants")
-        try:
-            parsed = tuple(parse_set(text) for text in sets if isinstance(text, str))
-        except OverrideError as exc:
-            raise BacktestError(exc.code) from None
-        if len(parsed) != len(sets):
-            raise BacktestError("backtest_sweep_bad_variants")
+        parsed = _texts(item, "set", parse_set)
+        policy_sets = _texts(item, "policy_set", parse_policy_set)
+        policy = base.overrides.policy
+        if "policy" in item:
+            if not isinstance(item["policy"], str) or not item["policy"]:
+                raise BacktestError("backtest_sweep_bad_variants")
+            try:
+                policy = read_policy(item["policy"])
+            except OverrideError as exc:
+                raise BacktestError(exc.code) from None
         overrides = Overrides(
             sets=(*base.overrides.sets, *parsed),
+            policy=policy,
+            policy_sets=(*base.overrides.policy_sets, *policy_sets),
             risk_pct=_number(item, "risk_pct", base.overrides.risk_pct),
             max_positions=_count(item, "max_positions", base.overrides.max_positions),
             max_per_industry=_count(item, "max_per_industry", base.overrides.max_per_industry),
@@ -632,6 +646,19 @@ def parse_variants(doc: object, base: RunConventions) -> list[Variant]:
     if len({v.label for v in out}) != len(out):
         raise BacktestError("backtest_sweep_bad_variants")
     return out
+
+
+def _texts(
+    item: Mapping[str, object], key: str, parse: Callable[[str], tuple[str, Any]]
+) -> tuple[tuple[str, Any], ...]:
+    """The item's list of `path=value` strings under `key`, each parsed by `parse`."""
+    texts = item.get(key, [])
+    if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+        raise BacktestError("backtest_sweep_bad_variants")
+    try:
+        return tuple(parse(text) for text in texts)
+    except OverrideError as exc:
+        raise BacktestError(exc.code) from None
 
 
 def _number(item: Mapping[str, object], key: str, default: Decimal | None) -> Decimal | None:

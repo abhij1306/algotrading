@@ -12,6 +12,13 @@ Commands, in first-deploy order:
 
     show                                      strategies, versions and sleeves, with their ids
     seed-policy                               risk-policy version 1
+    show-policy                               the risk policy in force, as YAML: the starting
+                                              point of a research run's candidate policy
+                                              (`python -m app.hat.backtest --policy FILE`)
+    set-policy --file FILE                    the policy in FILE (YAML or JSON) in force at
+                                              once, outside market hours, only while nothing has
+                                              traded for real (the pre-trading reset; then every
+                                              change is gated: docs/invariants.md)
     onboard-account --account-ref REF [--broker B]
                                               capability check of the broker account (HAT-BRK-092);
                                               only the active broker's (`HAT_BROKER`, the default)
@@ -71,13 +78,13 @@ Commands, in first-deploy order:
                                               raw bars' first days (audit M3, one-off);
                                               without --apply a dry run that writes nothing
 
-Input files (`--constituents`, `--csv`, `--config`, `--list`, `--dump`) are names inside
+Input files (`--constituents`, `--csv`, `--config`, `--list`, `--dump`, `--file`) are names inside
 `<HAT_DATA_ROOT>/admin/`: a path that leaves that folder, or a file without the expected suffix, is
 refused (`file_outside_admin`).
 
-`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `release-version`, `resolve-action`,
-`resolve-sale`, `correct-action`, `correct-actions` and `repair-symbol-history` are the owner's
-acts: their
+`set-policy`, `assign-version`, `confirm-ddpi`, `revoke-ddpi`, `promote`, `release-version`,
+`resolve-action`, `resolve-sale`, `correct-action`, `correct-actions` and `repair-symbol-history`
+are the owner's acts: their
 events carry `actor = user`, the allowlisted chat id (`HAT_TELEGRAM_CHAT_ID`) and `via = cli`.
 """
 
@@ -131,8 +138,9 @@ from .execution.accounts import (
 from .execution.broker import HatBroker
 from .execution.kite_adapter import kite_symbol_source
 from .money import exact
-from .risk.policy import RiskPolicy, effective_version
-from .risk.policy_service import load_versions, seed_initial_policy
+from .risk.policy import PolicyError, RiskPolicy, effective_version
+from .risk.policy_file import policy_text, policy_yaml
+from .risk.policy_service import load_versions, reset_policy_before_trading, seed_initial_policy
 from .risk.sessions import SessionCalendar
 from .settings import active_broker
 from .telegram.config import owner_chat_id
@@ -194,6 +202,8 @@ def _parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("show")
     commands.add_parser("seed-policy")
+    commands.add_parser("show-policy")
+    commands.add_parser("set-policy").add_argument("--file", required=True)
     onboard = commands.add_parser("onboard-account")
     onboard.add_argument("--account-ref", required=True)
     onboard.add_argument("--broker")
@@ -437,6 +447,11 @@ def _setup(
     command = args.command
     if command == "show":
         return release.release_overview(session, user_id)
+    if command == "show-policy":
+        version = effective_version(load_versions(session, user_id), now)
+        if version is None:
+            raise AdminError("no_policy")
+        return {"version": version.version, "policy": version.policy}
     if command == "seed-policy":
         row = seed_initial_policy(session, user_id, now)
         return {"risk_policy_version": row.version, "id": str(row.id)}
@@ -505,8 +520,8 @@ def _release(
 def _owner(
     session: Session, args: argparse.Namespace, deps: AdminDeps, now: datetime
 ) -> dict[str, Any]:
-    """The owner's acts (`assign-version`, `confirm-ddpi`, `revoke-ddpi`, `release-version`,
-    `resolve-action`, `resolve-sale`, `correct-action`, `correct-actions`,
+    """The owner's acts (`set-policy`, `assign-version`, `confirm-ddpi`, `revoke-ddpi`,
+    `release-version`, `resolve-action`, `resolve-sale`, `correct-action`, `correct-actions`,
     `repair-symbol-history` and `promote`) under the allowlisted chat id."""
     try:
         chat_id = owner_chat_id(deps.env)
@@ -541,6 +556,21 @@ def _owner(
         )
         return {"broker_account_id": str(account.id), "ddpi_confirmed": account.ddpi_confirmed}
     owner = OwnerCommand(chat_id, now, _calendar(session))
+    if args.command == "set-policy":
+        document = _read(deps.files, args.file, (".yaml", ".yml", ".json"), "policy_unreadable")
+        try:
+            policy = policy_text(document)
+        except PolicyError:
+            raise AdminError("policy_invalid") from None
+        row = reset_policy_before_trading(
+            session,
+            user_id=deps.user_id,
+            policy=policy,
+            calendar=owner.calendar,
+            chat_id=chat_id,
+            now=now,
+        )
+        return {"risk_policy_version": row.version, "id": str(row.id)}
     if args.command == "confirm-ddpi":
         account = confirm_ddpi(
             session,
@@ -605,6 +635,10 @@ def main(argv: Sequence[str] | None = None, deps: AdminDeps | None = None) -> in
     except SQLAlchemyError:
         sys.stderr.write("refused: database_error\n")
         return REFUSED
+    if args.command == "show-policy":  # a policy file a research run reads back
+        heading = f"risk policy version {result['version']}, in force"
+        sys.stdout.write(policy_yaml(result["policy"], heading))
+        return 0
     sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return 0
 

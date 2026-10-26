@@ -119,6 +119,7 @@ ADMIN_IMPORTS = {
     "app.hat.execution.kite_adapter",  # the zerodha symbol source
     "app.hat.money",  # the Decimal boundary: reads no table (PR 75c)
     "app.hat.risk.policy",
+    "app.hat.risk.policy_file",  # the policy file's text: pure
     "app.hat.risk.policy_service",
     "app.hat.risk.sessions",
     "app.hat.settings",

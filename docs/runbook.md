@@ -124,6 +124,8 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
 2. `seed-policy`; "Morning login"; `onboard-account --account-ref <Fyers client id>` (a `failed`
    account takes no sleeve); `seed-strategies`; `seed-bots --account <id>`. Then start HAT with
    `HAT_ENABLED=true`.
+   Until the first real order, `set-policy --file <name>` (a YAML file in `HAT_DATA_ROOT/admin/`,
+   written from `show-policy`) replaces the policy at once (decisions: Pre-trading policy reset).
 3. `publish-universe --constituents <ind_nifty500list.csv> --as-of <date> [--index I]
    [--include S] [--exclude S]`, and load the index's membership (Index membership). Rows whose
    ISIN is not an ordinary share (a REIT, a placeholder such as
@@ -226,13 +228,17 @@ enables `volume_pace` or `daily_close` cannot be promoted on a run (known gaps).
 the exposure ladder's top level to N (lower levels capped at N); the ladder still starts at L1.
 `--flat-ladder` gives every ladder level the run's cap at risk multiplier 1, so the run trades at
 one size from day one (the strategy, not the ladder's throttle); `--max-per-industry N` sets the
-per-industry cap. The overrides are recorded in
+per-industry cap. `--policy cand.yaml` sizes the run under a whole candidate policy (write it
+from `python -m app.hat.admin show-policy`) and `--set-policy kill.bot_drawdown_pct=0.15`
+(repeatable, a dotted path) sets one field; both apply before the flags above, and the run
+records the document and its digest. The overrides are recorded in
 the run's conventions and the run counts as a trial of its family (DSR, PBO); a
 `--for-promotion` run takes none.
 
 A sweep runs several variants over one load of the market: `--variants sweep.yaml` on top of the
 options given, a list of `{label, set: [path=value, ...], risk_pct, max_positions,
-max_per_industry, flat_ladder, sleeve_weight, slot_order}`. It prints one JSON line per variant (run id, status, trades,
+max_per_industry, flat_ladder, policy, policy_set, sleeve_weight, slot_order}` (`policy` a
+file path from the working directory). It prints one JSON line per variant (run id, status, trades,
 expectancy, DSR, PBO) as each finishes; each run carries `metrics.variant` (label, sweep id), and
 the runs and their report data read at `/api/hat/backtests?sweep_id=<id>`.
 
