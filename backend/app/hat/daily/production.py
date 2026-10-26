@@ -29,6 +29,7 @@ from ..configs.records import BROKER_FYERS, BROKER_ZERODHA, BrokerAccount
 from ..data.announcements import HttpFeedFetcher
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher, http_fetcher
+from ..data.index_history import http_poster
 from ..data.mcp_client import client_from_env
 from ..data.nse_changes import NAME_CHANGES_URL, SYMBOL_CHANGES_URL
 from ..data.reference_jobs import TextSource
@@ -167,6 +168,7 @@ def production_parts(
         require_broker_ready(settings.broker, env)
         telegram = telegram_settings()
         fetch = http_fetcher()
+        post = http_poster()
         store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
 
         def price_bands(day: date) -> TextSource:
@@ -196,6 +198,7 @@ def production_parts(
             announcements=HttpFeedFetcher(),
             links=BrokerLoginLinks(),
             prevalidated_token=prevalidated_token,
+            niftyindices=lambda: post,
         )
 
     return build

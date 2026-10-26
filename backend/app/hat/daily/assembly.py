@@ -30,6 +30,7 @@ from ..configs.records import BrokerAccount
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
+from ..data.index_history import Poster
 from ..data.live import EventFeedHealth, LiveData, silence_alert, threadsafe_provider
 from ..data.mcp_client import McpClient
 from ..data.quality import JOB_QUALITY
@@ -176,6 +177,7 @@ class RuntimeParts:
     links: LoginLinks | None = None
     sleep: Callable[[float], None] | None = None  # the ingest's wait; default: wall clock
     prevalidated_token: bool | None = None
+    niftyindices: Callable[[], Poster] | None = None  # the nightly TRI's POST; None: no TRI
 
 
 # How long after its time (`at`) each job's run has to have succeeded before the owner is told
@@ -472,6 +474,7 @@ def build(
         notifier=notifier,
         digest=reports.send_watchlist_digest,
         on_loaded=book.reset,
+        niftyindices=parts.niftyindices,
     )
     jobs = daily_jobs(nightly, intraday, desks, views, reports)
     heartbeats = Heartbeats(notifier, calendar.is_open)

@@ -457,9 +457,11 @@ def atomic_replace(
         raise
 
 
-def _keep_once(path: Path, data: bytes) -> bool:
-    """Write `data` to `path` once, never over another file. True when written, False when the
-    identical bytes were already there; different bytes under an existing name raise."""
+def keep_once(path: Path, data: bytes) -> bool:
+    """Write `data` to `path` once, never over another file: create-only (a hard link of a
+    temporary file), so two writers racing for the name cannot overwrite each other. True when
+    written, False when the identical bytes were already there; different bytes under an
+    existing name raise."""
     if path.exists():
         if path.read_bytes() == data:
             return False
@@ -579,7 +581,7 @@ class DataStore:
     def store_raw(self, name: str, data: bytes) -> bool:
         """Keep a raw bhavcopy zip untouched forever (HAT-DATA-083). True when written, False when
         the identical bytes were already there; different bytes under an existing name raise."""
-        return _keep_once(self.raw_path(name), data)
+        return keep_once(self.raw_path(name), data)
 
     def store_bc(self, day: date, text: str) -> Path:
         """Keep the night's `bc` file of NSE's PR archive untouched under `ca_bc/`, dated by its
@@ -589,11 +591,11 @@ class DataStore:
         data = text.encode("utf-8")
         path = self._under_root(self.root / BC_DIR / f"bc_{day.isoformat()}.csv")
         try:
-            _keep_once(path, data)
+            keep_once(path, data)
         except StoreError:
             digest = hashlib.sha256(data).hexdigest()
             path = path.with_name(f"bc_{day.isoformat()}_{digest}.csv")
-            _keep_once(path, data)
+            keep_once(path, data)
         return path
 
     def raw_exists(self, name: str) -> bool:

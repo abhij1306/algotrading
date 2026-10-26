@@ -7,7 +7,10 @@ fetches the active EQ/BE universe in batches of 50, checks every row, flags the 
 prices suggest a corporate action, looks those up (and only those) and writes the day's raw
 partition once. At 22:00 without a matching probe it runs the bhavcopy fallback of PR 5 instead.
 The index snapshot and the advance/decline record are stored on both paths; a run that cannot
-store the NIFTY 500 and India VIX levels does not succeed.
+store the NIFTY 500 and India VIX levels does not succeed. Then the NIFTY 500 TRI close of the
+session (and of any recent bar day still without one) is fetched from niftyindices; a day it
+lacks is recorded in the report and left missing, never carried, and does not fail the run (only
+the backtest benchmark reads the TRI).
 
 The body is idempotent (a crash between the body and its recording re-runs it): a raw partition
 that already exists is never rewritten, so a re-run reads it and carries on with the rest, and
@@ -49,7 +52,7 @@ from .bhavcopy import (
     parse_bhavcopy,
 )
 from .breadth import breadth_from_mcp, derive_breadth, write_breadth
-from .index_history import INDEX_NAMES, parse_index_archive_csv
+from .index_history import INDEX_NAMES, IndexSource, nightly_tri, parse_index_archive_csv
 from .mcp_client import McpClient, McpError, parse_data_date
 from .pacing import Pacer
 from .rowcheck import Candidate, row_ok
@@ -245,6 +248,9 @@ class IngestReport:
     probes: int = 0
     index_rows: int = 0
     breadth_source: str = ""
+    tri_stored: int = 0  # NIFTY 500 TRI closes written (the session's and earlier missing ones)
+    tri_missing: list[date] = field(default_factory=list)  # bar days still without a TRI close
+    tri_failed: str = ""  # the TRI source's stable code when it failed
     reused: bool = False  # the raw partition already existed (a re-run)
 
     def payload(self) -> dict[str, Any]:
@@ -263,6 +269,9 @@ class IngestReport:
             "probes": self.probes,
             "index_rows": self.index_rows,
             "breadth_source": self.breadth_source,
+            "tri_stored": self.tri_stored,
+            "tri_missing": [d.isoformat() for d in self.tri_missing],
+            "tri_failed": self.tri_failed,
         }
 
 
@@ -277,6 +286,7 @@ class IngestDeps:
     sleep: Callable[[float], None] = time.sleep
     fallback: DayFallback | None = None
     index_csv: IndexCsv | None = None
+    tri: IndexSource | None = None  # niftyindices' TRI series (`tri_source`); None: not fetched
     rss_symbols: SymbolSource = lambda _day: ()
     notifier: Notifier = field(default_factory=LogNotifier)
 
@@ -454,6 +464,18 @@ def _store_breadth(deps: IngestDeps, trade_date: date, report: IngestReport) -> 
     report.breadth_source = row["source"]
 
 
+def _store_tri(deps: IngestDeps, trade_date: date, report: IngestReport) -> None:
+    """The TRI step (`nightly_tri`): never fails the night; what it could not store is reported."""
+    if deps.tri is None:
+        return
+    tri = nightly_tri(deps.store, deps.tri, trade_date, apply=True)
+    report.tri_stored = sum(len(points) for points in tri.found.values())
+    report.tri_missing = [d for days in tri.left.values() for d in days]
+    report.tri_failed = next(iter(tri.failed.values()), "")
+    if report.tri_missing:
+        logger.warning("NIFTY 500 TRI missing for %s", report.tri_missing)
+
+
 def run_ingest(deps: IngestDeps, trade_date: date, run_id: uuid.UUID) -> IngestReport:
     """One night's ingest. Raises `JobError` with a stable code when the day cannot be completed."""
     report = IngestReport(trade_date)
@@ -471,6 +493,7 @@ def run_ingest(deps: IngestDeps, trade_date: date, run_id: uuid.UUID) -> IngestR
         csv_first = _fetch_and_write(deps, trade_date, members, symbols, run_id, report)
     _store_indices(deps, trade_date, report, csv_first=csv_first)
     _store_breadth(deps, trade_date, report)
+    _store_tri(deps, trade_date, report)
     return report
 
 

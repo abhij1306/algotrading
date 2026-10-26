@@ -8,7 +8,9 @@ build loads them (`load_index_history`), and the nightly ingest reads the archiv
 for one day (`parse_index_archive_csv`). The TRI comes from niftyindices' total-return series,
 close only, and niftyindices' price history fills a day neither file source has (both
 `NiftyIndicesSource`). `backfill` loads the bar days an index lacks, from each source in turn;
-a day no source has stays missing, never carried.
+a day no source has stays missing, never carried. The nightly ingest loads the TRI of the night's
+session the same way (`nightly_tri`), and `verify-tri` checks the stored TRI against niftyindices'
+answers kept on disk under `raw_tri/`.
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from ..errors import HatError
@@ -30,7 +33,15 @@ from ..money import exact
 from .bhavcopy import BROWSER_HEADERS, Fetcher, FetchResult
 from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .pacing import Pacer
-from .store import DATASET_BARS, DataStore, IndexRow, atomic_replace
+from .store import (
+    DATASET_BARS,
+    DATASET_INDEX,
+    DataStore,
+    IndexRow,
+    StoreError,
+    atomic_replace,
+    keep_once,
+)
 from .store_coverage import index_coverage
 
 logger = logging.getLogger(__name__)
@@ -462,7 +473,14 @@ class NiftyIndicesSource:
             cursor = stop + timedelta(days=1)
 
 
+def tri_source(post: Poster, pacer: Pacer) -> NiftyIndicesSource:
+    """The TRI series (`TRI_INDICES`) from niftyindices, one request per calendar year."""
+    return NiftyIndicesSource(post, pacer, TRI_URL, TRI_INDICES, parse_tri_json)
+
+
 BACKFILL_NAMES = (*INDEX_NAMES, NIFTY_500_TRI)
+# Seconds between niftyindices requests: the backfill's default and the nightly TRI's pace.
+NIFTY_INDICES_INTERVAL = 2.0
 
 
 def only_days(source: IndexSource, days: Mapping[str, Collection[date]]) -> IndexSource:
@@ -496,14 +514,20 @@ def missing_index_days(
 
 
 def backfill(
-    store: DataStore, sources: Sequence[IndexSource], start: date, end: date, *, apply: bool
+    store: DataStore,
+    sources: Sequence[IndexSource],
+    start: date,
+    end: date,
+    *,
+    apply: bool,
+    names: Sequence[str] = BACKFILL_NAMES,
 ) -> BackfillReport:
     """Fill each index's missing bar days from `sources` in turn, each asked only for the days
     the ones before did not give (`only_days`): without `apply` only read what it would write;
     with it, merge them into each day as `load_index_history` does. The days no source has stay
     missing (`left`): an index day is never carried forward. A source that fails is reported
-    (`failed`) while days are left."""
-    report = BackfillReport(missing_index_days(store, start, end))
+    (`failed`) while days are left. Only the indices of `names` are looked at."""
+    report = BackfillReport(missing_index_days(store, start, end, names))
     for name, days in report.missing.items():
         found: list[IndexPoint] = []
         for source in sources:
@@ -523,7 +547,7 @@ def backfill(
             store.upsert_index(
                 day, [p.row for ps in report.found.values() for p in ps if p.day == day]
             )
-        left = missing_index_days(store, start, end)
+        left = missing_index_days(store, start, end, names)
         report.left = {name: left[name] for name in report.missing if name in left}
     else:
         for name, days in report.missing.items():
@@ -533,9 +557,161 @@ def backfill(
     return report
 
 
+# [A] How far back the nightly TRI step looks for bar days without a TRI close: niftyindices
+# may publish a session's TRI after that night's ingest, so the next nights ask for it again.
+TRI_LOOKBACK = timedelta(days=14)
+
+
+def nightly_tri(
+    store: DataStore, source: IndexSource, trade_date: date, *, apply: bool
+) -> BackfillReport:
+    """The nightly ingest's TRI step: `backfill` of `NIFTY_500_TRI` alone over the bar days from
+    `TRI_LOOKBACK` before `trade_date` to it, from `source` (`tri_source`). A day niftyindices
+    does not have stays missing (`left`), never carried."""
+    return backfill(
+        store, (source,), trade_date - TRI_LOOKBACK, trade_date, apply=apply, names=(NIFTY_500_TRI,)
+    )
+
+
+# niftyindices' TRI answers as fetched by `verify-tri --fetch`, under HAT_DATA_ROOT, one file per
+# request: `<index>_<first day>_<last day>.json`, a calendar year (to the day of the fetch for
+# the current year). A kept file is never rewritten.
+TRI_RAW_DIR = "raw_tri"
+
+
+def tri_raw_name(name: str, start: date, end: date) -> str:
+    return f"{name.replace(' ', '_')}_{start:%Y%m%d}_{end:%Y%m%d}.json"
+
+
+def tri_raw_range(name: str, year: int, today: date) -> tuple[date, date] | None:
+    """The days a `verify-tri` request asks for in `year`: the calendar year from the index's
+    start, cut at `today`; None when the year holds none of them."""
+    start = max(date(year, 1, 1), INDEX_STARTS.get(name, date(year, 1, 1)))
+    end = min(date(year, 12, 31), today)
+    return (start, end) if start <= end else None
+
+
+def latest_tri_raw(folder: Path, name: str, year: int) -> Path | None:
+    """The kept answer for `year` that reaches furthest (its last day ends the name)."""
+    files = folder.glob(f"{name.replace(' ', '_')}_{year}????_{year}????.json")
+    return max(files, key=lambda p: p.stem.rsplit("_", 1)[-1], default=None)
+
+
+def _tri_closes(data: bytes) -> dict[date, Decimal] | None:
+    points = parse_tri_json(data, NIFTY_500_TRI)
+    return None if points is None else {p.day: Decimal(p.row.close) for p in points}
+
+
+def fetch_tri_raw(
+    folder: Path, post: Poster, pacer: Pacer, years: Iterable[int], today: date
+) -> dict[int, str]:
+    """Ask niftyindices for each year's `NIFTY_500_TRI` (`tri_raw_range`) and keep the answer
+    untouched under `folder`. Per year: "saved"; "kept" (a file with the same closes was there:
+    each answer carries its own request number); "changed" (one with other closes is kept under
+    the name, and stays); "failed" (no answer, or one that is no series: nothing kept)."""
+    status: dict[int, str] = {}
+    for year in years:
+        days = tri_raw_range(NIFTY_500_TRI, year, today)
+        if days is None:
+            continue
+        pacer.wait()
+        result = post(TRI_URL, tri_request(TRI_INDICES[NIFTY_500_TRI], *days))
+        if result.status != "ok" or parse_tri_json(result.data, NIFTY_500_TRI) is None:
+            status[year] = "failed"
+            continue
+        path = folder / tri_raw_name(NIFTY_500_TRI, *days)
+        try:  # create-only: a file another fetch kept first is never replaced
+            status[year] = "saved" if keep_once(path, result.data) else "kept"
+        except StoreError:
+            same = _tri_closes(path.read_bytes()) == _tri_closes(result.data)
+            status[year] = "kept" if same else "changed"
+    return status
+
+
+@dataclass
+class TriCheck:
+    compared: int = 0
+    mismatched: list[tuple[date, Decimal, Decimal]] = field(default_factory=list)  # stored, raw
+    not_in_raw: list[date] = field(default_factory=list)  # stored, absent from the raw files
+    not_stored: list[date] = field(default_factory=list)  # in the raw files, absent from the store
+    no_file: list[int] = field(default_factory=list)  # years with no kept answer
+
+    @property
+    def clean(self) -> bool:
+        return not (self.mismatched or self.not_in_raw or self.not_stored or self.no_file)
+
+
+def compare_tri(
+    stored: Mapping[date, Decimal], raw: Mapping[date, Decimal], start: date, end: date
+) -> TriCheck:
+    """Every stored close in [start, end] against the raw close of the same day (exact decimal
+    equality), and the raw days in the range the store lacks."""
+    check = TriCheck()
+    for day in sorted(d for d in stored if start <= d <= end):
+        if day not in raw:
+            check.not_in_raw.append(day)
+            continue
+        check.compared += 1
+        if stored[day] != raw[day]:
+            check.mismatched.append((day, stored[day], raw[day]))
+    check.not_stored = sorted(d for d in raw if start <= d <= end and d not in stored)
+    return check
+
+
+def verify_tri(store: DataStore, folder: Path, start: date, end: date, today: date) -> TriCheck:
+    """Compare the stored `NIFTY_500_TRI` closes in [start, end] with the kept raw answers
+    (`latest_tri_raw` per year). Reads only."""
+    stored: dict[date, Decimal] = {}
+    for day in store.days(DATASET_INDEX):
+        if start <= day <= end:
+            for row in store.read_index(day):
+                if row.index_name == NIFTY_500_TRI:
+                    stored[day] = Decimal(row.close)
+    raw: dict[date, Decimal] = {}
+    no_file = []
+    for year in range(start.year, end.year + 1):
+        if tri_raw_range(NIFTY_500_TRI, year, today) is None:
+            continue
+        path = latest_tri_raw(folder, NIFTY_500_TRI, year)
+        points = parse_tri_json(path.read_bytes(), NIFTY_500_TRI) if path is not None else None
+        if points is None:
+            no_file.append(year)
+            continue
+        raw.update((p.day, Decimal(p.row.close)) for p in points)
+    check = compare_tri(stored, raw, start, end)
+    check.no_file = no_file
+    return check
+
+
+def _print_tri_check(
+    check: TriCheck, fetched: Mapping[int, str], start: date, end: date
+) -> None:  # pragma: no cover - output
+    out = sys.stdout
+    out.write(f"verify-tri {NIFTY_500_TRI} {start}..{end}\n")
+    for year, status in sorted(fetched.items()):
+        out.write(f"  fetch {year}: {status}\n")
+    out.write(
+        f"compared {check.compared}, mismatched {len(check.mismatched)}, "
+        f"stored not in raw {len(check.not_in_raw)}, raw not stored {len(check.not_stored)}, "
+        f"years without a raw file {len(check.no_file)}\n"
+    )
+    for day, stored, raw in check.mismatched[:40]:
+        out.write(f"  mismatch {day} stored {stored} raw {raw}\n")
+    for label, days in (
+        ("stored not in raw", check.not_in_raw),
+        ("raw not stored", check.not_stored),
+    ):
+        if days:
+            out.write(f"  {label} ({len(days)}): {', '.join(str(d) for d in days[:40])}\n")
+    if check.no_file:
+        out.write(f"  no raw file: {', '.join(str(y) for y in check.no_file)}\n")
+
+
 def _print_backfill(report: BackfillReport, apply: bool) -> None:  # pragma: no cover - output
     out = sys.stdout
     out.write(f"index backfill ({'applied' if apply else 'dry run'})\n")
+    if not report.missing:
+        out.write("no bar day lacks an index row\n")
     for name, days in report.missing.items():
         found = sorted(report.found.get(name, []), key=lambda p: p.day)
         out.write(f"{name}: missing {len(days)}, found {len(found)}")
@@ -561,8 +737,21 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
     fill = commands.add_parser("backfill", help="fill the bar days an index has no row for")
     fill.add_argument("--from", dest="start", type=date.fromisoformat, default=date(2011, 1, 1))
     fill.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
-    fill.add_argument("--interval", type=float, default=2.0, help="seconds between requests")
     fill.add_argument("--apply", action="store_true")
+    night = commands.add_parser("nightly-tri", help="the nightly ingest's TRI step for one day")
+    night.add_argument("--day", type=date.fromisoformat, required=True)
+    night.add_argument("--apply", action="store_true")
+    check = commands.add_parser("verify-tri", help="the stored TRI against niftyindices' files")
+    check.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
+    check.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
+    check.add_argument("--fetch", action="store_true", help="first keep each year's answer")
+    for sub in (fill, night, check):
+        sub.add_argument(
+            "--interval",
+            type=float,
+            default=NIFTY_INDICES_INTERVAL,
+            help="seconds between requests",
+        )
     args = parser.parse_args(argv)
     from ..settings import operator_settings
     from .bhavcopy import http_fetcher
@@ -571,12 +760,24 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
     settings = operator_settings()
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     pacer = Pacer(min_interval=args.interval)
-    archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
     post = http_poster()
-    tri = NiftyIndicesSource(post, pacer, TRI_URL, TRI_INDICES, parse_tri_json)
+    if args.command == "nightly-tri":
+        report = nightly_tri(store, tri_source(post, pacer), args.day, apply=args.apply)
+        _print_backfill(report, args.apply)
+        return 1 if report.failed or report.left else 0
+    if args.command == "verify-tri":
+        folder = store.root / TRI_RAW_DIR
+        today = date.today()
+        years = range(args.start.year, args.end.year + 1)
+        fetched = fetch_tri_raw(folder, post, pacer, years, today) if args.fetch else {}
+        result = verify_tri(store, folder, args.start, args.end, today)
+        _print_tri_check(result, fetched, args.start, args.end)
+        return 0 if result.clean and set(fetched.values()) <= {"saved", "kept"} else 1
+    archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
     history = NiftyIndicesSource(post, pacer, HISTORY_URL, HISTORY_INDICES, parse_history_json)
     end = args.end or date.today()
-    report = backfill(store, (archive, tri, history), args.start, end, apply=args.apply)
+    sources = (archive, tri_source(post, pacer), history)
+    report = backfill(store, sources, args.start, end, apply=args.apply)
     _print_backfill(report, args.apply)
     return 1 if report.failed or report.left else 0
 

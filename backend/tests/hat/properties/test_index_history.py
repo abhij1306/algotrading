@@ -9,6 +9,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from app.hat.data.bhavcopy import FetchResult
 from app.hat.data.index_history import (
     INDEX_ARCHIVE_URL,
@@ -16,13 +18,17 @@ from app.hat.data.index_history import (
     NIFTY_500,
     NIFTY_500_TRI,
     ArchiveIndexSource,
+    compare_tri,
+    fetch_tri_raw,
+    latest_tri_raw,
     parse_history_json,
     parse_index_archive_csv,
     parse_tri_json,
+    tri_raw_range,
     tri_request,
 )
 from app.hat.data.pacing import Pacer
-from app.hat.data.store import DataStore
+from app.hat.data.store import DataStore, StoreError, keep_once
 
 DAY = date(2013, 10, 9)
 CSV = (
@@ -111,3 +117,77 @@ def test_a_day_neither_has_stays_missing(tmp_path: Path) -> None:
     assert source.not_found == [DAY]
     assert source.errors == []
     assert source.absent[NIFTY_500] == {DAY}
+
+
+def test_compare_tri_reports_each_kind_of_difference() -> None:
+    d1, d2, d3, d4 = (date(2026, 10, d) for d in (20, 21, 22, 23))
+    stored = {d1: Decimal("100.10"), d2: Decimal("101.0000"), d3: Decimal("102"), DAY: Decimal(1)}
+    raw = {d1: Decimal("100.1"), d2: Decimal("101.01"), d4: Decimal("103")}
+    check = compare_tri(stored, raw, d1, d4)
+    assert check.compared == 2
+    assert check.mismatched == [(d2, Decimal("101.0000"), Decimal("101.01"))]
+    assert check.not_in_raw == [d3]
+    assert check.not_stored == [d4]
+    assert not check.clean
+
+
+def test_tri_raw_range_is_the_year_from_the_index_start_to_today() -> None:
+    today = date(2026, 10, 26)
+    assert tri_raw_range(NIFTY_500_TRI, 2012, today) == (date(2012, 2, 21), date(2012, 12, 31))
+    assert tri_raw_range(NIFTY_500_TRI, 2026, today) == (date(2026, 1, 1), today)
+    assert tri_raw_range(NIFTY_500_TRI, 2011, today) is None
+    assert tri_raw_range(NIFTY_500_TRI, 2027, today) is None
+
+
+def test_fetch_tri_raw_keeps_each_answer_once(tmp_path: Path) -> None:
+    """A new answer is saved, the same one is kept, a different one never replaces the file, an
+    answer that is no series is not kept; the latest kept answer of a year is the one read."""
+    row = '{"RequestNumber": "%s", "Date": "02 Jan 2025", "TotalReturnsIndex": "%s"}'
+    answers = [
+        f"[{row % ('a', '100.5')}]".encode(),
+        f"[{row % ('b', '100.50')}]".encode(),  # another request number, the same close
+        f"[{row % ('c', '100.6')}]".encode(),
+        b"<html>",
+        b"[]",
+    ]
+    asked: list[bytes] = []
+
+    def post(_url: str, body: bytes) -> FetchResult:
+        asked.append(body)
+        return FetchResult("ok", answers[len(asked) - 1])
+
+    def fetch(year: int, today: date) -> str:
+        return fetch_tri_raw(tmp_path, post, Pacer(), [year], today)[year]
+
+    assert [fetch(2025, date(2026, 1, 5)) for _ in range(4)] == [
+        "saved",
+        "kept",
+        "changed",
+        "failed",
+    ]
+    assert fetch(2026, date(2026, 1, 5)) == "saved"
+    assert [p.name for p in sorted(tmp_path.iterdir())] == [
+        "NIFTY_500_TRI_20250101_20251231.json",
+        "NIFTY_500_TRI_20260101_20260105.json",
+    ]
+    assert (tmp_path / "NIFTY_500_TRI_20250101_20251231.json").read_bytes() == answers[0]
+    (tmp_path / "NIFTY_500_TRI_20260101_20260301.json").write_bytes(b"[]")
+    latest = latest_tri_raw(tmp_path, NIFTY_500_TRI, 2026)
+    assert latest is not None
+    assert latest.name == "NIFTY_500_TRI_20260101_20260301.json"
+    assert latest_tri_raw(tmp_path, NIFTY_500_TRI, 2024) is None
+
+
+def test_keep_once_never_replaces_a_file_that_appeared_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two fetches racing for one raw name: the one that finds the name taken only after its own
+    check (`exists` said no) still cannot overwrite the first's file."""
+    path = tmp_path / "NIFTY_500_TRI_20250101_20251231.json"
+    path.write_bytes(b"first")
+    monkeypatch.setattr(Path, "exists", lambda _self: False)
+    with pytest.raises(StoreError):
+        keep_once(path, b"second")
+    assert path.read_bytes() == b"first"
+    assert keep_once(path, b"first") is False
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]

@@ -75,7 +75,7 @@ from ..risk.kill_ops import sync_health
 from ..time import IST, as_utc, utc_now
 from .market import official_closes, scan_inputs
 from .nightly_ca import CaAdjust
-from .nightly_deps import NightlyDeps, TextSources, mcp_client, next_session
+from .nightly_deps import NightlyDeps, TextSources, mcp_client, next_session, nightly_tri_source
 
 __all__ = [
     "BANDS_NIGHTLY",
@@ -245,6 +245,7 @@ class Nightly:
                 clock=deps.clock,
                 sleep=deps.sleep,
                 fallback=lambda d: nightly_ingest.bhavcopy_day(deps.store, deps.bhavcopy(), d),
+                tri=nightly_tri_source(deps),
                 notifier=deps.notifier,
             ),
             day,
