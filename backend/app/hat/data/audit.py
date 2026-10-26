@@ -32,7 +32,9 @@ The checks (each a pure function of plain inputs; `gather` reads them):
 
 A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot, window
 and golden file (`cache_key`), so the variants of a sweep, and later runs on the same data, read it
-instead of recomputing it. A run refuses to start on `fail` (`backtest_data_audit_failed`).
+instead of recomputing it. A run refuses to start on `fail` (`backtest_data_audit_failed`). The
+owner explains a `warn` once, beside it, as `<digest>.explained.md` (`explanation_of`); the run
+audit and the review read it.
 """
 
 from __future__ import annotations
@@ -709,6 +711,15 @@ def cache_key(
 
 def audits_dir(root: Path) -> Path:
     return root / "backtests" / "data_audits"
+
+
+def explanation_of(root: Path, digest: object) -> Path | None:
+    """The owner's explanation of a data audit's warnings, written once per audit digest as
+    `data_audits/<digest>.explained.md` (one line per finding); None when there is none."""
+    if not isinstance(digest, str) or not digest.isalnum():
+        return None
+    path = audits_dir(root) / f"{digest}.explained.md"
+    return path if path.is_file() else None
 
 
 def read_cached(root: Path, key: str) -> dict[str, Any] | None:

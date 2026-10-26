@@ -23,7 +23,9 @@ The checks:
   positions held: with none held it fails, and beyond `BAND_PCT` of the value held it warns.
 - `refusals`: `refusals.csv` counted by reason equals `run.json`'s `refusals`.
 - `trials`: `dsr_n_trials` present (DSR is meaningless without it).
-- `data`: the run's data audit status (`data.audit`).
+- `data`: the run's data audit status (`data.audit`); a warning names the data audit's checks
+  that did not pass and the owner's explanation of that audit digest, if there is one
+  (`data_audits/<digest>.explained.md`).
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from ..money import exact
@@ -462,16 +465,32 @@ def check_trials(run: Mapping[str, Any]) -> dict[str, Any]:
     return _check("trials", {"dsr_n_trials": trials, "dsr_prob": metrics.get("dsr_prob")}, findings)
 
 
-def check_data(run: Mapping[str, Any]) -> dict[str, Any]:
+def check_data(
+    run: Mapping[str, Any],
+    data_audit: Mapping[str, Any] | None = None,
+    explained: str | None = None,
+) -> dict[str, Any]:
+    """The run's data audit status; a warning or failure names the data audit's checks that did
+    not pass (from `data_audit`, the audit document) and `explained`, the path of the owner's
+    explanation of that digest (None: there is none)."""
     audit = (run.get("data") or {}).get("audit") or {}
     status = audit.get("status")
     findings = []
     if status is None:
         findings.append(_finding("no_data_audit", FAIL, []))
     elif status != PASS:
+        checks = [
+            c.get("name")
+            for c in (data_audit or {}).get("checks") or []
+            if isinstance(c, Mapping) and c.get("status") != PASS
+        ]
         findings.append(
             _finding(
-                f"data_audit_{status}", WARN if status == WARN else FAIL, [audit.get("digest")]
+                f"data_audit_{status}",
+                WARN if status == WARN else FAIL,
+                [audit.get("digest")],
+                checks=checks,
+                explained=explained,
             )
         )
     return _check("data", {"status": status, "digest": audit.get("digest")}, findings)
@@ -482,10 +501,14 @@ def audit_run(
     csvs: Mapping[str, str],
     bars: Mapping[tuple[str, date], tuple[Decimal, Decimal]],
     slippage_bps: Decimal,
+    *,
+    data_audit: Mapping[str, Any] | None = None,
+    explained: Path | None = None,
 ) -> dict[str, Any]:
     """`audit.json` of a completed run: its `run.json` document, its CSV files by name, the
-    (low, high) of each (instrument id, date) it filled on, on the price basis it fills on, and
-    its slippage in bps. The digest is sha256 of the rest of the document."""
+    (low, high) of each (instrument id, date) it filled on, on the price basis it fills on, its
+    slippage in bps, and its data audit with the owner's explanation of it (`check_data`). The
+    digest is sha256 of the rest of the document."""
     trades = _trades(_rows(csvs.get("trades")))
     checks = [
         check_binding(run),
@@ -498,7 +521,7 @@ def audit_run(
         check_equity_jumps(run, _rows(csvs.get("equity"))),
         check_refusals(run, _rows(csvs.get("refusals"))),
         check_trials(run),
-        check_data(run),
+        check_data(run, data_audit, None if explained is None else str(explained)),
     ]
     body = {
         "audit_version": AUDIT_VERSION,

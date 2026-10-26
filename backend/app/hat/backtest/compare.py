@@ -37,6 +37,7 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("sharpe", "metrics", "sharpe"),
     ("DSR", "metrics", "dsr_prob"),
     ("trials", "metrics", "dsr_n_trials"),
+    ("N_eff", "metrics", "dsr_n_trials_effective"),
     ("PBO", "metrics", "pbo"),
     ("top5%", "metrics", "top5_trades_pnl_share_pct"),
     ("cost%", "metrics", "cost_share_pct"),

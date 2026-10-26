@@ -1,7 +1,7 @@
-# Backtest Result Standard v1.2
+# Backtest Result Standard v1.3
 
-Sections 1 to 6 and the rules are v1.0; the sections v1.1 changes and v1.2 changes amend them, a
-later one winning where they differ. `format_version` is `1.2` (`run.schema.json`,
+Sections 1 to 6 and the rules are v1.0; the sections v1.1, v1.2 and v1.3 changes amend them, a
+later one winning where they differ. `format_version` is `1.3` (`run.schema.json`,
 `example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
@@ -334,3 +334,28 @@ null); `config` adds `risk_policy_version` and `base_risk_policy_version` (the b
 without one). Each is optional in `run.schema.json`. A hold-out made with `--rerun <id> --split
 hold_out` records `asked.hold_out_of` and the candidate's `config.overrides`.
 
+---
+
+## v1.3 changes
+
+**Trials.** `trials.json` (registry version 2) keys trials by family: strategy, universe and
+window (`S1/NIFTY500_PIT/2016-01-01..2021-12-31`). `dsr_n_trials` is the number of distinct
+`resolved_hash` values among the family's completed in-sample runs, this run's included, plus
+the family's prior trials: variants tried before the registry saw them, seeded from their sweep
+files (`python -m app.hat.backtest.trials seed`), each counted without a Sharpe ratio. A
+hold-out run counts the family of the run it validates and adds none. A reset of the run folders
+never deletes the registry.
+
+**metrics.**
+- Added `dsr_n_trials_effective`: the trial count the DSR was scored at, `dsr_n_trials` floored
+  at 5 (the trial-Sharpe variance is likewise floored at 0.25/252, an annualised spread of 0.5).
+  Both floors only deflate more.
+- `pbo` reads the family's completed in-sample runs on the run's universe and window; null with
+  fewer than 4 distinct variants (with 2 or 3, CSCV's rank is a coin toss).
+- `avg_hold_sessions_win`, `avg_hold_sessions_loss`, `by_exit_reason.*.avg_hold_sessions`,
+  `stocks.csv` `avg_hold_sessions` and `trades.csv` `hold_sessions` count the run's sessions after
+  the entry up to the exit (a leg's own exit for `hold_sessions`), not calendar days.
+
+**audit.json.** The `data` check's finding names the data audit's checks that did not pass
+(`checks`) and the owner's explanation of that audit digest (`explained`: the path of
+`backtests/data_audits/<digest>.explained.md`, null without one).

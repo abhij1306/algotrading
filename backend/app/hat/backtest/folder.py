@@ -45,6 +45,7 @@ from .standard import (
     leg_shares,
     max_consecutive_losses,
     refusal_code,
+    sessions_held,
     sharpe,
     sortino,
     top_share_pct,
@@ -332,6 +333,7 @@ class RunInputs:
     base_trades: Sequence[tuple[str, date, date]] | None = None
     dsr_prob: float | None = None
     dsr_n_trials: int | None = None
+    dsr_n_trials_effective: int | None = None  # the trial count the DSR's floor scored it at
     pbo: float | None = None  # the family's probability of backtest overfitting (None: unscored)
     rf_pct: float = 0.0
 
@@ -357,7 +359,7 @@ def _bucket(trades: Sequence[_Trade]) -> dict[str, Any]:
         "trades": len(trades),
         "win_pct": _f(sum(1 for r in rs if r > 0) / len(rs) * 100) if rs else None,
         "expectancy_r": _f(_mean(rs)),
-        "avg_hold_sessions": _f(_mean([t.row.holding_days for t in trades])),
+        "avg_hold_sessions": _f(_mean([t.hold for t in trades])),
         "net_pnl": _money(sum((t.row.realized_pnl for t in trades), _ZERO)),
     }
 
@@ -380,6 +382,7 @@ class _Trade:
     signal: SignalRow | None
     exit: str
     features: Mapping[str, Any]
+    hold: int  # sessions from the entry to the last sale (`standard.sessions_held`)
 
 
 def _closes_on(closes: Sequence[tuple[date, Decimal]]) -> dict[date, Decimal]:
@@ -430,8 +433,9 @@ def _yearly(
     return out
 
 
-def _trades(result: BacktestResult) -> list[_Trade]:
-    """The closed trades in entry order, numbered from 1, each with the signal it entered on."""
+def _trades(result: BacktestResult, days: Sequence[date]) -> list[_Trade]:
+    """The closed trades in entry order, numbered from 1, each with the signal it entered on and
+    its hold in the run's sessions `days`."""
     signals = {(s.instrument_id, s.trade_date): s for s in result.signals if s.qty > 0}
     rows = sorted(result.trades, key=lambda t: (t.entry_date, t.instrument_id, t.exit_date))
     out = []
@@ -444,6 +448,7 @@ def _trades(result: BacktestResult) -> list[_Trade]:
                 signal,
                 exit_code(row.exit_reason, row.initial_stop, row.final_stop, row.rules_fired),
                 {} if signal is None else signal.features,
+                sessions_held(days, row.entry_date, row.exit_date),
             )
         )
     return out
@@ -492,7 +497,9 @@ def _legs_of(row: TradeRow) -> tuple[LegRow, ...]:
     return (LegRow(row.exit_date, row.qty, price, _ZERO, row.exit_reason),)
 
 
-def _trade_rows(run_id: str, trades: Sequence[_Trade]) -> list[dict[str, Any]]:
+def _trade_rows(
+    run_id: str, trades: Sequence[_Trade], days: Sequence[date]
+) -> list[dict[str, Any]]:
     """One row per leg (a sale) of each trade, numbered from 1 under the trade's `trade_id`:
     its shares, exit, and its share of the trade's P&L, fees and R (`leg_shares`); the trade's
     entry, risk and features on every leg."""
@@ -536,7 +543,7 @@ def _trade_rows(run_id: str, trades: Sequence[_Trade]) -> list[dict[str, Any]]:
                     "exit_reason": t.exit
                     if last
                     else exit_code(leg.rule, row.initial_stop, row.final_stop, row.rules_fired),
-                    "hold_sessions": max(0, (leg.day - row.entry_date).days),
+                    "hold_sessions": sessions_held(days, row.entry_date, leg.day),
                     "gross_pnl": share.gross,
                     "fees": share.fees,
                     "net_pnl": share.net,
@@ -635,6 +642,7 @@ def _metrics(
         "longest_dd_end": None if dd.longest_end is None else dd.longest_end.isoformat(),
         "dsr_prob": _f(inputs.dsr_prob, 6),
         "dsr_n_trials": inputs.dsr_n_trials,
+        "dsr_n_trials_effective": inputs.dsr_n_trials_effective,
         "pbo": _f(inputs.pbo, 6),
         "total_return_pct": _f((final / start - 1) * 100) if start > 0 else None,
         "final_equity": _money(final),
@@ -643,8 +651,8 @@ def _metrics(
         "benchmark_cagr_pct": _f(cagr_pct(bench_end, bench_start, days))
         if bench_start and bench_end
         else None,
-        "avg_hold_sessions_win": _f(_mean([t.row.holding_days for t in wins])),
-        "avg_hold_sessions_loss": _f(_mean([t.row.holding_days for t in losses])),
+        "avg_hold_sessions_win": _f(_mean([t.hold for t in wins])),
+        "avg_hold_sessions_loss": _f(_mean([t.hold for t in losses])),
         "max_consecutive_losses": max_consecutive_losses(rs),
         "symbols_traded": len(by_symbol),
         "top5_trades_pnl_share_pct": _f(top_share_pct(top5, 5, net)),
@@ -719,7 +727,7 @@ def _stock_rows(signals: Sequence[SignalRow], trades: Sequence[_Trade]) -> list[
                 "best_trade_r": max(rs) if rs else None,
                 "worst_trade_r": min(rs) if rs else None,
                 "stopouts": sum(1 for t in mine if t.exit == "initial_stop"),
-                "avg_hold_sessions": _f(_mean([t.row.holding_days for t in mine])),
+                "avg_hold_sessions": _f(_mean([t.hold for t in mine])),
                 "first_trade": min((t.row.entry_date for t in mine), default=None),
                 "last_trade": max((t.row.entry_date for t in mine), default=None),
             }
@@ -738,7 +746,8 @@ def build(
         for n, s in enumerate(signals)
         if s.qty == 0
     }
-    trades = _trades(result)
+    days = [s.day for s in result.sessions]
+    trades = _trades(result, days)
     trade_of = {(t.row.instrument_id, t.row.entry_date): t.trade_id for t in trades}
     signal_rows, refusal_rows = _signal_rows(signals, codes, trade_of)
     keys = [
@@ -780,7 +789,7 @@ def build(
         },
     }
     csvs = {
-        "trades": _csv(TRADE_COLUMNS, _trade_rows(run_id, trades)),
+        "trades": _csv(TRADE_COLUMNS, _trade_rows(run_id, trades, days)),
         "equity": _csv(EQUITY_COLUMNS, _equity_rows(result, inputs.start_capital, bench)),
         "refusals": _csv(REFUSAL_COLUMNS, refusal_rows),
         "signals": _csv(SIGNAL_COLUMNS, signal_rows),

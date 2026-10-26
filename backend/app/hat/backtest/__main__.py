@@ -132,6 +132,7 @@ def _outcome_json(outcome: RunOutcome) -> dict[str, Any]:  # pragma: no cover - 
         "expectancy_r": metrics.get("expectancy_r"),
         "dsr": metrics.get("dsr_prob"),
         "dsr_n_trials": metrics.get("dsr_n_trials"),
+        "dsr_n_trials_effective": metrics.get("dsr_n_trials_effective"),
         "pbo": metrics.get("pbo"),
     }
 

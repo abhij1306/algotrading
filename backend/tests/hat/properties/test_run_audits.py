@@ -279,6 +279,11 @@ def test_run_audit_refusals_trials_binding_and_data() -> None:
     assert _codes(checks["trials"]) == {"no_trial_count": 1}
     assert _codes(checks["binding"]) == {"no_op": 1}
     assert _codes(checks["data"]) == {"data_audit_warn": 1}
+    data_audit = {
+        "checks": [{"name": "golden", "status": "pass"}, {"name": "calendar", "status": "warn"}]
+    }
+    named = run_audit.check_data(run, data_audit, "x.explained.md")["findings"][0]
+    assert (named["checks"], named["explained"]) == (["calendar"], "x.explained.md")
 
 
 def test_equity_jumps_need_positions() -> None:
@@ -358,13 +363,25 @@ def test_review_refuses_a_missing_criteria_file(tmp_path: Path) -> None:
     run_id = "01a17359-fe35-7207-abe4-fe26eae939bf"
     out = tmp_path / "backtests" / "runs" / run_id
     out.mkdir(parents=True)
-    (out / "run.json").write_text(json.dumps(_run()), encoding="utf-8")
+    run = _run()
+    run["identity"].update(strategy="S1", run_id=run_id)
+    (out / "run.json").write_text(json.dumps(run), encoding="utf-8")
     with pytest.raises(ValueError, match="review_criteria_missing"):
-        review.write_request(tmp_path, run_id, tmp_path / "no-such-notes.md")
+        review.write_review(tmp_path, run_id, tmp_path / "no-such-notes.md")
+    notes = tmp_path / "notes.md"
+    notes.write_text("no block", encoding="utf-8")
+    with pytest.raises(ValueError, match="criteria_block_missing"):
+        review.write_review(tmp_path, run_id, notes)
     assert not (out / review.REQUEST).exists()
-    criteria = tmp_path / "notes.md"
-    criteria.write_text("criteria", encoding="utf-8")
-    assert str(criteria) in review.write_request(tmp_path, run_id, criteria).read_text()
+    notes.write_text(
+        "# S1\n```hat-criteria\nstrategy: S1\nuniverse: U\n"
+        "in_sample: {from: 2024-01-01, to: 2024-01-31}\ntrial_budget: 30\n"
+        "checks: {trades_min: 100}\n```\n",
+        encoding="utf-8",
+    )
+    text = review.write_review(tmp_path, run_id, notes).read_text()
+    assert review.CRITERIA_MD in text
+    assert "**fail**" in (out / review.CRITERIA_MD).read_text()  # 3 trades, and no plateau
 
 
 def test_compare_row() -> None:

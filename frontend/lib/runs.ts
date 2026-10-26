@@ -1,5 +1,5 @@
 /**
- * Backtest runs in the Result Standard v1.2 (docs/backtests/result-standard.md): the run.json shape and
+ * Backtest runs in the Result Standard v1.3 (docs/backtests/result-standard.md): the run.json shape and
  * the pure shaping the Backtests pages draw from (deltas, grouping, sorting, CSV parsing and the
  * summaries of the run's CSV files). Units follow the standard: % as 0 to 100, R as a multiple,
  * money in rupees.
@@ -76,6 +76,7 @@ export type Metrics = {
   longest_dd_end?: string | null;
   dsr_prob: Num;
   dsr_n_trials: Num;
+  dsr_n_trials_effective?: Num;
   pbo: Num;
   total_return_pct: Num;
   final_equity: Num;

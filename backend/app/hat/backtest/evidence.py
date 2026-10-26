@@ -17,7 +17,7 @@ universe, flagged for promotion (PR 62, O5) and run under the cooldown in force 
 order, fill rule, regime rule, ...), so the flag alone says the run sized and filled as live.
 
 The deflated Sharpe probability depends on the family's trial count N and the variance V of its
-trial Sharpe ratios (the strategy's trial registry, `trials`), which grow after a run is
+trial Sharpe ratios (the run's family in the trial registry, `trials`), which grow after a run is
 recorded. A run's stored DSR is the value at its completion; the evidence is recomputed from the
 run's return moments at the family's current N and V (`run_dsr`), so an old run never passes the
 gate on a stale count, always through the family floors of `dsr.family_deflated_sharpe`.
@@ -245,6 +245,7 @@ class EvidenceRun:
     run_id: str
     strategy: str
     resolved_hash: str | None
+    trial_family: str | None  # its key in the trial registry (`trials.family_of`)
     strategy_id: uuid.UUID | None
     strategy_version_id: uuid.UUID | None
     universe_id: uuid.UUID | None
@@ -368,10 +369,13 @@ def _read_evidence(root: Path, run_id: str, run: Mapping[str, Any]) -> EvidenceR
     if doc is None or doc.get("run_id") != run_id:
         return None
     strategy, resolved = doc.get("strategy"), doc.get("resolved_hash")
+    validates = (run.get("data") or {}).get("validates_run_id")
+    validated = run_files.read_run(root, validates) if isinstance(validates, str) else None
     return EvidenceRun(
         run_id=run_id,
         strategy=strategy if isinstance(strategy, str) else "",
         resolved_hash=resolved if isinstance(resolved, str) else None,
+        trial_family=trials.family_of(run, validated),
         strategy_id=_uuid(doc.get("strategy_id")),
         strategy_version_id=_uuid(doc.get("strategy_version_id")),
         universe_id=_uuid(doc.get("universe_id")),
@@ -466,12 +470,14 @@ def evidence_run(
 
 
 def run_dsr(root: Path, run: EvidenceRun) -> tuple[Deflated, int, float]:
-    """A completed run's deflated Sharpe probability now, with its strategy's trial count in the
-    registry (`trials`, the run's own counted once) and the variance of their Sharpe ratios,
-    through the family floors (`family_deflated_sharpe`)."""
+    """A completed run's deflated Sharpe probability now, with its trial family's count in the
+    registry (`trials`, the run's own counted once; a run that names no family counts only
+    itself) and the variance of their Sharpe ratios, through the family floors
+    (`family_deflated_sharpe`)."""
     stats = run.metrics.returns
     own = None if run.resolved_hash is None else (run.resolved_hash, stats and stats.sr)
-    count, sharpes = trials.family(trials.read_registry(root), run.strategy, own)
+    registry = {} if run.trial_family is None else trials.read_registry(root)
+    count, sharpes = trials.family(registry, run.trial_family or "", own)
     variance = trial_variance(sharpes)
     return family_deflated_sharpe(stats, count, variance), count, variance
 
