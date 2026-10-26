@@ -150,6 +150,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   broker's 5-minute history (five years, the NIFTY 500 members of 2026-10-23) through
   `bars5m_import`. Precedence: a stored (instrument, day) is kept; the import fills only the
   days the store lacks (missing, or refused by the minute download), so it overwrites nothing.
+  It keeps only days the store can vouch for: it refuses to run while a stored day is off the
+  raw daily bar (`bars5m_repair` first).
   The history labels a bar by its end through 2022-01-21 and by its start after; rows outside
   `[09:15, 15:30)` (flat pre-open rows, a post-close placeholder) are dropped, as the live
   builder drops those prints, and zero-volume rows are kept (`REJECT_RULES` has no such rule). It
