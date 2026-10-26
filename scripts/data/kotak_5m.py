@@ -201,9 +201,11 @@ def _load_state(path: Path, empty: dict[str, Any]) -> dict[str, Any]:
 
 
 def _save_state(path: Path, state: Mapping[str, Any]) -> None:
+    # path is a fixed <work>/state.json name, never taken from the content (a taint-analysis
+    # false positive)
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state))
-    os.replace(tmp, path)  # NOSONAR: path is <work>/state.json, never taken from the content
+    tmp.write_text(json.dumps(state))  # NOSONAR
+    os.replace(tmp, path)  # NOSONAR
 
 
 # ---------------------------------------------------------------------------------------------

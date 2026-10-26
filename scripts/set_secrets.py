@@ -140,7 +140,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = p.parse_args(argv)
     Handler.env_file = args.env.resolve()
     print(f"Open {HOST}:{args.port} in the browser on this machine's desktop", flush=True)
-    HTTPServer((HOST, args.port), Handler).serve_forever()
+    # plain HTTP on the loopback interface only: the form never leaves this machine
+    HTTPServer((HOST, args.port), Handler).serve_forever()  # NOSONAR
     return 0
 
 
