@@ -76,6 +76,7 @@ def test_extras_are_drift_unless_allowed_or_pg_ddl_owned() -> None:
         MODEL,
         ddl_indexes={"hat_order_signal": "hat_order"},
         ddl_constraints={"hat_order_guard": "hat_order"},
+        allowed_tables=frozenset({"hat_isin_merge"}),
     )
     assert drift == [
         "-- table hat_stray is in the database, not in the models",
@@ -93,3 +94,19 @@ def test_pg_ddl_objects_names_its_indexes_and_constraints() -> None:
     indexes, constraints = pg_ddl_objects()
     assert indexes["hat_event_bot_type"] == "hat_event"
     assert constraints["hat_symbol_history_no_overlap"] == "hat_instrument_symbol_history"
+
+
+def test_a_table_the_storage_split_moved_out_is_drift_in_hat_live() -> None:
+    # the owner dropped them (2026-10-26): a recreated config, backtest or state table is drift
+    shape = live()
+    for table in ("hat_bot", "hat_backtest_run", "hat_position"):
+        shape[table] = {"columns": {}, "constraints": {}, "indexes": {}}
+    shape["hat_order"]["constraints"]["hat_order_bot_id_fkey"] = (
+        "FOREIGN KEY (bot_id) REFERENCES hat_bot(id)"
+    )
+    assert schema_drift(shape, MODEL) == [
+        "-- table hat_backtest_run is in the database, not in the models",
+        "-- table hat_bot is in the database, not in the models",
+        "-- table hat_position is in the database, not in the models",
+        "-- constraint hat_order_bot_id_fkey on hat_order is in the database, not in the models",
+    ]

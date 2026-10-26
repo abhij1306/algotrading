@@ -2,14 +2,15 @@
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import hat_db_builders as b
 import hat_db_rules as rules
 import pytest
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, MetaData, text
 
 from app import database
-from app.base import Base
+from app.base import Base, StateBase
 from app.database import init_db
 from app.hat.configs.records import RiskPolicyVersion
 from app.hat.configs.unit import RUNS_ROOT, STORE
@@ -22,13 +23,16 @@ pytestmark = pytest.mark.postgres
 def test_migration__ensure_idempotent(pg_engine: Engine, monkeypatch: pytest.MonkeyPatch) -> None:
     # The policy upkeep `init_db` runs reads and writes the check's config store, never a file.
     monkeypatch.setitem(database.HatSessionLocal.kw, "info", {STORE: b.STORE, RUNS_ROOT: None})
-    # Both databases are this one test database: hat_state's drift probe would see hat_live's
-    # tables as extra, so only hat_live's (which allows hat_state's tables) runs.
+    # Both databases are this one test database: it is probed once, against both databases'
+    # models together (each database's own probe would see the other's tables as extra).
+    both = MetaData()
+    for table in (*Base.metadata.sorted_tables, *StateBase.metadata.sorted_tables):
+        table.to_metadata(both)
     drift = database.check_schema_drift
     monkeypatch.setattr(
         database,
         "check_schema_drift",
-        lambda bind, base: drift(bind, base) if base is Base else None,
+        lambda bind, base: drift(bind, SimpleNamespace(metadata=both)) if base is Base else None,
     )
     # The Postgres-only DDL of both databases, repeated.
     rules.check_migration__ensure_idempotent(pg_engine, rules.ensure_both_schemas)
