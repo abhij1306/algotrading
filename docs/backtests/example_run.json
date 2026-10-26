@@ -1,0 +1,119 @@
+{
+  "format_version": "1.1",
+  "identity": {
+    "run_id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
+    "strategy": "S1",
+    "strategy_version": "aac4fda7-0c1e-4b6f-9d2a-5e8f7a6b3c21",
+    "engine_commit": "2c8d3c48e1f0",
+    "sweep_id": "sweep-07",
+    "sweep_name": "policy v3 on np",
+    "variant": "v3-np",
+    "base_run_id": "019a2b3c-1a2b-7c3d-9e4f-5a6b7c8d9e0f",
+    "change": "np under policy v3",
+    "created_at": null,
+    "status": "complete",
+    "error": null,
+    "for_promotion": false
+  },
+  "data": {
+    "universe": "NIFTY500_PIT",
+    "data_snapshot_id": null,
+    "split": "in_sample",
+    "validates_run_id": null,
+    "period_start": "2016-01-01",
+    "period_end": "2021-12-31",
+    "benchmark": "NIFTY500_TRI"
+  },
+  "config": {
+    "overrides": {
+      "risk_policy": "v3"
+    },
+    "resolved": {
+      "setup": {
+        "vcp_contractions": [
+          2,
+          6
+        ]
+      },
+      "exits": {
+        "time_stop": false,
+        "sma50_close_exit": true,
+        "swing_low_trail_days": 20,
+        "partial_exit": false
+      },
+      "risk": {
+        "risk_pct": 1.0,
+        "max_positions": 10,
+        "open_risk_pct": 10,
+        "industry_cap": null,
+        "ladder": [
+          6,
+          8,
+          10
+        ],
+        "ladder_step_down_after_losses": 2,
+        "kill_pct": 20,
+        "weight": 1.0
+      }
+    },
+    "resolved_hash": null,
+    "cost_model": "dated-delivery",
+    "start_capital": 1000000,
+    "rf_pct": 0
+  },
+  "metrics": {
+    "trades": 144,
+    "signals": 328,
+    "win_pct": 28.5,
+    "avg_win_r": 3.13,
+    "avg_loss_r": -0.71,
+    "expectancy_r": 0.383,
+    "avg_mfe_r": 2.16,
+    "avg_mae_r": null,
+    "cagr_pct": 9.4,
+    "max_dd_pct": 16.51,
+    "mar": 0.57,
+    "sharpe": 0.89,
+    "sortino": null,
+    "invested_pct": 33.7,
+    "avg_open_positions": null,
+    "longest_dd_sessions": 739,
+    "longest_dd_recovered": null,
+    "longest_dd_start": null,
+    "longest_dd_end": null,
+    "dsr_prob": 0.334618,
+    "dsr_n_trials": null,
+    "total_return_pct": 69.9,
+    "final_equity": 1698874,
+    "fees": 61556,
+    "cost_share_pct": 8.1,
+    "benchmark_cagr_pct": null,
+    "avg_hold_sessions_win": null,
+    "avg_hold_sessions_loss": null,
+    "max_consecutive_losses": null,
+    "symbols_traded": null,
+    "top5_trades_pnl_share_pct": null,
+    "top10_symbols_pnl_share_pct": null,
+    "cagr_ex_top5_trades_pct": null,
+    "max_position_pct_adv": null,
+    "trades_over_5pct_adv": null,
+    "avg_dd_pct": 6.1
+  },
+  "refusals": {
+    "max_positions": 142,
+    "size_zero_cash": 42
+  },
+  "binding": {
+    "trades_changed": null,
+    "trade_list_hash": null,
+    "no_op": null
+  },
+  "breakdowns": {
+    "by_year": [],
+    "by_regime": {},
+    "by_exit_reason": {},
+    "by_industry": {},
+    "by_cap_bucket": {},
+    "by_liquidity_bucket": {}
+  }
+}

@@ -225,6 +225,12 @@ def trade_rows(
             .join(HatOrder, HatOrder.id == HatFill.order_id)
             .where(HatOrder.signal_id == signal.id, HatOrder.purpose == "entry")
         )
+        sold = session.execute(
+            select(HatFill.qty, HatFill.price)
+            .join(HatOrder, HatOrder.id == HatFill.order_id)
+            .where(HatOrder.signal_id == signal.id, HatOrder.side == "sell")
+        ).all()
+        shares = sum(q for q, _ in sold)
         rows.append(
             TradeRow(
                 entry_date=signal.trade_date,
@@ -245,6 +251,12 @@ def trade_rows(
                 strategy_version_id=signal.strategy_version_id,
                 risk_policy_version_id=signal.risk_policy_version_id,
                 score=scores.get((signal.playbook, str(signal.instrument_id), signal.trade_date)),
+                # the mean sale price over every leg, the stop when it closed, the rules fired
+                exit_price=sum((q * Decimal(p) for q, p in sold), Decimal(0)) / shares
+                if shares
+                else None,
+                final_stop=Decimal(position.current_stop),
+                rules_fired=tuple(position.rules_fired or ()),
             )
         )
     rows.sort(key=lambda t: (t.exit_date, t.entry_date, t.instrument_id, t.playbook))

@@ -66,6 +66,7 @@ from ..models import (
     HatIndexMembership,
     HatIndustry,
     HatInstrument,
+    HatInstrumentSymbolHistory,
     HatUniverseVersion,
 )
 from ..money import exact
@@ -195,6 +196,21 @@ class MarketData:
     # Each member's ISIN, by instrument id, so the ledger's instruments are classed as live's are
     # (decisions.md "Stocks only", `watchlist._tradable_members`).
     isins: Mapping[str, str] = field(default_factory=dict)
+    # For the run's result files (`folder`), not the day loop: each member's symbols as
+    # (valid_from, symbol) oldest first (`hat_instrument_symbol_history`, else its one symbol),
+    # and its listing date.
+    symbols: Mapping[str, Sequence[tuple[date, str]]] = field(default_factory=dict)
+    listed_on: Mapping[str, date] = field(default_factory=dict)
+
+
+def symbol_on(data: MarketData, instrument_id: str, day: date) -> str:
+    """The instrument's symbol on `day`: the last one that took effect by then (its first one
+    before any), the id itself without one."""
+    found = data.symbols.get(instrument_id, ())
+    at = bisect_right([d for d, _ in found], day)
+    if not found:
+        return instrument_id
+    return found[max(0, at - 1)][1]
 
 
 def classifications(data: MarketData, instrument_id: str) -> list[tuple[date, str]]:
@@ -785,6 +801,28 @@ def _isins(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, str]
     }
 
 
+def _symbols(
+    session: Session, instruments: Iterable[uuid.UUID]
+) -> tuple[dict[str, list[tuple[date, str]]], dict[str, date]]:
+    """Each instrument's dated symbols (`MarketData.symbols`) and its listing date."""
+    wanted = set(instruments)
+    found: dict[str, list[tuple[date, str]]] = defaultdict(list)
+    for row in session.scalars(select(HatInstrumentSymbolHistory)):
+        if row.instrument_id in wanted:
+            found[str(row.instrument_id)].append((row.valid_from, row.symbol))
+    listed: dict[str, date] = {}
+    for row in session.execute(
+        select(HatInstrument.id, HatInstrument.symbol, HatInstrument.listed_on)
+    ):
+        if row.id not in wanted:
+            continue
+        if str(row.id) not in found:
+            found[str(row.id)].append((date.min, row.symbol))
+        if row.listed_on is not None:
+            listed[str(row.id)] = row.listed_on
+    return {k: sorted(v) for k, v in found.items()}, listed
+
+
 def _delisted(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, date]:
     wanted = set(instruments)
     return {
@@ -975,18 +1013,19 @@ def load_market(
     start: date,
     end: date,
     regime_inputs: bool = False,
-    breadth_gate: bool = False,
 ) -> tuple[MarketData, dict[str, Any]]:
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
-    read, for `hat_backtest_run.data_snapshot`). Raises `BacktestError` when the store has no
+    read, for `run.json` `data.data_snapshot_id` and `--rerun`). Raises `BacktestError` when the
+    store has no
     session in the period or no features, and `backtest_features_stale` when the features were
     not written for the stored corporate actions (the nightly job's digest) from the bars the
     store holds now, or a session of the window has none: the loop would read prices adjusted
     one way and features computed another, or miss a night's scan, which the nightly job never
     does. With `regime_inputs` it also reads the regime engine's index and VIX closes
     and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
-    of one of them (PR 68); with `breadth_gate` it reads the window's breadth too (a session
-    without one turns that night's gate off, as live)."""
+    of one of them (PR 68). The window's breadth is always read: a breadth regime gate reads it
+    (a session without one turns that night's gate off, as live) and the run's result files
+    record it (`folder`)."""
     read = store.fingerprints(DATASET_BARS)  # the bars about to be read, for the features gate
     every_day = sorted(read)
     days = [d for d in every_day if d <= end]
@@ -1015,8 +1054,8 @@ def load_market(
             _DIVIDENDS_SQL, [window[0], end, wanted]
         ).fetchall():
             dividends[str(instrument_id)].append((ex_date, Decimal(amount) * Decimal(basis)))
-        # NIFTY 500 and its TRI always: the run's report splits trades by the one's regime and
-        # charts against the other (`report_data`)
+        # NIFTY 500 and its TRI always: the run folder splits trades by the one's regime and
+        # benchmarks against the other (`folder`)
         names = sorted(
             {
                 index,
@@ -1031,7 +1070,7 @@ def load_market(
         store,
         expected,
         days[max(0, first - 1) :],
-        window if regime_inputs or breadth_gate else [],
+        window,  # every run's result files read the breadth (`folder`)
         wanted,
         read,
     )
@@ -1065,6 +1104,7 @@ def load_market(
     exits = demerger_exits(_demerger_rows(session), adjustment.lineage, every_day, window[0], end)
     exits = frozenset((i, d) for i, d in exits if i in wanted)
     versions_sha, versions = versions_digest(session)
+    symbols, listed_on = _symbols(session, instruments)
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -1080,6 +1120,8 @@ def load_market(
         dividends=dict(dividends),
         demerger_exits=exits,
         isins=_isins(session, instruments),
+        symbols=symbols,
+        listed_on=listed_on,
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -1089,10 +1131,9 @@ def load_market(
         "features": features.height,
         "index": index,
         "index_points": len(closes),
-        **({"breadth_points": len(breadth)} if breadth_gate else {}),
+        "breadth_points": len(breadth),
         **(
             {
-                "breadth_points": len(breadth),
                 "regime_index_points": len(index_closes[regime.INDEX_NAME]),
                 "vix_points": len(index_closes[regime.VIX_NAME]),
             }

@@ -7,7 +7,6 @@
  * the version is sent.
  */
 import type { components } from "@/lib/api/schema";
-import { asText } from "@/lib/backtests";
 
 type Schemas = components["schemas"];
 export type VersionOption = Schemas["BacktestVersionOption"];
@@ -280,4 +279,11 @@ export function startBody(version: VersionOption | undefined, form: StartForm): 
       variants,
     },
   };
+}
+
+/** A JSON value as text: strings as they are, numbers and booleans printed, the rest as JSON. */
+export function asText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value) ?? "";
 }

@@ -1,8 +1,9 @@
 """The backtest command line: `python -m app.hat.backtest --bot <id> --from YYYY-MM-DD --to
-YYYY-MM-DD [...]` backtests a sleeve over the Parquet store and records the run (`runs`);
-`--strategy-version <id> --universe <id or name>` in place of `--bot` is a research run with no
-bot. With `--variants FILE` it runs a sweep of variants over one load of the market
-(`runs.sweep_bot`)."""
+YYYY-MM-DD [...]` backtests a sleeve over the Parquet store and publishes the run's folder
+(`runs`, `folder`); `--strategy-version <id> --universe <id or name>` in place of `--bot` is a
+research run with no bot. With `--variants FILE` it runs a sweep of variants over one load of
+the market (`runs.sweep_bot`); `--rerun <run_id>` runs a run's `config.json` again
+(`runs.rerun`). It reads the database in a read-only transaction: no backtest writes to it."""
 
 from __future__ import annotations
 
@@ -10,12 +11,13 @@ import argparse
 import json
 import sys
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 from typing import Any, TextIO
 
 import yaml
+from sqlalchemy import text
 
 from app.database import db_session_scope
 
@@ -32,7 +34,17 @@ from .fills import (
     SUSPENSION_SESSIONS,
 )
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
-from .runs import RunRequest, SweepOutcome, backtest_bot, parse_variants, sweep_bot
+from .runs import (
+    IN_SAMPLE,
+    SPLITS,
+    Labels,
+    RunOutcome,
+    RunRequest,
+    backtest_bot,
+    parse_variants,
+    rerun,
+    sweep_bot,
+)
 from .slots import SLOT_ORDER_TIME, is_slot_order
 from .spec import REGIME_MULT_ONE, REGIME_MULT_RULES, BacktestError, RunConventions
 
@@ -92,18 +104,17 @@ def _variants_doc(file: TextIO) -> object:  # pragma: no cover - the command lin
             raise BacktestError("backtest_sweep_bad_variants") from None
 
 
-def _outcome_json(outcome: SweepOutcome) -> dict[str, Any]:  # pragma: no cover - the database
-    run = outcome.run
-    metrics = {} if run is None else run.metrics
+def _outcome_json(outcome: RunOutcome) -> dict[str, Any]:  # pragma: no cover - the database
+    metrics = (outcome.run or {}).get("metrics") or {}
     return {
         "label": outcome.label,
-        "run_id": None if run is None else str(run.id),
-        "status": "refused" if run is None else run.status,
+        "run_id": outcome.run_id,
+        "status": outcome.status,
         "code": outcome.code,
         "trades": metrics.get("trades"),
         "expectancy_r": metrics.get("expectancy_r"),
-        "dsr": (metrics.get("dsr") or {}).get("prob"),
-        "pbo": (metrics.get("pbo") or {}).get("prob"),
+        "dsr": metrics.get("dsr_prob"),
+        "dsr_n_trials": metrics.get("dsr_n_trials"),
     }
 
 
@@ -115,31 +126,39 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
     [--regime-mult 1|policy] [--for-promotion] [--set PATH=VALUE ...] [--risk-pct P]
     [--max-positions N] [--max-per-industry N] [--flat-ladder] [--policy FILE]
-    [--set-policy PATH=VALUE ...] [--variants FILE]
+    [--set-policy PATH=VALUE ...] [--split in_sample|hold_out] [--validates RUN_ID]
+    [--sweep-id ID] [--sweep-name NAME] [--variant LABEL] [--base RUN_ID] [--change TEXT]
+    [--variants FILE]
+    python -m app.hat.backtest --rerun RUN_ID
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
     mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
-    Parquet store under `HAT_DATA_ROOT`, records the run as a trial of its family and writes
-    `backtests/run_id=<id>/trades.parquet`. Prints the run id, status, trade count and DSR.
-    The slippage defaults to 20 bps; `--for-promotion` marks a run `publish_version` may take as
-    a version's evidence, and is refused at a slippage of 0 (PR 62). A capped day's slots go in
-    the estimated trigger order (`--slot-order time`, PR 63). `--ambiguous pessimistic` fills
-    a raised stop the day's low reached; a bar-less position is marked down after
+    Parquet store under `HAT_DATA_ROOT`, and publishes `backtests/runs/<run_id>/` (`folder`).
+    Prints the run id, status, trade count and DSR. The database is read in a read-only
+    transaction. The slippage defaults to 20 bps; `--for-promotion` marks a run under the
+    conventions live trades by, and is refused at a slippage of 0 (PR 62). A capped day's slots
+    go in the estimated trigger order (`--slot-order time`, PR 63). `--ambiguous pessimistic`
+    fills a raised stop the day's low reached; a bar-less position is marked down after
     `--suspension-sessions` sessions (PR 64). Entries are sized from the sleeve's nightly
     allocation at `--sleeve-weight` (the policy's base weight by default; a research run of a
     sleeve the policy gives no weight sizes at `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime
     rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
     `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
     `--flat-ladder` override the version's config and the policy for this run only
-    (`overrides`), recorded in its conventions; a promotion run takes none. `--policy FILE`
-    (YAML or JSON, e.g. from `python -m app.hat.admin show-policy`) sizes the run under that
-    whole candidate policy instead of the version in force, and `--set-policy` (repeatable) sets
-    one policy field by its dotted path; the other policy overrides apply on top. `--variants FILE`
-    (YAML or JSON, `runs.parse_variants`) runs each variant over one load of the market, on top
-    of the options given here, and prints one line per variant as it finishes; a file argparse
-    cannot open is a usage error, one that does not parse is refused
-    (`backtest_sweep_bad_variants`).
+    (`overrides`); a promotion run takes none. `--policy FILE` (YAML or JSON, e.g. from
+    `python -m app.hat.admin show-policy`) sizes the run under that whole candidate policy
+    instead of the version in force, and `--set-policy` (repeatable) sets one policy field by
+    its dotted path; the other policy overrides apply on top. `--split hold_out` needs
+    `--validates`, the in-sample run it validates. `--sweep-id`, `--sweep-name`, `--variant`,
+    `--base` (a run id) and `--change` label a single run as a sweep's file labels its
+    variants. `--variants FILE` (YAML or JSON, `runs.parse_variants`) runs each variant over one
+    load of the market, on top of the options given here, and prints one line per variant as it
+    finishes; a file argparse cannot open is a usage error, one that does not parse is refused
+    (`backtest_sweep_bad_variants`). `--rerun RUN_ID` takes nothing else.
     """
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    if args_list[:1] == ["--rerun"]:
+        return _rerun(args_list)
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
     parser.add_argument("--bot", type=uuid.UUID, default=None)
     parser.add_argument("--universe", default=None)
@@ -165,14 +184,20 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument(
         "--set-policy", dest="policy_sets", type=_policy_set_arg, action="append", default=[]
     )
+    parser.add_argument("--split", choices=SPLITS, default=IN_SAMPLE)
+    parser.add_argument("--validates", default=None)
+    parser.add_argument("--sweep-id", default=None)
+    parser.add_argument("--sweep-name", default=None)
+    parser.add_argument("--variant", default=None)
+    parser.add_argument("--base", default=None)
+    parser.add_argument("--change", default=None)
     parser.add_argument("--variants", type=argparse.FileType("r", encoding="utf-8"), default=None)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(args_list)
     settings = operator_settings()
     refused: str | None = None
     summary: dict[str, Any] = {}
-    # A refusal is caught inside the session, so a run the engine refused commits as a failed
-    # trial of its family instead of rolling back with the error.
     with db_session_scope() as session:
+        session.execute(text("SET TRANSACTION READ ONLY"))  # a backtest writes no row
         try:
             request = RunRequest(
                 bot_id=args.bot,
@@ -201,34 +226,64 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                         policy_sets=tuple(args.policy_sets),
                     ),
                 ),
+                labels=Labels(
+                    sweep_id=args.sweep_id,
+                    sweep_name=args.sweep_name,
+                    variant=args.variant,
+                    base=args.base,
+                    change=args.change,
+                    split=args.split,
+                    validates=args.validates,
+                ),
+                args=tuple(args_list),
             )
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
             if args.variants is not None:
-                variants = parse_variants(_variants_doc(args.variants), request.conventions)
+                sweep = parse_variants(_variants_doc(args.variants), request.conventions)
 
-                def after(outcome: SweepOutcome) -> None:
-                    session.commit()
+                def after(outcome: RunOutcome) -> None:
                     sys.stdout.write(json.dumps(_outcome_json(outcome)) + "\n")
                     sys.stdout.flush()
 
-                sweep_bot(session, store, request, variants, root=settings.data_root, after=after)
+                sweep_bot(session, store, request, sweep, root=settings.data_root, after=after)
                 return 0
-            run = backtest_bot(session, store, request, root=settings.data_root)
+            outcome = backtest_bot(session, store, request, root=settings.data_root)
         except BacktestError as exc:
             refused = exc.code
         else:
-            summary = {
-                "run_id": str(run.id),
-                "status": run.status,
-                "family_key": run.family_key,
-                "trades": run.metrics.get("trades"),
-                "expectancy_r": run.metrics.get("expectancy_r"),
-                "dsr": run.metrics.get("dsr"),
-            }
+            summary = _outcome_json(outcome)
+    return _report(refused, summary)
+
+
+def _rerun(argv: Sequence[str]) -> int:  # pragma: no cover - needs the database
+    """`--rerun RUN_ID`: the run's `config.json` again (`runs.rerun`)."""
+    parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
+    parser.add_argument("--rerun", required=True)
+    args = parser.parse_args(argv)
+    settings = operator_settings()
+    refused: str | None = None
+    summary: dict[str, Any] = {}
+    with db_session_scope() as session:
+        session.execute(text("SET TRANSACTION READ ONLY"))  # a backtest writes no row
+        try:
+            store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+            outcome = rerun(session, store, args.rerun, root=settings.data_root, args=argv)
+        except BacktestError as exc:
+            refused = exc.code
+        else:
+            summary = _outcome_json(outcome)
+    return _report(refused, summary)
+
+
+def _report(refused: str | None, summary: Mapping[str, Any]) -> int:  # pragma: no cover
+    """Print the refusal (exit 2) or the run's summary (exit 0; a failed run exits 2 too)."""
     if refused is not None:
         sys.stderr.write(f"backtest refused: {refused}\n")
         return 2
     sys.stdout.write(json.dumps(summary, indent=2) + "\n")
+    if summary.get("status") != "complete":
+        sys.stderr.write(f"backtest refused: {summary.get('code')}\n")
+        return 2
     return 0
 
 

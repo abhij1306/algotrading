@@ -1,9 +1,8 @@
 """What a backtest run reports (HAT-BT-032, HAT-BT-040..042): its rows (watchlists, signals,
-fills, trades), its metrics and its `trades.parquet`."""
+fills, trades, sessions) and its metrics; `folder` writes them as the run's result files."""
 
 from __future__ import annotations
 
-import io
 import math
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
@@ -13,8 +12,6 @@ from decimal import Decimal
 from typing import Any
 
 import polars as pl
-import pyarrow as pa
-import pyarrow.parquet as pq
 
 from ..confighash import config_hash
 from ..data.demerger_notice import CLOSE_REASON
@@ -28,16 +25,15 @@ __all__ = [
     "DELISTED",
     "DEMERGER",
     "END_OF_PERIOD",
-    "TRADE_SCHEMA",
     "BacktestResult",
     "FillRow",
+    "SessionRow",
     "SignalRow",
     "TradeRow",
     "WatchRow",
     "auction_risk_summary",
     "compute_metrics",
     "flag_auction_risk",
-    "trades_parquet",
 ]
 
 # The exit reasons the loop itself closes a position with.
@@ -70,6 +66,22 @@ class SignalRow:
     strategy_version_id: uuid.UUID
     risk_policy_version_id: uuid.UUID
     allocation: Allocation | None = None  # the night's allocation the entry was sized from
+    # What the result files report of it (`folder`): the planned entry, the book when it fired
+    # (ladder level, open positions and their open risk, the last close's equity), the
+    # strategy's regime gate that day and the market breadth of the night before, its stock
+    # and setup features (`signal_features`), and for a refusal the R it would have reached
+    # (`standard.fwd_r`, set when the run ends).
+    entry_price: Decimal | None = None
+    scan_date: date | None = None  # the night the watchlist row was scanned
+    ladder_level: str | None = None
+    open_positions: int | None = None
+    open_risk: Decimal | None = None
+    equity: Decimal | None = None
+    regime_on: bool | None = None
+    breadth_pct: Decimal | None = None
+    features: Mapping[str, Any] = field(default_factory=dict)
+    fwd_r_20d: Decimal | None = None
+    fwd_r_60d: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +120,27 @@ class TradeRow:
     # `qty` is in price-basis shares, adjusted for every later split and bonus; the whole real
     # shares it was on the entry day (`data.real_shares`), None without a bar to read it from
     qty_real: int | None = None
+    mfe_date: date | None = None  # the session of the highest high between entry and exit
+    exit_price: Decimal | None = None  # the mean sale price over the trade's legs
+    final_stop: Decimal | None = None  # the stop when it closed
+    rules_fired: tuple[str, ...] = ()  # the exit rule ids that acted on it (`index:rule`)
+
+
+@dataclass(frozen=True)
+class SessionRow:
+    """One session's close of the account: its mark, cash and positions' value, the open
+    positions and their open risk ((entry - stop) x shares, none below 0), the ladder level,
+    the regime gate the session traded under and the breadth of the night before."""
+
+    day: date
+    equity: Decimal
+    cash: Decimal
+    position_value: Decimal
+    open_positions: int
+    open_risk: Decimal
+    ladder_level: str
+    regime_on: bool | None
+    breadth_pct: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -123,6 +156,7 @@ class BacktestResult:
     # allocation each trade date's entries were sized from (None: the night had none)
     invested: tuple[Decimal, ...] = ()
     allocations: Mapping[date, Allocation | None] = field(default_factory=dict)
+    sessions: tuple[SessionRow, ...] = ()
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:
@@ -190,8 +224,8 @@ def compute_metrics(
         under, and `invested_share` is the mean of `invested`, the positions' share of each
         session's mark (PR 68, HAT-BT-014). Besides: the triggers that never became a signal
     (`skips`), the signals and their rejections by reason, and the ambiguous and lower-circuit days
-    the path rules counted (HAT-BT-021, PR 64). The one writer of a run's metrics but for what
-    `runs.complete_run` adds; `evidence.RunMetrics` reads the facts a gate needs."""
+    the path rules counted (HAT-BT-021, PR 64). `folder.build` turns them into
+    the run's files; `evidence.RunMetrics` reads the facts a gate needs."""
     rs = [t.r_multiple for t in trades_]
     count = len(rs)
     wins = [r for r in rs if r > 0]
@@ -306,53 +340,3 @@ def forced_exits(trades_: Sequence[TradeRow], reason: str) -> dict[str, Any]:
         "net_pnl": str(sum((t.realized_pnl for t in closed), _ZERO)),
         "sum_r": _ratio(sum((t.r_multiple for t in closed), _ZERO)),
     }
-
-
-# --- trades.parquet ---------------------------------------------------------------------------
-
-_MONEY = pa.decimal128(18, 4)
-_R = pa.decimal128(18, 6)
-TRADE_SCHEMA = pa.schema(
-    [
-        ("entry_date", pa.date32()),
-        ("exit_date", pa.date32()),
-        ("playbook", pa.string()),
-        ("instrument_id", pa.string()),
-        ("qty", pa.int64()),
-        ("entry_price", _MONEY),
-        ("initial_stop", _MONEY),
-        ("exit_reason", pa.string()),
-        ("realized_pnl", _MONEY),
-        ("fees", _MONEY),
-        ("dividends", _MONEY),  # already in realized_pnl and r_multiple (R-DIV)
-        ("r_multiple", _R),
-        ("mfe_r", _R),
-        ("mae_r", _R),
-        ("holding_days", pa.int64()),
-        ("strategy_version_id", pa.string()),
-        ("risk_policy_version_id", pa.string()),
-        # the watchlist score (PR 65, N10): a float of the scorer, null without a watchlist row
-        ("score", pa.float64()),
-        # `fo_expiry`/`index_rebalance` for an exit priced at that day's auction close, else null
-        ("auction_risk", pa.string()),
-        # the entry's whole real shares on its day; `qty` is in today's price-basis shares
-        ("qty_real", pa.int64()),
-    ]
-)
-
-
-def trades_parquet(trades_: Sequence[TradeRow]) -> bytes:
-    """The run's `trades.parquet`, one row per closed trade in exit order (HAT-BT-032)."""
-    rows = [
-        {
-            **{name: getattr(t, name) for name in TRADE_SCHEMA.names},
-            "strategy_version_id": str(t.strategy_version_id),
-            "risk_policy_version_id": str(t.risk_policy_version_id),
-            "score": None if t.score is None else float(t.score),
-        }
-        for t in trades_
-    ]
-    table = pa.Table.from_pylist(rows, schema=TRADE_SCHEMA)
-    buffer = io.BytesIO()
-    pq.write_table(table, buffer)
-    return buffer.getvalue()

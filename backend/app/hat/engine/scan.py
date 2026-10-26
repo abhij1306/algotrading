@@ -19,6 +19,7 @@ the bot was opened on (`ScanInputs.used_pivots`). A setup is named by its pivot'
 
 from __future__ import annotations
 
+import math
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -93,6 +94,34 @@ class ScanResult:
     evaluated: int  # members with a bar on `as_of`, which were evaluated
 
 
+def _json_extras(extras: Mapping[str, Any]) -> dict[str, Any]:
+    """A criterion's extras as stored JSON: numbers, text, booleans and lists or mappings of
+    them (a Decimal as its text); anything else, or a value holding a float that is not
+    finite, is left out."""
+
+    def plain(value: object) -> tuple[bool, object]:
+        if isinstance(value, float):
+            return math.isfinite(value), value
+        if value is None or isinstance(value, (bool, int, str)):
+            return True, value
+        if isinstance(value, Decimal):
+            return True, str(value)
+        if isinstance(value, (list, tuple)):
+            items = [plain(v) for v in value]
+            return all(ok for ok, _ in items), [v for _, v in items]
+        if isinstance(value, Mapping):
+            pairs = {str(k): plain(v) for k, v in value.items()}
+            return all(ok for ok, _ in pairs.values()), {k: v for k, (_, v) in pairs.items()}
+        return False, None
+
+    out: dict[str, Any] = {}
+    for key, value in extras.items():
+        ok, found = plain(value)
+        if ok:
+            out[str(key)] = found
+    return out
+
+
 def _stage_json(stage: StageOutcome) -> dict[str, Any]:
     return {
         "stage": stage.stage,
@@ -108,6 +137,9 @@ def _stage_json(stage: StageOutcome) -> dict[str, Any]:
                 "score": o.result.score,
                 "value": o.result.value,
                 "reason": o.result.reason,
+                # the measured shape (a VCP's contractions and base start), which a backtest's
+                # result files report per signal (`backtest.folder`)
+                **({"extras": _json_extras(o.result.extras)} if o.result.extras else {}),
             }
             for o in stage.outcomes
         ],

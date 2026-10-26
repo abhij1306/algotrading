@@ -92,9 +92,16 @@ def test_comparable_leaves_out() -> None:
 
 
 def test_columns_to_read() -> None:
-    trade = ["playbook", "instrument_id", "entry_date", "entry_price", "r_multiple", "exit_reason"]
-    assert columns_to_read([*trade, "score", "fees"]) == [*trade, "score"]
-    assert columns_to_read(trade) == trade  # a run before PR 65 has no score column
+    trade = [
+        "playbook",
+        "instrument_id",
+        "entry_date",
+        "entry_price",
+        "r_net",
+        "engine_exit_reason",
+        "setup_score",
+    ]
+    assert columns_to_read([*trade, "fees", "symbol"]) == trade
     with pytest.raises(GapError) as refused:
         columns_to_read(trade[1:])
     assert refused.value.code == "gap_no_trades_file"

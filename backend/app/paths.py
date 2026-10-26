@@ -22,3 +22,7 @@ DATA_ROOT = PROJECT_ROOT / "data_system"
 # Hire a Trader (HAT): Parquet bars, raw bhavcopy zips and backtest outputs. Gitignored.
 # HAT_DATA_ROOT overrides it (HAT-OVR-052); an empty value means the default.
 HAT_DATA_ROOT = Path(os.environ.get("HAT_DATA_ROOT", "").strip() or DATA_ROOT / "hat")
+
+# The Backtest Result Standard's JSON schema, which every run's run.json is validated against
+# before its folder is published (docs/backtests/result-standard.md; the image copies it).
+BACKTEST_SCHEMA = PROJECT_ROOT / "docs" / "backtests" / "run.schema.json"

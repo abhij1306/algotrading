@@ -16,27 +16,31 @@ is the run's, not the setup's.
 
 Only shadow trades (a virtual position of a `shadow` signal) of the run's strategy version are
 read; real trades and the veto trades of skipped confirm signals are not paper.
+
+The run is read from its folder (`folder`): `run.json` for its status, `config.json` for its
+strategy, universe, period, strategy config and known gaps, `trades.csv` for its trades (keyed
+by `playbook`, `instrument_id` and `entry_date`, compared on `engine_exit_reason` and
+`setup_score`, the watchlist score to 4 places).
 """
 
 from __future__ import annotations
 
+import csv
+import io
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-import pyarrow as pa
-import pyarrow.parquet as pq
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..errors import HatError
 from ..models import (
-    HatBacktestRun,
     HatBot,
     HatPosition,
     HatSignal,
@@ -44,21 +48,22 @@ from ..models import (
     HatWatchlistEntry,
 )
 from ..money import NotExactError, require_exact
-from .evidence import (
-    COMPLETED,
-    RunMetrics,
-    family_key,
-    run_playbooks,
-    unbacktested,
-    universe_of,
-)
+from . import folder
+from .evidence import RunMetrics, config_playbooks, unbacktested, universe_of
 from .report import END_OF_PERIOD
-from .runs import trades_path
 
 _PLACES = Decimal("0.000001")
+_SCORE_PLACES = Decimal("0.0001")  # `trades.csv` holds the score to 4 places
 _BPS = Decimal(10000)
-_COLUMNS = ("playbook", "instrument_id", "entry_date", "entry_price", "r_multiple", "exit_reason")
-_SCORE = "score"  # a run before PR 65 wrote no score column
+_COLUMNS = (
+    "playbook",
+    "instrument_id",
+    "entry_date",
+    "entry_price",
+    "r_net",
+    "engine_exit_reason",
+    "setup_score",
+)
 
 Key = tuple[str, str, date]  # (playbook, instrument id, entry date)
 
@@ -134,7 +139,9 @@ def _mean(values: Iterable[Decimal]) -> str | None:
 
 
 def _same_score(a: Decimal | None, b: Decimal | None) -> bool:
-    return a is not None and b is not None and a.quantize(_PLACES) == b.quantize(_PLACES)
+    return (
+        a is not None and b is not None and a.quantize(_SCORE_PLACES) == b.quantize(_SCORE_PLACES)
+    )
 
 
 def compare(shadow: Sequence[Leg], proxy: Sequence[Leg]) -> GapReport:
@@ -248,70 +255,90 @@ def shadow_legs(
 
 
 def columns_to_read(names: Collection[str]) -> list[str]:
-    """The `trades.parquet` columns the comparison reads: the trade's, and its score when the
-    file has one (a run before PR 65 has none, and its trades have no score). A file without a
-    trade column is refused."""
+    """The `trades.csv` columns the comparison reads; a file without one of them is refused."""
     if not set(_COLUMNS) <= set(names):
         raise GapError("gap_no_trades_file")
-    return [*_COLUMNS, _SCORE] if _SCORE in names else list(_COLUMNS)
+    return list(_COLUMNS)
 
 
-def proxy_legs(root: Path, run_id: uuid.UUID, start: date, end: date) -> list[Leg]:
-    """The run's trades (`trades.parquet`) entered from `start` to `end`."""
-    path = trades_path(root, run_id)
+def _cell(row: Mapping[str, str], name: str) -> Decimal | None:
+    text = row[name]
+    return None if text == "" else require_exact(text, name)
+
+
+def proxy_legs(root: Path, run_id: str, start: date, end: date) -> list[Leg]:
+    """The run's trades (`trades.csv`) entered from `start` to `end`."""
+    text = folder.read_csv(root, run_id, "trades")
+    if text is None:
+        raise GapError("gap_no_trades_file")
+    reader = csv.DictReader(io.StringIO(text))
+    columns_to_read(reader.fieldnames or ())
+    legs = []
     try:
-        columns = columns_to_read(pq.read_schema(path).names)
-        table = pq.read_table(
-            path,
-            columns=columns,
-            filters=[("entry_date", ">=", start), ("entry_date", "<=", end)],
-        )
-    except (OSError, pa.ArrowException):
-        raise GapError("gap_no_trades_file") from None
-    try:
-        return [
-            Leg(
-                playbook=row["playbook"],
-                instrument_id=row["instrument_id"],
-                entry_date=row["entry_date"],
-                entry_price=require_exact(row["entry_price"], "entry_price"),
-                r_multiple=require_exact(row["r_multiple"], "r_multiple"),
-                exit_reason=row["exit_reason"],
-                # the scorer's float (`TRADE_SCHEMA`); null without a watchlist row
-                score=None
-                if row.get("score") is None
-                else require_exact(row["score"], "score", floats=True),
+        for row in reader:
+            day = date.fromisoformat(row["entry_date"])
+            entry, r = _cell(row, "entry_price"), _cell(row, "r_net")
+            if not start <= day <= end:
+                continue
+            if entry is None or r is None:  # a trade the file cannot price is no trade
+                raise GapError("gap_no_trades_file")
+            legs.append(
+                Leg(
+                    playbook=row["playbook"],
+                    instrument_id=row["instrument_id"],
+                    entry_date=day,
+                    entry_price=entry,
+                    r_multiple=r,
+                    exit_reason=row["engine_exit_reason"],
+                    score=_cell(row, "setup_score"),  # empty without a watchlist row
+                )
             )
-            for row in table.to_pylist()
-        ]
-    except NotExactError:  # a trade the file cannot price is no trade to compare
+    except (ArithmeticError, ValueError, NotExactError):
         raise GapError("gap_no_trades_file") from None
+    return legs
 
 
 def shadow_gap(
     session: Session,
     bot: HatBot,
-    run: HatBacktestRun,
+    run_id: str,
     *,
     root: Path,
     start: date | None = None,
     end: date | None = None,
 ) -> GapReport:
-    """The gap between `bot`'s shadow trades and `run`'s trades entered in the window (the run's
-    period by default, never beyond it), without the playbooks the run cannot have and the
+    """The gap between `bot`'s shadow trades and the run's trades entered in the window (the
+    run's period by default, never beyond it), without the playbooks the run cannot have and the
     trades it closed at the end of its period. The run must be a completed run of the bot's
     strategy on its universe."""
-    if run.status != COMPLETED:
+    run, config = folder.read_run(root, run_id), folder.read_config(root, run_id)
+    if run is None or config is None:
+        raise GapError("gap_unknown_run")
+    if run.get("identity", {}).get("status") != folder.COMPLETE:
         raise GapError("gap_run_not_completed")
     universe_id = universe_of(session, bot)
-    if universe_id is None or run.family_key != family_key(bot.strategy_id, universe_id):
+    try:
+        same = universe_id is not None and (
+            uuid.UUID(config["strategy_id"]),
+            uuid.UUID(config["universe"]["universe_id"]),
+        ) == (bot.strategy_id, universe_id)
+        version_id = uuid.UUID(config["strategy_version_id"])
+        period = (
+            date.fromisoformat(config["period"]["start"]),
+            date.fromisoformat(config["period"]["end"]),
+        )
+        playbooks = config_playbooks(config["strategy_config"])
+    except (KeyError, TypeError, ValueError):
+        raise GapError("gap_unknown_run") from None
+    if not same:
         raise GapError("gap_run_not_of_bot")
-    first, last = window(run.period_start, run.period_end, start, end)
+    first, last = window(*period, start, end)
+    gaps = RunMetrics.from_json({"known_gaps": config.get("known_gaps")})
     return compare(
         *comparable(
-            shadow_legs(session, bot.id, run.strategy_version_id, first, last),
-            proxy_legs(root, run.id, first, last),
-            unbacktested(RunMetrics.from_json(run.metrics), run_playbooks(session, run)),
+            shadow_legs(session, bot.id, version_id, first, last),
+            proxy_legs(root, run_id, first, last),
+            unbacktested(gaps, playbooks),
         )
     )
 
@@ -331,27 +358,26 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest.proxy_gap")
     parser.add_argument("--bot", type=uuid.UUID, required=True)
-    parser.add_argument("--run", type=uuid.UUID, required=True)
+    parser.add_argument("--run", required=True)
     parser.add_argument("--from", dest="start", type=date.fromisoformat, default=None)
     parser.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
     args = parser.parse_args(argv)
     settings = operator_settings()
     with db_session_scope() as session:
         bot = session.get(HatBot, args.bot)
-        run = session.get(HatBacktestRun, args.run)
-        if bot is None or run is None:
+        if bot is None:
             sys.stderr.write("proxy gap refused: gap_unknown_bot_or_run\n")
             return 2
         try:
             report = shadow_gap(
-                session, bot, run, root=settings.data_root, start=args.start, end=args.end
+                session, bot, args.run, root=settings.data_root, start=args.start, end=args.end
             )
         except GapError as exc:
             sys.stderr.write(f"proxy gap refused: {exc.code}\n")
             return 2
     summary = {
         "bot_id": str(bot.id),
-        "run_id": str(run.id),
+        "run_id": args.run,
         **report.summary(),
         "trades": [
             {

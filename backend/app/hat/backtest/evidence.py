@@ -78,6 +78,7 @@ __all__ = [
     "COMPLETED",
     "DSR_DIGITS",
     "RunMetrics",
+    "config_playbooks",
     "backtest_evidence",
     "evidence_run",
     "family_key",
@@ -351,6 +352,14 @@ def _config_of(version: HatStrategyVersion | None) -> StrategyConfig | None:
         return parse_config(version.config)
     except ConfigError:
         return None
+
+
+def config_playbooks(raw: object) -> tuple[Playbook, ...]:
+    """The playbooks a strategy config document enables (none when it does not parse)."""
+    try:
+        return tuple(parse_config(raw).playbooks)
+    except ConfigError:
+        return ()
 
 
 def run_playbooks(session: Session, run: HatBacktestRun) -> tuple[Playbook, ...]:

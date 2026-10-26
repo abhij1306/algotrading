@@ -1,13 +1,12 @@
 """The research-variant seams: the new exit rules and the trail start (`engine.exits`), the stop
 width cap (`engine.stops`), per-run overrides (`backtest.overrides`, `RunConventions.record`), a
-sweep's variants file (`runs.parse_variants`) and the report data's pure parts
-(`backtest.report_data`). Small examples; no run of the loop."""
+sweep's variants file (`runs.parse_variants`). Small examples; no run of the loop."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -21,15 +20,6 @@ from app.hat.backtest.overrides import (
     policy_digest,
     policy_text,
     set_path,
-)
-from app.hat.backtest.report_data import (
-    _benchmark_on,
-    drawdowns,
-    group_stats,
-    hold_bucket,
-    index_regimes,
-    regime_before,
-    yearly_returns,
 )
 from app.hat.backtest.runs import parse_variants
 from app.hat.backtest.spec import BacktestError, RunConventions
@@ -304,13 +294,19 @@ def test_conventions_record_overrides_only_when_set() -> None:
         )
 
 
+def _sweep(*items: object) -> dict[str, object]:
+    return {"sweep_id": "sw-1", "variants": list(items)}
+
+
 def test_parse_variants_layers_on_the_base() -> None:
     base = RunConventions(overrides=Overrides(sets=(("exits[0].enabled", True),), risk_pct=D(1)))
-    variants = parse_variants(
-        [
+    sweep = parse_variants(
+        _sweep(
             {"label": "base"},
             {
                 "label": "wide",
+                "base": "base",
+                "change": "wider target, half weight",
                 "set": ["exits[1].at_r=3"],
                 "risk_pct": 0.005,
                 "max_positions": 8,
@@ -319,10 +315,13 @@ def test_parse_variants_layers_on_the_base() -> None:
                 "sleeve_weight": 0.5,
                 "slot_order": "score",
             },
-        ],
+        ),
         base,
     )
+    assert (sweep.sweep_id, sweep.sweep_name) == ("sw-1", "sw-1")
+    variants = sweep.variants
     assert variants[0].conventions == base
+    assert (variants[1].base, variants[1].change) == ("base", "wider target, half weight")
     wide = variants[1].conventions
     assert wide.overrides == Overrides(
         sets=(("exits[0].enabled", True), ("exits[1].at_r", 3)),
@@ -332,13 +331,17 @@ def test_parse_variants_layers_on_the_base() -> None:
         flat_ladder=True,
     )
     assert (wide.sleeve_weight, wide.slot_order) == (D("0.5"), "score")
+    named = parse_variants({**_sweep({"label": "a"}), "sweep_name": "named"}, base)
+    assert named.sweep_name == "named"
+    run_id = "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b"
+    assert parse_variants(_sweep({"label": "a", "base": run_id}), base).variants[0].base == run_id
     candidate = policy_version().policy
     files = {"cand.yaml": candidate}
     (pol,) = parse_variants(
-        [{"label": "p", "policy": "cand.yaml", "policy_set": ["kill.bot_drawdown_pct=0.15"]}],
+        _sweep({"label": "p", "policy": "cand.yaml", "policy_set": ["kill.bot_drawdown_pct=0.15"]}),
         base,
         files.__getitem__,
-    )
+    ).variants
     assert pol.conventions.overrides.policy == candidate
     assert pol.conventions.overrides.policy_sets == (("kill.bot_drawdown_pct", "0.15"),)
 
@@ -346,77 +349,20 @@ def test_parse_variants_layers_on_the_base() -> None:
         raise OverrideError("backtest_policy_unreadable")
 
     with pytest.raises(BacktestError, match="backtest_policy_unreadable"):
-        parse_variants([{"label": "p", "policy": "x.yaml"}], base, unreadable)
+        parse_variants(_sweep({"label": "p", "policy": "x.yaml"}), base, unreadable)
     for bad in (
-        [],
-        [{"label": "a"}, {"label": "a"}],
-        [{"label": "a", "other": 1}],
-        [{"x": 1}],
-        [{"label": "a", "flat_ladder": 1}],
-        [{"label": "a", "policy": 1}],
-        [{"label": "a", "policy_set": "risk_pct=0.01"}],
+        [{"label": "a"}],  # the old list form
+        {"variants": [{"label": "a"}]},  # no sweep id
+        {**_sweep({"label": "a"}), "other": 1},
+        _sweep(),
+        _sweep({"label": "a"}, {"label": "a"}),
+        _sweep({"label": "a", "other": 1}),
+        _sweep({"x": 1}),
+        _sweep({"label": "a", "flat_ladder": 1}),
+        _sweep({"label": "a", "policy": 1}),
+        _sweep({"label": "a", "policy_set": "risk_pct=0.01"}),
+        _sweep({"label": "a", "base": "b"}, {"label": "b"}),  # a base not run yet
+        _sweep({"label": "a", "change": "two\nlines"}),
     ):
         with pytest.raises(BacktestError):
             parse_variants(bad, base)
-
-
-# --- report data ---------------------------------------------------------------------------------
-
-
-def test_index_regime_on_the_prior_session() -> None:
-    start = date(2020, 1, 1)
-    closes = [(start + timedelta(days=n), D(100 + n)) for n in range(230)]
-    states = index_regimes(closes)
-    assert states[218][1] == "unknown"  # 219 sessions: no SMA 20 sessions back
-    assert states[219][1] == "up"
-    assert regime_before(states, closes[219][0]) == "unknown"  # the session before counts
-    assert regime_before(states, closes[220][0]) == "up"
-    assert regime_before(states, start) == "unknown"
-    falling = [(d, D(1000 - n)) for n, (d, _) in enumerate(closes)]
-    assert index_regimes(falling)[-1][1] == "not_up"
-
-
-def test_hold_buckets() -> None:
-    assert [hold_bucket(n) for n in (0, 5, 6, 20, 21, 60, 61, 400)] == [
-        "0-5",
-        "0-5",
-        "6-20",
-        "6-20",
-        "21-60",
-        "21-60",
-        "61+",
-        "61+",
-    ]
-
-
-def test_yearly_returns_chain_from_the_initial_equity() -> None:
-    equity = [(date(2020, 6, 1), D(110)), (date(2020, 12, 31), D(120)), (date(2021, 3, 1), D(90))]
-    found = yearly_returns(equity, D(100))
-    assert found[2020] == pytest.approx(0.2)
-    assert found[2021] == pytest.approx(-0.25)
-
-
-def test_group_stats() -> None:
-    class T:
-        def __init__(self, reason: str, r: str) -> None:
-            self.exit_reason, self.r_multiple = reason, D(r)
-
-    trades = [T("b", "2"), T("a", "-1"), T("b", "-1")]
-    found = group_stats(trades, lambda t: t.exit_reason, ["b"])  # type: ignore[arg-type]
-    assert [(g["key"], g["trades"], g["sum_r"], g["win_rate"]) for g in found] == [
-        ("b", 2, "1.000000", 0.5),
-        ("a", 1, "-1.000000", 0.0),
-    ]
-
-
-def test_drawdown_counts_from_the_initial_equity() -> None:
-    assert drawdowns([90.0, 120.0, 60.0], 100.0) == pytest.approx([-0.1, 0.0, -0.5])
-    assert drawdowns([90.0, 99.0]) == pytest.approx([0.0, 0.0])  # no start: the first is the peak
-
-
-def test_benchmark_is_never_carried_over_a_missing_session() -> None:
-    """The benchmark is the index's close on each run session; one missing session gives none."""
-    d1, d2, d3 = date(2015, 2, 2), date(2015, 2, 3), date(2015, 2, 4)
-    closes = [(d1, D(100)), (d3, D(102))]
-    assert _benchmark_on(closes, [d1, d3]) == [D(100), D(102)]
-    assert _benchmark_on(closes, [d1, d2, d3]) == []

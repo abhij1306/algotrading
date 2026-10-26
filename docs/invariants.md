@@ -210,7 +210,7 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   delisting rule. A version naming no index, an
   index with no loaded history, or a run starting before or ending after the history's cover
   (`hat_index_membership`; the NIFTY 500's starts 2016-01-01) is refused
-  (`backtest/data.membership_cover_refusal`); the run's `data_snapshot` records the membership's
+  (`backtest/data.membership_cover_refusal`); the run's data snapshot records the membership's
   source, digest, cover and the version's member-set key (`spec.membership_key`: index,
   includes, excludes). A run is a sleeve's evidence only when that key is its live universe
   version's (`evidence.evidence_run`): a run over another member set, or over today's list, is

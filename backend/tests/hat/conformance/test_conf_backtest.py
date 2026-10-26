@@ -16,7 +16,7 @@ BACKTEST = HAT / "backtest" / "loop.py"
 # hold no decision.
 LOOP = tuple(
     HAT / "backtest" / f"{name}.py"
-    for name in ("loop", "spec", "data", "ledger", "fillrules", "report")
+    for name in ("loop", "spec", "data", "ledger", "fillrules", "report", "signal_features")
 )
 RUNNERS = {"runs.py", "evidence.py", "overrides.py", "__main__.py"}
 PROPERTIES = Path(__file__).resolve().parents[1] / "properties"
@@ -162,8 +162,9 @@ def _imports_dsr_module(path: Path) -> bool:
 def test_dsr_scored_only_by_runs() -> None:
     """Under `app/hat` only `backtest/runs.py` and `backtest/evidence.py` import the DSR and PBO
     scorers of `app.hat.backtest.dsr` (`deflated_sharpe`, `family_deflated_sharpe`, `pbo`), and
-    they score a run only through `run_dsr` and `family_pbo`, which read recorded runs; so no
-    other module can score a result that never became a trial (G33). Harm: a variant tried
+    they score a run only through `run_dsr` and the trial registry (`backtest.trials`), which
+    count the recorded trials; so no other module can score a result that never became a trial
+    (G33). Harm: a variant tried
     outside the recorded runs reaches a gate as evidence without counting as a trial."""
     allowed = {
         APP_ROOT / "hat" / "backtest" / name for name in ("runs.py", "evidence.py", "dsr.py")
@@ -186,7 +187,9 @@ def test_dsr_scored_only_by_runs() -> None:
     assert "app.hat.backtest.dsr.family_deflated_sharpe" in imports_of(
         APP_ROOT / "hat" / "backtest" / "evidence.py"
     )
-    assert "app.hat.backtest.dsr.pbo" in imports_of(APP_ROOT / "hat" / "backtest" / "runs.py")
+    assert "app.hat.backtest.dsr.family_deflated_sharpe" in imports_of(
+        APP_ROOT / "hat" / "backtest" / "runs.py"
+    )
 
 
 # --- known gaps ------------------------------------------------------------------

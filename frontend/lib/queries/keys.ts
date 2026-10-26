@@ -16,9 +16,6 @@ export const queryKeys = {
   // Not under "hat": the dashboard's shared stale banner reads only the polled panels.
   backtests: {
     all: ["backtests"] as const,
-    runs: () => ["backtests", "runs"] as const,
-    run: (id: string) => ["backtests", "run", id] as const,
-    trades: (id: string) => ["backtests", "trades", id] as const,
     options: () => ["backtests", "options"] as const,
     jobs: () => ["backtests", "jobs"] as const,
   },
