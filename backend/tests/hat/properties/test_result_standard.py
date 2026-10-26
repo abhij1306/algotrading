@@ -4,6 +4,7 @@ count and the schema check of a hand-built `run.json`. Small examples; no run of
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date, timedelta
 from decimal import Decimal
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from app.hat.backtest import folder, standard, trials
+from app.hat.backtest import evidence, folder, standard, trials
 from app.hat.backtest.signal_features import vcp_extras
 from app.hat.backtest.spec import BacktestError
 from app.hat.risk.decision import Reason
@@ -180,6 +181,17 @@ def test_a_hold_out_run_counts_in_its_in_sample_family() -> None:
     hold = {**run, "data": {**run["data"], "split": "hold_out", "period_start": "c"}}
     assert trials.family_of(run, None) == trials.family_of(hold, run) == "S1/U/a..b"
     assert trials.family_of(hold, None) is None
+
+
+def test_a_hold_out_run_is_no_trial_of_its_family_now(tmp_path: Path) -> None:
+    key = trials.family_key("S1", "U", "a", "b")
+    trials.record_trial(tmp_path, key, "h1", "run-a", 0.5)
+    run = evidence.EvidenceRun(
+        "h", "S1", "h2", key, None, None, None, None, evidence.RunMetrics.from_json({}), {}
+    )
+    assert evidence.run_dsr(tmp_path, run)[1] == 2  # an in-sample run counts itself
+    hold = dataclasses.replace(run, in_sample=False)
+    assert evidence.run_dsr(tmp_path, hold)[1] == 1
 
 
 def test_prior_trials_count_but_carry_no_sharpe(tmp_path: Path) -> None:

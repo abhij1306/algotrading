@@ -82,8 +82,9 @@ values, rebase them with a reason (`golden rebase`); never edit a golden file. S
 only when every row passes, `fail` when one fails, `incomplete` when one is `not_run` (no plateau
 sweep, no hold-out yet). Then hand `review_request.md` to an independent review agent, which
 writes `audit_report.md` beside it with a `promote`, `hold` or `reject` verdict. A candidate goes
-to step 7 only if its in-sample rows and plateau pass, its audits pass or each warning is
-explained, and the review says `promote`.
+to step 7 only if its in-sample rows and plateau pass, neither audit fails (a failed or missing
+audit is no evidence; the `audits` rows fail it) and each warning is explained, and the review
+says `promote`.
 
 ### Criteria block
 
@@ -104,10 +105,10 @@ checks:                   # in-sample, each read from run.json (max_pct_adv from
   expectancy_r_min: 0.2
   cagr_above_benchmark: true        # cagr_pct > benchmark_cagr_pct
   cagr_ex_top5_min_share: 0.5       # cagr_ex_top5_trades_pct >= 0.5 x cagr_pct (cagr > 0)
-  max_pct_adv: 5                    # every entry's position_pct_adv
+  max_pct_adv: 5                    # every entry's position_pct_adv; an entry without one fails
   binding_required: true            # binding.no_op false
-  dsr_prob_min: 0.95
-  pbo_max: 0.5
+  dsr_prob_min: 0.95                # the DSR at the family's trials today, not at completion
+  pbo_max: 0.5                      # the PBO over the family's runs today
 plateau:                  # rows from the --sweep runs that differ from the candidate in one path
   mar_min: 0.5
   parameters:             # a config.resolved path as config.overrides names it

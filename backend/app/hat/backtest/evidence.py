@@ -252,6 +252,7 @@ class EvidenceRun:
     membership_key: object
     metrics: RunMetrics
     buckets: Mapping[tuple[str, str], BucketStats]
+    in_sample: bool = True  # a hold-out run reads its family's trials and is none of them
 
 
 def _bucket_json(playbook: str, band: str, stats: BucketStats) -> dict[str, Any]:
@@ -376,6 +377,7 @@ def _read_evidence(root: Path, run_id: str, run: Mapping[str, Any]) -> EvidenceR
         strategy=strategy if isinstance(strategy, str) else "",
         resolved_hash=resolved if isinstance(resolved, str) else None,
         trial_family=trials.family_of(run, validated),
+        in_sample=(run.get("data") or {}).get("split") != "hold_out",
         strategy_id=_uuid(doc.get("strategy_id")),
         strategy_version_id=_uuid(doc.get("strategy_version_id")),
         universe_id=_uuid(doc.get("universe_id")),
@@ -471,11 +473,13 @@ def evidence_run(
 
 def run_dsr(root: Path, run: EvidenceRun) -> tuple[Deflated, int, float]:
     """A completed run's deflated Sharpe probability now, with its trial family's count in the
-    registry (`trials`, the run's own counted once; a run that names no family counts only
-    itself) and the variance of their Sharpe ratios, through the family floors
-    (`family_deflated_sharpe`)."""
+    registry (`trials`, an in-sample run's own counted once, a hold-out run's never, as at its
+    completion; a run that names no family counts only itself) and the variance of their Sharpe
+    ratios, through the family floors (`family_deflated_sharpe`)."""
     stats = run.metrics.returns
-    own = None if run.resolved_hash is None else (run.resolved_hash, stats and stats.sr)
+    own = None
+    if run.resolved_hash is not None and run.in_sample:
+        own = (run.resolved_hash, stats and stats.sr)
     registry = {} if run.trial_family is None else trials.read_registry(root)
     count, sharpes = trials.family(registry, run.trial_family or "", own)
     variance = trial_variance(sharpes)

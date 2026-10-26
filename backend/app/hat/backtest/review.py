@@ -24,6 +24,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +34,7 @@ from ..data.audit import explanation_of
 from . import criteria as crit
 from . import folder, trials
 from .evidence import read_evidence, run_dsr
+from .runs import family_pbo
 
 __all__ = ["CRITERIA_JSON", "CRITERIA_MD", "REQUEST", "REPORT", "evaluate", "request_text"]
 
@@ -89,6 +91,34 @@ def _dsr_now(t: Mapping[str, Any]) -> str:
     return f"DSR now {t['dsr_prob_now']} at {t['dsr_n_trials_now']} trials"
 
 
+def _audits(root: Path, which: str, run: Mapping[str, Any]) -> list[crit.Row]:
+    run_id = _id(run) or ""
+    audit = folder.read_doc(root, run_id, "audit")
+    data_audit = folder.read_doc(root, run_id, "data_audit")
+    return crit.audit_rows(
+        which,
+        None if audit is None else audit.get("status"),
+        None if data_audit is None else data_audit.get("status"),
+    )
+
+
+def _pbo_now(root: Path, run: Mapping[str, Any]) -> float | None:
+    """The in-sample run's PBO over its family as it is today (`runs.family_pbo`); None when its
+    returns cannot be read or the family is too small."""
+    identity, data = run.get("identity") or {}, run.get("data") or {}
+    own = folder.read_returns(root, _id(run) or "")
+    try:
+        window = (
+            date.fromisoformat(str(data.get("period_start"))),
+            date.fromisoformat(str(data.get("period_end"))),
+        )
+    except ValueError:
+        return None
+    if own is None:
+        return None
+    return family_pbo(root, str(identity.get("strategy")), str(data.get("universe")), window, own)
+
+
 def evaluate(
     root: Path,
     run: Mapping[str, Any],
@@ -129,9 +159,12 @@ def evaluate(
     found = None if in_id is None else read_evidence(root, in_id)
     now = None if found is None else run_dsr(root, found)
     neighbours = [r for r in runs if (r.get("identity") or {}).get("sweep_id") == sweep]
+    scores = {"dsr_prob": None if now is None else now[0].prob, "pbo": _pbo_now(root, in_sample)}
     rows = [
+        *_audits(root, "in-sample", in_sample),
+        *([] if hold_out is None else _audits(root, "hold-out", hold_out)),
         *crit.in_sample_rows(
-            criteria, in_sample, _rows(folder.read_csv(root, in_id or "", "trades"))
+            criteria, in_sample, _rows(folder.read_csv(root, in_id or "", "trades")), scores
         ),
         *crit.trial_rows(criteria, in_sample, key, total, prior),
         *crit.plateau_rows(criteria, in_sample, sweep, neighbours),
@@ -351,7 +384,8 @@ def write_review(
         )
     base = identity.get("base_run_id")
     in_sample = None if evaluated is None else evaluated["in_sample_run_id"]
-    validated = data.get("validates_run_id") or (in_sample if in_sample != run_id else None)
+    # the run the criteria read as in-sample (a `--validates` override included), else the stored
+    validated = in_sample if in_sample not in {None, run_id} else data.get("validates_run_id")
     docs = PROJECT_ROOT / "docs" / "backtests"
     text = request_text(
         run,

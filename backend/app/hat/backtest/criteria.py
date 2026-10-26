@@ -232,15 +232,20 @@ def _window_of(run: Mapping[str, Any]) -> tuple[object, object]:
 
 
 def _scope(run: Mapping[str, Any], c: Criteria, window: tuple[str, str], section: str) -> Row:
-    data = run.get("data") or {}
-    status = (run.get("identity") or {}).get("status")
-    got = f"{data.get('universe')} {data.get('period_start')}..{data.get('period_end')}"
-    ok = data.get("universe") == c.universe and _window_of(run) == window and status == "complete"
+    data, identity = run.get("data") or {}, run.get("identity") or {}
+    status, strategy = identity.get("status"), identity.get("strategy")
+    got = f"{strategy} {data.get('universe')} {data.get('period_start')}..{data.get('period_end')}"
+    ok = (
+        strategy == c.strategy
+        and data.get("universe") == c.universe
+        and _window_of(run) == window
+        and status == "complete"
+    )
     return Row(
         section,
         "scope",
         got if status == "complete" else f"{got} ({status})",
-        f"complete, {c.universe} {window[0]}..{window[1]}",
+        f"complete, {c.strategy} {c.universe} {window[0]}..{window[1]}",
         _status(ok),
     )
 
@@ -252,26 +257,35 @@ def _at_least(section: str, name: str, value: object, floor: float) -> Row:
     )
 
 
-def max_pct_adv(trades: Sequence[Mapping[str, str]]) -> tuple[float | None, list[float]]:
-    """(the largest entry's % of 20-day traded value, every entry's) from `trades.csv` rows (a
-    trade's first leg; the entry is the same on every leg)."""
-    values = []
+def max_pct_adv(trades: Sequence[Mapping[str, str]]) -> tuple[float | None, list[float], int]:
+    """(the largest entry's % of 20-day traded value, every entry's, the entries without one)
+    from `trades.csv` rows (a trade's first leg; the entry is the same on every leg)."""
+    values, missing = [], 0
     for row in trades:
         if row.get("leg") not in {None, "1"}:
             continue
         try:
-            values.append(float(row.get("position_pct_adv") or "nan"))
+            value = float(row.get("position_pct_adv") or "nan")
         except ValueError:
-            continue
-    values = [v for v in values if math.isfinite(v)]
-    return (max(values) if values else None), values
+            value = math.nan
+        if math.isfinite(value):
+            values.append(value)
+        else:
+            missing += 1
+    return (max(values) if values else None), values, missing
 
 
 def in_sample_rows(
-    c: Criteria, run: Mapping[str, Any], trades: Sequence[Mapping[str, str]]
+    c: Criteria,
+    run: Mapping[str, Any],
+    trades: Sequence[Mapping[str, str]],
+    now: Mapping[str, float | None] | None = None,
 ) -> list[Row]:
-    """The in-sample criteria of `run` (its `run.json`, its `trades.csv` rows)."""
+    """The in-sample criteria of `run` (its `run.json`, its `trades.csv` rows). `dsr_prob` and
+    `pbo` are read from `now`, the run's scores at its family as it is today (the stored ones
+    were scored at completion, before later trials); missing there, they fail."""
     m, s = _metrics(run), "in_sample"
+    now = now or {}
     rows = [_scope(run, c, c.in_sample, s)]
     k = c.checks
     if "mar_min" in k:
@@ -306,12 +320,13 @@ def in_sample_rows(
         )
     if "max_pct_adv" in k:
         limit = float(k["max_pct_adv"])
-        top, values = max_pct_adv(trades)
+        top, values, missing = max_pct_adv(trades)
         over = sum(1 for v in values if v > limit)
-        unknown = (_num(m.get("trades")) or 0) > 0 and not values
+        # every entry is measured: none without ADV, and none at all only for a run with no trades
+        unknown = missing > 0 or ((_num(m.get("trades")) or 0) > 0 and not values)
         note = f"{over} entries above" if over else None
         if unknown:
-            note = "no ADV on the entries"
+            note = f"{missing} entries without ADV" if missing else "no ADV on the entries"
         rows.append(
             Row(
                 s,
@@ -327,10 +342,10 @@ def in_sample_rows(
         note = "no base: binding unknown" if no_op is None else None
         rows.append(Row(s, "binding.no_op", no_op, "false", _status(no_op is False), note))
     if "dsr_prob_min" in k:
-        rows.append(_at_least(s, "dsr_prob", m.get("dsr_prob"), float(k["dsr_prob_min"])))
+        rows.append(_at_least(s, "dsr_prob now", now.get("dsr_prob"), float(k["dsr_prob_min"])))
     if "pbo_max" in k:
-        pbo, cap = _num(m.get("pbo")), float(k["pbo_max"])
-        rows.append(Row(s, "pbo", pbo, f"<= {cap:g}", _status(pbo is not None and pbo <= cap)))
+        pbo, cap = _num(now.get("pbo")), float(k["pbo_max"])
+        rows.append(Row(s, "pbo now", pbo, f"<= {cap:g}", _status(pbo is not None and pbo <= cap)))
     return rows
 
 
@@ -467,6 +482,17 @@ def hold_out_rows(
         )
     if "mar_min" in k:
         rows.append(_at_least(s, "mar", m.get("mar"), k["mar_min"]))
+    return rows
+
+
+def audit_rows(which: str, run_audit: str | None, data_audit: str | None) -> list[Row]:
+    """The audits of the `which` run: a failed or missing run or data audit is no evidence
+    (fail); a warning passes here and is the reviewer's to judge against its explanation."""
+    rows = []
+    for name, status in ((f"{which} run audit", run_audit), (f"{which} data audit", data_audit)):
+        ok = status in {PASS, "warn"}
+        note = "explain each warning" if status == "warn" else None
+        rows.append(Row("audits", name, status, "pass, or warn explained", _status(ok), note))
     return rows
 
 

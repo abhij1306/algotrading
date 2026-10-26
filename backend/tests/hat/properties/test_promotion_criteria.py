@@ -31,7 +31,7 @@ hold_out_checks: {expectancy_min_share: 0.5, mar_min: 0.4}
 
 def _run(run_id: str = "r", **metrics: object) -> dict:
     return {
-        "identity": {"run_id": run_id, "status": "complete"},
+        "identity": {"run_id": run_id, "status": "complete", "strategy": "S1"},
         "data": {"universe": "U", "period_start": "2016-01-01", "period_end": "2021-12-31"},
         "config": {
             "resolved": {
@@ -99,6 +99,12 @@ def test_in_sample_rows() -> None:
         "cagr_pct vs benchmark",
         "cagr_ex_top5_trades_pct",
     }
+    other = _run()
+    other["identity"]["strategy"] = "S2"
+    assert [r.status for r in crit.in_sample_rows(c, other, TRADES)][0] == crit.FAIL  # scope
+    partly = [*TRADES, {"leg": "1", "position_pct_adv": ""}]  # one entry never measured
+    adv = {r.name: r for r in crit.in_sample_rows(c, _run(), partly)}["max position % ADV"]
+    assert (adv.status, adv.note) == (crit.FAIL, "1 entries without ADV")
     big = crit.in_sample_rows(c, _run(), [{"leg": "1", "position_pct_adv": "6"}])
     assert {r.name for r in big if r.status == crit.FAIL} == {"max position % ADV"}
     off = _run()
@@ -159,3 +165,19 @@ def test_hold_out_rows() -> None:
     }
     twice = {r.name: r.status for r in crit.hold_out_rows(c, _run(), hold, 2)}
     assert twice["hold-out reads"] == crit.FAIL
+
+
+def test_dsr_and_pbo_are_read_as_of_today() -> None:
+    c = crit.parse(BLOCK.replace("binding_required: true", "dsr_prob_min: 0.9\n  pbo_max: 0.5"))
+    stale = _run(dsr_prob=0.99, pbo=0.0)  # scored at completion, before later trials
+    rows = {r.name: r.status for r in crit.in_sample_rows(c, stale, TRADES)}
+    assert (rows["dsr_prob now"], rows["pbo now"]) == (crit.FAIL, crit.FAIL)
+    now = {"dsr_prob": 0.002, "pbo": 0.2}
+    rows = {r.name: r.status for r in crit.in_sample_rows(c, stale, TRADES, now)}
+    assert (rows["dsr_prob now"], rows["pbo now"]) == (crit.FAIL, crit.PASS)
+
+
+def test_a_failed_or_missing_audit_fails() -> None:
+    rows = crit.audit_rows("in-sample", "warn", "pass")
+    assert [r.status for r in rows] == [crit.PASS, crit.PASS]
+    assert [r.status for r in crit.audit_rows("in-sample", "fail", None)] == [crit.FAIL] * 2
