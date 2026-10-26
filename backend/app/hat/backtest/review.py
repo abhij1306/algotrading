@@ -127,11 +127,13 @@ def request_text(
 
 def write_request(root: Path, run_id: str, criteria: Path | None = None) -> Path:
     """Write the run's `review_request.md`; `review_unknown_run` (ValueError) without its
-    folder."""
+    folder, `review_criteria_missing` when `criteria` names no file."""
     run = folder.read_run(root, run_id)
     out = folder.run_dir(root, run_id)
     if run is None or out is None:
         raise ValueError("review_unknown_run")
+    if criteria is not None and not criteria.is_file():
+        raise ValueError("review_criteria_missing")
     identity, data = run.get("identity") or {}, run.get("data") or {}
     base, validates = identity.get("base_run_id"), data.get("validates_run_id")
     docs = PROJECT_ROOT / "docs" / "backtests"

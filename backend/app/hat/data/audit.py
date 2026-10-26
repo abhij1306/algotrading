@@ -448,16 +448,25 @@ def check_features(
 ) -> list[dict[str, Any]]:
     """Findings of the feature samples (instrument, day, stored row, row recomputed from the
     bars dated on or before the day): a per-instrument feature that differs read a later bar,
-    or was written from other bars (fail)."""
-    wrong = []
+    or was written from other bars (fail); a member day with a bar but no stored row was never
+    computed, and the run reads no features for it (fail)."""
+    wrong, missing = [], []
     for instrument_id, day, stored, fresh in samples:
-        if stored is None or fresh is None:
-            wrong.append({"instrument_id": instrument_id, "date": _iso(day), "features": ["row"]})
+        if stored is None:
+            missing.append({"instrument_id": instrument_id, "date": _iso(day)})
             continue
-        off = [n for n in PER_INSTRUMENT if not _same(stored.get(n), fresh.get(n))]
+        off = (
+            ["row"]
+            if fresh is None
+            else [n for n in PER_INSTRUMENT if not _same(stored.get(n), fresh.get(n))]
+        )
         if off:
             wrong.append({"instrument_id": instrument_id, "date": _iso(day), "features": off})
-    return [_finding("feature_not_point_in_time", FAIL, wrong)] if wrong else []
+    return [
+        _finding(code, FAIL, items)
+        for code, items in (("feature_not_point_in_time", wrong), ("feature_row_missing", missing))
+        if items
+    ]
 
 
 def recount_breadth(
@@ -738,14 +747,20 @@ def _names(market: MarketData) -> dict[str, str]:
 
 
 def _feature_samples(
-    con: duckdb.DuckDBPyConnection, market: MarketData, sessions: Sequence[date]
+    con: duckdb.DuckDBPyConnection,
+    market: MarketData,
+    sessions: Sequence[date],
+    spans: Mapping[str, Sequence[tuple[date, date | None]]],
+    bar_days: Mapping[str, Sequence[date]],
 ) -> list:
-    """(instrument, day, stored row, recomputed row) for `SAMPLE_INSTRUMENTS` instruments with
-    a stored row on each of `SAMPLE_DAYS` sessions."""
+    """(instrument, day, stored row or None, recomputed row) for `SAMPLE_INSTRUMENTS` member
+    days with a bar on each of `SAMPLE_DAYS` sessions: drawn from the members, not the stored
+    rows, so a missing row is sampled too."""
     features = market.features
+    held = {i: set(days) for i, days in bar_days.items()}
     picks: list[tuple[str, date]] = []
     for day in _spread(sessions, SAMPLE_DAYS):
-        ids = features.filter(pl.col("date") == day)["instrument_id"].cast(pl.String).to_list()
+        ids = [i for i, s in spans.items() if _member_on(s, day) and day in held.get(i, ())]
         picks.extend((i, day) for i in _hashed(ids, _iso(day), SAMPLE_INSTRUMENTS))
     if not picks:
         return []
@@ -863,7 +878,7 @@ def gather(
                 _DUPES_SQL, [sessions[0], end, sorted(bar_days)]
             ).fetchall()
         ]
-        feature_samples = _feature_samples(con, market, in_window)
+        feature_samples = _feature_samples(con, market, in_window, spans, bar_days)
         breadth_samples = _breadth_samples(store, con, market, in_window)
         bars_5m = _bars_5m(store.root, con, market, in_window)
     regime_index = snapshot.get("index")

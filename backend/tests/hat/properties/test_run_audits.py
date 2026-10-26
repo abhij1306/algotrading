@@ -3,9 +3,12 @@ hand-built inputs, and the review request. No market load, no run of the loop.""
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from app.hat.backtest import compare, review, run_audit
 from app.hat.backtest.runs import parse_variants
@@ -104,9 +107,12 @@ def test_feature_and_breadth_samples() -> None:
     same = {**stored, "sma50": 1.0 + 1e-13}
     later = {**stored, "sma50": 1.01}  # a value that read a later bar
     assert audit.check_features([("a", DAYS[0], stored, same)]) == []
-    [found] = audit.check_features([("a", DAYS[0], stored, later), ("b", DAYS[1], None, same)])
-    assert found["count"] == 2
-    assert found["items"][0]["features"] == ["sma50"]
+    found, missing = audit.check_features(
+        [("a", DAYS[0], stored, later), ("b", DAYS[1], stored, None), ("c", DAYS[1], None, same)]
+    )
+    assert (found["code"], found["count"]) == ("feature_not_point_in_time", 2)
+    assert [i["features"] for i in found["items"]] == [["sma50"], ["row"]]
+    assert (missing["code"], missing["count"]) == ("feature_row_missing", 1)
     isin = "INE001A01036"
     pct, counted = audit.recount_breadth(
         [(isin, 11.0, 10.0), (isin, 9.0, 10.0), (isin, 9.0, None), ("INF001A01036", 20.0, 1.0)]
@@ -346,6 +352,19 @@ def test_review_request_names_every_file(tmp_path: Path) -> None:
     assert "run audit: pass; data audit: absent" in text
     assert "verdict is `reject`" in text
     assert review.REPORT in text
+
+
+def test_review_refuses_a_missing_criteria_file(tmp_path: Path) -> None:
+    run_id = "01a17359-fe35-7207-abe4-fe26eae939bf"
+    out = tmp_path / "backtests" / "runs" / run_id
+    out.mkdir(parents=True)
+    (out / "run.json").write_text(json.dumps(_run()), encoding="utf-8")
+    with pytest.raises(ValueError, match="review_criteria_missing"):
+        review.write_request(tmp_path, run_id, tmp_path / "no-such-notes.md")
+    assert not (out / review.REQUEST).exists()
+    criteria = tmp_path / "notes.md"
+    criteria.write_text("criteria", encoding="utf-8")
+    assert str(criteria) in review.write_request(tmp_path, run_id, criteria).read_text()
 
 
 def test_compare_row() -> None:
