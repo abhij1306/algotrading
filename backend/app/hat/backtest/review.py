@@ -94,7 +94,7 @@ def evaluate(
     run: Mapping[str, Any],
     criteria: crit.Criteria,
     *,
-    source: Path,
+    source: str,
     sweep: str | None = None,
     validates: str | None = None,
 ) -> dict[str, Any]:
@@ -143,7 +143,7 @@ def evaluate(
         "hold_out_run_id": _id(hold_out),
         "plateau_sweep": sweep,
         "criteria": {
-            "source": str(source),
+            "source": source,
             "digest": criteria.digest,
             "strategy": criteria.strategy,
             "text": criteria.text,
@@ -318,22 +318,20 @@ def request_text(
 def write_review(
     root: Path,
     run_id: str,
-    criteria: Path | None = None,
+    criteria: tuple[str, str] | None = None,
     *,
     sweep: str | None = None,
     validates: str | None = None,
 ) -> Path:
-    """Evaluate the criteria into the run's folder (`criteria.json`, `criteria.md`) and write its
-    `review_request.md`. Refused (ValueError): `review_unknown_run` without its folder,
-    `review_criteria_missing` when `criteria` names no file, the block's own refusals
+    """Evaluate the criteria (the notes' (name, text); the command line opens the file) into the
+    run's folder (`criteria.json`, `criteria.md`) and write its `review_request.md`. Refused
+    (ValueError): `review_unknown_run` without its folder, the block's own refusals
     (`criteria.extract`, `criteria.parse`), `review_criteria_strategy` for another strategy's
     criteria, and `evaluate`'s."""
     run = folder.read_run(root, run_id)
     out = folder.run_dir(root, run_id)
     if run is None or out is None:
         raise ValueError("review_unknown_run")
-    if criteria is not None and not criteria.is_file():
-        raise ValueError("review_criteria_missing")
     identity, data = run.get("identity") or {}, run.get("data") or {}
     audit, data_audit = (
         folder.read_doc(root, run_id, "audit"),
@@ -342,12 +340,11 @@ def write_review(
     explained = explanation_of(root, (data.get("audit") or {}).get("digest"))
     evaluated = None
     if criteria is not None:
-        parsed = crit.parse(crit.extract(criteria.read_text(encoding="utf-8")))
+        source, notes = criteria
+        parsed = crit.parse(crit.extract(notes))
         if parsed.strategy != identity.get("strategy"):
             raise ValueError("review_criteria_strategy")
-        evaluated = evaluate(
-            root, run, parsed, source=criteria.resolve(), sweep=sweep, validates=validates
-        )
+        evaluated = evaluate(root, run, parsed, source=source, sweep=sweep, validates=validates)
         (out / CRITERIA_JSON).write_text(json.dumps(evaluated, indent=1), encoding="utf-8")
         (out / CRITERIA_MD).write_text(
             criteria_markdown(evaluated, audit, data_audit, explained), encoding="utf-8"
@@ -384,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the co
 
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest.review")
     parser.add_argument("run_id")
-    parser.add_argument("--criteria", type=Path, default=None)
+    parser.add_argument("--criteria", type=argparse.FileType("r", encoding="utf-8"), default=None)
     parser.add_argument("--sweep", default=None, help="the plateau sweep of the run")
     parser.add_argument("--validates", default=None, help="a hold-out run's in-sample run")
     args = parser.parse_args(argv)
@@ -392,7 +389,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the co
         path = write_review(
             operator_settings().data_root,
             args.run_id,
-            args.criteria,
+            None if args.criteria is None else (args.criteria.name, args.criteria.read()),
             sweep=args.sweep,
             validates=args.validates,
         )

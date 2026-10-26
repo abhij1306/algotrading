@@ -309,6 +309,9 @@ def in_sample_rows(
         top, values = max_pct_adv(trades)
         over = sum(1 for v in values if v > limit)
         unknown = (_num(m.get("trades")) or 0) > 0 and not values
+        note = f"{over} entries above" if over else None
+        if unknown:
+            note = "no ADV on the entries"
         rows.append(
             Row(
                 s,
@@ -316,7 +319,7 @@ def in_sample_rows(
                 top,
                 f"<= {limit:g} on every entry",
                 _status(over == 0 and not unknown),
-                f"{over} entries above" if over else ("no ADV on the entries" if unknown else None),
+                note,
             )
         )
     if k.get("binding_required"):

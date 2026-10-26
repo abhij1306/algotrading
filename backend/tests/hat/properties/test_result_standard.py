@@ -193,8 +193,7 @@ def test_prior_trials_count_but_carry_no_sharpe(tmp_path: Path) -> None:
     assert set(trials.prior_variants("s2.yaml", old)).isdisjoint(prior)
     with pytest.raises(ValueError, match="trials_bad_sweep"):
         trials.prior_variants("s.yaml", [{"set": []}])
-    sweep = tmp_path / "s1.yaml"
-    sweep.write_text(json.dumps(old), encoding="utf-8")
+    sweep = ("s1.yaml", json.dumps(old))
     assert trials.seed(tmp_path, key, [sweep]) == (2, 2)
     assert trials.seed(tmp_path, key, [sweep]) == (0, 2)  # seeding twice adds nothing
     trials.record_trial(tmp_path, key, "h1", "run-a", 0.5)

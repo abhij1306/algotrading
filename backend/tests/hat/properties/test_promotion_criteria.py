@@ -69,12 +69,14 @@ def test_extract_and_parse() -> None:
         crit.extract("```yaml\nx: 1\n```\n")
     with pytest.raises(ValueError, match="criteria_block_many"):
         crit.extract(f"```hat-criteria\n{BLOCK}```\n```hat-criteria\n{BLOCK}```\n")
-    with pytest.raises(ValueError, match="criteria_bad_checks"):
-        crit.parse(BLOCK.replace("trades_min", "trade_min"))
-    with pytest.raises(ValueError, match="criteria_bad_in_sample"):
-        crit.parse(BLOCK.replace("to: 2021-12-31", "to: 2015-12-31"))
-    with pytest.raises(ValueError, match="criteria_bad_binding_required"):
-        crit.parse(BLOCK.replace("binding_required: true", "binding_required: 1"))
+    for old, new, code in (
+        ("trades_min", "trade_min", "criteria_bad_checks"),
+        ("to: 2021-12-31", "to: 2015-12-31", "criteria_bad_in_sample"),
+        ("binding_required: true", "binding_required: 1", "criteria_bad_binding_required"),
+    ):
+        bad = BLOCK.replace(old, new)
+        with pytest.raises(ValueError, match=code):
+            crit.parse(bad)
 
 
 def test_in_sample_rows() -> None:

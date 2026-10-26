@@ -359,27 +359,22 @@ def test_review_request_names_every_file(tmp_path: Path) -> None:
     assert review.REPORT in text
 
 
-def test_review_refuses_a_missing_criteria_file(tmp_path: Path) -> None:
+def test_review_writes_the_criteria_table(tmp_path: Path) -> None:
     run_id = "01a17359-fe35-7207-abe4-fe26eae939bf"
     out = tmp_path / "backtests" / "runs" / run_id
     out.mkdir(parents=True)
     run = _run()
     run["identity"].update(strategy="S1", run_id=run_id)
     (out / "run.json").write_text(json.dumps(run), encoding="utf-8")
-    with pytest.raises(ValueError, match="review_criteria_missing"):
-        review.write_review(tmp_path, run_id, tmp_path / "no-such-notes.md")
-    notes = tmp_path / "notes.md"
-    notes.write_text("no block", encoding="utf-8")
     with pytest.raises(ValueError, match="criteria_block_missing"):
-        review.write_review(tmp_path, run_id, notes)
+        review.write_review(tmp_path, run_id, ("notes.md", "no block"))
     assert not (out / review.REQUEST).exists()
-    notes.write_text(
+    notes = (
         "# S1\n```hat-criteria\nstrategy: S1\nuniverse: U\n"
         "in_sample: {from: 2024-01-01, to: 2024-01-31}\ntrial_budget: 30\n"
-        "checks: {trades_min: 100}\n```\n",
-        encoding="utf-8",
+        "checks: {trades_min: 100}\n```\n"
     )
-    text = review.write_review(tmp_path, run_id, notes).read_text()
+    text = review.write_review(tmp_path, run_id, ("notes.md", notes)).read_text()
     assert review.CRITERIA_MD in text
     assert "**fail**" in (out / review.CRITERIA_MD).read_text()  # 3 trades, and no plateau
 

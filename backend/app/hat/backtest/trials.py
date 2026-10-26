@@ -204,13 +204,12 @@ def prior_variants(name: str, raw: object) -> dict[str, str]:
     return out
 
 
-def seed(root: Path, key: str, files: Sequence[Path]) -> tuple[int, int]:
-    """Record every variant of the sweep `files` as a prior trial of the family `key`;
-    (added, the family's count after)."""
+def seed(root: Path, key: str, files: Sequence[tuple[str, str]]) -> tuple[int, int]:
+    """Record every variant of the sweep `files` (each its file name and text; the command line
+    opens them) as a prior trial of the family `key`; (added, the family's count after)."""
     found: dict[str, Trial] = {}
-    for path in files:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for digest, source in prior_variants(path.name, raw).items():
+    for name, text in files:
+        for digest, source in prior_variants(name, yaml.safe_load(text)).items():
             found[digest] = Trial(None, None, source)
     added = _update(root, key, found)
     return added, counts(read_registry(root), key)[0]
@@ -226,14 +225,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the co
     add.add_argument("--universe", required=True)
     add.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
     add.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
-    add.add_argument("files", nargs="+", type=Path)
+    add.add_argument("files", nargs="+", type=argparse.FileType("r", encoding="utf-8"))
     sub.add_parser("show", help="print each family's trials and prior trials")
     args = parser.parse_args(argv)
     root = operator_settings().data_root
     try:
         if args.command == "seed":
             key = family_key(args.strategy, args.universe, args.start, args.end)
-            added, total = seed(root, key, args.files)
+            named = [(Path(f.name).name, f.read()) for f in args.files]
+            added, total = seed(root, key, named)
             sys.stdout.write(json.dumps({"family": key, "added": added, "trials": total}) + "\n")
             return 0
         registry = read_registry(root)
