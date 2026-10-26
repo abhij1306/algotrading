@@ -59,7 +59,7 @@ from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
-from .dsr import family_deflated_sharpe, trial_variance
+from .dsr import PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
 from .evidence import RunMetrics, universe_live_version, universe_of
 from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
@@ -71,7 +71,7 @@ from .spec import (
     known_gaps,
     with_cooldown,
 )
-from .standard import FORMAT_VERSION, changed_paths
+from .standard import FORMAT_VERSION, changed_paths, daily_returns, distinct_on_common
 
 __all__ = [
     "HOLD_OUT",
@@ -483,6 +483,30 @@ def _blocks(
     return identity, data, config
 
 
+def family_pbo(
+    root: Path, strategy: str, universe: str, own: Mapping[date, float], blocks: int = PBO_BLOCKS
+) -> float | None:
+    """The probability of backtest overfitting (`dsr.pbo`, CSCV) of a run's family: the
+    completed in-sample runs of its strategy on its universe with a readable equity file, and
+    the run itself (`own`, its daily returns), on the sessions all of them have a return for, a
+    rerun of the same variant counted once. None with fewer than 2 distinct variants, fewer
+    than 2 common sessions per block, or a series CSCV cannot score."""
+    series = [
+        found
+        for doc in folder.list_runs(root)
+        if (doc.get("identity") or {}).get("strategy") == strategy
+        and (doc.get("identity") or {}).get("status") == COMPLETE
+        and (doc.get("data") or {}).get("universe") == universe
+        and (doc.get("data") or {}).get("split") == IN_SAMPLE
+        and (found := folder.read_returns(root, str(doc["identity"].get("run_id")))) is not None
+    ]
+    distinct, sessions = distinct_on_common([*series, own])
+    if len(distinct) < 2 or sessions < 2 * blocks:
+        return None
+    found = pbo(distinct, blocks)
+    return None if found is None else found.prob
+
+
 def _execute(
     target: _Target,
     plan: _Plan,
@@ -531,6 +555,12 @@ def _execute(
             base_trades=None if labels.base is None else folder.trade_keys(root, labels.base),
             dsr_prob=deflated.prob,
             dsr_n_trials=count,
+            pbo=family_pbo(
+                root,
+                target.strategy,
+                target.universe,
+                daily_returns(result.equity, spec.initial_equity),
+            ),
         )
         doc, csvs = folder.build(run_id, result, built)
         folder.publish(root, run_id, doc, config_doc, csvs)

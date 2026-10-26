@@ -262,7 +262,7 @@ variants:
 Each variant takes `set: [path=value, ...]`, `risk_pct`, `max_positions`, `max_per_industry`,
 `flat_ladder`, `policy` (a file path from the working directory), `policy_set`,
 `sleeve_weight`, `slot_order` and, for a hold-out sweep, `validates`. It prints one JSON line per
-variant (label, run id, status, code, trades, expectancy, DSR) as each finishes; the runs read at
+variant (label, run id, status, code, trades, expectancy, DSR, PBO) as each finishes; the runs read at
 `/api/hat/backtests/runs?sweep_id=<id>` and their folders at
 `HAT_DATA_ROOT/backtests/runs/<run_id>/`.
 

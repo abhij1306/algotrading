@@ -97,7 +97,8 @@
     "cagr_ex_top5_trades_pct": null,
     "max_position_pct_adv": null,
     "trades_over_5pct_adv": null,
-    "avg_dd_pct": 6.1
+    "avg_dd_pct": 6.1,
+    "pbo": 0.31
   },
   "refusals": {
     "max_positions": 142,

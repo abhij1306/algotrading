@@ -211,3 +211,56 @@ def test_vcp_extras_from_the_criteria_results() -> None:
     assert vcp_extras(criteria) == extras
     assert vcp_extras({"stages": [{"criteria": [{"type": "vcp"}]}]}) is None
     assert vcp_extras(None) is None
+
+
+# --- partial exits and PBO inputs ----------------------------------------------------------------
+
+
+def test_leg_shares_sum_to_the_trade() -> None:
+    # 100 shares at 100, stop 95 (risk 500): 40 sold at 110, 60 at 104; fees 10 entry, 4 + 6 sales
+    net, fees = D(40 * 10 + 60 * 4 - 20 + 30), D(20)  # 30 of dividends
+    r = net / D(500)
+    legs = standard.leg_shares(
+        [(40, D(110), D(4)), (60, D(104), D(6))], D(100), D(95), net, fees, r
+    )
+    first, last = legs
+    assert first.fees == D("8.0000")  # its own 4 and 40% of the entry's 10
+    assert first.net == D("404.0000")  # 400 gross on the shares + 40% of 30 dividends - 8
+    assert first.r == D("0.808000")
+    assert first.gross == first.net + first.fees
+    assert sum(leg.net for leg in legs) == net
+    assert sum(leg.fees for leg in legs) == fees
+    assert sum(leg.r for leg in legs) == r
+    assert last.gross == last.net + last.fees
+    (whole,) = standard.leg_shares([(100, D(90), D(5))], D(100), D(95), D(-1010), D(10), D(-2))
+    assert (whole.net, whole.fees, whole.r) == (D(-1010), D(10), D(-2))
+    assert standard.leg_shares([], D(100), D(95), D(0), D(0), D(0)) == []
+
+
+def test_daily_returns_and_the_common_sessions() -> None:
+    d1, d2, d3 = date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 3)
+    returns = standard.daily_returns([(d1, D(110)), (d2, D(0)), (d3, D(5))], D(100))
+    assert returns == pytest.approx({d1: 0.1, d2: -1.0})  # none after a close at 0
+    a = {d1: 0.01, d2: 0.02, d3: 0.03}
+    b = {d2: 0.02, d3: 0.03}  # a rerun of `a` on the common sessions
+    c = {d1: 0.5, d2: -0.01, d3: 0.0}
+    assert standard.distinct_on_common([a, b, c]) == ([[0.02, 0.03], [-0.01, 0.0]], 2)
+    assert standard.distinct_on_common([]) == ([], 0)
+
+
+def test_trade_keys_take_a_trade_once_with_its_last_sale(tmp_path: Path) -> None:
+    run_id = "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b"
+    run = folder.run_dir(tmp_path, run_id)
+    assert run is not None
+    run.mkdir(parents=True)
+    (run / "trades.csv").write_text(
+        "trade_id,leg,symbol,entry_date,exit_date\n"
+        "1,1,INFY,2020-01-02,2020-01-10\n"
+        "1,2,INFY,2020-01-02,2020-02-03\n"
+        "2,1,TCS,2020-01-05,2020-01-20\n",
+        encoding="utf-8",
+    )
+    assert folder.trade_keys(tmp_path, run_id) == [
+        ("INFY", date(2020, 1, 2), date(2020, 2, 3)),
+        ("TCS", date(2020, 1, 5), date(2020, 1, 20)),
+    ]

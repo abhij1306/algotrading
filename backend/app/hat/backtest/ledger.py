@@ -22,6 +22,7 @@ from ..governance import VersionStatus
 from ..models import (
     HatBot,
     HatCorporateAction,
+    HatEvent,
     HatFill,
     HatIndustry,
     HatInstrument,
@@ -39,7 +40,7 @@ from ..models import (
 )
 from ..time import as_utc, trade_date_of
 from .data import MarketData, classifications, scan_night_members
-from .report import FillRow, TradeRow, WatchRow
+from .report import FillRow, LegRow, TradeRow, WatchRow
 from .spec import RunSpec
 
 __all__ = ["exact_flows", "fill_rows", "ledger", "set_series", "trade_rows", "watch_rows"]
@@ -207,6 +208,42 @@ def watch_rows(session: Session, bot_id: uuid.UUID) -> tuple[WatchRow, ...]:
     return tuple(rows)
 
 
+def _legs(
+    session: Session, signal: HatSignal, position: HatPosition, closing: str
+) -> tuple[LegRow, ...]:
+    """The trade's sales in order, each with the rule that sold it: a partial sale's from its
+    `exit.partial` event, in order; the sale that closed the position (and any other) the
+    trade's `closing` reason."""
+    sales = session.execute(
+        select(HatFill.filled_at, HatFill.qty, HatFill.price, HatFill.fees, HatOrder.purpose)
+        .join(HatOrder, HatOrder.id == HatFill.order_id)
+        .where(HatOrder.signal_id == signal.id, HatOrder.side == "sell")
+        .order_by(HatFill.filled_at, HatOrder.placed_at)
+    ).all()
+    partial_rules = iter(
+        str(payload.get("rule") or closing)
+        for payload in session.scalars(
+            select(HatEvent.payload)
+            .where(
+                HatEvent.aggregate_type == "position",
+                HatEvent.aggregate_id == position.id,
+                HatEvent.event_type == "exit.partial",
+            )
+            .order_by(HatEvent.id)
+        )
+    )
+    return tuple(
+        LegRow(
+            day=trade_date_of(as_utc(at)),
+            qty=qty,
+            price=Decimal(price),
+            fees=Decimal(fees),
+            rule=next(partial_rules, closing) if purpose == "exit_partial" else closing,
+        )
+        for at, qty, price, fees, purpose in sales
+    )
+
+
 def trade_rows(
     session: Session, bot_id: uuid.UUID, watched: Sequence[WatchRow]
 ) -> tuple[TradeRow, ...]:
@@ -257,6 +294,7 @@ def trade_rows(
                 else None,
                 final_stop=Decimal(position.current_stop),
                 rules_fired=tuple(position.rules_fired or ()),
+                legs=_legs(session, signal, position, result.exit_reason),
             )
         )
     rows.sort(key=lambda t: (t.exit_date, t.entry_date, t.instrument_id, t.playbook))

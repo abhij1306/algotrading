@@ -216,6 +216,10 @@ data it loads is not the snapshot the run read.
 - `sharpe` and `sortino` use the population deviation of daily returns; `sortino`'s downside
   deviation is the root mean square of the negative excess returns over every session.
 - `cagr_ex_top5_trades_pct` takes the five best trades' net P&L out of the final equity.
+- Added `pbo` (nullable): the probability of backtest overfitting (CSCV, 8 blocks) of the run's
+  family, the completed in-sample runs of its strategy on its universe and the run itself, on the
+  daily returns (from `equity.csv`) of the sessions all of them share; a rerun of the same
+  variant counts once. Null with fewer than 2 distinct variants or under 16 common sessions.
 - `benchmark_cagr_pct` is NIFTY 500 TRI over the run's sessions.
 - `dsr_n_trials` is the number of distinct `resolved_hash` values among the completed in-sample
   runs of the same strategy, this run's included; they are kept in
@@ -263,7 +267,14 @@ before entry). `by_cap_bucket` is keyed `null` while cap is null (below).
 - `trades.csv` adds `liquidity_bucket` after `adv_20d_cr`, and at the end `instrument_id`,
   `playbook`, `engine_exit_reason` (the engine's own exit reason, which the shadow-vs-proxy
   comparison matches) and `auction_risk` (the tags of an exit priced at a close far from live's
-  pre-15:15 price, decisions: close phase). Every trade is one row, `leg` 1: a partial exit's legs are in that row.
+  pre-15:15 price, decisions: close phase; on the closing leg).
+- Partial exits: one row per sale, `leg` 1..n under the trade's `trade_id`. Each leg has its own
+  `qty`, `exit_date`, `exit_price`, `exit_reason` (`partial_target` for a partial rule's sale),
+  `engine_exit_reason` and `hold_sessions`, and its share of the trade's P&L: the entry's fees and
+  the dividends split by shares, `r_net` over the whole position's risk; the last leg takes the
+  remainder, so a trade's legs sum to its net P&L, fees and R exactly. Entry, risk, features,
+  `mfe_r` and `mae_r` are the trade's on every leg. Metrics, breakdowns, `stocks.csv` and
+  `binding` count trades by `trade_id` (a trade's exit date is its last leg's).
 - `exit_reason` adds `trailing_atr`, `breakeven_stop`, `raised_stop` (a hard stop above the
   initial one that no trail is credited with) and the engine's other exits as it names them
   (`early_failure`, `demerger`, `delisted`, ...): `max_hold` is `time_stop`, `pct_gain_target`

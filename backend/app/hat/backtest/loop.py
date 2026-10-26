@@ -1044,6 +1044,8 @@ class _Run:
                 open_positions=0,
                 open_risk=_ZERO,
             )
+            if self.invested:
+                self.invested[-1] = _ZERO  # and holds no position: `invested_share` agrees
 
     def _sync_ladder(self) -> None:
         """Step the exposure ladder for each trade closed since the last step, in close order:

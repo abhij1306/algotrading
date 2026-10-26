@@ -55,7 +55,10 @@ from .report import END_OF_PERIOD
 _PLACES = Decimal("0.000001")
 _SCORE_PLACES = Decimal("0.0001")  # `trades.csv` holds the score to 4 places
 _BPS = Decimal(10000)
+_ZERO = Decimal(0)
 _COLUMNS = (
+    "trade_id",
+    "leg",
     "playbook",
     "instrument_id",
     "entry_date",
@@ -266,6 +269,39 @@ def _cell(row: Mapping[str, str], name: str) -> Decimal | None:
     return None if text == "" else require_exact(text, name)
 
 
+def trades_of(rows: Iterable[Mapping[str, str]], start: date, end: date) -> list[Leg]:
+    """The trades of `trades.csv` rows (their legs by `trade_id`: R summed, the exit reason the
+    last leg's) entered from `start` to `end`. A trade the file cannot price is refused."""
+    by_trade: dict[str, list[Mapping[str, str]]] = defaultdict(list)
+    for row in rows:
+        by_trade[row["trade_id"]].append(row)
+    trades = []
+    try:
+        for legs in by_trade.values():
+            legs.sort(key=lambda row: int(row["leg"]))
+            first, last = legs[0], legs[-1]
+            day = date.fromisoformat(first["entry_date"])
+            if not start <= day <= end:
+                continue
+            entry, rs = _cell(first, "entry_price"), [_cell(row, "r_net") for row in legs]
+            if entry is None or any(r is None for r in rs):
+                raise GapError("gap_no_trades_file")
+            trades.append(
+                Leg(
+                    playbook=first["playbook"],
+                    instrument_id=first["instrument_id"],
+                    entry_date=day,
+                    entry_price=entry,
+                    r_multiple=sum((r for r in rs if r is not None), _ZERO),
+                    exit_reason=last["engine_exit_reason"],
+                    score=_cell(first, "setup_score"),  # empty without a watchlist row
+                )
+            )
+    except (ArithmeticError, ValueError, NotExactError):
+        raise GapError("gap_no_trades_file") from None
+    return trades
+
+
 def proxy_legs(root: Path, run_id: str, start: date, end: date) -> list[Leg]:
     """The run's trades (`trades.csv`) entered from `start` to `end`."""
     text = folder.read_csv(root, run_id, "trades")
@@ -273,29 +309,7 @@ def proxy_legs(root: Path, run_id: str, start: date, end: date) -> list[Leg]:
         raise GapError("gap_no_trades_file")
     reader = csv.DictReader(io.StringIO(text))
     columns_to_read(reader.fieldnames or ())
-    legs = []
-    try:
-        for row in reader:
-            day = date.fromisoformat(row["entry_date"])
-            entry, r = _cell(row, "entry_price"), _cell(row, "r_net")
-            if not start <= day <= end:
-                continue
-            if entry is None or r is None:  # a trade the file cannot price is no trade
-                raise GapError("gap_no_trades_file")
-            legs.append(
-                Leg(
-                    playbook=row["playbook"],
-                    instrument_id=row["instrument_id"],
-                    entry_date=day,
-                    entry_price=entry,
-                    r_multiple=r,
-                    exit_reason=row["engine_exit_reason"],
-                    score=_cell(row, "setup_score"),  # empty without a watchlist row
-                )
-            )
-    except (ArithmeticError, ValueError, NotExactError):
-        raise GapError("gap_no_trades_file") from None
-    return legs
+    return trades_of(reader, start, end)
 
 
 def shadow_gap(

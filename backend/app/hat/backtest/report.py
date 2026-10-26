@@ -96,6 +96,18 @@ class FillRow:
 
 
 @dataclass(frozen=True)
+class LegRow:
+    """One sale of a trade, in order: its session, shares, price, the sale's own fees and the
+    exit rule that sold it (`exit_partial` sales by their partial rule)."""
+
+    day: date
+    qty: int
+    price: Decimal
+    fees: Decimal
+    rule: str
+
+
+@dataclass(frozen=True)
 class TradeRow:
     entry_date: date
     exit_date: date
@@ -124,6 +136,7 @@ class TradeRow:
     exit_price: Decimal | None = None  # the mean sale price over the trade's legs
     final_stop: Decimal | None = None  # the stop when it closed
     rules_fired: tuple[str, ...] = ()  # the exit rule ids that acted on it (`index:rule`)
+    legs: tuple[LegRow, ...] = ()  # its sales in order (none: the trade closed without one)
 
 
 @dataclass(frozen=True)

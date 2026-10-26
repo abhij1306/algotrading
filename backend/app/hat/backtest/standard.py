@@ -262,6 +262,75 @@ def drawdowns(curve: Sequence[tuple[date, Decimal]], start: Decimal) -> Drawdown
     )
 
 
+def daily_returns(curve: Sequence[tuple[date, Decimal]], start: Decimal) -> dict[date, float]:
+    """Each session's return against the close before (the first against `start`), by date; a
+    session after a close at or below 0 has none."""
+    previous = float(start)
+    out: dict[date, float] = {}
+    for day, value in curve:
+        if previous > 0:
+            out[day] = float(value) / previous - 1.0
+        previous = float(value)
+    return out
+
+
+def distinct_on_common(series: Sequence[Mapping[date, float]]) -> tuple[list[list[float]], int]:
+    """The return series on the sessions every one of them has a return for, a series equal to
+    an earlier one's there (a rerun of the same variant) left out, and the common session
+    count: what the family's PBO scores."""
+    common = sorted(set.intersection(*(set(s) for s in series))) if series else []
+    distinct: list[list[float]] = []
+    for s in series:
+        row = [s[d] for d in common]
+        if row not in distinct:
+            distinct.append(row)
+    return distinct, len(common)
+
+
+@dataclass(frozen=True)
+class LegShare:
+    """A sale's share of its trade: gross P&L, fees, net P&L and net R."""
+
+    gross: Decimal
+    fees: Decimal
+    net: Decimal
+    r: Decimal
+
+
+_MONEY = Decimal("0.0001")
+_R = Decimal("0.000001")
+
+
+def leg_shares(
+    legs: Sequence[tuple[int, Decimal, Decimal]],
+    entry: Decimal,
+    stop: Decimal,
+    net: Decimal,
+    fees: Decimal,
+    r: Decimal,
+) -> list[LegShare]:
+    """Each sale's (`qty`, `price`, its own fees) share of a trade with net P&L `net`, all fees
+    `fees` and net R `r`: the entry's fees and the dividends by shares, the R over the whole
+    position's risk. The last sale takes what is left, so the legs sum to the trade exactly."""
+    if not legs:
+        return []
+    shares = sum(q for q, _, _ in legs)
+    entry_fees = fees - sum((f for _, _, f in legs), Decimal(0))
+    dividends = net - (sum(((p - entry) * q for q, p, _ in legs), Decimal(0)) - fees)
+    risk = (entry - stop) * shares
+    out: list[LegShare] = []
+    for q, price, own in legs[:-1]:
+        leg_fees = (own + entry_fees * q / shares).quantize(_MONEY)
+        leg_net = ((price - entry) * q + dividends * q / shares - leg_fees).quantize(_MONEY)
+        leg_r = (leg_net / risk).quantize(_R) if risk > 0 else Decimal(0)
+        out.append(LegShare(leg_net + leg_fees, leg_fees, leg_net, leg_r))
+    last_fees = fees - sum((leg.fees for leg in out), Decimal(0))
+    last_net = net - sum((leg.net for leg in out), Decimal(0))
+    last_r = r - sum((leg.r for leg in out), Decimal(0))
+    out.append(LegShare(last_net + last_fees, last_fees, last_net, last_r))
+    return out
+
+
 def max_consecutive_losses(rs: Iterable[Decimal]) -> int:
     """The longest run of trades with net R <= 0, in exit order."""
     longest = run = 0

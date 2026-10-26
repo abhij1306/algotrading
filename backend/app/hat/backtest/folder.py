@@ -30,7 +30,7 @@ from typing import Any
 from app.paths import BACKTEST_SCHEMA
 
 from ..money import exact
-from .report import BacktestResult, SignalRow, TradeRow
+from .report import BacktestResult, LegRow, SignalRow, TradeRow
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
 from .spec import BacktestError
 from .standard import (
@@ -39,8 +39,10 @@ from .standard import (
     binding,
     breadth_bucket,
     cagr_pct,
+    daily_returns,
     drawdowns,
     exit_code,
+    leg_shares,
     max_consecutive_losses,
     refusal_code,
     sharpe,
@@ -58,6 +60,7 @@ __all__ = [
     "publish",
     "read_config",
     "read_csv",
+    "read_returns",
     "read_run",
     "run_dir",
     "runs_dir",
@@ -222,18 +225,40 @@ def read_csv(root: Path, run_id: str, name: str) -> str | None:
 
 
 def trade_keys(root: Path, run_id: str) -> list[tuple[str, date, date]] | None:
-    """The run's (symbol, entry date, exit date) per trade, what binding compares; None
-    without a readable `trades.csv`."""
+    """The run's (symbol, entry date, exit date) per trade (its legs by `trade_id`, the last
+    sale's date), what binding compares; None without a readable `trades.csv`."""
     text = read_csv(root, run_id, "trades")
     if text is None:
         return None
+    found: dict[str, tuple[str, date, date]] = {}
     try:
-        return [
-            (r["symbol"], date.fromisoformat(r["entry_date"]), date.fromisoformat(r["exit_date"]))
+        for r in csv.DictReader(io.StringIO(text)):
+            symbol, entry = r["symbol"], date.fromisoformat(r["entry_date"])
+            exit_day = date.fromisoformat(r["exit_date"])
+            known = found.get(r["trade_id"])
+            found[r["trade_id"]] = (symbol, entry, max(exit_day, known[2] if known else exit_day))
+    except (KeyError, ValueError):
+        return None
+    return list(found.values())
+
+
+def read_returns(root: Path, run_id: str) -> dict[date, float] | None:
+    """A run's daily returns from its `equity.csv` and its start capital; None when it has no
+    readable equity file."""
+    run, text = read_run(root, run_id), read_csv(root, run_id, "equity")
+    start = exact(((run or {}).get("config") or {}).get("start_capital"), floats=True)
+    if text is None or start is None:
+        return None
+    try:
+        curve = [
+            (date.fromisoformat(r["date"]), exact(r["equity"]))
             for r in csv.DictReader(io.StringIO(text))
         ]
     except (KeyError, ValueError):
         return None
+    if any(value is None for _, value in curve):
+        return None
+    return daily_returns([(d, v) for d, v in curve if v is not None], start)
 
 
 def list_runs(root: Path) -> list[dict[str, Any]]:
@@ -323,7 +348,7 @@ def publish(
 class RunInputs:
     """What a run's documents are built from besides its result: its `identity`, `data` and
     `config` blocks as run.json holds them, its start capital and policy cap (the refusal
-    split), the NIFTY 500 TRI closes, the base run's trades (None: no base), and the DSR."""
+    split), the NIFTY 500 TRI closes, the base run's trades (None: no base), the DSR and the PBO."""
 
     identity: Mapping[str, Any]
     data: Mapping[str, Any]
@@ -334,6 +359,7 @@ class RunInputs:
     base_trades: Sequence[tuple[str, date, date]] | None = None
     dsr_prob: float | None = None
     dsr_n_trials: int | None = None
+    pbo: float | None = None  # the family's probability of backtest overfitting (None: unscored)
     rf_pct: float = 0.0
 
 
@@ -485,7 +511,18 @@ def _position_pct_adv(t: _Trade) -> float | None:
     return _f(t.row.entry_price * t.row.qty / (adv * CRORE) * _HUNDRED)
 
 
+def _legs_of(row: TradeRow) -> tuple[LegRow, ...]:
+    """The trade's sales; one closing leg of the whole position for a trade with none."""
+    if row.legs:
+        return row.legs
+    price = row.entry_price if row.exit_price is None else row.exit_price
+    return (LegRow(row.exit_date, row.qty, price, _ZERO, row.exit_reason),)
+
+
 def _trade_rows(run_id: str, trades: Sequence[_Trade]) -> list[dict[str, Any]]:
+    """One row per leg (a sale) of each trade, numbered from 1 under the trade's `trade_id`:
+    its shares, exit, and its share of the trade's P&L, fees and R (`leg_shares`); the trade's
+    entry, risk and features on every leg."""
     out = []
     for t in trades:
         row, signal = t.row, t.signal
@@ -493,43 +530,56 @@ def _trade_rows(run_id: str, trades: Sequence[_Trade]) -> list[dict[str, Any]]:
         prior, stopouts = _history(
             trades, t.features.get("symbol") or row.instrument_id, row.entry_date
         )
-        out.append(
-            {
-                **t.features,
-                **_context(signal),
-                "run_id": run_id,
-                "trade_id": t.trade_id,
-                "leg": 1,
-                "symbol": t.features.get("symbol") or row.instrument_id,
-                "signal_date": None if signal is None else signal.scan_date,
-                "entry_date": row.entry_date,
-                "entry_price": row.entry_price,
-                "initial_stop": row.initial_stop,
-                "risk_per_share": risk,
-                "qty": row.qty,
-                "risk_pct_equity": _pct_of(
-                    risk * row.qty, None if signal is None else signal.equity
-                ),
-                "exit_date": row.exit_date,
-                "exit_price": None if row.exit_price is None else round(row.exit_price, 4),
-                "exit_reason": t.exit,
-                "hold_sessions": row.holding_days,
-                "gross_pnl": row.realized_pnl + row.fees,
-                "fees": row.fees,
-                "net_pnl": row.realized_pnl,
-                "r_net": row.r_multiple,
-                "mfe_r": row.mfe_r,
-                "mae_r": row.mae_r,
-                "mfe_date": row.mfe_date,
-                "position_pct_adv": _position_pct_adv(t),
-                "prior_trades_symbol": prior,
-                "prior_stopouts_symbol_90d": stopouts,
-                "instrument_id": row.instrument_id,
-                "playbook": row.playbook,
-                "engine_exit_reason": row.exit_reason,
-                "auction_risk": row.auction_risk,
-            }
+        legs = _legs_of(row)
+        shares = leg_shares(
+            [(leg.qty, leg.price, leg.fees) for leg in legs],
+            row.entry_price,
+            row.initial_stop,
+            row.realized_pnl,
+            row.fees,
+            row.r_multiple,
         )
+        for n, (leg, share) in enumerate(zip(legs, shares, strict=True), start=1):
+            last = n == len(legs)
+            out.append(
+                {
+                    **t.features,
+                    **_context(signal),
+                    "run_id": run_id,
+                    "trade_id": t.trade_id,
+                    "leg": n,
+                    "symbol": t.features.get("symbol") or row.instrument_id,
+                    "signal_date": None if signal is None else signal.scan_date,
+                    "entry_date": row.entry_date,
+                    "entry_price": row.entry_price,
+                    "initial_stop": row.initial_stop,
+                    "risk_per_share": risk,
+                    "qty": leg.qty,
+                    "risk_pct_equity": _pct_of(
+                        risk * row.qty, None if signal is None else signal.equity
+                    ),
+                    "exit_date": leg.day,
+                    "exit_price": round(leg.price, 4),
+                    "exit_reason": t.exit
+                    if last
+                    else exit_code(leg.rule, row.initial_stop, row.final_stop, row.rules_fired),
+                    "hold_sessions": max(0, (leg.day - row.entry_date).days),
+                    "gross_pnl": share.gross,
+                    "fees": share.fees,
+                    "net_pnl": share.net,
+                    "r_net": share.r,
+                    "mfe_r": row.mfe_r,
+                    "mae_r": row.mae_r,
+                    "mfe_date": row.mfe_date,
+                    "position_pct_adv": _position_pct_adv(t),
+                    "prior_trades_symbol": prior,
+                    "prior_stopouts_symbol_90d": stopouts,
+                    "instrument_id": row.instrument_id,
+                    "playbook": row.playbook,
+                    "engine_exit_reason": leg.rule if not last else row.exit_reason,
+                    "auction_risk": row.auction_risk if last else None,
+                }
+            )
     return out
 
 
@@ -612,6 +662,7 @@ def _metrics(
         "longest_dd_end": None if dd.longest_end is None else dd.longest_end.isoformat(),
         "dsr_prob": _f(inputs.dsr_prob, 6),
         "dsr_n_trials": inputs.dsr_n_trials,
+        "pbo": _f(inputs.pbo, 6),
         "total_return_pct": _f((final / start - 1) * 100) if start > 0 else None,
         "final_equity": _money(final),
         "fees": _money(fees),
