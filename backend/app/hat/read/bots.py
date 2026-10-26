@@ -7,12 +7,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot, Strategy
+from ..configs.unit import configs_of
 from ..data.calendar import session_calendar
 from ..execution.modes import ModeView, mode_view
-from ..models import HatBot, HatStrategy
 from ..risk import kill
 from .kill import kill_rows, manage_only_reasons
 
@@ -34,22 +34,23 @@ class BotRow:
 
 
 def labels(session: Session, bot_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Each bot's strategy name, else the start of its id, read in one query (a bot that does
-    not exist is left out)."""
-    rows = session.execute(
-        select(HatBot.id, HatStrategy.name)
-        .outerjoin(HatStrategy, HatStrategy.id == HatBot.strategy_id)
-        .where(HatBot.id.in_(set(bot_ids)))
-    )
-    return {bot_id: name or str(bot_id)[:8] for bot_id, name in rows}
+    """Each bot's strategy name, else the start of its id (a bot that does not exist is left
+    out)."""
+    configs = configs_of(session)
+    wanted = set(bot_ids)
+    out = {}
+    for bot in configs.all(Bot, lambda b: b.id in wanted):
+        strategy = configs.get(Strategy, bot.strategy_id)
+        out[bot.id] = strategy.name if strategy is not None else str(bot.id)[:8]
+    return out
 
 
-def label_of(session: Session, bot: HatBot) -> str:
+def label_of(session: Session, bot: Bot) -> str:
     return labels(session, (bot.id,))[bot.id]
 
 
-def all_bots(session: Session) -> list[HatBot]:
-    return list(session.scalars(select(HatBot).order_by(HatBot.id)))
+def all_bots(session: Session) -> list[Bot]:
+    return configs_of(session).all(Bot)
 
 
 def bot_rows(

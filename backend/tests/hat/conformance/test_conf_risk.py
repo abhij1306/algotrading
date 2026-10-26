@@ -6,9 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT
-from sqlalchemy.orm import Session
 
 from app.hat.risk.policy import (
     OPTIONAL_FIELDS,
@@ -48,35 +46,35 @@ def test_risk__policy_schema_fields() -> None:
 
 
 def test_risk__no_risk_keys_in_strategy_schema() -> None:
-    """No bot, strategy or strategy-version column carries a policy field."""
+    """No bot, strategy or strategy-version field carries a policy field."""
+    from app.hat.configs.records import Bot, Strategy, StrategyVersion
+
     names = set(POLICY_FIELDS) | {p.split(".")[-1] for p in _policy_paths()}
-    tables = hat_tables()
-    for table in ("hat_bot", "hat_strategy", "hat_strategy_version"):
-        for column in tables[table].columns:
-            assert column.name not in names, f"{table}.{column.name}"
-            assert not re.search(r"risk_pct|p_max|adv_cap|drawdown|stopout", column.name), (
-                table,
-                column.name,
-            )
+    for kind in (Bot, Strategy, StrategyVersion):
+        for name in kind.FIELDS:
+            assert name not in names, f"{kind.KIND}.{name}"
+            assert not re.search(r"risk_pct|p_max|adv_cap|drawdown|stopout", name), (kind, name)
 
 
 def test_initial_risk_policy_seed() -> None:
     """Seeding writes version 1, direction initial, effective at once, with the seed
     policy and both governance events, and seeding again changes nothing."""
-    from hat_support import memory_engine
+    from hat_support import memory_engine, memory_session
     from sqlalchemy import select
 
-    from app.hat.models import HatEvent, HatRiskPolicyVersion
+    from app.hat.configs.records import RiskPolicyVersion
+    from app.hat.configs.unit import configs_of
+    from app.hat.models import HatEvent
     from app.hat.risk.policy_service import seed_initial_policy
     from app.hat.settings import load_settings
 
     user = load_settings().user_id
-    with Session(memory_engine()) as session:
+    with memory_session(memory_engine()) as session:
         first = seed_initial_policy(session, user, datetime.now(UTC))
         again = seed_initial_policy(session, user, datetime.now(UTC))
         session.commit()
         assert first.id == again.id
-        rows = session.scalars(select(HatRiskPolicyVersion)).all()
+        rows = configs_of(session).all(RiskPolicyVersion)
         assert len(rows) == 1
         assert (rows[0].version, rows[0].direction) == (1, "initial")
         assert rows[0].policy == seed_policy().to_json()

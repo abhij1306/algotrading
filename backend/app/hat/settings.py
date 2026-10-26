@@ -1,7 +1,7 @@
 """HAT settings from environment variables (HAT-OPS-001, HAT-OVR-007, HAT-OVR-052).
 
 `HAT_ENABLED` defaults to false, so a developer machine or a test run never starts a HAT task.
-`HAT_BROKER` names the one active order broker (`models.strategy.BROKERS`, default the first):
+`HAT_BROKER` names the one active order broker (`configs.records.BROKERS`, default the first):
 every order, stop and broker read goes to it, and an account of another broker gets no adapter.
 Any other value refuses the start (`HatConfigError`): switching brokers is this setting and a
 login, never two brokers at once. Market data stays on the data socket's broker either way.
@@ -45,8 +45,8 @@ from app.paths import ENV_FILE, HAT_DATA_ROOT
 from app.utils.env_loader import TRUE_VALUES, load_dotenv
 
 from .broker_limits import PLAN_CALLS_PER_DAY
+from .configs.records import BROKERS
 from .errors import HatConfigError
-from .models.strategy import BROKERS
 from .money import exact
 
 # MVP is single user (decision T1): one fixed tenant id unless HAT_USER_ID overrides it.

@@ -14,8 +14,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import BROKER_FYERS, BROKER_ZERODHA
 from ..models import HatBrokerSymbol, HatInstrument
-from ..models.strategy import BROKER_FYERS, BROKER_ZERODHA
 from ..time import utc_now
 from .instruments import ReferenceDataError
 from .kite_symbols import KiteListing, kite_symbol, plausible_refresh

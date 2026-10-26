@@ -9,18 +9,16 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from datetime import UTC, date, datetime, timedelta
+from datetime import date
 from decimal import Decimal
 
 import hat_db_builders as b
-from sqlalchemy import Connection, Engine, delete, select, text, update
+from sqlalchemy import Connection, Engine, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
-from app.hat.governance import Mode
 from app.hat.ids import uuid7
-
-SEVEN_DAYS = timedelta(days=7)
+from app.hat.schema import ensure_live_schema, ensure_state_schema
 
 
 def rejects(conn: Connection, what: str, action: Callable[[], object]) -> None:
@@ -167,20 +165,6 @@ def check_reference__band_pct_check(conn: Connection) -> None:
 
 def _domain_cases(conn: Connection) -> list[tuple[str, Callable[[str], None], tuple, tuple]]:
     """(column, insert-with-that-value, good values, bad values) for every domain column."""
-    market = b.market(conn)
-    strategy = b.strategy(conn, market)
-    account = b.broker_account(conn)
-    counter = iter(range(1, 10_000))
-
-    def version(status: str) -> None:
-        b.strategy_version(conn, strategy, next(counter), status=status)
-
-    def risk(direction: str) -> None:
-        # a far-future effective date keeps the cooling-off CHECK out of this domain check
-        b.risk_policy(conn, next(counter), direction=direction, effective_from=b.later(30))
-
-    def bot_row(column: str) -> Callable[[str], None]:
-        return lambda value: b.bot(conn, strategy, account, **{column: value})
 
     def kill(column: str) -> Callable[[str], None]:
         def make(value: str) -> None:
@@ -191,7 +175,7 @@ def _domain_cases(conn: Connection) -> list[tuple[str, Callable[[str], None], tu
         return make
 
     def exposure(value: str) -> None:
-        other = b.bot(conn, strategy, account)
+        other = uuid7()  # a bot id: the sleeve is a config record, named by a plain column
         b.add(
             conn,
             m.HatExposureState,
@@ -202,57 +186,10 @@ def _domain_cases(conn: Connection) -> list[tuple[str, Callable[[str], None], tu
             updated_at=b.NOW,
         )
 
-    def criterion(value: str) -> None:
-        b.add(
-            conn,
-            m.HatCriterionType,
-            code=f"c{next(counter)}",
-            version=1,
-            stage=value,
-            param_schema={},
-            data_needs={},
-        )
-
     return [
-        (
-            "hat_strategy_version.status",
-            version,
-            ("draft", "frozen", "trial", "superseded"),
-            ("", "signal", "RELEASED", "backtested", "shadow", "live", "retired"),
-        ),
-        (
-            "hat_risk_policy_version.direction",
-            risk,
-            ("initial", "increase", "decrease"),
-            ("", "raise", "INCREASE"),
-        ),
-        (
-            "hat_bot.execution_mode",
-            bot_row("execution_mode"),
-            tuple(Mode),
-            ("", "signal", "AUTO", "live"),
-        ),
-        (
-            "hat_bot.status",
-            bot_row("status"),
-            ("active", "paused", "manage_only"),
-            ("", "stopped", "ACTIVE"),
-        ),
-        (
-            "hat_bot.lifecycle_state",
-            bot_row("lifecycle_state"),
-            ("research", "backtested", "shadow", "live", "probation", "retired"),
-            ("", "draft", "Live"),
-        ),
         ("hat_kill_switch.scope", kill("scope"), ("account",), ("", "global", "user")),
         ("hat_kill_switch.state", kill("state"), ("tripped", "armed"), ("", "off", "TRIPPED")),
         ("hat_exposure_state.level", exposure, ("L1", "L2", "L3"), ("", "L0", "L4", "l1")),
-        (
-            "hat_criterion_type.stage",
-            criterion,
-            ("universe", "setup", "trigger", "entry_filter"),
-            ("", "exit", "Setup"),
-        ),
     ]
 
 
@@ -262,42 +199,10 @@ def check_governance__domain_checks(conn: Connection) -> None:
             accepts(conn, f"{column} = {value!r}", lambda v=value, f=make: f(v))
         for value in bad:
             rejects(conn, f"{column} = {value!r}", lambda v=value, f=make: f(v))
-    # Updates are held to the same domains.
-    market = b.market(conn)
-    strategy = b.strategy(conn, market)
-    bot = b.bot(conn, strategy, b.broker_account(conn))
-    rejects(
-        conn,
-        "updating hat_bot.execution_mode to 'signal'",
-        lambda: conn.execute(
-            update(m.HatBot.__table__).where(m.HatBot.id == bot).values(execution_mode="signal")
-        ),
-    )
-    # A bot starts in shadow mode (B2), whether or not the writer says so.
-    raw = uuid7()
-    accepts(
-        conn,
-        "a bot row that does not name an execution mode",
-        lambda: conn.execute(
-            text(
-                "INSERT INTO hat_bot (id, user_id, strategy_id, broker_account_id, status,"
-                " lifecycle_state, risk_cluster) SELECT :id, user_id, strategy_id,"
-                " broker_account_id, status, lifecycle_state, risk_cluster"
-                " FROM hat_bot WHERE id = :bot"
-            ),
-            {"id": raw, "bot": bot},
-        ),
-    )
-    assert (
-        scalar(conn, text("SELECT execution_mode FROM hat_bot WHERE id = :i").bindparams(i=raw))
-        == "confirm"
-    )
 
 
 def check_governance__kill_switch_scope_check(conn: Connection) -> None:
-    market = b.market(conn)
-    strategy = b.strategy(conn, market)
-    bot = b.bot(conn, strategy, b.broker_account(conn))
+    bot = uuid7()
 
     def kill(scope: str, bot_id: uuid.UUID | None) -> None:
         b.add(
@@ -317,10 +222,7 @@ def check_governance__kill_switch_scope_check(conn: Connection) -> None:
 
 
 def check_governance__exposure_checks(conn: Connection) -> None:
-    market = b.market(conn)
-    strategy = b.strategy(conn, market)
-    account = b.broker_account(conn)
-    bot = b.bot(conn, strategy, account)
+    bot = uuid7()
 
     def exposure(bot_id: uuid.UUID, level: str = "L1", wins: int = 0, losses: int = 0) -> None:
         b.add(
@@ -335,7 +237,7 @@ def check_governance__exposure_checks(conn: Connection) -> None:
 
     exposure(bot)
     rejects(conn, "a second exposure row for one bot", lambda: exposure(bot, "L2"))
-    other = b.bot(conn, strategy, account)
+    other = uuid7()
     rejects(conn, "level L4", lambda: exposure(other, "L4"))
     rejects(conn, "a negative win counter", lambda: exposure(other, wins=-1))
     rejects(conn, "a negative loss counter", lambda: exposure(other, losses=-1))
@@ -352,15 +254,7 @@ def check_portfolio__unique_keys(conn: Connection) -> None:
     rejects(conn, "a duplicate (universe, version)", lambda: b.universe_version(conn, universe, 1))
     accepts(conn, "the next universe version", lambda: b.universe_version(conn, universe, 2))
 
-    model = b.add(
-        conn,
-        m.HatRegimeModelVersion,
-        market_id=market,
-        kind="rules",
-        version=1,
-        status="live",
-        config={},
-    )
+    model = uuid7()  # a regime model version: a config record, named by a plain column
 
     def regime(day: date) -> None:
         b.add(
@@ -380,8 +274,7 @@ def check_portfolio__unique_keys(conn: Connection) -> None:
     )
     accepts(conn, "another date", lambda: regime(date(2026, 10, 20)))
 
-    strategy = b.strategy(conn, market)
-    bot = b.bot(conn, strategy, b.broker_account(conn))
+    bot = uuid7()
 
     def allocation(day: date) -> None:
         b.add(
@@ -410,23 +303,7 @@ def check_portfolio__domain_checks(conn: Connection) -> None:
     for kind in ("", "auto", "Manual", "etf"):
         rejects(conn, f"universe kind {kind!r}", lambda k=kind: b.universe(conn, market, k))
 
-    def model(kind: str) -> uuid.UUID:
-        return b.add(
-            conn,
-            m.HatRegimeModelVersion,
-            market_id=market,
-            kind=kind,
-            version=1,
-            status="x",
-            config={},
-        )  # type: ignore[return-value]
-
-    for kind in ("rules", "hmm", "gmm"):
-        accepts(conn, f"regime model kind {kind}", lambda k=kind: model(k))
-    for kind in ("", "ml", "HMM"):
-        rejects(conn, f"regime model kind {kind!r}", lambda k=kind: model(k))
-
-    parent = model("rules")
+    parent = uuid7()
 
     def state(value: str, day: date) -> None:
         b.add(
@@ -523,90 +400,9 @@ def check_ops__job_run_unique_concurrent(engine: Engine) -> None:
             connection.execute(text("DELETE FROM hat_job_run WHERE job = :job"), {"job": job})
 
 
-def check_ops__family_key_not_null(conn: Connection) -> None:
-    market = b.market(conn)
-    version = b.strategy_version(conn, b.strategy(conn, market))
-    policy = b.risk_policy(conn)
-    rejects(
-        conn,
-        "a backtest run with no family_key",
-        lambda: b.backtest_run(conn, version, policy, family_key=None),
-    )
-    accepts(conn, "a backtest run with a family_key", lambda: b.backtest_run(conn, version, policy))
-
-
 # --- governance (.. 087) -----------------------------------------------------
 
 NON_DRAFT = ("backtested", "shadow", "live", "retired")  # a universe version's
-VERSION_NON_DRAFT = ("frozen", "trial", "released", "superseded")  # a strategy version's
-
-
-def _published_version(
-    conn: Connection, strategy: uuid.UUID, number: int, status: str
-) -> uuid.UUID:
-    """A strategy version moved from draft to `status` (a released one with its evidence)."""
-    version = b.strategy_version(conn, strategy, number)
-    values: dict[str, object] = {"status": status}
-    if status == "released":
-        policy = b.risk_policy(conn, number)
-        run = b.backtest_run(conn, version, policy)
-        values.update(backtest_run_id=run, shadow_started_at=b.NOW)
-    conn.execute(
-        update(m.HatStrategyVersion.__table__)
-        .where(m.HatStrategyVersion.id == version)
-        .values(**values)
-    )
-    return version
-
-
-def check_governance__version_config_immutable(conn: Connection) -> None:
-    market = b.market(conn)
-    table = m.HatStrategyVersion.__table__
-    draft = b.strategy_version(conn, b.strategy(conn, market), 1)
-    accepts(
-        conn,
-        "changing a draft's config",
-        lambda: conn.execute(
-            update(table).where(table.c.id == draft).values(config={"a": 2}, config_hash="h2")
-        ),
-    )
-    for number, status in enumerate(VERSION_NON_DRAFT, start=2):
-        # one strategy per version, so a released one never meets another released one
-        version = _published_version(conn, b.strategy(conn, market), number, status)
-        for new in ({"a": 3}, {"x": [1, 2]}, {}):
-            rejects(
-                conn,
-                f"changing the config of a {status} version",
-                lambda n=new, v=version: conn.execute(
-                    update(table).where(table.c.id == v).values(config=n)
-                ),
-            )
-        rejects(
-            conn,
-            f"changing the config_hash of a {status} version",
-            lambda v=version: conn.execute(
-                update(table).where(table.c.id == v).values(config_hash="zzz")
-            ),
-        )
-        rejects(
-            conn,
-            f"sending a {status} version back to draft",
-            lambda v=version: conn.execute(
-                update(table).where(table.c.id == v).values(status="draft")
-            ),
-        )
-        row = conn.execute(
-            select(table.c.config, table.c.config_hash).where(table.c.id == version)
-        ).one()
-        assert row.config == {"a": 1}, f"{status} config changed"
-        assert row.config_hash == "h", f"{status} config hash changed"
-        accepts(
-            conn,
-            f"a non-config update of a {status} version",
-            lambda v=version: conn.execute(
-                update(table).where(table.c.id == v).values(promoted_at=b.NOW)
-            ),
-        )
 
 
 def check_governance__universe_version_immutable(conn: Connection) -> None:
@@ -643,181 +439,14 @@ def check_governance__universe_version_immutable(conn: Connection) -> None:
         assert stored.config_hash == "h"
 
 
-def check_governance__one_released_version(conn: Connection) -> None:
-    market = b.market(conn)
-    table = m.HatStrategyVersion.__table__
-    strategy = b.strategy(conn, market)
-    first = _published_version(conn, strategy, 1, "released")
-    second = b.strategy_version(conn, strategy, 2)
-    evidence = b.backtest_run(conn, second, b.risk_policy(conn, 99))
-    go_live = {"status": "released", "backtest_run_id": evidence, "shadow_started_at": b.NOW}
-    rejects(
-        conn,
-        "a second released version of one strategy",
-        lambda: conn.execute(update(table).where(table.c.id == second).values(**go_live)),
-    )
-    other = b.strategy(conn, market)
-    accepts(
-        conn,
-        "a released version of another strategy",
-        lambda: _published_version(conn, other, 3, "released"),
-    )
-    accepts(
-        conn,
-        "superseding the released version",
-        lambda: conn.execute(update(table).where(table.c.id == first).values(status="superseded")),
-    )
-    accepts(
-        conn,
-        "releasing once the other is superseded",
-        lambda: conn.execute(update(table).where(table.c.id == second).values(**go_live)),
-    )
-
-    universe = b.universe(conn, market)
-    b.universe_version(conn, universe, 1, status="live")
-    rejects(
-        conn,
-        "a second live version of one universe",
-        lambda: b.universe_version(conn, universe, 2, status="live"),
-    )
-    accepts(
-        conn,
-        "a draft next to the live universe version",
-        lambda: b.universe_version(conn, universe, 3),
-    )
-    accepts(
-        conn,
-        "a live version of another universe",
-        lambda: b.universe_version(conn, b.universe(conn, market), 1, status="live"),
-    )
-
-
-def check_governance__release_requires_evidence(conn: Connection) -> None:
-    market = b.market(conn)
-    table = m.HatStrategyVersion.__table__
-    strategy = b.strategy(conn, market)
-    seed = b.strategy_version(conn, strategy, 1)
-    run = b.backtest_run(conn, seed, b.risk_policy(conn))
-    cases = {
-        "no backtest run": {"backtest_run_id": None, "shadow_started_at": b.NOW},
-        "no shadow start": {"backtest_run_id": run, "shadow_started_at": None},
-        "neither": {"backtest_run_id": None, "shadow_started_at": None},
-    }
-    for number, (label, values) in enumerate(cases.items(), start=10):
-        rejects(
-            conn,
-            f"inserting a released version with {label}",
-            lambda n=number, v=values: b.strategy_version(
-                conn, b.strategy(conn, market), n, status="released", **v
-            ),
-        )
-        candidate = b.strategy_version(conn, b.strategy(conn, market), number + 10)
-        rejects(
-            conn,
-            f"updating a version to released with {label}",
-            lambda c=candidate, v=values: conn.execute(
-                update(table).where(table.c.id == c).values(status="released", **v)
-            ),
-        )
-    accepts(
-        conn,
-        "a released version with a backtest run and a shadow start",
-        lambda: b.strategy_version(
-            conn,
-            b.strategy(conn, market),
-            50,
-            status="released",
-            backtest_run_id=run,
-            shadow_started_at=b.NOW,
-        ),
-    )
-
-
-COOLING_OFFSETS = (
-    timedelta(days=-3),
-    timedelta(0),
-    timedelta(hours=1),
-    timedelta(days=1),
-    timedelta(days=6, hours=23, minutes=59, seconds=59, microseconds=999999),
-    SEVEN_DAYS - timedelta(microseconds=1),
-    SEVEN_DAYS,
-    SEVEN_DAYS + timedelta(microseconds=1),
-    timedelta(days=30),
-)
-
-
-def check_governance__risk_increase_cooling_off(conn: Connection) -> None:
-    requested = datetime(2026, 10, 20, 3, 30, 15, 123456, tzinfo=UTC)
-    number = 0
-    for direction in ("initial", "increase", "decrease"):
-        for offset in COOLING_OFFSETS:
-            number += 1
-
-            def write(n: int = number, d: str = direction, o: timedelta = offset) -> None:
-                b.risk_policy(
-                    conn, n, direction=d, requested_at=requested, effective_from=requested + o
-                )
-
-            if direction == "increase" and offset < SEVEN_DAYS:
-                rejects(conn, f"an increase effective {offset} after its request", write)
-            else:
-                accepts(conn, f"a {direction} effective {offset} after its request", write)
-
-
-def check_governance__risk_version_immutable(conn: Connection) -> None:
-    table = m.HatRiskPolicyVersion.__table__
-    row = b.risk_policy(conn, 1)
-    before = conn.execute(select(table).where(table.c.id == row)).one()
-    changes = {
-        "policy": {"risk_pct": "9"},
-        "direction": "decrease",
-        "version": 7,
-        "effective_from": b.later(-5),
-        "requested_at": b.later(1),
-        "user_id": uuid.uuid4(),
-        "gate_evidence": {"ok": True},
-    }
-    for column, value in changes.items():
-        rejects(
-            conn,
-            f"changing {column} of a risk policy version",
-            lambda c=column, v=value: conn.execute(
-                update(table).where(table.c.id == row).values(**{c: v})
-            ),
-        )
-    rejects(
-        conn,
-        "deleting a risk policy version",
-        lambda: conn.execute(delete(table).where(table.c.id == row)),
-    )
-    assert conn.execute(select(table).where(table.c.id == row)).one() == before
-    accepts(
-        conn,
-        "setting superseded_at on a current version",
-        lambda: conn.execute(
-            update(table).where(table.c.id == row).values(superseded_at=b.later(1))
-        ),
-    )
-    rejects(
-        conn,
-        "changing superseded_at once set",
-        lambda: conn.execute(
-            update(table).where(table.c.id == row).values(superseded_at=b.later(2))
-        ),
-    )
-    rejects(
-        conn,
-        "changing any column of a superseded version",
-        lambda: conn.execute(update(table).where(table.c.id == row).values(policy={"x": 1})),
-    )
-    rejects(
-        conn,
-        "deleting a superseded version",
-        lambda: conn.execute(delete(table).where(table.c.id == row)),
-    )
-
-
 # --- migration ------------------------------------------------
+
+
+def ensure_both_schemas(bind: Engine | Connection) -> None:
+    """hat_live's and hat_state's upkeep, on the one test database."""
+    ensure_live_schema(bind)
+    ensure_state_schema(bind)
+
 
 CATALOG_QUERIES = {
     "tables": (

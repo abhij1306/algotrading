@@ -1,6 +1,6 @@
-"""Ops tables: job runs and quality-gate results (PR 2); broker sessions,
-Telegram messages, the command log and daily bot snapshots (PR 3); the Telegram cursors
-(PR 16); the quality quarantine (PR 33)."""
+"""Ops tables. hat_live: the quality-gate results and the quality quarantine (the data
+pipeline writes them). hat_state: job runs, broker sessions, Telegram messages and cursors, the
+command log and the daily bot snapshots."""
 
 from sqlalchemy import (
     BigInteger,
@@ -15,8 +15,8 @@ from sqlalchemy import (
     text,
 )
 
-from ...base import Base
-from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, in_values, now_utc, uuid_pk
+from ...base import Base, StateBase
+from ._types import Currency, JsonB, Money, Ratio, Timestamptz, fk, in_values, now_utc, ref, uuid_pk
 
 __all__ = [
     "JOB_STATUSES",
@@ -33,7 +33,7 @@ __all__ = [
 JOB_STATUSES = ("running", "succeeded", "failed")
 
 
-class HatJobRun(Base):
+class HatJobRun(StateBase):
     """One row per (job, trade_date): the unique key makes every job idempotent (T7)."""
 
     __tablename__ = "hat_job_run"
@@ -67,7 +67,8 @@ class HatQualityCheck(Base):
         CheckConstraint(in_values("status", ("PASS", "FAIL")), name="ck_hat_quality_check_status"),
     )
 
-    job_run_id = fk("hat_job_run.id", primary_key=True)
+    # the hat_state job run that checked (a plain column: the run is in the other database)
+    job_run_id = ref(primary_key=True)
     check_name = Column(Text, primary_key=True)
     status = Column(Text, nullable=False)
     detail = Column(JsonB, nullable=False)
@@ -92,19 +93,19 @@ class HatQualityQuarantine(Base):
     released_by = Column(Text)
 
 
-class HatBrokerSession(Base):
+class HatBrokerSession(StateBase):
     """Morning login state."""
 
     __tablename__ = "hat_broker_session"
 
-    broker_account_id = fk("hat_broker_account.id", primary_key=True)
+    broker_account_id = ref(primary_key=True)
     trade_date = Column(Date, primary_key=True)
     logged_in_at = Column(Timestamptz)
     expires_at = Column(Timestamptz)
     status = Column(Text, nullable=False)
 
 
-class HatTelegramMessage(Base):
+class HatTelegramMessage(StateBase):
     """Links cards to signals. Purged after one year (HAT-SCH-091)."""
 
     __tablename__ = "hat_telegram_message"
@@ -117,7 +118,7 @@ class HatTelegramMessage(Base):
     message_id = Column(BigInteger, nullable=False)
 
 
-class HatCommandLog(Base):
+class HatCommandLog(StateBase):
     """Every inbound command, including rejected ones from unknown chats. Purged after one
     year (HAT-SCH-091)."""
 
@@ -132,7 +133,7 @@ class HatCommandLog(Base):
     received_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 
-class HatTelegramCursor(Base):
+class HatTelegramCursor(StateBase):
     """Where the Telegram service has got to: `updates` is the next `getUpdates` offset
     (HAT-TG-011), `events` the last `hat_event` id the relay sent (HAT-TG-024). Not purged."""
 
@@ -143,7 +144,7 @@ class HatTelegramCursor(Base):
     updated_at = Column(Timestamptz, nullable=False, default=now_utc)
 
 
-class HatDailyBotSnapshot(Base):
+class HatDailyBotSnapshot(StateBase):
     """The kill-switch and drawdown source: one row per bot and day."""
 
     __tablename__ = "hat_daily_bot_snapshot"
@@ -154,7 +155,7 @@ class HatDailyBotSnapshot(Base):
         ),
     )
 
-    bot_id = fk("hat_bot.id", primary_key=True)
+    bot_id = ref(primary_key=True)
     trade_date = Column(Date, primary_key=True)
     # allocation capital + the realised P&L not yet in it + `open_pnl` (Q1; P5: marked to market
     # at the close)

@@ -195,6 +195,13 @@ membership and its cover) with its `data_snapshot_id`. `python -m app.hat.backte
 says whether it made the same trades), and refuses (`backtest_rerun_snapshot_differs`) when the
 data it loads is not the snapshot the run read.
 
+**evidence.json.** A completed folder also holds `evidence.json`, HAT's own sidecar outside the
+standard: the strategy, version, universe and membership ids, the gate metrics (with the DSR and
+the completion time) and the trade buckets signal confidence reads. Promotion (`publish-version
+--run`), the lifecycle gates and the risk-increase gate read it (`backtest/evidence.py`), and
+only when the run's `audit.json` passed or warned: a run whose audit failed or is missing is no
+evidence.
+
 **identity.**
 - `run_id`: a UUID v7 (time-sortable); the API takes only that shape.
 - `strategy`: `S1` stage2-contraction-breakout, `S2` momentum-breakout-ep, `S3`

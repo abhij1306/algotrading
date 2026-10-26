@@ -22,6 +22,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..data.instruments import current_industry
 from ..engine import entries
 from ..engine.live_entry import route_by_mode
@@ -31,7 +33,6 @@ from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
 from ..models import (
     HatAllocationDaily,
-    HatBot,
     HatInstrument,
     HatPosition,
     HatSignal,
@@ -117,7 +118,7 @@ class LiveContexts:
 
     def entry_context(self, session: Session, bot_id: uuid.UUID, at: datetime) -> SignalContext:
         day = trade_date_of(at)
-        bot = session.get(HatBot, bot_id)
+        bot = configs_of(session).get(Bot, bot_id)
         calendar = self._calendar()
         base = SignalContext(
             calendar=calendar,
@@ -222,7 +223,7 @@ class LiveRoute:
         decide: entries.DECIDE = evaluate_signal,
     ) -> entries.EntryOutcome:
         request = _with_industry(session, request)
-        bot = session.get(HatBot, request.bot_id)
+        bot = configs_of(session).get(Bot, request.bot_id)
         router = self._routers(bot.broker_account_id) if bot is not None else None
         if router is None:
             return route_by_mode(session, request, decide=decide)

@@ -1,6 +1,7 @@
-"""Postgres-only DDL for HAT and the reference seed.
+"""Postgres-only DDL for HAT's two databases and the reference seed.
 
-`ensure_hat_schema(bind)` runs from `init_db()` after `create_all`. It is idempotent
+`ensure_live_schema(bind)` (hat_live, `LIVE_DDL`) and `ensure_state_schema(bind)` (hat_state,
+`STATE_DDL`) run from `init_db()` after `create_all`. They are idempotent
 (`CREATE OR REPLACE`, `IF NOT EXISTS`, guarded constraints) and issues nothing on SQLite, where
 the rules the app can enforce are enforced in the app. Every statement names only `hat_*` objects
 (HAT-SCH-106); `PG_DDL` is the complete list so a check can read it.
@@ -16,10 +17,9 @@ from typing import TypedDict
 
 from sqlalchemy import Connection, Engine, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import DeclarativeMeta, Session
 
-from ..base import Base
-from .confighash import canonical_json, config_hash
+from ..base import Base, StateBase
 from .models import HatMarket
 from .ops.partitions import ensure_event_partitions
 from .time import utc_now
@@ -28,24 +28,6 @@ logger = logging.getLogger(__name__)
 
 # One transaction-scoped lock key so two processes starting together do not interleave DDL.
 _LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext('hat_ensure_schema'))"
-
-_VERSION_IMMUTABLE_FN = """
-CREATE OR REPLACE FUNCTION hat_strategy_version_immutable() RETURNS trigger AS $$
-BEGIN
-  IF OLD.status <> 'draft' THEN
-    IF NEW.config IS DISTINCT FROM OLD.config OR NEW.config_hash IS DISTINCT FROM OLD.config_hash
-    THEN
-      RAISE EXCEPTION 'strategy version % is % and its config cannot change', OLD.id, OLD.status
-        USING ERRCODE = 'check_violation';
-    END IF;
-    IF NEW.status = 'draft' THEN
-      RAISE EXCEPTION 'strategy version % cannot return to draft', OLD.id
-        USING ERRCODE = 'check_violation';
-    END IF;
-  END IF;
-  RETURN NEW;
-END $$ LANGUAGE plpgsql
-"""
 
 _UNIVERSE_IMMUTABLE_FN = """
 CREATE OR REPLACE FUNCTION hat_universe_version_immutable() RETURNS trigger AS $$
@@ -65,40 +47,6 @@ BEGIN
   RETURN NEW;
 END $$ LANGUAGE plpgsql
 """
-
-_RISK_IMMUTABLE_FN = """
-CREATE OR REPLACE FUNCTION hat_risk_policy_version_immutable() RETURNS trigger AS $$
-BEGIN
-  IF TG_OP = 'DELETE' THEN
-    RAISE EXCEPTION 'risk policy version % cannot be deleted', OLD.id
-      USING ERRCODE = 'check_violation';
-  END IF;
-  IF OLD.superseded_at IS NOT NULL
-     OR (to_jsonb(NEW) - 'superseded_at') IS DISTINCT FROM (to_jsonb(OLD) - 'superseded_at')
-  THEN
-    RAISE EXCEPTION 'risk policy version % is immutable except setting superseded_at', OLD.id
-      USING ERRCODE = 'check_violation';
-  END IF;
-  RETURN NEW;
-END $$ LANGUAGE plpgsql
-"""
-
-# 7 days stated as 168 hours: a timestamptz + '7 days' follows the session time zone's
-# daylight saving rules, a span in hours does not.
-_COOLING_OFF_CHECK = """
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'hat_risk_increase_cooling_off'
-      AND conrelid = to_regclass('hat_risk_policy_version')
-  ) THEN
-    ALTER TABLE hat_risk_policy_version ADD CONSTRAINT hat_risk_increase_cooling_off
-      CHECK (direction <> 'increase' OR effective_from >= requested_at + interval '168 hours');
-  END IF;
-END $$
-"""
-
 
 # The lifecycle state domains (HAT-SCH-059) as the models declare them, for a table created before
 # the models had them: `create_all` never alters an existing table. The text matches the models'
@@ -203,7 +151,7 @@ END $$
 # symbol overlap (a null `valid_to` is open). Checked at commit, as a writer closes the previous
 # holder's interval and adds the new one in either order. It needs `btree_gist`, and is added
 # only once no overlap is stored (`admin repair-symbol-history --apply` closes them), so a
-# startup never fails on it: `ensure_hat_schema` warns while it is missing.
+# startup never fails on it: `ensure_live_schema` warns while it is missing.
 _SYMBOL_HISTORY_EXCLUDE = """
 DO $$
 BEGIN
@@ -227,50 +175,6 @@ BEGIN
   END IF;
 END $$
 """
-
-# A strategy version's release states are named apart from a sleeve's (`governance.VersionStatus`).
-# A database created with the old names (hat_live) moves to the new ones once, in this
-# transaction: its CHECKs and one-released index are dropped, the stored statuses renamed
-# (backtested -> frozen, shadow -> trial, live -> released, retired -> superseded; the
-# immutability trigger allows a status change that keeps the config), and the CHECKs and index
-# made again with the models' text. A database that has the new index never runs it again.
-_VERSION_STATUS_RENAME = """
-DO $$
-BEGIN
-  IF to_regclass('hat_strategy_version') IS NOT NULL
-     AND to_regclass('hat_one_released_version') IS NULL THEN
-    ALTER TABLE hat_strategy_version DROP CONSTRAINT IF EXISTS ck_hat_strategy_version_status;
-    ALTER TABLE hat_strategy_version
-      DROP CONSTRAINT IF EXISTS ck_hat_strategy_version_live_evidence;
-    DROP INDEX IF EXISTS hat_one_live_version;
-    UPDATE hat_strategy_version SET status = CASE status
-        WHEN 'backtested' THEN 'frozen' WHEN 'shadow' THEN 'trial'
-        WHEN 'live' THEN 'released' WHEN 'retired' THEN 'superseded' ELSE status END
-      WHERE status IN ('backtested', 'shadow', 'live', 'retired');
-    ALTER TABLE hat_strategy_version ADD CONSTRAINT hat_strategy_version_status_check
-      CHECK (status IN ('draft', 'frozen', 'trial', 'released', 'superseded'));
-    ALTER TABLE hat_strategy_version ADD CONSTRAINT hat_strategy_version_release_evidence_check
-      CHECK (status <> 'released'
-        OR (backtest_run_id IS NOT NULL AND shadow_started_at IS NOT NULL));
-    CREATE UNIQUE INDEX hat_one_released_version ON hat_strategy_version (strategy_id)
-      WHERE status = 'released';
-  END IF;
-END $$
-"""
-
-# The close-phase exits once carried a `when` clock that nothing read (the window is the
-# session's, `SessionCalendar.continuous_end_on`); the config model no longer has it, so a stored
-# version holding it would not parse. Each such row loses the key once and its `config_hash` is
-# recomputed (`_strip_exit_when`): the only config change a frozen version ever takes, made with
-# its immutability trigger off inside this transaction, and only where the stored hash is the
-# stored config's, so the new hash names exactly what the old one did, less the unread key.
-_VERSION_GUARD = "hat_strategy_version_immutable_guard"
-_EXITS_WITH_WHEN = """
-SELECT id, config, config_hash FROM hat_strategy_version
-WHERE jsonb_path_exists(config, '$.exits[*] ? (exists (@."when"))')
-FOR UPDATE
-"""
-
 
 _SYMBOL_HISTORY_GUARDED = """
 SELECT EXISTS (
@@ -345,32 +249,46 @@ BEGIN
 END $$ LANGUAGE plpgsql
 """
 
-PG_DDL: tuple[str, ...] = (
-    _VERSION_IMMUTABLE_FN,
-    """
-CREATE OR REPLACE TRIGGER hat_strategy_version_immutable_guard
-  BEFORE UPDATE ON hat_strategy_version
-  FOR EACH ROW EXECUTE FUNCTION hat_strategy_version_immutable()
-""",
+# hat_live's DDL: the stock-data tables' guards, checks and late columns.
+LIVE_DDL: tuple[str, ...] = (
     _UNIVERSE_IMMUTABLE_FN,
     """
 CREATE OR REPLACE TRIGGER hat_universe_version_immutable_guard
   BEFORE UPDATE ON hat_universe_version
   FOR EACH ROW EXECUTE FUNCTION hat_universe_version_immutable()
 """,
-    _RISK_IMMUTABLE_FN,
+    _FACTOR_CHECK,
+    _SYMBOL_HISTORY_EXCLUDE,
     """
-CREATE OR REPLACE TRIGGER hat_risk_policy_version_immutable_guard
-  BEFORE UPDATE OR DELETE ON hat_risk_policy_version
-  FOR EACH ROW EXECUTE FUNCTION hat_risk_policy_version_immutable()
+CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
+  ON hat_announcement (instrument_id, published_at DESC)
 """,
-    _COOLING_OFF_CHECK,
+    # CA3a: a database created before the column (hat_live) gains it; create_all makes it anew
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS cash_amount numeric",
+    # Kite's numeric instrument id of a zerodha row (None for the other brokers' rows)
+    "ALTER TABLE hat_broker_symbol ADD COLUMN IF NOT EXISTS instrument_token bigint",
+    # CA5: a database created before the columns (hat_live) gains them
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS announced_on date",
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_on date",
+    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",
+    _KNOWN_CHECK,
+    _DEMERGER_COLUMN,
+    "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
+    # CA6: create_all makes the table; its rows are append-only
+    _ACTION_VERSION_APPEND_ONLY_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_corporate_action_version_no_update
+  BEFORE UPDATE OR DELETE ON hat_corporate_action_version
+  FOR EACH ROW EXECUTE FUNCTION hat_corporate_action_version_is_append_only()
+""",
+)
+
+# hat_state's DDL: the trading state's guards (invariant 1, the append-only event log), the
+# lifecycle CHECKs and the runtime's indexes.
+STATE_DDL: tuple[str, ...] = (
     _SIGNAL_STATE_CHECK,
     _POSITION_STATE_CHECK,
     _SIGNAL_CONFIDENCE_CHECK,
-    _FACTOR_CHECK,
-    _SYMBOL_HISTORY_EXCLUDE,
-    _VERSION_STATUS_RENAME,
     _SIGNAL_CONFIDENCE_FN,
     """
 CREATE OR REPLACE TRIGGER hat_signal_confidence_guard
@@ -389,18 +307,6 @@ CREATE OR REPLACE TRIGGER hat_position_no_delete_guard
   BEFORE DELETE ON hat_position
   FOR EACH ROW EXECUTE FUNCTION hat_position_never_deleted()
 """,
-    """
-CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
-  ON hat_announcement (instrument_id, published_at DESC)
-""",
-    # CA3a: a database created before the column (hat_live) gains it; create_all makes it anew
-    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS cash_amount numeric",
-    # R-DIV: a trade's dividends; the rows before the column start at 0 and the nightly
-    # `positions.restate_dividends` brings them up to the stored dividends
-    "ALTER TABLE hat_trade_result ADD COLUMN IF NOT EXISTS dividends numeric(18,4)"
-    " NOT NULL DEFAULT 0",
-    # Kite's numeric instrument id of a zerodha row (None for the other brokers' rows)
-    "ALTER TABLE hat_broker_symbol ADD COLUMN IF NOT EXISTS instrument_token bigint",
     _EVENT_APPEND_ONLY_FN,
     """
 CREATE OR REPLACE TRIGGER hat_event_no_update
@@ -423,24 +329,9 @@ CREATE OR REPLACE TRIGGER hat_event_no_truncate
     "CREATE INDEX IF NOT EXISTS hat_mode_change_bot ON hat_mode_change (bot_id)",
     "CREATE INDEX IF NOT EXISTS hat_telegram_message_sent_at ON hat_telegram_message (sent_at)",
     "CREATE INDEX IF NOT EXISTS hat_command_log_received_at ON hat_command_log (received_at)",
-    # CA5: a database created before the columns (hat_live) gains them
-    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS announced_on date",
-    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_on date",
-    "ALTER TABLE hat_corporate_action ADD COLUMN IF NOT EXISTS known_basis text",
-    _KNOWN_CHECK,
-    _DEMERGER_COLUMN,
-    "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
-    # Q1: drawdown points keep the allocation they were measured against
-    "ALTER TABLE hat_daily_bot_snapshot ADD COLUMN IF NOT EXISTS capital numeric(18,4)",
-    "ALTER TABLE hat_daily_bot_snapshot ADD COLUMN IF NOT EXISTS final_weight numeric",
-    # CA6: create_all makes the table; its rows are append-only
-    _ACTION_VERSION_APPEND_ONLY_FN,
-    """
-CREATE OR REPLACE TRIGGER hat_corporate_action_version_no_update
-  BEFORE UPDATE OR DELETE ON hat_corporate_action_version
-  FOR EACH ROW EXECUTE FUNCTION hat_corporate_action_version_is_append_only()
-""",
 )
+
+PG_DDL: tuple[str, ...] = LIVE_DDL + STATE_DDL
 
 NSE_MARKET = {
     "code": "NSE",
@@ -451,59 +342,39 @@ NSE_MARKET = {
 }
 
 
-def ensure_hat_schema(bind: Engine | Connection) -> None:
-    """Create or replace the Postgres-only triggers and CHECKs and create the `hat_event`
+def ensure_live_schema(bind: Engine | Connection) -> None:
+    """hat_live's Postgres-only triggers and CHECKs (`LIVE_DDL`), on the data writer's
+    connection. No-op on other dialects."""
+    _ensure(bind, LIVE_DDL, live=True)
+
+
+def ensure_state_schema(bind: Engine | Connection) -> None:
+    """hat_state's Postgres-only triggers and CHECKs (`STATE_DDL`) and the `hat_event`
     partitions for the current month and the next two (HAT-SCH-066). No-op on other dialects."""
+    _ensure(bind, STATE_DDL, live=False)
+
+
+def _ensure(bind: Engine | Connection, ddl: tuple[str, ...], *, live: bool) -> None:
     if bind.dialect.name != "postgresql":
         return
     if isinstance(bind, Engine):
         with bind.begin() as connection:
-            _run_ddl(connection)
+            _run_ddl(connection, ddl, live=live)
     else:
-        _run_ddl(bind)
+        _run_ddl(bind, ddl, live=live)
 
 
-def _run_ddl(connection: Connection) -> None:
+def _run_ddl(connection: Connection, ddl: tuple[str, ...], *, live: bool) -> None:
     connection.execute(text(_LOCK_SQL))
-    for statement in PG_DDL:
+    for statement in ddl:
         connection.execute(text(statement))
-    _strip_exit_when(connection)
-    if not connection.execute(text(_SYMBOL_HISTORY_GUARDED)).scalar_one():
+    if not live:
+        ensure_event_partitions(connection, utc_now().date())
+    elif not connection.execute(text(_SYMBOL_HISTORY_GUARDED)).scalar_one():
         logger.warning(
             "hat_symbol_history_no_overlap is missing: run `python -m app.hat.admin "
             "repair-symbol-history --apply` (and install btree_gist), then restart"
         )
-    ensure_event_partitions(connection, utc_now().date())
-
-
-def _strip_exit_when(connection: Connection) -> None:
-    """Drop the unread `when` key from every stored version's exits and recompute its
-    `config_hash` (`_EXITS_WITH_WHEN`). Idempotent: a row without the key is never read. Raises
-    when a stored hash is not its stored config's, so no hash is ever made up."""
-    rows = connection.execute(text(_EXITS_WITH_WHEN)).all()
-    if not rows:
-        return
-    connection.execute(
-        text(
-            "ALTER TABLE hat_strategy_version DISABLE TRIGGER hat_strategy_version_immutable_guard"
-        )
-    )
-    for row in rows:
-        if config_hash(row.config) != row.config_hash:
-            raise RuntimeError(f"strategy version {row.id}: stored config_hash is not its config's")
-        config = dict(row.config)
-        config["exits"] = [
-            {k: v for k, v in rule.items() if k != "when"} for rule in config["exits"]
-        ]
-        connection.execute(
-            text(
-                "UPDATE hat_strategy_version SET config = CAST(:config AS jsonb),"
-                " config_hash = :hash WHERE id = :id"
-            ),
-            {"config": canonical_json(config), "hash": config_hash(config), "id": row.id},
-        )
-    connection.execute(text(f"ALTER TABLE hat_strategy_version ENABLE TRIGGER {_VERSION_GUARD}"))
-    logger.info("dropped the unread exit `when` from %d strategy versions", len(rows))
 
 
 def seed_hat_reference(bind: Engine) -> None:
@@ -526,11 +397,31 @@ def seed_hat_reference(bind: Engine) -> None:
 # upkeep above, `check_schema_drift` compares the live catalog with the catalog the models give:
 # the models are created as temporary tables in the same transaction, both are read with the same
 # catalog queries, and the transaction rolls back. Any difference refuses the start and names the
-# DDL to run. Triggers, functions and partitions are `ensure_hat_schema`'s and are not compared.
+# DDL to run. Triggers, functions and partitions are the upkeep's (`ensure_live_schema`,
+# `ensure_state_schema`) and are not compared.
 
 # Tables the models do not hold that may stay until the owner drops them: the P6b ISIN-merge
 # bookkeeping (runbook, DBA steps).
 DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row"})
+
+# The tables hat_live held before the storage split (docs/decisions.md, Storage split) whose
+# rows now live elsewhere: the configs (JSON files), the backtest runs (run folders) and every
+# hat_state table. They stay in hat_live, unread, until the owner drops them (runbook), with the
+# foreign keys that name them; the migration (`app.hat.state_split`) reads them.
+LEGACY_CONFIG_TABLES = (
+    "hat_strategy",
+    "hat_strategy_version",
+    "hat_risk_policy_version",
+    "hat_regime_model_version",
+    "hat_criterion_type",
+    "hat_broker_account",
+    "hat_bot",
+)
+LEGACY_BACKTEST_TABLES = ("hat_backtest_run", "hat_backtest_bucket")
+
+
+def legacy_live_tables() -> frozenset[str]:
+    return frozenset({*LEGACY_CONFIG_TABLES, *LEGACY_BACKTEST_TABLES, *StateBase.metadata.tables})
 
 
 class TableShape(TypedDict):
@@ -608,12 +499,14 @@ def _read_shape(connection: Connection, namespace_sql: str) -> SchemaShape:
     return shape
 
 
-def read_live_and_model_shapes(connection: Connection) -> tuple[SchemaShape, SchemaShape]:
-    """The live schema and the models' schema, read on `connection` inside a transaction the
-    caller rolls back (the models are created there as temporary tables)."""
+def read_live_and_model_shapes(
+    connection: Connection, base: DeclarativeMeta = Base
+) -> tuple[SchemaShape, SchemaShape]:
+    """The database's schema and the schema of `base`'s models, read on `connection` inside a
+    transaction the caller rolls back (the models are created there as temporary tables)."""
     live = _read_shape(connection, "to_regnamespace(current_schema())::oid")
     probe = connection.execution_options(schema_translate_map={None: "pg_temp"})
-    Base.metadata.create_all(probe, checkfirst=False)
+    base.metadata.create_all(probe, checkfirst=False)
     model = _read_shape(connection, "pg_my_temp_schema()")
     return live, model
 
@@ -627,18 +520,23 @@ def schema_drift(
     allowed_tables: frozenset[str] = DRIFT_ALLOWED_TABLES,
 ) -> list[str]:
     """Every difference between the live schema and the models', as DDL to run or (for what the
-    database has and the models do not) a comment. Empty when they match."""
+    database has and the models do not) a comment. Empty when they match. A constraint the
+    database has that names an allowed table (a legacy foreign key) is no difference."""
     ddl_indexes = ddl_indexes or {}
     ddl_constraints = ddl_constraints or {}
     drift: list[str] = []
     for table in sorted(model.keys() - live.keys()):
-        drift.append(f"-- table {table} is missing: Base.metadata.create_all creates it")
+        drift.append(f"-- table {table} is missing: metadata.create_all creates it")
     for table in sorted(live.keys() - model.keys() - allowed_tables):
         drift.append(f"-- table {table} is in the database, not in the models")
     for table in sorted(model.keys() & live.keys()):
         drift += _column_drift(table, live[table]["columns"], model[table]["columns"])
         table_ddl_indexes = {n for n, t in ddl_indexes.items() if t == table}
-        table_ddl_constraints = {n for n, t in ddl_constraints.items() if t == table}
+        table_ddl_constraints = {n for n, t in ddl_constraints.items() if t == table} | {
+            name
+            for name, definition in live[table]["constraints"].items()
+            if _names_table(definition, allowed_tables)
+        }
         drift += _named_drift(
             table,
             "constraint",
@@ -719,19 +617,33 @@ def _named_drift(
     return drift
 
 
-def check_schema_drift(bind: Engine) -> None:
-    """Refuse a database whose schema differs from the models (DB audit M5): raise
-    `SchemaDriftError` naming the DDL to run. No-op on other dialects."""
+def _names_table(definition: str, tables: frozenset[str]) -> bool:
+    """`definition` is a foreign key to one of `tables`."""
+    found = re.search(r"REFERENCES (\w+)\(", definition)
+    return found is not None and found.group(1) in tables
+
+
+def check_schema_drift(bind: Engine, base: DeclarativeMeta = Base) -> None:
+    """Refuse a database whose schema differs from `base`'s models (DB audit M5): raise
+    `SchemaDriftError` naming the DDL to run. hat_live may still hold the tables the storage
+    split moved out (`legacy_live_tables`). No-op on other dialects."""
     if bind.dialect.name != "postgresql":
         return
     with bind.connect() as connection:
         transaction = connection.begin()
         try:
-            live, model = read_live_and_model_shapes(connection)
+            live, model = read_live_and_model_shapes(connection, base)
         finally:
             transaction.rollback()
     ddl_indexes, ddl_constraints = pg_ddl_objects()
-    drift = schema_drift(live, model, ddl_indexes=ddl_indexes, ddl_constraints=ddl_constraints)
+    allowed = DRIFT_ALLOWED_TABLES | (legacy_live_tables() if base is Base else frozenset())
+    drift = schema_drift(
+        live,
+        model,
+        ddl_indexes=ddl_indexes,
+        ddl_constraints=ddl_constraints,
+        allowed_tables=allowed,
+    )
     if drift:
         raise SchemaDriftError(
             "the database schema differs from the models; run this DDL, then restart:\n"

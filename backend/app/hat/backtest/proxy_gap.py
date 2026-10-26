@@ -39,9 +39,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..errors import HatError
 from ..models import (
-    HatBot,
     HatPosition,
     HatSignal,
     HatTradeResult,
@@ -314,7 +315,7 @@ def proxy_legs(root: Path, run_id: str, start: date, end: date) -> list[Leg]:
 
 def shadow_gap(
     session: Session,
-    bot: HatBot,
+    bot: Bot,
     run_id: str,
     *,
     root: Path,
@@ -378,7 +379,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     args = parser.parse_args(argv)
     settings = operator_settings()
     with db_session_scope() as session:
-        bot = session.get(HatBot, args.bot)
+        bot = configs_of(session).get(Bot, args.bot)
         if bot is None:
             sys.stderr.write("proxy gap refused: gap_unknown_bot_or_run\n")
             return 2

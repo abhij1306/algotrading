@@ -4,8 +4,8 @@ The map. Rules: `invariants.md`. Decisions: `decisions.md`. Operations: `runbook
 
 ## Shape
 
-One FastAPI process (`backend/app/main.py`), one PostgreSQL database, Parquet under
-`HAT_DATA_ROOT`. All of HAT is `backend/app/hat/`, which imports only `app.base`,
+One FastAPI process (`backend/app/main.py`), two PostgreSQL databases on one server (hat_live,
+hat_state), JSON configs and Parquet under `HAT_DATA_ROOT` (Storage). All of HAT is `backend/app/hat/`, which imports only `app.base`,
 `app.database`, `app.paths` and `app.utils.env_loader`. The runtime starts only with
 `HAT_ENABLED=true`. The frontend (`frontend/`) is a read-only dashboard and a Backtests page (read,
 compare and start research runs) whose components sit in atomic layers under `frontend/components/`: `atoms/` and `molecules/` take props only,
@@ -23,11 +23,13 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock |
 | `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`) |
 | `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run folders (`folder`, `standard`, `trials`). `engine` and `risk` import only `spec` and `evidence` |
+| `configs` | The config records (`records`: strategies, versions, risk policy versions, broker accounts, bots, regime models, criterion types), their file store (`store`) and a session's unit of work over them (`unit.configs_of`) |
 | `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
 
 Top level: `events.py` (event log), `money.py`, `costs.py` (slippage and the dated cost
 schedules in `cost_models/<version>/<effective_from>.yaml`), `clock.py`, `ids.py` (uuid v7), `settings.py`,
-`schema.py` (`init_db` upkeep, `PG_DDL`, drift check), `admin.py`.
+`schema.py` (`init_db` upkeep, `PG_DDL`, drift check), `storage.py` (which database a table lives
+in, `HatSession`), `admin.py`.
 
 ## Data flow
 
@@ -59,7 +61,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `engine/strategy/seeds/<name>.yaml` (a header with `sleeve`, `persona` and `regime`, then the
   config). `regime` names the strategy's row in the regime model's multiplier table; a strategy
   whose row is missing, or one not registered, gets each state's least multiplier.
-  A strategy has one name: the file name, its config's `bot` and `hat_strategy.name`
+  A strategy has one name: the file name, its config's `bot` and its strategy record's `name`
   (`save_draft` refuses a config whose `bot` is another name), and every key reads it.
   Adding a strategy is one seed file plus any new criteria; its `p_max` and `base_weight` go into
   the risk policy as a new policy version.
@@ -80,7 +82,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   beneath `FyersHatBroker`) the only fake.
 - **One position desk per account** (`execution/position_desk.py`): one write lock per position
   for every stop write and sale.
-- **One runtime per database** (`ops/runtime_lock.py`, a session advisory lock); one session owner
+- **One runtime per hat_state** (`ops/runtime_lock.py`, a session advisory lock); one session owner
   per account (`SessionRegistry`), one token store per broker (`fyers_tokens`, `kite_tokens`), one
   live socket (Fyers: market data stays on Fyers whichever broker takes orders).
 - **One clock:** code that needs "now" takes a `clock.Clock`. `governance.py:Mode` is the only
@@ -92,10 +94,30 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 
 ## Storage
 
-- PostgreSQL `hat_*` tables (created by `init_db`; `hat_event` monthly-partitioned): reference
-  (instruments one per ISIN, symbol history, calendar, bands, corporate actions and their
-  versions, lineage, index membership by date), strategy, risk and bots, portfolio, runtime
-  (watchlist, signal, approval, order, fill, position, trade result, holding baseline), ops (events, job runs, Telegram, snapshots, backtest runs).
+- **hat_live** (`app.base.Base`, `DB_NAME`): the stock data only. Instruments one per ISIN, symbol
+  history, calendar, bands, industries, corporate actions and their versions, lineage, index
+  membership by date, announcements, demerger notices, broker symbols, universes, quality checks.
+  Only the data jobs and importers write it (`HatDataSessionLocal`, `db_session_scope(writes_data=True)`:
+  the nightly ingest, `ca.adjust`, quality gate, reference, bands, calendar, announcements poll,
+  the `app.hat.data` command lines and the admin data commands `admin.DATA_COMMANDS`); every other
+  connection is `default_transaction_read_only`, so a stray write fails.
+- **hat_state** (`app.base.StateBase`, `DB_STATE_NAME`, default `hat_state`; same server and
+  credentials): the trading and runtime state. Watchlist, signal, approval, order, fill, position,
+  trade result, holding baseline, kill switches, mode changes, exposure, regime state, allocations,
+  events (`hat_event` monthly-partitioned), job runs, broker sessions, Telegram, snapshots.
+- **Configs** (`app.hat.configs`): `HAT_DATA_ROOT/admin/config/<kind>/<id>/<rev>.json`, one file
+  per revision, schema-validated on load and never changed once written (`<kind>/<id>` is the
+  record's uuid; a criterion type's is `<code>@<version>`). `<kind>/in_force.json` names each
+  record's revision in force; it is replaced atomically and each of its states is kept in
+  `<kind>/pointers/<seq>.json`. A session reads a kind once per transaction (`configs_of`), and
+  its commit writes each changed record as its next revision, refused (`config_conflict`) when
+  another writer moved that record first. The per-record rules the old CHECKs and triggers kept
+  are `records.record_rules`.
+- Every session (`HatSession`) binds both databases and the config store; a statement naming
+  tables of both databases is refused (`CrossDatabaseError`), so a key from one database to the
+  other, or to a config record, is a plain column checked in code (`bot_id`, `strategy_version_id`,
+  `risk_policy_version_id`, `instrument_id`, `broker_account_id`, `announcement_id`,
+  `market_id`, `model_version_id`, `job_run_id`, `backtest_run_id`).
 - Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
   `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily` (the
   nightly indices, and NIFTY 500 TRI from `index_history backfill`), `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
@@ -103,10 +125,14 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
 - `backtests/runs/<run_id>/` holds every run's folder in the Backtest Result Standard
   (`docs/backtests/result-standard.md`: `run.json` validated against `run.schema.json`,
-  `config.json`, the CSVs, `audit.json` and `data_audit.json`; `backtest/folder.py`),
-  `backtests/data_audits/` each data audit by data snapshot and window (`data/audit.py`), and
-  `backtests/trials.json` each strategy's DSR trials (`backtest/trials.py`); no backtest writes
-  the database. The process: `docs/backtests/process.md`. `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
+  `config.json`, the CSVs, `audit.json`, `data_audit.json` and, for a completed run,
+  `evidence.json`; `backtest/folder.py`), `backtests/data_audits/` each data audit by data
+  snapshot and window (`data/audit.py`), and `backtests/trials.json` each strategy's DSR trials
+  (`backtest/trials.py`); no backtest writes the database. The process:
+  `docs/backtests/process.md`. Promotion and the gates read a completed run whose `audit.json`
+  passed or warned, through its `evidence.json` (metrics and trade buckets,
+  `backtest/evidence.py`); a strategy version names its evidence by run id.
+  `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
   stderr (`backtest/jobs.py`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features
@@ -152,13 +178,14 @@ changes, weekly and on demand.
 
 ## Startup and routes
 
-Startup (`main.py` lifespan): `init_db` (a database that is down stops the app), then
-`check_schema_drift` refuses any difference from the models and logs the DDL. With
+Startup (`main.py` lifespan): `init_db` creates both databases' tables and runs their upkeep (a
+database that is down stops the app), then `check_schema_drift` refuses any difference from the
+models in either and logs the DDL. With
 `HAT_ENABLED=true` it then checks the Fyers token, and `daily/runtime.py` refuses a non-Postgres
 database, a proxy variable that would carry Fyers (or, with `HAT_BROKER=zerodha`, Kite) traffic,
 missing Kite credentials when Zerodha is the active broker and a bad Telegram setup, reconciles
 every account, and starts the scheduler, live feed, periodic loops and Telegram. Shutdown stops
-the runtime, then the engine.
+the runtime, then the engines.
 
 Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET /status`, `GET
 /url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`), and the same four
@@ -177,5 +204,5 @@ and weights, so an undefined colour class or a weight above 500 generates nothin
 
 Environment: `.env.example` lists every variable: `DB_*`; the Fyers app `CLIENT_ID`,
 `SECRET_KEY`, `REDIRECT_URI`; `HAT_BROKER` and the Kite app `KITE_API_KEY`, `KITE_API_SECRET`,
-`KITE_REDIRECT_URI`; `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, the MCP URLs and
+`KITE_REDIRECT_URI`; `DB_STATE_NAME` (hat_state's name); `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, the MCP URLs and
 Telegram secrets; `BACKEND_HOST`/`BACKEND_PORT` and logging for `backend/start_server.py`.

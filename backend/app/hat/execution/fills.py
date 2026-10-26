@@ -81,10 +81,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
+from ..data.instrument_names import instrument_symbols
 from ..engine import live_trades
 from ..engine.positions import TradeError
 from ..events import record
-from ..models import HatBot, HatEvent, HatFill, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..models import HatEvent, HatFill, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..time import trade_date_of
 from .broker import (
@@ -96,6 +97,7 @@ from .broker import (
     Side,
 )
 from .gtt_upkeep import GttUpkeep
+from .modes import account_bot_ids
 from .order_book import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
@@ -583,10 +585,9 @@ class FillSync:
     def _working_gtts(session: Session, account_id: uuid.UUID) -> _WorkingGtts:
         """The working GTTs of the account's open real positions."""
         found: dict[str, list[HatOrder]] = defaultdict(list)
-        rows = session.execute(
-            select(HatOrder, HatInstrument.symbol)
+        found_rows = session.execute(
+            select(HatOrder, HatPosition.instrument_id)
             .join(HatPosition, HatPosition.id == HatOrder.position_id)
-            .join(HatInstrument, HatInstrument.id == HatPosition.instrument_id)
             .where(
                 HatOrder.broker_account_id == account_id,
                 HatOrder.purpose == STOP_GTT,
@@ -595,6 +596,10 @@ class FillSync:
                 HatPosition.closed_at.is_(None),
             )
         ).all()
+        # the instruments live in hat_live: their symbols are read apart (an order of an unknown
+        # instrument was dropped by the inner join before, and is here too)
+        symbols = instrument_symbols(session, (i for _, i in found_rows))
+        rows = [(row, symbols[i]) for row, i in found_rows if i in symbols]
         for row, symbol in rows:
             found[symbol].append(row)
         return _WorkingGtts(
@@ -864,10 +869,8 @@ class FillSync:
         """Open real positions of the account that hold no shares (sold while the entry worked)."""
         return list(
             session.scalars(
-                select(HatPosition.id)
-                .join(HatBot, HatBot.id == HatPosition.bot_id)
-                .where(
-                    HatBot.broker_account_id == account_id,
+                select(HatPosition.id).where(
+                    HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
                     HatPosition.is_virtual.is_(False),
                     HatPosition.closed_at.is_(None),
                     HatPosition.qty_open <= 0,
@@ -926,10 +929,8 @@ class FillSync:
         )
         return set(
             session.scalars(
-                select(HatPosition.id)
-                .join(HatBot, HatBot.id == HatPosition.bot_id)
-                .where(
-                    HatBot.broker_account_id == account_id,
+                select(HatPosition.id).where(
+                    HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
                     HatPosition.is_virtual.is_(False),
                     HatPosition.closed_at.is_(None),
                     HatPosition.qty_open > 0,

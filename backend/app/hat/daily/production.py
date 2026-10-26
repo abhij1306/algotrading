@@ -25,6 +25,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from datetime import date
 
+from ..configs.records import BROKER_FYERS, BROKER_ZERODHA, BrokerAccount
 from ..data.announcements import HttpFeedFetcher
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher, http_fetcher
@@ -40,8 +41,6 @@ from ..execution.fyers_ipv4 import require_direct_fyers
 from ..execution.kite_adapter import kite_symbol_source
 from ..execution.kite_auth import get_kite_auth, kite_credentials_from_env
 from ..execution.kite_ipv4 import require_direct_kite
-from ..models import HatBrokerAccount
-from ..models.strategy import BROKER_FYERS, BROKER_ZERODHA
 from ..settings import HatSettings, process_env
 from ..telegram.client import HttpsTransport
 from ..telegram.config import telegram_settings
@@ -107,7 +106,7 @@ class BrokerLoginLinks:
     """The login link of an account's broker (Fyers' or Kite's) that the Telegram login prompt
     carries; None for another broker or when one cannot be made."""
 
-    def link(self, account: HatBrokerAccount) -> str | None:
+    def link(self, account: BrokerAccount) -> str | None:
         if account.broker == BROKER_FYERS:
             login_url = get_fyers_auth().login_url
         elif account.broker == BROKER_ZERODHA:
@@ -137,14 +136,14 @@ def require_broker_ready(broker: str, env: Mapping[str, str]) -> None:
 
 def one_login_each(
     factories: Mapping[str, Callable[[], HatBroker]],
-) -> Callable[[HatBrokerAccount], HatBroker | None]:
+) -> Callable[[BrokerAccount], HatBroker | None]:
     """The adapter of each active account. An adapter logs in once per broker (one token store,
     trading-safety rule 9), so a second active account of a broker refuses the start: it would
     place and reconcile through the first account's login, and the allocation would count the
     same funds twice (HAT-OPS-002)."""
     built: set[str] = set()
 
-    def broker_for(account: HatBrokerAccount) -> HatBroker | None:
+    def broker_for(account: BrokerAccount) -> HatBroker | None:
         factory = factories.get(account.broker)
         if factory is None:
             logger.warning("account %s: no adapter for its broker", account.id)

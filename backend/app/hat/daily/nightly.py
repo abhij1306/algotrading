@@ -29,6 +29,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import Bot, StrategyVersion
+from ..configs.unit import configs_of
 from ..data import ingest as nightly_ingest
 from ..data.calendar import session_calendar
 from ..data.chains import stored_adjustment
@@ -58,7 +60,7 @@ from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
 from ..events import record
-from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatStrategyVersion
+from ..models import HatEvent, HatJobRun, HatPosition
 from ..ops.jobs import JobError, JobResult, OnFinish
 from ..ops.partitions import events_partitions
 from ..ops.retention import purge_job
@@ -138,18 +140,14 @@ RESCALE_SYNC_UNTIL = time(8, 58)
 RESCALE_POLL = timedelta(seconds=30)
 
 
-def _active_bots(session: Session) -> list[HatBot]:
-    return list(
-        session.scalars(
-            select(HatBot)
-            .where(HatBot.status == "active", HatBot.live_version_id.is_not(None))
-            .order_by(HatBot.id)
-        )
+def _active_bots(session: Session) -> list[Bot]:
+    return configs_of(session).all(
+        Bot, lambda b: b.status == "active" and b.live_version_id is not None
     )
 
 
-def _index_of(session: Session, bot: HatBot) -> str | None:
-    version = session.get(HatStrategyVersion, bot.live_version_id)
+def _index_of(session: Session, bot: Bot) -> str | None:
+    version = configs_of(session).get(StrategyVersion, bot.live_version_id)
     return None if version is None else parse_config(version.config).regime.index
 
 
@@ -243,7 +241,7 @@ class Nightly:
             nightly_ingest.IngestDeps(
                 client=mcp_client(deps),
                 store=deps.store,
-                session_factory=deps.session_factory,
+                session_factory=deps.data_session_factory,
                 clock=deps.clock,
                 sleep=deps.sleep,
                 fallback=lambda d: nightly_ingest.bhavcopy_day(deps.store, deps.bhavcopy(), d),
@@ -308,7 +306,7 @@ class Nightly:
         def ready(session: Session, position: HatPosition) -> bool:
             if position.is_virtual:
                 return True
-            bot = session.get(HatBot, position.bot_id)
+            bot = configs_of(session).get(Bot, position.bot_id)
             if closed is None or bot is None or bot.broker_account_id is None:
                 return False
             read = self.deps.fills_read_at(bot.broker_account_id)
@@ -396,7 +394,7 @@ class Nightly:
         that `ca.adjust` did not ask for (held or on the watchlist of `day`). A failed lookup is
         alerted `corporate_action.unchecked` and never fails the scan."""
         try:
-            with self.deps.session_factory() as session:
+            with self.deps.data_session_factory() as session:
                 asked = set(held_and_watchlisted(session, day).values())
                 new = {
                     symbol: iid
@@ -407,7 +405,7 @@ class Nightly:
                 return
             found = lookup_actions(mcp_client(self.deps), new, target, target)
             stored = store_actions(
-                self.deps.session_factory, found.records, (self.deps.notifier, day)
+                self.deps.data_session_factory, found.records, (self.deps.notifier, day)
             )
         except Exception:
             logger.exception("post-scan corporate-action lookup failed")
@@ -439,7 +437,7 @@ class Nightly:
         trading days through `day`, after the ingest stored the day's."""
         deps = self.deps
         return coverage_body(
-            session_factory=deps.session_factory,
+            session_factory=deps.data_session_factory,
             store=deps.store,
             notifier=deps.notifier,
             trade_date=day,
@@ -487,7 +485,7 @@ class Nightly:
             client=mcp_client(deps),
             equity_list=deps.sources.equity_list,
             industry_list=deps.sources.industry_list,
-            session_factory=deps.session_factory,
+            session_factory=deps.data_session_factory,
             master=symbol_master,
             today=day,
             renames=lambda: renames_from_bars(deps.store),
@@ -499,13 +497,13 @@ class Nightly:
         return bands_nightly(
             price_band_file=deps.sources.price_bands(day),
             circuit_limits=deps.sources.circuit_limits,
-            session_factory=deps.session_factory,
+            session_factory=deps.data_session_factory,
             effective=day,
         )()
 
     def partitions(self, day: date) -> JobResult:
         with self.deps.session_factory() as session:
-            bind = session.get_bind()
+            bind = session.get_bind(HatEvent)  # hat_state, where the events live
         return events_partitions(bind, day, self.deps.notifier)
 
     def purge(self, day: date) -> JobResult:
@@ -536,7 +534,7 @@ def _quality_gate(n: Nightly) -> JobBody:
         _built,
         gate_body,
         "trade_date",
-        session_factory=deps.session_factory,
+        session_factory=deps.data_session_factory,
         store=deps.store,
         verdict=quality_verdict,
         notifier=deps.notifier,
@@ -590,7 +588,7 @@ def nightly_jobs(deps: NightlyDeps) -> tuple[ScheduledJob, ...]:
                 calendar_refresh,
                 None,
                 holiday_list=deps.sources.holidays,
-                session_factory=deps.session_factory,
+                session_factory=deps.data_session_factory,
             ),
             days=Days.EVERY,
         ),

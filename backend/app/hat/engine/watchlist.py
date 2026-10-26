@@ -27,16 +27,16 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot, StrategyVersion
+from ..configs.unit import configs_of
 from ..data.broker_symbols import FYERS_SERIES
 from ..data.isin import ordinary_equity
 from ..events import record, recorded_for
 from ..models import (
-    HatBot,
     HatEvent,
     HatInstrument,
     HatPosition,
     HatSignal,
-    HatStrategyVersion,
     HatUniverseVersion,
     HatWatchlistEntry,
 )
@@ -61,7 +61,7 @@ class Published:
     skipped: str | None = None
 
 
-def _universe_id(session: Session, bot: HatBot) -> uuid.UUID | None:
+def _universe_id(session: Session, bot: Bot) -> uuid.UUID | None:
     if bot.universe_version_id is None:
         return None
     version = session.get(HatUniverseVersion, bot.universe_version_id)
@@ -87,7 +87,7 @@ def _tradable_members(session: Session, universe_id: uuid.UUID, day: date) -> fr
     return frozenset(row.id for row in rows if ordinary_equity(row.isin))
 
 
-def bot_universe_members(session: Session, bot: HatBot, day: date) -> frozenset[uuid.UUID]:
+def bot_universe_members(session: Session, bot: Bot, day: date) -> frozenset[uuid.UUID]:
     """The tradable instruments in the bot's universe on `day`, point in time; empty without
     one."""
     universe_id = _universe_id(session, bot)
@@ -179,12 +179,12 @@ def scan_and_publish(
     `inputs.used_pivots` by the bot's book (`_book`): the caller chooses neither. Idempotent per
     (bot, trade date)."""
     lock_bot(session, bot_id)  # held to commit: a concurrent run waits, then sees our event
-    bot = session.get(HatBot, bot_id)
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None or bot.live_version_id is None:
         return Published(0, False, "no_live_version")
     if _already_published(session, bot_id, trade_date):
         return Published(0, False, "already_published")
-    version = session.get(HatStrategyVersion, bot.live_version_id)
+    version = configs_of(session).get(StrategyVersion, bot.live_version_id)
     if version is None:
         return Published(0, False, "no_live_version")
     universe_id = _universe_id(session, bot)

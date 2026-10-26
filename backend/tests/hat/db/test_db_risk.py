@@ -10,18 +10,16 @@ import hat_db_builders as b
 import pytest
 from hat_risk_support import TRADE_DAY, calendar_around, policy_with
 from sqlalchemy import Connection, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.hat.governance import CoolingOffError
+from app.hat.configs.records import RiskPolicyVersion
+from app.hat.configs.unit import configs_of
 from app.hat.models import (
     HatAllocationDaily,
     HatDailyBotSnapshot,
     HatEvent,
     HatKillSwitch,
-    HatRiskPolicyVersion,
 )
-from app.hat.risk import policy_service
 from app.hat.risk.drawdown import evaluate_drawdown_kills, snapshot_bots
 from app.hat.risk.kill_ops import rearm_kill, trip_kill
 from app.hat.risk.policy import seed_policy
@@ -45,12 +43,12 @@ EVIDENCE = {
 
 
 def session_on(conn: Connection) -> Session:
-    return Session(bind=conn, join_transaction_mode="create_savepoint")
+    return b.session(conn, join_transaction_mode="create_savepoint")
 
 
 def test_risk__policy_service_rows_pass_the_database(conn: Connection) -> None:
-    """The version rows the policy service writes (seed, a decrease, an increase) satisfy the
-    cooling-off check, and every request and effect has its event row."""
+    """The policy service's versions (seed, a decrease, an increase) and their event rows: every
+    request and effect has its event row."""
     user = uuid.uuid4()
     calendar = calendar_around(TRADE_DAY, span=40)
     with session_on(conn) as session:
@@ -76,38 +74,13 @@ def test_risk__policy_service_rows_pass_the_database(conn: Connection) -> None:
         session.flush()
         assert (down.direction, up.direction) == ("decrease", "increase")
         assert up.effective_from - up.requested_at >= timedelta(days=7)
-        rows = session.scalars(
-            select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.user_id == user)
-        ).all()
+        rows = configs_of(session).all(RiskPolicyVersion, lambda r: r.user_id == user)
         assert len(rows) == 3
         kinds = [
             e.event_type for e in session.scalars(select(HatEvent).where(HatEvent.user_id == user))
         ]
         assert kinds.count("risk.change_requested") == 3
         assert kinds.count("risk.change_effective") == 3
-
-
-def test_risk__policy_service_without_cooling_off_is_rejected(
-    conn: Connection, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Broken variant: a service with zero cooling-off cannot write an increase; the model guard or
-    database check refuses it."""
-    monkeypatch.setattr(policy_service, "COOLING_OFF", timedelta(0))
-    user = uuid.uuid4()
-    with session_on(conn) as session:
-        seed_initial_policy(session, user, EVENING - timedelta(days=1))
-        proposed = policy_with(risk_pct="0.0030")
-        calendar = calendar_around(TRADE_DAY, span=40)
-        with pytest.raises((CoolingOffError, IntegrityError)):
-            request_policy_change(
-                session,
-                user_id=user,
-                proposed=proposed,
-                calendar=calendar,
-                requested_at=EVENING,
-                evidence=lambda _s, _u, _at: EVIDENCE,
-                chat_id=1,
-            )
 
 
 def test_risk__kill_rows_pass_the_scope_check(conn: Connection) -> None:

@@ -32,11 +32,13 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.sql.expression import Exists
 
 from ..clock import SYSTEM_CLOCK, Clock
+from ..configs.records import ACCOUNT_ACTIVE, BrokerAccount
+from ..configs.unit import configs_of
+from ..data.instrument_names import instrument_symbols
 from ..engine.entries import TokenIssuer
 from ..errors import HatConfigError
 from ..execution.broker import (
@@ -53,6 +55,7 @@ from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
 from ..execution.gtt_upkeep import GttUpkeep
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import ManagerConfig, TradeManager, ViewSource
+from ..execution.modes import account_bot_ids
 from ..execution.mpp import MarketProtection
 from ..execution.order_book import TERMINAL_STATUSES
 from ..execution.position_desk import PositionDesk
@@ -69,14 +72,10 @@ from ..execution.session import (
 )
 from ..models import (
     HatApproval,
-    HatBot,
-    HatBrokerAccount,
-    HatInstrument,
     HatOrder,
     HatPosition,
     HatSignal,
 )
-from ..models.strategy import ACCOUNT_ACTIVE
 from ..notify import LogNotifier, Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..ops.scheduler import ScheduledJob
@@ -114,7 +113,7 @@ FILL_SYNC_EVERY = timedelta(minutes=1)
 RECONCILE_DOWN_IN_SESSION = timedelta(minutes=10)
 RECONCILE_DOWN_AFTER = timedelta(minutes=30)
 
-BrokerFor = Callable[[HatBrokerAccount], HatBroker | None]
+BrokerFor = Callable[[BrokerAccount], HatBroker | None]
 TickFor = Callable[[Session, HatPosition], Decimal | None]
 # (session, bot, instrument, now): the placement check, the instrument's live price in it
 CheckFor = Callable[[Session, uuid.UUID, uuid.UUID, datetime], PlacementCheck]
@@ -204,14 +203,7 @@ class AccountDesk:
         bot, not the account switch: one account's live session never clears another's trip."""
         failing = broker_health_failing(now, live)
         try:
-            bots = list(
-                session.scalars(
-                    select(HatBot.id)
-                    .where(HatBot.broker_account_id == self.account_id)
-                    .order_by(HatBot.id)
-                )
-            )
-            for bot_id in bots:
+            for bot_id in account_bot_ids(session, self.account_id):
                 sync_health(
                     session,
                     scope="bot",
@@ -302,61 +294,67 @@ def _open_costs(session: Session, account_id: uuid.UUID) -> list[OpenCost]:
     """The account's open real positions (its bots'), each with its symbol, shares and fill
     cash (`drawdown.fill_cash`)."""
     rows = session.execute(
-        select(HatPosition.signal_id, HatPosition.qty_open, HatInstrument.symbol)
-        .join(HatBot, HatBot.id == HatPosition.bot_id)
-        .join(HatInstrument, HatInstrument.id == HatPosition.instrument_id)
-        .where(
-            HatBot.broker_account_id == account_id,
+        select(HatPosition.signal_id, HatPosition.qty_open, HatPosition.instrument_id).where(
+            HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
             HatPosition.is_virtual.is_(False),
             HatPosition.closed_at.is_(None),
         )
     ).all()
+    symbols = instrument_symbols(session, (instrument_id for _, _, instrument_id in rows))
     cash = fill_cash(session, {signal_id for signal_id, _, _ in rows})
-    return [OpenCost(str(symbol), qty, cash[signal_id]) for signal_id, qty, symbol in rows]
+    return [
+        OpenCost(symbols[instrument_id], qty, cash[signal_id])
+        for signal_id, qty, instrument_id in rows
+        if instrument_id in symbols
+    ]
 
 
-def _holds_real_positions() -> Exists:
+def _holds_real_positions(session: Session, account_id: uuid.UUID) -> bool:
     """The account has an open real position: its desk keeps the fill sync, GTT upkeep, exit
     rules and flatten running whatever its status, while the mode gates keep real entries
     blocked unless it is active (HAT-EXEC-012)."""
-    return (
+    held = (
         select(HatPosition.id)
-        .join(HatBot, HatBot.id == HatPosition.bot_id)
         .where(
-            HatBot.broker_account_id == HatBrokerAccount.id,
+            HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
             HatPosition.is_virtual.is_(False),
             HatPosition.closed_at.is_(None),
             HatPosition.qty_open > 0,
         )
         .exists()
     )
+    return bool(session.scalar(select(held)))
 
 
-def _has_working_orders() -> Exists:
+def _has_working_orders(session: Session, account_id: uuid.UUID) -> bool:
     """The account has a real order that can still move (not filled, cancelled, expired or
     rejected): an entry, sale or GTT stop working at its broker."""
-    return (
+    working = (
         select(HatOrder.id)
         .where(
-            HatOrder.broker_account_id == HatBrokerAccount.id,
+            HatOrder.broker_account_id == account_id,
             HatOrder.is_virtual.is_(False),
             HatOrder.status.not_in(TERMINAL_STATUSES),
         )
         .exists()
     )
+    return bool(session.scalar(select(working)))
 
 
-def refuse_stranded(session: Session, account: HatBrokerAccount) -> None:
+def _needs_desk(session: Session, account: BrokerAccount) -> bool:
+    return (
+        account.status == ACCOUNT_ACTIVE
+        or _holds_real_positions(session, account.id)
+        or _has_working_orders(session, account.id)
+    )
+
+
+def refuse_stranded(session: Session, account: BrokerAccount) -> None:
     """Refuse the start (`HatConfigError`) when `account`, which has no adapter (its broker is
     not the active one, `HAT_BROKER`), holds real open positions or working orders: no desk
     would reconcile, protect or sell them. Only one broker is active at a time, so the owner
     closes them at the old broker (or switches back) before switching."""
-    held = session.scalar(
-        select(HatBrokerAccount.id).where(
-            HatBrokerAccount.id == account.id, or_(_holds_real_positions(), _has_working_orders())
-        )
-    )
-    if held is not None:
+    if _holds_real_positions(session, account.id) or _has_working_orders(session, account.id):
         raise HatConfigError(
             f"inactive_broker_holds_positions: account {account.id} ({account.broker}) has real "
             "open positions or working orders; close them or set HAT_BROKER to its broker"
@@ -366,7 +364,7 @@ def refuse_stranded(session: Session, account: HatBrokerAccount) -> None:
     )
 
 
-def desk_accounts(accounts: list[HatBrokerAccount]) -> list[HatBrokerAccount]:
+def desk_accounts(accounts: list[BrokerAccount]) -> list[BrokerAccount]:
     """The accounts that get a desk, active ones first: every active account (a second active
     account of one broker still refuses the start in `broker_for`), and an account that is not
     active but holds open real positions only when no earlier one claimed its broker. A broker
@@ -420,19 +418,7 @@ class Desks:
         # whose placement raised, per account, until `resume_entries` (HAT-OPS-003, PR 52)
         self._resume: dict[uuid.UUID, list[uuid.UUID]] = {}
         with session_factory() as session:
-            accounts = list(
-                session.scalars(
-                    select(HatBrokerAccount)
-                    .where(
-                        or_(
-                            HatBrokerAccount.status == ACCOUNT_ACTIVE,
-                            _holds_real_positions(),
-                            _has_working_orders(),
-                        )
-                    )
-                    .order_by(HatBrokerAccount.id)
-                )
-            )
+            accounts = configs_of(session).all(BrokerAccount, lambda a: _needs_desk(session, a))
             for account in desk_accounts(accounts):
                 broker = broker_for(account)
                 if broker is None:
@@ -701,10 +687,9 @@ def _left_unplaced(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
     return list(
         session.scalars(
             select(HatSignal.id)
-            .join(HatBot, HatBot.id == HatSignal.bot_id)
             .outerjoin(HatApproval, HatApproval.signal_id == HatSignal.id)
             .where(
-                HatBot.broker_account_id == account_id,
+                HatSignal.bot_id.in_(account_bot_ids(session, account_id)),
                 unplaced_entry(),
             )
             .order_by(HatSignal.id)

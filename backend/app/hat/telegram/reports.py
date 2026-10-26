@@ -25,11 +25,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from ..clock import SYSTEM_CLOCK, Clock
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..data.calendar import session_calendar
 from ..engine import approvals
 from ..engine.watchlist import EVENT_PUBLISHED
 from ..events import recorded_for
-from ..models import HatBot, HatEvent, HatJobRun, HatPosition, HatTelegramMessage
+from ..models import HatEvent, HatJobRun, HatPosition, HatTelegramMessage
 from ..ops.jobs import JobError, JobResult
 from ..ops.scheduler import ScheduledJob
 from ..read.positions import symbol_of
@@ -244,7 +246,7 @@ class Reports:
         retry of the nightly job (a later bot's send failed) skips a bot whose digest already
         went out after its watchlist for `day` was published."""
         with self._factory() as session:
-            bot = session.get(HatBot, bot_id)
+            bot = configs_of(session).get(Bot, bot_id)
             if bot is None or _digest_sent(session, bot_id, day):
                 return
             digest = reads.watchlist_digest(session, bot, day)

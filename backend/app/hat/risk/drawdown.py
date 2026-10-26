@@ -18,9 +18,10 @@ from decimal import ROUND_CEILING, Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..models import (
     HatAllocationDaily,
-    HatBot,
     HatDailyBotSnapshot,
     HatFill,
     HatKillSwitch,
@@ -116,7 +117,7 @@ def evaluate_drawdown_kills(
     history = _History(session, now, live)
     keys: list[tuple[str, uuid.UUID | None, Decimal]] = [
         ("bot", bot_id, policy.bot_drawdown_pct)
-        for bot_id in sorted(set(session.scalars(select(HatBot.id))) | set(live))
+        for bot_id in sorted({b.id for b in configs_of(session).all(Bot)} | set(live))
     ]
     keys.append(("account", None, policy.account_drawdown_pct))
     rearms = _last_rearms(session)
@@ -283,7 +284,7 @@ def live_equity(
     stop)."""
     out: dict[uuid.UUID, kill.SnapshotPoint] = {}
     fallbacks = {kill.MARK_CLOSE: 0, kill.MARK_STOP: 0}
-    for bot in session.scalars(select(HatBot)).all():
+    for bot in configs_of(session).all(Bot):
         allocation = _allocation_on(session, bot.id, trade_date_of(now))
         if allocation is None:
             continue
@@ -348,7 +349,7 @@ def snapshot_bots(
     """
     rows = 0
     fallbacks = 0
-    for bot in session.scalars(select(HatBot)).all():
+    for bot in configs_of(session).all(Bot):
         allocation = _allocation_on(session, bot.id, trade_date)
         if allocation is None:
             continue

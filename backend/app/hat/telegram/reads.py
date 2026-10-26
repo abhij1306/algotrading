@@ -16,17 +16,16 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import ACCOUNT_ACTIVE, Bot, BrokerAccount
+from ..configs.unit import configs_of
 from ..data.calendar import session_calendar
 from ..events import recorded_for
 from ..models import (
-    HatBot,
-    HatBrokerAccount,
     HatDailyBotSnapshot,
     HatEvent,
     HatPosition,
     HatSignal,
 )
-from ..models.strategy import ACCOUNT_ACTIVE
 from ..read import bots as read_bots
 from ..read import kill as read_kill
 from ..read.positions import UNKNOWN, open_positions, symbols
@@ -61,7 +60,7 @@ PriceSource = Callable[[uuid.UUID], Decimal | None]
 
 
 class LoginLinks(Protocol):
-    def link(self, account: HatBrokerAccount) -> str | None:
+    def link(self, account: BrokerAccount) -> str | None:
         """A fresh login link for the account's broker, None when one cannot be made."""
         ...
 
@@ -69,7 +68,7 @@ class LoginLinks(Protocol):
 # --- bots --------------------------------------------------------------------------------------
 
 
-def bots_named(session: Session, name: str | None) -> list[HatBot]:
+def bots_named(session: Session, name: str | None) -> list[Bot]:
     """Every bot when `name` is None; else the bots whose strategy name is `name` (any case) or
     whose id starts with it (6 or more characters). Ordered by id."""
     bots = read_bots.all_bots(session)
@@ -88,16 +87,15 @@ def bots_named(session: Session, name: str | None) -> list[HatBot]:
 # --- accounts and broker sessions --------------------------------------------------------------
 
 
-def accounts(session: Session, broker: str | None = None) -> list[HatBrokerAccount]:
+def accounts(session: Session, broker: str | None = None) -> list[BrokerAccount]:
     """The active broker accounts (of one broker, any case), ordered by id."""
-    query = select(HatBrokerAccount).where(HatBrokerAccount.status == ACCOUNT_ACTIVE)
-    rows = list(session.scalars(query.order_by(HatBrokerAccount.id)))
+    rows = configs_of(session).all(BrokerAccount, lambda a: a.status == ACCOUNT_ACTIVE)
     if broker is None:
         return rows
     return [a for a in rows if a.broker.lower() == broker.strip().lower()]
 
 
-def logged_out(session: Session, day: date) -> list[HatBrokerAccount]:
+def logged_out(session: Session, day: date) -> list[BrokerAccount]:
     """The active accounts with no live `hat_broker_session` for `day` (the 09:05 prompt)."""
     return [row.account for row in broker_sessions(session, day) if row.status != LIVE]
 
@@ -106,7 +104,8 @@ def open_real_positions(session: Session, account_ids: Sequence[uuid.UUID]) -> i
     """The real open positions of the accounts' bots (the 09:05 prompt's escalation)."""
     if not account_ids:
         return 0
-    bots = select(HatBot.id).where(HatBot.broker_account_id.in_(account_ids))
+    wanted = set(account_ids)
+    bots = [b.id for b in configs_of(session).all(Bot, lambda b: b.broker_account_id in wanted)]
     return (
         session.scalar(
             select(func.count())
@@ -198,7 +197,7 @@ def position_rows(session: Session, now: datetime, price: PriceSource) -> list[r
 # --- watchlists --------------------------------------------------------------------------------
 
 
-def watchlist_texts(session: Session, bots: Sequence[HatBot], day: date) -> list[str]:
+def watchlist_texts(session: Session, bots: Sequence[Bot], day: date) -> list[str]:
     """`/watchlist`: each bot's latest watchlist on or before `day`."""
     found = latest_watchlists(session, day, (b.id for b in bots))
     labels = read_bots.labels(session, (b.id for b in bots))
@@ -215,7 +214,7 @@ def watchlist_texts(session: Session, bots: Sequence[HatBot], day: date) -> list
     return out
 
 
-def watchlist_digest(session: Session, bot: HatBot, day: date) -> render.WatchlistDigest:
+def watchlist_digest(session: Session, bot: Bot, day: date) -> render.WatchlistDigest:
     """HAT-TG-022: new = today minus the previous watchlist, dropped = the previous minus today,
     top = the first min(10, n) of today by score descending."""
     latest = latest_watchlists(session, day, (bot.id,)).get(bot.id)

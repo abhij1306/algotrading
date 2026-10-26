@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.hat.configs.records import ACCOUNT_ACTIVE
 from app.hat.execution.broker import BrokerHolding, BrokerPosition
 from app.hat.execution.entry_timeout import BREAK_FAILED, TIMED_OUT, cancel_reason
 from app.hat.execution.modes import HIGH, real_orders_allowed, route_mode
@@ -14,7 +15,6 @@ from app.hat.execution.order_book import ENTRY, GTT_PURPOSE
 from app.hat.execution.reconcile import broker_quantities
 from app.hat.execution.submit import Retry, retry_verdict
 from app.hat.governance import Mode
-from app.hat.models.strategy import ACCOUNT_ACTIVE
 
 D = Decimal
 NOW = datetime(2026, 10, 23, 5, 0, tzinfo=UTC)

@@ -1,22 +1,24 @@
 """Risk-policy reads and startup upkeep that need no backtest or order code (HAT-RISK-011).
 
+The policy versions are config records (`configs.records.RiskPolicyVersion`, JSON files).
 `app.database` runs `ensure_hat_policies` at startup, and the Telegram text path imports
-`app.database`, so this module imports only the models, the event log and `risk.policy`
+`app.database`, so this module imports only the configs, the event log and `risk.policy`
 (CONF `telegram.no_order_import_in_text_path`). `policy_service` builds on it.
 """
 
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Engine, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..configs.records import RiskPolicyVersion
+from ..configs.store import ConfigConflictError
+from ..configs.unit import configs_of
 from ..events import record
-from ..models import HatRiskPolicyVersion
 from ..time import as_utc, utc_now
 from .policy import (
     OLD_SEED_POLICY,
@@ -29,9 +31,7 @@ from .policy import (
 
 def load_versions(session: Session, user_id: uuid.UUID) -> list[PolicyVersion]:
     """Every stored version of the user's policy, parsed (a malformed stored document raises)."""
-    rows = session.scalars(
-        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.user_id == user_id)
-    ).all()
+    rows = configs_of(session).all(RiskPolicyVersion, lambda r: r.user_id == user_id)
     return [
         PolicyVersion(r.id, r.version, r.effective_from, r.superseded_at, parse_policy(r.policy))
         for r in rows
@@ -45,7 +45,7 @@ EVENT_WITHDRAWN = "risk.change_withdrawn"  # a pending version a decrease withdr
 
 def record_policy_event(
     session: Session,
-    row: HatRiskPolicyVersion,
+    row: RiskPolicyVersion,
     kind: str,
     actor: str,
     chat_id: int | None,
@@ -67,15 +67,13 @@ def record_policy_event(
 
 
 def next_version(session: Session, user_id: uuid.UUID) -> int:
-    rows = session.scalars(
-        select(HatRiskPolicyVersion.version).where(HatRiskPolicyVersion.user_id == user_id)
-    ).all()
-    return max(rows, default=0) + 1
+    rows = configs_of(session).all(RiskPolicyVersion, lambda r: r.user_id == user_id)
+    return max((r.version for r in rows), default=0) + 1
 
 
 def supersede_old_seed(
     session: Session, user_id: uuid.UUID, now: datetime
-) -> HatRiskPolicyVersion | None:
+) -> RiskPolicyVersion | None:
     """PR 46 (D128, HAT-RISK-011): when the user's policy in force at `now` is the withdrawn PR 10
     seed (`OLD_SEED_POLICY`) and nothing is pending, write the current seed as the next version,
     `direction = initial` and effective at once (the owner's decision, not a requested change,
@@ -88,8 +86,9 @@ def supersede_old_seed(
         return None
     if any(as_utc(v.effective_from) > as_utc(now) for v in versions):
         return None  # the owner has a change queued: leave the policy to it
-    old = session.get_one(HatRiskPolicyVersion, in_force.version_id)
-    row = HatRiskPolicyVersion(
+    old = configs_of(session).get(RiskPolicyVersion, in_force.version_id)
+    assert old is not None  # a loaded version
+    row = RiskPolicyVersion(
         user_id=user_id,
         version=next_version(session, user_id),
         policy=dict(SEED_POLICY),
@@ -97,33 +96,31 @@ def supersede_old_seed(
         requested_at=now,
         effective_from=now,
     )
-    session.add(row)
+    configs_of(session).add(row)
     old.superseded_at = as_utc(now)
-    session.flush()
     record_policy_event(session, row, EVENT_REQUESTED, "engine", None, now)
     record_policy_event(session, row, EVENT_EFFECTIVE, "engine", None, now)
     return row
 
 
-def ensure_hat_policies(bind: Engine) -> int:
+def ensure_hat_policies(session_factory: Callable[[], Session]) -> int:
     """Startup upkeep (`app.database.ensure_hat_database`): `supersede_old_seed` for every user
     with a policy, each in its own transaction. Safe to repeat and to race: a second process
-    that loses the version number to the first rolls back and leaves the first's row; any other
-    constraint failure, after which the old seed is still in force (even with a change now
-    pending), is raised. Returns
+    that loses the version files to the first (`ConfigConflictError`) rolls back and leaves the
+    first's; when the old seed is still in force after that, the conflict is raised. Returns
     how many users were moved to the new seed."""
-    with Session(bind) as session:
-        users = session.scalars(select(HatRiskPolicyVersion.user_id).distinct()).all()
+    with session_factory() as session:
+        users = {r.user_id for r in configs_of(session).all(RiskPolicyVersion)}
     moved = 0
-    for user_id in users:
-        with Session(bind) as session:
+    for user_id in sorted(users):
+        with session_factory() as session:
             try:
                 if supersede_old_seed(session, user_id, utc_now()) is not None:
                     session.commit()
                     moved += 1
-            except IntegrityError:
+            except ConfigConflictError:
                 session.rollback()
-                with Session(bind) as fresh:
+                with session_factory() as fresh:
                     in_force = effective_version(load_versions(fresh, user_id), utc_now())
                     if in_force is not None and in_force.policy == parse_policy(OLD_SEED_POLICY):
                         raise  # not a lost race: the old seed is still in force

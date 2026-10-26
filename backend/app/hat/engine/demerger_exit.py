@@ -76,12 +76,21 @@ def due_positions(session: Session, sessions: Sequence[date]) -> list[Due]:
     that reaches it (its last session before the ex-date is not known yet)."""
     if not sessions:
         return []
-    rows = session.execute(
-        select(HatPosition, HatDemergerNotice)
-        .join(HatDemergerNotice, HatDemergerNotice.instrument_id == HatPosition.instrument_id)
-        .where(HatPosition.closed_at.is_(None), HatDemergerNotice.ex_date <= sessions[-1])
-        .order_by(HatPosition.opened_at, HatPosition.id, HatDemergerNotice.ex_date)
+    # positions (hat_state) and notices (hat_live) are two reads, joined here
+    positions = session.scalars(
+        select(HatPosition)
+        .where(HatPosition.closed_at.is_(None))
+        .order_by(HatPosition.opened_at, HatPosition.id)
     ).all()
+    notices = session.scalars(
+        select(HatDemergerNotice)
+        .where(
+            HatDemergerNotice.instrument_id.in_({p.instrument_id for p in positions}),
+            HatDemergerNotice.ex_date <= sessions[-1],
+        )
+        .order_by(HatDemergerNotice.ex_date)
+    ).all()
+    rows = [(p, n) for p in positions for n in notices if n.instrument_id == p.instrument_id]
     found = []
     for position, notice in rows:
         last = last_session_before(sessions, notice.ex_date)

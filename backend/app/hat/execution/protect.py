@@ -63,10 +63,12 @@ from enum import StrEnum
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..engine.rescale import applied_factors, pending_actions
 from ..errors import HatError
 from ..events import record
-from ..models import HatBot, HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
+from ..models import HatEvent, HatInstrument, HatOrder, HatPosition, HatSignal
 from ..notify import LogNotifier, Notifier
 from ..risk.sessions import SessionCalendar, SessionState, before_continuous_end
 from ..time import IST, day_bounds, trade_date_of, utc_now
@@ -439,7 +441,7 @@ class StopDesk:
             raise HatError("not a real position")
         session.refresh(position)
         signal = session.get(HatSignal, position.signal_id)
-        bot = session.get(HatBot, position.bot_id)
+        bot = configs_of(session).get(Bot, position.bot_id)
         # The instrument's current symbol: after a series change (HAT-EXEC-146) the adapter maps
         # it to the new series' Fyers symbol, as the old series' symbol takes no order.
         symbol = session.scalar(

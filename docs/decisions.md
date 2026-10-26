@@ -215,9 +215,20 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Owner corrections over automation.** Wrong factors, amounts and dates are fixed by the owner's
   journalled corrections and reviewed lists with bar evidence; loads never overwrite them, and
   nothing is guessed.
-- **Storage.** Postgres is the system of record (fresh database, no migration tool, uuid v7 keys,
+- **Storage.** Postgres is the system of record (fresh databases, no migration tool, uuid v7 keys,
   `Numeric(18,4)`); price history is date-partitioned Parquet read through DuckDB; indicators are
   own polars code.
+- **Stock data, state and configs apart (owner, 2026-10-26).** hat_live is the canonical stock
+  database: it holds the data and only the data jobs and importers write it (read-only for every
+  other connection). Trading and runtime state goes to hat_state, a second database on the same
+  server with the same credentials and its own upkeep. The configs (strategies and their versions,
+  risk policy versions, broker accounts, bots, regime models, the criterion catalogue) are
+  versioned JSON revision files under `HAT_DATA_ROOT/admin/config`, never edited once written,
+  with an in-force pointer per kind and its history; ids are unchanged. So a data rebuild can
+  never touch a trade, every config change is a reviewable file, and a stray write to the stock
+  data fails loudly. Keys across them are plain columns checked in code. The watchlist is nightly
+  scan output and lives in hat_state, not in the configs. `python -m app.hat.ops.state_split`
+  moved the rows once (runbook); hat_live's legacy tables stay until the owner drops them.
 - **Evidence defaults (QA7).** The DSR family floors N ≥ 5 trials and trial-Sharpe variance
   V ≥ 0.25/252 (`dsr.py`); ambiguous days at most 10% of the sessions a trade was held
   (`lifecycle.py`); `max_chase` 2% by default, 5% for stage2-contraction-breakout and 2% for
@@ -272,10 +283,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `HAT_DATA_ROOT/backtests/runs/<run_id>/`, with `config.json` to rerun it, and the DSR's trial
   count in `backtests/trials.json` beside them; `hat_live` is read-only to every backtest, a
   promotion run too. So results compare across strategies and sweeps in one shape, a refused
-  entry's cost is measured, and a backtest cannot touch the live database. Promotion's linkage
-  (`hat_backtest_run`, `hat_backtest_bucket`) is left in place and no longer written:
-  `publish-version --run`, the `backtest_gate` and signal confidence read it and fail closed
-  until promotion reads run folders (Planned, not built).
+  entry's cost is measured, and a backtest cannot touch the live database. Promotion reads run
+  folders: a completed run whose run audit (`audit.json`) passed or warned, through its
+  `evidence.json` (metrics, trade buckets), evidences `publish-version --run <run id>` (only a run
+  flagged `for_promotion`), the risk-increase gate and signal confidence; a run whose audit failed
+  or is missing is no evidence. A strategy version names its run by id.
 - **One backtest process, audited (owner, 2026-10-26).** Every backtest follows
   `docs/backtests/process.md`: a data audit before every run (a failed one refuses the run), a run
   audit after it (`audit.json`), one change per variant against a named base within a trial
@@ -296,7 +308,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   broker read gives an earlier session's trades.
 - **No dormant real mode (Q9).** Confirm or auto for a sleeve that is not Live is refused; the
   owner asks again after promotion, so a promotion never turns on real orders by itself.
-- **A strategy holds no mode (Q10).** The mode is the bot's alone (`hat_bot.execution_mode`, by
+- **A strategy holds no mode (Q10).** The mode is the bot's alone (its record's `execution_mode`, by
   `/mode`); the strategy config's `execution_mode`, never read, is removed so no file suggests
   otherwise.
 - **Failed-break closes survive a restart (Q7).** The day's closes are rebuilt from the stored
@@ -339,9 +351,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
-live trading of `entry_timing: daily_close`; promotion (`publish-version --run`, the
-`backtest_gate`, the risk-increase gate and signal confidence) reading a `--for-promotion` run's
-folder instead of `hat_backtest_run`.
+live trading of `entry_timing: daily_close`.
 
 ## Defaults awaiting owner confirmation
 

@@ -131,23 +131,33 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   under that same confirmation.
 - **Policy changes.** Live levers only reduce risk; an increase waits 7 days and passes the
   evidence gate; a decrease withdraws every pending version, so a later decrease is never
-  overridden; policy and strategy versions are immutable. The gate counts the live trades
+  overridden; policy and strategy versions are immutable (`configs.records.record_rules`). The
+  gate counts the live trades
   closed since the version in force took effect, so any change, a decrease too, restarts that
   window; every sleeve's evidence run must pass the lifecycle's span, gap and ambiguity
   conditions (QA8), and the gate reads only the runs and trades that existed when it was asked.
   Pre-trading reset: until a real order, position or closed trade exists, `set-policy` replaces
   the policy at once; after, it is refused.
 - **One owner per resource.** One live socket, one session owner per broker account, one token
-  store, one fake broker, one risk authority, one HAT runtime per database. A runtime whose
+  store, one fake broker, one risk authority, one HAT runtime per hat_state. A runtime whose
   lock another runtime took writes no order (no entry, stop or sale) until it is restarted.
 - **Nothing leaks.** Results carry fixed codes, never broker or database text; secrets are never
   logged, returned or committed.
-- **Events.** Every state change and its event commit in one transaction; `hat_event` is
+- **Events.** Every state change and its event commit in one transaction (a config change's
+  revision files are written once the transaction's rows are flushed, just before it commits);
+  `hat_event` is
   append-only (triggers refuse UPDATE, DELETE and TRUNCATE, on every partition too); trade state
   replays from events.
-- **Schema.** The database holds exactly the models' tables, columns, types, constraints and
-  indexes plus `schema.PG_DDL`; HAT refuses to start on any difference and prints the DDL.
+- **Schema.** Each database holds exactly its models' tables, columns, types, constraints and
+  indexes plus `schema.PG_DDL` (hat_live may keep the legacy tables `schema.legacy_live_tables`
+  until the owner drops them); HAT refuses to start on any difference and prints the DDL.
   `create_all` never alters a table: a change ships as idempotent `PG_DDL` or a runbook DDL step.
+- **Storage.** hat_live holds stock data only and only the data jobs and importers write it; every
+  other connection to it is read-only. Trading state lives in hat_state, configs in revision
+  files under `HAT_DATA_ROOT/admin/config`: a revision file is validated on every load and never
+  changed once written, the in-force pointer moves only by compare and swap, and every earlier
+  pointer is kept. No statement spans both databases (`storage.CrossDatabaseError`); a key across
+  them, or to a config record, is checked in code.
 
 ## Data
 

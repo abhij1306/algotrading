@@ -406,7 +406,7 @@ def _run(args: argparse.Namespace, settings: HatSettings) -> ImportReport:  # pr
     from ..models import HatInstrument
     from .chains import stored_adjustment
 
-    with db_session_scope() as db:
+    with db_session_scope(writes_data=True) as db:
         adjustment = stored_adjustment(db)
         pairs = db.execute(select(HatInstrument.isin, HatInstrument.id)).all()
     counts = Counter(isin for isin, _ in pairs)

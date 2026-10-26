@@ -45,11 +45,13 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..backtest.evidence import signal_confidence
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..data.demerger_notice import SKIP_DEMERGER_PENDING
 from ..execution.modes import route_mode
 from ..governance import MODE_VALUES, Mode
 from ..ids import uuid7
-from ..models import HatApproval, HatBot, HatSignal
+from ..models import HatApproval, HatSignal
 from ..risk.caps import effective_max_chase_pct
 from ..risk.decision import REASON_CODES, RiskDecision, SignalContext
 from ..risk.policy import PolicyVersion, effective_version
@@ -162,7 +164,7 @@ def _existing_signal(session: Session, request: EntryRequest) -> HatSignal | Non
     )
 
 
-def _entry_policy(session: Session, bot: HatBot, request: EntryRequest) -> PolicyVersion:
+def _entry_policy(session: Session, bot: Bot, request: EntryRequest) -> PolicyVersion:
     """The policy version a new entry is decided under, after the rules that refuse it outright."""
     if request.instrument_id not in bot_universe_members(session, bot, request.trade_date):
         # Leaving the universe stops new entries (HAT-PORT-023); an open position is untouched.
@@ -203,7 +205,7 @@ def open_entry(
     if mode not in MODE_VALUES:
         raise TradeError("unknown_mode")
     lock_bot(session, request.bot_id)
-    bot = session.get(HatBot, request.bot_id)
+    bot = configs_of(session).get(Bot, request.bot_id)
     if bot is None:
         raise TradeError("unknown_bot")
     existing = _existing_signal(session, request)
@@ -276,7 +278,7 @@ def open_entry(
     return _route_accepted(session, trade, decision, entry, request.triggered_at, fills, issue)
 
 
-def entry_confidence(session: Session, bot: HatBot, request: EntryRequest) -> Confidence:
+def entry_confidence(session: Session, bot: Bot, request: EntryRequest) -> Confidence:
     """The confidence label of the signal `request` makes (D132, HAT-EXEC-015)."""
     return signal_confidence(
         session,
@@ -316,7 +318,7 @@ def _route_accepted(
 
 def _signal_row(
     request: EntryRequest,
-    bot: HatBot,
+    bot: Bot,
     policy: PolicyVersion,
     decision: RiskDecision,
     signal_id: uuid.UUID,

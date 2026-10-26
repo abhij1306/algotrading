@@ -12,8 +12,10 @@ from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..events import record
-from ..models import HatBot, HatExposureState
+from ..models import HatExposureState
 from ..time import utc_now
 from .controls import actor_payload
 from .exposure import ClosedTrade, LadderState, apply_trade
@@ -32,7 +34,7 @@ def pause_bot(
 ) -> bool:
     """Pause an active bot: manage-only at once, `bot.paused` in the same transaction.
     False when it was not active."""
-    bot = session.get(HatBot, bot_id)
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None or bot.status != "active":
         return False
     bot.status = "paused"
@@ -59,7 +61,7 @@ def resume_bot(
 ) -> bool:
     """Resume a paused bot (`bot.resumed`). It never lifts a kill switch: the kills are rows of
     their own, and `kill_state` still reads them. False when it was not paused."""
-    bot = session.get(HatBot, bot_id)
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None or bot.status != "paused":
         return False
     bot.status = "active"

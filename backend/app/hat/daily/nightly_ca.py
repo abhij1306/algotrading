@@ -93,7 +93,7 @@ class CaAdjust:
             logger.exception("nightly demerger notices failed")
             self.deps.notifier.alert(ALERT_DEMERGERS_UNCHECKED, day, {})
         try:
-            with self.deps.session_factory() as session:
+            with self.deps.data_session_factory() as session:
                 restated = restate_dividends(session, self._now())
                 session.commit()
             logger.info("trade dividends restated: %d trades changed", restated)
@@ -109,7 +109,7 @@ class CaAdjust:
         self._refresh_lineage(day)
         self._isin_changes(day)
         self._projection(day)
-        with self.deps.session_factory() as session:
+        with self.deps.data_session_factory() as session:
             adjustment = stored_adjustment(session)
         cumulative_segments(adjustment.factors)  # raises when a factor cannot load into the view
         logger.info(
@@ -126,7 +126,7 @@ class CaAdjust:
         that fails, is alerted, never fatal (the adjusted view reads the stored rows either
         way)."""
         try:
-            with self.deps.session_factory() as session:
+            with self.deps.data_session_factory() as session:
                 found = projection_mismatches(stored_rows(session), read_versions(session))
                 session.rollback()
         except Exception:
@@ -150,7 +150,7 @@ class CaAdjust:
             return
         try:
             report = refresh_lineage(
-                self.deps.session_factory,
+                self.deps.data_session_factory,
                 self.deps.store,
                 sources.symbol_changes,
                 sources.name_changes,
@@ -168,7 +168,7 @@ class CaAdjust:
         `position.isin_changed` (Q4); it is manage-only and its chain takes no entry
         (`rescale.open_guards`) whether or not this runs. A failure is alerted."""
         try:
-            with self.deps.session_factory() as session:
+            with self.deps.data_session_factory() as session:
                 flagged = flag_isin_changes(session, self._now())
                 session.commit()
         except Exception:
@@ -178,13 +178,15 @@ class CaAdjust:
         logger.info("positions held across an isin change: %d newly flagged", flagged)
 
     def _next_session_actions(self, day: date) -> None:
-        with self.deps.session_factory() as session:
+        with self.deps.data_session_factory() as session:
             target = next_session(session, day)
             instruments = held_and_watchlisted(session, day)
         if target is None or not instruments:
             return
         found = lookup_actions(mcp_client(self.deps), instruments, target, target)
-        stored = store_actions(self.deps.session_factory, found.records, (self.deps.notifier, day))
+        stored = store_actions(
+            self.deps.data_session_factory, found.records, (self.deps.notifier, day)
+        )
         logger.info(
             "next-session actions: %d stored, %d lookups failed, %d conflicts",
             stored.created,
@@ -224,7 +226,7 @@ class CaAdjust:
             except CaFileError:
                 logger.exception("tonight's bc file is unreadable; the stored notices are checked")
                 self.deps.notifier.alert(ALERT_DEMERGERS_UNCHECKED, day, {})
-        with self.deps.session_factory() as session:
+        with self.deps.data_session_factory() as session:
             stored = store_notices(session, rows, day) if rows is not None else 0
             unlisted = (
                 flag_unlisted(session, unlisted_notices(session, rows, day), self._now())
@@ -252,7 +254,7 @@ class CaAdjust:
         file of `day`, stored with their cash in one transaction (`ca_nightly.nightly_import`,
         the CA3 checks). Each review or conflict case is alerted, and so is each stored dividend
         of those days still without an amount: it is never guessed."""
-        with self.deps.session_factory() as session:
+        with self.deps.data_session_factory() as session:
             report = ca_nightly.nightly_import(session, self.deps.store, text, day, self._now())
             session.commit()
         logger.info(
@@ -283,7 +285,7 @@ class CaAdjust:
             )
 
     def _quarantine_actions(self) -> None:
-        with self.deps.session_factory() as session:
+        with self.deps.data_session_factory() as session:
             rows = open_quarantines(session)
         if not rows:
             return
@@ -292,7 +294,7 @@ class CaAdjust:
             instruments = {r.symbol: r.instrument_id for r in rows if r.since == since}
             found = lookup_actions(client, instruments, since, since)
             stored = store_actions(
-                self.deps.session_factory, found.records, (self.deps.notifier, since)
+                self.deps.data_session_factory, found.records, (self.deps.notifier, since)
             )
             logger.info(
                 "quarantine actions of %s: %d stored, %d lookups failed, %d conflicts",

@@ -16,6 +16,7 @@ from sqlalchemy import Connection, Engine, delete, func, select, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.hat import models as m
+from app.hat.configs.records import Bot
 from app.hat.governance import Mode
 from app.hat.ids import uuid7
 from app.hat.notify import RecordingNotifier
@@ -30,7 +31,7 @@ from app.hat.ops.partitions import (
     partition_bounds,
     partition_name,
 )
-from app.hat.schema import ensure_hat_schema
+from app.hat.schema import ensure_state_schema
 
 if TYPE_CHECKING:
     from app.hat.engine.entries import EntryRequest
@@ -129,16 +130,6 @@ def check_runtime__signal_versions_not_null(conn: Connection) -> None:
         conn,
         "a signal with no risk policy version",
         lambda: b.signal(conn, w, risk_policy_version_id=None),
-    )
-    rejects(
-        conn,
-        "a signal with a dangling strategy version",
-        lambda: b.signal(conn, w, strategy_version_id=uuid.uuid4()),
-    )
-    rejects(
-        conn,
-        "a signal with a dangling risk policy version",
-        lambda: b.signal(conn, w, risk_policy_version_id=uuid.uuid4()),
     )
     accepts(conn, "a signal naming both versions", lambda: b.signal(conn, w))
 
@@ -628,14 +619,14 @@ def _second_bot(engine: Engine, bot: uuid.UUID) -> uuid.UUID:
     """Another shadow bot of `bot`'s owner, strategy version and universe, on another broker
     account of the owner."""
     with engine.begin() as connection:
-        row = connection.execute(select(m.HatBot).where(m.HatBot.id == bot)).one()
+        row = b.STORE.load(Bot.KIND)[str(bot)].record
         return b.bot(
             connection,
-            row.strategy_id,
+            uuid.UUID(row["strategy_id"]),
             b.broker_account(connection),
             execution_mode="shadow",
-            live_version_id=row.live_version_id,
-            universe_version_id=row.universe_version_id,
+            live_version_id=uuid.UUID(row["live_version_id"]),
+            universe_version_id=uuid.UUID(row["universe_version_id"]),
             risk_cluster="c2",
         )
 
@@ -648,7 +639,6 @@ def _race_entries(
     """Run two `open_entry` transactions at once, the holder pausing between its risk decision
     and its insert until the racer waits on an advisory lock (or 5 s pass); whether each took a
     position, in the order they committed. The caller empties the runtime tables."""
-    from sqlalchemy.orm import Session
 
     from app.hat.engine import entries
     from app.hat.risk.decision import SignalContext
@@ -667,7 +657,7 @@ def _race_entries(
     def worker(request: EntryRequest, hold: bool) -> None:
         if not hold:
             first_in.wait(5)
-        with Session(engine) as session:
+        with b.session(engine) as session:
             decide = hold_between_decision_and_insert if hold else evaluate_signal
             outcome = entries.open_entry(session, request, decide=decide)
             session.commit()
@@ -713,9 +703,7 @@ def _empty_runtime(engine: Engine) -> None:
     with engine.begin() as connection:
         truncate_bypassing_guards(connection)
         connection.execute(
-            text(
-                "TRUNCATE hat_event, hat_fill, hat_order, hat_position, hat_signal, hat_bot CASCADE"
-            )
+            text("TRUNCATE hat_event, hat_fill, hat_order, hat_position, hat_signal CASCADE")
         )
 
 
@@ -798,7 +786,6 @@ def check_runtime__publish_serialised(conn: Connection) -> None:
     import polars as pl
     import yaml
     from hat_risk_support import AT, TRADE_DAY
-    from sqlalchemy.orm import Session
 
     from app.hat.engine import watchlist
     from app.hat.engine.scan import ScanInputs
@@ -822,7 +809,7 @@ def check_runtime__publish_serialised(conn: Connection) -> None:
     def worker() -> None:
         if threading.current_thread().name != "holder":
             first_in.wait(5)
-        with Session(engine) as session:
+        with b.session(engine) as session:
             published = watchlist.scan_and_publish(session, bot, inputs, TRADE_DAY, AT)
             session.commit()
             results.append(published.skipped)
@@ -858,7 +845,7 @@ def check_runtime__publish_serialised(conn: Connection) -> None:
         release.set()
         with engine.begin() as connection:
             truncate_bypassing_guards(connection)
-            connection.execute(text("TRUNCATE hat_event, hat_watchlist_entry, hat_bot CASCADE"))
+            connection.execute(text("TRUNCATE hat_event, hat_watchlist_entry CASCADE"))
 
 
 # --- event log (061, 066, 068) -------------------------------------------------
@@ -1079,10 +1066,10 @@ def check_events__partitions_ahead(conn: Connection) -> None:
                     f"not {partition_name(first)}"
                 )
     # The schema upkeep run (what startup does) covers the current month and two more.
-    ensure_hat_schema(conn)
+    ensure_state_schema(conn)
     moment = datetime.now(UTC)
     today = moment.date()
     children = _children(conn)
     for first in months_to_cover(today, SPEC_MONTHS_AHEAD):
-        assert partition_name(first) in children, f"ensure_hat_schema left {first:%Y-%m} out"
+        assert partition_name(first) in children, f"ensure_state_schema left {first:%Y-%m} out"
     assert _routed_to(conn, moment) == partition_name(months_to_cover(today, 0)[0])

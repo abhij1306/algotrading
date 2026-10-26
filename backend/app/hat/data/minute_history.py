@@ -664,7 +664,7 @@ def _basis(settings: HatSettings) -> RawBasis:  # pragma: no cover - real DB
 
     from .chains import stored_adjustment
 
-    with db_session_scope() as db:
+    with db_session_scope(writes_data=True) as db:
         actions = stored_adjustment(db).factors
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     return RawBasis(actions, store_daily(store), settings.history_envelope_tol)
@@ -702,7 +702,7 @@ def _download(
         return 2
     from .universe import active_members  # the models: only the command line needs them
 
-    with db_session_scope() as db:
+    with db_session_scope(writes_data=True) as db:
         members = active_members(db, with_broker_symbol=True)
     instruments = {m.broker_symbol: m.instrument_id for m in members if m.broker_symbol}
     unmapped = sum(1 for m in members if m.broker_symbol is None)

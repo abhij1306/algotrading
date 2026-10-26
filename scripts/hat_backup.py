@@ -1,12 +1,15 @@
-"""Nightly HAT backup: a pg_dump and the HAT_DATA_ROOT store, copied to two targets and checked.
+"""Nightly HAT backup: pg_dumps of both databases and the HAT_DATA_ROOT store, copied to two
+targets and checked.
 
 Usage (from the repo root, with the .env variables in the environment):
     python scripts/hat_backup.py run --local /mnt/backup/hat --remote /mnt/bucket/hat
     python scripts/hat_backup.py verify /mnt/bucket/hat/20261021T180000Z
 
 `run` writes one backup set, a directory named by its UTC start time, holding
-    hat.dump       pg_dump of the HAT database in the custom format (pg_restore reads it)
-    hat_data.tar   every file under HAT_DATA_ROOT (Parquet store, raw bhavcopy zips, backtests)
+    hat.dump       pg_dump of hat_live (DB_NAME) in the custom format (pg_restore reads it)
+    hat_state.dump pg_dump of hat_state (DB_STATE_NAME, default hat_state), the same way
+    hat_data.tar   every file under HAT_DATA_ROOT (Parquet store, raw bhavcopy zips, backtests,
+                   the config files under admin/config)
     manifest.json  size and sha256 of both files and of every file inside the tar
 into the local target, copies it to the remote target, then re-reads both copies against the
 manifest (HAT-OPS-060, docs/runbook.md). Any missing, resized or changed file fails
@@ -46,6 +49,7 @@ from pathlib import Path
 from typing import IO
 
 DUMP_NAME = "hat.dump"
+STATE_DUMP_NAME = "hat_state.dump"
 DATA_TAR = "hat_data.tar"
 MANIFEST_NAME = "manifest.json"
 MANIFEST_VERSION = 1
@@ -170,10 +174,18 @@ def write_data_tar(data_root: Path, names: list[str], tar_path: Path) -> None:
             archive.add(data_root / name, arcname=name, recursive=False)
 
 
-def pg_dump_command(pg_dump: str, env: Mapping[str, str]) -> list[str]:
-    """The pg_dump argv (the dump goes to stdout). `pg_dump` may be a command prefix such as
-    `docker compose ... exec -T -e PGPASSWORD postgres pg_dump`. The argv carries no password:
-    that goes through PGPASSWORD or ~/.pgpass."""
+def dump_databases(env: Mapping[str, str]) -> dict[str, str]:
+    """Each dump file of a set and the database it holds: hat_live and hat_state."""
+    return {
+        DUMP_NAME: env.get("DB_NAME", "algotrading"),
+        STATE_DUMP_NAME: env.get("DB_STATE_NAME") or "hat_state",
+    }
+
+
+def pg_dump_command(pg_dump: str, env: Mapping[str, str], database: str) -> list[str]:
+    """The pg_dump argv of `database` (the dump goes to stdout). `pg_dump` may be a command
+    prefix such as `docker compose ... exec -T -e PGPASSWORD postgres pg_dump`. The argv carries
+    no password: that goes through PGPASSWORD or ~/.pgpass."""
     return [
         *shlex.split(pg_dump),
         "--format=custom",
@@ -181,7 +193,7 @@ def pg_dump_command(pg_dump: str, env: Mapping[str, str]) -> list[str]:
         f"--host={env.get('DB_HOST', 'localhost')}",
         f"--port={env.get('DB_PORT', '5432')}",
         f"--username={env.get('DB_USER', 'postgres')}",
-        f"--dbname={env.get('DB_NAME', 'algotrading')}",
+        f"--dbname={database}",
     ]
 
 
@@ -192,8 +204,8 @@ def pg_dump_env(env: Mapping[str, str]) -> dict[str, str]:
     return child
 
 
-def run_pg_dump(pg_dump: str, out: Path) -> None:
-    command = pg_dump_command(pg_dump, os.environ)
+def run_pg_dump(pg_dump: str, database: str, out: Path) -> None:
+    command = pg_dump_command(pg_dump, os.environ, database)
     with out.open("wb") as handle:
         result = subprocess.run(command, env=pg_dump_env(os.environ), stdout=handle, check=False)
     if result.returncode != 0:
@@ -248,9 +260,11 @@ def run_backup(args: argparse.Namespace) -> int:
         )
         return 1
     local.mkdir(parents=True, exist_ok=False)
-    run_pg_dump(args.pg_dump, local / DUMP_NAME)
+    dumps = dump_databases(os.environ)
+    for name, database in dumps.items():
+        run_pg_dump(args.pg_dump, database, local / name)
     write_data_tar(args.data_root, names, local / DATA_TAR)
-    manifest = build_manifest(local, [DUMP_NAME, DATA_TAR])
+    manifest = build_manifest(local, [*dumps, DATA_TAR])
     manifest[ARCHIVES] = {DATA_TAR: archive_manifest(local / DATA_TAR)}
     manifest["created"] = stamp
     manifest["data_dirs"] = top_dirs(names)

@@ -159,16 +159,26 @@ def load_inputs(
     """Today's watchlist symbols and every open position's symbol (virtual ones too: shadow
     trades need prices as well), from the database; `candidates` come from the gap scan."""
     watch = session.scalars(
-        select(HatInstrument.symbol)
-        .join(HatWatchlistEntry, HatWatchlistEntry.instrument_id == HatInstrument.id)
-        .where(HatWatchlistEntry.trade_date == trade_date)
-    )
+        select(HatWatchlistEntry.instrument_id).where(HatWatchlistEntry.trade_date == trade_date)
+    ).all()
     held = session.scalars(
-        select(HatInstrument.symbol)
-        .join(HatPosition, HatPosition.instrument_id == HatInstrument.id)
-        .where(HatPosition.closed_at.is_(None))
+        select(HatPosition.instrument_id).where(HatPosition.closed_at.is_(None))
+    ).all()
+    # the watchlist and positions live in hat_state, the symbols in hat_live: two reads
+    symbols = dict(
+        session.execute(
+            select(HatInstrument.id, HatInstrument.symbol).where(
+                HatInstrument.id.in_({*watch, *held})
+            )
+        )
+        .tuples()
+        .all()
     )
-    return SubscriptionInputs(frozenset(watch), frozenset(held), frozenset(candidates))
+    return SubscriptionInputs(
+        frozenset(symbols[i] for i in watch if i in symbols),
+        frozenset(symbols[i] for i in held if i in symbols),
+        frozenset(candidates),
+    )
 
 
 class LiveSubscriptions:

@@ -46,12 +46,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
+from ..configs.records import Bot, StrategyVersion
+from ..configs.unit import configs_of
 from ..data.bars import Bar
 from ..data.demerger_notice import SKIP_DEMERGER_PENDING, entry_blocked
 from ..data.gapscan import Gapper, is_candidate
 from ..execution.modes import bot_mode
 from ..governance import Mode
-from ..models import HatBot, HatInstrument, HatStrategyVersion, HatWatchlistEntry
+from ..models import HatInstrument, HatWatchlistEntry
 from ..money import exact
 from ..notify import Notifier
 from ..risk import kill_ops
@@ -113,16 +115,14 @@ def _daily_results(
     return daily_trigger_results(playbook, bars(instrument_id), trade_date)
 
 
-def _active_bots(session: Session) -> list[HatBot]:
-    return list(
-        session.scalars(
-            select(HatBot).where(HatBot.status == ACTIVE, HatBot.live_version_id.is_not(None))
-        )
+def _active_bots(session: Session) -> list[Bot]:
+    return configs_of(session).all(
+        Bot, lambda b: b.status == ACTIVE and b.live_version_id is not None
     )
 
 
 def _session_mode(
-    session: Session, bot: HatBot, trade_date: date, calendar: SessionCalendar | None
+    session: Session, bot: Bot, trade_date: date, calendar: SessionCalendar | None
 ) -> str:
     """The bot's effective mode for `trade_date`'s session, read at its open (09:15 IST when the
     calendar does not give one)."""
@@ -133,12 +133,8 @@ def _session_mode(
 
 
 def _versions_newest_first(session: Session, strategy_id: uuid.UUID) -> list[StrategyConfig]:
-    rows = session.scalars(
-        select(HatStrategyVersion)
-        .where(HatStrategyVersion.strategy_id == strategy_id)
-        .order_by(HatStrategyVersion.version.desc())
-    )
-    return [parse_config(row.config) for row in rows]
+    rows = configs_of(session).all(StrategyVersion, lambda v: v.strategy_id == strategy_id)
+    return [parse_config(row.config) for row in sorted(rows, key=lambda v: -v.version)]
 
 
 def _symbols(session: Session, ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -178,7 +174,7 @@ def watchlist_candidates(
         )
         symbols = _symbols(session, (r.instrument_id for r in rows))
         for row in rows:
-            version = session.get(HatStrategyVersion, row.strategy_version_id)
+            version = configs_of(session).get(StrategyVersion, row.strategy_version_id)
             if version is None or row.instrument_id not in symbols:
                 continue
             config = parse_config(version.config)
@@ -258,7 +254,7 @@ def ep_bot_candidates(
     trigger criteria."""
     out: list[Candidate] = []
     for bot in _active_bots(session):
-        version = session.get(HatStrategyVersion, bot.live_version_id)
+        version = configs_of(session).get(StrategyVersion, bot.live_version_id)
         if version is None:
             continue
         config = parse_config(version.config)
@@ -353,7 +349,7 @@ def route_by_mode(
     transaction (no commit). An auto bot needs the execution router to place its order, and a
     confirm bot needs it to sign its approval card's token (PR 16), so each is refused here
     (`auto_needs_router`, `confirm_needs_router`) and nothing is written: only shadow is routed."""
-    bot = session.get(HatBot, request.bot_id)
+    bot = configs_of(session).get(Bot, request.bot_id)
     if bot is None:
         raise positions.TradeError("unknown_bot")
     mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)

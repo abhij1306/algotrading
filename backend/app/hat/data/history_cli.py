@@ -79,7 +79,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     end = args.end or date.today()
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import HatSessionLocal
+    from app.database import HatDataSessionLocal
 
     from ..models import HatCorporateAction, HatInstrument, HatMarket  # noqa: F401
     from . import calendar as hat_calendar
@@ -90,7 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO)
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
-    with HatSessionLocal() as session:
+    with HatDataSessionLocal() as session:
         market = session.scalar(select(HatMarket).where(HatMarket.code == "NSE"))
         if market is None:
             sys.stderr.write("history_no_market\n")
@@ -107,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # read when the actions are loaded, so securities registered by the build are included;
         # a symbol several instruments share (an ISIN change keeps it) asks once, for the active
         # one (then the lowest id), and is listed as shared
-        with HatSessionLocal() as session:
+        with HatDataSessionLocal() as session:
             rows = session.execute(
                 select(HatInstrument.id, HatInstrument.symbol, HatInstrument.active).where(
                     HatInstrument.market_id == market_id
@@ -122,19 +122,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return chosen, shared
 
     def resolve(symbol: str, on: date) -> object | None:
-        with HatSessionLocal() as session:
+        with HatDataSessionLocal() as session:
             found = resolve_symbol(session, market_id, symbol, on)
             return None if found is None else found.id
 
     def symbols() -> int:
         # the bars' own rename dates; the master would place a rename on the day it saw it
-        with HatSessionLocal() as session:
+        with HatDataSessionLocal() as session:
             unmatched = seed_symbol_history(session, market_id, renames_from_bars(store))
             session.commit()
             return unmatched
 
     def sink(records: Sequence[ca.ActionRecord]) -> ca.LoadReport:
-        with HatSessionLocal() as session:
+        with HatDataSessionLocal() as session:
             result = ca.load_actions(session, records)
             session.commit()
             return result
@@ -161,7 +161,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             BuildPlan(
                 store=store,
                 fetch=fetch,
-                catalog=DbCatalog(HatSessionLocal, market_id),
+                catalog=DbCatalog(HatDataSessionLocal, market_id),
                 start=args.start,
                 end=end,
                 holidays=holidays,

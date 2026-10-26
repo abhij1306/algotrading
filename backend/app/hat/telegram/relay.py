@@ -129,13 +129,22 @@ def card_view(session: Session, signal: HatSignal, approval: HatApproval | None)
     )
     pct = exact((payload or {}).get("max_chase_pct"), floats=True)
     trigger = Decimal(signal.trigger_price)
-    news = session.execute(
-        select(HatAnnouncement.title, HatAnnouncement.url)
-        .join(HatSignalAnnouncement, HatSignalAnnouncement.announcement_id == HatAnnouncement.id)
-        .where(HatSignalAnnouncement.signal_id == signal.id)
-        .order_by(HatAnnouncement.published_at.desc())
-        .limit(1)
-    ).first()
+    # the link lives in hat_state, the announcements in hat_live: two reads
+    attached = session.scalars(
+        select(HatSignalAnnouncement.announcement_id).where(
+            HatSignalAnnouncement.signal_id == signal.id
+        )
+    ).all()
+    news = (
+        session.execute(
+            select(HatAnnouncement.title, HatAnnouncement.url)
+            .where(HatAnnouncement.id.in_(attached))
+            .order_by(HatAnnouncement.published_at.desc())
+            .limit(1)
+        ).first()
+        if attached
+        else None
+    )
     return render.CardView(
         signal_id=signal.id,
         symbol=symbol_of(session, signal.instrument_id),

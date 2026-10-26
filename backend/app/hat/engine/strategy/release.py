@@ -8,7 +8,8 @@ at a released one). The version states (`governance.VersionStatus`) are named ap
 sleeve's lifecycle states (`portfolio.lifecycle`), whose own shadow gate the sleeve still passes.
 Every change of a sleeve's version is recorded as `sleeve.version_assigned`.
 `release_overview` is what the owner reads before a step. The owner runs them through the local
-admin command line (`app.hat.admin`). Nothing here commits.
+admin command line (`app.hat.admin`). Versions and sleeves are config records (`configs`): nothing
+here commits, and the caller's commit writes them, refusing a change another writer made first.
 """
 
 from __future__ import annotations
@@ -20,9 +21,11 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ...configs.records import Bot, Strategy, StrategyVersion
+from ...configs.unit import configs_of
 from ...events import record
 from ...governance import VersionStatus
-from ...models import HatBot, HatEvent, HatStrategy, HatStrategyVersion
+from ...models import HatEvent
 from ...risk.sessions import SessionCalendar, SessionState
 from ...time import as_utc, trade_date_of
 from ..owner import OwnerCommand
@@ -44,18 +47,17 @@ def _closed(calendar: SessionCalendar, now: datetime) -> None:
 
 def start_trial(
     session: Session, version_id: uuid.UUID, *, calendar: SessionCalendar, now: datetime
-) -> HatStrategyVersion:
+) -> StrategyVersion:
     """A frozen version starts its trial (paper) period now (`shadow_started_at`), outside market
     hours only. Any other status is refused and nothing changes."""
     _closed(calendar, now)
-    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
+    row = configs_of(session).get(StrategyVersion, version_id)
     if row is None:
         raise VersionError("unknown_version")
     if row.status != VersionStatus.FROZEN or row.backtest_run_id is None:
         raise VersionError("not_frozen")
     row.status = VersionStatus.TRIAL
     row.shadow_started_at = now
-    session.flush()
     return row
 
 
@@ -63,7 +65,7 @@ def release_version(
     session: Session,
     version_id: uuid.UUID,
     command: OwnerCommand,
-) -> HatStrategyVersion:
+) -> StrategyVersion:
     """Release a version in trial (HAT-BOT-084): outside market hours, with its backtest run, at
     least 20 trading sessions of trial on the calendar and at least 20 of them that a sleeve of the
     strategy ran it on paper (`trial_sessions`). The strategy's previously released
@@ -73,22 +75,11 @@ def release_version(
     cli`). A refusal changes nothing."""
     calendar, now, chat_id = command.calendar, command.now, command.chat_id
     _closed(calendar, now)
-    strategy_id = session.scalar(
-        select(HatStrategyVersion.strategy_id).where(HatStrategyVersion.id == version_id)
-    )
-    if strategy_id is None:
+    unit = configs_of(session)
+    row = unit.get(StrategyVersion, version_id)
+    if row is None:
         raise VersionError("unknown_version")
-    # sleeves before versions, the order `assign_version` locks in, so the two never deadlock
-    sleeves = list(
-        session.scalars(
-            select(HatBot)
-            .where(HatBot.strategy_id == strategy_id)
-            .order_by(HatBot.id)
-            .with_for_update()
-        ).all()
-    )
-    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
-    assert row is not None  # versions are never deleted
+    sleeves = unit.all(Bot, lambda b: b.strategy_id == row.strategy_id)
     if (
         row.status != VersionStatus.TRIAL
         or row.backtest_run_id is None
@@ -101,26 +92,21 @@ def release_version(
         raise VersionError("trial_days")
     if trial_sessions(session, row, sleeves, calendar, today) < SHADOW_DAYS:
         raise VersionError("trial_sessions")
-    previous = session.scalars(
-        select(HatStrategyVersion)
-        .where(
-            HatStrategyVersion.strategy_id == row.strategy_id,
-            HatStrategyVersion.status == VersionStatus.RELEASED,
-        )
-        .with_for_update()
-    ).first()
-    moved: list[HatBot] = []
+    released = unit.all(
+        StrategyVersion,
+        lambda v: v.strategy_id == row.strategy_id and v.status == VersionStatus.RELEASED,
+    )
+    previous = released[0] if released else None
+    moved: list[Bot] = []
     if previous is not None:
-        previous.status = VersionStatus.SUPERSEDED
-        session.flush()  # the one-released index never sees two
+        previous.status = VersionStatus.SUPERSEDED  # one released version per strategy
         moved = [b for b in sleeves if b.live_version_id == previous.id]
         for bot in moved:
             _assigned(session, bot, row, chat_id=chat_id, now=now)
     row.status = VersionStatus.RELEASED
     row.promoted_at = now
-    session.flush()
-    strategy = session.get(HatStrategy, row.strategy_id)
-    assert strategy is not None  # the foreign key holds it
+    strategy = unit.get(Strategy, row.strategy_id)
+    assert strategy is not None  # a version's strategy is never deleted
     record(
         session,
         aggregate_type="strategy_version",
@@ -143,8 +129,8 @@ def release_version(
 
 def trial_sessions(
     session: Session,
-    row: HatStrategyVersion,
-    sleeves: list[HatBot],
+    row: StrategyVersion,
+    sleeves: list[Bot],
     calendar: SessionCalendar,
     today: date,
 ) -> int:
@@ -176,18 +162,18 @@ def assign_version(
     bot_id: uuid.UUID,
     version_id: uuid.UUID,
     command: OwnerCommand,
-) -> HatBot:
+) -> Bot:
     """Point a sleeve at the version it scans and trades with (`live_version_id`): a version of
     its own strategy that is frozen, in trial or released. A sleeve that places real orders
     (Live, Probation) takes only a released version, so an unreleased version never trades real
     money. Open trades keep their entry version (HAT-BOT-083). The change is recorded as the
     owner's `sleeve.version_assigned` (PR 73); naming the version the sleeve already runs changes
     nothing and records nothing."""
-    bot = session.get(HatBot, bot_id, with_for_update=True)
+    unit = configs_of(session)
+    bot = unit.get(Bot, bot_id)
     if bot is None:
         raise VersionError("unknown_bot")
-    # locked after the sleeve, the order `release_version` locks in
-    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
+    row = unit.get(StrategyVersion, version_id)
     if row is None or row.strategy_id != bot.strategy_id:
         raise VersionError("unknown_version")
     if row.status in (VersionStatus.DRAFT, VersionStatus.SUPERSEDED):
@@ -197,20 +183,15 @@ def assign_version(
     if bot.live_version_id == row.id:  # a repeated step: nothing changes, nothing is recorded
         return bot
     _assigned(session, bot, row, chat_id=command.chat_id, now=command.now)
-    session.flush()
     return bot
 
 
 def _assigned(
-    session: Session, bot: HatBot, row: HatStrategyVersion, *, chat_id: int, now: datetime
+    session: Session, bot: Bot, row: StrategyVersion, *, chat_id: int, now: datetime
 ) -> None:
     """Point `bot` at `row` and record `sleeve.version_assigned` as the owner's (`actor = user`,
     the allowlisted chat, `via = cli`), with the version it ran before (None for its first)."""
-    before = (
-        None
-        if bot.live_version_id is None
-        else session.get(HatStrategyVersion, bot.live_version_id)
-    )
+    before = configs_of(session).get(StrategyVersion, bot.live_version_id)
     bot.live_version_id = row.id
     record(
         session,
@@ -234,12 +215,9 @@ def _assigned(
 def release_overview(session: Session, user_id: uuid.UUID) -> dict[str, Any]:
     """The user's strategies with their versions, and the sleeves with what they run: what the
     owner reads before a release step (ids included, since the steps take them)."""
-    strategies = session.scalars(
-        select(HatStrategy).where(HatStrategy.user_id == user_id).order_by(HatStrategy.name)
-    ).all()
-    bots = session.scalars(
-        select(HatBot).where(HatBot.user_id == user_id).order_by(HatBot.id)
-    ).all()
+    unit = configs_of(session)
+    strategies = sorted(unit.all(Strategy, lambda s: s.user_id == user_id), key=lambda s: s.name)
+    bots = unit.all(Bot, lambda b: b.user_id == user_id)
     return {
         "strategies": [
             {
@@ -250,9 +228,7 @@ def release_overview(session: Session, user_id: uuid.UUID) -> dict[str, Any]:
                         "id": str(v.id),
                         "version": v.version,
                         "status": v.status,
-                        "backtest_run_id": None
-                        if v.backtest_run_id is None
-                        else str(v.backtest_run_id),
+                        "backtest_run_id": v.backtest_run_id,
                         "shadow_started_at": None
                         if v.shadow_started_at is None
                         else as_utc(v.shadow_started_at).isoformat(),

@@ -23,6 +23,7 @@ from app.database import db_session_scope
 
 from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS
 from ..data.store import DataStore
+from ..models import HatEvent
 from ..money import exact
 from ..risk.policy import RiskPolicy
 from ..settings import operator_settings
@@ -216,7 +217,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     refused: str | None = None
     summary: dict[str, Any] = {}
     with db_session_scope() as session:
-        session.execute(text("SET TRANSACTION READ ONLY"))  # a backtest writes no row
+        # a backtest writes no row: hat_live is read-only already, hat_state is made so
+        session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatEvent})
         try:
             request = RunRequest(
                 bot_id=args.bot,
@@ -284,7 +286,8 @@ def _rerun(argv: Sequence[str]) -> int:  # pragma: no cover - needs the database
     refused: str | None = None
     summary: dict[str, Any] = {}
     with db_session_scope() as session:
-        session.execute(text("SET TRANSACTION READ ONLY"))  # a backtest writes no row
+        # a backtest writes no row: hat_live is read-only already, hat_state is made so
+        session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatEvent})
         try:
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
             outcome = rerun(session, store, args.rerun, root=settings.data_root, args=argv)

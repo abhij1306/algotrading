@@ -20,16 +20,16 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot, StrategyVersion
+from ..configs.unit import configs_of
 from ..errors import HatError
 from ..events import record
 from ..governance import Mode
 from ..models import (
-    HatBot,
     HatFill,
     HatOrder,
     HatPosition,
     HatSignal,
-    HatStrategyVersion,
     HatTradeResult,
 )
 from ..risk import bots
@@ -83,7 +83,7 @@ class TradeError(HatError):
 def exit_rules_of(session: Session, signal: HatSignal) -> list[ExitRule]:
     """The exit stack of the strategy version the signal entered under: a version promoted
     after the entry never changes the rules of an open trade (HAT-BOT-083)."""
-    version = session.get(HatStrategyVersion, signal.strategy_version_id)
+    version = configs_of(session).get(StrategyVersion, signal.strategy_version_id)
     if version is None:
         raise TradeError("unknown_strategy_version")
     return list(parse_config(version.config).exits)
@@ -135,7 +135,7 @@ class Trade:
     opens it), and whether it is the signal's veto trade (its events are flagged `veto`)."""
 
     signal: HatSignal
-    bot: HatBot
+    bot: Bot
     position: HatPosition | None
     veto: bool = False
 
@@ -328,9 +328,9 @@ def _trade_state(trade: Trade) -> str:
     return trade.signal.state
 
 
-def signal_and_bot(session: Session, position: HatPosition) -> tuple[HatSignal, HatBot]:
+def signal_and_bot(session: Session, position: HatPosition) -> tuple[HatSignal, Bot]:
     signal = session.get(HatSignal, position.signal_id)
-    bot = session.get(HatBot, position.bot_id)
+    bot = configs_of(session).get(Bot, position.bot_id)
     if signal is None or bot is None:
         raise TradeError("unknown_signal")
     return signal, bot
@@ -490,7 +490,7 @@ def _excursions(
 
 
 def _owner_of(session: Session, signal: HatSignal) -> uuid.UUID:
-    bot = session.get(HatBot, signal.bot_id)
+    bot = configs_of(session).get(Bot, signal.bot_id)
     if bot is None:
         raise TradeError("unknown_bot")
     return bot.user_id

@@ -31,6 +31,12 @@ def uuid_pk() -> Column[uuid.UUID]:
     return Column(Uuid, primary_key=True, default=uuid7)
 
 
+def ref(*, nullable: bool = False, primary_key: bool = False) -> Column[uuid.UUID]:
+    """A uuid naming a record outside this table's database (a config record, or a hat_live row
+    from hat_state): a plain column, checked by the code that writes it, never a foreign key."""
+    return Column(Uuid, nullable=nullable, primary_key=primary_key)
+
+
 def fk(target: str, *, nullable: bool = False, primary_key: bool = False) -> Column[uuid.UUID]:
     """A uuid column referencing `target` ("hat_table.column")."""
     return Column(Uuid, ForeignKey(target), nullable=nullable, primary_key=primary_key)

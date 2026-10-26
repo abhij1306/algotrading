@@ -1,7 +1,8 @@
-"""The day loop's private ledger (HAT-BT-010): an in-memory SQLite database holding the run's one
-bot, its pinned strategy version, its universe (point in time) and the virtual signals, orders,
-fills, positions and trade results the engine writes. The ledger is the shadow engine's own
-schema; it never touches the HAT database and nothing in it reaches a broker. At the end of the
+"""The day loop's private ledger (HAT-BT-010): an in-memory SQLite database (both HAT
+schemas) and config store holding the run's one bot, its pinned strategy version, its universe
+(point in time) and the virtual signals, orders, fills, positions and trade results the engine
+writes. The ledger is the shadow engine's own schema; it never touches the HAT
+databases or config files and nothing in it reaches a broker. At the end of the
 run the loop reads back what the engine wrote: the watchlist, trade and fill rows, and the cash
 flows, summed exactly."""
 
@@ -16,11 +17,13 @@ from sqlalchemy import create_engine, func, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from ...base import Base
+from ...base import Base, StateBase
+from ..configs.records import Bot, Strategy, StrategyVersion
+from ..configs.store import MemoryConfigStore
+from ..configs.unit import STORE, configs_of
 from ..data.corporate_actions import TYPE_DIVIDEND
 from ..governance import VersionStatus
 from ..models import (
-    HatBot,
     HatCorporateAction,
     HatEvent,
     HatFill,
@@ -30,8 +33,6 @@ from ..models import (
     HatOrder,
     HatPosition,
     HatSignal,
-    HatStrategy,
-    HatStrategyVersion,
     HatTradeResult,
     HatUniverse,
     HatUniverseMember,
@@ -52,12 +53,14 @@ _NO_SERIES = ""
 
 
 def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
-    """A private in-memory database seeded with the run's bot, version and universe."""
+    """A private in-memory database and config store seeded with the run's bot, version and
+    universe (committed, so the engine's rollbacks keep them)."""
     engine = create_engine(
         "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(engine)
-    session = Session(engine)
+    StateBase.metadata.create_all(engine)
+    session = Session(engine, info={STORE: MemoryConfigStore()})
     market = HatMarket(
         code="NSE",
         timezone="Asia/Kolkata",
@@ -67,13 +70,15 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     )
     session.add(market)
     session.flush()
-    strategy = HatStrategy(
+    configs = configs_of(session)
+    strategy = Strategy(
         user_id=_SANDBOX_USER, market_id=market.id, name=spec.config.bot, persona="trader"
     )
     universe = HatUniverse(user_id=_SANDBOX_USER, market_id=market.id, name="run", kind="manual")
-    session.add_all([strategy, universe])
+    configs.add(strategy)
+    session.add(universe)
     session.flush()
-    version = HatStrategyVersion(
+    version = StrategyVersion(
         id=spec.strategy_version_id,
         strategy_id=strategy.id,
         version=1,
@@ -84,7 +89,8 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     universe_version = HatUniverseVersion(
         universe_id=universe.id, version=1, status="live", definition={}, config_hash="run"
     )
-    session.add_all([version, universe_version])
+    configs.add(version)
+    session.add(universe_version)
     session.flush()
     for interval in scan_night_members(data.members, data.days):
         session.add(
@@ -123,7 +129,7 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
                 )
             )
     _seed_dividends(session, data)
-    bot = HatBot(
+    bot = Bot(
         id=uuid.uuid4(),
         user_id=_SANDBOX_USER,
         strategy_id=strategy.id,
@@ -135,8 +141,8 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
         lifecycle_state="research",
         risk_cluster="run",
     )
-    session.add(bot)
-    session.flush()
+    configs.add(bot)
+    session.commit()
     return session, bot.id
 
 

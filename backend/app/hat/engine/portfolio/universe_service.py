@@ -15,10 +15,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
+from app.hat.configs.records import Bot
+from app.hat.configs.unit import configs_of
 from app.hat.data.isin import ordinary_equity
 from app.hat.data.reference import IndustryRow
 from app.hat.data.symbol_history import resolve_symbol
-from app.hat.models import HatBot, HatUniverse, HatUniverseMember, HatUniverseVersion
+from app.hat.models import HatUniverse, HatUniverseMember, HatUniverseVersion
 from app.hat.risk.sessions import SessionCalendar, SessionState
 
 from . import universe
@@ -99,20 +101,19 @@ def assign_universe(
     universe_version_id: uuid.UUID,
     calendar: SessionCalendar,
     now: datetime,
-) -> HatBot:
+) -> Bot:
     """Point a sleeve at a live universe version (its scans, backtests and evidence read the
     universe it belongs to), outside market hours only, so a session's scans never change under
     it. A draft or retired version is refused."""
     if calendar.state(now) is not SessionState.CLOSED:
         raise PortfolioError("market_hours")
-    bot = session.get(HatBot, bot_id, with_for_update=True)
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None:
         raise PortfolioError("bot_unknown")
     version = session.get(HatUniverseVersion, universe_version_id)
     if version is None or version.status != "live":
         raise PortfolioError("universe_version_not_live")
     bot.universe_version_id = version.id
-    session.flush()
     return bot
 
 

@@ -5,13 +5,14 @@ import ast
 import inspect
 import re
 import uuid
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 import yaml
 from hat_conf_model import hat_tables
 from hat_conf_repo import APP_ROOT, build_graph, reaches
 
+from app.hat.configs.records import Bot
 from app.hat.engine import entries
 from app.hat.engine.portfolio.sleeve_service import create_bot
 from app.hat.engine.strategy.config import StrategyConfig
@@ -21,7 +22,6 @@ from app.hat.execution.broker import HatBroker
 from app.hat.execution.fyers_adapter import FYERS_CAPABILITIES, FyersHatBroker
 from app.hat.execution.kite_adapter import KiteHatBroker
 from app.hat.governance import Mode
-from app.hat.models import HatBot
 
 HAT_ROOT = APP_ROOT / "hat"
 DATA_SOCKET_MODULE = "app.hat.data.provider.fyers_websocket"
@@ -224,8 +224,9 @@ def test_ops__single_fyers_secret_store() -> None:
         for column in table.columns:
             if re.search(r"token|secret|password|api_key|credential", column.name, re.I):
                 assert (name, column.name) in NOT_SECRETS, (name, column.name)
-    broker_account = hat_tables()["hat_broker_account"]
-    assert {c.name for c in broker_account.columns} == {
+    from app.hat.configs.records import BrokerAccount
+
+    assert set(BrokerAccount.FIELDS) == {
         "id",
         "user_id",
         "broker",
@@ -284,27 +285,28 @@ def _seed_scope_strategies_and_owner() -> None:
     """The seeds are exactly S1 and S2 on NSE, and every row they create is owned by one user."""
     import uuid
 
-    from hat.hat_support import memory_engine
+    from hat.hat_support import memory_engine, memory_session
     from sqlalchemy import select
-    from sqlalchemy.orm import Session
 
+    from app.hat.configs.records import Strategy
+    from app.hat.configs.unit import configs_of
     from app.hat.engine.portfolio.sleeve_service import seed_default_bots
     from app.hat.engine.strategy.registry import STRATEGIES
-    from app.hat.models import HatBot, HatMarket, HatStrategy
+    from app.hat.models import HatMarket
     from app.hat.schema import seed_hat_reference
 
     engine = memory_engine()
     seed_hat_reference(engine)
     owner = uuid.uuid4()
-    with Session(engine) as session:
+    with memory_session(engine) as session:
         seed_default_bots(session, user_id=owner, broker_account_id=uuid.uuid4())
-        strategies = session.scalars(select(HatStrategy)).all()
+        strategies = configs_of(session).all(Strategy)
         assert {s.name for s in strategies} == set(STRATEGIES)
         assert {s.persona for s in strategies} == {s.persona for s in STRATEGIES.values()}
         assert [m.code for m in session.scalars(select(HatMarket)).all()] == ["NSE"]
-        for model in (HatStrategy, HatBot):
-            owners = {row.user_id for row in session.scalars(select(model)).all()}
-            assert owners == {owner}, model
+        for kind in (Strategy, Bot):
+            owners = {row.user_id for row in configs_of(session).all(kind)}
+            assert owners == {owner}, kind
 
 
 def test_mvp_seed_scope() -> None:
@@ -343,11 +345,8 @@ def test_exec__default_mode_confirm() -> None:
         for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")):
             assert "execution_mode" not in doc, path
     assert "execution_mode" not in StrategyConfig.model_fields
-    column = HatBot.__table__.c.execution_mode
-    assert column.default is not None
-    assert column.default.arg == "confirm"
-    assert column.server_default is not None
-    assert column.server_default.arg == "confirm"
+    defaults = {f.name: f.default for f in fields(Bot)}
+    assert defaults["execution_mode"] == "confirm"
     for mode in ("shadow", "auto"):
         no_session, user_id, strategy_id, account_id = (
             _NoSession(),
@@ -383,9 +382,9 @@ ACCOUNT_CONSTANTS = {
     "BROKER_FYERS",
     "BROKER_ZERODHA",
 }
-CONSTANTS_HOME = HAT_ROOT / "models" / "strategy.py"
+CONSTANTS_HOME = HAT_ROOT / "configs" / "records.py"
 # the model, and any name for an account a reader uses (`account`, `acct`, `broker_account`...)
-ACCOUNT_OWNER = re.compile(r"^HatBrokerAccount$|acc(oun)?t", re.IGNORECASE)
+ACCOUNT_OWNER = re.compile(r"^BrokerAccount$|acc(oun)?t", re.IGNORECASE)
 
 
 def _account_column(node: ast.expr) -> bool:
@@ -433,7 +432,7 @@ def account_literal_violations(source: str) -> list[str]:
 
 def test_brk__account_constants_one_copy() -> None:
     """CONF brk.account_constants_one_copy: no module but
-    `models/strategy.py` defines a broker-account status constant or the broker name, and none
+    `configs/records.py` defines a broker-account status constant or the broker name, and none
     compares an account's status or broker with a string of its own. Harm: a renamed status
     leaves a stale copy behind, and a login, a routing gate, the dashboard or a broker-symbol
     read uses a value no row has any more."""

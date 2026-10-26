@@ -13,9 +13,11 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..errors import HatError
 from ..events import record
-from ..models import HatBot, HatModeChange
+from ..models import HatModeChange
 from .modes import ModeChange, plan_mode_change
 from .sessions import SessionCalendar
 
@@ -44,7 +46,7 @@ def queue_mode_change(
 ) -> HatModeChange:
     """Queue a mode change for the next session open (`mode.change_requested`). Raises
     `ModeChangeError` inside market hours, for an unknown mode, or without a known next open."""
-    bot = session.get(HatBot, bot_id)
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None:
         raise ControlError("unknown bot")
     if via not in ("telegram", "dashboard"):

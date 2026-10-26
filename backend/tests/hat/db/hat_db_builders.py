@@ -1,16 +1,50 @@
-"""Row builders for the database checks: Core inserts with explicit, minimal valid rows."""
+"""Row builders for the database checks: Core inserts with explicit, minimal valid rows. The
+config kinds (strategy, version, policy, account, bot) are records in `STORE`, an in-memory
+config store the `conn` fixture makes fresh for each check; `session` binds it."""
 
 import uuid
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import Connection, Uuid, insert
+from sqlalchemy import Connection, Engine, Uuid, insert
+from sqlalchemy.orm import Session
 
 from app.hat import models as m
+from app.hat.configs.records import (
+    Bot,
+    BrokerAccount,
+    Record,
+    RiskPolicyVersion,
+    Strategy,
+    StrategyVersion,
+    doc_of,
+)
+from app.hat.configs.store import MemoryConfigStore, Write
+from app.hat.configs.unit import STORE as STORE_KEY
 from app.hat.ids import uuid7
 
 NOW = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
 USER_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
+
+
+STORE = MemoryConfigStore()
+
+
+def reset_store() -> None:
+    """A fresh config store for the next check."""
+    global STORE  # noqa: PLW0603 - the one store every builder and session of a check shares
+    STORE = MemoryConfigStore()
+
+
+def session(bind: Connection | Engine, **kw: object) -> Session:
+    """A session on `bind` holding the check's config store."""
+    return Session(bind=bind, info={STORE_KEY: STORE}, **kw)  # type: ignore[arg-type]
+
+
+def put(record: Record) -> uuid.UUID:
+    """Store a new config record (its revision 1) and return its id."""
+    STORE.commit([Write(record.KIND, record.key, 0, doc_of(record))])
+    return record.id  # type: ignore[attr-defined]
 
 
 def add(conn: Connection, model: type, **values: object) -> uuid.UUID | None:
@@ -50,15 +84,9 @@ def instrument(conn: Connection, market_id: uuid.UUID, **overrides: object) -> u
 
 
 def strategy(conn: Connection, market_id: uuid.UUID) -> uuid.UUID:
-    return add(
-        conn,
-        m.HatStrategy,
-        user_id=USER_ID,
-        market_id=market_id,
-        name="s",
-        persona="p",
-        created_at=NOW,
-    )  # type: ignore[return-value]
+    return put(
+        Strategy(user_id=USER_ID, market_id=market_id, name="s", persona="p", created_at=NOW)
+    )
 
 
 def strategy_version(
@@ -73,7 +101,7 @@ def strategy_version(
         "created_at": NOW,
     }
     values.update(overrides)
-    return add(conn, m.HatStrategyVersion, **values)  # type: ignore[return-value]
+    return put(StrategyVersion(**values))  # type: ignore[arg-type]
 
 
 def risk_policy(conn: Connection, version: int = 1, **overrides: object) -> uuid.UUID:
@@ -86,36 +114,15 @@ def risk_policy(conn: Connection, version: int = 1, **overrides: object) -> uuid
         "effective_from": NOW,
     }
     values.update(overrides)
-    return add(conn, m.HatRiskPolicyVersion, **values)  # type: ignore[return-value]
-
-
-def backtest_run(
-    conn: Connection, version_id: uuid.UUID, policy_id: uuid.UUID, **overrides: object
-) -> uuid.UUID:
-    values: dict[str, object] = {
-        "strategy_version_id": version_id,
-        "risk_policy_version_id": policy_id,
-        "family_key": "s:u",
-        "period_start": date(2020, 1, 1),
-        "period_end": date(2025, 1, 1),
-        "data_snapshot": {},
-        "status": "done",
-        "metrics": {},
-    }
-    values.update(overrides)
-    return add(conn, m.HatBacktestRun, **values)  # type: ignore[return-value]
+    return put(RiskPolicyVersion(**values))  # type: ignore[arg-type]
 
 
 def broker_account(conn: Connection) -> uuid.UUID:
-    return add(
-        conn,
-        m.HatBrokerAccount,
-        user_id=USER_ID,
-        broker="fyers",
-        account_ref="acct",
-        capabilities={},
-        status="active",
-    )  # type: ignore[return-value]
+    return put(
+        BrokerAccount(
+            user_id=USER_ID, broker="fyers", account_ref="acct", capabilities={}, status="active"
+        )
+    )
 
 
 def bot(
@@ -130,7 +137,7 @@ def bot(
         "risk_cluster": "c1",
     }
     values.update(overrides)
-    return add(conn, m.HatBot, **values)  # type: ignore[return-value]
+    return put(Bot(**values))  # type: ignore[arg-type]
 
 
 def universe(conn: Connection, market_id: uuid.UUID, kind: str = "manual") -> uuid.UUID:

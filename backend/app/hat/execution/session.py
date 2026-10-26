@@ -24,9 +24,11 @@ from typing import TypeVar
 
 from sqlalchemy.orm import Session
 
+from ..configs.records import BrokerAccount
+from ..configs.unit import configs_of
 from ..errors import HatError
 from ..events import record
-from ..models import HatBrokerAccount, HatBrokerSession
+from ..models import HatBrokerSession
 from ..time import IST, utc_now
 from .broker import HatBroker, SessionStatus
 
@@ -201,7 +203,7 @@ def refresh_capabilities(session: Session, broker: HatBroker, account_id: uuid.U
     sends as a health alert. True when they changed. A failure is logged and rolled back alone,
     so it never undoes the caller's session row."""
     try:
-        account = session.get(HatBrokerAccount, account_id)
+        account = configs_of(session).get(BrokerAccount, account_id)
         if account is None:
             return False
         current = broker.capabilities().to_json()

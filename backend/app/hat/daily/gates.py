@@ -17,11 +17,12 @@ from datetime import date, datetime, time, timedelta
 
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot, StrategyVersion
+from ..configs.unit import configs_of
 from ..data.quality import gate_failed
 from ..data.store import DataStore
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.strategy.config import parse_config
-from ..models import HatBot, HatStrategyVersion
 from ..risk.sessions import SessionCalendar
 from ..time import IST, trade_date_of
 from .market import breadth_series, index_closes, sessions_before
@@ -57,8 +58,9 @@ class GateBoard:
         with self._lock:
             if key in self._gates:
                 return self._gates[key]
-        bot = session.get(HatBot, bot_id)
-        version = session.get(HatStrategyVersion, bot.live_version_id) if bot else None
+        configs = configs_of(session)
+        bot = configs.get(Bot, bot_id)
+        version = configs.get(StrategyVersion, bot.live_version_id) if bot else None
         if version is None:
             return None
         regime = parse_config(version.config).regime

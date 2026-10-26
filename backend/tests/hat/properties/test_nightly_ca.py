@@ -34,7 +34,7 @@ def test_unreadable_bc_file_still_checks_the_stored_notices(
     )
     session, notifier = Session(), RecordingNotifier()
     deps = SimpleNamespace(
-        session_factory=lambda: nullcontext(session), notifier=notifier, clock=SYSTEM_CLOCK
+        data_session_factory=lambda: nullcontext(session), notifier=notifier, clock=SYSTEM_CLOCK
     )
     nightly_ca.CaAdjust(deps)._demergers(DAY, "NOT,A,BC,FILE\n1,2,3,4\n")  # type: ignore[arg-type]
     assert checked == [DAY]

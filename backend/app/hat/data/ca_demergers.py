@@ -437,7 +437,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import HatSessionLocal
+    from app.database import HatDataSessionLocal
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     write: Callable[[str], Any] = lambda s: sys.stdout.write(s + "\n")  # noqa: E731
@@ -451,7 +451,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         except HatConfigError:
             sys.stderr.write("refused: no_owner_chat\n")
             return 2
-    with HatSessionLocal() as session:
+    with HatDataSessionLocal() as session:
         if args.apply:
             lock_reference_data(session)
         demergers = plan(session, store)
