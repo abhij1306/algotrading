@@ -266,6 +266,11 @@ def _left_by(spans: Sequence[tuple[date, date | None]], day: date, end: date) ->
     return all(hi is not None and hi <= end for _, hi in spans if hi is None or hi > day)
 
 
+def _year_starts(sessions: Sequence[date]) -> list[date]:
+    """The first of sorted `sessions` and each later year's first session."""
+    return [d for n, d in enumerate(sessions) if n == 0 or d.year != sessions[n - 1].year]
+
+
 def check_survivorship(
     sessions: Sequence[date],
     spans: Mapping[str, Sequence[tuple[date, date | None]]],
@@ -283,12 +288,8 @@ def check_survivorship(
     sessions = sorted(d for d in sessions if start <= d <= end)
     if not sessions:
         return _check("survivorship", {"samples": []}, [])
-    samples = [sessions[0]]
-    for day in sessions[1:]:
-        if day.year != samples[-1].year:
-            samples.append(day)
     rows, leavers = [], set()
-    for day in samples:
+    for day in _year_starts(sessions):
         members = [i for i, s in spans.items() if _member_on(s, day)]
         left = [i for i in members if i in last_traded or _left_by(spans[i], day, end)]
         leavers.update(left)
@@ -408,13 +409,15 @@ def check_corporate_actions(
             off_ex.append(row)
             if action_shaped(jump["raw_move_pct"]):
                 shaped.append(row)
-    findings = []
-    if bad:
-        findings.append(_finding("bad_adjustment_factor", FAIL, bad))
-    if at_ex:
-        findings.append(_finding("ex_date_jump", WARN, at_ex, threshold_pct=JUMP_PCT))
-    if shaped:
-        findings.append(_finding("action_shaped_jump", WARN, shaped))
+    findings = [
+        _finding(code, severity, items, **extra)
+        for code, severity, items, extra in (
+            ("bad_adjustment_factor", FAIL, bad, {}),
+            ("ex_date_jump", WARN, at_ex, {"threshold_pct": JUMP_PCT}),
+            ("action_shaped_jump", WARN, shaped, {}),
+        )
+        if items
+    ]
     off_ex.sort(key=lambda r: -abs(r["move_pct"]))
     summary = {
         "instruments": len(series),
