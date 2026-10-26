@@ -21,7 +21,6 @@ not yet knowable (CA5, `MarketData.pending`).
 
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import math
 import uuid
@@ -41,6 +40,7 @@ from sqlalchemy.orm import Session
 from ..data.ca_versions import digest as versions_digest
 from ..data.chains import stored_adjustment
 from ..data.demerger_notice import exit_day
+from ..data.features import features_read_lock
 from ..data.features_state import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.index_history import NIFTY_500_TRI
@@ -549,7 +549,6 @@ class MarketView:
 
 
 _DIGEST_SLICE = 100_000  # rows per CSV slice of the content digest
-FEATURES_LOCK = ".features.lock"  # the lock `data.features.run_features` holds while it writes
 
 # The universe's adjusted rows of every ingest run, deduped in polars (`latest_rows`, as
 # `features.load_bars` does: a window in SQL costs several times the memory of the rows), with
@@ -886,9 +885,7 @@ def _current_features(
     generation; `backtest_features_stale` unless the job recorded every day as written for the
     inputs `digest` from the bars `read` fingerprints (taken before the bars were read) and the
     store still holds those bars (`features_state.features_current`)."""
-    store.root.mkdir(parents=True, exist_ok=True)
-    with (store.root / FEATURES_LOCK).open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_SH)
+    with features_read_lock(store):
         if not features_current(store, digest, days, read):
             raise BacktestError("backtest_features_stale")
         return _features(store, days, wanted), _breadth(store, breadth_days)

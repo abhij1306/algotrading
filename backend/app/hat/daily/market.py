@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.chains import stored_adjustment
+from ..data.features import features_read_lock
 from ..data.instruments import current_band
 from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
@@ -92,11 +93,11 @@ def index_closes(store: DataStore, index: str, through: date) -> list[Decimal]:
 
 def breadth_series(store: DataStore, through: date) -> list[Decimal | None]:
     """The features job's `breadth_pct` of the last `BREADTH_SESSIONS` stored sessions through
-    `through`, oldest first, None for a session without one (the breadth regime gate's input)."""
-    return [
-        read_breadth(store, d)
-        for d in sessions_before(store, through, BREADTH_SESSIONS, inclusive=True)
-    ]
+    `through`, oldest first, None for a session without one (the breadth regime gate's input),
+    read under the features job's shared lock so a rebuild cannot mix generations."""
+    days = sessions_before(store, through, BREADTH_SESSIONS, inclusive=True)
+    with features_read_lock(store):
+        return [read_breadth(store, d) for d in days]
 
 
 def _features(store: DataStore, day: date) -> pl.DataFrame | None:

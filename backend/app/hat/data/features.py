@@ -33,7 +33,8 @@ import fcntl
 import logging
 import sys
 from bisect import bisect_left
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -87,6 +88,7 @@ BATCH_INSTRUMENTS = 500  # instruments per per-instrument computation
 DUCKDB_THREADS = 2
 FEATURES_PART = "features"
 BREADTH_PART = "breadth"
+FEATURES_LOCK = ".features.lock"  # `run_features` holds it exclusive while it writes
 # More changed chains than this in one night is a bulk reference change (an import): every date
 # is recomputed instead, which bounds the memory of the two chain computations.
 MAX_CHAINS = 100
@@ -578,9 +580,19 @@ def run_features(
     if chunk_days < 1:
         raise FeaturesError("features_bad_chunk")
     store.root.mkdir(parents=True, exist_ok=True)
-    with (store.root / ".features.lock").open("a") as lock:
+    with (store.root / FEATURES_LOCK).open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)  # one run at a time: runs must not interleave writes
         return _run_locked(store, adjustment, through, full, chunk_days)
+
+
+@contextmanager
+def features_read_lock(store: DataStore) -> Iterator[None]:
+    """Hold the features job's lock shared: a run rewriting partitions finishes first, so the
+    partitions read inside come from one generation."""
+    store.root.mkdir(parents=True, exist_ok=True)
+    with (store.root / FEATURES_LOCK).open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_SH)
+        yield
 
 
 def _run_locked(
