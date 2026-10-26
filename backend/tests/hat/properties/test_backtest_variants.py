@@ -173,8 +173,9 @@ def test_apply_config_changes_only_the_named_values() -> None:
     assert rules["early_failure"] == ExitEarlyFailure(rule="early_failure", days=10)
     assert changed.playbook("default").stop.max_pct == 12  # type: ignore[union-attr]
     assert changed.regime == config.regime
+    no_hard_stop = Overrides(sets=(("exits[hard_stop].enabled", False),))
     with pytest.raises(OverrideError, match="backtest_override_invalid"):
-        Overrides(sets=(("exits[hard_stop].enabled", False),)).apply_config(config)
+        no_hard_stop.apply_config(config)
     assert Overrides(sets=(("bot", "other"),)).touches_identity()
 
 
@@ -190,8 +191,9 @@ def test_apply_policy_and_record() -> None:
     assert [fewer[k].max_positions for k in ("L1", "L2", "L3")] == [2, 3, 3]
     assert changed.version_id == version.version_id
     assert overrides.record() == {"risk_pct": "0.005", "max_positions": 10}
+    too_much = Overrides(risk_pct=D(2))
     with pytest.raises(OverrideError):
-        Overrides(risk_pct=D(2)).apply_policy(version)
+        too_much.apply_policy(version)
 
 
 def test_flat_ladder_holds_the_cap_at_full_size() -> None:
@@ -210,10 +212,9 @@ def test_flat_ladder_holds_the_cap_at_full_size() -> None:
     own_cap = Overrides(flat_ladder=True).apply_policy(version).policy
     assert {r.max_positions for r in own_cap.ladder.values()} == {policy.max_open_positions}
     assert flat.record() == {"max_positions": 10, "max_per_industry": 3, "flat_ladder": True}
+    flat_run = RunConventions(regime_mult="policy", overrides=Overrides(flat_ladder=True))
     with pytest.raises(BacktestError, match="backtest_promotion_with_overrides"):
-        RunConventions(regime_mult="policy", overrides=Overrides(flat_ladder=True)).check_promotion(
-            DEFAULT_SLIPPAGE_BPS
-        )
+        flat_run.check_promotion(DEFAULT_SLIPPAGE_BPS)
 
 
 def test_policy_text_takes_a_whole_policy_and_refuses_an_invalid_one() -> None:
@@ -268,13 +269,13 @@ def test_candidate_policy_then_fields_then_caps() -> None:
         ((("risk_pct.x", "0.1"),), "backtest_bad_override_path"),
         ((("health_bands.zero_dd", "0.05"),), "backtest_override_invalid"),
     ):
+        bad_sets = Overrides(policy_sets=sets)
         with pytest.raises(OverrideError, match=code):
-            Overrides(policy_sets=sets).apply_policy(version)
+            bad_sets.apply_policy(version)
     for refused in (Overrides(policy=candidate), Overrides(policy_sets=sets)):
+        refused_run = RunConventions(regime_mult="policy", overrides=refused)
         with pytest.raises(BacktestError, match="backtest_promotion_with_overrides"):
-            RunConventions(regime_mult="policy", overrides=refused).check_promotion(
-                DEFAULT_SLIPPAGE_BPS
-            )
+            refused_run.check_promotion(DEFAULT_SLIPPAGE_BPS)
 
 
 def test_conventions_record_overrides_only_when_set() -> None:
@@ -288,10 +289,9 @@ def test_conventions_record_overrides_only_when_set() -> None:
     assert varied.record(fills, window, weight, table)["overrides"] == {
         "set": [{"path": "exits[0].enabled", "value": True}]
     }
+    capped = RunConventions(regime_mult="policy", overrides=Overrides(max_positions=3))
     with pytest.raises(BacktestError, match="backtest_promotion_with_overrides"):
-        RunConventions(regime_mult="policy", overrides=Overrides(max_positions=3)).check_promotion(
-            DEFAULT_SLIPPAGE_BPS
-        )
+        capped.check_promotion(DEFAULT_SLIPPAGE_BPS)
 
 
 def _sweep(*items: object) -> dict[str, object]:
@@ -348,8 +348,9 @@ def test_parse_variants_layers_on_the_base() -> None:
     def unreadable(path: str) -> RiskPolicy:
         raise OverrideError("backtest_policy_unreadable")
 
+    sweep = _sweep({"label": "p", "policy": "x.yaml"})
     with pytest.raises(BacktestError, match="backtest_policy_unreadable"):
-        parse_variants(_sweep({"label": "p", "policy": "x.yaml"}), base, unreadable)
+        parse_variants(sweep, base, unreadable)
     for bad in (
         [{"label": "a"}],  # the old list form
         {"variants": [{"label": "a"}]},  # no sweep id

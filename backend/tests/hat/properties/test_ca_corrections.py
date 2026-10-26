@@ -82,8 +82,9 @@ def test_parse_list_reads_a_dividend_cash_column() -> None:
     ],
 )
 def test_parse_list_refuses_a_bad_cash(line: str) -> None:
+    text = HEADER.replace("note\n", "note\tcash\n") + line
     with pytest.raises(CorrectionListError) as refused:
-        parse_list(HEADER.replace("note\n", "note\tcash\n") + line)
+        parse_list(text)
     assert refused.value.code == "bad_cash@2"
 
 

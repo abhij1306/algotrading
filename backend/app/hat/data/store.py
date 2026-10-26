@@ -157,6 +157,7 @@ DATASET_SCHEMAS = {
 }
 
 PART_GLOB = "part-*.parquet"
+DATE_GLOB = "date=*"
 MAX_VOLUME = 10**14  # the adjusted volume column is decimal(14, 0) x decimal(24, 12)
 FACTOR_PLACES = 18  # cumulative factors are stored as decimal(20, 18)
 INVERSE_PLACES = 12  # and their reciprocals, for volume, as decimal(24, 12)
@@ -631,7 +632,7 @@ class DataStore:
         if not base.is_dir():
             return []
         found = []
-        for child in sorted(base.glob("date=*")):
+        for child in sorted(base.glob(DATE_GLOB)):
             if any(child.glob(PART_GLOB)):
                 found.append(date.fromisoformat(child.name[5:]))
         return found
@@ -645,7 +646,7 @@ class DataStore:
         if not base.is_dir():
             return {}
         found = {}
-        for child in sorted(base.glob("date=*")):
+        for child in sorted(base.glob(DATE_GLOB)):
             parts = sorted(
                 f"{f.name}:{stat.st_size}:{stat.st_mtime_ns}"
                 for f in child.glob(PART_GLOB)
@@ -710,7 +711,7 @@ class DataStore:
         `date=` partition at query time (listing ~7,400 files inline cost most of a connect)."""
         base = self._under_root(self.root / dataset)
         if next(base.glob(f"date=*/{PART_GLOB}"), None) is not None:
-            pattern = str(base / "date=*" / PART_GLOB).replace("'", "''")
+            pattern = str(base / DATE_GLOB / PART_GLOB).replace("'", "''")
             con.execute(
                 f"CREATE VIEW {view} AS SELECT * FROM read_parquet('{pattern}', "  # noqa: S608
                 "hive_partitioning = true, hive_types = {'date': DATE})"

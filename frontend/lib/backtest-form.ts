@@ -184,10 +184,11 @@ function parseNumber(text: string, whole: boolean, what: string): Parsed<number>
 
 const DECIMAL = /^\d+(\.\d+)?$/;
 
-/** The variant's body, or the first field it cannot send. */
-export function variantBody(fields: readonly Field[], draft: Draft): Parsed<VariantBody> {
-  const label = draft.label.trim();
-  const sets: NonNullable<VariantBody["sets"]> = [];
+type Sets = NonNullable<VariantBody["sets"]>;
+
+/** The version fields the draft changed, or the first it cannot send. */
+function fieldSets(fields: readonly Field[], draft: Draft): Parsed<Sets> {
+  const sets: Sets = [];
   for (const field of fields) {
     const text = draft.values[field.path];
     if (text === undefined || text === field.initial) continue;
@@ -206,6 +207,12 @@ export function variantBody(fields: readonly Field[], draft: Draft): Parsed<Vari
     if (field.initial !== "" && Number(field.initial) === parsed.value) continue;
     sets.push({ path: field.path, value: parsed.value });
   }
+  return { ok: true, value: sets };
+}
+
+/** One appended exit per added rule, or the first value it cannot send. */
+function addedSets(draft: Draft): Parsed<Sets> {
+  const sets: Sets = [];
   for (const rule of draft.added) {
     const value: Record<string, unknown> = { rule };
     for (const [name, start] of Object.entries(ADDABLE[rule] ?? {})) {
@@ -216,7 +223,11 @@ export function variantBody(fields: readonly Field[], draft: Draft): Parsed<Vari
     }
     sets.push({ path: "exits[+]", value });
   }
-  const body: VariantBody = { label: label || "run", sets };
+  return { ok: true, value: sets };
+}
+
+/** The run-level settings into `body`; the first it cannot send as an error, else null. */
+function setRunOptions(body: VariantBody, draft: Draft): { ok: false; error: string } | null {
   for (const [key, text, what] of [
     ["sleeve_weight", draft.sleeveWeight, "Sleeve weight"],
     ["risk_pct", draft.riskPct, "Risk per trade"],
@@ -237,7 +248,20 @@ export function variantBody(fields: readonly Field[], draft: Draft): Parsed<Vari
   } else if (draft.slotOrder !== "time") {
     body.slot_order = draft.slotOrder;
   }
-  return { ok: true, value: body };
+  return null;
+}
+
+/** The variant's body, or the first field it cannot send. */
+export function variantBody(fields: readonly Field[], draft: Draft): Parsed<VariantBody> {
+  const changed = fieldSets(fields, draft);
+  if (!changed.ok) return changed;
+  const added = addedSets(draft);
+  if (!added.ok) return added;
+  const body: VariantBody = {
+    label: draft.label.trim() || "run",
+    sets: [...changed.value, ...added.value],
+  };
+  return setRunOptions(body, draft) ?? { ok: true, value: body };
 }
 
 export type StartForm = Readonly<{

@@ -413,10 +413,9 @@ def test_regime_table_is_recorded_and_checked() -> None:
     }
     run = dataclasses.replace(s.spec(cfg, days, conventions=PROMOTED), regime_table=table)
     assert run.recorded_conventions()["regime_table"] == {k: str(v) for k, v in table.items()}
-    with pytest.raises(BacktestError, match="backtest_bad_regime_table"):
-        dataclasses.replace(run, regime_table={**table, "bear": 0.25})
-    with pytest.raises(BacktestError, match="backtest_bad_regime_table"):
-        dataclasses.replace(run, regime_table={k: v for k, v in table.items() if k != "bear"})
+    for bad in ({**table, "bear": 0.25}, {k: v for k, v in table.items() if k != "bear"}):
+        with pytest.raises(BacktestError, match="backtest_bad_regime_table"):
+            dataclasses.replace(run, regime_table=bad)
 
 
 @pytest.mark.parametrize(
@@ -682,9 +681,10 @@ def test_research_run_sizes_an_unweighted_sleeve_and_promotion_refuses_it() -> N
     assert sleeve_weight(run) == RESEARCH_SLEEVE_WEIGHT
     assert run.recorded_conventions()["sleeve_weight"] == "0.5"
     fills = BacktestFills(load_cost_schedule(), DEFAULT_SLIPPAGE_BPS)
+    config = s.config()
     with pytest.raises(BacktestError, match="backtest_no_base_weight"):
         s.spec(
-            s.config(),
+            config,
             DAYS,
             fills=fills,
             policy=unweighted,

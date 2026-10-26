@@ -129,8 +129,9 @@ def test_select_criteria_and_filters_by_type() -> None:
     ],
 )
 def test_select_by_type_fails_loudly(path: str, code: str) -> None:
+    overrides, config = Overrides(sets=((path, False),)), seed_config(S1)
     with pytest.raises(OverrideError, match=code):
-        Overrides(sets=((path, False),)).apply_config(seed_config(S1))
+        overrides.apply_config(config)
 
 
 # --- entry timing and breakout volume ------------------------------------------------------------

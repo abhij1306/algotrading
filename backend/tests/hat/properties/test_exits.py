@@ -477,8 +477,9 @@ def test_raise_stop_refuses_a_stop_that_does_not_rise(new: Decimal) -> None:
     """`positions.raise_stop` is invariant 1's Python check: a stop at or below the current one
     is refused before anything is written (the session is never touched)."""
     position = HatPosition(current_stop=D("100.00"), is_virtual=True)
+    signal = HatSignal(mode="shadow")
     with pytest.raises(TradeError) as refused:
-        raise_stop(None, HatSignal(mode="shadow"), position, new, None)  # type: ignore[arg-type]
+        raise_stop(None, signal, position, new, None)  # type: ignore[arg-type]
     assert refused.value.code == "stop_would_lower"
     assert position.current_stop == D("100.00")
 
@@ -521,14 +522,15 @@ def test_a_failing_exit_view_alerts_once_a_day() -> None:
 
     clock = FixedClock(datetime(2026, 10, 26, 5, 0, tzinfo=UTC))
     position = HatPosition(id=uuid.uuid4(), instrument_id=uuid.uuid4(), is_virtual=False)
+    nothing = cast(Any, None)
     for notifier, expected in ((RecordingNotifier(), 1), (Undelivered(), 2)):
-        views = ExitViews(cast(Any, None), broken, clock, lambda: None, cast(Any, None), notifier)
+        views = ExitViews(nothing, broken, clock, lambda: None, nothing, notifier)
         for _ in range(2):
             with pytest.raises(RuntimeError):
-                views(cast(Any, None), position)
+                views(nothing, position)
         assert [a[0] for a in notifier.alerts] == [VIEW_FAILED] * expected
     clock.advance(timedelta(days=1))
     with pytest.raises(RuntimeError):
-        views(cast(Any, None), position)
+        views(nothing, position)
     assert len(notifier.alerts) == 3
     assert notifier.alerts[-1][2] == {"position": str(position.id), "kind": "real"}
