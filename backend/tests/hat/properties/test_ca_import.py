@@ -109,8 +109,9 @@ def test_rights_factor() -> None:
     assert round(float(factor), 4) == 0.964
     assert rights_factor(terms, Fraction(105)) == 1  # at the cum price: neutral
     assert rights_factor(terms, Fraction(90)) == 1  # above it: neutral
+    zero = Fraction(0)
     with pytest.raises(ValueError, match="cum_price"):
-        rights_factor(terms, Fraction(0))
+        rights_factor(terms, zero)
 
 
 def test_demerger_factor() -> None:
@@ -132,8 +133,9 @@ def test_gate() -> None:
     assert gate(Fraction(96, 100), Fraction(100), Fraction(98)).reason == "ambiguous"
     assert gate(Fraction(96, 100), Fraction(100), Fraction("96.3")).confirmed
     assert gate(Fraction(96, 100), Fraction(100), Fraction(100)).reason == "ambiguous"
+    half, zero, fifty = Fraction(1, 2), Fraction(0), Fraction(50)
     with pytest.raises(ValueError, match="positive"):
-        gate(Fraction(1, 2), Fraction(0), Fraction(50))
+        gate(half, zero, fifty)
 
 
 def test_plan_legs() -> None:

@@ -82,8 +82,10 @@ def test_corporate_action_load_on_postgres(conn: Connection) -> None:
         (2, "conflict", Decimal("0.5")),
         (3, "deleted", Decimal("0.2")),
     ]
-    with pytest.raises(DBAPIError, match="append-only"), session.begin_nested():
-        session.execute(update(HatCorporateActionVersion).values(text="x"))
+    edit = update(HatCorporateActionVersion).values(text="x")
+    nested = session.begin_nested()
+    with pytest.raises(DBAPIError, match="append-only"), nested:
+        session.execute(edit)
     session.rollback()
 
 
@@ -113,14 +115,13 @@ def test_a_moved_demerger_keeps_its_text_and_flag(conn: Connection) -> None:
         )
     ).one()
     assert version == "ex-date per bars"
+    bad = {
+        "isin": "INE000000772",
+        "ex_date": date(2024, 9, 30),
+        "action_type": "split",
+        "factor": Decimal("0.5"),
+        "note": "n",
+        "demerger": True,
+    }
     with pytest.raises(ca.ActionCorrectionError, match="bad_action_type"):
-        add_action(
-            session,
-            isin="INE000000772",
-            ex_date=date(2024, 9, 30),
-            action_type="split",
-            factor=Decimal("0.5"),
-            note="n",
-            demerger=True,
-            **owner,
-        )
+        add_action(session, **bad, **owner)

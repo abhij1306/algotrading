@@ -55,10 +55,9 @@ def test_undo_rebuilds_intervals_back_from_today() -> None:
 def test_undo_refuses_a_change_that_does_not_fit(
     added: dict[str, str], removed: dict[str, str]
 ) -> None:
+    changes = [_change(date(2020, 1, 1), added, removed, "n")]
     with pytest.raises(IndexMembershipError, match="membership_undo_conflict"):
-        undo_changes(
-            {"A": "A"}, AS_OF, [_change(date(2020, 1, 1), added, removed, "n")], START, TODAY
-        )
+        undo_changes({"A": "A"}, AS_OF, changes, START, TODAY)
 
 
 def test_undo_refuses_a_change_outside_the_cover() -> None:

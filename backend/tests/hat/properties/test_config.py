@@ -361,11 +361,12 @@ def test_save_draft_refuses_another_bot_name() -> None:
     saturday = datetime(2026, 12, 5, 12, tzinfo=UTC)
     with memory_session(ENGINE) as session:
         first, second = seed_default_strategies(session, USER)[:2]
+        other_bot = seed_config(second.name)
         with pytest.raises(VersionError) as caught:
             save_draft(
                 session,
                 strategy_id=first.id,
-                config=seed_config(second.name),
+                config=other_bot,
                 calendar=GATE_CALENDAR,
                 now=saturday,
             )

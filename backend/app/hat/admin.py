@@ -544,11 +544,15 @@ def _owner(
         raise AdminError("no_owner_chat") from None
     if args.command == "correct-action":  # stored reference data: any time, no calendar
         cash = args.cash  # a dividend's amount: its factor stays 1
+        if args.delete:
+            factor = None
+        else:
+            factor = Decimal(1) if cash is not None else args.factor
         correction = Correction(
             isin=args.isin,
             ex_date=args.ex_date,
             action_type=args.type,
-            factor=None if args.delete else Decimal(1) if cash is not None else args.factor,
+            factor=factor,
             new_type=args.as_type,
             note=args.note,
             cash=cash,

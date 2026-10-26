@@ -749,7 +749,9 @@ def build(
 
     def regime(t: _Trade) -> str:
         on = None if t.signal is None else t.signal.regime_on
-        return "index_unknown" if on is None else ("index_on" if on else "index_off")
+        if on is None:
+            return "index_unknown"
+        return "index_on" if on else "index_off"
 
     def liquidity(t: _Trade) -> str | None:
         return t.features.get("liquidity_bucket")

@@ -102,8 +102,9 @@ def test_a_sale_today_nets_the_holding_out() -> None:
 
 def test_shares_without_a_price_fail_the_read() -> None:
     funds = BrokerFunds(available=CASH, used=Decimal(0))
+    unpriced = [BrokerHolding("TCS", QTY, COST)]
     with pytest.raises(ValueError):
-        account_equity(funds, [], [BrokerHolding("TCS", QTY, COST)])
+        account_equity(funds, [], unpriced)
     # an intraday position is not a share held
     intraday = BrokerPosition("SBIN", 5, Decimal("800"), "INTRADAY")
     assert account_equity(funds, [intraday], []) == CASH
@@ -152,5 +153,6 @@ def test_the_three_reads_are_one_book_or_none() -> None:
     held = [BrokerPosition("TCS", QTY, COST, "CNC", COST)]
     _, positions, _ = _one_book(_Moving([], held, held))  # type: ignore[arg-type]
     assert positions == held
+    moving = _Moving([], held, [], held)
     with pytest.raises(ValueError):
-        _one_book(_Moving([], held, [], held))  # type: ignore[arg-type]
+        _one_book(moving)  # type: ignore[arg-type]

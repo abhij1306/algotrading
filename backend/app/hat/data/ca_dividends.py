@@ -121,7 +121,7 @@ def read_feed(directory: Path) -> tuple[list[FeedRow], str]:
         sha.update(path.name.encode() + b"\0" + data)
         try:
             items = json.loads(data.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
+        except ValueError as exc:  # UnicodeDecodeError and JSONDecodeError are ValueErrors
             raise CaFileError("feed_unreadable") from exc
         if not isinstance(items, list):
             raise CaFileError("feed_unreadable")

@@ -206,7 +206,9 @@ def date_check(ex_date: date, texts: Iterable[tuple[str, str]]) -> str:
                 continue  # another event's date
             ok = day == ex_date if kind == "ex" else 0 <= (day - ex_date).days <= RECORD_DAYS
             agree, disagree = agree or ok, disagree or not ok
-    return "disputed" if disagree else "confirmed" if agree else ""
+    if disagree:
+        return "disputed"
+    return "confirmed" if agree else ""
 
 
 _NAME_SKIP = {"THE", "LTD", "LIMITED", "PVT", "PRIVATE", "CO", "COMPANY", "INDIA", "NEW", "LTDNEW"}

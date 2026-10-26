@@ -86,8 +86,9 @@ def test_an_unreadable_foreign_trade_is_skipped_and_counted() -> None:
     ],
 )
 def test_an_unreadable_hat_trade_fails_the_read(tag: str) -> None:
+    rows = [trade_row(tag, 0)]
     with pytest.raises(ValueError):
-        parse_trade_book([trade_row(tag, 0)])
+        parse_trade_book(rows)
 
 
 # --- no symbol guessed --------------------------------------------------------------------------
@@ -190,8 +191,9 @@ def test_the_shadow_close_pass_runs_only_in_the_shifted_window() -> None:
     muhurat = timedelta(hours=3, minutes=45)  # an 18:00-19:15 session
     assert shadow.close(ist(DAY, 15, 7), muhurat) == 0
     assert shadow.close(ist(DAY, 18, 57), muhurat) == 0
+    inside = ist(DAY, 18, 52)
     with pytest.raises(LookupError):
-        shadow.close(ist(DAY, 18, 52), muhurat)
+        shadow.close(inside, muhurat)
 
 
 def test_a_settled_order_forgets_its_first_absent_read() -> None:

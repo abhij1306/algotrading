@@ -1020,8 +1020,11 @@ class _Run:
             if self.data.last_traded.get(held.instrument_id) != day:
                 continue
             bar = self.view.bar(held.instrument_id, day)
-            last = self._last_close(held.instrument_id)
-            price = bar.close if bar is not None else (last[1] if last is not None else None)
+            if bar is not None:
+                price: Decimal | None = bar.close
+            else:
+                last = self._last_close(held.instrument_id)
+                price = last[1] if last is not None else None
             if price is not None:
                 self._close(position, price, DELISTED, _at(day, _AT_END))
 

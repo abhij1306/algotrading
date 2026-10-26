@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 NIFTY_50 = "NIFTY 50"
 NIFTY_500 = "NIFTY 500"
 INDIA_VIX = "INDIA VIX"
-INDEX_NAMES = (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250", INDIA_VIX)
+NIFTY_SMALLCAP_250 = "NIFTY SMALLCAP 250"
+INDEX_NAMES = (NIFTY_50, NIFTY_500, NIFTY_SMALLCAP_250, INDIA_VIX)
 MCP_HISTORY_MONTHS = 12
 NIFTY_500_TRI = "NIFTY 500 TRI"
 # [A] NSE's daily index archive; the MCP keeps only about two years (HAT-DATA-095).
@@ -54,14 +55,14 @@ TRI_INDICES = {NIFTY_500_TRI: NIFTY_500}
 # "15 Dec 2014", "OPEN": .., "HIGH": .., "LOW": .., "CLOSE": ..}. It has regular sessions that
 # neither day-file source holds (2014-12-15, 2015-03-12, 2015-07-08); India VIX is not there.
 HISTORY_URL = "https://www.niftyindices.com/Backpage/getHistoricaldatatabletoString"
-HISTORY_INDICES = {n: n for n in (NIFTY_50, NIFTY_500, "NIFTY SMALLCAP 250")}
+HISTORY_INDICES = {n: n for n in (NIFTY_50, NIFTY_500, NIFTY_SMALLCAP_250)}
 # [A] Each index's first day in the archive (the first row of the first file holding it, read
 # from the stored archive on 2026-10-23): no source reaches further back, so coverage starts here.
 INDEX_STARTS = {
     NIFTY_50: date(2012, 2, 21),
     NIFTY_500: date(2012, 2, 21),
-    "NIFTY SMALLCAP 250": date(2019, 1, 14),
-    "INDIA VIX": date(2014, 5, 14),
+    NIFTY_SMALLCAP_250: date(2019, 1, 14),
+    INDIA_VIX: date(2014, 5, 14),
     NIFTY_500_TRI: date(2012, 2, 21),  # from its price index's first day, as the regime reads it
 }
 # [A] Names the archive used before NSE's 2015 renaming; read as today's names.
@@ -510,8 +511,7 @@ def backfill(
             if not rest:
                 break
             try:
-                for point in only_days(source, {name: rest})(name, rest[0], rest[-1]):
-                    found.append(point)
+                found.extend(only_days(source, {name: rest})(name, rest[0], rest[-1]))
             except Exception as exc:  # one index or source never stops the others
                 code = getattr(exc, "code", None)
                 report.failed[name] = code if isinstance(code, str) else "index_source_failed"

@@ -14,8 +14,9 @@ def test_policy_yaml_reads_back_to_the_same_policy() -> None:
     text = policy_yaml(policy, "risk policy version 2, in force")
     assert text.startswith("# risk policy version 2, in force\n")
     assert policy_text(text) == policy
+    no_entry_cap = text.replace("max_entries_per_day: 3\n", "")
     with pytest.raises(PolicyError):
-        policy_text(text.replace("max_entries_per_day: 3\n", ""))
+        policy_text(no_entry_cap)
 
 
 @pytest.mark.parametrize(
