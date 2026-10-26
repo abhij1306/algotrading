@@ -120,7 +120,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `market_id`, `model_version_id`, `job_run_id`, `backtest_run_id`).
 - Parquet, date-partitioned, read through DuckDB: `bars_daily_raw` (immutable) and its views in
   `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily` (the
-  nightly indices, and NIFTY 500 TRI from `index_history backfill`), `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
+  nightly indices, and NIFTY 500 TRI fetched by the nightly ingest from niftyindices), `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `raw_tri/` keeps niftyindices' TRI answers `verify-tri --fetch` saved (one per year and fetch, never rewritten). `ca_bc/` keeps each night's
   NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable; a later, different copy of that
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
 - `backtests/runs/<run_id>/` holds every run's folder in the Backtest Result Standard

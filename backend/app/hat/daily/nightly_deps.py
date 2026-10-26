@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
+from ..data.index_history import NIFTY_INDICES_INTERVAL, IndexSource, Poster, tri_source
 from ..data.kite_symbols import KiteSymbolData
 from ..data.mcp_client import McpClient
+from ..data.pacing import Pacer
 from ..data.reference_jobs import CircuitSource, TextSource
 from ..data.store import DataStore
 from ..notify import LogNotifier, Notifier
@@ -59,12 +61,22 @@ class NightlyDeps:
     notifier: Notifier = field(default_factory=LogNotifier)
     digest: Callable[[uuid.UUID, date], None] | None = None  # Reports.send_watchlist_digest
     on_loaded: Callable[[], None] = lambda: None  # new daily bars: drop the cached daily view
+    # niftyindices' JSON POST for the ingest's NIFTY 500 TRI step; None: the TRI is not fetched
+    niftyindices: Callable[[], Poster] | None = None
 
 
 def next_session(session: Session, day: date) -> date | None:
     """The first trading day of the calendar after `day`; None when the calendar holds none."""
     calendar = session_calendar(session)
     return None if calendar is None else calendar.next_trading_day(day)
+
+
+def nightly_tri_source(deps: NightlyDeps) -> IndexSource | None:
+    """The ingest's TRI source, paced as the operator's backfill, on the runtime's sleep."""
+    if deps.niftyindices is None:
+        return None
+    pacer = Pacer(min_interval=NIFTY_INDICES_INTERVAL, clock=deps.clock, sleep=deps.sleep)
+    return tri_source(deps.niftyindices(), pacer)
 
 
 def mcp_client(deps: NightlyDeps) -> McpClient:
