@@ -334,7 +334,7 @@ def _etf(row: Mapping[str, str]) -> Proposal:
     p = Proposal(T_ETF, row["rowid"], row["symbol"], "", nse_date(row["ex_effective_date"]), text)
     if p.ex_date is None:
         return p.ends(REVIEW, "bad_ex_date")
-    if old is None or new is None or not new < old:
+    if old is None or new is None or new >= old:
         return p.ends(REVIEW, "unparsed")
     return replace(p, legs=(Leg(TYPE_SPLIT, Fraction(new) / Fraction(old)),))
 

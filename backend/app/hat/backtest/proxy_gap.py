@@ -48,7 +48,7 @@ from ..models import (
     HatTradeResult,
     HatWatchlistEntry,
 )
-from ..money import NotExactError, require_exact
+from ..money import require_exact
 from . import folder
 from .evidence import RunMetrics, config_playbooks, unbacktested, universe_of
 from .report import END_OF_PERIOD
@@ -298,7 +298,7 @@ def trades_of(rows: Iterable[Mapping[str, str]], start: date, end: date) -> list
                     score=_cell(first, "setup_score"),  # empty without a watchlist row
                 )
             )
-    except (ArithmeticError, ValueError, NotExactError):
+    except (ArithmeticError, ValueError):  # NotExactError is both
         raise GapError("gap_no_trades_file") from None
     return trades
 
