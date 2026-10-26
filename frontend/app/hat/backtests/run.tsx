@@ -204,6 +204,11 @@ function EquitySection({ runId, benchmark }: Readonly<{ runId: string; benchmark
   );
 }
 
+function excessTone(excess: number | null): string | undefined {
+  if (excess === null) return undefined;
+  return excess >= 0 ? "text-profit" : "text-loss";
+}
+
 const YEAR_COLUMNS = [
   { label: "Year" },
   { label: "Return %", numeric: true },
@@ -224,16 +229,7 @@ function ByYear({ years }: Readonly<{ years: Run["breakdowns"]["by_year"] }>) {
           <TableCell>{row.year}</TableCell>
           <TableCell numeric>{formatNumber(row.return_pct, 1)}</TableCell>
           <TableCell numeric>{formatNumber(row.benchmark_return_pct, 1)}</TableCell>
-          <TableCell
-            numeric
-            className={
-              row.excess_pct === null
-                ? undefined
-                : row.excess_pct >= 0
-                  ? "text-profit"
-                  : "text-loss"
-            }
-          >
+          <TableCell numeric className={excessTone(row.excess_pct)}>
             {formatNumber(row.excess_pct, 1)}
           </TableCell>
           <TableCell numeric>{formatNumber(row.max_dd_pct, 1)}</TableCell>

@@ -365,11 +365,8 @@ export function groupRuns(
   const shownIds = new Set(shown.map((run) => run.identity.run_id));
   const nestedUnder = (run: RunSummary) => {
     const target = run.data.validates_run_id;
-    return run.data.split === "hold_out" && target && target !== run.identity.run_id
-      ? shownIds.has(target)
-        ? target
-        : null
-      : null;
+    const nests = run.data.split === "hold_out" && target && target !== run.identity.run_id;
+    return nests && shownIds.has(target) ? target : null;
   };
   const holdOuts = new Map<string, RunSummary[]>();
   const anchors: RunSummary[] = [];
@@ -713,7 +710,9 @@ export function sortRecords(rows: readonly CsvRecord[], sort: Sort | null): CsvR
 
 /** The distinct values of a text column, sorted, for a filter's options. */
 export function distinctValues(rows: readonly CsvRecord[], column: string): string[] {
-  return [...new Set(rows.map((row) => cellText(row, column)).filter(Boolean))].sort();
+  return [...new Set(rows.map((row) => cellText(row, column)).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b),
+  );
 }
 
 export type TopTrade = Readonly<{

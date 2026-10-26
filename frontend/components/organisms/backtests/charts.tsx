@@ -101,11 +101,9 @@ export function EquityChart({
   spans,
   benchmark,
 }: Readonly<{ points: readonly EquityPoint[]; spans: readonly Span[]; benchmark: string }>) {
+  const shading = spans.length > 0 ? `, ${SHADING_NOTE}` : "";
   return (
-    <ChartFrame
-      title={`Equity vs ${benchmark}`}
-      note={`growth from the first session${spans.length > 0 ? `, ${SHADING_NOTE}` : ""}`}
-    >
+    <ChartFrame title={`Equity vs ${benchmark}`} note={`growth from the first session${shading}`}>
       <LineChart data={points as EquityPoint[]} syncId="run">
         {grid}
         {regimeShading(spans)}

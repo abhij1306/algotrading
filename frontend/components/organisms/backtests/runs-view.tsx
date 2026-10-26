@@ -49,8 +49,11 @@ import { cn } from "@/lib/utils";
 const PICK_WIDTH = 40;
 const VARIANT_WIDTH = 240;
 const METRIC_WIDTH = 104;
-const stickyLeft = (column: number) =>
-  column === 0 ? 0 : PICK_WIDTH + (column > 1 ? VARIANT_WIDTH + (column - 2) * METRIC_WIDTH : 0);
+const stickyLeft = (column: number) => {
+  if (column === 0) return 0;
+  if (column === 1) return PICK_WIDTH;
+  return PICK_WIDTH + VARIANT_WIDTH + (column - 2) * METRIC_WIDTH;
+};
 const stickyWidth = (column: number) => {
   if (column === 0) return PICK_WIDTH;
   return column === 1 ? VARIANT_WIDTH : METRIC_WIDTH;
@@ -212,7 +215,7 @@ function Select({
   );
 }
 
-const SWEEP_COMMAND = `python -m app.hat.backtest --strategy-version <v> --universe nifty500 \\
+const SWEEP_COMMAND = String.raw`python -m app.hat.backtest --strategy-version <v> --universe nifty500 \
   --from <d> --to <d> --variants sweep.yaml`;
 
 /** No run folder yet: how to start a sweep. */
