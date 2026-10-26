@@ -136,7 +136,8 @@ def test_n500__notice_events_apply_overrides() -> None:
         "c.pdf": {"date": "2020-03-20", "drop_from": "b.pdf"},
         "_extra": [{"date": "2020-04-01", "file": "x.pdf", "excluded": ["T"]}],
     }
-    events = n500.notice_events(parsed, overrides, date(2016, 1, 1))
+    parsed.append(_parsed("later.pdf", "2026-11-01", ["L"], ["M"]))
+    events = n500.notice_events(parsed, overrides, date(2016, 1, 1), date(2026, 10, 25))
     assert sorted(events) == [
         (date(2020, 2, 10), "b.pdf", ["P"], ["R"]),
         (date(2020, 3, 20), "c.pdf", ["Q"], ["S"]),
@@ -195,6 +196,17 @@ def test_n500__wanted_notice() -> None:
 def test_set_secrets__updated_env() -> None:
     text = "A=1\nexport KEY=old\n# note\nKEY=dup\n"
     assert secrets.updated_env(text, {"KEY": "new", "NEW": "v"}) == "A=1\nKEY=new\n# note\nNEW=v\n"
+
+
+def test_set_secrets__request_allowed() -> None:
+    own = {"Host": "127.0.0.1:8765", "Origin": "http://127.0.0.1:8765"}
+    allowed = secrets.request_allowed
+    assert allowed(own, "tok", "tok", 8765, post=True)
+    assert allowed({"Host": "127.0.0.1:8765"}, "", "tok", 8765, post=False)
+    assert not allowed(own, "other", "tok", 8765, post=True)
+    assert not allowed({**own, "Origin": "https://evil.test"}, "tok", "tok", 8765, post=True)
+    assert not allowed({"Host": "127.0.0.1:8765"}, "tok", "tok", 8765, post=True)
+    assert not allowed({**own, "Host": "evil.test:8765"}, "", "tok", 8765, post=False)
 
 
 def test_fyers_login__auth_code() -> None:
@@ -263,9 +275,14 @@ def _thread(resolved: bool, *logins: str) -> dict[str, object]:
 
 
 def test_merge__open_threads() -> None:
-    threads = [_thread(True, "bot"), _thread(False, "bot", "owner"), _thread(False, "owner", "bot")]
-    graphql = {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
-    assert merge.open_threads(graphql, "owner") == ["f.py (last: bot)"]
+    def page(*threads: dict[str, object]) -> dict[str, object]:
+        return {"data": {"repository": {"pullRequest": {"reviewThreads": {"nodes": threads}}}}}
+
+    pages = [
+        page(_thread(True, "bot"), _thread(False, "bot", "owner")),
+        page(_thread(False, "bot")),
+    ]
+    assert merge.open_threads(pages, "owner") == ["f.py (last: bot)"]
 
 
 def test_merge__secret_hits_on_added_lines_only() -> None:
@@ -282,12 +299,15 @@ def test_merge__secret_hits_on_added_lines_only() -> None:
             "+++ b/deploy.env",
             "+KOTAK_NEO_MPIN=12345678",
             "+api_key: '" + "a" * 16 + "'",
+            "+++ b/keys.env",
+            "+KOTAK_NEO_CONSUMER_KEY=" + "x" * 20,
         ]
     )
     assert merge.secret_hits(diff) == [
         "app/x.py:AWS key",
         "deploy.env:env secret",
         "deploy.env:quoted secret",
+        "keys.env:env secret",
     ]
 
 

@@ -5,20 +5,24 @@
 Serves http://127.0.0.1:<port> on this machine only. The owner opens it in the desktop browser,
 fills any of the fields, and submits. Each filled field replaces that key's existing line or
 appends one; empty fields and every other line are left as they are. The file is written
-atomically with mode 600, and the script exits after one save. Values are typed into the form at
-runtime: the script holds none, and never prints or logs one, only which keys it saved.
+atomically with mode 600, and the script exits after one save. Each run makes a fresh token
+that the form carries; a POST needs it plus this server's own `Host` and `Origin`, so no other
+page open in the browser can write the file. Values are typed into the form at runtime: the
+script holds none, and never prints or logs one, only which keys it saved.
 """
 
 from __future__ import annotations
 
 import argparse
+import hmac
 import html
 import os
 import re
+import secrets
 import sys
 import tempfile
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -88,14 +92,40 @@ def write_env(env_file: Path, values: dict[str, str]) -> None:
         raise
 
 
+def request_allowed(
+    headers: Mapping[str, str], form_token: str, token: str, port: int, *, post: bool
+) -> bool:
+    """A request to this form: `Host` is this server (no DNS rebinding); a POST also carries
+    this run's token and comes from this server's own page (`Origin`)."""
+    host = f"{HOST}:{port}"
+    if headers.get("Host") != host:
+        return False
+    if not post:
+        return True
+    origin = f"http://{host}"  # NOSONAR: the loopback form's own origin
+    return headers.get("Origin") == origin and hmac.compare_digest(form_token, token)
+
+
 class Handler(BaseHTTPRequestHandler):
     env_file: Path = ENV_FILE
+    token: str = ""
+    port: int = 0
+
+    def _allowed(self, form_token: str = "", *, post: bool = False) -> bool:
+        headers = {k: self.headers.get(k, "") for k in ("Host", "Origin")}
+        if request_allowed(headers, form_token, self.token, self.port, post=post):
+            return True
+        self.send_error(403)
+        return False
 
     def _page(self, msg: str, status: int = 200) -> None:
-        inputs = "".join(
-            f'<label>{html.escape(label)}<input name="{key}" type="password"'
-            ' autocomplete="new-password"></label>'
-            for key, (label, _) in FIELDS.items()
+        inputs = (
+            "".join(
+                f'<label>{html.escape(label)}<input name="{key}" type="password"'
+                ' autocomplete="new-password"></label>'
+                for key, (label, _) in FIELDS.items()
+            )
+            + f'<input type="hidden" name="_token" value="{html.escape(self.token)}">'
         )
         body = PAGE.format(env=html.escape(str(self.env_file)), inputs=inputs, msg=msg).encode()
         self.send_response(status)
@@ -105,11 +135,14 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        self._page("")
+        if self._allowed():
+            self._page("")
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         form = parse_qs(self.rfile.read(length).decode())
+        if not self._allowed((form.get("_token") or [""])[0], post=True):
+            return
         values: dict[str, str] = {}
         for key, (label, pattern) in FIELDS.items():
             value = (form.get(key) or [""])[0].strip()
@@ -139,6 +172,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8765)
     args = p.parse_args(argv)
     Handler.env_file = args.env.resolve()
+    Handler.token = secrets.token_urlsafe(32)
+    Handler.port = args.port
     print(f"Open {HOST}:{args.port} in the browser on this machine's desktop", flush=True)
     # plain HTTP on the loopback interface only: the form never leaves this machine
     HTTPServer((HOST, args.port), Handler).serve_forever()  # NOSONAR

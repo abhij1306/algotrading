@@ -37,10 +37,11 @@ REVIEW_DONE = "Reviewed your PR"  # its summary comment once a review finished
 SONAR_GATE = "https://sonarcloud.io/api/qualitygates/project_status"
 OK_BUCKETS = frozenset({"pass", "skipping"})
 THREADS_QUERY = """
-query($owner: String!, $name: String!, $number: Int!) {
+query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes { isResolved path comments(last: 1) { nodes { author { login } } } }
       }
     }
@@ -54,11 +55,11 @@ SECRET_PATTERNS = {
     "Telegram bot token": re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{35}\b"),
     "JWT": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     "quoted secret": re.compile(
-        r"(?i)(?:secret|password|passwd|api_key|access_token|totp|mpin)[a-z0-9_]*['\"]?"
+        r"(?i)(?:secret|password|passwd|api_?key|consumer_key|access_token|totp|mpin)[a-z0-9_]*['\"]?"
         r"\s*[:=]\s*['\"][A-Za-z0-9+/_.~=-]{12,}['\"]"
     ),
     "env secret": re.compile(
-        r"^\s*(?:export\s+)?[A-Z0-9_]*(?:SECRET|PASSWORD|API_KEY|TOKEN|TOTP|MPIN)[A-Z0-9_]*"
+        r"^\s*(?:export\s+)?[A-Z0-9_]*(?:SECRET|PASSWORD|KEY|TOKEN|TOTP|MPIN|PIN)[A-Z0-9_]*"
         r"=[^\s$<{]{8,}\s*$"
     ),
 }
@@ -99,11 +100,16 @@ def review_bot_status(comments: Iterable[Mapping[str, Any]], bot: str = REVIEW_B
     return "pending"
 
 
-def open_threads(graphql: Mapping[str, Any], owner: str) -> list[str]:
-    """`path (last: login)` of each unresolved thread whose last comment is not the owner's."""
-    pr = graphql["data"]["repository"]["pullRequest"]
+def open_threads(pages: Iterable[Mapping[str, Any]], owner: str) -> list[str]:
+    """`path (last: login)` of each unresolved thread whose last comment is not the owner's,
+    over every page of the GraphQL answer."""
+    threads = [
+        t
+        for page in pages
+        for t in page["data"]["repository"]["pullRequest"]["reviewThreads"]["nodes"]
+    ]
     out = []
-    for t in pr["reviewThreads"]["nodes"]:
+    for t in threads:
         if t["isResolved"]:
             continue
         last = t["comments"]["nodes"]
@@ -173,6 +179,8 @@ def gather(pr: int, reported: str | None) -> Facts:
         _gh(
             "api",
             "graphql",
+            "--paginate",
+            "--slurp",
             "-f",
             f"query={THREADS_QUERY}",
             "-F",

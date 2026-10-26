@@ -177,9 +177,9 @@ def parse_notice(text: str) -> tuple[list[str], list[dict[str, Any]]]:
 
 
 def notice_events(
-    parsed: Iterable[Mapping[str, Any]], overrides: Mapping[str, Any], start: date
+    parsed: Iterable[Mapping[str, Any]], overrides: Mapping[str, Any], start: date, as_of: date
 ) -> list[Event]:
-    """The changes after `start`, from the parsed notices corrected by `overrides`."""
+    """The changes in (start, as_of], from the parsed notices corrected by `overrides`."""
     events: list[Event] = []
     for notice in parsed:
         f = notice["file"]
@@ -224,7 +224,7 @@ def notice_events(
         (date.fromisoformat(c["date"]), c["file"], c.get("excluded", []), c.get("included", []))
         for c in overrides.get("_extra", [])
     ]
-    return [e for e in events if e[0] > start]
+    return [e for e in events if start < e[0] <= as_of]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -366,7 +366,9 @@ def cmd_fetch(work: Path) -> None:
         if not wanted_notice(day, title) or (target.exists() and target.stat().st_size):
             continue
         try:
-            target.write_bytes(_get(SITE + href))
+            tmp = target.with_suffix(".part")  # a stopped run leaves no partial PDF
+            tmp.write_bytes(_get(SITE + href))
+            os.replace(tmp, target)
             got += 1
         except OSError as e:
             failed.append(f"{href}: {e}")
@@ -479,7 +481,7 @@ def cmd_build(work: Path, start: date, as_of: date, out: Path) -> int:
     parsed = json.loads((work / "changes_parsed.json").read_text())
     current = current_list(work / "raw" / LIST_SOURCE, ref)
     changes, unresolved = [], []
-    for day, notice, excluded, included in notice_events(parsed, overrides, start):
+    for day, notice, excluded, included in notice_events(parsed, overrides, start, as_of):
         sides: dict[str, dict[str, str]] = {"in": {}, "out": {}}
         for side, symbols in (("in", included), ("out", excluded)):
             for symbol in symbols:

@@ -370,7 +370,8 @@ def cmd_members(work: Work, as_of: date) -> None:
         " past as (select instrument_id, min(effective_from) member_from,"
         " max(coalesce(effective_to, '2100-01-01')) member_to,"
         " string_agg(distinct symbol, ' ') member_symbols from hat_index_member"
-        " where index_name = :ix and coalesce(effective_to, '2100-01-01') >= :floor"
+        " where index_name = :ix and effective_from <= :d"
+        " and coalesce(effective_to, '2100-01-01') >= :floor"
         " group by instrument_id)"
         " select i.id, i.isin, i.symbol, p.member_symbols, i.series, i.active, i.delisted_on,"
         " p.member_from, p.member_to from past p join hat_instrument i on i.id = p.instrument_id"
@@ -597,7 +598,7 @@ def cmd_former_map(work: Work) -> None:
 def former_plan(work: Work) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """(files, unavailable): one file per current token, named by its rows' symbol (the current
     name when a token has several), with the token's current ISIN, which the importer checks
-    against the scrip master; a token already fetched by `download` is reused."""
+    against the scrip master; a token whose file `download` already wrote is reused."""
     current = equity_scrips(work.scrips)
     isin_of = {s["pSymbol"]: s["pISIN"] for s in current}
     name_of = {s["pSymbol"]: s["pSymbolName"] for s in current}
@@ -619,7 +620,8 @@ def former_plan(work: Work) -> tuple[list[dict[str, Any]], list[dict[str, str]]]
         symbols = {r["symbol"] for r in f["rows"]}
         f["file"] = symbols.pop() if len(symbols) == 1 else name_of[f["token"]]
         f["isin"] = isin_of[f["token"]]
-        f["reuse"] = raw.get(f["token"])
+        reuse = raw.get(f["token"])
+        f["reuse"] = reuse if reuse and (work.raw / f"{reuse}.parquet").exists() else None
     return list(files.values()), unavailable
 
 
