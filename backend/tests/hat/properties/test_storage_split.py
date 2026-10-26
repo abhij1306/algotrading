@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import create_engine, func, select
 
+from app.hat.backtest.evidence import audit_admits
 from app.hat.configs.records import (
     Bot,
     ConfigRecordError,
@@ -204,3 +205,14 @@ def test_the_digest_ignores_row_order_and_sees_any_change() -> None:
     rows = [{"id": 1, "at": AT}, {"id": 2, "at": AT}]
     assert rows_digest(rows) == rows_digest(list(reversed(rows)))
     assert rows_digest(rows) != rows_digest([rows[0], {"id": 2, "at": None}])
+
+
+# --- a run's audit gating promotion ----------------------------------------------------------
+
+
+def test_only_a_run_whose_audit_passed_or_warned_is_evidence() -> None:
+    assert audit_admits({"status": "pass"})
+    assert audit_admits({"status": "warn"})
+    assert not audit_admits({"status": "fail"})
+    assert not audit_admits({})  # no status
+    assert not audit_admits(None)  # a run from before the audits

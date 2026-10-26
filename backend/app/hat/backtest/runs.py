@@ -648,7 +648,7 @@ def _execute(
             strategy_id=target.strategy_id,
             strategy_version_id=spec.strategy_version_id,
             universe_id=target.universe_id,
-            membership=(snapshot.get("membership") or {}).get("universe_key"),
+            membership=(market.snapshot.get("membership") or {}).get("universe_key"),
             metrics={
                 **result.metrics,
                 "dsr": {"prob": deflated.prob, "trials": count, "reason": deflated.reason},

@@ -158,8 +158,8 @@ at once: the later commit is refused `config_conflict`; run it again. Only the d
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
    <bot> --version <v> --from 2016-01-01 --to <last trading day> --for-promotion --regime-mult
    policy`; then `publish-version --version <v> --run <run_id>` (the run folder's id; the run must
-   be complete and flagged for promotion; the version is `frozen`) and `assign-version --bot <bot>
-   --version <v>`.
+   be complete, flagged for promotion and its `audit.json` pass or warn, else `run_audit_not_passed`;
+   the version is `frozen`) and `assign-version --bot <bot> --version <v>`.
 5. `promote --bot <bot> --to backtested` (`backtest_gate`), `promote --to shadow` and
    `trial-version --version <v>` the same evening. Versions move draft -> frozen -> trial ->
    released -> superseded; sleeves move research -> backtested -> shadow -> live (`promote`).

@@ -25,7 +25,6 @@ gate on a stale count, always through the family floors of `dsr.family_deflated_
 
 from __future__ import annotations
 
-import json
 import threading
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
