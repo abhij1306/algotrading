@@ -33,6 +33,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 from ..money import MONEY_SCALE
 from .bars import Bar
 from .bars_store import DATASET, FILE_NAME
+from .minute_limits import MinuteHistoryError
 from .store import RAW_LATEST, ActionFactor, DataStore
 
 __all__ = [
@@ -210,13 +211,17 @@ _MISFIT_CHUNK = 60  # day files per query: the aggregate stays well inside the D
 
 def misfit_days(store: DataStore, tolerance: Decimal) -> list[tuple[str, date]]:
     """Every stored `bars_5m` (instrument, day) that `check_day` refuses against the raw daily
-    bar (none, or outside the envelope), oldest first; `_MISFIT_CHUNK` day files per query."""
+    bar (none, or outside the envelope), oldest first; `_MISFIT_CHUNK` day files per query.
+    Stored days without any raw daily bar raise `bars5m_no_daily_bars` (fails closed: none
+    of them can be vouched for, and none is dropped for it)."""
     files = sorted((store.root / DATASET).glob(f"date=*/{FILE_NAME}"))
     found: list[tuple[str, date]] = []
     with closing(store.connect()) as con:
         last = con.execute(f"SELECT max(date) FROM {RAW_LATEST}").fetchone()  # noqa: S608
-        if not files or last is None or last[0] is None:
+        if not files:
             return []
+        if last is None or last[0] is None:  # stored days with nothing to check them against
+            raise MinuteHistoryError("bars5m_no_daily_bars")
         for at in range(0, len(files), _MISFIT_CHUNK):
             chunk = files[at : at + _MISFIT_CHUNK]
             first, final = (date.fromisoformat(f.parent.name[5:]) for f in (chunk[0], chunk[-1]))
