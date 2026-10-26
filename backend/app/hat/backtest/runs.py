@@ -61,6 +61,7 @@ from ..settings import operator_settings
 from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
+from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of
 from .dsr import PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
 from .evidence import (
     DSR_DIGITS,
@@ -94,6 +95,7 @@ __all__ = [
     "Variant",
     "backtest_bot",
     "engine_commit",
+    "hold_out",
     "parse_variants",
     "rerun",
     "resolved_of",
@@ -102,7 +104,7 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-IN_SAMPLE, HOLD_OUT = "in_sample", "hold_out"
+IN_SAMPLE = "in_sample"
 SPLITS = (IN_SAMPLE, HOLD_OUT)
 COMPLETE, FAILED, STOPPED = folder.COMPLETE, folder.FAILED, folder.STOPPED
 # The strategies' short names in the result files (decisions.md, Two trading sleeves).
@@ -120,7 +122,8 @@ BENCHMARK_LABEL = "NIFTY500_TRI"
 class Labels:
     """What a run is called and compared with (run.json `identity` and `data`): its sweep and
     variant, its base (a run id; a sweep resolves a label of its file to the run it made), the
-    one-line change against it, its split and, for a hold-out run, the run it validates."""
+    one-line change against it, the reason of a declared bundle (a variant changing more than
+    one knob, `discipline`), its split and, for a hold-out run, the run it validates."""
 
     sweep_id: str | None = None
     sweep_name: str | None = None
@@ -129,6 +132,7 @@ class Labels:
     change: str | None = None
     split: str = IN_SAMPLE
     validates: str | None = None
+    bundle: str | None = None
 
     def __post_init__(self) -> None:
         if self.split not in SPLITS:
@@ -447,12 +451,14 @@ class RunOutcome:
 @dataclass(frozen=True)
 class _Plan:
     """One run to execute: its spec, labels (the base resolved to a run id), what
-    `config.json` records of how it was asked for, and its overrides block."""
+    `config.json` records of how it was asked for, its overrides block and its knobs
+    (`discipline.knobs_of`; a rerun's are the run's it replays)."""
 
     spec: RunSpec
     labels: Labels
     asked: Mapping[str, Any]
     overrides: Mapping[str, Any]
+    knobs: Mapping[str, str]
 
 
 def _config_doc(
@@ -503,7 +509,9 @@ def _config_doc(
             "change": plan.labels.change,
             "split": plan.labels.split,
             "validates_run_id": plan.labels.validates,
+            "bundle": plan.labels.bundle,
         },
+        "knobs": dict(plan.knobs),
         "asked": dict(plan.asked),
         "data_snapshot_id": snapshot.get("content_digest"),
         "data_snapshot": dict(snapshot),  # what was read: the store, membership and its cover
@@ -525,6 +533,9 @@ def _blocks(
     resolved = resolved_of(spec)
     base = None if labels.base is None else folder.read_run(root, labels.base)
     base_resolved = None if base is None else (base.get("config") or {}).get("resolved")
+    base_config = None if labels.base is None else folder.read_config(root, labels.base)
+    base_knobs = None if base_config is None else base_config.get("knobs")
+    base_policy = None if base_config is None else (base_config.get("risk_policy") or {})
     identity = {
         "run_id": run_id,
         "strategy": target.strategy,
@@ -535,6 +546,11 @@ def _blocks(
         "variant": labels.variant,
         "base_run_id": labels.base,
         "change": labels.change,
+        # None without a base, or when the base's config.json predates knobs
+        "changed_knobs": changed_knobs(plan.knobs, base_knobs)
+        if isinstance(base_knobs, dict)
+        else None,
+        "bundle": labels.bundle,
         "created_at": utc_now().isoformat(),
         "status": status,
         "error": error,
@@ -556,6 +572,8 @@ def _blocks(
         else dict(plan.overrides),
         "resolved": resolved,
         "resolved_hash": config_hash(resolved),
+        "risk_policy_version": spec.policy.version,
+        "base_risk_policy_version": None if base_policy is None else base_policy.get("version"),
         "cost_model": spec.fills.schedule.version,
         "start_capital": _capital(spec.initial_equity),
         "rf_pct": 0,
@@ -679,8 +697,21 @@ def _execute(
     return RunOutcome(label, run_id, COMPLETE, None, doc)
 
 
-def _plan(spec: RunSpec, labels: Labels, asked: Mapping[str, Any]) -> _Plan:
-    return _Plan(spec, labels, asked, spec.conventions.overrides.record())
+def _knobs(request: RunRequest, conventions: RunConventions) -> dict[str, str]:
+    return knobs_of(
+        conventions, request.slippage_bps, request.cost_model, request.cooldown_sessions
+    )
+
+
+def _plan(request: RunRequest, spec: RunSpec, labels: Labels, asked: Mapping[str, Any]) -> _Plan:
+    overrides = spec.conventions.overrides.record()
+    return _Plan(spec, labels, asked, overrides, _knobs(request, spec.conventions))
+
+
+def _guard_hold_out(root: Path, spec: RunSpec, labels: Labels) -> None:
+    """A hold-out run's guards (`discipline.check_hold_out`); nothing for an in-sample run."""
+    if labels.split == HOLD_OUT and labels.validates is not None:
+        check_hold_out(root, labels.validates, resolved_of(spec), spec.start)
 
 
 def backtest_bot(
@@ -696,11 +727,12 @@ def backtest_bot(
     a failed run."""
     target = _target(session, request)
     spec = _spec(target, request, request.conventions)
+    _guard_hold_out(root, spec, request.labels)
     market = _load(
         session, store, target.universe_version_id, (request.start, request.end), [spec], root
     )
-    plan = _plan(spec, request.labels, {"args": list(request.args), "variant_item": None})
-    return _execute(target, plan, market, root=root)
+    asked = {"args": list(request.args), "variant_item": None}
+    return _execute(target, _plan(request, spec, request.labels, asked), market, root=root)
 
 
 # --- sweeps ------------------------------------------------------------------------------------
@@ -710,7 +742,8 @@ def backtest_bot(
 class Variant:
     """One run of a sweep: a label, its conventions (the overrides among them), its base (a
     label earlier in the file or a run id; None: a baseline), the one-line change, the run a
-    hold-out variant validates, and its item as the file wrote it."""
+    hold-out variant validates, its item as the file wrote it and, for a declared bundle, its
+    reason."""
 
     label: str
     conventions: RunConventions
@@ -718,6 +751,7 @@ class Variant:
     change: str | None = None
     validates: str | None = None
     item: Mapping[str, Any] = field(default_factory=dict)
+    bundle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -735,6 +769,8 @@ VARIANT_KEYS = frozenset(
         "base",
         "change",
         "validates",
+        "bundle",
+        "reason",
         "set",
         "risk_pct",
         "max_positions",
@@ -776,9 +812,13 @@ def parse_variants(
     `overrides.parse_policy_set`), `policy` (a policy file's path, relative to the working
     directory, read by `read_policy`), `risk_pct`, `max_positions`, `max_per_industry`,
     `flat_ladder` (a boolean), `sleeve_weight`, `slot_order`, `entry_fill`, `ambiguous`,
-    `suspension_sessions`, `regime_mult` and `start_capital` (each replacing the base's).
+    `suspension_sessions`, `regime_mult` and `start_capital` (each replacing the base's), and
+    `bundle: true` with a one-line `reason` (a variant with a base only).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
-    conventions or override raise."""
+    conventions or override raise. A variant whose knobs differ from those of its base earlier
+    in the file in more than one (`discipline.changed_knobs`) is refused
+    `backtest_sweep_not_one_change` unless it is a declared bundle; a base named by run id is
+    checked when the sweep runs (`sweep_bot`)."""
     if not isinstance(doc, dict) or not set(doc) <= SWEEP_KEYS:
         raise BacktestError("backtest_sweep_bad_variants")
     sweep_id = _text(doc, "sweep_id")
@@ -794,25 +834,49 @@ def parse_variants(
         change = _text(item, "change")
         if label is None or (change is not None and "\n" in change):
             raise BacktestError("backtest_sweep_bad_variants")
-        if (
-            based is not None
-            and based not in {v.label for v in out}
-            and not folder.is_run_id(based)
-        ):
+        earlier = {v.label: v for v in out}
+        if based is not None and based not in earlier and not folder.is_run_id(based):
             raise BacktestError("backtest_sweep_bad_variants")  # a base the file has not run yet
-        out.append(
-            Variant(
-                label,
-                _conventions(item, base, read_policy),
-                based,
-                change,
-                _text(item, "validates"),
-                dict(item),
-            )
+        variant = Variant(
+            label,
+            _conventions(item, base, read_policy),
+            based,
+            change,
+            _text(item, "validates"),
+            dict(item),
+            _bundle(item),
         )
+        if variant.bundle is not None and based is None:
+            raise BacktestError("backtest_sweep_bad_variants")
+        if (
+            based in earlier
+            and variant.bundle is None
+            and len(_changed(variant, earlier[based])) > 1
+        ):
+            raise BacktestError("backtest_sweep_not_one_change")
+        out.append(variant)
     if len({v.label for v in out}) != len(out):
         raise BacktestError("backtest_sweep_bad_variants")
     return Sweep(sweep_id, _text(doc, "sweep_name") or sweep_id, tuple(out))
+
+
+def _bundle(item: Mapping[str, object]) -> str | None:
+    """A declared bundle's reason: `bundle: true` needs a one-line `reason`, and a `reason`
+    needs the bundle."""
+    reason = _text(item, "reason")
+    declared = _flag(item, "bundle", False)
+    if declared != (reason is not None) or (reason is not None and "\n" in reason):
+        raise BacktestError("backtest_sweep_bad_variants")
+    return reason
+
+
+def _changed(variant: Variant, base: Variant) -> list[str]:
+    """The knobs a variant changes against a base of its own file; the run's slippage, cost
+    model and cooldown are the command line's, alike for both."""
+    return changed_knobs(
+        knobs_of(variant.conventions, Decimal(0), "", None),
+        knobs_of(base.conventions, Decimal(0), "", None),
+    )
 
 
 def _conventions(
@@ -904,14 +968,17 @@ def sweep_bot(
     label, its base (an earlier label resolved to the run it made) and change, so a later run
     sees the earlier ones in its DSR trial count; `after` takes each variant's outcome as it is
     decided, in order, refused ones too (the command line prints it there). A variant refused
-    before it runs (a bad override, a missing weight, a hold-out without the run it validates)
-    is skipped with its code; the request-wide refusals, and a sweep whose variants read
-    different regime indices, raise `BacktestError` before any run."""
+    before it runs (a bad override, a missing weight, a hold-out without the run it validates
+    or failing its guards, `discipline.check_hold_out`, an undeclared bundle against a base
+    named by run id) is skipped with its code; the request-wide refusals, and a sweep whose
+    variants read different regime indices, raise `BacktestError` before any run."""
     target = _target(session, request)
     plans: list[tuple[Variant, RunSpec | str]] = []
     for variant in sweep.variants:
         try:
-            plans.append((variant, _spec(target, request, variant.conventions)))
+            spec = _spec(target, request, variant.conventions)
+            _guard_variant(root, request, variant, spec)
+            plans.append((variant, spec))
         except BacktestError as exc:
             plans.append((variant, exc.code))
     runnable = [spec for _, spec in plans if isinstance(spec, RunSpec)]
@@ -931,6 +998,24 @@ def sweep_bot(
         out.append(outcome)
         after(outcome)
     return out
+
+
+def _guard_variant(root: Path, request: RunRequest, variant: Variant, spec: RunSpec) -> None:
+    """A variant's guards before the sweep runs: against a base named by run id whose
+    `config.json` records its knobs, more than one changed knob needs a declared bundle
+    (`backtest_sweep_not_one_change`; a base of the file was checked by `parse_variants`); a
+    hold-out variant's guards (`discipline.check_hold_out`)."""
+    if variant.base is not None and folder.is_run_id(variant.base) and variant.bundle is None:
+        base = folder.read_config(root, variant.base) or {}
+        knobs = base.get("knobs")
+        if (
+            isinstance(knobs, dict)
+            and len(changed_knobs(_knobs(request, spec.conventions), knobs)) > 1
+        ):
+            raise BacktestError("backtest_sweep_not_one_change")
+    validates = variant.validates or request.labels.validates
+    if request.labels.split == HOLD_OUT and validates is not None:
+        check_hold_out(root, validates, resolved_of(spec), spec.start)
 
 
 def _base_of(variant: Variant, sweep: Sweep, made: Mapping[str, str]) -> str | None:
@@ -964,19 +1049,25 @@ def _sweep_run(
             change=variant.change,
             split=request.labels.split,
             validates=variant.validates or request.labels.validates,
+            bundle=variant.bundle,
         )
+        _guard_hold_out(root, spec, labels)  # again: an earlier variant may have held it out
     except BacktestError as exc:
         return RunOutcome(variant.label, None, "refused", exc.code)
     asked = {"args": list(request.args), "variant_item": dict(variant.item)}
-    return _execute(target, _plan(spec, labels, asked), market, root=root, label=variant.label)
+    plan = _plan(request, spec, labels, asked)
+    return _execute(target, plan, market, root=root, label=variant.label)
 
 
 # --- rerun -------------------------------------------------------------------------------------
 
 
-def _replayed(config: Mapping[str, Any]) -> tuple[_Target, RunSpec]:
+def _replayed(
+    config: Mapping[str, Any], window: tuple[date, date] | None = None
+) -> tuple[_Target, RunSpec]:
     """The target and spec a run's `config.json` records, exactly as it ran (the documents
-    after their overrides); `backtest_rerun_bad_config` for a file that is not one."""
+    after their overrides), over its own period or `window`; `backtest_rerun_bad_config` for a
+    file that is not one."""
     try:
         policy_block = config["risk_policy"]
         c = config["conventions"]
@@ -984,6 +1075,8 @@ def _replayed(config: Mapping[str, Any]) -> tuple[_Target, RunSpec]:
         period = config["period"]
         fills = config["fills"]
         start, end = date.fromisoformat(period["start"]), date.fromisoformat(period["end"])
+        if window is not None:
+            start, end = window
         strategy_config = parse_config(config["strategy_config"])
         policy = PolicyVersion(
             uuid.UUID(policy_block["version_id"]),
@@ -1042,21 +1135,69 @@ def rerun(
     documents as they ran, the universe version, the period, the fills and conventions) as a
     new run whose base is the old one, so its binding says whether it made the same trades.
     Refused `backtest_rerun_unknown` without that file and `backtest_rerun_snapshot_differs`
-    when the market it loads is not the data the run read (`data_snapshot_id`)."""
+    when the market it loads is not the data the run read (`data_snapshot_id`); a hold-out run
+    is not rerun once it has been seen (`backtest_hold_out_repeated`, `discipline`)."""
     config = folder.read_config(root, run_id)
     if config is None:
         raise BacktestError("backtest_rerun_unknown")
     target, spec = _replayed(config)
+    old = config.get("labels") or {}
+    if old.get("split") == HOLD_OUT and old.get("validates_run_id") is not None:
+        # a hold-out is read once: its rerun is a second look (`backtest_hold_out_repeated`)
+        check_hold_out(root, old["validates_run_id"], resolved_of(spec), spec.start)
     market = _load(session, store, target.universe_version_id, (spec.start, spec.end), [spec], root)
     if market.snapshot.get("content_digest") != config.get("data_snapshot_id"):
         raise BacktestError("backtest_rerun_snapshot_differs")
-    old = config.get("labels") or {}
     labels = Labels(
         variant=old.get("variant"),
         base=run_id,
         change=f"rerun of {run_id}",
         split=old.get("split") or IN_SAMPLE,
         validates=old.get("validates_run_id"),
+        bundle=old.get("bundle"),
     )
-    plan = _Plan(spec, labels, {"args": list(args), "rerun_of": run_id}, {})
+    plan = _Plan(spec, labels, {"args": list(args), "rerun_of": run_id}, {}, _old_knobs(config))
+    return _execute(target, plan, market, root=root)
+
+
+def _old_knobs(config: Mapping[str, Any]) -> dict[str, str]:
+    knobs = config.get("knobs")
+    return dict(knobs) if isinstance(knobs, dict) else {}
+
+
+def hold_out(
+    session: Session,
+    store: DataStore,
+    run_id: str,
+    window: tuple[date, date],
+    *,
+    root: Path,
+    args: Sequence[str] = (),
+) -> RunOutcome:
+    """The hold-out of a candidate: its `config.json` replayed (`_replayed`, as `rerun`) over
+    `window`, a hold-out run that validates it, in its sweep and with its variant label, change
+    and knobs. Refused before any load by `discipline.check_hold_out` (a candidate that is not a
+    completed in-sample run, a window that does not start after the candidate's, a second
+    hold-out of the same config) and `backtest_rerun_unknown` without the candidate's file; the
+    data is the store's now, not the candidate's snapshot (the window differs)."""
+    config = folder.read_config(root, run_id)
+    if config is None:
+        raise BacktestError("backtest_rerun_unknown")
+    target, spec = _replayed(config, window)
+    old = config.get("labels") or {}
+    labels = Labels(
+        sweep_id=old.get("sweep_id"),
+        sweep_name=old.get("sweep_name"),
+        variant=old.get("variant"),
+        change=old.get("change"),
+        split=HOLD_OUT,
+        validates=run_id,
+        bundle=old.get("bundle"),
+    )
+    _guard_hold_out(root, spec, labels)
+    market = _load(session, store, target.universe_version_id, window, [spec], root)
+    candidate = folder.read_run(root, run_id) or {}
+    overrides = (candidate.get("config") or {}).get("overrides") or {}  # the candidate's
+    asked = {"args": list(args), "hold_out_of": run_id}
+    plan = _Plan(spec, labels, asked, dict(overrides), _old_knobs(config))
     return _execute(target, plan, market, root=root)

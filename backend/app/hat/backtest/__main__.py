@@ -3,7 +3,8 @@ YYYY-MM-DD [...]` backtests a sleeve over the Parquet store and publishes the ru
 (`runs`, `folder`); `--strategy-version <id> --universe <id or name>` in place of `--bot` is a
 research run with no bot. With `--variants FILE` it runs a sweep of variants over one load of
 the market (`runs.sweep_bot`); `--rerun <run_id>` runs a run's `config.json` again
-(`runs.rerun`). It reads the database in a read-only transaction: no backtest writes to it."""
+(`runs.rerun`), and with `--split hold_out --from --to` runs it as the hold-out of that run
+(`runs.hold_out`). It reads the database in a read-only transaction: no backtest writes to it."""
 
 from __future__ import annotations
 
@@ -36,12 +37,14 @@ from .fills import (
 )
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
 from .runs import (
+    HOLD_OUT,
     IN_SAMPLE,
     SPLITS,
     Labels,
     RunOutcome,
     RunRequest,
     backtest_bot,
+    hold_out,
     parse_variants,
     rerun,
     sweep_bot,
@@ -145,7 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--set-policy PATH=VALUE ...] [--split in_sample|hold_out] [--validates RUN_ID]
     [--sweep-id ID] [--sweep-name NAME] [--variant LABEL] [--base RUN_ID] [--change TEXT]
     [--variants FILE]
-    python -m app.hat.backtest --rerun RUN_ID
+    python -m app.hat.backtest --rerun RUN_ID [--split hold_out --from YYYY-MM-DD --to YYYY-MM-DD]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
     mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
@@ -173,7 +176,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     variants. `--variants FILE` (YAML or JSON, `runs.parse_variants`) runs each variant over one
     load of the market, on top of the options given here, and prints one line per variant as it
     finishes; a file argparse cannot open is a usage error, one that does not parse is refused
-    (`backtest_sweep_bad_variants`). `--rerun RUN_ID` takes nothing else.
+    (`backtest_sweep_bad_variants`); a variant changing more than one knob against its base
+    needs `bundle: true` and a `reason` (`backtest_sweep_not_one_change`). A hold-out run is
+    refused by its guards (`discipline.check_hold_out`). `--rerun RUN_ID` takes nothing else,
+    or `--split hold_out --from --to`: the run's own config as its hold-out (`_rerun`).
     """
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list[:1] == ["--rerun"]:
@@ -278,10 +284,18 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
 
 def _rerun(argv: Sequence[str]) -> int:  # pragma: no cover - needs the database
-    """`--rerun RUN_ID`: the run's `config.json` again (`runs.rerun`)."""
+    """`--rerun RUN_ID`: the run's `config.json` again (`runs.rerun`); with `--split hold_out
+    --from --to`, that config over the window as the run's hold-out (`runs.hold_out`)."""
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
     parser.add_argument("--rerun", required=True)
+    parser.add_argument("--split", choices=(HOLD_OUT,), default=None)
+    parser.add_argument("--from", dest="start", type=date.fromisoformat, default=None)
+    parser.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
     args = parser.parse_args(argv)
+    window = (args.start, args.end)
+    plain = args.split is None and window == (None, None)
+    if not plain and (args.split is None or None in window):
+        parser.error("--split hold_out needs --from and --to; a plain --rerun takes neither")
     settings = operator_settings()
     refused: str | None = None
     summary: dict[str, Any] = {}
@@ -290,7 +304,12 @@ def _rerun(argv: Sequence[str]) -> int:  # pragma: no cover - needs the database
         session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatEvent})
         try:
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
-            outcome = rerun(session, store, args.rerun, root=settings.data_root, args=argv)
+            if args.split is None:
+                outcome = rerun(session, store, args.rerun, root=settings.data_root, args=argv)
+            else:
+                outcome = hold_out(
+                    session, store, args.rerun, window, root=settings.data_root, args=argv
+                )
         except BacktestError as exc:
             refused = exc.code
         else:

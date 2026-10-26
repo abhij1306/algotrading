@@ -325,3 +325,12 @@ records it in `config.resolved.conventions.start_capital`, so it hashes as its o
 **API.** A list item adds `audit` (the run audit's `status` and `digest`, null without one);
 `GET /api/hat/backtests/runs/{run_id}/audits/{name}` returns `audit` or `data_audit`.
 
+**Sweep discipline.** `config.json` adds `knobs` (each knob the run was asked for, by name:
+`set:<path>`, `policy_set:<path>`, `policy` by digest, the conventions, slippage, cost model and
+cooldown; a rerun or hold-out carries the replayed run's) and `labels.bundle`. `run.json`
+`identity` adds `changed_knobs` (the knobs that differ from the base's, null without a base or
+when the base's `config.json` has no `knobs`) and `bundle` (a declared bundle's reason, else
+null); `config` adds `risk_policy_version` and `base_risk_policy_version` (the base's, null
+without one). Each is optional in `run.schema.json`. A hold-out made with `--rerun <id> --split
+hold_out` records `asked.hold_out_of` and the candidate's `config.overrides`.
+

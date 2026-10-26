@@ -310,7 +310,6 @@ def test_variants_set_the_fill_conventions_and_capital() -> None:
                 {"label": "base"},
                 {
                     "label": "v",
-                    "base": "base",
                     "entry_fill": "touch",
                     "ambiguous": "pessimistic",
                     "suspension_sessions": 3,
@@ -374,5 +373,5 @@ def test_compare_row() -> None:
     row = compare.row_of(run, {"status": "warn"})
     assert row[:4] == ["019a2b3c", "v1", "a/b", "complete"]
     assert row[-1] == "warn/pass"
-    assert len(row) == len(compare.COLUMNS) + 2
+    assert len(row) == len(compare.COLUMNS) + 4
     assert compare.table([row]).count("\n") == 3

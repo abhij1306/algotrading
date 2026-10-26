@@ -6,7 +6,10 @@ before anyone reads the metrics.
 
 The checks:
 - `binding`: a variant with a base made a different trade list (`no_op` warns: the change never
-  triggered; a base without a binding warns).
+  triggered; a base without a binding warns), changed one knob against it (`one_change` warns
+  with the knobs, a declared bundle's reason beside them; a base whose `config.json` predates
+  knobs is counted in resolved paths), and ran under the base's risk policy version
+  (`policy_drift` warns).
 - `fills`: every entry and exit price inside its day's low and high, widened by the run's
   slippage (a fill without a bar that day, a suspension mark or a delisting, is counted).
 - `sequence`: signal date <= entry date <= each leg's exit date, the legs in order.
@@ -37,9 +40,9 @@ from typing import Any
 
 from ..money import exact
 
-__all__ = ["AUDIT_VERSION", "audit_run"]
+__all__ = ["AUDIT_VERSION", "audit_run", "changed_of"]
 
-AUDIT_VERSION = "1"
+AUDIT_VERSION = "2"
 PASS, WARN, FAIL = "pass", "warn", "fail"
 _RANK = {PASS: 0, WARN: 1, FAIL: 2}
 MAX_LISTED = 25
@@ -106,15 +109,38 @@ def _sum(legs: Sequence[Mapping[str, str]], column: str) -> Decimal:
 # --- the checks --------------------------------------------------------------------------------
 
 
+def changed_of(run: Mapping[str, Any]) -> tuple[list[str], str]:
+    """What a variant changed against its base and how it was counted: its knobs, or for a base
+    that recorded none, the resolved config's changed paths (`config.overrides`)."""
+    knobs = (run.get("identity") or {}).get("changed_knobs")
+    if isinstance(knobs, list):
+        return [str(k) for k in knobs], "knobs"
+    return sorted((run.get("config") or {}).get("overrides") or {}), "resolved_paths"
+
+
 def check_binding(run: Mapping[str, Any]) -> dict[str, Any]:
-    base = (run.get("identity") or {}).get("base_run_id")
+    identity, config = run.get("identity") or {}, run.get("config") or {}
+    base = identity.get("base_run_id")
     binding = run.get("binding") or {}
     findings = []
     if base is not None and binding.get("trade_list_hash") is None:
         findings.append(_finding("binding_unknown", WARN, [base]))
     elif base is not None and binding.get("no_op"):
         findings.append(_finding("no_op", WARN, [base]))
-    summary = {"base_run_id": base, "trades_changed": binding.get("trades_changed")}
+    changed, basis = changed_of(run) if base is not None else ([], "knobs")
+    if len(changed) > 1:
+        bundle = identity.get("bundle")
+        findings.append(_finding("one_change", WARN, changed, basis=basis, bundle=bundle))
+    policy, base_policy = config.get("risk_policy_version"), config.get("base_risk_policy_version")
+    if base is not None and base_policy is not None and policy != base_policy:
+        findings.append(_finding("policy_drift", WARN, [{"run": policy, "base": base_policy}]))
+    summary = {
+        "base_run_id": base,
+        "trades_changed": binding.get("trades_changed"),
+        "changed": len(changed) if base is not None else None,
+        "risk_policy_version": policy,
+        "base_risk_policy_version": base_policy,
+    }
     return _check("binding", summary, findings)
 
 
