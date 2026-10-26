@@ -8,7 +8,7 @@ rebalances), looked up again in the current stores and compared within each item
 
 Golden files live in `HAT_DATA_ROOT/audits/golden/` as `YYYY-MM-DD[.N].json` (data, never
 committed; validated against `docs/backtests/golden-sample.schema.json`); a check reads the newest
-unless `--file` names one and writes its result under `results/` there. `rebase` writes a new
+unless `--file` names one there and writes its result under `results/` there. `rebase` writes a new
 golden file with the current store values of drifted items, each with its reason; a golden file
 is never edited. The data audit runs the same check (`audit.check_golden`). Read-only on the
 database and the stores.
@@ -101,6 +101,14 @@ _VIEWS = {
 _BREADTH_FIELDS = {f.name for f in BREADTH_SCHEMA}
 _MARKET_BREADTH_FIELDS = {f.name for f in MARKET_BREADTH_SCHEMA}
 _AGG_FIELDS = ("open", "high", "low", "close", "volume", "bars")
+_AGG_ALIASES = {
+    "first_open": "open",
+    "max_high": "high",
+    "min_low": "low",
+    "last_close": "close",
+    "sum_volume": "volume",
+    "count": "bars",
+}
 
 
 class GoldenError(HatError):
@@ -179,6 +187,19 @@ def validate(doc: object) -> list[str]:
     return errors
 
 
+def golden_path(root: Path, given: Path | str | None) -> Path | None:
+    """The golden file a command reads: `given` (a name, or a path) inside `audits/golden/`,
+    else the newest. A path outside that directory is refused: a check reads only golden
+    files."""
+    if given is None:
+        return newest(root)
+    base = golden_dir(root).resolve()
+    path = (base / given).resolve()
+    if not path.is_relative_to(base) or not path.is_file():
+        raise GoldenError("golden_file_outside_dir")
+    return path
+
+
 def read_golden(path: Path) -> dict[str, Any]:
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
@@ -208,6 +229,8 @@ def matches(expected: object, actual: object, tolerance: Mapping[str, float] | N
         return abs(e - a) <= bound + 1e-12 * max(1.0, abs(e))  # the decimal-to-binary error
     if isinstance(expected, bool) or isinstance(actual, bool):  # True == 1 in Python
         return expected is actual
+    if expected == "" and actual is None:  # an empty string stands for a NULL column
+        return True
     return _plain(expected) == _plain(actual)
 
 
@@ -330,7 +353,8 @@ def _row(rows: Mapping[Any, Mapping[str, Any]], at: tuple, what: str) -> Mapping
 
 
 def _view(key: Mapping[str, Any]) -> str:
-    name = str(_first(key, "view", "store", "table", "basis") or "bars_daily")
+    # the first word: a key may describe the view after its name ("bars_daily_cap view (...)")
+    name = str(_first(key, "view", "store", "table", "basis") or "bars_daily").split()[0]
     if name not in _VIEWS:
         raise Unresolved(UNRESOLVED, f"unknown adjusted view {name}")
     return _VIEWS[name]
@@ -372,22 +396,30 @@ def _corporate_action(key: Mapping[str, Any], stores: Stores) -> object:
 
 
 def _membership(key: Mapping[str, Any], stores: Stores) -> object:
-    day = _need_day(key)
-    instrument = resolve_instrument(key, day, stores)
+    """Membership on the key's `date`, or the span starting on its `effective_from`."""
+    starts = _day(key, "effective_from")
+    day = _day(key) if key.get("effective_from") is None else None
+    if starts is None:
+        raise Unresolved(UNRESOLVED, "no date or effective_from in key")
+    instrument = resolve_instrument(key, starts, stores)
     index = str(_first(key, "index", "index_name") or DEFAULT_INDEX)
     spans = [
         r
         for r in stores.members
         if r["index_name"] == index
         and r["instrument_id"] == instrument
-        and r["effective_from"] <= day
-        and (r["effective_to"] is None or day < r["effective_to"])
+        and (
+            r["effective_from"] == starts
+            if day is None
+            else r["effective_from"] <= day
+            and (r["effective_to"] is None or day < r["effective_to"])
+        )
     ]
     name = _field(key, "member")
     if name in ("member", "is_member"):
         return bool(spans)
     if not spans:
-        raise Unresolved(MISSING, f"not a member of {index} on {day}")
+        raise Unresolved(MISSING, f"no {index} span of the instrument at {starts}")
     return _get(spans[0], name)
 
 
@@ -459,6 +491,7 @@ def _bar_5m_daily_agg(key: Mapping[str, Any], stores: Stores) -> object:
         (stores.chain.get(instrument, instrument), day)
     )
     name = _field(key, "close")
+    name = _AGG_ALIASES.get(name, name)
     if name not in _AGG_FIELDS:
         raise Unresolved(UNRESOLVED, f"unknown field {name}")
     if not bars:
@@ -640,7 +673,8 @@ def _needs(items: Sequence[Mapping[str, Any]], base: Stores) -> dict[str, dict]:
                 continue
             if kind == "isin_lineage":
                 continue
-            day = _need_day(key, "ex_date" if kind == "corporate_action" else "date")
+            names = {"corporate_action": "ex_date", "membership": "effective_from"}
+            day = _need_day(key, names.get(kind, "date"))
             instrument = resolve_instrument(key, day, base)
         except Unresolved:
             continue
@@ -801,9 +835,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.golden")
     sub = parser.add_subparsers(dest="command", required=True)
     checking = sub.add_parser("check")
-    checking.add_argument("--file", type=Path)
+    checking.add_argument("--file")
     rebasing = sub.add_parser("rebase")
-    rebasing.add_argument("--file", type=Path)
+    rebasing.add_argument("--file")
     rebasing.add_argument("--reason", required=True)
     rebasing.add_argument("--items", required=True)
     args = parser.parse_args(argv)
@@ -812,7 +846,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         return 2
     settings = operator_settings()
     root = settings.data_root
-    path = args.file or newest(root)
+    try:
+        path = golden_path(root, args.file)
+    except GoldenError as exc:
+        sys.stderr.write(f"golden {args.command} refused: {exc.code}\n")
+        return 2
     if path is None:
         sys.stderr.write("golden check refused: golden_file_missing\n")
         return 2

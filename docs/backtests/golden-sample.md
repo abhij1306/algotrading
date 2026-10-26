@@ -18,7 +18,8 @@ the newest file (by date, then `.N`). A golden file is never edited.
  "mismatches": [{"...item...": "", "store_value": 2990.1}]}
 ```
 
-`tolerance` is `{"abs": x}`, `{"rel": x}` (of `value`) or `null` (equal). `mismatches` are values
+`tolerance` is `{"abs": x}`, `{"rel": x}` (of `value`) or `null` (equal). The value `""` matches
+a NULL column. `mismatches` are values
 already wrong when the sample was frozen. `risk` is free text (`ex_date`, `rename`, `delisting`,
 `rebalance`, `random`, `5m_reject_neighbor`, ...) and is used for counting.
 
@@ -33,17 +34,18 @@ key that names more than one row is reported as ambiguous.
 | `bar_raw` | instrument, `date` | `close` (any raw column) | `bars_daily_raw`, the latest ingest run's row |
 | `bar_adjusted` | instrument, `date`, `view` (`store`, `basis`): `bars_daily`/`tr` or `bars_daily_cap`/`cap` | `close` | the adjusted view, by chain |
 | `corporate_action` | instrument, `ex_date`, `action_type` (needed when the day has two) | `adjustment_factor` (any column; `exists` returns a bool) | `hat_corporate_action` |
-| `membership` | instrument, `date`, `index` (default `NIFTY 500`) | `member` (bool), `effective_from`, `effective_to` | `hat_index_member` |
+| `membership` | instrument, `date` or the span's `effective_from`, `index` (default `NIFTY 500`) | `member` (bool), `effective_from`, `effective_to` | `hat_index_member` |
 | `isin_lineage` | `old_*` and `new_*` instrument | `status` (`linked` returns a bool, or any column) | `hat_isin_lineage` |
 | | or one instrument | `chain_id`, `chain_isin` | the linked chain |
 | `index_close` | `index`, `date` | `close` | `index_daily` |
 | `feature` | instrument, `date` | a feature name | `features_daily`, by chain |
 | `breadth` | `date`, `dataset` (inferred from the field) | `breadth_pct` | `breadth_daily` or `market_breadth` |
-| `bar_5m_daily_agg` | instrument, `date` | `close`; `open`, `high`, `low`, `volume`, `bars` | `bars_5m`, the day's bars aggregated |
+| `bar_5m_daily_agg` | instrument, `date` | `close`; `open` (`first_open`), `high`, `low`, `volume` (`sum_volume`), `bars` | `bars_5m`, the day's bars aggregated |
 
 ## Check and rebase
 
-`python -m app.hat.data.golden check [--file F]` looks up each item. Each item gets one of:
+`python -m app.hat.data.golden check [--file F]` looks up each item (`F` must be in
+`audits/golden/`). Each item gets one of:
 `pass`, `drift` (outside tolerance), `missing` (no such row) or `unresolved` (ambiguous or
 malformed key). Each recorded mismatch gets `open` (still the recorded store value), `fixed`
 (now the verified value) or `drift`. The command prints counts per status, kind and risk, and the

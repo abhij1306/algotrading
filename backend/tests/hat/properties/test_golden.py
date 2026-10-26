@@ -83,6 +83,7 @@ def test_matches_tolerance() -> None:
     assert golden.matches(True, True, None)
     assert not golden.matches(True, 1, None)  # a bool is not a number
     assert golden.matches("2024-03-05", D3, None)
+    assert golden.matches("", None, {"abs": 0})  # an empty string is a NULL column
 
 
 def test_resolve_instrument() -> None:
@@ -114,6 +115,21 @@ def test_resolve_instrument() -> None:
         ),
         ("membership", {"isin": "INE000A01029", "date": "2024-03-04"}, True),
         ("membership", {"isin": "INE000A01029", "date": "2024-03-05"}, False),
+        (
+            "membership",
+            {"isin": "INE000A01029", "effective_from": "2024-03-01", "field": "effective_to"},
+            "2024-03-05",
+        ),
+        (
+            "bar_adjusted",
+            {"isin": "INE000A01011", "date": "2024-03-01", "store": "bars_daily view (tr)"},
+            50.25,
+        ),
+        (
+            "bar_5m_daily_agg",
+            {"isin": "INE000A01011", "date": "2024-03-01", "field": "sum_volume"},
+            150,
+        ),
         ("isin_lineage", {"old_isin": "INE000A01011", "new_isin": "INE000A01029"}, "linked"),
         ("isin_lineage", {"isin": "INE000A01011", "field": "chain_isin"}, "INE000A01029"),
         ("index_close", {"index": "NIFTY 500", "date": "2024-03-01"}, 21000.15),
@@ -216,3 +232,15 @@ def test_newest_and_next_path(tmp_path: Path) -> None:
     assert golden.newest(tmp_path) == base / "2026-10-26.2.json"
     assert golden.next_path(tmp_path, date(2026, 10, 26)) == base / "2026-10-26.3.json"
     assert golden.next_path(tmp_path, date(2026, 10, 27)) == base / "2026-10-27.json"
+
+
+def test_golden_path_stays_in_its_directory(tmp_path: Path) -> None:
+    base = golden.golden_dir(tmp_path)
+    base.mkdir(parents=True)
+    (base / "2026-10-26.json").write_text("{}")
+    (tmp_path / "outside.json").write_text("{}")
+    assert golden.golden_path(tmp_path, "2026-10-26.json") == (base / "2026-10-26.json").resolve()
+    assert golden.golden_path(tmp_path, None) == base / "2026-10-26.json"
+    for bad in ("../../outside.json", str(tmp_path / "outside.json"), "absent.json"):
+        with pytest.raises(golden.GoldenError, match="outside_dir"):
+            golden.golden_path(tmp_path, bad)
