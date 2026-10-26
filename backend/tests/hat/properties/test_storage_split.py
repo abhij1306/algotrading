@@ -1,6 +1,5 @@
 """The storage split's seams: config revision files (schema, pointer, immutability), which
-database a statement runs on, the read-only hat_live connection, and the export of a legacy
-config row."""
+database a statement runs on and the read-only hat_live connection."""
 
 import json
 import uuid
@@ -13,7 +12,6 @@ from app.hat.backtest.evidence import audit_admits
 from app.hat.configs.records import (
     Bot,
     ConfigRecordError,
-    CriterionType,
     StrategyVersion,
     doc_of,
     kind_rules,
@@ -28,7 +26,6 @@ from app.hat.configs.store import (
     validate_revision,
 )
 from app.hat.models import HatInstrument, HatPosition
-from app.hat.ops.state_split import config_plan, legacy_record_doc, rows_digest
 from app.hat.storage import (
     LIVE,
     STATE,
@@ -172,41 +169,6 @@ def test_a_session_sends_each_statement_to_its_database_and_refuses_a_join_of_bo
 def test_only_a_data_writer_may_write_hat_live() -> None:
     assert live_connect_options(writer=False) == "-c default_transaction_read_only=on"
     assert live_connect_options(writer=True) == ""
-
-
-# --- the export of legacy rows -----------------------------------------------------------------
-
-
-def test_a_legacy_row_becomes_its_record_with_the_same_id() -> None:
-    bot = _bot()
-    row = {**doc_of(bot), "id": bot.id, "user_id": bot.user_id, "extra": "ignored"}
-    key, doc = legacy_record_doc(Bot, row)
-    assert key == str(bot.id)
-    assert doc == doc_of(bot)
-    version = {**_version(), "backtest_run_id": uuid.UUID(int=5), "created_at": AT}
-    _, doc = legacy_record_doc(StrategyVersion, version)
-    assert doc["backtest_run_id"] == str(uuid.UUID(int=5))
-    assert doc["created_at"] == AT.isoformat()
-    row = {"code": "ema", "version": 2, "stage": "setup", "param_schema": {}, "data_needs": ["d"]}
-    assert legacy_record_doc(CriterionType, row)[0] == "ema@2"
-
-
-def test_a_bad_legacy_row_is_refused() -> None:
-    with pytest.raises(ConfigRecordError):
-        legacy_record_doc(Bot, {**doc_of(_bot()), "status": "lost"})
-
-
-def test_the_export_writes_what_is_missing_and_refuses_what_differs() -> None:
-    docs = {"a": {"x": 1}, "b": {"x": 2}, "c": {"x": 3}}
-    plan = config_plan("bot", docs, {"b": {"x": 2}, "c": {"x": 4}})
-    assert [(w.id, w.base) for w in plan.writes] == [("a", 0)]
-    assert (plan.same, plan.differs) == (["b"], ["c"])
-
-
-def test_the_digest_ignores_row_order_and_sees_any_change() -> None:
-    rows = [{"id": 1, "at": AT}, {"id": 2, "at": AT}]
-    assert rows_digest(rows) == rows_digest(list(reversed(rows)))
-    assert rows_digest(rows) != rows_digest([rows[0], {"id": 2, "at": None}])
 
 
 # --- a run's audit gating promotion ----------------------------------------------------------

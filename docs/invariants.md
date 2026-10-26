@@ -149,8 +149,7 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   append-only (triggers refuse UPDATE, DELETE and TRUNCATE, on every partition too); trade state
   replays from events.
 - **Schema.** Each database holds exactly its models' tables, columns, types, constraints and
-  indexes plus `schema.PG_DDL` (hat_live may keep the legacy tables `schema.legacy_live_tables`
-  until the owner drops them); HAT refuses to start on any difference and prints the DDL.
+  indexes plus `schema.PG_DDL`; HAT refuses to start on any difference and prints the DDL.
   `create_all` never alters a table: a change ships as idempotent `PG_DDL` or a runbook DDL step.
 - **Storage.** hat_live holds stock data only and only the data jobs and importers write it; every
   other connection to it is read-only. Trading state lives in hat_state, configs in revision

@@ -25,19 +25,6 @@ in the shell (`set -a; . ./.env; set +a`). The SQL below on the state tables (`h
 
 Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
 
-0. The storage split (decisions: Stock data, state and configs apart), once, before the first
-   start of a release that has it: `$COMPOSE stop backend`, then from `backend/` with the `.env`
-   variables loaded, `python -m app.hat.ops.state_split --check` (writes nothing; prints what it
-   would write) and `python -m app.hat.ops.state_split`. It creates hat_state (`DB_STATE_NAME`,
-   default `hat_state`; no new role or secret: same server and credentials) with its schema,
-   writes each config row of hat_live as revision 1 of its record under
-   `HAT_DATA_ROOT/admin/config` (same ids), copies the state tables' rows to hat_state, and prints
-   a JSON report: per kind and table the rows, what it wrote and the digests of both sides;
-   `verified` must be true (exit 0). It reads hat_live read-only and changes nothing there. Safe to
-   repeat; a record whose revision 1 differs from its row is refused (`config_file_differs`,
-   exit 2). Then start the backend. The owner dropped hat_live's legacy tables
-   (`schema.legacy_live_tables`: the config, backtest and state tables) on 2026-10-26.
-
 1. Role limits, then restart the backend:
    ```sql
    ALTER ROLE <db_user> SET idle_in_transaction_session_timeout = '5min';

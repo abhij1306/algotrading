@@ -19,7 +19,7 @@ from sqlalchemy import Connection, Engine, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeMeta, Session
 
-from ..base import Base, StateBase
+from ..base import Base
 from .models import HatMarket
 from .ops.partitions import ensure_event_partitions
 from .time import utc_now
@@ -404,25 +404,6 @@ def seed_hat_reference(bind: Engine) -> None:
 # bookkeeping (runbook, DBA steps).
 DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row"})
 
-# The tables hat_live held before the storage split (docs/decisions.md, Storage split) whose
-# rows now live elsewhere: the configs (JSON files), the backtest runs (run folders) and every
-# hat_state table. They stay in hat_live, unread, until the owner drops them (runbook), with the
-# foreign keys that name them; the migration (`app.hat.state_split`) reads them.
-LEGACY_CONFIG_TABLES = (
-    "hat_strategy",
-    "hat_strategy_version",
-    "hat_risk_policy_version",
-    "hat_regime_model_version",
-    "hat_criterion_type",
-    "hat_broker_account",
-    "hat_bot",
-)
-LEGACY_BACKTEST_TABLES = ("hat_backtest_run", "hat_backtest_bucket")
-
-
-def legacy_live_tables() -> frozenset[str]:
-    return frozenset({*LEGACY_CONFIG_TABLES, *LEGACY_BACKTEST_TABLES, *StateBase.metadata.tables})
-
 
 class TableShape(TypedDict):
     """One table as the catalog describes it; definitions carry no schema qualifier."""
@@ -517,26 +498,20 @@ def schema_drift(
     *,
     ddl_indexes: Mapping[str, str] | None = None,
     ddl_constraints: Mapping[str, str] | None = None,
-    allowed_tables: frozenset[str] = DRIFT_ALLOWED_TABLES,
 ) -> list[str]:
     """Every difference between the live schema and the models', as DDL to run or (for what the
-    database has and the models do not) a comment. Empty when they match. A constraint the
-    database has that names an allowed table (a legacy foreign key) is no difference."""
+    database has and the models do not) a comment. Empty when they match."""
     ddl_indexes = ddl_indexes or {}
     ddl_constraints = ddl_constraints or {}
     drift: list[str] = []
     for table in sorted(model.keys() - live.keys()):
         drift.append(f"-- table {table} is missing: metadata.create_all creates it")
-    for table in sorted(live.keys() - model.keys() - allowed_tables):
+    for table in sorted(live.keys() - model.keys() - DRIFT_ALLOWED_TABLES):
         drift.append(f"-- table {table} is in the database, not in the models")
     for table in sorted(model.keys() & live.keys()):
         drift += _column_drift(table, live[table]["columns"], model[table]["columns"])
         table_ddl_indexes = {n for n, t in ddl_indexes.items() if t == table}
-        table_ddl_constraints = {n for n, t in ddl_constraints.items() if t == table} | {
-            name
-            for name, definition in live[table]["constraints"].items()
-            if _names_table(definition, allowed_tables)
-        }
+        table_ddl_constraints = {n for n, t in ddl_constraints.items() if t == table}
         drift += _named_drift(
             table,
             "constraint",
@@ -617,16 +592,9 @@ def _named_drift(
     return drift
 
 
-def _names_table(definition: str, tables: frozenset[str]) -> bool:
-    """`definition` is a foreign key to one of `tables`."""
-    found = re.search(r"REFERENCES (\w+)\(", definition)
-    return found is not None and found.group(1) in tables
-
-
 def check_schema_drift(bind: Engine, base: DeclarativeMeta = Base) -> None:
     """Refuse a database whose schema differs from `base`'s models (DB audit M5): raise
-    `SchemaDriftError` naming the DDL to run. hat_live may still hold the tables the storage
-    split moved out (`legacy_live_tables`). No-op on other dialects."""
+    `SchemaDriftError` naming the DDL to run. No-op on other dialects."""
     if bind.dialect.name != "postgresql":
         return
     with bind.connect() as connection:
@@ -636,14 +604,7 @@ def check_schema_drift(bind: Engine, base: DeclarativeMeta = Base) -> None:
         finally:
             transaction.rollback()
     ddl_indexes, ddl_constraints = pg_ddl_objects()
-    allowed = DRIFT_ALLOWED_TABLES | (legacy_live_tables() if base is Base else frozenset())
-    drift = schema_drift(
-        live,
-        model,
-        ddl_indexes=ddl_indexes,
-        ddl_constraints=ddl_constraints,
-        allowed_tables=allowed,
-    )
+    drift = schema_drift(live, model, ddl_indexes=ddl_indexes, ddl_constraints=ddl_constraints)
     if drift:
         raise SchemaDriftError(
             "the database schema differs from the models; run this DDL, then restart:\n"
