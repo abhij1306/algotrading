@@ -56,14 +56,16 @@ class ScanInputs:
     `close`, `volume`, optional `traded_value`) with `raw_close`, the unadjusted close the
     rules on a rupee price read (`criteria.base.EvalContext`); `features` the date's feature rows
     (`instrument_id`, `rs_pct`, `adtr20`, ...). `regime_closes` are the regime index's closes
-    up to `as_of`, oldest first. `held` are the instruments the bot has an open position in (any
-    state) and `used_pivots` the (instrument, pivot date) of every setup a position of the bot
-    was opened on (`setup_taken`)."""
+    up to `as_of`, oldest first, and `breadth` the `breadth_pct` of each stored session up to
+    `as_of` (None where it has none; `regime_gate.breadth_above`). `held` are the instruments
+    the bot has an open position in (any state) and `used_pivots` the (instrument, pivot date) of
+    every setup a position of the bot was opened on (`setup_taken`)."""
 
     as_of: date
     members: Collection[str]
     bars: pl.DataFrame
     regime_closes: Sequence[Decimal]
+    breadth: Sequence[Decimal | None] = ()
     features: pl.DataFrame | None = None
     series: Mapping[str, str] = field(default_factory=dict)
     price_bands: Mapping[str, Sequence[tuple[date, float | None]]] = field(default_factory=dict)
@@ -288,7 +290,7 @@ def _member_bars(inputs: ScanInputs, members: Sequence[str]) -> dict[str, Any]:
 def scan_bot(config: StrategyConfig, inputs: ScanInputs) -> ScanResult:
     """The watchlist rows of every nightly playbook of `config` for `inputs.as_of`, best score
     first (ties by instrument id), and whether the regime gate was on."""
-    gate_on = regime_allows_longs(config.regime, inputs.regime_closes)
+    gate_on = regime_allows_longs(config.regime, inputs.regime_closes, inputs.breadth)
     if not gate_on:
         return ScanResult((), False, 0)  # stage 2 fails for every symbol: nothing is evaluated
     members = sorted({str(m) for m in inputs.members})

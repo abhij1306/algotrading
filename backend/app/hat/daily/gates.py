@@ -24,7 +24,7 @@ from ..engine.strategy.config import parse_config
 from ..models import HatBot, HatStrategyVersion
 from ..risk.sessions import SessionCalendar
 from ..time import IST, trade_date_of
-from .market import index_closes, sessions_before
+from .market import breadth_series, index_closes, sessions_before
 
 __all__ = ["GATE_AT", "CalendarSource", "GateBoard"]
 
@@ -38,7 +38,8 @@ CalendarSource = Callable[[], SessionCalendar | None]
 
 class GateBoard:
     """Each bot's regime gate for the trade date, evaluated once at or after 09:20 IST on the
-    index closes before the trade date (HAT-RISK-051), and the quality-gate state of the day."""
+    index closes or breadth before the trade date (HAT-RISK-051), and the quality-gate state of
+    the day."""
 
     def __init__(self, store: DataStore, calendar: CalendarSource | None = None) -> None:
         self._store = store
@@ -64,7 +65,11 @@ class GateBoard:
         before = sessions_before(self._store, day, 1)
         if not before:
             return None
-        gate = regime_allows_longs(regime, index_closes(self._store, regime.index, before[-1]))
+        gate = regime_allows_longs(
+            regime,
+            index_closes(self._store, regime.index, before[-1]),
+            breadth_series(self._store, before[-1]),
+        )
         with self._lock:
             self._gates = {k: v for k, v in self._gates.items() if k[1] == day}
             self._gates[key] = gate

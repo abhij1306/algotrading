@@ -450,6 +450,7 @@ class _Run:
             members=(),  # replaced by the bot's universe on `prev`
             bars=self.view.window(prev),
             regime_closes=self.view.closes_through(prev),
+            breadth=self.view.breadth_through(prev),
             features=self.view.features.get(prev),
             series=series,
         )
@@ -523,7 +524,7 @@ class _Run:
 
     def _morning(self, day: date, prev: date | None) -> None:
         regime_off = prev is not None and not regime_allows_longs(
-            self.config.regime, self.view.closes_through(prev)
+            self.config.regime, self.view.closes_through(prev), self.view.breadth_through(prev)
         )
         for position in self._open_positions():
             held = self.held[position.id]

@@ -25,6 +25,8 @@ from ..data.instruments import current_band
 from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
 from ..engine.exits import ExitView, history_sessions, reads_peak, view_from_bars
+from ..engine.portfolio.jobs import read_breadth
+from ..engine.regime_gate import BREADTH_SESSIONS
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import ExitRule, StopRule
 from ..engine.trigger import DailyFeeds, DailyInputs, daily_inputs
@@ -88,6 +90,15 @@ def index_closes(store: DataStore, index: str, through: date) -> list[Decimal]:
     return [require_exact(close, "close") for _, close in rows]
 
 
+def breadth_series(store: DataStore, through: date) -> list[Decimal | None]:
+    """The features job's `breadth_pct` of the last `BREADTH_SESSIONS` stored sessions through
+    `through`, oldest first, None for a session without one (the breadth regime gate's input)."""
+    return [
+        read_breadth(store, d)
+        for d in sessions_before(store, through, BREADTH_SESSIONS, inclusive=True)
+    ]
+
+
 def _features(store: DataStore, day: date) -> pl.DataFrame | None:
     frame = store.read_partition(DATASET_FEATURES, day)
     if frame.height == 0:
@@ -114,6 +125,7 @@ def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> 
         members=(),
         bars=bars,
         regime_closes=index_closes(store, index, as_of),
+        breadth=breadth_series(store, as_of),
         features=_features(store, as_of),
         series=_series(session),
     )

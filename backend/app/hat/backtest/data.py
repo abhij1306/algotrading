@@ -58,6 +58,7 @@ from ..data.store import (
 from ..data.ticks import scaled_tick, tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
+from ..engine.regime_gate import BREADTH_SESSIONS
 from ..engine.stops import mean_true_range
 from ..models import (
     HatCorporateAction,
@@ -136,7 +137,7 @@ class MarketData:
     bars, so a scan reads the series of its own day (`identity.series_on`), not today's.
     `breadth`: the features job's `breadth_pct` per session, read with the `regime.INDEX_NAME`
     and `regime.VIX_NAME` closes of `index_closes` only by a run under the `policy` regime rule
-    (PR 68).
+    (PR 68), and alone by a strategy whose regime gate reads it (`breadth_above`).
 
     `last_traded`: the last session of each instrument delisted by the period's end, where the
     day loop closes a position in it (HAT-BT-012). It is read from the bars (`stopped_trading`),
@@ -329,6 +330,7 @@ class MarketView:
             key[0]: part for key, part in data.features.partition_by("date", as_dict=True).items()
         }
         self.closes = list(data.index_closes.get(index, ()))
+        self.breadth = data.breadth
         self.dividends = data.dividends
         by_day: dict[date, set[str]] = defaultdict(set)
         for instrument_id, day in data.pending:
@@ -427,6 +429,12 @@ class MarketView:
 
     def closes_through(self, day: date) -> list[Decimal]:
         return [c for d, c in self.closes if d <= day]
+
+    def breadth_through(self, day: date) -> list[Decimal | None]:
+        """The breadth of the last `BREADTH_SESSIONS` sessions through `day`, as live reads it
+        (`daily.market.breadth_series`): None for a session without one."""
+        end = self.index[day] + 1
+        return [self.breadth.get(d) for d in self.days[max(0, end - BREADTH_SESSIONS) : end]]
 
     def feature(self, day: date, instrument_id: str, name: str) -> Decimal | None:
         rows = self.feature_rows.get(day)
@@ -970,6 +978,7 @@ def load_market(
     start: date,
     end: date,
     regime_inputs: bool = False,
+    breadth_gate: bool = False,
 ) -> tuple[MarketData, dict[str, Any]]:
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
     read, for `hat_backtest_run.data_snapshot`). Raises `BacktestError` when the store has no
@@ -979,7 +988,8 @@ def load_market(
     one way and features computed another, or miss a night's scan, which the nightly job never
     does. With `regime_inputs` it also reads the regime engine's index and VIX closes
     and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
-    of one of them (PR 68)."""
+    of one of them (PR 68); with `breadth_gate` it reads the window's breadth too (a session
+    without one turns that night's gate off, as live)."""
     read = store.fingerprints(DATASET_BARS)  # the bars about to be read, for the features gate
     every_day = sorted(read)
     days = [d for d in every_day if d <= end]
@@ -1021,7 +1031,12 @@ def load_market(
         rows = con.execute(_INDEX_SQL, [names, end]).fetchall()
     # read once DuckDB has let go of the bars' memory
     features, breadth = _current_features(
-        store, expected, days[max(0, first - 1) :], window if regime_inputs else [], wanted, read
+        store,
+        expected,
+        days[max(0, first - 1) :],
+        window if regime_inputs or breadth_gate else [],
+        wanted,
+        read,
     )
     index_closes: dict[str, list[tuple[date, Decimal]]] = {name: [] for name in names}
     for name, day, close in rows:
@@ -1077,6 +1092,7 @@ def load_market(
         "features": features.height,
         "index": index,
         "index_points": len(closes),
+        **({"breadth_points": len(breadth)} if breadth_gate else {}),
         **(
             {
                 "breadth_points": len(breadth),

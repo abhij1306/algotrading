@@ -206,7 +206,7 @@ def test_strategy_rules(closes: list[Decimal], window: int, rising: int) -> None
         ({"fast": fast, "slow": slow, "rising_days": rising}, rising),
     ):
         regime = Regime(index="NIFTY 500", rule="sma_fast_above_slow_both_rising", params=params)
-        assert regime_gate.regime_allows_longs(regime, closes) is fast_slow(back)
+        assert regime_gate.regime_allows_longs(regime, closes, ()) is fast_slow(back)
 
 
 GENTLE = {

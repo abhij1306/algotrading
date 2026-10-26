@@ -72,6 +72,14 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   exit, the entry timing with its breakout volume, and the regime without a slope test. The VCP is
   judged on its most recent contractions (at most `contractions[1]`), so the final contraction,
   pivot and dry-up are current.
+- **Breadth regime rule (owner 2026-10-26).** A strategy's regime gate may read market breadth
+  instead of an index (`breadth_above`: `min_pct` 50, optional `off_below_pct` hysteresis,
+  `smooth_days` 1): S1's longest drawdown ran through the 2018-2020 midcap bear while NIFTY 500
+  kept rising, so no index rule switched it off. Breadth is the features job's `breadth_pct`, the
+  share of that day's NSE ordinary equity rows (delisted names included) whose close is above
+  their SMA50, back to 2011. The gate for D reads the sessions through D-1, as the index rules do;
+  live and backtest walk the same last 250 sessions, and a session without a value turns it off.
+  The regime's `index` still names the market a backtest loads.
 - **A pivot is used once (2026-10-25).** The nightly scan, live and backtest alike, publishes
   no row for an instrument the bot holds (an open position in any state, virtual or real), and
   none for a setup a position of the bot was already opened on: a re-entry needs a new setup.

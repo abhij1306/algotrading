@@ -175,10 +175,29 @@ class FastAboveSlow(_Rule):
         return self
 
 
+class BreadthAbove(_Rule):
+    """The market breadth (`breadth_daily.breadth_pct`, the share of the ranked universe above
+    its SMA50), averaged over the last `smooth_days` sessions, at least `min_pct`; once on, off
+    only when it falls below `off_below_pct` (left out: `min_pct`, no hysteresis). Reads no
+    index: the regime's `index` still names the market the backtest runs on."""
+
+    rule: Literal["breadth_above"]
+    min_pct: float = Field(default=50.0, ge=0, le=100)
+    off_below_pct: float | None = Field(default=None, ge=0, le=100, exclude_if=lambda v: v is None)
+    smooth_days: int = Field(default=1, ge=1, le=60)
+
+    @model_validator(mode="after")
+    def _check(self) -> BreadthAbove:
+        if self.off_below_pct is not None and self.off_below_pct > self.min_pct:
+            raise ValueError("off_below_above_min_pct")
+        return self
+
+
 # The closed set of strategy regime rules, one model each; `regime_gate.RULES` maps each to its
 # function, as `stops` maps each stop rule to its planner.
-RegimeRule = Annotated[CloseAboveSma | FastAboveSlow, Field(discriminator="rule")]
-_REGIME_RULE: TypeAdapter[CloseAboveSma | FastAboveSlow] = TypeAdapter(RegimeRule)
+RegimeRuleModel = CloseAboveSma | FastAboveSlow | BreadthAbove
+RegimeRule = Annotated[RegimeRuleModel, Field(discriminator="rule")]
+_REGIME_RULE: TypeAdapter[RegimeRuleModel] = TypeAdapter(RegimeRule)
 # The indices a regime may read: those the store ingests, less India VIX (not a price index).
 REGIME_INDICES = tuple(name for name in INDEX_NAMES if name != INDIA_VIX)
 
@@ -198,7 +217,7 @@ class Regime(Model):
         object.__setattr__(self, "params", model.model_dump(exclude={"rule"}))
         return self
 
-    def parsed(self) -> CloseAboveSma | FastAboveSlow:
+    def parsed(self) -> RegimeRuleModel:
         """The rule as its model (`RegimeRule`), its parameters validated."""
         return _REGIME_RULE.validate_python({**self.params, "rule": self.rule})
 
