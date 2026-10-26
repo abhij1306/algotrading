@@ -26,10 +26,13 @@ The checks (each a pure function of plain inputs; `gather` reads them):
 - `bars_5m`: on sample sessions, the 5-minute bars start on the 5-minute grid inside the IST session
   of their own day and fit the raw daily bar within the history envelope tolerance. Findings warn
   while a run reads no 5-minute bars, and fail when it does.
+- `golden`: the newest golden sample (`data/golden.py`, docs/backtests/golden-sample.md) looked up
+  in the current stores: a drifted or missing value fails, as does an unreadable golden file; an
+  unresolvable key, a recorded mismatch still open, or no golden file yet warns.
 
-A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot and window
-(`cache_key`), so the variants of a sweep, and later runs on the same data, read it instead of
-recomputing it. A run refuses to start on `fail` (`backtest_data_audit_failed`).
+A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot, window
+and golden file (`cache_key`), so the variants of a sweep, and later runs on the same data, read it
+instead of recomputing it. A run refuses to start on `fail` (`backtest_data_audit_failed`).
 """
 
 from __future__ import annotations
@@ -58,6 +61,7 @@ from sqlalchemy.orm import Session
 
 from ..models import HatMarket, HatTradingCalendar
 from ..time import IST
+from . import golden
 from .bars_store import BarStore
 from .chains import stored_adjustment
 from .features import ABOVE_MARGIN, compute_features
@@ -81,6 +85,7 @@ __all__ = [
     "check_calendar",
     "check_corporate_actions",
     "check_features",
+    "check_golden",
     "check_gate_inputs",
     "check_missing_sessions",
     "check_survivorship",
@@ -89,7 +94,7 @@ __all__ = [
     "read_cached",
 ]
 
-AUDIT_VERSION = "1"  # a change to a check or a threshold changes it, so no stale audit is read
+AUDIT_VERSION = "2"  # a change to a check or a threshold changes it, so no stale audit is read
 PASS, WARN, FAIL, SKIPPED = "pass", "warn", "fail", "skipped"
 _RANK = {PASS: 0, SKIPPED: 0, WARN: 1, FAIL: 2}
 # Findings listed per check; the counts cover them all.
@@ -620,6 +625,56 @@ def check_bars_5m(days: Sequence[Day5m], tolerance: float, *, used: bool) -> dic
     return _check("bars_5m", summary, findings)
 
 
+# --- golden sample ---------------------------------------------------------------------------
+
+
+def check_golden(result: Mapping[str, Any] | None, problem: str | None = None) -> dict[str, Any]:
+    """The golden sample check's result (`golden.check`) as an audit check: drifted or missing
+    values fail, unresolvable keys and recorded mismatches still open warn. Without a result,
+    `problem` says why: no golden file yet warns, an unreadable or invalid one fails."""
+    if result is None:
+        code = problem or "golden_file_missing"
+        severity = WARN if code == "golden_file_missing" else FAIL
+        return _check("golden", {"file": None}, [_finding(code, severity, [])])
+    shown = ("id", "kind", "risk", "status", "value", "store_value", "note")
+
+    def listed(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        return [{k: r[k] for k in shown if k in r} for r in rows]
+
+    drift = [o for o in result["drift"] if o["status"] != golden.UNRESOLVED]
+    unresolved = [o for o in result["drift"] if o["status"] == golden.UNRESOLVED]
+    still_open = [o for o in result["mismatches"] if o["status"] == golden.OPEN]
+    findings = []
+    if drift:
+        findings.append(_finding("golden_drift", FAIL, listed(drift)))
+    if unresolved:
+        findings.append(_finding("golden_key_unresolved", WARN, listed(unresolved)))
+    if still_open:
+        findings.append(_finding("golden_mismatch_open", WARN, listed(still_open)))
+    summary = {
+        "file": result["golden_file"],
+        "digest": result["golden_digest"],
+        "created": result["golden_created"],
+        "items": sum(result["counts"].values()),
+        "counts": result["counts"],
+        "mismatch_counts": result["mismatch_counts"],
+    }
+    return _check("golden", summary, findings)
+
+
+def _golden(
+    store: DataStore, session: Session, con: duckdb.DuckDBPyConnection, chain: Mapping[str, str]
+) -> dict[str, Any]:
+    path = golden.newest(store.root)
+    if path is None:
+        return check_golden(None)
+    try:
+        _, result = golden.run_check(path, store, session, con, chain)
+    except golden.GoldenError as exc:
+        return check_golden(None, exc.code)
+    return check_golden(result)
+
+
 # --- the document ------------------------------------------------------------------------------
 
 
@@ -641,10 +696,14 @@ def audit_doc(checks: Sequence[Mapping[str, Any]], scope: Mapping[str, Any]) -> 
     return {**body, "digest": hashlib.sha256(_canonical(body).encode()).hexdigest()}
 
 
-def cache_key(snapshot_id: str, start: date, end: date, *, used_5m: bool) -> str:
+def cache_key(
+    snapshot_id: str, start: date, end: date, *, used_5m: bool, golden_digest: str | None
+) -> str:
     """The audit's name under `data_audits/`: the audit version, the data snapshot (which covers
-    the universe's members and every bar, feature and close the run reads) and the window."""
-    text = f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}"
+    the universe's members and every bar, feature and close the run reads), the window and the
+    sha256 of the golden file the `golden` check reads (`golden.current`), so a new golden file
+    is checked."""
+    text = f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}|{golden_digest}"
     return hashlib.sha256(text.encode()).hexdigest()[:32]
 
 
@@ -881,6 +940,7 @@ def gather(
         feature_samples = _feature_samples(con, market, in_window, spans, bar_days)
         breadth_samples = _breadth_samples(store, con, market, in_window)
         bars_5m = _bars_5m(store.root, con, market, in_window)
+        golden_check = _golden(store, session, con, adjustment.lineage)
     regime_index = snapshot.get("index")
     lookahead = [
         *check_features(feature_samples),
@@ -916,6 +976,7 @@ def gather(
         check_bars_5m(bars_5m, float(tolerance), used=used_5m)
         if bars_5m
         else _check("bars_5m", {"days": 0, "used_by_run": used_5m}, []) | {"status": SKIPPED},
+        golden_check,
     ]
     scope = {
         "data_snapshot_id": snapshot.get("content_digest"),
@@ -975,7 +1036,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     args = parser.parse_args(argv)
     settings = operator_settings()
     with db_session_scope() as session:
-        session.execute(text("SET TRANSACTION READ ONLY"))
+        session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatMarket})
         try:
             named = HatUniverse.id == uuid.UUID(args.universe)
         except ValueError:
@@ -998,7 +1059,13 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         except BacktestError as exc:
             sys.stderr.write(f"data audit refused: {exc.code}\n")
             return 2
-        key = cache_key(str(snapshot["content_digest"]), args.start, args.end, used_5m=False)
+        key = cache_key(
+            str(snapshot["content_digest"]),
+            args.start,
+            args.end,
+            used_5m=False,
+            golden_digest=golden.current(settings.data_root),
+        )
         doc, path = cached(
             settings.data_root,
             key,

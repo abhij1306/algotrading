@@ -26,3 +26,7 @@ HAT_DATA_ROOT = Path(os.environ.get("HAT_DATA_ROOT", "").strip() or DATA_ROOT / 
 # The Backtest Result Standard's JSON schema, which every run's run.json is validated against
 # before its folder is published (docs/backtests/result-standard.md; the image copies it).
 BACKTEST_SCHEMA = PROJECT_ROOT / "docs" / "backtests" / "run.schema.json"
+
+# The golden sample format, which every golden file is validated against before a check reads it
+# (docs/backtests/golden-sample.md; the image copies it).
+GOLDEN_SCHEMA = PROJECT_ROOT / "docs" / "backtests" / "golden-sample.schema.json"

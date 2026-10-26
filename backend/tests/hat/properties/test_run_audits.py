@@ -165,8 +165,9 @@ def test_audit_doc_digest_and_cache(tmp_path: Path) -> None:
     assert doc["status"] == audit.PASS
     assert doc["digest"] == audit.audit_doc(checks, {"data_snapshot_id": "abc"})["digest"]
     assert doc["digest"] != audit.audit_doc(checks, {"data_snapshot_id": "abd"})["digest"]
-    key = audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False)
-    assert key != audit.cache_key("abc", DAYS[0], DAYS[2], used_5m=False)
+    key = audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False, golden_digest=None)
+    assert key != audit.cache_key("abc", DAYS[0], DAYS[2], used_5m=False, golden_digest=None)
+    assert key != audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False, golden_digest="d")
     calls = []
 
     def compute() -> dict:
