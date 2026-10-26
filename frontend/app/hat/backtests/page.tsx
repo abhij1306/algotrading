@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Button } from "@/components/atoms/button";
 import { JobsPanel } from "@/components/organisms/backtests/jobs-panel";
+import { RunsView } from "@/components/organisms/backtests/runs-view";
 import { StartForm } from "@/components/organisms/backtests/start-form";
 import { PageLayout } from "@/components/templates/page-layout";
 
-/** Start a research run or a small sweep and follow its jobs; the runs are read from their folders. */
+/** The backtest run folders: read and compare them, and start a research run or a small sweep. */
 export default function BacktestsPage() {
   const [starting, setStarting] = useState(false);
   return (
@@ -27,6 +28,7 @@ export default function BacktestsPage() {
           </section>
         ) : null}
         <JobsPanel />
+        <RunsView />
       </div>
     </PageLayout>
   );

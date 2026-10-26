@@ -26,6 +26,16 @@ export const router = createBrowserRouter([
         element: page(() => import("@/app/hat/backtests/page")),
         errorElement: <RouteError />,
       },
+      {
+        path: "hat/backtests/compare",
+        element: page(() => import("@/app/hat/backtests/compare")),
+        errorElement: <RouteError />,
+      },
+      {
+        path: "hat/backtests/:runId",
+        element: page(() => import("@/app/hat/backtests/run")),
+        errorElement: <RouteError />,
+      },
       { path: "*", element: <NotFound /> },
     ],
   },

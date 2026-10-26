@@ -268,7 +268,8 @@ variant (label, run id, status, code, trades, expectancy, DSR, PBO) as each fini
 
 The app's Backtests page (`/hat/backtests`) starts the same research run or a sweep of up to
 eight variants (New run or sweep): it runs this command line in a child process, one job at a
-time, and shows its progress and each variant's run id. A job's files are under
+time, and shows its progress and links each variant's run page. The page lists the run folders
+by strategy and sweep with each variant's deltas against its base, and compares up to four. A job's files are under
 `HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds the child's stderr). The job list is
 in memory: after a restart it is empty, and a child still running finishes and records its runs.
 
