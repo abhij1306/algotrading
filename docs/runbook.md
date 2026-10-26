@@ -223,7 +223,9 @@ The VCP (`criteria[vcp].params`): `contractions`, `pivot_window`, `min_base_bars
 entry (`trigger[price_breaks_level].params`): `entry_timing` `intraday_break` or `daily_close`
 (enter at the close above the level), and under `daily_close` `volume_vs_avg` with
 `volume_avg_days` (the breakout day's volume against the mean before). The regime
-(`regime.params.rising_days=0`): the close above the SMA with no slope test. A version that
+(`regime.params.rising_days=0`): the close above the SMA with no slope test; or market breadth,
+`--set 'regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55,
+"off_below_pct": 45, "smooth_days": 5}}'` (decisions, Breadth regime rule). A version that
 enables `volume_pace` or `daily_close` cannot be promoted on a run (known gaps). `--max-positions N` sets the account cap and
 the exposure ladder's top level to N (lower levels capped at N); the ladder still starts at L1.
 `--flat-ladder` gives every ladder level the run's cap at risk multiplier 1, so the run trades at

@@ -144,6 +144,7 @@ def _with_members(
         members={str(m) for m in members},
         bars=inputs.bars,
         regime_closes=inputs.regime_closes,
+        breadth=inputs.breadth,
         features=inputs.features,
         series=inputs.series,
         price_bands=inputs.price_bands,

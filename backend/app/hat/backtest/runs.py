@@ -41,6 +41,7 @@ from ..engine.confidence import buckets
 from ..engine.portfolio.common import market_id_of
 from ..engine.portfolio.regime import INDEX_NAME
 from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
+from ..engine.regime_gate import needs_breadth
 from ..engine.strategy.config import StrategyConfig, parse_config
 from ..models import (
     HatBacktestBucket,
@@ -551,6 +552,7 @@ def _load(
         start=request.start,
         end=request.end,
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
+        breadth_gate=any(needs_breadth(s.config.regime) for s in specs),
     )
 
 
