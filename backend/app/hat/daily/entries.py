@@ -24,7 +24,8 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..configs.records import Bot
 from ..configs.unit import configs_of
-from ..data.instruments import current_industry
+from ..data.chains import chain_members, stored_links
+from ..data.instruments import chain_ids, current_industry
 from ..engine import entries
 from ..engine.live_entry import route_by_mode
 from ..engine.trade_dividends import shadow_dividend_cash
@@ -168,7 +169,8 @@ class LiveContexts:
 
 
 def _with_industry(session: Session, request: entries.EntryRequest) -> entries.EntryRequest:
-    found = current_industry(session, request.instrument_id, request.trade_date)
+    chain = chain_ids(chain_members(stored_links(session)), request.instrument_id)
+    found = current_industry(session, chain, request.trade_date)
     industry = found.industry if found is not None else "unknown"
     return copy.replace(request, context=copy.replace(request.context, industry=industry))
 

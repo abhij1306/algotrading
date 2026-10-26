@@ -175,8 +175,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   never dated at the load: the nightly reference load dates a new chain's first from its
   listing and appends changes from the load day. Why: a load-dated first row left every earlier
   day `unknown`, so by-industry results were empty and the per-industry cap capped the whole
-  book. The data audit warns above 5% unknown member-days and fails a run whose per-industry
-  cap is below its open positions while any member-day is unknown. Loaded by
+  book. The data audit warns above 5% unknown member-days, and a run whose per-industry cap is
+  below its open positions while any member-day is unknown is refused (a sweep's uncapped
+  variants still run). Loaded by
   `load-industry-history` (runbook).
 - **Total return for signals, price basis for money.** Signals read dividend-adjusted series so a
   dividend never looks like a fall; fills and orders use the prices the broker sees. Every

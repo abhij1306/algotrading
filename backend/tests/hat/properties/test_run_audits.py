@@ -168,17 +168,31 @@ def test_later_factors_multiply_the_ex_dates_after_a_day() -> None:
     assert audit._later(factors, "x", DAYS[0]) == 1.0
 
 
-def test_industries_warn_on_unknown_and_fail_under_a_cap() -> None:
+def test_industries_warn_on_unknown() -> None:
     spans = {"a": [(DAYS[0], None)], "b": [(DAYS[0], DAYS[5])]}
     history = {"a": [(DAYS[0], "Power")], "b": [(DAYS[3], "Realty")]}
-    check = audit.check_industries(DAYS, spans, history, {}, capped=False)
+    check = audit.check_industries(DAYS, spans, history, {})
     assert check["summary"]["member_days"] == len(DAYS) + 5
     assert check["summary"]["unknown_member_days"] == 3
     assert _codes(check) == {"industry_unknown": 1}
-    capped = audit.check_industries(DAYS, spans, history, {}, capped=True)
-    assert capped["status"] == audit.FAIL
     full = {"a": history["a"], "b": [(DAYS[0], "Realty")]}
-    assert audit.check_industries(DAYS, spans, full, {}, capped=True)["status"] == audit.PASS
+    assert audit.check_industries(DAYS, spans, full, {})["status"] == audit.PASS
+
+
+def test_industry_cap_refuses_only_a_capped_run() -> None:
+    """One shared audit with unknown member-days: a sweep's capped variant is refused, its
+    uncapped sibling is not (CodeAnt #284)."""
+    spans = {"a": [(DAYS[0], None)]}
+    partial = audit.audit_doc(
+        [audit.check_industries(DAYS, spans, {"a": [(DAYS[3], "Power")]}, {})], {}
+    )
+    assert audit.industry_cap_refused(partial, max_per_industry=2, max_open=10)
+    assert not audit.industry_cap_refused(partial, max_per_industry=10, max_open=10)
+    complete = audit.audit_doc(
+        [audit.check_industries(DAYS, spans, {"a": [(DAYS[0], "Power")]}, {})], {}
+    )
+    assert not audit.industry_cap_refused(complete, max_per_industry=2, max_open=10)
+    assert audit.industry_cap_refused({"checks": []}, max_per_industry=2, max_open=10)
 
 
 def test_demergers_flag_a_thin_open_not_corrected() -> None:
@@ -208,9 +222,6 @@ def test_audit_doc_digest_and_cache(tmp_path: Path) -> None:
     key = audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False, golden_digest=None)
     assert key != audit.cache_key("abc", DAYS[0], DAYS[2], used_5m=False, golden_digest=None)
     assert key != audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False, golden_digest="d")
-    assert key != audit.cache_key(
-        "abc", DAYS[0], DAYS[1], used_5m=False, golden_digest=None, industry_capped=True
-    )
     calls = []
 
     def compute() -> dict:

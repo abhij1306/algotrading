@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Collection, Iterable, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -274,6 +274,12 @@ def load_price_bands(
     return written, unknown
 
 
+def chain_ids(members: Mapping[str, frozenset[str]], instrument_id: uuid.UUID) -> list[uuid.UUID]:
+    """Every ISIN's id of `instrument_id`'s chain (`chains.chain_members`), itself alone when it
+    is linked to nothing: a chain's classifications may sit on any of them."""
+    return sorted(uuid.UUID(i) for i in members.get(str(instrument_id), {str(instrument_id)}))
+
+
 def current_industry(
     session: Session, instrument_ids: Collection[uuid.UUID], on: date
 ) -> HatIndustry | None:
@@ -313,9 +319,7 @@ def load_industries(
                 same_day.sector, same_day.industry = row.sector, row.industry
                 written += 1
             continue
-        chain = [
-            uuid.UUID(i) for i in members.get(str(instrument.id), frozenset({str(instrument.id)}))
-        ]
+        chain = chain_ids(members, instrument.id)
         current = current_industry(session, chain, effective)
         if current is None:
             listed = session.scalars(

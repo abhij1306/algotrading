@@ -3,7 +3,7 @@ checks of the market a run reads, over its window and universe, written as one J
 a digest, a status (`pass`, `warn` or `fail`) and the findings.
 
     python -m app.hat.data.audit --from YYYY-MM-DD --to YYYY-MM-DD --universe <id|name>
-        [--index NAME] [--refresh] [--industry-capped]
+        [--index NAME] [--refresh]
 
 The checks (each a pure function of plain inputs; `gather` reads them):
 - `calendar`: the store's sessions in the window against the NSE trading calendar: a stored day
@@ -30,9 +30,10 @@ The checks (each a pure function of plain inputs; `gather` reads them):
   (`bar_5m_adjusted_basis`). Findings warn
   while a run reads no 5-minute bars, and fail when it does.
 - `industries`: the share of the run's member-days with no industry in force
-  (`industry_history`): above `INDUSTRY_UNKNOWN_PCT` it warns, and any unknown member-day fails
-  a run whose policy caps positions per industry below its open positions (`industry_capped`):
-  every unknown name would count as one industry. run.json `data` carries the share.
+  (`industry_history`): above `INDUSTRY_UNKNOWN_PCT` it warns. run.json `data` carries the share.
+  The audit is shared by a sweep's variants, so the cap is judged per run, not here: a run whose
+  policy caps positions per industry below its open positions while any member-day is unknown
+  is refused (`industry_cap_refused`), as every unknown name would count as one industry.
 - `demergers`: each demerger on a member chain from the history's first session to the period's
   end whose ex-day open gap and close gap (over NSE's previous close) differ by more than
   `DEMERGER_GAP_PCT`, and whose factor is not the close gap (no correction took it there), warns;
@@ -43,7 +44,7 @@ The checks (each a pure function of plain inputs; `gather` reads them):
   unresolvable key, a recorded mismatch still open, or no golden file yet warns.
 
 A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot, window,
-use of 5-minute bars, industry cap and golden file (`cache_key`), so the variants of a sweep, and
+use of 5-minute bars and golden file (`cache_key`), so the variants of a sweep, and
 later runs on the same data, read it instead of recomputing it. A run refuses to start on
 `fail` (`backtest_data_audit_failed`). The owner explains a `warn` once, beside it, as
 `<digest>.explained.md` (`explanation_of`); the run audit and the review read it.
@@ -113,6 +114,7 @@ __all__ = [
     "check_survivorship",
     "check_unique_keys",
     "gather",
+    "industry_cap_refused",
     "read_cached",
     "run_counts",
 ]
@@ -666,20 +668,16 @@ def check_industries(
     spans: Mapping[str, Sequence[tuple[date, date | None]]],
     history: Mapping[str, Sequence[tuple[date, str]]],
     names: Mapping[str, str],
-    *,
-    capped: bool,
 ) -> dict[str, Any]:
     """The run's member-days (`sessions` in its period, sorted) with no industry in force
-    (`history`, each chain's (effective_from, industry)): more than `INDUSTRY_UNKNOWN_PCT` warns;
-    any fails when the policy caps positions per industry below its open positions (`capped`)."""
+    (`history`, each chain's (effective_from, industry)): more than `INDUSTRY_UNKNOWN_PCT`
+    warns."""
     total, unknown, per_chain = unknown_member_days(sessions, spans, history)
     pct = round(100 * unknown / total, 3) if total else 0.0
     worst = sorted(per_chain.items(), key=lambda kv: (-kv[1], kv[0]))
     items = [{"instrument_id": i, "symbol": names.get(i, i), "member_days": n} for i, n in worst]
     findings = []
-    if capped and unknown:
-        findings.append(_finding("industry_cap_without_industries", FAIL, items))
-    elif pct > INDUSTRY_UNKNOWN_PCT:
+    if pct > INDUSTRY_UNKNOWN_PCT:
         findings.append(
             _finding("industry_unknown", WARN, items, threshold_pct=INDUSTRY_UNKNOWN_PCT)
         )
@@ -688,9 +686,23 @@ def check_industries(
         "unknown_member_days": unknown,
         "unknown_pct": pct,
         "unknown_members": len(per_chain),
-        "industry_capped": capped,
     }
     return _check("industries", summary, findings)
+
+
+INDUSTRY_CAP_REFUSED = "backtest_industry_cap_without_industries"
+
+
+def industry_cap_refused(doc: Mapping[str, Any], max_per_industry: int, max_open: int) -> bool:
+    """Whether a run whose policy holds at most `max_per_industry` positions per industry and
+    `max_open` in all is refused on the audit `doc`: the cap binds below the open positions
+    while a member-day has no industry (or the audit did not measure it), so every unknown name
+    would count as one industry. An uncapped run on the same audit is never refused."""
+    if max_per_industry >= max_open:
+        return False
+    found = next((c for c in doc.get("checks", ()) if c.get("name") == "industries"), None)
+    unknown = None if found is None else (found.get("summary") or {}).get("unknown_member_days")
+    return unknown != 0
 
 
 @dataclass(frozen=True)
@@ -819,15 +831,12 @@ def cache_key(
     *,
     used_5m: bool,
     golden_digest: str | None,
-    industry_capped: bool = False,
 ) -> str:
     """The audit's name under `data_audits/`: the audit version, the data snapshot (which covers
     the universe's members and every bar, feature and close the run reads), the window, whether
-    the run reads 5-minute bars and caps positions per industry, and the sha256 of the golden
+    the run reads 5-minute bars, and the sha256 of the golden
     file the `golden` check reads (`golden.current`), so a new golden file is checked."""
-    text = (
-        f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}|{golden_digest}|{industry_capped}"
-    )
+    text = f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}|{golden_digest}"
     return hashlib.sha256(text.encode()).hexdigest()[:32]
 
 
@@ -1171,13 +1180,11 @@ def gather(
     end: date,
     *,
     used_5m: bool = False,
-    industry_capped: bool = False,
 ) -> dict[str, Any]:
     """The audit document of the market a run of `start..end` reads (`backtest.data.load_market`
     and its snapshot): reads what the checks need beyond it (the calendar, the store's duplicate
     keys, the sampled bars, features and breadth, the 5-minute store and the demergers) and runs
-    every check. `industry_capped`: a run's policy caps positions per industry below its open
-    positions."""
+    every check."""
     sessions = sorted(market.days)
     in_window = [d for d in sessions if start <= d <= end]
     names = _names(market)
@@ -1246,7 +1253,7 @@ def gather(
         if scanned_5m
         else _check("bars_5m", {"days_scanned": 0, "used_by_run": used_5m}, [])
         | {"status": SKIPPED},
-        check_industries(in_window, spans, _history(market), names, capped=industry_capped),
+        check_industries(in_window, spans, _history(market), names),
         check_demergers(demergers, start, end),
         golden_check,
     ]
@@ -1315,7 +1322,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--universe", required=True)
     parser.add_argument("--index", default=regime.INDEX_NAME)
     parser.add_argument("--refresh", action="store_true")
-    parser.add_argument("--industry-capped", action="store_true")
     args = parser.parse_args(argv)
     settings = operator_settings()
     with db_session_scope() as session:
@@ -1348,7 +1354,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             args.end,
             used_5m=False,
             golden_digest=golden.current(settings.data_root),
-            industry_capped=args.industry_capped,
         )
         doc, path = cached(
             settings.data_root,
@@ -1360,7 +1365,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 snapshot,
                 args.start,
                 args.end,
-                industry_capped=args.industry_capped,
             ),
             refresh=args.refresh,
         )

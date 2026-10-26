@@ -338,16 +338,11 @@ def _load(
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
     )
     used_5m = bool(data.intraday)
-    capped = any(
-        s.policy.policy.max_positions_per_industry < s.policy.policy.max_open_positions
-        for s in specs
-    )
     key = data_audit.cache_key(
         str(snapshot["content_digest"]),
         *period,
         used_5m=used_5m,
         golden_digest=golden.current(root),
-        industry_capped=capped,
     )
     audit, _ = data_audit.cached(
         root,
@@ -359,13 +354,22 @@ def _load(
             snapshot,
             *period,
             used_5m=used_5m,
-            industry_capped=capped,
         ),
     )
     if audit.get("status") == data_audit.FAIL:
         logger.error("data audit %s failed: backtests refused", key)
         raise BacktestError("backtest_data_audit_failed")
     return _Market(data, snapshot, audit)
+
+
+def _cap_refusal(spec: RunSpec, audit: Mapping[str, Any]) -> str | None:
+    """The refusal of a run whose per-industry cap binds while the shared data audit found
+    member-days with no industry (`data_audit.industry_cap_refused`); None otherwise."""
+    policy = spec.policy.policy
+    refused = data_audit.industry_cap_refused(
+        audit, policy.max_positions_per_industry, policy.max_open_positions
+    )
+    return data_audit.INDUSTRY_CAP_REFUSED if refused else None
 
 
 def _audit_ref(audit: Mapping[str, Any]) -> dict[str, Any]:
@@ -772,6 +776,9 @@ def backtest_bot(
     market = _load(
         session, store, target.universe_version_id, (request.start, request.end), [spec], root
     )
+    refused = _cap_refusal(spec, market.audit)
+    if refused is not None:
+        raise BacktestError(refused)
     asked = {"args": list(request.args), "variant_item": None}
     return _execute(target, _plan(request, spec, request.labels, asked), market, root=root)
 
@@ -1030,6 +1037,11 @@ def sweep_bot(
         if runnable
         else None
     )
+    if market is not None:  # a capped variant is refused alone, never its uncapped siblings
+        plans = [
+            (v, (_cap_refusal(s, market.audit) or s) if isinstance(s, RunSpec) else s)
+            for v, s in plans
+        ]
     made: dict[str, str] = {}
     out: list[RunOutcome] = []
     for variant, spec in plans:

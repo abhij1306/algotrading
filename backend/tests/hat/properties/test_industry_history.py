@@ -3,6 +3,7 @@ mapping, the chain history, the row plan and the unknown member-days."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 from app.hat.data.industry_history import (
@@ -14,6 +15,7 @@ from app.hat.data.industry_history import (
     snapshot_day,
     unknown_member_days,
 )
+from app.hat.data.instruments import chain_ids
 
 OLD = Snapshot(
     date(2015, 3, 25),
@@ -92,3 +94,11 @@ def test_unknown_member_days() -> None:
     history = {"a": [(date(2024, 1, 4), "Power")]}
     total, unknown, per_chain = unknown_member_days(sessions, spans, history)
     assert (total, unknown, per_chain) == (13, 11, {"a": 3, "b": 8})
+
+
+def test_chain_ids_name_every_isin_of_the_chain() -> None:
+    """The live entry route reads a chain's industry by all its ids (CodeAnt #284)."""
+    old, new, alone = (uuid.UUID(int=n) for n in (1, 2, 3))
+    members = {str(old): frozenset({str(old), str(new)}), str(new): frozenset({str(old), str(new)})}
+    assert chain_ids(members, new) == [old, new]
+    assert chain_ids(members, alone) == [alone]

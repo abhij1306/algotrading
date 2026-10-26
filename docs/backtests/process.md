@@ -76,8 +76,7 @@ based on the old one; refused `backtest_rerun_snapshot_differs` when the data ch
 `--split hold_out --from --to` the same replay is the run's hold-out (step 7).
 
 Step 1 also runs inside every run (cached by data snapshot and window, so a sweep audits once);
-`--refresh` recomputes it; `--industry-capped` audits as a run whose policy caps positions per
-industry would be (a run sets it from its policy). Step 1 includes the golden sample check (`golden-sample.md`; run it
+`--refresh` recomputes it. Step 1 includes the golden sample check (`golden-sample.md`; run it
 alone with `python -m app.hat.data.golden check`). When a deliberate data fix moves golden
 values, rebase them with a reason (`golden rebase`); never edit a golden file. Step 6 computes every criterion from the folders (never by hand) into `criteria.md`: `pass`
 only when every row passes, `fail` when one fails, `incomplete` when one is `not_run` (no plateau
@@ -145,7 +144,7 @@ whose audit warns or fails):
 | `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D; a sampled member day with a bar and no feature row | a session whose previous session has no index close or breadth (the gates read D-1) |
 | `unique_keys` | a duplicate bar, features row or index close | |
 | `bars_5m` | (when the run reads them) over the whole 5-minute store: a day with bars off the IST 5-minute grid, without a daily bar, or whose last close is > 5% off the daily close (`bar_5m_adjusted_basis` when the ratio is the stored factors after the day) | the same, while no run reads them |
-| `industries` | the policy caps positions per industry below its open positions and a member-day has no industry | > 5% of the member-days have no industry (`unknown`) |
+| `industries` | | > 5% of the member-days have no industry (`unknown`); a run (a sweep variant alone) whose policy caps positions per industry below its open positions while any member-day has no industry is refused `backtest_industry_cap_without_industries` |
 | `demergers` | | a member demerger whose ex-day open and close gaps differ > 15% and whose factor is not the close gap; the summary counts the period's undated member demergers (no `announced_on`) |
 | `golden` | a golden sample value drifted or missing; an unreadable golden file | an unresolvable key; a recorded mismatch still open; no golden file yet |
 
