@@ -52,6 +52,7 @@ from .standard import (
 
 __all__ = [
     "CSV_FILES",
+    "JSON_DOCS",
     "RunInputs",
     "build",
     "failed_run",
@@ -60,6 +61,7 @@ __all__ = [
     "publish",
     "read_config",
     "read_csv",
+    "read_doc",
     "read_returns",
     "read_run",
     "run_dir",
@@ -69,6 +71,9 @@ __all__ = [
 ]
 
 CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks")
+# The folder's audits: the run audit (`run_audit`, a completed run only) and the data audit it ran
+# on (`data.audit`).
+JSON_DOCS = ("audit", "data_audit")
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
 STOPOUT_DAYS = 90
@@ -213,6 +218,14 @@ def read_config(root: Path, run_id: str) -> dict[str, Any] | None:
     return None if folder is None else _json(folder / "config.json")
 
 
+def read_doc(root: Path, run_id: str, name: str) -> dict[str, Any] | None:
+    """One of the run's `JSON_DOCS`; None without it."""
+    folder = run_dir(root, run_id)
+    if folder is None or name not in JSON_DOCS:
+        return None
+    return _json(folder / f"{name}.json")
+
+
 def read_csv(root: Path, run_id: str, name: str) -> str | None:
     """One of the run's `CSV_FILES` as text; None without it (a failed run has none)."""
     folder = run_dir(root, run_id)
@@ -318,9 +331,12 @@ def publish(
     run: Mapping[str, Any],
     config: Mapping[str, Any],
     csvs: Mapping[str, str] | None = None,
+    *,
+    docs: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Path:
     """Write the run's folder: everything into a hidden temporary folder beside it, `run.json`
-    validated first (`backtest_result_invalid`, nothing published), then one rename."""
+    validated first (`backtest_result_invalid`, nothing published), then one rename. `docs` are
+    the folder's other JSON files by name (`JSON_DOCS`: the run and data audits)."""
     folder = run_dir(root, run_id)
     if folder is None:
         raise BacktestError("backtest_bad_run_id")
@@ -334,6 +350,10 @@ def publish(
         (tmp / "config.json").write_text(json.dumps(config, indent=1), encoding="utf-8")
         for name, text in (csvs or {}).items():
             (tmp / f"{name}.csv").write_text(text, encoding="utf-8")
+        for name, doc in (docs or {}).items():
+            if name not in JSON_DOCS:
+                raise BacktestError("backtest_bad_run_file")
+            (tmp / f"{name}.json").write_text(json.dumps(doc, indent=1), encoding="utf-8")
         os.replace(tmp, folder)
     except BaseException:
         shutil.rmtree(tmp, ignore_errors=True)

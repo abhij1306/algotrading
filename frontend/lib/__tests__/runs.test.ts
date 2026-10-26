@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import example from "./fixtures/example-run.json";
 import {
+  auditRows,
   bucketRows,
   changeText,
   compareCells,
@@ -349,5 +350,34 @@ describe("trades, stocks and concentration", () => {
     const top = topSymbols(stocks, 2);
     expect(top.map((s) => s.symbol)).toEqual(["AAA", "CCC"]);
     expect(top[0]?.sharePct).toBeCloseTo(128.57, 1);
+  });
+});
+
+describe("auditRows", () => {
+  it("lists the findings that are not a pass, failures first, in check order", () => {
+    const rows = auditRows({
+      status: "fail",
+      digest: "d",
+      checks: [
+        {
+          name: "binding",
+          status: "warn",
+          findings: [{ code: "no_op", severity: "warn", count: 1 }],
+        },
+        { name: "trials", status: "pass", findings: [] },
+        {
+          name: "fills",
+          status: "fail",
+          findings: [
+            { code: "fill_outside_range", severity: "fail", count: 3 },
+            { code: "noted", severity: "pass", count: 2 },
+          ],
+        },
+      ],
+    });
+    expect(rows).toEqual([
+      { check: "fills", code: "fill_outside_range", severity: "fail", count: 3 },
+      { check: "binding", code: "no_op", severity: "warn", count: 1 },
+    ]);
   });
 });

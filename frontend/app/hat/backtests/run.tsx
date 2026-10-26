@@ -1,13 +1,21 @@
 import { useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router";
 import { fieldClass } from "@/components/atoms/field";
-import { TableCell, TableRow } from "@/components/atoms/table";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/atoms/table";
 import { Text } from "@/components/atoms/text";
 import { DataTable } from "@/components/molecules/data-table";
 import { LabelledValue } from "@/components/molecules/labelled-value";
 import { noRows, QuerySection } from "@/components/molecules/query-section";
 import { BreadthChart, DrawdownChart, EquityChart } from "@/components/organisms/backtests/charts";
 import {
+  AuditBadge,
   BucketTable,
   CsvTable,
   MetricWithDelta,
@@ -18,8 +26,9 @@ import {
 } from "@/components/organisms/backtests/run-parts";
 import { PageLayout } from "@/components/templates/page-layout";
 import { formatNumber, PLACEHOLDER } from "@/lib/format";
-import { useBacktestRun, useRunFile } from "@/lib/queries/backtests";
+import { useBacktestRun, useRunAudit, useRunFile } from "@/lib/queries/backtests";
 import {
+  auditRows,
   bucketRows,
   CAP_ORDER,
   cellNumber,
@@ -41,11 +50,13 @@ import {
   topTrades,
   yearRows,
   regimeOffSpans,
+  type AuditDoc,
   type Bucket,
   type CsvTable as CsvData,
   type Metrics,
   type Outcome,
   type Run,
+  type RunAudit,
   type RunFile,
   type TradeFilter,
 } from "@/lib/runs";
@@ -506,6 +517,76 @@ function StocksTable({ data }: Readonly<{ data: CsvData }>) {
   );
 }
 
+function AuditTable({ doc }: Readonly<{ doc: AuditDoc }>) {
+  return (
+    <Table>
+      <TableHeader>
+        <TableRow>
+          <TableHead>Check</TableHead>
+          <TableHead>Finding</TableHead>
+          <TableHead>Severity</TableHead>
+          <TableHead numeric>Count</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {auditRows(doc).map((row) => (
+          <TableRow key={`${row.check}/${row.code}`}>
+            <TableCell>{row.check}</TableCell>
+            <TableCell className="font-mono text-xs">{row.code}</TableCell>
+            <TableCell>
+              <AuditBadge
+                label={row.severity === "fail" ? "fails" : "warns"}
+                status={row.severity}
+              />
+            </TableCell>
+            <TableCell numeric>{formatNumber(row.count, 0)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
+  );
+}
+
+const auditStatus = (doc: AuditDoc) => <AuditBadge label="status" status={doc.status} />;
+const auditTable = (doc: AuditDoc) => <AuditTable doc={doc} />;
+
+function AuditSection({
+  runId,
+  name,
+  title,
+}: Readonly<{ runId: string; name: RunAudit; title: string }>) {
+  const query = useRunAudit(runId, name);
+  return (
+    <QuerySection
+      title={title}
+      query={query}
+      isEmpty={(doc) => auditRows(doc).length === 0}
+      empty="Every check passes."
+      meta={auditStatus}
+    >
+      {auditTable}
+    </QuerySection>
+  );
+}
+
+/** The run's audits (docs/backtests/process.md), read before its metrics. */
+function Audits({ run }: Readonly<{ run: Run }>) {
+  // A run published before Result Standard v1.2 has no audits.
+  if (!run.data.audit) {
+    return (
+      <Block title="Audits">
+        <Text tone="muted">This run predates the audits: it has no audit.json.</Text>
+      </Block>
+    );
+  }
+  return (
+    <div className="grid gap-x-12 gap-y-14 lg:grid-cols-2">
+      <AuditSection runId={run.identity.run_id} name="audit" title="Run audit" />
+      <AuditSection runId={run.identity.run_id} name="data_audit" title="Data audit" />
+    </div>
+  );
+}
+
 function RunBody({ run }: Readonly<{ run: Run }>) {
   const runId = run.identity.run_id;
   const base = useBacktestRun(run.identity.base_run_id ?? "");
@@ -524,6 +605,7 @@ function RunBody({ run }: Readonly<{ run: Run }>) {
   return (
     <div className="space-y-14">
       <Header run={run} />
+      <Audits run={run} />
       <Headline metrics={run.metrics} base={base.data?.metrics} baseError={base.error} />
       <EquitySection runId={runId} benchmark={run.data.benchmark} />
       <Block title="By year" note={`run vs ${run.data.benchmark}`}>
@@ -554,7 +636,7 @@ function RunBody({ run }: Readonly<{ run: Run }>) {
   );
 }
 
-/** One run folder: header, headline metrics, equity, breakdowns, refusals, trades and stocks. */
+/** One run folder: header, audits, headline metrics, equity, breakdowns, refusals, trades and stocks. */
 export default function BacktestRunPage() {
   const runId = useParams().runId ?? "";
   const run = useBacktestRun(runId);

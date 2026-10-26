@@ -15,6 +15,7 @@ import { Text } from "@/components/atoms/text";
 import { QuerySection } from "@/components/molecules/query-section";
 import { SortableHead } from "@/components/molecules/sortable-head";
 import {
+  AuditBadge,
   MetricWithDelta,
   NoOpFlag,
   RunStatusBadge,
@@ -98,6 +99,9 @@ function VariantCell({ row }: Readonly<{ row: RunRow }>) {
           <RunStatusBadge status={identity.status} error={identity.error} />
         )}
         <NoOpFlag binding={binding} />
+        {row.run.audit && row.run.audit.status !== "pass" ? (
+          <AuditBadge label="audit" status={row.run.audit.status} />
+        ) : null}
       </div>
     </div>
   );

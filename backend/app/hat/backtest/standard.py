@@ -41,7 +41,7 @@ __all__ = [
     "trade_list_hash",
 ]
 
-FORMAT_VERSION = "1.1"
+FORMAT_VERSION = "1.2"
 TRADING_DAYS = 252
 LADDER_LEVEL = "ladder_level"
 REFUSAL_CODES = (

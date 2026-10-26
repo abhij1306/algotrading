@@ -8,6 +8,8 @@ and the one write, starting a research run or a small sweep as a background job
 - `GET /api/hat/backtests/runs/{run_id}`: the run's whole `run.json`.
 - `GET /api/hat/backtests/runs/{run_id}/files/{name}`: one of its CSV files (`trades`, `equity`,
   `refusals`, `signals`, `stocks`) as `text/csv`.
+- `GET /api/hat/backtests/runs/{run_id}/audits/{name}`: its run audit (`audit`) or the data audit
+  it ran on (`data_audit`), as JSON. A list item carries the run audit's status and digest.
 - `GET /api/hat/backtests/options`: the strategy versions a job can run, each with its exit stack,
   its playbooks' stops and its owner's universes (`BacktestOptions`).
 - `POST /api/hat/backtests` (behind `guard.frontend_write`): start a job (`BacktestStart`): one
@@ -121,6 +123,7 @@ class BacktestRunItem(BaseModel):
     metrics: dict[str, Any]
     refusals: dict[str, Any]
     binding: dict[str, Any]
+    audit: dict[str, Any] | None = None  # the run audit's status and digest; None without one
 
 
 class BacktestUniverse(BaseModel):
@@ -215,14 +218,26 @@ def _matches(
     )
 
 
+def _audit_of(root: Path, doc: dict[str, Any]) -> dict[str, Any] | None:
+    found = folder.read_doc(root, str((doc.get("identity") or {}).get("run_id")), "audit")
+    return None if found is None else {"status": found.get("status"), "digest": found.get("digest")}
+
+
 def _runs(
     root: Path, strategy: str | None, sweep_id: str | None, split: str | None
 ) -> list[BacktestRunItem]:
     return [
-        BacktestRunItem(**{k: doc.get(k) or {} for k in LIST_BLOCKS})
+        BacktestRunItem(**{k: doc.get(k) or {} for k in LIST_BLOCKS}, audit=_audit_of(root, doc))
         for doc in folder.list_runs(root)
         if _matches(doc, strategy, sweep_id, split)
     ]
+
+
+def _audit(root: Path, run_id: str, name: str) -> dict[str, Any]:
+    doc = folder.read_doc(root, run_id, name)
+    if doc is None:
+        raise HTTPException(status_code=404, detail=NOT_FOUND)
+    return doc
 
 
 def _run(root: Path, run_id: str) -> dict[str, Any]:
@@ -361,6 +376,12 @@ def get_run(run_id: str, root: Root) -> dict[str, Any]:
 def get_file(run_id: str, name: str, root: Root) -> Response:
     """One of the run's CSV files: trades, equity, refusals, signals or stocks."""
     return _read("file", lambda: _file(root, run_id, name))
+
+
+@router.get("/runs/{run_id}/audits/{name}", responses=ERRORS)
+def get_audit(run_id: str, name: str, root: Root) -> dict[str, Any]:
+    """The run's run audit (`audit`) or the data audit it ran on (`data_audit`)."""
+    return _read("audit", lambda: _audit(root, run_id, name))
 
 
 @router.get("/options", responses=ERRORS)

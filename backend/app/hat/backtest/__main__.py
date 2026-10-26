@@ -46,7 +46,13 @@ from .runs import (
     sweep_bot,
 )
 from .slots import SLOT_ORDER_TIME, is_slot_order
-from .spec import REGIME_MULT_ONE, REGIME_MULT_RULES, BacktestError, RunConventions
+from .spec import (
+    INITIAL_EQUITY,
+    REGIME_MULT_ONE,
+    REGIME_MULT_RULES,
+    BacktestError,
+    RunConventions,
+)
 
 
 def _slot_order_arg(text: str) -> str:  # pragma: no cover - the command line
@@ -59,6 +65,13 @@ def _sleeve_weight_arg(text: str) -> Decimal:  # pragma: no cover - the command 
     number = exact(text)
     if number is None:
         raise argparse.ArgumentTypeError("a decimal in (0, 1], e.g. 0.5")
+    return number
+
+
+def _capital_arg(text: str) -> Decimal:  # pragma: no cover - the command line
+    number = exact(text)
+    if number is None or number <= 0:
+        raise argparse.ArgumentTypeError("rupees above 0, e.g. 2500000")
     return number
 
 
@@ -125,7 +138,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--cooldown-sessions N]
     [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
-    [--regime-mult 1|policy] [--for-promotion] [--set PATH=VALUE ...] [--risk-pct P]
+    [--regime-mult 1|policy] [--start-capital RUPEES] [--for-promotion] [--set PATH=VALUE ...]
+    [--risk-pct P]
     [--max-positions N] [--max-per-industry N] [--flat-ladder] [--policy FILE]
     [--set-policy PATH=VALUE ...] [--split in_sample|hold_out] [--validates RUN_ID]
     [--sweep-id ID] [--sweep-name NAME] [--variant LABEL] [--base RUN_ID] [--change TEXT]
@@ -144,6 +158,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     allocation at `--sleeve-weight` (the policy's base weight by default; a research run of a
     sleeve the policy gives no weight sizes at `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime
     rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
+    `--start-capital` is the account's equity on the first day (₹10,00,000 by default).
+    Every run first audits its data (`data.audit`) and refuses to start on a failed audit
+    (`backtest_data_audit_failed`); a completed run's folder holds its run audit (`audit.json`).
     `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
     `--flat-ladder` override the version's config and the policy for this run only
     (`overrides`); a promotion run takes none. `--policy FILE` (YAML or JSON, e.g. from
@@ -175,6 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--suspension-sessions", type=int, default=SUSPENSION_SESSIONS)
     parser.add_argument("--sleeve-weight", type=_sleeve_weight_arg, default=None)
     parser.add_argument("--regime-mult", choices=REGIME_MULT_RULES, default=REGIME_MULT_ONE)
+    parser.add_argument("--start-capital", type=_capital_arg, default=INITIAL_EQUITY)
     parser.add_argument("--for-promotion", action="store_true")
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
     parser.add_argument("--risk-pct", type=_risk_pct_arg, default=None)
@@ -217,6 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                     suspension_sessions=args.suspension_sessions,
                     sleeve_weight=args.sleeve_weight,
                     regime_mult=args.regime_mult,
+                    start_capital=args.start_capital,
                     overrides=Overrides(
                         sets=tuple(args.sets),
                         risk_pct=args.risk_pct,

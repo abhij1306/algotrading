@@ -157,33 +157,34 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
 ### Research backtest
 
 A research run needs no bot, broker account or Fyers login, only a strategy version, a published
-universe and the risk policy (`seed-policy`, `seed-strategies`, step 3's `publish-universe`):
+universe and the risk policy (`seed-policy`, `seed-strategies`, step 3's `publish-universe`). Every
+command (data check, run, sweep, rerun, compare, review request), knob and audit is in
+`docs/backtests/process.md`; this section holds only the operator facts around it.
 
-```bash
-python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-10-25 \
-  --to <last trading day> [--sleeve-weight W] [--slot-order score] [...]
-```
-
-`--universe` takes the universe's id or name. The run reads the database in a read-only
-transaction and writes its folder `HAT_DATA_ROOT/backtests/runs/<run_id>/` (`run.json`,
-`config.json` and the CSVs, docs/backtests/result-standard.md); a completed in-sample run adds its
-resolved parameters' hash to the strategy's trials in `backtests/trials.json`, which every run's
-DSR counts. `--split hold_out --validates <run_id>` marks a hold-out run of an in-sample one; it
-adds no trial. `--sweep-id`, `--sweep-name`, `--variant`, `--base <run_id>` and `--change "<one
-line>"` label a single run as a sweep file labels its variants; with a base its `binding` says
-whether the change altered the trades. `python -m app.hat.backtest --rerun <run_id>` runs a
-folder's `config.json` again as a new run based on it, refused
-`backtest_rerun_snapshot_differs` when the data changed since. The universe is its index's members as of each session, through lineage (Index
-membership). Backtests run from 2016-01-01 onward until the 2011-2015 membership is resolved
-(decisions.md "Backtests from 2016-01-01"): a `--from` before the loaded history's first day is
-refused `backtest_starts_before_membership@2016-01-01`, a `--to` after its last day
-`backtest_ends_after_membership@<day>`, and a universe whose index has no history loaded
-`backtest_no_index_membership`. Bars before 2016 still warm the indicators up. A
+`--universe` takes the universe's id or name. The universe is its index's members as of each
+session, through lineage (Index membership). Backtests run from 2016-01-01 onward until the
+2011-2015 membership is resolved (decisions.md "Backtests from 2016-01-01"): a `--from` before the
+loaded history's first day is refused `backtest_starts_before_membership@2016-01-01`, a `--to`
+after its last day `backtest_ends_after_membership@<day>`, and a universe whose index has no
+history loaded `backtest_no_index_membership`. Bars before 2016 still warm the indicators up. A
 sleeve the policy gives base weight 0 sizes at 0.5 in a research run (recorded in the run's
-conventions); a `--for-promotion` run of it is refused `backtest_no_base_weight`. The trade
-ledger's `qty` is in today's split-adjusted shares; `qty_real` is the whole real shares on the
-entry day. Admin commands gated outside market hours run at weekends: an ordinary Saturday or
-Sunday inside the stored calendar reads closed.
+conventions); a `--for-promotion` run of it is refused `backtest_no_base_weight`, and takes no
+overrides. A version that enables `volume_pace` or `daily_close` cannot be promoted on a run
+(known gaps). A sweep prints one JSON line per variant as each finishes. The trade ledger's `qty`
+is in today's split-adjusted shares; `qty_real` is the whole real shares on the entry day. Admin
+commands gated outside market hours run at weekends: an ordinary Saturday or Sunday inside the
+stored calendar reads closed. A data audit that fails
+refuses every run on that data (`backtest_data_audit_failed`): read its file under
+`HAT_DATA_ROOT/backtests/data_audits/` (the data check prints the path), fix the data, and run
+`python -m app.hat.data.audit ... --refresh`.
+
+The app's Backtests page (`/hat/backtests`) starts a research run or a sweep of up to eight
+variants (New run or sweep): it runs the backtest command line in a child process, one job at a
+time, and shows its progress and links each variant's run page. The page lists the run folders
+by strategy and sweep with each variant's deltas against its base, and compares up to four. A
+job's files are under `HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds the child's
+stderr). The job list is in memory: after a restart it is empty, and a child still running
+finishes and records its runs.
 
 ### Index membership
 
@@ -204,74 +205,6 @@ nothing) and records the source, digest, cover (the earliest `from_date` to `--a
 explains each: a second share class, a vacancy, a non-stock row). Every ISIN must name an
 instrument, or nothing is written. A run ending after `--as-of` is refused: after an index change
 notice, extend the CSV and load it again.
-
-### Backtest research variants
-
-A research run changes the version's config or the policy for that run only, without a new
-draft:
-
-```bash
-python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from <d> --to <d> \
-  --set 'exits[trailing_swing_low].lookback_days=20' \
-  --set 'exits[+]={"rule": "early_failure", "days": 10}' \
-  --risk-pct 0.005 --max-positions 10 --sleeve-weight 0.5 --slot-order score
-```
-
-A list item is named by its index, its `rule`/`name`, or its criterion `type`
-(`playbooks[default].setup.criteria[vcp].params.min_depth_pct=3`,
-`playbooks[default].entry_filters[max_chase].params.pct=2`); a type held twice takes `#n`, the
-n-th from 0 in config order (`criteria[rs_rank#1]`, S1's score instance), and a name that is
-missing or ambiguous is refused. `exits[+]=` appends a rule. The variables: the stop width cap
-(`playbooks[<name>].stop.max_pct`), `early_failure` (`days`, `min_r`),
-`move_stop_to_breakeven.at_r`, `step_trail` (`step_r`, `move_r`: every +`step_r` R moves the
-stop up `move_r` R from the initial stop, only up), the trails (`trailing_swing_low`,
-`close_below_sma`, `close_below_ema` with `ema`, `trailing_atr` with `days` and `multiple`, each
-with an optional `start_r`), `partial_at_r` (`at_r`, `sell_fraction`) and `max_hold` (`days`).
-The VCP (`criteria[vcp].params`): `contractions`, `pivot_window`, `min_base_bars`,
-`dryup_baseline_days`, `min_depth_pct`, `score_floor` besides the depth and dry-up limits. The
-entry (`trigger[price_breaks_level].params`): `entry_timing` `intraday_break` or `daily_close`
-(enter at the close above the level), and under `daily_close` `volume_vs_avg` with
-`volume_avg_days` (the breakout day's volume against the mean before). The regime
-(`regime.params.rising_days=0`): the close above the SMA with no slope test; or market breadth,
-`--set 'regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55,
-"off_below_pct": 45, "smooth_days": 5}}'` (decisions, Breadth regime rule). A version that
-enables `volume_pace` or `daily_close` cannot be promoted on a run (known gaps). `--max-positions N` sets the account cap and
-the exposure ladder's top level to N (lower levels capped at N); the ladder still starts at L1.
-`--flat-ladder` gives every ladder level the run's cap at risk multiplier 1, so the run trades at
-one size from day one (the strategy, not the ladder's throttle); `--max-per-industry N` sets the
-per-industry cap. `--policy cand.yaml` sizes the run under a whole candidate policy (write it
-from `python -m app.hat.admin show-policy`) and `--set-policy kill.bot_drawdown_pct=0.15`
-(repeatable, a dotted path) sets one field; both apply before the flags above, and the run
-records the document and its digest. The overrides are recorded in
-the run's `config.overrides` and `config.json`; a `--for-promotion` run takes none.
-
-A sweep runs several variants over one load of the market: `--variants sweep.yaml` on top of the
-options given:
-
-```yaml
-sweep_id: s1-exits-07
-sweep_name: S1 exit stack            # optional, the id when absent
-variants:
-  - {label: base}
-  - label: trail20
-    base: base                       # an earlier label of this file, or a run id
-    change: swing-low trail 20 days  # one line
-    set: ['exits[trailing_swing_low].lookback_days=20']
-```
-
-Each variant takes `set: [path=value, ...]`, `risk_pct`, `max_positions`, `max_per_industry`,
-`flat_ladder`, `policy` (a file path from the working directory), `policy_set`,
-`sleeve_weight`, `slot_order` and, for a hold-out sweep, `validates`. It prints one JSON line per
-variant (label, run id, status, code, trades, expectancy, DSR, PBO) as each finishes; the runs read at
-`/api/hat/backtests/runs?sweep_id=<id>` and their folders at
-`HAT_DATA_ROOT/backtests/runs/<run_id>/`.
-
-The app's Backtests page (`/hat/backtests`) starts the same research run or a sweep of up to
-eight variants (New run or sweep): it runs this command line in a child process, one job at a
-time, and shows its progress and links each variant's run page. The page lists the run folders
-by strategy and sweep with each variant's deltas against its base, and compares up to four. A job's files are under
-`HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds the child's stderr). The job list is
-in memory: after a restart it is empty, and a child still running finishes and records its runs.
 
 ### First live session checks (O2 day)
 

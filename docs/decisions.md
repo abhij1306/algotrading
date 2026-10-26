@@ -268,7 +268,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   and tries again each minute.
 - **Verification on real data.** See `CLAUDE.md`.
 - **Backtest results are files, never database rows (owner, 2026-10-26).** Every run writes one
-  folder in the Backtest Result Standard (`docs/backtests/result-standard.md`, v1.1) under
+  folder in the Backtest Result Standard (`docs/backtests/result-standard.md`, v1.2) under
   `HAT_DATA_ROOT/backtests/runs/<run_id>/`, with `config.json` to rerun it, and the DSR's trial
   count in `backtests/trials.json` beside them; `hat_live` is read-only to every backtest, a
   promotion run too. So results compare across strategies and sweeps in one shape, a refused
@@ -276,6 +276,13 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   (`hat_backtest_run`, `hat_backtest_bucket`) is left in place and no longer written:
   `publish-version --run`, the `backtest_gate` and signal confidence read it and fail closed
   until promotion reads run folders (Planned, not built).
+- **One backtest process, audited (owner, 2026-10-26).** Every backtest follows
+  `docs/backtests/process.md`: a data audit before every run (a failed one refuses the run), a run
+  audit after it (`audit.json`), one change per variant against a named base within a trial
+  budget, promotion criteria fixed in the strategy's notes before any run, a plateau check, an
+  independent review report, the hold-out read once, then paper trading. Every knob is set from
+  config or the command line, so a backtest needs a code change only when a strategy changes or is
+  added.
 
 ## Execution safety
 

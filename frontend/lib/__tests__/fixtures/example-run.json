@@ -1,5 +1,5 @@
 {
-  "format_version": "1.1",
+  "format_version": "1.2",
   "identity": {
     "run_id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
     "strategy": "S1",
@@ -22,7 +22,11 @@
     "validates_run_id": null,
     "period_start": "2016-01-01",
     "period_end": "2021-12-31",
-    "benchmark": "NIFTY500_TRI"
+    "benchmark": "NIFTY500_TRI",
+    "audit": {
+      "digest": "821ce04cf7ae856eea6227492818b87fadbcf4da1845e3741bef2ae74e9d5f8f",
+      "status": "warn"
+    }
   },
   "config": {
     "overrides": {
