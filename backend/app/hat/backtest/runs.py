@@ -515,6 +515,8 @@ def _spec(target: _Target, request: RunRequest, conventions: RunConventions) -> 
         policy = overrides.apply_policy(target.policy)
     except OverrideError as exc:
         raise BacktestError(exc.code) from None
+    if request.cooldown_sessions is not None:  # a candidate policy replaced the one it was set on
+        policy = with_cooldown(policy, request.cooldown_sessions)
     return RunSpec(
         config=config,
         strategy_version_id=target.version_id,
