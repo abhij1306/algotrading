@@ -135,9 +135,16 @@ function Header({ run }: Readonly<{ run: Run }>) {
   );
 }
 
-function Headline({ metrics, base }: Readonly<{ metrics: Metrics; base: Metrics | undefined }>) {
+function Headline({
+  metrics,
+  base,
+  baseError,
+}: Readonly<{ metrics: Metrics; base: Metrics | undefined; baseError: Error | null }>) {
+  let note: string | undefined;
+  if (base) note = "small figures: change against the base run";
+  else if (baseError) note = `no deltas: could not load the base run (${baseError.message})`;
   return (
-    <Block title="Headline" note={base ? "small figures: change against the base run" : undefined}>
+    <Block title="Headline" note={note}>
       <dl className="grid grid-cols-2 gap-x-8 gap-y-5 sm:grid-cols-4 lg:grid-cols-6">
         {HEADLINE.map((def) => {
           let text: string | undefined;
@@ -497,7 +504,7 @@ function RunBody({ run }: Readonly<{ run: Run }>) {
   return (
     <div className="space-y-14">
       <Header run={run} />
-      <Headline metrics={run.metrics} base={base.data?.metrics} />
+      <Headline metrics={run.metrics} base={base.data?.metrics} baseError={base.error} />
       <EquitySection runId={runId} benchmark={run.data.benchmark} />
       <Block title="By year" note={`run vs ${run.data.benchmark}`}>
         <ByYear years={run.breakdowns.by_year} />
