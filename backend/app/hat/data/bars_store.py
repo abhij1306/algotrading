@@ -129,9 +129,14 @@ class BarStore:
     def path(self, day: date) -> Path:
         return self.partition(day) / FILE_NAME
 
-    def read(self, day: date) -> list[BarRow5m]:
-        """Every stored row of `day`, ordered by (bar_start, instrument_id)."""
-        return sorted(_rows(self._table(day)), key=lambda r: (r.bar_start, r.instrument_id))
+    def read(self, day: date, instruments: Iterable[str] | None = None) -> list[BarRow5m]:
+        """Every stored row of `day` (of `instruments` only, when given), ordered by
+        (bar_start, instrument_id)."""
+        table = self._table(day)
+        if instruments is not None:
+            ids = pa.array(sorted(set(instruments)), pa.string())
+            table = table.filter(pc.is_in(table["instrument_id"], value_set=ids))
+        return sorted(_rows(table), key=lambda r: (r.bar_start, r.instrument_id))
 
     def _table(self, day: date) -> pa.Table:
         path = self.path(day)

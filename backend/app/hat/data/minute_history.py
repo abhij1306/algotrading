@@ -73,7 +73,6 @@ __all__ = [
     "history_pacer",
     "load_minute_history",
     "main",
-    "rebase_stored",
     "run_lock",
 ]
 
@@ -514,51 +513,6 @@ def _flush(dl: Download) -> None:
     batch.bars = 0
 
 
-def rebase_stored(
-    source: BarStore, target: BarStore, basis: RawBasis, fetched_on: date, first: date, last: date
-) -> HistoryReport:
-    """Re-derive the raw basis of bars already stored by an earlier download, fetched on
-    `fetched_on` over `first..last`, into `target` (another root: a converted day must never be
-    converted twice), with the envelope check and the ledger of a download; no Fyers call. One
-    write per day; `days` counts the stored days per instrument."""
-    report = HistoryReport(first, last)
-    for day in source.days():
-        if not first <= day <= last:
-            continue
-        by_instrument: dict[str, list[Bar]] = {}
-        for row in source.read(day):
-            factor = basis.factor(row.instrument_id, day, fetched_on)
-            bar = Bar(
-                row.instrument_id,
-                row.bar_start.astimezone(IST),
-                row.open,
-                row.high,
-                row.low,
-                row.close,
-                row.volume,
-            )
-            by_instrument.setdefault(row.instrument_id, []).append(to_raw(bar, factor))
-        daily = basis.daily(sorted(by_instrument), day, day)
-        keep: list[Bar] = []
-        rejects: list[RejectRow] = []
-        for instrument_id, bars in by_instrument.items():
-            kept, refused = _checked_days(bars, instrument_id, daily, basis.tolerance)
-            keep.extend(kept)
-            if kept:
-                report.days[instrument_id] = report.days.get(instrument_id, 0) + 1
-            for refused_day, code in refused:
-                rejects.append(RejectRow(instrument_id, instrument_id, refused_day, None, code))
-                report.rejects[code] += 1
-        # each instrument's day is replaced whole: a day refused now keeps no earlier bar
-        report.rows += target.write(
-            keep, {i: i for i in by_instrument}, replace=dict.fromkeys(by_instrument, (day, day))
-        )
-        report.writes += 1
-        target.write_rejects(rejects)
-    report.symbols = len(report.days)
-    return report
-
-
 # --- the command line ------------------------------------------------------------------------
 
 
@@ -601,23 +555,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--per-minute", type=int, help="override HAT_HISTORY_PER_MINUTE")
     p.add_argument("--per-day", type=int, help="override the day cap (limit less reserve)")
     p.add_argument("--plan-days", type=int, help="override HAT_HISTORY_PLAN_DAYS")
-    p.add_argument(
-        "--rebase-into",
-        type=Path,
-        help="no download: convert the stored bars_5m of the last run's period to the raw basis "
-        "into this other data root (needs --fetched-on)",
-    )
-    p.add_argument(
-        "--fetched-on",
-        type=date.fromisoformat,
-        help="with --rebase-into, the IST day the stored bars were downloaded",
-    )
     return p.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real Fyers and DB
     """python -m app.hat.data.minute_history [--days N] [--resume [--retry-failed]]
-    python -m app.hat.data.minute_history --rebase-into ROOT --fetched-on YYYY-MM-DD
 
     Loads the trading universe's 1-minute history through HAT's Fyers session (log in from the
     app first) into `bars_5m` under `HAT_DATA_ROOT`, from `--days` back to yesterday (today's
@@ -651,10 +593,7 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
     logging.basicConfig(level=logging.INFO)
     root = settings.data_root
     with run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
-        basis = _basis(settings)
-        if args.rebase_into is not None:
-            return _rebase(args, root, basis)
-        return _download(args, days, limits, root, basis, fyers_history)
+        return _download(args, days, limits, root, _basis(settings), fyers_history)
 
 
 def _basis(settings: HatSettings) -> RawBasis:  # pragma: no cover - real DB
@@ -668,21 +607,6 @@ def _basis(settings: HatSettings) -> RawBasis:  # pragma: no cover - real DB
         actions = stored_adjustment(db).factors
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     return RawBasis(actions, store_daily(store), settings.history_envelope_tol)
-
-
-def _rebase(
-    args: argparse.Namespace, root: Path, basis: RawBasis
-) -> int:  # pragma: no cover - real data
-    progress = Progress.load(root / PROGRESS_FILE)
-    target = Path(args.rebase_into)
-    if args.fetched_on is None or progress.window is None:
-        raise MinuteHistoryError("history_bad_period")
-    if target.resolve() == root.resolve():
-        raise MinuteHistoryError("history_rebase_in_place")  # a day must not convert twice
-    first, last = progress.window
-    report = rebase_stored(BarStore(root), BarStore(target), basis, args.fetched_on, first, last)
-    sys.stdout.write(report.summary())
-    return 0
 
 
 def _download(

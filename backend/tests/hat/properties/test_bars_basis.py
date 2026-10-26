@@ -4,12 +4,16 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.hat.data.bars import Bar
+from app.hat.data.bars5m_repair import CHAIN_DUPLICATE, mend
 from app.hat.data.bars_basis import (
     BASIS_MISMATCH,
+    CONVERTED,
+    KEPT,
     NO_DAILY_BAR,
     DailyRange,
     check_day,
     fyers_factor,
+    mend_day,
     to_raw,
 )
 from app.hat.data.candles import parse_candles, screen
@@ -62,6 +66,43 @@ def test_check_day_envelope() -> None:
         BASIS_MISMATCH
     )
     assert check_day(bars, None, tol) == NO_DAILY_BAR
+
+
+def test_mend_day_converts_an_adjusted_day_and_never_a_fitting_one() -> None:
+    tol = Decimal("0.005")
+    raw = DailyRange(*map(Decimal, ("200", "210", "198", "204")))
+    # stored on the basis of a later 1:1 bonus: half the raw prices
+    adjusted = [_bar("100", "104", "99", "103"), _bar("103", "105", "101", "102", minutes=5)]
+    verdict, bars = mend_day(adjusted, Decimal("0.5"), raw, tol)
+    assert verdict == CONVERTED
+    assert (bars[0].open, max(b.high for b in bars), bars[0].volume) == (200, 210, 50)
+    # a day that fits as stored is kept as it is, whatever the factor: mending twice is a no-op
+    assert mend_day(bars, Decimal("0.5"), raw, tol) == (KEPT, bars)
+    # no factor, or a conversion that still misses, drops the day with the check's code
+    assert mend_day(adjusted, Decimal(1), raw, tol) == (BASIS_MISMATCH, [])
+    assert mend_day(adjusted, Decimal("0.25"), raw, tol) == (BASIS_MISMATCH, [])
+    assert mend_day(adjusted, Decimal("0.5"), None, tol) == (NO_DAILY_BAR, [])
+
+
+def test_mend_refiles_a_day_under_the_chain_member_with_its_daily_bar() -> None:
+    tol, day = Decimal("0.005"), OPEN.date()
+    bars = [_bar("100", "104", "99", "103")]
+    fits = DailyRange(*map(Decimal, ("100", "104", "99", "103")))
+    chain, daily = ("new", "old"), {("old", day): fits}
+    done, out = mend("new", day, bars, chain, daily, {"new"}, Decimal(1), tol)
+    assert done is not None
+    assert (done.action, done.owner, done.code) == ("refiled", "old", None)
+    assert [b.symbol for b in out] == ["old"]
+    # the owner already holds the day: the misfiled copy is a duplicate
+    done, out = mend("new", day, bars, chain, daily, {"new", "old"}, Decimal(1), tol)
+    assert done is not None
+    assert (done.action, done.code, out) == ("dropped", CHAIN_DUPLICATE, [])
+    # no member has the daily bar
+    done, out = mend("new", day, bars, chain, {}, {"new"}, Decimal(1), tol)
+    assert done is not None
+    assert (done.action, done.code) == ("dropped", NO_DAILY_BAR)
+    # a day that fits under its own id is left alone
+    assert mend("old", day, bars, chain, daily, {"old"}, Decimal("0.5"), tol) == (None, [])
 
 
 def test_parse_candles_rejects_each_rule_with_its_code() -> None:

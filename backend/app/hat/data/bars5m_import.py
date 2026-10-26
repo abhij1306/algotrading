@@ -24,7 +24,10 @@ goes to the older ISIN, as in `bars_daily_raw`.
 
 Precedence (decisions.md): an (instrument, day) already in `bars_5m` is kept as it is; the
 import adds only the days the store does not hold, so it overwrites and deletes nothing, and a
-second run writes nothing new. Symbols are written `batch` at a time; `progress.json` records each
+second run writes nothing new. A kept day must be one the store can vouch for: the import
+refuses to start (`bars5m_store_unfit`) while any stored day is off the raw daily bar
+(`bars_basis.misfit_days`; `bars5m_repair` mends them), so it never keeps a day on another
+basis. Symbols are written `batch` at a time; `progress.json` records each
 imported file with its modification time, so a stopped run resumes after the last batch written,
 and a file downloaded again is imported again.
 """
@@ -55,6 +58,7 @@ from .bars_basis import (
     RawBasis,
     check_day,
     fyers_factor,
+    misfit_days,
     store_daily,
     to_raw,
 )
@@ -365,12 +369,19 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--universe", type=Path, help="default: <source>/../universe_raw.csv")
     p.add_argument("--scrips", type=Path, help="default: <source>/../nse_cm_scrips.csv")
     p.add_argument("--batch", type=int, default=4, help="symbols per write (default 4)")
+    p.add_argument(
+        "--only",
+        nargs="+",
+        metavar="SYMBOL",
+        help="import only these files, again even when imported before (refills days a "
+        "bars5m_repair dropped; their refused rows are ledgered again)",
+    )
     p.add_argument("--apply", action="store_true", help="write (default: a dry run)")
     return p.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real data and DB
-    """python -m app.hat.data.bars5m_import --source DIR [--batch N] [--apply]
+    """python -m app.hat.data.bars5m_import --source DIR [--batch N] [--only SYMBOL...] [--apply]
 
     Imports the broker's 5-minute history files in DIR into `bars_5m` under `HAT_DATA_ROOT`
     (reads the database: instruments, lineage and corporate-action factors; writes none). Holds
@@ -415,16 +426,21 @@ def _run(args: argparse.Namespace, settings: HatSettings) -> ImportReport:  # pr
     universe = read_universe(args.universe or data / "universe_raw.csv")
     scrips = read_scrips(args.scrips or data / "nse_cm_scrips.csv")
     files = sorted(args.source.glob("*.parquet"))
+    if args.only:
+        if set(args.only) - {f.stem for f in files}:
+            raise MinuteHistoryError("bars5m_unknown_symbol")
+        files = [f for f in files if f.stem in set(args.only)]
     isins = {f.stem: isin_of(f.stem, universe, scrips) for f in files}
     sources, unmapped = plan_sources(files, isins, ids, dict(adjustment.lineage))
     root = settings.data_root
-    basis = RawBasis(
-        adjustment.factors,
-        store_daily(DataStore(root, memory_limit=settings.duckdb_memory)),
-        settings.history_envelope_tol,
-    )
+    data = DataStore(root, memory_limit=settings.duckdb_memory)
+    if misfit_days(data, settings.history_envelope_tol):
+        raise MinuteHistoryError("bars5m_store_unfit")  # run bars5m_repair first
+    basis = RawBasis(adjustment.factors, store_daily(data), settings.history_envelope_tol)
     path = root / PROGRESS_FILE
     progress = _load_progress(path)
+    for symbol in args.only or ():
+        progress.pop(symbol, None)
     today = datetime.now(IST).date()
     report = import_symbols(
         sources,

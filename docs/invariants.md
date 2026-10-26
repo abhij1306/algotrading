@@ -166,7 +166,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   of more than `SERIES_BREAK_DAYS`); raw bars (`bars_daily_raw`, `bars_5m`) are immutable. An
   index day no source has stays missing: no close is carried over it. Broker minute history is
   converted to raw with the factors it carries as of its fetch day; a day that does not fit the
-  raw daily bar is ledgered (`bars_5m_rejects`), never written.
+  raw daily bar is ledgered (`bars_5m_rejects`), never written. A stored 5-minute day off the
+  raw daily bar was never raw: `bars5m_repair` converts, refiles or drops it (the one rewrite of
+  `bars_5m`), and `bars5m_import` refuses to run while one is stored.
 - **Adjustment.** Adjusted prices are raw times cumulative factors, each action applied once per
   ISIN chain; two ISINs share a history only through a `linked` lineage row, and a pair that
   gains or loses that link is journalled (`lineage.changed`). An ex-session's adjusted
