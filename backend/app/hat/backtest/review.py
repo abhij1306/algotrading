@@ -36,7 +36,16 @@ from . import folder, trials
 from .evidence import read_evidence, run_dsr
 from .runs import family_pbo
 
-__all__ = ["CRITERIA_JSON", "CRITERIA_MD", "REQUEST", "REPORT", "evaluate", "request_text"]
+__all__ = [
+    "CRITERIA_JSON",
+    "CRITERIA_MD",
+    "REPORT",
+    "REQUEST",
+    "evaluate",
+    "request_text",
+    "scores_now",
+    "trade_rows",
+]
 
 REQUEST = "review_request.md"
 REPORT = "audit_report.md"
@@ -71,7 +80,7 @@ def _id(run: Mapping[str, Any] | None) -> str | None:
     return found if isinstance(found, str) else None
 
 
-def _rows(text: str | None) -> list[dict[str, str]]:
+def trade_rows(text: str | None) -> list[dict[str, str]]:
     return [] if not text else list(csv.DictReader(io.StringIO(text)))
 
 
@@ -119,6 +128,19 @@ def _pbo_now(root: Path, run: Mapping[str, Any]) -> float | None:
     return family_pbo(root, str(identity.get("strategy")), str(data.get("universe")), window, own)
 
 
+def scores_now(
+    root: Path, run: Mapping[str, Any]
+) -> tuple[dict[str, float | None], tuple[float, int] | None]:
+    """An in-sample run's scores at its family as it is today, as the criteria read them
+    (`dsr_prob`, `pbo`), and its DSR with the family's trial count now (`evidence.run_dsr`;
+    None when the run has no evidence the gates admit)."""
+    run_id = _id(run)
+    found = None if run_id is None else read_evidence(root, run_id)
+    dsr = None if found is None else run_dsr(root, found)
+    now = None if dsr is None else (dsr[0].prob, dsr[1])
+    return {"dsr_prob": None if now is None else now[0], "pbo": _pbo_now(root, run)}, now
+
+
 def evaluate(
     root: Path,
     run: Mapping[str, Any],
@@ -156,15 +178,13 @@ def evaluate(
         hold_out = reads[0]  # newest first
     key = str(trials.family_of(in_sample, None))
     total, prior = trials.counts(trials.read_registry(root), key)
-    found = None if in_id is None else read_evidence(root, in_id)
-    now = None if found is None else run_dsr(root, found)
+    scores, now = scores_now(root, in_sample)
     neighbours = [r for r in runs if (r.get("identity") or {}).get("sweep_id") == sweep]
-    scores = {"dsr_prob": None if now is None else now[0].prob, "pbo": _pbo_now(root, in_sample)}
     rows = [
         *_audits(root, "in-sample", in_sample),
         *([] if hold_out is None else _audits(root, "hold-out", hold_out)),
         *crit.in_sample_rows(
-            criteria, in_sample, _rows(folder.read_csv(root, in_id or "", "trades")), scores
+            criteria, in_sample, trade_rows(folder.read_csv(root, in_id or "", "trades")), scores
         ),
         *crit.trial_rows(criteria, in_sample, key, total, prior),
         *crit.plateau_rows(criteria, in_sample, sweep, neighbours),
@@ -188,7 +208,7 @@ def evaluate(
             "budget": criteria.trial_budget,
             # the in-sample run's DSR at the family's count now (`evidence.run_dsr`), as the
             # gates read it; None when the run has no evidence the gates admit
-            "dsr_prob_now": None if now is None else round(now[0].prob, 6),
+            "dsr_prob_now": None if now is None else round(now[0], 6),
             "dsr_n_trials_now": None if now is None else now[1],
         },
         "status": crit.overall(rows),

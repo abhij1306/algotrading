@@ -125,18 +125,22 @@ def _pick(items: list[Any], selector: str) -> int:
     return hits[0]
 
 
-def set_path(doc: dict[str, Any], path: str, value: object) -> None:
-    """Set `path` (see the module docstring) of the JSON document `doc` to `value`, in place."""
+def set_path(doc: dict[str, Any], path: str, value: object) -> str:
+    """Set `path` (see the module docstring) of the JSON document `doc` to `value`, in place;
+    the path it set, each list selector resolved to its index (`exits[time_stop].enabled` and
+    `exits[3].enabled` name one field), an append as the new item's index."""
     node: Any = doc
     segments = _segments(path)
+    done: list[str] = []
     for n, (key, selector) in enumerate(segments):
         last = n == len(segments) - 1
         if not isinstance(node, dict):
             raise OverrideError("backtest_bad_override_path")
         if selector is None:
+            done.append(key)
             if last:
                 node[key] = value
-                return
+                return ".".join(done)
             if key not in node:
                 raise OverrideError("backtest_bad_override_path")
             node = node[key]
@@ -146,12 +150,14 @@ def set_path(doc: dict[str, Any], path: str, value: object) -> None:
             raise OverrideError("backtest_bad_override_path")
         if selector == APPEND:
             items.append(value)
-            return
+            return ".".join([*done, f"{key}[{len(items) - 1}]"])
         index = _pick(items, selector)
+        done.append(f"{key}[{index}]")
         if last:
             items[index] = value
-            return
+            return ".".join(done)
         node = items[index]
+    raise OverrideError("backtest_bad_override_path")  # pragma: no cover - a path has a segment
 
 
 def policy_text(text: str) -> RiskPolicy:

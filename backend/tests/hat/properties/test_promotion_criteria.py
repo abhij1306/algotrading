@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.hat.backtest import compare, trials
 from app.hat.backtest import criteria as crit
 
 BLOCK = """strategy: S1
@@ -122,6 +123,47 @@ def test_trial_budget_counts_own_trials_only() -> None:
     assert (row.value, row.status) == (2, crit.PASS)
     (over,) = crit.trial_rows(c, _run(), "S1/U/..", total=85, prior=54)
     assert over.status == crit.FAIL
+
+
+def test_a_sweep_refuses_a_new_trial_at_the_budget() -> None:
+    own = {f"h{n}": trials.Trial(f"r{n}", 0.1) for n in range(3)}
+    prior = {f"{trials.PRIOR}p{n}": trials.Trial(None, None, "s1-sweep1:v") for n in range(50)}
+    registry = {"F": {**own, **prior}}
+    # three own trials: under a budget of 4 a new hash runs, at 3 it is refused
+    assert not trials.over_budget(registry, "F", "new", 4)
+    assert trials.over_budget(registry, "F", "new", 3)
+    # a duplicate is no new trial, and another family has its own count
+    assert not trials.over_budget(registry, "F", "h1", 3)
+    assert not trials.over_budget(registry, "G", "new", 1)
+
+
+def test_compare_criteria_table_one_column_per_criterion() -> None:
+    passed = crit.Row("in_sample", "mar", 0.7, ">= 0.6", crit.PASS)
+    failed = crit.Row("in_sample", "trades", 90, ">= 100", crit.FAIL)
+    text = compare.criteria_table([("aaaa", [passed, failed]), ("bbbb", [passed])])
+    assert text.splitlines()[0] == "| run | mar | trades | overall |"
+    assert text.splitlines()[2:] == ["| aaaa | pass | fail | fail |", "| bbbb | pass | - | pass |"]
+
+
+def test_compare_reads_a_hold_out_runs_in_sample_criteria_from_its_validated_run() -> None:
+    c = crit.parse(BLOCK)
+    in_sample = _run("in")
+    held = _run("held", expectancy_r=0.3, mar=0.5)
+    held["data"] = {**held["data"], "split": "hold_out", "validates_run_id": "in"}
+    seen: list[str] = []
+
+    def rows_of(run: dict) -> list[crit.Row]:
+        seen.append(run["identity"]["run_id"])
+        return [crit.Row("in_sample", "mar", 0.7, ">= 0.6", crit.PASS)]
+
+    rows = compare.criteria_rows(c, held, in_sample, rows_of, reads=1)
+    assert seen == ["in"]  # never the hold-out run's own metrics
+    assert {r.section for r in rows} == {"in_sample", "hold_out"}
+    assert "hold_out mar" in compare.criteria_table([("held", rows)]).splitlines()[0]
+    (missing,) = compare.criteria_rows(c, held, None, rows_of, reads=1)
+    assert (missing.name, missing.status) == ("in-sample run", crit.FAIL)
+    assert compare.criteria_rows(c, in_sample, None, rows_of, reads=0)[0].name == "mar"
+    assert seen == ["in", "in"]
 
 
 def _neighbour(run_id: str, path: tuple[int, str], value: object, mar: float) -> dict:
