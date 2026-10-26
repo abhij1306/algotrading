@@ -35,13 +35,14 @@ __all__ = [
     "max_consecutive_losses",
     "quintile",
     "refusal_code",
+    "sessions_held",
     "sharpe",
     "sortino",
     "top_share_pct",
     "trade_list_hash",
 ]
 
-FORMAT_VERSION = "1.2"
+FORMAT_VERSION = "1.3"
 TRADING_DAYS = 252
 LADDER_LEVEL = "ladder_level"
 REFUSAL_CODES = (
@@ -260,6 +261,12 @@ def drawdowns(curve: Sequence[tuple[date, Decimal]], start: Decimal) -> Drawdown
         longest_end=longest[3],
         longest_recovered=longest[4],
     )
+
+
+def sessions_held(days: Sequence[date], entry: date, exit_day: date) -> int:
+    """The sessions of `days` (sorted) after `entry` up to and including `exit_day`: a trade's
+    hold in sessions (0 for a same-day exit)."""
+    return max(0, bisect_right(days, exit_day) - bisect_right(days, entry))
 
 
 def daily_returns(curve: Sequence[tuple[date, Decimal]], start: Decimal) -> dict[date, float]:

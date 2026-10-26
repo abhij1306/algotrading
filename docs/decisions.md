@@ -279,7 +279,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   and tries again each minute.
 - **Verification on real data.** See `CLAUDE.md`.
 - **Backtest results are files, never database rows (owner, 2026-10-26).** Every run writes one
-  folder in the Backtest Result Standard (`docs/backtests/result-standard.md`, v1.2) under
+  folder in the Backtest Result Standard (`docs/backtests/result-standard.md`, v1.3) under
   `HAT_DATA_ROOT/backtests/runs/<run_id>/`, with `config.json` to rerun it, and the DSR's trial
   count in `backtests/trials.json` beside them; `hat_live` is read-only to every backtest, a
   promotion run too. So results compare across strategies and sweeps in one shape, a refused

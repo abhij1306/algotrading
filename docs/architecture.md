@@ -22,7 +22,7 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock |
 | `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`) |
-| `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run folders (`folder`, `standard`, `trials`). `engine` and `risk` import only `spec` and `evidence` |
+| `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run folders (`folder`, `standard`, `trials`), promotion criteria and review (`criteria`, `review`). `engine` and `risk` import only `spec` and `evidence` |
 | `configs` | The config records (`records`: strategies, versions, risk policy versions, broker accounts, bots, regime models, criterion types), their file store (`store`) and a session's unit of work over them (`unit.configs_of`) |
 | `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
 
@@ -128,7 +128,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `config.json`, the CSVs, `audit.json`, `data_audit.json` and, for a completed run,
   `evidence.json`; `backtest/folder.py`), `backtests/data_audits/` each data audit by data
   snapshot, window and golden file (`data/audit.py`), `audits/golden/` the golden samples and
-  their check results (`data/golden.py`, `docs/backtests/golden-sample.md`), and `backtests/trials.json` each strategy's DSR trials
+  their check results (`data/golden.py`, `docs/backtests/golden-sample.md`), and `backtests/trials.json` the DSR trials of each strategy, universe and window
   (`backtest/trials.py`); no backtest writes the database. The process:
   `docs/backtests/process.md`. Promotion and the gates read a completed run whose `audit.json`
   passed or warned, through its `evidence.json` (metrics and trade buckets,

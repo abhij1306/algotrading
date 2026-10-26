@@ -10,9 +10,11 @@ run that fails (a refusal of the engine, an error) or is stopped publishes `run.
 status and `config.json`.
 
 A run's deflated Sharpe probability is scored here, at its completion, through the family
-floors (`dsr.family_deflated_sharpe`), over the strategy's trials in the registry (a distinct
-`resolved_hash` among its completed in-sample runs, this one included), with the variance of
-their Sharpe ratios; `dsr_n_trials` records the count.
+floors (`dsr.family_deflated_sharpe`), over its trial family in the registry (`trials`: the
+distinct `resolved_hash` values among the completed in-sample runs of its strategy, universe and
+window, this one included, and the prior trials seeded there; a hold-out run reads the family
+of the run it validates), with the variance of their Sharpe ratios; `dsr_n_trials` records the
+count and `dsr_n_trials_effective` the count the floors scored it at.
 """
 
 from __future__ import annotations
@@ -62,7 +64,7 @@ from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
 from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of
-from .dsr import PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
+from .dsr import MIN_TRIALS, PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
 from .evidence import (
     DSR_DIGITS,
     RunMetrics,
@@ -581,14 +583,26 @@ def _blocks(
     return identity, data, config
 
 
+# [A] fewer distinct variants than this make CSCV's rank a coin toss (with 2, PBO is 0 or 1 by
+# which half wins): the family's PBO is null below it.
+MIN_PBO_VARIANTS = 4
+
+
 def family_pbo(
-    root: Path, strategy: str, universe: str, own: Mapping[date, float], blocks: int = PBO_BLOCKS
+    root: Path,
+    strategy: str,
+    universe: str,
+    window: tuple[date, date],
+    own: Mapping[date, float],
+    blocks: int = PBO_BLOCKS,
 ) -> float | None:
     """The probability of backtest overfitting (`dsr.pbo`, CSCV) of a run's family: the
-    completed in-sample runs of its strategy on its universe with a readable equity file, and
-    the run itself (`own`, its daily returns), on the sessions all of them have a return for, a
-    rerun of the same variant counted once. None with fewer than 2 distinct variants, fewer
-    than 2 common sessions per block, or a series CSCV cannot score."""
+    completed in-sample runs of its strategy on its universe and window with a readable equity
+    file, and the run itself (`own`, its daily returns), on the sessions all of them have a
+    return for, a rerun of the same variant counted once. None with fewer than
+    `MIN_PBO_VARIANTS` distinct variants, fewer than 2 common sessions per block, or a series
+    CSCV cannot score."""
+    period = (window[0].isoformat(), window[1].isoformat())
     series = [
         found
         for doc in folder.list_runs(root)
@@ -596,13 +610,25 @@ def family_pbo(
         and (doc.get("identity") or {}).get("status") == COMPLETE
         and (doc.get("data") or {}).get("universe") == universe
         and (doc.get("data") or {}).get("split") == IN_SAMPLE
+        and ((doc.get("data") or {}).get("period_start"), (doc.get("data") or {}).get("period_end"))
+        == period
         and (found := folder.read_returns(root, str(doc["identity"].get("run_id")))) is not None
     ]
     distinct, sessions = distinct_on_common([*series, own])
-    if len(distinct) < 2 or sessions < 2 * blocks:
+    if len(distinct) < MIN_PBO_VARIANTS or sessions < 2 * blocks:
         return None
     found = pbo(distinct, blocks)
     return None if found is None else found.prob
+
+
+def trial_family(root: Path, strategy: str, universe: str, spec: RunSpec, labels: Labels) -> str:
+    """The registry key a run counts its trials in: its own strategy, universe and window, or for
+    a hold-out run the window of the in-sample run it validates (when its folder is readable)."""
+    start, end = spec.start.isoformat(), spec.end.isoformat()
+    if labels.split != IN_SAMPLE and labels.validates is not None:
+        data = (folder.read_run(root, labels.validates) or {}).get("data") or {}
+        start, end = data.get("period_start") or start, data.get("period_end") or end
+    return trials.family_key(strategy, universe, start, end)
 
 
 def _execute(
@@ -644,8 +670,9 @@ def _execute(
         resolved_hash = config_hash(resolved_of(spec))
         stats = RunMetrics.from_json(result.metrics).returns
         own = (resolved_hash, None if stats is None else stats.sr)
+        key = trial_family(root, target.strategy, target.universe, spec, labels)
         count, sharpes = trials.family(
-            trials.read_registry(root), target.strategy, own if labels.split == IN_SAMPLE else None
+            trials.read_registry(root), key, own if labels.split == IN_SAMPLE else None
         )
         deflated = family_deflated_sharpe(stats, count, trial_variance(sharpes))
         built = inputs(
@@ -655,15 +682,24 @@ def _execute(
             base_trades=None if labels.base is None else folder.trade_keys(root, labels.base),
             dsr_prob=deflated.prob,
             dsr_n_trials=count,
+            dsr_n_trials_effective=max(count, MIN_TRIALS),
             pbo=family_pbo(
                 root,
                 target.strategy,
                 target.universe,
+                (spec.start, spec.end),
                 daily_returns(result.equity, spec.initial_equity),
             ),
         )
         doc, csvs = folder.build(run_id, result, built)
-        audit = audit_run(doc, csvs, fill_ranges(data, csvs.get("trades")), spec.fills.slippage_bps)
+        audit = audit_run(
+            doc,
+            csvs,
+            fill_ranges(data, csvs.get("trades")),
+            spec.fills.slippage_bps,
+            data_audit=market.audit,
+            explained=data_audit.explanation_of(root, market.audit.get("digest")),
+        )
         pbo = built.pbo
         evidence = evidence_doc(
             run_id=run_id,
@@ -693,7 +729,7 @@ def _execute(
         logger.exception("backtest run %s failed", run_id)
         return give_up(FAILED, "backtest_error")
     if labels.split == IN_SAMPLE:
-        trials.record_trial(root, target.strategy, resolved_hash, run_id, own[1])
+        trials.record_trial(root, key, resolved_hash, run_id, own[1])
     return RunOutcome(label, run_id, COMPLETE, None, doc)
 
 

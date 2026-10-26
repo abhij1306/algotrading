@@ -18,7 +18,7 @@ result field means: `result-standard.md`.
   `backtests/sweeps/<sweep_id>.yaml` the variants files, `backtests/<sweep_id>.log` each sweep's
   printed lines (`... --variants FILE | tee ../../backtests/<sweep_id>.log`), `backtests/policies/`
   candidate policy files, and `strategy-notes/<strategy>.md` each strategy's notes (rule 1),
-  which `review --criteria` takes whole.
+  whose one `hat-criteria` block `review --criteria` reads.
 - **Paths.** A `--variants` path and a variant's `policy:` path resolve from the working
   directory, `backend/`: from a worktree's `backend/`, use absolute paths.
 
@@ -27,8 +27,8 @@ result field means: `result-standard.md`.
 1. **Criteria first.** Before the first run of a strategy, its promotion criteria (the thresholds
    it must meet, e.g. expectancy, MAR, DSR, PBO, trades, concentration, hold-out degradation) and
    its trial budget (how many variants may be tried) are written in the strategy's notes, the
-   owner's living document per strategy outside the repo. They are not changed after a run has
-   been seen.
+   owner's living document per strategy outside the repo, as one `hat-criteria` block (below).
+   They are not changed after a run has been seen; the review pins the block's sha256.
 2. **Windows.** Choose on the in-sample window; read the hold-out window once, for the one
    candidate, at the end. Trades from 2016-01-01 only (point-in-time membership starts there).
    A hold-out runs the candidate's own `config.json` (step 7) and is refused for a candidate
@@ -46,12 +46,17 @@ result field means: `result-standard.md`.
    records. Every variant of a sweep should run under its base's risk policy version: the run
    audit warns on a drift (`policy_drift`) and `compare` shows it. `binding.no_op: true` means
    the change never fired: it tells you nothing.
-4. **Trials count.** Every completed in-sample run with new parameters is a trial
-   (`dsr_n_trials`, `HAT_DATA_ROOT/backtests/trials.json`); stop at the budget. Reruns and
-   duplicates add none.
+4. **Trials count.** Every completed in-sample run with new parameters is a trial of its family
+   (strategy, universe, window: `dsr_n_trials`, `HAT_DATA_ROOT/backtests/trials.json`); stop at
+   the budget. Reruns and duplicates add none. Variants tried before the registry saw them (runs
+   since deleted) are seeded as prior trials: `python -m app.hat.backtest.trials seed --strategy
+   S1 --universe NIFTY500_PIT --from 2016-01-01 --to 2021-12-31 <sweep files>`; `trials show`
+   prints each family's count. Never delete `trials.json`, only run folders.
 5. **Audits gate.** A run refuses to start on a failed data audit
    (`backtest_data_audit_failed`). A run whose `audit.json` fails is not evidence until the
-   failure is explained.
+   failure is explained. The owner explains a data audit's warnings once per digest, one line
+   per finding, in `backtests/data_audits/<digest>.explained.md`; the run audit's `data` check
+   and the review name it.
 
 ## Steps
 
@@ -62,8 +67,8 @@ result field means: `result-standard.md`.
 | 3 | Sweep | `python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-01-01 --to 2021-12-31 --variants sweep.yaml` | one folder per variant |
 | 4 | Compare | `python -m app.hat.backtest.compare --sweep <s>` (or run ids): `knobs` is the knobs changed against the base (`5b` a declared bundle), `policy` the risk policy version (`3!2`: 3 against a base under 2) | stdout table |
 | 5 | Plateau | a sweep of the chosen variant's key parameters, each one step either side, `base` the chosen run | one folder per variant |
-| 6 | Review request | `python -m app.hat.backtest.review <run_id> --criteria <strategy notes>` | `<run folder>/review_request.md` |
-| 7 | Hold-out, once | `python -m app.hat.backtest --rerun <run_id> --split hold_out --from 2022-01-01 --to <last session>`: the candidate's `config.json` on the hold-out window (rule 2) | `backtests/runs/<run_id>/` |
+| 6 | Criteria and review request | `python -m app.hat.backtest.review <run_id> --criteria <strategy notes> --sweep <plateau sweep>` | `<run folder>/criteria.md`, `criteria.json`, `review_request.md` |
+| 7 | Hold-out, once | `python -m app.hat.backtest --rerun <run_id> --split hold_out --from 2022-01-01 --to <last session>`: the candidate's `config.json` on the hold-out window (rule 2), then `review <hold-out run_id> --criteria <notes>` (`--validates <run_id>` names the in-sample run) | `backtests/runs/<run_id>/` |
 | 8 | Paper | promote and run the sleeve in shadow (`runbook.md`, Strategy promotion) | |
 
 Rerun any run exactly from its folder: `python -m app.hat.backtest --rerun <run_id>` (a new run
@@ -73,10 +78,46 @@ based on the old one; refused `backtest_rerun_snapshot_differs` when the data ch
 Step 1 also runs inside every run (cached by data snapshot and window, so a sweep audits once);
 `--refresh` recomputes it. Step 1 includes the golden sample check (`golden-sample.md`; run it
 alone with `python -m app.hat.data.golden check`). When a deliberate data fix moves golden
-values, rebase them with a reason (`golden rebase`); never edit a golden file. Step 6: hand `review_request.md` to an independent review agent, which
+values, rebase them with a reason (`golden rebase`); never edit a golden file. Step 6 computes every criterion from the folders (never by hand) into `criteria.md`: `pass`
+only when every row passes, `fail` when one fails, `incomplete` when one is `not_run` (no plateau
+sweep, no hold-out yet). Then hand `review_request.md` to an independent review agent, which
 writes `audit_report.md` beside it with a `promote`, `hold` or `reject` verdict. A candidate goes
-to step 7 only if it meets every criterion of rule 1, its audits pass or each warning is
-explained, its plateau holds, and the review says `promote`.
+to step 7 only if its in-sample rows and plateau pass, neither audit fails (a failed or missing
+audit is no evidence; the `audits` rows fail it) and each warning is explained, and the review
+says `promote`.
+
+### Criteria block
+
+One fenced block tagged `hat-criteria` in the strategy's notes, in YAML; every key but
+`strategy`, `universe`, `in_sample` and `trial_budget` is optional, and an unknown key is
+refused.
+
+```yaml
+strategy: S1
+universe: NIFTY500_PIT                          # run.json data.universe
+in_sample: {from: 2016-01-01, to: 2021-12-31}   # the run's window must equal it
+hold_out: {from: 2022-01-01, to: 2026-10-23}
+trial_budget: 30          # the family's own trials; prior (seeded) trials count only in the DSR
+checks:                   # in-sample, each read from run.json (max_pct_adv from trades.csv)
+  mar_min: 0.6
+  longest_dd_sessions_below: 500
+  trades_min: 100
+  expectancy_r_min: 0.2
+  cagr_above_benchmark: true        # cagr_pct > benchmark_cagr_pct
+  cagr_ex_top5_min_share: 0.5       # cagr_ex_top5_trades_pct >= 0.5 x cagr_pct (cagr > 0)
+  max_pct_adv: 5                    # every entry's position_pct_adv; an entry without one fails
+  binding_required: true            # binding.no_op false
+  dsr_prob_min: 0.95                # the DSR at the family's trials today, not at completion
+  pbo_max: 0.5                      # the PBO over the family's runs today
+plateau:                  # rows from the --sweep runs that differ from the candidate in one path
+  mar_min: 0.5
+  parameters:             # a config.resolved path as config.overrides names it
+    - {path: strategy.exits.4.lookback_days, step: 5}   # value - 5 and value + 5
+    - {path: strategy.exits.2.enabled}                  # a boolean: its negation
+hold_out_checks:          # the complete hold-out run validating the in-sample run, read once
+  expectancy_min_share: 0.5         # >= 0.5 x in-sample expectancy_r (in-sample > 0)
+  mar_min: 0.4
+```
 
 ## Reading a run
 
@@ -119,7 +160,7 @@ whose audit warns or fails):
 | `equity_jumps` | a > 5% session move with no position held | a move beyond 20% of the value held |
 | `refusals` | `refusals.csv` counts differ from `run.json` | |
 | `trials` | no `dsr_n_trials` | no DSR |
-| `data` | no data audit | the data audit warned |
+| `data` | no data audit | the data audit warned (naming its checks and the owner's explanation, if any) |
 
 ## Variants file
 

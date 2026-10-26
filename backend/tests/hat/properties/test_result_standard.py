@@ -4,6 +4,7 @@ count and the schema check of a hand-built `run.json`. Small examples; no run of
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date, timedelta
 from decimal import Decimal
@@ -11,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from app.hat.backtest import folder, standard, trials
+from app.hat.backtest import evidence, folder, standard, trials
 from app.hat.backtest.signal_features import vcp_extras
 from app.hat.backtest.spec import BacktestError
 from app.hat.risk.decision import Reason
@@ -156,17 +157,78 @@ def test_changed_paths() -> None:
 # --- trials --------------------------------------------------------------------------------------
 
 
-def test_trial_count_is_distinct_hashes(tmp_path: Path) -> None:
-    assert trials.family({}, "S1", ("h1", 0.5)) == (1, [0.5])
-    trials.record_trial(tmp_path, "S1", "h1", "run-a", 0.5)
-    trials.record_trial(tmp_path, "S1", "h1", "run-b", 0.9)  # a duplicate keeps its first run
-    trials.record_trial(tmp_path, "S1", "h2", "run-c", None)
-    trials.record_trial(tmp_path, "S2", "h1", "run-d", 0.1)
+def test_trial_count_is_distinct_hashes_per_family(tmp_path: Path) -> None:
+    s1 = trials.family_key("S1", "U", date(2016, 1, 1), date(2021, 12, 31))
+    other = trials.family_key("S1", "U", "2022-01-01", "2026-10-23")
+    assert s1 == "S1/U/2016-01-01..2021-12-31"
+    assert trials.family({}, s1, ("h1", 0.5)) == (1, [0.5])
+    trials.record_trial(tmp_path, s1, "h1", "run-a", 0.5)
+    trials.record_trial(tmp_path, s1, "h1", "run-b", 0.9)  # a duplicate keeps its first run
+    trials.record_trial(tmp_path, s1, "h2", "run-c", None)
+    trials.record_trial(tmp_path, other, "h1", "run-d", 0.1)  # another window: its own family
     registry = trials.read_registry(tmp_path)
-    assert registry["S1"]["h1"] == trials.Trial("run-a", 0.5)
-    assert trials.family(registry, "S1", ("h1", 0.7)) == (2, [0.5])
-    assert trials.family(registry, "S1", ("h3", 0.7)) == (3, [0.5, 0.7])
-    assert trials.family(registry, "S1", None) == (2, [0.5])
+    assert registry[s1]["h1"] == trials.Trial("run-a", 0.5)
+    assert trials.family(registry, s1, ("h1", 0.7)) == (2, [0.5])
+    assert trials.family(registry, s1, ("h3", 0.7)) == (3, [0.5, 0.7])
+    assert trials.family(registry, other, None) == (1, [0.1])
+
+
+def test_a_hold_out_run_counts_in_its_in_sample_family() -> None:
+    run = {
+        "identity": {"strategy": "S1"},
+        "data": {"universe": "U", "split": "in_sample", "period_start": "a", "period_end": "b"},
+    }
+    hold = {**run, "data": {**run["data"], "split": "hold_out", "period_start": "c"}}
+    assert trials.family_of(run, None) == trials.family_of(hold, run) == "S1/U/a..b"
+    assert trials.family_of(hold, None) is None
+
+
+def test_a_hold_out_run_is_no_trial_of_its_family_now(tmp_path: Path) -> None:
+    key = trials.family_key("S1", "U", "a", "b")
+    trials.record_trial(tmp_path, key, "h1", "run-a", 0.5)
+    run = evidence.EvidenceRun(
+        "h", "S1", "h2", key, None, None, None, None, evidence.RunMetrics.from_json({}), {}
+    )
+    assert evidence.run_dsr(tmp_path, run)[1] == 2  # an in-sample run counts itself
+    hold = dataclasses.replace(run, in_sample=False)
+    assert evidence.run_dsr(tmp_path, hold)[1] == 1
+
+
+def test_prior_trials_count_but_carry_no_sharpe(tmp_path: Path) -> None:
+    key = trials.family_key("S1", "U", "2016-01-01", "2021-12-31")
+    old = [{"label": "a", "set": ["x=1"]}, {"label": "b", "set": ["x=2"]}]
+    prior = trials.prior_variants("s1.yaml", old)
+    assert sorted(prior.values()) == ["s1.yaml#a", "s1.yaml#b"]
+    assert all(k.startswith(trials.PRIOR) for k in prior)
+    assert trials.prior_variants("s1.yaml", {"variants": old}) == prior
+    # the same variant in another file is another trial (another base or policy)
+    assert set(trials.prior_variants("s2.yaml", old)).isdisjoint(prior)
+    with pytest.raises(ValueError, match="trials_bad_sweep"):
+        trials.prior_variants("s.yaml", [{"set": []}])
+    sweep = ("s1.yaml", json.dumps(old))
+    assert trials.seed(tmp_path, key, [sweep]) == (2, 2)
+    assert trials.seed(tmp_path, key, [sweep]) == (0, 2)  # seeding twice adds nothing
+    trials.record_trial(tmp_path, key, "h1", "run-a", 0.5)
+    registry = trials.read_registry(tmp_path)
+    assert trials.counts(registry, key) == (3, 2)
+    assert trials.family(registry, key, None) == (3, [0.5])
+
+
+def test_an_old_registry_is_refused_not_read_as_empty(tmp_path: Path) -> None:
+    trials.registry_path(tmp_path).parent.mkdir(parents=True)
+    trials.registry_path(tmp_path).write_text(
+        json.dumps({"version": 1, "strategies": {"S1": {}}}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="trials_registry_version"):
+        trials.read_registry(tmp_path)
+
+
+def test_sessions_held_counts_sessions_not_days() -> None:
+    days = [date(2016, 4, 20) + timedelta(days=n) for n in range(15)]
+    sessions = [d for d in days if d.weekday() < 5]  # 2016-04-20 is a Wednesday
+    assert standard.sessions_held(sessions, date(2016, 4, 20), date(2016, 5, 4)) == 10
+    assert standard.sessions_held(sessions, date(2016, 4, 20), date(2016, 4, 20)) == 0
+    assert standard.sessions_held(sessions, date(2016, 4, 22), date(2016, 4, 25)) == 1  # Fri-Mon
 
 
 # --- the run folder ------------------------------------------------------------------------------
