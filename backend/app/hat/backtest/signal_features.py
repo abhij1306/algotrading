@@ -20,6 +20,7 @@ column, not an input of any rule). The stock's levels come from `features_daily`
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import date
 from decimal import Decimal
@@ -158,7 +159,7 @@ class SignalFeatures:
 
     def _volume_ratio(self, instrument_id: str, day: date) -> float | None:
         volumes = self.view.volumes_through(instrument_id, day, VOLUME_BASELINE + 1)
-        if len(volumes) <= VOLUME_BASELINE or any(v != v for v in volumes):  # NaN: missing
+        if len(volumes) <= VOLUME_BASELINE or any(math.isnan(v) for v in volumes):
             return None
         base = sum(volumes[:-1]) / VOLUME_BASELINE
         return None if base <= 0 else _round(volumes[-1] / base)
