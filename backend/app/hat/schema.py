@@ -400,8 +400,8 @@ def seed_hat_reference(bind: Engine) -> None:
 # DDL to run. Triggers, functions and partitions are the upkeep's (`ensure_live_schema`,
 # `ensure_state_schema`) and are not compared.
 
-# Tables the models do not hold that may stay until the owner drops them: the P6b ISIN-merge
-# bookkeeping (runbook, DBA steps).
+# Tables hat_live's models do not hold that may stay there until the owner drops them: the P6b
+# ISIN-merge bookkeeping (runbook, DBA steps).
 DRIFT_ALLOWED_TABLES = frozenset({"hat_isin_merge", "hat_isin_merge_row"})
 
 
@@ -498,6 +498,7 @@ def schema_drift(
     *,
     ddl_indexes: Mapping[str, str] | None = None,
     ddl_constraints: Mapping[str, str] | None = None,
+    allowed_tables: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Every difference between the live schema and the models', as DDL to run or (for what the
     database has and the models do not) a comment. Empty when they match."""
@@ -506,7 +507,7 @@ def schema_drift(
     drift: list[str] = []
     for table in sorted(model.keys() - live.keys()):
         drift.append(f"-- table {table} is missing: metadata.create_all creates it")
-    for table in sorted(live.keys() - model.keys() - DRIFT_ALLOWED_TABLES):
+    for table in sorted(live.keys() - model.keys() - allowed_tables):
         drift.append(f"-- table {table} is in the database, not in the models")
     for table in sorted(model.keys() & live.keys()):
         drift += _column_drift(table, live[table]["columns"], model[table]["columns"])
@@ -604,7 +605,13 @@ def check_schema_drift(bind: Engine, base: DeclarativeMeta = Base) -> None:
         finally:
             transaction.rollback()
     ddl_indexes, ddl_constraints = pg_ddl_objects()
-    drift = schema_drift(live, model, ddl_indexes=ddl_indexes, ddl_constraints=ddl_constraints)
+    drift = schema_drift(
+        live,
+        model,
+        ddl_indexes=ddl_indexes,
+        ddl_constraints=ddl_constraints,
+        allowed_tables=DRIFT_ALLOWED_TABLES if base is Base else frozenset(),
+    )
     if drift:
         raise SchemaDriftError(
             "the database schema differs from the models; run this DDL, then restart:\n"

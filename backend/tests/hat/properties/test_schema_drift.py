@@ -76,6 +76,7 @@ def test_extras_are_drift_unless_allowed_or_pg_ddl_owned() -> None:
         MODEL,
         ddl_indexes={"hat_order_signal": "hat_order"},
         ddl_constraints={"hat_order_guard": "hat_order"},
+        allowed_tables=frozenset({"hat_isin_merge"}),
     )
     assert drift == [
         "-- table hat_stray is in the database, not in the models",
