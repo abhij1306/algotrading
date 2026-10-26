@@ -3,8 +3,8 @@ sample of store values, weighted to the risky spots (ex-dates, renames, delistin
 rebalances), looked up again in the current stores and compared within each item's tolerance.
 
     python -m app.hat.data.golden check [--file F]
-    python -m app.hat.data.golden rebase --reason "<text>" --items <id,...|all-drifted>
-        [--file F]
+    python -m app.hat.data.golden rebase --reason "<text>" (--item ID [--item ID ...] |
+        --all-drifted) [--file F]
 
 Golden files live in `HAT_DATA_ROOT/audits/golden/` as `YYYY-MM-DD[.N].json` (data, never
 committed; validated against `docs/backtests/golden-sample.schema.json`); a check reads the newest
@@ -839,7 +839,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     rebasing = sub.add_parser("rebase")
     rebasing.add_argument("--file")
     rebasing.add_argument("--reason", required=True)
-    rebasing.add_argument("--items", required=True)
+    named = rebasing.add_mutually_exclusive_group(required=True)
+    named.add_argument("--item", action="append", dest="items")  # an id may hold a comma
+    named.add_argument("--all-drifted", action="store_true")
     args = parser.parse_args(argv)
     if args.command == "rebase" and not args.reason.strip():
         sys.stderr.write("golden rebase refused: golden_rebase_reason_required\n")
@@ -870,7 +872,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     if args.command == "check":
         sys.stdout.write(json.dumps(summary(result, written), indent=2, default=_plain) + "\n")
         return 2 if failed(result) else 0
-    wanted = ALL_DRIFTED if args.items == ALL_DRIFTED else args.items.split(",")
+    wanted = ALL_DRIFTED if args.all_drifted else args.items
     today = datetime.now(UTC).astimezone(IST).date()
     try:
         new = rebase_doc(golden, result, wanted, args.reason, today, (path.name, file_digest(path)))

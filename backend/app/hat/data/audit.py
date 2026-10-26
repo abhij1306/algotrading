@@ -23,18 +23,31 @@ The checks (each a pure function of plain inputs; `gather` reads them):
   the session before (the scan, the regime gate and the breadth gate of trade date D read D-1).
 - `unique_keys`: one bar per (instrument, date) from one ISIN in an ingest run, one features row
   per (instrument, date), one close per index and date.
-- `bars_5m`: on sample sessions, the 5-minute bars start on the 5-minute grid inside the IST session
-  of their own day and fit the raw daily bar within the history envelope tolerance. Findings warn
+- `bars_5m`: every stored 5-minute day (the whole store, not the run's window): its bars start on
+  the 5-minute grid inside the IST session of their own day, it has a raw daily bar (its ISIN's
+  or its chain's), and its last close is within `CLOSE_5M_PCT` of the daily close; a day off by
+  the product of the stored price factors after it was stored on the adjusted basis
+  (`bar_5m_adjusted_basis`). Findings warn
   while a run reads no 5-minute bars, and fail when it does.
+- `industries`: the share of the run's member-days with no industry in force
+  (`industry_history`): above `INDUSTRY_UNKNOWN_PCT` it warns. run.json `data` carries the share.
+  The audit is shared by a sweep's variants, so the cap is judged per run, not here: a run whose
+  policy caps positions per industry below its open positions while any member-day is unknown
+  is refused (`industry_cap_refused`), as every unknown name would count as one industry.
+- `demergers`: each demerger on a member chain from the history's first session to the period's
+  end whose ex-day open gap and close gap (over NSE's previous close) differ by more than
+  `DEMERGER_GAP_PCT`, and whose factor is not the close gap (no correction took it there), warns;
+  the summary counts the member demergers in the period with no `announced_on` (the run cannot
+  exit before them, `demerger_notice.exit_day`), which run.json `data` carries too.
 - `golden`: the newest golden sample (`data/golden.py`, docs/backtests/golden-sample.md) looked up
   in the current stores: a drifted or missing value fails, as does an unreadable golden file; an
   unresolvable key, a recorded mismatch still open, or no golden file yet warns.
 
-A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot, window
-and golden file (`cache_key`), so the variants of a sweep, and later runs on the same data, read it
-instead of recomputing it. A run refuses to start on `fail` (`backtest_data_audit_failed`). The
-owner explains a `warn` once, beside it, as `<digest>.explained.md` (`explanation_of`); the run
-audit and the review read it.
+A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot, window,
+use of 5-minute bars and golden file (`cache_key`), so the variants of a sweep, and
+later runs on the same data, read it instead of recomputing it. A run refuses to start on
+`fail` (`backtest_data_audit_failed`). The owner explains a `warn` once, beside it, as
+`<digest>.explained.md` (`explanation_of`); the run audit and the review read it.
 """
 
 from __future__ import annotations
@@ -51,8 +64,7 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from decimal import Decimal
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -61,15 +73,22 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import HatMarket, HatTradingCalendar
-from ..time import IST
+from ..models import HatCorporateAction, HatInstrument, HatMarket, HatTradingCalendar
 from . import golden
 from .bars_store import BarStore
 from .chains import stored_adjustment
 from .features import ABOVE_MARGIN, compute_features
+from .industry_history import unknown_member_days
 from .isin import ORDINARY_EQUITY
 from .sessions import SESSION_CLOSE, SESSION_OPEN
-from .store import DATASET_FEATURES, FEATURE_NAMES, DataStore, latest_rows
+from .store import (
+    DATASET_FEATURES,
+    FEATURE_NAMES,
+    Adjustment,
+    DataStore,
+    latest_rows,
+    newest,
+)
 
 if TYPE_CHECKING:  # the market a run reads; `gather` takes it from the caller
     from ..backtest.data import MarketData
@@ -86,17 +105,21 @@ __all__ = [
     "check_breadth",
     "check_calendar",
     "check_corporate_actions",
+    "check_demergers",
     "check_features",
     "check_golden",
+    "check_industries",
     "check_gate_inputs",
     "check_missing_sessions",
     "check_survivorship",
     "check_unique_keys",
     "gather",
+    "industry_cap_refused",
     "read_cached",
+    "run_counts",
 ]
 
-AUDIT_VERSION = "2"  # a change to a check or a threshold changes it, so no stale audit is read
+AUDIT_VERSION = "3"  # a change to a check or a threshold changes it, so no stale audit is read
 PASS, WARN, FAIL, SKIPPED = "pass", "warn", "fail", "skipped"
 _RANK = {PASS: 0, SKIPPED: 0, WARN: 1, FAIL: 2}
 # Findings listed per check; the counts cover them all.
@@ -124,8 +147,13 @@ FACTOR_STEP = 1e-6  # a relative change of the adjustment factor this large is a
 SAMPLE_DAYS = 12
 SAMPLE_INSTRUMENTS = 8
 BREADTH_DAYS = 8
-BARS_5M_DAYS = 6
-BARS_5M_INSTRUMENTS = 20
+# NSE's daily close is the last half hour's weighted average, so a day's last 5-minute close
+# differs from it a little; more than this is a day on another price basis or a broken day.
+CLOSE_5M_PCT = 5.0
+INDUSTRY_UNKNOWN_PCT = 5.0
+# A demerger factor is the ex-day open gap (CA6); a close gap this far from it marks a thin open.
+DEMERGER_GAP_PCT = 15.0
+CLOSE_GAP_TOLERANCE = 0.01  # a factor this close to the close gap was corrected to it
 FEATURE_TOLERANCE = 1e-9  # relative; a rolling mean's last bits depend on where its frame starts
 # The features of one instrument's own rows; the percentile columns rank the whole market.
 PER_INSTRUMENT = tuple(n for n in FEATURE_NAMES if n not in {"rs_pct", "mom_rank"})
@@ -566,65 +594,163 @@ def check_unique_keys(
 
 @dataclass(frozen=True)
 class Day5m:
-    """One instrument's 5-minute bars of one session (start instants, aware, and OHLC) and its
-    raw daily bar (open, high, low, close), None without one."""
+    """One instrument's stored 5-minute day off its daily bar: its bars off the IST 5-minute
+    grid, its last close, the raw daily close (None without a daily bar), the product of its
+    chain's stored price factors with an ex-date after the day, and whether it is a member-day
+    of the run in its period."""
 
     instrument_id: str
     day: date
-    starts: Sequence[datetime]
-    bars: Sequence[tuple[float, float, float, float]]
-    daily: tuple[float, float, float, float] | None
+    off_grid: int
+    last_close: float
+    daily_close: float | None
+    later_factor: float
+    member: bool
 
 
-def _on_grid(start: datetime, day: date) -> bool:
-    local = start.astimezone(IST)
-    return (
-        local.date() == day
-        and SESSION_OPEN <= local.time() < SESSION_CLOSE
-        and local.minute % 5 == 0
-        and local.second == 0
-        and local.microsecond == 0
-    )
+def basis_of(day: Day5m) -> str | None:
+    """Why a 5-minute day is off its daily bar: `off_grid`, `no_daily`, `adjusted_basis` (its
+    last close over the daily close is the later factors' product, within `CLOSE_5M_PCT`),
+    `close_off` (more than `CLOSE_5M_PCT` off otherwise), or None when it fits."""
+    if day.off_grid:
+        return "off_grid"
+    if not day.daily_close:
+        return "no_daily"
+    ratio = day.last_close / day.daily_close
+    if abs(ratio - 1) * 100 <= CLOSE_5M_PCT:
+        return None
+    if day.later_factor != 1 and abs(ratio / day.later_factor - 1) * 100 <= CLOSE_5M_PCT:
+        return "adjusted_basis"
+    return "close_off"
 
 
-def fits_daily(
-    bars: Sequence[tuple[float, float, float, float]], daily: tuple[float, ...], tol: float
-) -> bool:
-    """Whether one day's 5-minute bars fit its raw daily bar (open, high, low, close) as the
-    history import requires (`bars_basis.check_day`): the high and the low within `tol`, the
-    first open and the last close inside the day's range widened by `tol`."""
-    high = max(b[1] for b in bars)
-    low = min(b[2] for b in bars)
-    floor, ceiling = daily[2] * (1 - tol), daily[1] * (1 + tol)
-    return (
-        abs(high - daily[1]) <= daily[1] * tol
-        and abs(low - daily[2]) <= daily[2] * tol
-        and floor <= bars[0][0] <= ceiling
-        and floor <= bars[-1][3] <= ceiling
-    )
-
-
-def check_bars_5m(days: Sequence[Day5m], tolerance: float, *, used: bool) -> dict[str, Any]:
-    """The sample's 5-minute bars: each start on the 5-minute grid inside its own day's IST
-    session, and each day fitting its raw daily bar within `tolerance`. A finding fails when the
+def check_bars_5m(days: Iterable[Day5m], scanned: int, *, used: bool) -> dict[str, Any]:
+    """The store-wide 5-minute scan (`scanned` days, `days` the ones off their daily bar): each
+    kind (`basis_of`) is a finding, its run member-days listed first. A finding fails when the
     run reads 5-minute bars (`used`) and warns otherwise."""
     severity = FAIL if used else WARN
-    off_grid, misfit = [], []
+    found: dict[str, list[Day5m]] = defaultdict(list)
     for d in days:
-        bad = [s.isoformat() for s in d.starts if not _on_grid(s, d.day)]
-        if bad:
-            off_grid.append(
-                {"instrument_id": d.instrument_id, "date": _iso(d.day), "starts": bad[:3]}
-            )
-        if d.bars and (d.daily is None or not fits_daily(d.bars, d.daily, tolerance)):
-            misfit.append({"instrument_id": d.instrument_id, "date": _iso(d.day)})
-    findings = []
-    if off_grid:
-        findings.append(_finding("bar_5m_off_ist_grid", severity, off_grid))
-    if misfit:
-        findings.append(_finding("bar_5m_off_daily", severity, misfit, tolerance=tolerance))
-    summary = {"days": len(days), "bars": sum(len(d.bars) for d in days), "used_by_run": used}
+        kind = basis_of(d)
+        if kind is not None:
+            found[kind].append(d)
+    findings, by_kind = [], {}
+    for kind, code in (
+        ("off_grid", "bar_5m_off_ist_grid"),
+        ("no_daily", "bar_5m_no_daily"),
+        ("adjusted_basis", "bar_5m_adjusted_basis"),
+        ("close_off", "bar_5m_close_off_daily"),
+    ):
+        rows = sorted(found.get(kind, ()), key=lambda d: (not d.member, d.instrument_id, d.day))
+        if not rows:
+            continue
+        by_kind[kind] = {"days": len(rows), "member_days": sum(d.member for d in rows)}
+        items = [
+            {
+                "instrument_id": d.instrument_id,
+                "date": _iso(d.day),
+                "member": d.member,
+                "ratio": None if not d.daily_close else round(d.last_close / d.daily_close, 4),
+                "later_factor": round(d.later_factor, 6),
+            }
+            for d in rows
+        ]
+        findings.append(_finding(code, severity, items, threshold_pct=CLOSE_5M_PCT))
+    summary = {"days_scanned": scanned, "off": by_kind, "used_by_run": used}
     return _check("bars_5m", summary, findings)
+
+
+# --- industries and demergers ------------------------------------------------------------------
+
+
+def check_industries(
+    sessions: Sequence[date],
+    spans: Mapping[str, Sequence[tuple[date, date | None]]],
+    history: Mapping[str, Sequence[tuple[date, str]]],
+    names: Mapping[str, str],
+) -> dict[str, Any]:
+    """The run's member-days (`sessions` in its period, sorted) with no industry in force
+    (`history`, each chain's (effective_from, industry)): more than `INDUSTRY_UNKNOWN_PCT`
+    warns."""
+    total, unknown, per_chain = unknown_member_days(sessions, spans, history)
+    pct = round(100 * unknown / total, 3) if total else 0.0
+    worst = sorted(per_chain.items(), key=lambda kv: (-kv[1], kv[0]))
+    items = [{"instrument_id": i, "symbol": names.get(i, i), "member_days": n} for i, n in worst]
+    findings = []
+    if pct > INDUSTRY_UNKNOWN_PCT:
+        findings.append(
+            _finding("industry_unknown", WARN, items, threshold_pct=INDUSTRY_UNKNOWN_PCT)
+        )
+    summary = {
+        "member_days": total,
+        "unknown_member_days": unknown,
+        "unknown_pct": pct,
+        "unknown_members": len(per_chain),
+    }
+    return _check("industries", summary, findings)
+
+
+INDUSTRY_CAP_REFUSED = "backtest_industry_cap_without_industries"
+
+
+def industry_cap_refused(doc: Mapping[str, Any], max_per_industry: int, max_open: int) -> bool:
+    """Whether a run whose policy holds at most `max_per_industry` positions per industry and
+    `max_open` in all is refused on the audit `doc`: the cap binds below the open positions
+    while a member-day has no industry (or the audit did not measure it), so every unknown name
+    would count as one industry. An uncapped run on the same audit is never refused."""
+    if max_per_industry >= max_open:
+        return False
+    found = next((c for c in doc.get("checks", ()) if c.get("name") == "industries"), None)
+    unknown = None if found is None else (found.get("summary") or {}).get("unknown_member_days")
+    return unknown != 0
+
+
+@dataclass(frozen=True)
+class Demerger:
+    """A stored demerger of a member chain: its factor, the ex-day open and close gaps over
+    NSE's previous close (None without a bar), and its `announced_on`."""
+
+    instrument_id: str
+    symbol: str
+    ex_date: date
+    factor: float
+    open_gap: float | None
+    close_gap: float | None
+    announced_on: date | None
+
+
+def check_demergers(rows: Iterable[Demerger], start: date, end: date) -> dict[str, Any]:
+    """A demerger whose open and close gaps differ by more than `DEMERGER_GAP_PCT` and whose
+    factor is not within `CLOSE_GAP_TOLERANCE` of the close gap (a thin open the factor still
+    takes) warns. The summary counts the demergers with an ex-date in `start..end` and no
+    `announced_on`: undated, a run holds through them."""
+    thin, undated, checked = [], [], 0
+    for d in sorted(rows, key=lambda d: (d.ex_date, d.symbol)):
+        row = {"instrument_id": d.instrument_id, "symbol": d.symbol, "ex_date": _iso(d.ex_date)}
+        if start <= d.ex_date <= end and d.announced_on is None:
+            undated.append(row)
+        if not d.open_gap or not d.close_gap:
+            continue
+        checked += 1
+        apart = abs(d.open_gap / d.close_gap - 1) * 100
+        if apart > DEMERGER_GAP_PCT and abs(d.factor / d.close_gap - 1) > CLOSE_GAP_TOLERANCE:
+            thin.append(
+                row
+                | {
+                    "factor": round(d.factor, 6),
+                    "open_gap": round(d.open_gap, 6),
+                    "close_gap": round(d.close_gap, 6),
+                }
+            )
+    findings = []
+    if thin:
+        findings.append(_finding("demerger_thin_open", WARN, thin, threshold_pct=DEMERGER_GAP_PCT))
+    summary = {
+        "gaps_checked": checked,
+        "undated_member_demergers": len(undated),
+        "undated": undated[:MAX_LISTED],
+    }
+    return _check("demergers", summary, findings)
 
 
 # --- golden sample ---------------------------------------------------------------------------
@@ -699,12 +825,17 @@ def audit_doc(checks: Sequence[Mapping[str, Any]], scope: Mapping[str, Any]) -> 
 
 
 def cache_key(
-    snapshot_id: str, start: date, end: date, *, used_5m: bool, golden_digest: str | None
+    snapshot_id: str,
+    start: date,
+    end: date,
+    *,
+    used_5m: bool,
+    golden_digest: str | None,
 ) -> str:
     """The audit's name under `data_audits/`: the audit version, the data snapshot (which covers
-    the universe's members and every bar, feature and close the run reads), the window and the
-    sha256 of the golden file the `golden` check reads (`golden.current`), so a new golden file
-    is checked."""
+    the universe's members and every bar, feature and close the run reads), the window, whether
+    the run reads 5-minute bars, and the sha256 of the golden
+    file the `golden` check reads (`golden.current`), so a new golden file is checked."""
     text = f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}|{golden_digest}"
     return hashlib.sha256(text.encode()).hexdigest()[:32]
 
@@ -774,13 +905,57 @@ _DAY_CLOSES_SQL = """
 SELECT CAST(instrument_id AS VARCHAR), isin, CAST(close AS DOUBLE)
 FROM bars_daily_cap WHERE date = ?
 """
-# The raw daily bars of the sampled 5-minute days.
-_RAW_SQL = """
-SELECT CAST(instrument_id AS VARCHAR), date, CAST(open AS DOUBLE), CAST(high AS DOUBLE),
-       CAST(low AS DOUBLE), CAST(close AS DOUBLE)
-FROM bars_daily_raw_latest
-WHERE date = ? AND instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
-"""
+# One year's stored 5-minute days off their raw daily bar (bars off the IST 5-minute grid of
+# their own day's session, no daily bar, or a last close more than ? off the daily close), with
+# the count of days scanned on every row (the first row is always kept to carry it). IST is
+# UTC+5:30, so a 5-minute grid instant is a multiple of 300 s in epoch time too. The daily
+# close is the latest ingest run's (`newest`), aggregated over the year's raw rows rather than
+# the `bars_daily_raw_latest` view, which ranks the whole store; it is the day's bar of the same
+# ISIN, else of its chain (a split's new ISIN may hold 5-minute days the old one has the bars of).
+_BARS_5M_SQL = f"""
+WITH day AS (
+    SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date,
+           arg_max(CAST(close AS DOUBLE), bar_start) AS last_close,
+           count(*) FILTER (WHERE epoch_us(bar_start) % 300000000 <> 0
+               OR CAST(timezone('Asia/Kolkata', bar_start) AS DATE) <> date
+               OR CAST(timezone('Asia/Kolkata', bar_start) AS TIME) < CAST(? AS TIME)
+               OR CAST(timezone('Asia/Kolkata', bar_start) AS TIME) >= CAST(? AS TIME)) AS off_grid
+    FROM read_parquet(?, hive_partitioning = true)
+    GROUP BY ALL
+), daily AS (
+    SELECT CAST(r.instrument_id AS VARCHAR) AS instrument_id, r.date,
+           CAST({newest("close")} AS DOUBLE) AS close
+    FROM bars_daily_raw r
+    WHERE r.date BETWEEN ? AND ?
+    GROUP BY ALL
+), chained AS (
+    SELECT COALESCE(l.chain_id, r.instrument_id) AS chain_id, r.date,
+           arg_max(r.close, r.instrument_id) AS close
+    FROM daily r LEFT JOIN lineage l ON l.instrument_id = r.instrument_id
+    GROUP BY ALL
+), joined AS (
+    SELECT d.*, COALESCE(own.close, other.close) AS close
+    FROM day d
+    LEFT JOIN lineage l ON l.instrument_id = d.instrument_id
+    LEFT JOIN daily own ON own.instrument_id = d.instrument_id AND own.date = d.date
+    LEFT JOIN chained other
+           ON other.chain_id = COALESCE(l.chain_id, d.instrument_id) AND other.date = d.date
+)
+SELECT instrument_id, date, off_grid, last_close, close, count(*) OVER () AS scanned
+FROM joined
+QUALIFY off_grid > 0 OR close IS NULL OR abs(last_close / close - 1) * 100 > ?
+    OR row_number() OVER () = 1
+"""  # noqa: S608 - `newest` is a constant expression
+# The raw open, close and NSE previous close of the demergers' ex-days (the latest ingest run's
+# row, `newest`, over those days alone).
+_EX_DAY_SQL = f"""
+SELECT CAST(r.instrument_id AS VARCHAR), r.date, CAST({newest("open")} AS DOUBLE),
+       CAST({newest("close")} AS DOUBLE), CAST({newest("prev_close")} AS DOUBLE)
+FROM bars_daily_raw r
+WHERE r.date IN (SELECT unnest(CAST(? AS DATE[])))
+  AND CAST(r.instrument_id AS VARCHAR) IN (SELECT unnest(CAST(? AS VARCHAR[])))
+GROUP BY ALL
+"""  # noqa: S608 - `newest` is a constant expression
 
 
 def _spread(items: Sequence[Any], count: int) -> list[Any]:
@@ -874,36 +1049,125 @@ def _breadth_samples(
     return out
 
 
+def later_factors(adjustment: Adjustment) -> dict[str, tuple[list[date], list[float]]]:
+    """Each chain's stored price-factor ex-dates (sorted) and, at each, the product of its
+    factors from that ex-date on: the factor a price of a day before it carries on the adjusted
+    basis."""
+    by_chain: dict[str, list[tuple[date, float]]] = defaultdict(list)
+    for f in adjustment.factors:
+        by_chain[str(f.instrument_id)].append((f.ex_date, float(f.factor)))
+    out = {}
+    for chain, rows in by_chain.items():
+        rows.sort()
+        products, running = [], 1.0
+        for _, factor in reversed(rows):
+            running *= factor
+            products.append(running)
+        out[chain] = ([d for d, _ in rows], products[::-1])
+    return out
+
+
+def _later(factors: Mapping[str, tuple[list[date], list[float]]], chain: str, day: date) -> float:
+    days, products = factors.get(chain, ([], []))
+    at = bisect_right(days, day)
+    return products[at] if at < len(products) else 1.0
+
+
 def _bars_5m(
-    root: Path, con: duckdb.DuckDBPyConnection, market: MarketData, sessions: Sequence[date]
-) -> list[Day5m]:
-    """The sampled sessions' 5-minute bars of up to `BARS_5M_INSTRUMENTS` members each, with
-    their raw daily bars."""
-    store = BarStore(root)
-    held = set(store.days())
+    root: Path,
+    con: duckdb.DuckDBPyConnection,
+    adjustment: Adjustment,
+    spans: Mapping[str, Sequence[tuple[date, date | None]]],
+    start: date,
+    end: date,
+) -> tuple[list[Day5m], int]:
+    """Every stored 5-minute day off its daily bar (`_BARS_5M_SQL`) and the days scanned."""
+    years = sorted({d.year for d in BarStore(root).days()})
+    folder = BarStore(root).partition(date(2000, 1, 1)).parent
+    rows, scanned = [], 0
+    for year in years:  # a year at a time: the whole store does not fit DuckDB's memory limit
+        found = con.execute(
+            _BARS_5M_SQL,
+            [
+                SESSION_OPEN.isoformat(),
+                SESSION_CLOSE.isoformat(),
+                str(folder / f"date={year}-*" / "*.parquet"),
+                date(year, 1, 1),
+                date(year, 12, 31),
+                CLOSE_5M_PCT,
+            ],
+        ).fetchall()
+        rows.extend(found)
+        scanned += found[0][5] if found else 0
+    factors = later_factors(adjustment)
     out = []
-    for day in _spread([d for d in sessions if d in held], BARS_5M_DAYS):
-        rows: dict[str, list] = defaultdict(list)
-        members = {str(m.instrument_id) for m in market.members}
-        for r in store.read(day):
-            if str(r.instrument_id) in members:
-                rows[str(r.instrument_id)].append(r)
-        picked = _hashed(rows, _iso(day), BARS_5M_INSTRUMENTS)
-        daily = {
-            i: (o, h, low, c)
-            for i, _, o, h, low, c in con.execute(_RAW_SQL, [day, picked]).fetchall()
-        }
-        for instrument_id in picked:
-            bars = sorted(rows[instrument_id], key=lambda r: r.bar_start)
-            out.append(
-                Day5m(
-                    instrument_id,
-                    day,
-                    [r.bar_start for r in bars],
-                    [(float(r.open), float(r.high), float(r.low), float(r.close)) for r in bars],
-                    daily.get(instrument_id),
-                )
+    for instrument_id, day, off_grid, last_close, daily_close, _ in rows:
+        chain = adjustment.lineage.get(instrument_id, instrument_id)
+        member = start <= day <= end and any(
+            lo <= day and (hi is None or day < hi) for lo, hi in spans.get(chain, ())
+        )
+        out.append(
+            Day5m(
+                instrument_id,
+                day,
+                off_grid,
+                last_close,
+                daily_close,
+                _later(factors, chain, day),
+                member,
             )
+        )
+    return out, scanned
+
+
+def _demergers(
+    session: Session,
+    con: duckdb.DuckDBPyConnection,
+    adjustment: Adjustment,
+    spans: Mapping[str, Sequence[tuple[date, date | None]]],
+    first: date,
+    end: date,
+) -> list[Demerger]:
+    """The stored demergers of the member chains with an ex-date in `first..end`, with the
+    ex-day gaps of the chain's bar that day (any of its ISINs)."""
+    actions = session.execute(
+        select(
+            HatCorporateAction.instrument_id,
+            HatInstrument.symbol,
+            HatCorporateAction.ex_date,
+            HatCorporateAction.adjustment_factor,
+            HatCorporateAction.announced_on,
+        )
+        .join(HatInstrument, HatInstrument.id == HatCorporateAction.instrument_id)
+        .where(
+            HatCorporateAction.demerger.is_(True), HatCorporateAction.ex_date.between(first, end)
+        )
+    ).all()
+    lineage = adjustment.lineage
+    wanted = [a for a in actions if lineage.get(str(a[0]), str(a[0])) in spans]
+    chain_ids = {i for i in {*lineage, *lineage.values()} if lineage.get(i, i) in spans}
+    gaps: dict[tuple[str, date], tuple[float, float]] = {}
+    if wanted:
+        ids = sorted(chain_ids | {str(a[0]) for a in wanted})
+        days = sorted({a[2] for a in wanted})
+        for i, day, open_, close, prev in con.execute(_EX_DAY_SQL, [days, ids]).fetchall():
+            if prev:
+                gaps[(lineage.get(i, i), day)] = (open_ / prev, close / prev)
+    out = []
+    for instrument_id, symbol, ex_date, factor, announced_on in wanted:
+        chain = lineage.get(str(instrument_id), str(instrument_id))
+        open_gap, close_gap = gaps.get((chain, ex_date), (None, None))
+        out.append(
+            Demerger(chain, symbol, ex_date, float(factor), open_gap, close_gap, announced_on)
+        )
+    return out
+
+
+def _history(market: MarketData) -> dict[str, list[tuple[date, str]]]:
+    """The run's industry classifications per chain; one plain name is in force throughout."""
+    out = {}
+    for chain, found in market.industries.items():
+        out[chain] = [(date.min, found)] if isinstance(found, str) else sorted(found)
     return out
 
 
@@ -915,12 +1179,12 @@ def gather(
     start: date,
     end: date,
     *,
-    tolerance: Decimal,
     used_5m: bool = False,
 ) -> dict[str, Any]:
     """The audit document of the market a run of `start..end` reads (`backtest.data.load_market`
     and its snapshot): reads what the checks need beyond it (the calendar, the store's duplicate
-    keys, the sampled bars, features, breadth and 5-minute bars) and runs every check."""
+    keys, the sampled bars, features and breadth, the 5-minute store and the demergers) and runs
+    every check."""
     sessions = sorted(market.days)
     in_window = [d for d in sessions if start <= d <= end]
     names = _names(market)
@@ -950,7 +1214,8 @@ def gather(
         ]
         feature_samples = _feature_samples(con, market, in_window, spans, bar_days)
         breadth_samples = _breadth_samples(store, con, market, in_window)
-        bars_5m = _bars_5m(store.root, con, market, in_window)
+        bars_5m, scanned_5m = _bars_5m(store.root, con, adjustment, spans, start, end)
+        demergers = _demergers(session, con, adjustment, spans, sessions[0], end)
         golden_check = _golden(store, session, con, adjustment.lineage)
     regime_index = snapshot.get("index")
     lookahead = [
@@ -984,9 +1249,12 @@ def gather(
             market.features.select(pl.col("instrument_id").cast(pl.String), "date").iter_rows(),
             ((name, d) for name, points in market.index_closes.items() for d, _ in points),
         ),
-        check_bars_5m(bars_5m, float(tolerance), used=used_5m)
-        if bars_5m
-        else _check("bars_5m", {"days": 0, "used_by_run": used_5m}, []) | {"status": SKIPPED},
+        check_bars_5m(bars_5m, scanned_5m, used=used_5m)
+        if scanned_5m
+        else _check("bars_5m", {"days_scanned": 0, "used_by_run": used_5m}, [])
+        | {"status": SKIPPED},
+        check_industries(in_window, spans, _history(market), names),
+        check_demergers(demergers, start, end),
         golden_check,
     ]
     scope = {
@@ -1001,6 +1269,16 @@ def gather(
 
 
 # --- the command line --------------------------------------------------------------------------
+
+
+def run_counts(doc: Mapping[str, Any]) -> dict[str, Any]:
+    """What run.json's `data` carries of the audit beyond its status: the share of member-days
+    with no industry and the undated member demergers (None from an audit without the check)."""
+    found = {c.get("name"): c.get("summary") or {} for c in doc.get("checks", ())}
+    return {
+        "industry_unknown_pct": found.get("industries", {}).get("unknown_pct"),
+        "undated_member_demergers": found.get("demergers", {}).get("undated_member_demergers"),
+    }
 
 
 def summary(doc: Mapping[str, Any], path: Path | None = None) -> dict[str, Any]:
@@ -1087,7 +1365,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 snapshot,
                 args.start,
                 args.end,
-                tolerance=settings.history_envelope_tol,
             ),
             refresh=args.refresh,
         )

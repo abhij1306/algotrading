@@ -239,6 +239,23 @@ explains each: a second share class, a vacancy, a non-stock row). Every ISIN mus
 instrument, or nothing is written. A run ending after `--as-of` is refused: after an index change
 notice, extend the CSV and load it again.
 
+### Industry history
+
+`hat_industry` holds each chain's point-in-time industry (docs/decisions.md, Industry history),
+built from NIFTY 500 list snapshots kept under `<HAT_DATA_ROOT>/admin/nifty500-industry/` as
+`YYYY-MM-DD.csv` (the capture day; NSE's list and its archived copies, e.g. the Wayback
+Machine's). Add a newer list as a new file and load again:
+
+```bash
+$ADMIN load-industry-history --dir nifty500-industry           # dry run: changes and coverage
+$ADMIN load-industry-history --dir nifty500-industry --apply
+```
+
+It replaces each classified chain's rows dated up to the newest snapshot (rows the nightly load
+wrote later stay) and prints the old-label mapping it used and the NIFTY 500 coverage from 2016
+(member chains classified, unknown member-days before and after, the names left unknown).
+Loading the same files again changes nothing.
+
 ### First live session checks (O2 day)
 
 Checks on the first session with a real Fyers account; note each in the Check log. They place

@@ -143,7 +143,9 @@ whose audit warns or fails):
 | `corporate_actions` | an adjustment factor that is not a positive number | an adjusted move > 20% on an ex-date; an action-shaped raw move (a split or bonus ratio) with no factor |
 | `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D; a sampled member day with a bar and no feature row | a session whose previous session has no index close or breadth (the gates read D-1) |
 | `unique_keys` | a duplicate bar, features row or index close | |
-| `bars_5m` | (when the run reads them) bars off the IST 5-minute grid or outside the daily bar | the same, while no run reads them |
+| `bars_5m` | (when the run reads them) over the whole 5-minute store: a day with bars off the IST 5-minute grid, without a daily bar, or whose last close is > 5% off the daily close (`bar_5m_adjusted_basis` when the ratio is the stored factors after the day) | the same, while no run reads them |
+| `industries` | | > 5% of the member-days have no industry (`unknown`); a run (a sweep variant alone) whose policy caps positions per industry below its open positions while any member-day has no industry is refused `backtest_industry_cap_without_industries` |
+| `demergers` | | a member demerger whose ex-day open and close gaps differ > 15% and whose factor is not the close gap; the summary counts the period's undated member demergers (no `announced_on`) |
 | `golden` | a golden sample value drifted or missing; an unreadable golden file | an unresolvable key; a recorded mismatch still open; no golden file yet |
 
 ### Run audit (`audit.json`, `app/hat/backtest/run_audit.py`)
