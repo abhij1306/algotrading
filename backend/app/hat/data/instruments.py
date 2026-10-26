@@ -23,6 +23,7 @@ from ..models import (
     HatInstrument,
     HatPriceBand,
 )
+from .chains import chain_members, stored_links
 from .corporate_actions import lock_reference_data
 from .reference import BandRow, IndustryRow, Security, one_per_isin
 from .symbol_history import (
@@ -273,10 +274,13 @@ def load_price_bands(
     return written, unknown
 
 
-def current_industry(session: Session, instrument_id: uuid.UUID, on: date) -> HatIndustry | None:
+def current_industry(
+    session: Session, instrument_ids: Collection[uuid.UUID], on: date
+) -> HatIndustry | None:
+    """The classification in force on `on` of a chain (`instrument_ids`, all its ISINs)."""
     return session.scalar(
         select(HatIndustry)
-        .where(HatIndustry.instrument_id == instrument_id, HatIndustry.effective_from <= on)
+        .where(HatIndustry.instrument_id.in_(instrument_ids), HatIndustry.effective_from <= on)
         .order_by(HatIndustry.effective_from.desc())
         .limit(1)
     )
@@ -285,13 +289,18 @@ def current_industry(session: Session, instrument_id: uuid.UUID, on: date) -> Ha
 def load_industries(
     session: Session, market_id: uuid.UUID, rows: Sequence[IndustryRow], effective: date
 ) -> tuple[int, int]:
-    """Record industries that differ from the current one. Returns (written, unmatched)."""
+    """Record industries that differ from the instrument chain's current one, on its current
+    ISIN. Returns (written, unmatched). A chain with no classification yet takes its first from
+    its earliest listing (`listed_on` of any of its ISINs), not from `effective`: the industry is
+    the company's, and a first row dated at the load would leave every earlier day unknown
+    (docs/decisions.md, Industry history). A change appends from `effective`."""
     by_symbol: dict[str, HatInstrument] = {}
     for (symbol, series), instrument in sorted(
         _active_by_symbol_series(session, market_id).items()
     ):
         if series == "EQ" or symbol not in by_symbol:
             by_symbol[symbol] = instrument
+    members = chain_members(stored_links(session))
     written = unmatched = 0
     for row in rows:
         instrument = by_symbol.get(row.symbol)
@@ -304,8 +313,25 @@ def load_industries(
                 same_day.sector, same_day.industry = row.sector, row.industry
                 written += 1
             continue
-        current = current_industry(session, instrument.id, effective)
-        if current is None or (current.sector, current.industry) != (row.sector, row.industry):
+        chain = [
+            uuid.UUID(i) for i in members.get(str(instrument.id), frozenset({str(instrument.id)}))
+        ]
+        current = current_industry(session, chain, effective)
+        if current is None:
+            listed = session.scalars(
+                select(HatInstrument.listed_on).where(HatInstrument.id.in_(chain))
+            ).all()
+            start = min((d for d in listed if d is not None), default=effective)
+            session.add(
+                HatIndustry(
+                    instrument_id=instrument.id,
+                    sector=row.sector,
+                    industry=row.industry,
+                    effective_from=min(start, effective),
+                )
+            )
+            written += 1
+        elif (current.sector, current.industry) != (row.sector, row.industry):
             session.add(
                 HatIndustry(
                     instrument_id=instrument.id,

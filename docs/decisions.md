@@ -164,6 +164,20 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   Until that membership is resolved, a backtest's first session is 2016-01-01 or later; a run
   starting earlier is refused `backtest_starts_before_membership@2016-01-01`. Bars before 2016
   still warm the indicators up.
+- **Industry history (orchestrator, 2026-10-26).** One taxonomy: the `Industry` column of NSE's
+  current NIFTY 500 list. Each instrument chain takes its industry from the NIFTY 500 list
+  snapshots that list one of its ISINs in that taxonomy (the lists from 2022; the 2010-2020
+  CNX 500 lists use another), on its current ISIN: the first is in force from the chain's first
+  bar, and a later snapshot under another industry appends a reclassification from its capture
+  day. A chain only the old lists name takes the current label its old label maps to where the
+  mapping is unambiguous (at least 90% of 3 or more chains both lists name agree), else it stays
+  unknown; nothing is guessed. The industry is the company's, so a first classification is
+  never dated at the load: the nightly reference load dates a new chain's first from its
+  listing and appends changes from the load day. Why: a load-dated first row left every earlier
+  day `unknown`, so by-industry results were empty and the per-industry cap capped the whole
+  book. The data audit warns above 5% unknown member-days and fails a run whose per-industry
+  cap is below its open positions while any member-day is unknown. Loaded by
+  `load-industry-history` (runbook).
 - **Total return for signals, price basis for money.** Signals read dividend-adjusted series so a
   dividend never looks like a fall; fills and orders use the prices the broker sees. Every
   dividend counts: leaving small ones out biases returns down.

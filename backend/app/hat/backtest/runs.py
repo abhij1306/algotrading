@@ -59,7 +59,6 @@ from ..models import HatUniverse, HatUniverseVersion
 from ..money import exact
 from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_version, parse_policy
 from ..risk.policy_upkeep import load_versions
-from ..settings import operator_settings
 from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
@@ -339,11 +338,16 @@ def _load(
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
     )
     used_5m = bool(data.intraday)
+    capped = any(
+        s.policy.policy.max_positions_per_industry < s.policy.policy.max_open_positions
+        for s in specs
+    )
     key = data_audit.cache_key(
         str(snapshot["content_digest"]),
         *period,
         used_5m=used_5m,
         golden_digest=golden.current(root),
+        industry_capped=capped,
     )
     audit, _ = data_audit.cached(
         root,
@@ -354,8 +358,8 @@ def _load(
             data,
             snapshot,
             *period,
-            tolerance=operator_settings().history_envelope_tol,
             used_5m=used_5m,
+            industry_capped=capped,
         ),
     )
     if audit.get("status") == data_audit.FAIL:
@@ -567,6 +571,7 @@ def _blocks(
         "period_end": spec.end.isoformat(),
         "benchmark": BENCHMARK_LABEL,
         "audit": _audit_ref(market.audit),
+        **data_audit.run_counts(market.audit),
     }
     config = {
         "overrides": changed_paths(resolved, base_resolved)

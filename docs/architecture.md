@@ -127,7 +127,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   (`docs/backtests/result-standard.md`: `run.json` validated against `run.schema.json`,
   `config.json`, the CSVs, `audit.json`, `data_audit.json` and, for a completed run,
   `evidence.json`; `backtest/folder.py`), `backtests/data_audits/` each data audit by data
-  snapshot, window and golden file (`data/audit.py`), `audits/golden/` the golden samples and
+  snapshot, window, 5-minute use, industry cap and golden file (`data/audit.py`), `audits/golden/` the golden samples and
   their check results (`data/golden.py`, `docs/backtests/golden-sample.md`), and `backtests/trials.json` the DSR trials of each strategy, universe and window
   (`backtest/trials.py`); no backtest writes the database. The process:
   `docs/backtests/process.md`. Promotion and the gates read a completed run whose `audit.json`

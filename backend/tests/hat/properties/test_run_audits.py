@@ -4,7 +4,7 @@ hand-built inputs, and the review request. No market load, no run of the loop.""
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -14,6 +14,7 @@ from app.hat.backtest import compare, review, run_audit
 from app.hat.backtest.runs import parse_variants
 from app.hat.backtest.spec import INITIAL_EQUITY, RunConventions
 from app.hat.data import audit
+from app.hat.data.store import ActionFactor, Adjustment
 
 D = Decimal
 DAYS = [date(2024, 1, 1) + timedelta(days=n) for n in range(10)]  # ten "sessions"
@@ -140,23 +141,62 @@ def test_unique_keys() -> None:
     assert _codes(check) == {"duplicate_bar": 1, "duplicate_feature_row": 1}
 
 
-def test_bars_5m_grid_and_fit() -> None:
-    at = datetime(2024, 1, 1, 3, 45, tzinfo=UTC)  # 09:15 IST
-    good = audit.Day5m(
-        "a",
-        DAYS[0],
-        [at, at + timedelta(minutes=5)],
-        [(100.0, 101.0, 99.0, 100.5), (100.5, 102.0, 100.0, 101.0)],
-        (100.0, 102.0, 99.0, 101.5),
-    )
-    assert audit.check_bars_5m([good], 0.005, used=False)["status"] == audit.PASS
-    late = at + timedelta(hours=6, minutes=20)  # 15:35 IST, after the close
-    shifted = audit.Day5m("a", DAYS[0], [late], good.bars[:1], good.daily)
-    off = audit.Day5m("a", DAYS[0], good.starts, good.bars, (100.0, 110.0, 99.0, 101.5))
-    check = audit.check_bars_5m([shifted, off], 0.005, used=True)
-    assert _codes(check) == {"bar_5m_off_ist_grid": 1, "bar_5m_off_daily": 2}
+def test_bars_5m_scan_names_the_adjusted_basis() -> None:
+    def day(last: float, daily: float | None, later: float = 1.0, grid: int = 0) -> audit.Day5m:
+        return audit.Day5m("a", DAYS[0], grid, last, daily, later, member=True)
+
+    assert audit.basis_of(day(100.4, 100.0)) is None  # the close is a 30-minute average
+    assert audit.basis_of(day(50.1, 100.0, later=0.5)) == "adjusted_basis"
+    assert audit.basis_of(day(50.1, 100.0)) == "close_off"
+    assert audit.basis_of(day(100.0, None)) == "no_daily"
+    assert audit.basis_of(day(100.0, 100.0, grid=1)) == "off_grid"
+    check = audit.check_bars_5m([day(50.1, 100.0, later=0.5), day(100.0, None)], 10, used=True)
+    assert _codes(check) == {"bar_5m_adjusted_basis": 1, "bar_5m_no_daily": 1}
     assert check["status"] == audit.FAIL
-    assert audit.check_bars_5m([off], 0.005, used=False)["status"] == audit.WARN
+    assert audit.check_bars_5m([day(100.4, 100.0)], 10, used=True)["status"] == audit.PASS
+
+
+def test_later_factors_multiply_the_ex_dates_after_a_day() -> None:
+    adjustment = Adjustment(
+        (ActionFactor("c", DAYS[2], Decimal("0.5")), ActionFactor("c", DAYS[5], Decimal("0.2"))),
+        {},
+    )
+    factors = audit.later_factors(adjustment)
+    assert audit._later(factors, "c", DAYS[0]) == pytest.approx(0.1)
+    assert audit._later(factors, "c", DAYS[2]) == pytest.approx(0.2)  # the ex-day is adjusted
+    assert audit._later(factors, "c", DAYS[5]) == 1.0
+    assert audit._later(factors, "x", DAYS[0]) == 1.0
+
+
+def test_industries_warn_on_unknown_and_fail_under_a_cap() -> None:
+    spans = {"a": [(DAYS[0], None)], "b": [(DAYS[0], DAYS[5])]}
+    history = {"a": [(DAYS[0], "Power")], "b": [(DAYS[3], "Realty")]}
+    check = audit.check_industries(DAYS, spans, history, {}, capped=False)
+    assert check["summary"]["member_days"] == len(DAYS) + 5
+    assert check["summary"]["unknown_member_days"] == 3
+    assert _codes(check) == {"industry_unknown": 1}
+    capped = audit.check_industries(DAYS, spans, history, {}, capped=True)
+    assert capped["status"] == audit.FAIL
+    full = {"a": history["a"], "b": [(DAYS[0], "Realty")]}
+    assert audit.check_industries(DAYS, spans, full, {}, capped=True)["status"] == audit.PASS
+
+
+def test_demergers_flag_a_thin_open_not_corrected() -> None:
+    def demerger(factor: float, announced: date | None = DAYS[0]) -> audit.Demerger:
+        return audit.Demerger("c", "S", DAYS[4], factor, 0.172, 0.248, announced)
+
+    assert _codes(audit.check_demergers([demerger(0.172)], DAYS[0], DAYS[-1])) == {
+        "demerger_thin_open": 1
+    }
+    corrected = audit.check_demergers([demerger(0.2483, None)], DAYS[0], DAYS[-1])
+    assert corrected["status"] == audit.PASS
+    assert corrected["summary"]["undated_member_demergers"] == 1
+    assert (
+        audit.check_demergers([demerger(0.2483, None)], DAYS[5], DAYS[-1])["summary"][
+            "undated_member_demergers"
+        ]
+        == 0
+    )
 
 
 def test_audit_doc_digest_and_cache(tmp_path: Path) -> None:
@@ -168,6 +208,9 @@ def test_audit_doc_digest_and_cache(tmp_path: Path) -> None:
     key = audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False, golden_digest=None)
     assert key != audit.cache_key("abc", DAYS[0], DAYS[2], used_5m=False, golden_digest=None)
     assert key != audit.cache_key("abc", DAYS[0], DAYS[1], used_5m=False, golden_digest="d")
+    assert key != audit.cache_key(
+        "abc", DAYS[0], DAYS[1], used_5m=False, golden_digest=None, industry_capped=True
+    )
     calls = []
 
     def compute() -> dict:

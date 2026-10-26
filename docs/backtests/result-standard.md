@@ -315,7 +315,9 @@ metrics, refusals and binding, newest first), `GET /api/hat/backtests/runs/{run_
 (`app/hat/backtest/run_audit.py`): each a document with `status` (`pass` | `warn` | `fail`), its
 checks and their findings, and a `digest` (sha256 of the rest). The checks and their thresholds:
 `process.md`. `run.json` `data.audit` is `{digest, status}` of the data audit, and `config.json`
-`data_audit` the same. A run whose data audit fails does not start and writes no folder
+`data_audit` the same; `data.industry_unknown_pct` is the share of member-days with no industry
+and `data.undated_member_demergers` the member demergers in the period with no `announced_on`
+(both from the data audit). A run whose data audit fails does not start and writes no folder
 (`backtest_data_audit_failed`).
 
 **Start capital.** `config.json` `conventions.start_capital` is the run's start capital (₹10,00,000

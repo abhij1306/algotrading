@@ -221,6 +221,18 @@
               ]
             }
           }
+        },
+        "industry_unknown_pct": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "undated_member_demergers": {
+          "type": [
+            "integer",
+            "null"
+          ]
         }
       }
     },

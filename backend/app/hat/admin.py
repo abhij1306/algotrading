@@ -46,6 +46,11 @@ Commands, in first-deploy order:
                                               an index's membership history (QA5): replaces the
                                               file's index's rows; without --apply a dry run that
                                               writes nothing
+    load-industry-history --dir DIR [--apply]  the point-in-time industries (hat_industry) from
+                                              the NIFTY 500 list snapshots DIR/YYYY-MM-DD.csv
+                                              (docs/decisions.md, Industry history), with the
+                                              NIFTY 500 coverage from 2016; without --apply a
+                                              dry run that writes nothing
     save-draft --strategy ID --config YAML    a new draft version, outside market hours
                                               (HAT-BOT-084)
     publish-version --version ID --run ID     draft -> frozen on a completed run (HAT-BT-061)
@@ -111,6 +116,7 @@ from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
 from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
 from .data.index_membership import NIFTY_500, load_membership, parse_membership_csv
+from .data.industry_history import Snapshot, load_industry_history, read_snapshots
 from .data.kite_symbols import KiteSymbolData
 from .data.reference import parse_industry_csv
 from .data.renames import symbol_first_bars
@@ -166,6 +172,7 @@ DATA_COMMANDS = frozenset(
         "refresh-kite-symbols",
         "publish-universe",
         "load-index-membership",
+        "load-industry-history",
         "correct-action",
         "correct-actions",
         "repair-symbol-history",
@@ -286,6 +293,9 @@ def _parser() -> argparse.ArgumentParser:
     membership.add_argument("--as-of", type=date.fromisoformat, required=True)
     membership.add_argument("--size", type=int, default=500)
     membership.add_argument("--apply", action="store_true")
+    industries = commands.add_parser("load-industry-history")
+    industries.add_argument("--dir", required=True)
+    industries.add_argument("--apply", action="store_true")
     corrections = commands.add_parser("correct-actions")
     corrections.add_argument("--list", required=True)
     corrections.add_argument("--apply", action="store_true")
@@ -353,6 +363,17 @@ def _read(root: Path, name: str, suffixes: tuple[str, ...], code: str) -> str:
         return path.read_text("utf-8")
     except (OSError, UnicodeDecodeError):
         raise AdminError(code) from None
+
+
+def _snapshots(root: Path, name: str) -> list[Snapshot]:
+    """The industry snapshots of a folder inside the admin folder (refused outside it)."""
+    base = root.resolve()
+    path = (base / name).resolve()
+    if not path.is_relative_to(base):
+        raise AdminError("file_outside_admin")
+    if not path.is_dir():
+        raise AdminError("industry_snapshots_missing")
+    return read_snapshots(path)
 
 
 def _publish_universe(
@@ -503,6 +524,10 @@ def _setup(
             size=args.size,
             source=Path(args.csv).name,
             apply=args.apply,
+        )
+    if command == "load-industry-history":  # reference data: any time, no calendar
+        return load_industry_history(
+            session, deps.store(), _snapshots(deps.files, args.dir), apply=args.apply
         )
     return None
 
