@@ -166,8 +166,8 @@ dashboard under `/api/hat` (`/status`, `/watchlist`, `/signals`, `/positions`,
 the backtests under `/api/hat/backtests` (`/runs`, `/runs/{run_id}` and
 `/runs/{run_id}/files/{name}` read the run folders; `/options`, `/jobs`, and `POST` to start a
 research run or a sweep as a job: the backtest command line in a child process, one at a time,
-never a promotion run; documented in `app/hat/api/backtests.py`), jobs started from
-`frontend/app/hat/backtests/`.
+never a promotion run; documented in `app/hat/api/backtests.py`), read (runs view, run page,
+compare) and started from `frontend/app/hat/backtests/` (charts: Recharts).
 A panel whose poll fails keeps its last good read on screen, dimmed, under a stale notice; when several
 reads fail together the page shows one banner instead. The page header shows the backend's `as_of` in IST; the broker login status polls on the same cadence. The design
 tokens live only in `frontend/app/globals.css` `@theme`, which resets Tailwind's palette, type scale

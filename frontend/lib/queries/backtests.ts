@@ -1,6 +1,5 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, unwrap } from "@/lib/api/client";
-import { apiErrorFromResponse, apiErrorFromThrown } from "@/lib/api/errors";
 import type { components } from "@/lib/api/schema";
 import type { StartBody } from "@/lib/backtest-form";
 import { parseCsvTable, type Run, type RunFile, type RunSummary } from "@/lib/runs";
@@ -14,39 +13,29 @@ export const JOB_POLL_MS = 3_000;
 const isRunning = (jobs: readonly BacktestJob[] | undefined) =>
   jobs?.some((job) => job.status === "running") ?? false;
 
-// The run-folder routes (docs/backtests/result-standard.md). Read with fetch until their
-// response models are in the generated schema.
-const API_BASE = import.meta.env.VITE_API_URL || "";
-
-async function read<T>(path: string, parse: (response: Response) => Promise<T>): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE}${path}`);
-  } catch (error_) {
-    throw apiErrorFromThrown(error_);
-  }
-  if (!response.ok) {
-    const body: unknown = await response.json().catch(() => null);
-    throw apiErrorFromResponse({ status: response.status, statusText: response.statusText, body });
-  }
-  return parse(response);
-}
-
-const runPath = (id: string) => `/api/hat/backtests/runs/${encodeURIComponent(id)}`;
+// The API types run.json's sections as open objects; the writer validates every run.json against
+// docs/backtests/run.schema.json before it publishes the folder, which lib/runs.ts types.
+const asRuns = (items: readonly components["schemas"]["BacktestRunItem"][]) =>
+  items as unknown as RunSummary[];
+const asRun = (body: Readonly<Record<string, unknown>>) => body as unknown as Run;
 
 /** Every run folder's summary, newest first; the page filters and groups them. */
 export function useBacktestRuns() {
   return useQuery({
     queryKey: queryKeys.backtests.runs(),
-    queryFn: () =>
-      read("/api/hat/backtests/runs", (response) => response.json() as Promise<RunSummary[]>),
+    queryFn: async () => asRuns(await unwrap(api.GET("/api/hat/backtests/runs"))),
   });
 }
 
 function runQuery(id: string) {
   return {
     queryKey: queryKeys.backtests.run(id),
-    queryFn: () => read(runPath(id), (response) => response.json() as Promise<Run>),
+    queryFn: async () =>
+      asRun(
+        await unwrap(
+          api.GET("/api/hat/backtests/runs/{run_id}", { params: { path: { run_id: id } } }),
+        ),
+      ),
     enabled: id !== "",
   };
 }
@@ -64,9 +53,14 @@ export function useBacktestRunsById(ids: readonly string[]) {
 function fileQuery(id: string, name: RunFile) {
   return {
     queryKey: queryKeys.backtests.file(id, name),
-    queryFn: () =>
-      read(`${runPath(id)}/files/${name}`, async (response) =>
-        parseCsvTable(await response.text()),
+    queryFn: async () =>
+      parseCsvTable(
+        await unwrap(
+          api.GET("/api/hat/backtests/runs/{run_id}/files/{name}", {
+            params: { path: { run_id: id, name } },
+            parseAs: "text",
+          }),
+        ),
       ),
     // A run's files never change once its folder is published.
     staleTime: Infinity,

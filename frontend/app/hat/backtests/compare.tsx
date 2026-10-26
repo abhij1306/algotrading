@@ -15,12 +15,14 @@ import { formatNumber, PLACEHOLDER } from "@/lib/format";
 import { PageLayout } from "@/components/templates/page-layout";
 import { useBacktestRunsById, useRunFiles } from "@/lib/queries/backtests";
 import {
+  changeText,
   compareEquity,
   dsrText,
   equitySeries,
   HEADLINE,
   longestDd,
   MAX_COMPARE,
+  runTitle,
   type Run,
 } from "@/lib/runs";
 
@@ -68,14 +70,14 @@ function MetricsTable({ runs }: Readonly<{ runs: readonly Run[] }>) {
             <TableHead key={run.identity.run_id}>
               <Swatch index={index} />
               <Link to={`/hat/backtests/${run.identity.run_id}`} className="hover:text-accent">
-                {run.identity.strategy} · {run.identity.variant}
+                {runTitle(run.identity)}
               </Link>
             </TableHead>
           ))}
         </TableRow>
       </TableHeader>
       <TableBody>
-        <FactRow label="Change" runs={runs} cell={(run) => run.identity.change || "baseline"} />
+        <FactRow label="Change" runs={runs} cell={(run) => changeText(run.identity)} />
         <FactRow
           label="Split · period"
           runs={runs}
@@ -173,10 +175,7 @@ export default function BacktestComparePage() {
       {notice ?? (
         <div className="space-y-14">
           <MetricsTable runs={runs} />
-          <Curves
-            ids={ids}
-            names={runs.map((run) => `${run.identity.strategy} · ${run.identity.variant}`)}
-          />
+          <Curves ids={ids} names={runs.map((run) => runTitle(run.identity))} />
         </div>
       )}
     </PageLayout>

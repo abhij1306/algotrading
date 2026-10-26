@@ -32,8 +32,15 @@ const STATUS_TONE: Record<RunStatus, Tone> = {
   stopped_early: "warning",
 };
 
-export function RunStatusBadge({ status }: Readonly<{ status: RunStatus }>) {
-  return <Badge tone={STATUS_TONE[status] ?? "muted"}>{status.replaceAll("_", " ")}</Badge>;
+/** The run's status; a failed or stopped run adds its failure code. */
+export function RunStatusBadge({
+  status,
+  error,
+}: Readonly<{ status: RunStatus; error?: string | null }>) {
+  const label = status.replaceAll("_", " ");
+  return (
+    <Badge tone={STATUS_TONE[status] ?? "muted"}>{error ? `${label}: ${error}` : label}</Badge>
+  );
 }
 
 export const SPLIT_LABEL: Record<Split, string> = { in_sample: "in-sample", hold_out: "hold-out" };

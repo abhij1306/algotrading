@@ -29,6 +29,10 @@ import {
   filterTrades,
   HEADLINE,
   LIQUIDITY_ORDER,
+  REGIME_ORDER,
+  runTitle,
+  sweepName,
+  changeText,
   longestDd,
   refusalCosts,
   REPEAT_STOPOUTS,
@@ -73,7 +77,7 @@ function Header({ run }: Readonly<{ run: Run }>) {
   return (
     <dl className="grid grid-cols-2 gap-x-8 gap-y-5 md:grid-cols-4">
       <LabelledValue label="Status">
-        <RunStatusBadge status={identity.status} />
+        <RunStatusBadge status={identity.status} error={identity.error} />
       </LabelledValue>
       <LabelledValue label="Strategy">
         {identity.strategy}{" "}
@@ -82,11 +86,11 @@ function Header({ run }: Readonly<{ run: Run }>) {
         </span>
       </LabelledValue>
       <LabelledValue label="Sweep">
-        {identity.sweep_name ?? identity.sweep_id}{" "}
+        {sweepName(identity)}{" "}
         <span className="font-mono text-xs text-foreground-muted">{identity.sweep_id}</span>
       </LabelledValue>
       <LabelledValue label="Change" className="col-span-2 md:col-span-1">
-        {identity.change || "baseline"}
+        {changeText(identity)}
       </LabelledValue>
       <LabelledValue label="Base run">
         {identity.base_run_id ? runLink(identity.base_run_id) : "none (baseline)"}
@@ -250,7 +254,11 @@ function ByYear({ years }: Readonly<{ years: Run["breakdowns"]["by_year"] }>) {
 
 function Breakdowns({ breakdowns }: Readonly<{ breakdowns: Run["breakdowns"] }>) {
   const groups: { title: string; buckets: Record<string, Bucket>; order?: readonly string[] }[] = [
-    { title: "By regime at entry", buckets: breakdowns.by_regime },
+    {
+      title: "By regime at entry (index rule, breadth the session before)",
+      buckets: breakdowns.by_regime,
+      order: REGIME_ORDER,
+    },
     { title: "By exit reason", buckets: breakdowns.by_exit_reason },
     { title: "By cap bucket", buckets: breakdowns.by_cap_bucket, order: CAP_ORDER },
     {
@@ -286,8 +294,8 @@ function Breakdowns({ breakdowns }: Readonly<{ breakdowns: Run["breakdowns"] }>)
 const REFUSAL_COLUMNS = [
   { label: "Reason" },
   { label: "Refused", numeric: true },
-  { label: "Mean fwd R 20d", numeric: true },
-  { label: "Mean fwd R 60d", numeric: true },
+  { label: "Mean fwd R 20d (gross)", numeric: true },
+  { label: "Mean fwd R 60d (gross)", numeric: true },
   { label: "Would win at 60d %", numeric: true },
   { label: "With 60d data", numeric: true },
 ];
@@ -298,7 +306,7 @@ function Refusals({ runId, counts }: Readonly<{ runId: string; counts: Run["refu
   return (
     <Block
       title="Refusals"
-      note="what each gate cost: the forward R its refused entries would have made"
+      note="what each gate cost: the forward R, before costs, its refused entries would have made"
     >
       {query.error && !query.data ? (
         <Text role="alert" tone="loss" className="mb-3">
@@ -501,6 +509,18 @@ function StocksTable({ data }: Readonly<{ data: CsvData }>) {
 function RunBody({ run }: Readonly<{ run: Run }>) {
   const runId = run.identity.run_id;
   const base = useBacktestRun(run.identity.base_run_id ?? "");
+  // A failed or stopped run publishes run.json only: empty metrics and no CSV files.
+  if (run.identity.status !== "complete") {
+    return (
+      <div className="space-y-14">
+        <Header run={run} />
+        <Text tone="warning">
+          This run did not complete ({run.identity.error ?? "no failure code"}): its folder holds
+          run.json only, with no metrics and no files.
+        </Text>
+      </div>
+    );
+  }
   return (
     <div className="space-y-14">
       <Header run={run} />
@@ -541,7 +561,7 @@ export default function BacktestRunPage() {
   const identity = run.data?.identity;
   return (
     <PageLayout
-      title={identity ? `${identity.strategy} · ${identity.variant}` : "Backtest run"}
+      title={identity ? runTitle(identity) : "Backtest run"}
       description={runId}
       aside={
         <Link to="/hat/backtests" className="text-sm text-accent hover:underline">

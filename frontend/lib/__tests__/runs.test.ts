@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import example from "./fixtures/example-run.json";
 import {
   bucketRows,
+  changeText,
   compareCells,
   compareEquity,
   deltaTone,
@@ -17,9 +18,11 @@ import {
   NO_FILTER,
   parseCsv,
   parseCsvTable,
+  REGIME_ORDER,
   refusalCosts,
   regimeOffSpans,
   runFacets,
+  runName,
   stockSummary,
   toggleSelection,
   topSymbols,
@@ -129,6 +132,30 @@ describe("grouping", () => {
     expect(nextSort({ key: "mar", dir: "desc" }, "mar")).toEqual({ key: "mar", dir: "asc" });
   });
 
+  it("gathers runs that set no sweep into one group and names unlabelled runs", () => {
+    const loose = run("019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b", {
+      sweep_id: null,
+      sweep_name: null,
+      variant: null,
+      change: null,
+    });
+    const looseToo = run("r2", {
+      sweep_id: null,
+      sweep_name: null,
+      base_run_id: "r1",
+      change: null,
+    });
+    const groups = groupRuns([loose, looseToo], [loose, looseToo]);
+    expect(groups[0]?.sweeps.map((s) => [s.id, s.name, s.rows.length])).toEqual([
+      ["", "No sweep", 2],
+    ]);
+    expect(runFacets([loose]).sweeps).toEqual([{ id: "", name: "No sweep", runs: 1 }]);
+    expect(filterRuns([loose, other], { ...NO_FILTER, sweep: "" })).toEqual([loose]);
+    expect(runName(loose.identity)).toBe("4e5f6a7b");
+    expect(changeText(loose.identity)).toBe("baseline");
+    expect(changeText(looseToo.identity)).toBe("change not stated");
+  });
+
   it("keeps at most four compare picks", () => {
     expect(toggleSelection(["a", "b", "c", "d"], "e")).toEqual(["b", "c", "d", "e"]);
     expect(toggleSelection(["a", "b"], "a")).toEqual(["b"]);
@@ -214,6 +241,20 @@ describe("bucket summaries", () => {
     expect(rows[1]?.sharePct).toBe(60);
   });
 
+  it("orders the regime buckets index first, then breadth", () => {
+    const bucket = { trades: 1, win_pct: null, expectancy_r: null };
+    const rows = bucketRows(
+      { breadth_ge60: bucket, index_off: bucket, breadth_lt40: bucket, index_on: bucket },
+      REGIME_ORDER,
+    );
+    expect(rows.map((r) => r.key)).toEqual([
+      "index_on",
+      "index_off",
+      "breadth_lt40",
+      "breadth_ge60",
+    ]);
+  });
+
   it("puts the most traded bucket first when unordered", () => {
     const rows = bucketRows({
       a: { trades: 1, win_pct: 0, expectancy_r: 0 },
@@ -250,7 +291,7 @@ describe("bucket summaries", () => {
 
   it("costs each refusal reason by the forward R of its refused entries", () => {
     const refused = parseCsvTable(
-      "date,symbol,reason,fwd_r_20d,fwd_r_60d\n" +
+      "date,symbol,reason,fwd_r_20d_gross,fwd_r_60d_gross\n" +
         "2020-01-01,A,industry_cap,1,3\n" +
         "2020-01-02,B,industry_cap,-1,-1\n" +
         "2020-01-03,C,industry_cap,0.5,\n" +

@@ -1,9 +1,10 @@
 /**
- * Backtest runs in the Result Standard (docs/backtests/result-standard.md): the run.json shape and
+ * Backtest runs in the Result Standard v1.1 (docs/backtests/result-standard.md): the run.json shape and
  * the pure shaping the Backtests pages draw from (deltas, grouping, sorting, CSV parsing and the
  * summaries of the run's CSV files). Units follow the standard: % as 0 to 100, R as a multiple,
  * money in rupees.
  */
+import type { components } from "@/lib/api/schema";
 import { formatNumber, PLACEHOLDER } from "@/lib/format";
 
 export type Num = number | null;
@@ -15,13 +16,16 @@ export type Identity = {
   strategy: string;
   strategy_version: string;
   engine_commit: string | null;
-  sweep_id: string;
+  sweep_id: string | null;
   sweep_name?: string | null;
-  variant: string;
+  variant: string | null;
   base_run_id: string | null;
-  change: string;
+  change: string | null;
   created_at: string | null;
   status: RunStatus;
+  /** The failure code of a failed or stopped run. */
+  error?: string | null;
+  for_promotion?: boolean;
 };
 
 export type RunData = {
@@ -59,12 +63,14 @@ export type Metrics = {
   sortino?: Num;
   invested_pct: Num;
   avg_open_positions?: Num;
+  avg_dd_pct?: Num;
   longest_dd_sessions: Num;
   longest_dd_recovered: boolean | null;
   longest_dd_start?: string | null;
   longest_dd_end?: string | null;
   dsr_prob: Num;
   dsr_n_trials: Num;
+  pbo: Num;
   total_return_pct: Num;
   final_equity: Num;
   fees: Num;
@@ -125,8 +131,25 @@ export type Run = {
   breakdowns: Breakdowns;
 };
 
-/** One row of the runs list. */
-export type RunSummary = Pick<Run, "identity" | "data" | "metrics" | "refusals" | "binding">;
+/**
+ * One row of the runs list: the generated `BacktestRunItem` names the fields (the API types each
+ * as an open object), run.schema.json types them.
+ */
+export type RunSummary = Pick<Run, keyof components["schemas"]["BacktestRunItem"]>;
+
+/** A run's variant label, or its id's tail when the run sets none. */
+export const runName = (identity: Identity) => identity.variant ?? identity.run_id.slice(-8);
+export const runTitle = (identity: Identity) => `${identity.strategy} · ${runName(identity)}`;
+/** The run's one-line change; a run with no base and no change is a baseline. */
+export function changeText(identity: Identity): string {
+  if (identity.change) return identity.change;
+  return identity.base_run_id === null ? "baseline" : "change not stated";
+}
+/** The sweep group of a run; runs that set no sweep share one group. */
+export const NO_SWEEP = "";
+export const sweepId = (identity: Identity) => identity.sweep_id ?? NO_SWEEP;
+export const sweepName = (identity: Identity) =>
+  identity.sweep_name ?? identity.sweep_id ?? "No sweep";
 
 /** The CSV files of a run folder, by their route name. */
 export const RUN_FILES = ["trades", "equity", "refusals", "signals", "stocks"] as const;
@@ -191,6 +214,8 @@ export const HEADLINE: readonly MetricDef[] = [
   metric("sortino", "Sortino", "ratio", "higher"),
   metric("longest_dd_sessions", "Longest DD (sessions)", "int", "lower"),
   metric("dsr_prob", "DSR prob", "prob", "higher"),
+  metric("pbo", "PBO", "prob", "lower"),
+  metric("avg_dd_pct", "Avg DD %", "pct", "lower"),
   metric("invested_pct", "Invested %", "pct", null),
   metric("avg_open_positions", "Avg open positions", "ratio", null),
   metric("final_equity", "Final equity", "money", "higher"),
@@ -290,7 +315,7 @@ export function filterRuns(runs: readonly RunSummary[], filter: RunFilter): RunS
     (run) =>
       (filter.strategy === null || run.identity.strategy === filter.strategy) &&
       (filter.split === null || run.data.split === filter.split) &&
-      (filter.sweep === null || run.identity.sweep_id === filter.sweep),
+      (filter.sweep === null || sweepId(run.identity) === filter.sweep),
   );
 }
 
@@ -305,14 +330,10 @@ export function runFacets(runs: readonly RunSummary[]): {
   const sweeps = new Map<string, { id: string; name: string; runs: number }>();
   for (const { identity } of runs) {
     if (!strategies.includes(identity.strategy)) strategies.push(identity.strategy);
-    const sweep = sweeps.get(identity.sweep_id);
+    const id = sweepId(identity);
+    const sweep = sweeps.get(id);
     if (sweep) sweep.runs += 1;
-    else
-      sweeps.set(identity.sweep_id, {
-        id: identity.sweep_id,
-        name: identity.sweep_name ?? identity.sweep_id,
-        runs: 1,
-      });
+    else sweeps.set(id, { id, name: sweepName(identity), runs: 1 });
   }
   return { strategies, sweeps: [...sweeps.values()] };
 }
@@ -338,7 +359,7 @@ export function compareCells(a: Cell | undefined, b: Cell | undefined, dir: Sort
 }
 
 function runSortValue(run: RunSummary, key: RunSortKey): Cell {
-  return key === "variant" ? run.identity.variant : metricValue(run.metrics, key);
+  return key === "variant" ? runName(run.identity) : metricValue(run.metrics, key);
 }
 
 export type RunRow = Readonly<{
@@ -377,11 +398,12 @@ export function groupRuns(
   }
   const strategies = new Map<string, Map<string, { name: string; runs: RunSummary[] }>>();
   for (const run of anchors) {
-    const { strategy, sweep_id: sweepId, sweep_name: sweepName } = run.identity;
+    const { strategy } = run.identity;
+    const id = sweepId(run.identity);
     const sweeps = strategies.get(strategy) ?? new Map();
     strategies.set(strategy, sweeps);
-    const sweep = sweeps.get(sweepId) ?? { name: sweepName ?? sweepId, runs: [] };
-    sweeps.set(sweepId, sweep);
+    const sweep = sweeps.get(id) ?? { name: sweepName(run.identity), runs: [] };
+    sweeps.set(id, sweep);
     sweep.runs.push(run);
   }
   const row = (run: RunSummary, validates: RunSummary | null): RunRow => ({
@@ -468,6 +490,11 @@ const TEXT_COLUMNS = new Set([
   "refusal_reason",
   "first_trade",
   "last_trade",
+  "liquidity_bucket",
+  "instrument_id",
+  "playbook",
+  "engine_exit_reason",
+  "auction_risk",
 ]);
 const BOOL_COLUMNS = new Set(["index_regime_on", "taken"]);
 const MISSING = new Set(["", "null", "none", "nan"]);
@@ -620,6 +647,16 @@ export function bucketRows(
 
 export const CAP_ORDER = ["large", "mid", "small", "micro"] as const;
 export const LIQUIDITY_ORDER = ["q1", "q2", "q3", "q4", "q5"] as const;
+export const REGIME_ORDER = [
+  "index_on",
+  "index_off",
+  "index_unknown",
+  "breadth_lt40",
+  "breadth_40_50",
+  "breadth_50_60",
+  "breadth_ge60",
+  "breadth_unknown",
+] as const;
 
 /** by_year with the strategy's margin over the benchmark each year. */
 export function yearRows(years: readonly YearRow[]): (YearRow & { excess_pct: Num })[] {
@@ -649,8 +686,8 @@ export type RefusalCost = Readonly<{
 }>;
 
 /**
- * What each gate cost: per refusal reason, the mean forward R the refused entries would have
- * made at 20 and 60 sessions (refusals.csv), most refusals first.
+ * What each gate cost: per refusal reason, the mean forward R (before costs) the refused entries
+ * would have made at 20 and 60 sessions (refusals.csv), most refusals first.
  */
 export function refusalCosts(
   counts: Readonly<Record<string, number>>,
@@ -665,8 +702,8 @@ export function refusalCosts(
   return [...reasons]
     .map((reason) => {
       const refused = byReason.get(reason) ?? [];
-      const fwd20 = mean(refused.map((row) => cellNumber(row, "fwd_r_20d")));
-      const fwd60Values = refused.map((row) => cellNumber(row, "fwd_r_60d"));
+      const fwd20 = mean(refused.map((row) => cellNumber(row, "fwd_r_20d_gross")));
+      const fwd60Values = refused.map((row) => cellNumber(row, "fwd_r_60d_gross"));
       const fwd60 = mean(fwd60Values);
       const wins = fwd60Values.filter((v) => v !== null && v > 0).length;
       return {

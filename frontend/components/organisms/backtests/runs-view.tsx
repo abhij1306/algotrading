@@ -22,6 +22,7 @@ import {
 } from "@/components/organisms/backtests/run-parts";
 import { useBacktestRuns } from "@/lib/queries/backtests";
 import {
+  changeText,
   dsrText,
   filterRuns,
   groupRuns,
@@ -31,6 +32,7 @@ import {
   NO_FILTER,
   RUN_COLUMNS,
   runFacets,
+  runName,
   STICKY_METRICS,
   toggleSelection,
   type MetricDef,
@@ -87,14 +89,14 @@ function VariantCell({ row }: Readonly<{ row: RunRow }>) {
         className="font-medium break-words hover:text-accent"
       >
         {row.validates ? <span className="text-foreground-muted">↳ </span> : null}
-        {identity.variant}
+        {runName(identity)}
       </Link>
-      <p className="text-xs break-words text-foreground-secondary" title={identity.change}>
-        {identity.change || "baseline"}
-      </p>
+      <p className="text-xs break-words text-foreground-secondary">{changeText(identity)}</p>
       <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs">
         {data.split === "hold_out" ? <Badge tone="mode">{SPLIT_LABEL.hold_out}</Badge> : null}
-        {identity.status === "complete" ? null : <RunStatusBadge status={identity.status} />}
+        {identity.status === "complete" ? null : (
+          <RunStatusBadge status={identity.status} error={identity.error} />
+        )}
         <NoOpFlag binding={binding} />
       </div>
     </div>
@@ -150,7 +152,7 @@ function SweepTable({
                   type="checkbox"
                   checked={picked}
                   onChange={() => onToggle(identity.run_id)}
-                  aria-label={`Compare ${identity.variant}`}
+                  aria-label={`Compare ${runName(identity)}`}
                   className="size-4 accent-accent"
                 />
               </TableCell>
