@@ -141,8 +141,29 @@ def test_compare_criteria_table_one_column_per_criterion() -> None:
     passed = crit.Row("in_sample", "mar", 0.7, ">= 0.6", crit.PASS)
     failed = crit.Row("in_sample", "trades", 90, ">= 100", crit.FAIL)
     text = compare.criteria_table([("aaaa", [passed, failed]), ("bbbb", [passed])])
-    assert text.splitlines()[0] == "| run | mar | trades | in-sample |"
+    assert text.splitlines()[0] == "| run | mar | trades | overall |"
     assert text.splitlines()[2:] == ["| aaaa | pass | fail | fail |", "| bbbb | pass | - | pass |"]
+
+
+def test_compare_reads_a_hold_out_runs_in_sample_criteria_from_its_validated_run() -> None:
+    c = crit.parse(BLOCK)
+    in_sample = _run("in")
+    held = _run("held", expectancy_r=0.3, mar=0.5)
+    held["data"] = {**held["data"], "split": "hold_out", "validates_run_id": "in"}
+    seen: list[str] = []
+
+    def rows_of(run: dict) -> list[crit.Row]:
+        seen.append(run["identity"]["run_id"])
+        return [crit.Row("in_sample", "mar", 0.7, ">= 0.6", crit.PASS)]
+
+    rows = compare.criteria_rows(c, held, in_sample, rows_of, reads=1)
+    assert seen == ["in"]  # never the hold-out run's own metrics
+    assert {r.section for r in rows} == {"in_sample", "hold_out"}
+    assert "hold_out mar" in compare.criteria_table([("held", rows)]).splitlines()[0]
+    (missing,) = compare.criteria_rows(c, held, None, rows_of, reads=1)
+    assert (missing.name, missing.status) == ("in-sample run", crit.FAIL)
+    assert compare.criteria_rows(c, in_sample, None, rows_of, reads=0)[0].name == "mar"
+    assert seen == ["in", "in"]
 
 
 def _neighbour(run_id: str, path: tuple[int, str], value: object, mar: float) -> dict:

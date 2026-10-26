@@ -9,16 +9,18 @@ the change bound, how many knobs it changed against its base (`5b`: a declared b
 policy drifted), the run and data audit statuses, and the headline metrics with the promotion
 criteria's (longest drawdown in sessions, the benchmark's CAGR, the CAGR without the top five
 trades, the entries above 5% of ADV). With `--criteria` (the strategy's notes, their
-`hat-criteria` block) a second table gives each run's in-sample criteria, pass or fail, as the
-review computes them (`criteria.in_sample_rows`, the DSR and PBO at the family today), and the
-family's own trials against the budget.
+`hat-criteria` block) a second table gives each run's criteria, pass or fail, as the review
+computes them (`criteria.in_sample_rows`, the DSR and PBO at the family today; a hold-out run's
+in-sample rows are its validated run's, beside its own hold-out rows), and the family's own
+trials against the budget.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,9 @@ from . import folder, trials
 from .review import scores_now, trade_rows
 from .run_audit import changed_of
 
-__all__ = ["COLUMNS", "criteria_table", "policy_versions", "row_of", "table"]
+__all__ = ["COLUMNS", "criteria_rows", "criteria_table", "policy_versions", "row_of", "table"]
+
+HOLD_OUT = "hold_out"
 
 # (header, block, field) of each column after the run id
 COLUMNS: tuple[tuple[str, str, str], ...] = (
@@ -103,28 +107,66 @@ def table(rows: Sequence[Sequence[str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _column(row: crit.Row) -> str:
+    return row.name if row.section == "in_sample" else f"{row.section} {row.name}"
+
+
 def criteria_table(runs: Sequence[tuple[str, Sequence[crit.Row]]]) -> str:
-    """The Markdown table of each run's (short id, criteria rows): one column per criterion,
-    its status, and the run's overall status (`criteria.overall`)."""
-    names = list(dict.fromkeys(r.name for _, rows in runs for r in rows))
+    """The Markdown table of each run's (short id, criteria rows): one column per criterion
+    (a hold-out row's named by its section too), its status, and the run's overall status
+    (`criteria.overall`)."""
+    names = list(dict.fromkeys(_column(r) for _, rows in runs for r in rows))
     lines = [
-        "| " + " | ".join(["run", *names, "in-sample"]) + " |",
+        "| " + " | ".join(["run", *names, "overall"]) + " |",
         "|" + "---|" * (len(names) + 2),
     ]
     for run_id, rows in runs:
-        status = {r.name: r.status for r in rows}
+        status = {_column(r): r.status for r in rows}
         cells = [run_id, *(status.get(n, "-") for n in names), crit.overall(rows)]
         lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
     return "\n".join(lines) + "\n"
 
 
+def criteria_rows(
+    c: crit.Criteria,
+    run: Mapping[str, Any],
+    in_sample: Mapping[str, Any] | None,
+    in_sample_rows: Callable[[Mapping[str, Any]], list[crit.Row]],
+    reads: int,
+) -> list[crit.Row]:
+    """A run's criteria rows as the review computes them: an in-sample run's in-sample rows
+    (`in_sample_rows`, which reads its trades and scores); a hold-out run's are those of the
+    in-sample run it validates (`in_sample`, None when it cannot be read: a failing row) and
+    its hold-out rows (`reads`: the hold-out runs validating that run)."""
+    if (run.get("data") or {}).get("split") != HOLD_OUT:
+        return in_sample_rows(run)
+    if in_sample is None:
+        validates = (run.get("data") or {}).get("validates_run_id")
+        return [crit.Row("hold_out", "in-sample run", validates, "readable", crit.FAIL)]
+    return [*in_sample_rows(in_sample), *crit.hold_out_rows(c, in_sample, run, reads)]
+
+
 def _criteria(root: Path, runs: Sequence[Mapping[str, Any]], c: crit.Criteria) -> str:
     """The criteria table of `runs` and the line of the family's own trials and budget."""
+
+    def in_sample_rows(run: Mapping[str, Any]) -> list[crit.Row]:
+        run_id = str((run.get("identity") or {}).get("run_id"))
+        trades = trade_rows(folder.read_csv(root, run_id, "trades"))
+        return crit.in_sample_rows(c, run, trades, scores_now(root, run)[0])
+
+    held = [r for r in runs if (r.get("data") or {}).get("split") == HOLD_OUT]
+    reads = Counter(
+        (r.get("data") or {}).get("validates_run_id")
+        for r in (folder.list_runs(root) if held else [])
+        if (r.get("data") or {}).get("split") == HOLD_OUT
+        and (r.get("identity") or {}).get("status") == folder.COMPLETE
+    )
     evaluated = []
     for r in runs:
-        run_id = str((r.get("identity") or {}).get("run_id"))
-        trades = trade_rows(folder.read_csv(root, run_id, "trades"))
-        evaluated.append((run_id[:8], crit.in_sample_rows(c, r, trades, scores_now(root, r)[0])))
+        validates = (r.get("data") or {}).get("validates_run_id")
+        in_sample = folder.read_run(root, validates) if isinstance(validates, str) else None
+        rows = criteria_rows(c, r, in_sample, in_sample_rows, reads[validates])
+        evaluated.append((str((r.get("identity") or {}).get("run_id"))[:8], rows))
     key = trials.family_key(c.strategy, c.universe, *c.in_sample)
     total, prior = trials.counts(trials.read_registry(root), key)
     budget = (
