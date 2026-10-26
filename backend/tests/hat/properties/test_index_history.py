@@ -9,6 +9,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from app.hat.data.bhavcopy import FetchResult
 from app.hat.data.index_history import (
     INDEX_ARCHIVE_URL,
@@ -26,7 +28,7 @@ from app.hat.data.index_history import (
     tri_request,
 )
 from app.hat.data.pacing import Pacer
-from app.hat.data.store import DataStore
+from app.hat.data.store import DataStore, StoreError, keep_once
 
 DAY = date(2013, 10, 9)
 CSV = (
@@ -174,3 +176,18 @@ def test_fetch_tri_raw_keeps_each_answer_once(tmp_path: Path) -> None:
     assert latest is not None
     assert latest.name == "NIFTY_500_TRI_20260101_20260301.json"
     assert latest_tri_raw(tmp_path, NIFTY_500_TRI, 2024) is None
+
+
+def test_keep_once_never_replaces_a_file_that_appeared_meanwhile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two fetches racing for one raw name: the one that finds the name taken only after its own
+    check (`exists` said no) still cannot overwrite the first's file."""
+    path = tmp_path / "NIFTY_500_TRI_20250101_20251231.json"
+    path.write_bytes(b"first")
+    monkeypatch.setattr(Path, "exists", lambda _self: False)
+    with pytest.raises(StoreError):
+        keep_once(path, b"second")
+    assert path.read_bytes() == b"first"
+    assert keep_once(path, b"first") is False
+    assert [p.name for p in tmp_path.iterdir()] == [path.name]

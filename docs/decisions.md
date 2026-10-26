@@ -245,7 +245,8 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   never touch a trade, every config change is a reviewable file, and a stray write to the stock
   data fails loudly. Keys across them are plain columns checked in code. The watchlist is nightly
   scan output and lives in hat_state, not in the configs. `python -m app.hat.ops.state_split`
-  moved the rows once (runbook); hat_live's legacy tables stay until the owner drops them.
+  moved the rows once (runbook); the owner dropped hat_live's legacy tables
+  (`schema.legacy_live_tables`) on 2026-10-26.
 - **Evidence defaults (QA7).** The DSR family floors N ≥ 5 trials and trial-Sharpe variance
   V ≥ 0.25/252 (`dsr.py`); ambiguous days at most 10% of the sessions a trade was held
   (`lifecycle.py`); `max_chase` 2% by default, 5% for stage2-contraction-breakout and 2% for

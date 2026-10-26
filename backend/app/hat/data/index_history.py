@@ -33,7 +33,15 @@ from ..money import exact
 from .bhavcopy import BROWSER_HEADERS, Fetcher, FetchResult
 from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .pacing import Pacer
-from .store import DATASET_BARS, DATASET_INDEX, DataStore, IndexRow, atomic_replace
+from .store import (
+    DATASET_BARS,
+    DATASET_INDEX,
+    DataStore,
+    IndexRow,
+    StoreError,
+    atomic_replace,
+    keep_once,
+)
 from .store_coverage import index_coverage
 
 logger = logging.getLogger(__name__)
@@ -612,12 +620,11 @@ def fetch_tri_raw(
             status[year] = "failed"
             continue
         path = folder / tri_raw_name(NIFTY_500_TRI, *days)
-        if path.exists():
+        try:  # create-only: a file another fetch kept first is never replaced
+            status[year] = "saved" if keep_once(path, result.data) else "kept"
+        except StoreError:
             same = _tri_closes(path.read_bytes()) == _tri_closes(result.data)
             status[year] = "kept" if same else "changed"
-            continue
-        atomic_replace(path, lambda tmp, data=result.data: tmp.write_bytes(data))
-        status[year] = "saved"
     return status
 
 

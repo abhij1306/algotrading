@@ -35,11 +35,8 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
    a JSON report: per kind and table the rows, what it wrote and the digests of both sides;
    `verified` must be true (exit 0). It reads hat_live read-only and changes nothing there. Safe to
    repeat; a record whose revision 1 differs from its row is refused (`config_file_differs`,
-   exit 2). Then start the backend. Later, after a backup, the legacy tables may be dropped from
-   hat_live (`schema.legacy_live_tables`: the config, backtest and state tables): `DROP TABLE
-   hat_strategy, hat_strategy_version, hat_risk_policy_version, hat_regime_model_version,
-   hat_criterion_type, hat_broker_account, hat_bot, hat_backtest_run, hat_backtest_bucket, <each
-   hat_state table> CASCADE;`.
+   exit 2). Then start the backend. The owner dropped hat_live's legacy tables
+   (`schema.legacy_live_tables`: the config, backtest and state tables) on 2026-10-26.
 
 1. Role limits, then restart the backend:
    ```sql
