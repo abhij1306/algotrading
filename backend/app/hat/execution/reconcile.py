@@ -30,16 +30,16 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
+from ..data.instrument_names import instrument_symbols
 from ..models import (
-    HatBot,
     HatFill,
     HatHoldingBaseline,
-    HatInstrument,
     HatOrder,
     HatPosition,
     HatSignal,
@@ -48,6 +48,7 @@ from ..notify import Notifier
 from ..time import trade_date_of, utc_now
 from .broker import BrokerHolding, BrokerOrder, BrokerPosition, HatBroker
 from .guard import ExecutionGuard
+from .modes import account_bot_ids
 from .order_book import EXIT_SALES, TagBook, adopt_broker_order
 from .stop_plans import WORKING
 from .tags import is_hat_tag
@@ -194,6 +195,13 @@ def _unbooked(
     return found
 
 
+def _signal_symbols(session: Session, instruments: Select[Any], within: set[str]) -> set[str]:
+    """The symbols, among `within`, of the instruments `instruments` selects (a hat_state
+    query): the instruments live in hat_live, so the symbols are read apart."""
+    ids = set(session.scalars(instruments.distinct()))
+    return {s for s in instrument_symbols(session, ids).values() if s in within}
+
+
 def _record_baselines(
     session: Session,
     account_id: uuid.UUID,
@@ -214,25 +222,23 @@ def _record_baselines(
         hat[view.symbol] += view.qty_open
     if not hat:
         return
-    busy = set(
-        session.scalars(
-            select(HatInstrument.symbol)
-            .join(HatSignal, HatSignal.instrument_id == HatInstrument.id)
-            .join(HatOrder, HatOrder.signal_id == HatSignal.id)
-            .where(
-                HatOrder.broker_account_id == account_id,
-                HatOrder.is_virtual.is_(False),
-                HatInstrument.symbol.in_(set(hat)),
-                or_(
-                    and_(
-                        HatOrder.purpose.in_(("entry", *EXIT_SALES)),
-                        HatOrder.status.in_(WORKING),
-                    ),
-                    HatOrder.placed_at >= read_at,
-                    HatOrder.id.in_(select(HatFill.order_id).where(HatFill.filled_at >= read_at)),
+    busy = _signal_symbols(
+        session,
+        select(HatSignal.instrument_id)
+        .join(HatOrder, HatOrder.signal_id == HatSignal.id)
+        .where(
+            HatOrder.broker_account_id == account_id,
+            HatOrder.is_virtual.is_(False),
+            or_(
+                and_(
+                    HatOrder.purpose.in_(("entry", *EXIT_SALES)),
+                    HatOrder.status.in_(WORKING),
                 ),
-            )
-        )
+                HatOrder.placed_at >= read_at,
+                HatOrder.id.in_(select(HatFill.order_id).where(HatFill.filled_at >= read_at)),
+            ),
+        ),
+        set(hat),
     )
     busy |= unbooked
     later = set(
@@ -346,36 +352,31 @@ class ReconciliationService:
                 adopted.append(row.tag)
         session.commit()
 
-        bots = {
-            bot_id
-            for (bot_id,) in session.execute(
-                select(HatBot.id).where(HatBot.broker_account_id == account_id)
+        open_rows = session.execute(
+            select(HatPosition.bot_id, HatPosition.instrument_id, HatPosition.qty_open).where(
+                HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
+                HatPosition.closed_at.is_(None),
+                HatPosition.is_virtual.is_(False),
             )
-        }
+        ).all()
+        # the instruments live in hat_live, the positions in hat_state: symbols are read apart,
+        # and a position of an unknown instrument is left out as the inner join left it out
+        symbols = instrument_symbols(session, (i for _, i, _ in open_rows))
         positions = [
-            HatPositionView(bot_id, symbol, qty_open)
-            for bot_id, symbol, qty_open in session.execute(
-                select(HatPosition.bot_id, HatInstrument.symbol, HatPosition.qty_open)
-                .join(HatInstrument, HatInstrument.id == HatPosition.instrument_id)
-                .where(
-                    HatPosition.bot_id.in_(bots),
-                    HatPosition.closed_at.is_(None),
-                    HatPosition.is_virtual.is_(False),
-                )
-            )
+            HatPositionView(bot_id, symbols[instrument_id], qty_open)
+            for bot_id, instrument_id, qty_open in open_rows
+            if instrument_id in symbols
         ]
         held = {symbol for symbol, quantity in quantities.items() if quantity > 0}
-        hat_symbols = set(
-            session.execute(
-                select(HatInstrument.symbol)
-                .join(HatSignal, HatSignal.instrument_id == HatInstrument.id)
-                .join(HatOrder, HatOrder.signal_id == HatSignal.id)
-                .where(
-                    HatOrder.broker_account_id == account_id,
-                    HatOrder.is_virtual.is_(False),
-                    HatInstrument.symbol.in_(held),
-                )
-            ).scalars()
+        hat_symbols = _signal_symbols(
+            session,
+            select(HatSignal.instrument_id)
+            .join(HatOrder, HatOrder.signal_id == HatSignal.id)
+            .where(
+                HatOrder.broker_account_id == account_id,
+                HatOrder.is_virtual.is_(False),
+            ),
+            held,
         )
         mismatches = find_mismatches(
             broker_orders=orders,

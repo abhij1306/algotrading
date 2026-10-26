@@ -23,30 +23,5 @@ def test_governance__exposure_checks(conn: Connection) -> None:
 
 
 @pytest.mark.postgres
-def test_governance__version_config_immutable(conn: Connection) -> None:
-    rules.check_governance__version_config_immutable(conn)
-
-
-@pytest.mark.postgres
 def test_governance__universe_version_immutable(conn: Connection) -> None:
     rules.check_governance__universe_version_immutable(conn)
-
-
-@pytest.mark.postgres
-def test_governance__one_released_version(conn: Connection) -> None:
-    rules.check_governance__one_released_version(conn)
-
-
-@pytest.mark.postgres
-def test_governance__release_requires_evidence(conn: Connection) -> None:
-    rules.check_governance__release_requires_evidence(conn)
-
-
-@pytest.mark.postgres
-def test_governance__risk_increase_cooling_off(conn: Connection) -> None:
-    rules.check_governance__risk_increase_cooling_off(conn)
-
-
-@pytest.mark.postgres
-def test_governance__risk_version_immutable(conn: Connection) -> None:
-    rules.check_governance__risk_version_immutable(conn)

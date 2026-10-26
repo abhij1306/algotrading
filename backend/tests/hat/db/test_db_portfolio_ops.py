@@ -21,8 +21,3 @@ def test_portfolio__domain_checks(conn: Connection) -> None:
 def test_ops__job_run_unique(conn: Connection, pg_engine: Engine) -> None:
     rules.check_ops__job_run_unique(conn)
     rules.check_ops__job_run_unique_concurrent(pg_engine)
-
-
-@pytest.mark.postgres
-def test_ops__family_key_not_null(conn: Connection) -> None:
-    rules.check_ops__family_key_not_null(conn)

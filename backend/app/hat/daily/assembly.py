@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import BrokerAccount
 from ..data.bars_store import BarStore
 from ..data.bhavcopy import Fetcher
 from ..data.calendar import session_calendar
@@ -42,7 +43,7 @@ from ..engine.trigger import TriggerMonitor, locked_upper_circuit
 from ..execution.broker import HatBroker
 from ..execution.entry_timeout import EntryWatch
 from ..execution.router import PlacementCheck
-from ..models import HatBrokerAccount, HatInstrument, HatSignal
+from ..models import HatInstrument, HatSignal
 from ..notify import Notifier
 from ..ops.jobs import SessionFactory
 from ..ops.scheduler import DEFAULT_DEADLINE, HatScheduler, ScheduledJob
@@ -166,7 +167,7 @@ class RuntimeParts:
     feed: Feed
     telegram: TelegramSettings
     transport: TelegramTransport
-    broker_for: Callable[[HatBrokerAccount], HatBroker | None]
+    broker_for: Callable[[BrokerAccount], HatBroker | None]
     mcp: Callable[[], McpClient | None]
     bhavcopy: Callable[[], Fetcher]
     sources: TextSources
@@ -305,6 +306,7 @@ class Assembly:
 
     parts: RuntimeParts
     session_factory: SessionFactory
+    data_session_factory: SessionFactory  # the data jobs': the only sessions writing hat_live
     user_id: uuid.UUID
     calendar: TradingCalendar
     notifier: Notifier
@@ -350,10 +352,13 @@ def build(
     calendar: TradingCalendar,
     *,
     sleep: Callable[[float], None],
+    data_session_factory: SessionFactory | None = None,
 ) -> Assembly:
     """Wire the daily cycle over `parts` (blocking: the desks read the accounts and build the
-    brokers). `sleep` is the ingest's wait when the parts give none."""
+    brokers). `sleep` is the ingest's wait when the parts give none; `data_session_factory`
+    (default `session_factory`) is the data jobs' sessions, which may write hat_live."""
     sf = session_factory
+    data_sf = data_session_factory or session_factory
     client = BotClient(parts.transport, parts.telegram.chat_id)
     signer = ApprovalSigner(parts.telegram.approval_secret)
     notifier = TelegramNotifier(client, sf)
@@ -455,6 +460,7 @@ def build(
     nightly = NightlyDeps(
         store=parts.store,
         session_factory=sf,
+        data_session_factory=data_sf,
         clock=clock,
         user_id=settings.user_id,
         mcp=parts.mcp,
@@ -475,6 +481,7 @@ def build(
     return Assembly(
         parts=parts,
         session_factory=sf,
+        data_session_factory=data_sf,
         user_id=settings.user_id,
         calendar=calendar,
         notifier=notifier,

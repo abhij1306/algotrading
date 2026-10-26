@@ -26,13 +26,14 @@ from typing import Protocol
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
 from ..execution.tags import encode_tag
 from ..governance import Mode
 from ..ids import uuid7
 from ..models import (
     HatApproval,
-    HatBot,
     HatFill,
     HatOrder,
     HatPosition,
@@ -211,7 +212,7 @@ def open_veto_trade(session: Session, signal_id: uuid.UUID, now: datetime) -> Ha
     existing = _veto_position(session, signal_id)
     if existing is not None:
         return existing
-    bot = session.get(HatBot, signal.bot_id)
+    bot = configs_of(session).get(Bot, signal.bot_id)
     if bot is None:
         raise TradeError("unknown_bot")
     fill = SHADOW_FILLS.fill("buy", signal.qty, entry_price_of(session, signal), trade_date_of(now))

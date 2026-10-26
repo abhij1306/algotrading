@@ -7,8 +7,8 @@ market data comes from it.
 from __future__ import annotations
 
 from app.hat.api.broker_auth import RouteNames, auth_router
+from app.hat.configs.records import BROKER_FYERS
 from app.hat.execution.fyers_auth import get_fyers_auth
-from app.hat.models.strategy import BROKER_FYERS
 
 __all__ = ["router"]
 

@@ -1,27 +1,27 @@
-"""The criterion catalogue (HAT-CRIT-021): `hat_criterion_type` as a copy of the registry."""
+"""The criterion catalogue (HAT-CRIT-021): the `criterion_type` config records as a copy of the
+registry."""
 
 from __future__ import annotations
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...models import HatCriterionType
+from ...configs.records import CriterionType
+from ...configs.unit import configs_of
 from ..criteria import REGISTRY
 
 
 def sync_criterion_types(session: Session) -> int:
-    """Make `hat_criterion_type` hold exactly the registry: insert missing rows and bring each
-    row's stage, `param_schema` and `data_needs` to the registry's. Returns the rows written."""
-    existing = {
-        (row.code, row.version): row for row in session.scalars(select(HatCriterionType)).all()
-    }
+    """Make the `criterion_type` records hold exactly the registry: add missing records and bring
+    each one's stage, `param_schema` and `data_needs` to the registry's (written at the caller's
+    commit). Returns the records written."""
+    unit = configs_of(session)
     written = 0
     for ctype in REGISTRY.values():
         schema, needs = ctype.param_schema(), list(ctype.data_needs)
-        row = existing.pop((ctype.code, ctype.version), None)
+        row = unit.get(CriterionType, f"{ctype.code}@{ctype.version}")
         if row is None:
-            session.add(
-                HatCriterionType(
+            unit.add(
+                CriterionType(
                     code=ctype.code,
                     version=ctype.version,
                     stage=ctype.stage,
@@ -33,5 +33,4 @@ def sync_criterion_types(session: Session) -> int:
         elif (row.stage, row.param_schema, row.data_needs) != (ctype.stage, schema, needs):
             row.stage, row.param_schema, row.data_needs = ctype.stage, schema, needs
             written += 1
-    session.flush()
     return written

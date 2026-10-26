@@ -39,8 +39,9 @@ def _ensure_database_schema() -> None:
     from . import database
 
     database.init_db()
-    with database.engine.connect() as connection:
-        connection.execute(text("SELECT 1"))
+    for engine in (database.engine, database.state_engine):
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
 
 
 async def _init_database() -> None:
@@ -122,7 +123,8 @@ async def _start_hat_runtime(app: FastAPI, feed: Any) -> None:  # noqa: ANN401 -
         database.HatSessionLocal,
         dialect_name=database.engine.dialect.name,
         parts=production_parts(settings, feed, prevalidated_token=app.state.fyers_token_valid),
-        runtime_lock=lambda: RuntimeLock.acquire(database.engine),
+        runtime_lock=lambda: RuntimeLock.acquire(database.state_engine),
+        data_session_factory=database.HatDataSessionLocal,
     )
     app.state.hat_runtime = runtime
     await runtime.start()
@@ -145,7 +147,7 @@ async def _start_hat(app: FastAPI) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Startup: event loop, database schema, then the HAT runtime when HAT_ENABLED.
-    Shutdown: the HAT runtime, then the database engine, each even if the other failed."""
+    Shutdown: the HAT runtime, then the database engines, each even if the other failed."""
     loop = asyncio.get_running_loop()
     app.state.loop = loop
     await _init_database()
@@ -167,7 +169,8 @@ async def _stop_hat(app: FastAPI) -> None:
 async def _dispose_engine() -> None:
     from . import database
 
-    database.engine.dispose()
+    for engine in (database.engine, database.live_writer_engine, database.state_engine):
+        engine.dispose()
     await asyncio.sleep(0)
 
 
@@ -182,7 +185,7 @@ async def _run_shutdown_step(name: str, step: Callable[[], Awaitable[None]]) -> 
 
 
 async def _shutdown(app: FastAPI) -> None:
-    """Stop HAT's background work and release the DB pool; each step runs even if an earlier
+    """Stop HAT's background work and release the DB pools; each step runs even if an earlier
     one failed."""
     steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
         ("hat", lambda: _stop_hat(app)),

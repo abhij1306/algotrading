@@ -1,13 +1,14 @@
-"""Strategy versions and the seeds of the registered strategies as database operations
+"""Strategy versions and the seeds of the registered strategies as config operations
 (HAT-BOT-060/070/072/080).
 
-Every save creates a new `hat_strategy_version` (a draft) numbered 1, 2, 3 without gaps, with
-`parent_version_id` set; `publish_version` freezes a draft by moving it to `frozen`, after which
-the config never changes (the database trigger refuses it, and so does this module). A save is
-refused inside a market session and when the config does not validate: no row is written then.
-Nothing here commits; the caller's transaction decides. What a version does once `frozen` (its
-trial, its release, the sleeves that run it) is the release gate in `release`; the version states
-(`governance.VersionStatus`) are named apart from a sleeve's lifecycle states.
+Every save creates a new strategy version (a draft config record, `configs.records`) numbered
+1, 2, 3 without gaps, with `parent_version_id` set; `publish_version` freezes a draft by moving it
+to `frozen` against its promotion run folder, after which the config never changes (a version's
+config is fixed by its first revision file, `records.record_rules`). A save is refused inside a
+market session and when the config does not validate: nothing is written then. Nothing here
+commits; the caller's transaction writes the files at its commit. What a version does once
+`frozen` (its trial, its release, the sleeves that run it) is the release gate in `release`; the
+version states (`governance.VersionStatus`) are named apart from a sleeve's lifecycle states.
 """
 
 from __future__ import annotations
@@ -15,17 +16,21 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...backtest.evidence import RunMetrics
+from ...backtest.evidence import COMPLETED, audit_admits, read_evidence
+from ...backtest.run_files import read_doc, read_run
+from ...configs.records import Strategy, StrategyVersion
+from ...configs.unit import configs_of, data_root_of
 from ...errors import HatError
 from ...events import record
 from ...governance import VersionStatus
-from ...models import HatBacktestRun, HatMarket, HatStrategy, HatStrategyVersion
+from ...models import HatMarket
 from ...risk.sessions import SessionCalendar, SessionState
 from .catalogue import sync_criterion_types
 from .config import StrategyConfig, parse_config
@@ -42,30 +47,25 @@ class VersionError(HatError):
         self.code = code
 
 
-def versions_of(session: Session, strategy_id: uuid.UUID) -> list[HatStrategyVersion]:
-    return list(
-        session.scalars(
-            select(HatStrategyVersion)
-            .where(HatStrategyVersion.strategy_id == strategy_id)
-            .order_by(HatStrategyVersion.version)
-        ).all()
-    )
+def versions_of(session: Session, strategy_id: uuid.UUID) -> list[StrategyVersion]:
+    found = configs_of(session).all(StrategyVersion, lambda v: v.strategy_id == strategy_id)
+    return sorted(found, key=lambda v: v.version)
 
 
 def _new_version(
     session: Session,
-    strategy: HatStrategy,
+    strategy: Strategy,
     config: StrategyConfig,
     parent_version_id: uuid.UUID | None,
     at: datetime | None,
-) -> HatStrategyVersion:
+) -> StrategyVersion:
     existing = versions_of(session, strategy.id)
     parent = parent_version_id
     if parent is None and existing:
         parent = existing[-1].id
     if parent is not None and parent not in {v.id for v in existing}:
         raise VersionError("unknown_parent")
-    row = HatStrategyVersion(
+    row = StrategyVersion(
         id=uuid.uuid4(),
         strategy_id=strategy.id,
         version=(existing[-1].version if existing else 0) + 1,
@@ -74,8 +74,7 @@ def _new_version(
         config_hash=config.hash(),
         parent_version_id=parent,
     )
-    session.add(row)
-    session.flush()
+    configs_of(session).add(row)
     record(
         session,
         aggregate_type="strategy_version",
@@ -97,7 +96,7 @@ def save_draft(
     calendar: SessionCalendar,
     now: datetime,
     parent_version_id: uuid.UUID | None = None,
-) -> HatStrategyVersion:
+) -> StrategyVersion:
     """Validate `config` and store it as the strategy's next version (a draft), edited from
     `parent_version_id` (default: the latest version). Raises `ConfigError` for an invalid
     config, `VersionError("market_hours")` unless the calendar says the market is closed at
@@ -108,8 +107,9 @@ def save_draft(
     parsed = parse_config(config.to_json() if isinstance(config, StrategyConfig) else config)
     if calendar.state(now) is not SessionState.CLOSED:
         raise VersionError("market_hours")
-    # The row lock makes concurrent saves take turns, so each reads the true latest version.
-    strategy = session.get(HatStrategy, strategy_id, with_for_update=True)
+    # Two concurrent saves read the same latest version; the second's commit is refused
+    # (`ConfigConflictError`: the version file exists), so versions stay gapless and unique.
+    strategy = configs_of(session).get(Strategy, strategy_id)
     if strategy is None:
         raise VersionError("unknown_strategy")
     if parsed.bot != strategy.name:
@@ -117,33 +117,42 @@ def save_draft(
     return _new_version(session, strategy, parsed, parent_version_id, now)
 
 
-def publish_version(
-    session: Session, version_id: uuid.UUID, *, backtest_run_id: uuid.UUID
-) -> HatStrategyVersion:
-    """Freeze a draft: it becomes `frozen` against a completed run of that version, which
-    evidences it (HAT-BT-061), and its config can no longer change. Any other starting status, or
-    a run of another version, one not completed or one not flagged for promotion (PR 62), is
-    refused."""
-    # locked, so two publishes of one draft serialise and the second sees it frozen
-    row = session.get(HatStrategyVersion, version_id, with_for_update=True)
+def _not_evidence(root: Path | None, run_id: str) -> str:
+    """Why the run `run_id` is no evidence: unknown, not completed, or its audit not passed."""
+    run = None if root is None else read_run(root, run_id)
+    if root is None or run is None:
+        return "unknown_run"
+    if (run.get("identity") or {}).get("status") == COMPLETED and not audit_admits(
+        read_doc(root, run_id, "audit")
+    ):
+        return "run_audit_not_passed"
+    return "run_not_completed"
+
+
+def publish_version(session: Session, version_id: uuid.UUID, *, run_id: str) -> StrategyVersion:
+    """Freeze a draft: it becomes `frozen` against a completed run folder of that version
+    flagged for promotion (PR 62), which evidences it (HAT-BT-061): the version's
+    `backtest_run_id` is the run id. Its config can no longer change. Any other starting status,
+    an unknown run, one not completed (no evidence in its folder), one whose run audit failed or
+    is missing (`run_audit_not_passed`), a run of another version or one not flagged for
+    promotion is refused."""
+    row = configs_of(session).get(StrategyVersion, version_id)
     if row is None:
         raise VersionError("unknown_version")
     if row.status != VersionStatus.DRAFT:
         raise VersionError("not_a_draft")
-    run = session.get(HatBacktestRun, backtest_run_id)
+    root = data_root_of(session)
+    run = None if root is None else read_evidence(root, run_id)
     if run is None:
-        raise VersionError("unknown_run")
+        raise VersionError(_not_evidence(root, run_id))
     if run.strategy_version_id != version_id:
         raise VersionError("run_not_for_version")
-    if run.status != "completed":
-        raise VersionError("run_not_completed")
-    if not RunMetrics.from_json(run.metrics).for_promotion:
+    if not run.metrics.for_promotion:
         # O5 (PR 62): only a run flagged for promotion evidences; `RunSpec` records one only
         # under the conventions live trades by (never at perfect fills, slots in trigger order)
         raise VersionError("run_not_for_promotion")
     row.status = VersionStatus.FROZEN
-    row.backtest_run_id = backtest_run_id
-    session.flush()
+    row.backtest_run_id = run_id
     return row
 
 
@@ -162,7 +171,7 @@ def seed_config(name: str) -> StrategyConfig:
     return parse_config(yaml.safe_load(seed_text(name)))
 
 
-def seed_default_strategies(session: Session, user_id: uuid.UUID) -> list[HatStrategy]:
+def seed_default_strategies(session: Session, user_id: uuid.UUID) -> list[Strategy]:
     """Create every registered strategy, each with version 1 as a draft, when missing; sync the
     criterion catalogue. Safe to repeat: an existing strategy is left as it is. Needs the NSE
     `hat_market` row."""
@@ -171,20 +180,19 @@ def seed_default_strategies(session: Session, user_id: uuid.UUID) -> list[HatStr
         raise VersionError("no_market")
     sync_criterion_types(session)
     strategies = []
+    unit = configs_of(session)
     for name, registered in STRATEGIES.items():
-        strategy = session.scalar(
-            select(HatStrategy).where(HatStrategy.user_id == user_id, HatStrategy.name == name)
-        )
+        found = unit.all(Strategy, lambda s, name=name: s.user_id == user_id and s.name == name)
+        strategy = found[0] if found else None
         if strategy is None:
-            strategy = HatStrategy(
+            strategy = Strategy(
                 id=uuid.uuid4(),
                 user_id=user_id,
                 market_id=market.id,
                 name=name,
                 persona=registered.persona,
             )
-            session.add(strategy)
-            session.flush()
+            unit.add(strategy)
             _new_version(session, strategy, seed_config(name), None, None)
         strategies.append(strategy)
     return strategies

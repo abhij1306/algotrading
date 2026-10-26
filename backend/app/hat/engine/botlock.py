@@ -14,6 +14,8 @@ import uuid
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from ..models import HatSignal
+
 __all__ = ["lock_bot", "lock_owner"]
 
 
@@ -35,6 +37,11 @@ def lock_owner(session: Session, user_id: uuid.UUID) -> None:
 
 
 def _lock(session: Session, key: str) -> None:
-    if session.get_bind().dialect.name != "postgresql":
+    # the lock lives in hat_state, the database the entries write
+    if session.get_bind(HatSignal).dialect.name != "postgresql":
         return
-    session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"), {"key": key})
+    session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": key},
+        bind_arguments={"mapper": HatSignal},
+    )

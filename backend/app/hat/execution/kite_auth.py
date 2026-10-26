@@ -25,11 +25,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from ..models import HatBrokerAccount
-from ..models.strategy import ACCOUNT_ACTIVE, BROKER_ZERODHA
+from ..configs.records import ACCOUNT_ACTIVE, BROKER_ZERODHA, BrokerAccount
+from ..configs.unit import configs_of
 from .fyers_auth import (
     AccountRefs,
     FyersAuthError,
@@ -100,11 +99,9 @@ def kite_credentials_from_env() -> KiteCredentials:
 def zerodha_account_refs(session: DbSession) -> frozenset[str]:
     """The `account_ref` (the Kite user id) of every active zerodha broker account."""
     return frozenset(
-        session.scalars(
-            select(HatBrokerAccount.account_ref).where(
-                HatBrokerAccount.broker == BROKER_ZERODHA,
-                HatBrokerAccount.status == ACCOUNT_ACTIVE,
-            )
+        a.account_ref
+        for a in configs_of(session).all(
+            BrokerAccount, lambda a: a.broker == BROKER_ZERODHA and a.status == ACCOUNT_ACTIVE
         )
     )
 

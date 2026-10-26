@@ -1,8 +1,9 @@
 """Risk-policy changes as database operations (HAT-GOV-090..094).
 
-A change is requested as a new `hat_risk_policy_version`: a decrease takes effect at the next
-session open, an increase no sooner than 7 days after the request and only with gate evidence,
-which by default comes from the backtest runs (`backtest.evidence.gate_evidence`, HAT-GOV-091).
+A change is requested as a new risk-policy version (a config record, `configs`): a decrease takes
+effect at the next session open, an increase no sooner than 7 days after the request and only
+with gate evidence, which by default comes from the backtest runs
+(`backtest.evidence.gate_evidence`, HAT-GOV-091).
 Requesting writes `risk.change_requested`; a version taking effect writes `risk.change_effective`
 and marks the version it replaces `superseded_at`, in the same transaction. A decrease withdraws
 every version still pending (`risk.change_withdrawn`, `superseded_at` before its own
@@ -22,9 +23,11 @@ from sqlalchemy import Select, exists, select
 from sqlalchemy.orm import Session
 
 from ..backtest.evidence import gate_evidence
+from ..configs.records import RiskPolicyVersion
+from ..configs.unit import configs_of
 from ..errors import HatError
 from ..governance import COOLING_OFF
-from ..models import HatEvent, HatOrder, HatPosition, HatRiskPolicyVersion, HatTradeResult
+from ..models import HatEvent, HatOrder, HatPosition, HatTradeResult
 from ..time import as_utc
 from .policy import (
     SEED_POLICY,
@@ -63,19 +66,15 @@ class PolicyChangeError(HatError):
     """A policy change was refused (no known session open to take effect at)."""
 
 
-def seed_initial_policy(
-    session: Session, user_id: uuid.UUID, now: datetime
-) -> HatRiskPolicyVersion:
+def seed_initial_policy(session: Session, user_id: uuid.UUID, now: datetime) -> RiskPolicyVersion:
     """Version 1 (`direction = initial`), effective now, with seed; a no-op that returns
     the first version when one exists. Writes both governance events."""
-    first = session.scalars(
-        select(HatRiskPolicyVersion).where(
-            HatRiskPolicyVersion.user_id == user_id, HatRiskPolicyVersion.version == 1
-        )
-    ).first()
-    if first is not None:
-        return first
-    row = HatRiskPolicyVersion(
+    found = configs_of(session).all(
+        RiskPolicyVersion, lambda r: r.user_id == user_id and r.version == 1
+    )
+    if found:
+        return found[0]
+    row = RiskPolicyVersion(
         user_id=user_id,
         version=1,
         policy=dict(SEED_POLICY),
@@ -83,8 +82,7 @@ def seed_initial_policy(
         requested_at=now,
         effective_from=now,
     )
-    session.add(row)
-    session.flush()
+    configs_of(session).add(row)
     record_policy_event(session, row, EVENT_REQUESTED, "engine", None, now)
     record_policy_event(session, row, EVENT_EFFECTIVE, "engine", None, now)
     return row
@@ -110,7 +108,7 @@ def reset_policy_before_trading(
     calendar: SessionCalendar,
     chat_id: int,
     now: datetime,
-) -> HatRiskPolicyVersion:
+) -> RiskPolicyVersion:
     """Replace the policy in force with `policy` at once, as the next version (`direction =
     initial`, effective now, like the seed): the in-force version is superseded and every pending
     one withdrawn (`risk.change_withdrawn`), and the owner's `risk.change_requested` and
@@ -135,7 +133,7 @@ def reset_policy_before_trading(
     versions = load_versions(session, user_id)
     if effective_version(versions, now) is None:
         raise PolicyResetError("no_policy")
-    row = HatRiskPolicyVersion(
+    row = RiskPolicyVersion(
         user_id=user_id,
         version=next_version(session, user_id),
         policy=policy.to_json(),
@@ -143,13 +141,10 @@ def reset_policy_before_trading(
         requested_at=now,
         effective_from=now,
     )
-    session.add(row)
-    session.flush()
+    configs_of(session).add(row)
     record_policy_event(session, row, EVENT_REQUESTED, "user", chat_id, now)
     replaced = {v.version_id for v in versions if v.superseded_at is None}
-    for old in session.scalars(
-        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.id.in_(replaced))
-    ):
+    for old in configs_of(session).all(RiskPolicyVersion, lambda r: r.id in replaced):
         old.superseded_at = as_utc(now)
         if as_utc(old.effective_from) > as_utc(now):  # pending: withdrawn, never in force
             record_policy_event(session, old, EVENT_WITHDRAWN, "user", chat_id, now)
@@ -167,7 +162,7 @@ def request_policy_change(
     evidence: EvidenceSource = backtest_evidence,
     actor: str = "user",
     chat_id: int | None = None,
-) -> HatRiskPolicyVersion:
+) -> RiskPolicyVersion:
     """Queue `proposed` as the next version (`risk.change_requested`), outside market hours only.
 
     The direction is `increase` when `proposed` is more permissive than the version in force or
@@ -211,7 +206,7 @@ def request_policy_change(
         effective = calendar.next_open_after(requested_at)
     if effective is None:
         raise PolicyChangeError("the calendar has no session open to take effect at")
-    row = HatRiskPolicyVersion(
+    row = RiskPolicyVersion(
         user_id=user_id,
         version=next_version(session, user_id),
         policy=proposed.to_json(),
@@ -220,14 +215,11 @@ def request_policy_change(
         effective_from=effective,
         gate_evidence=dict(gate_evidence) if gate_evidence is not None else None,
     )
-    session.add(row)
-    session.flush()
+    configs_of(session).add(row)
     record_policy_event(session, row, EVENT_REQUESTED, actor, chat_id, requested_at)
     if direction == "decrease":
         ids = {v.version_id for v in withdrawn_by_decrease(versions, requested_at)}
-        for old in session.scalars(
-            select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.id.in_(ids))
-        ):
+        for old in configs_of(session).all(RiskPolicyVersion, lambda r: r.id in ids):
             old.superseded_at = as_utc(requested_at)
             record_policy_event(session, old, EVENT_WITHDRAWN, actor, chat_id, requested_at)
     return row
@@ -237,9 +229,7 @@ def apply_due_versions(session: Session, user_id: uuid.UUID, now: datetime) -> i
     """Make every version whose time has come take effect: write `risk.change_effective` once
     for it and mark the version it replaces `superseded_at`. Safe to repeat. Returns how many
     versions took effect on this call."""
-    rows = session.scalars(
-        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.user_id == user_id)
-    ).all()
+    rows = configs_of(session).all(RiskPolicyVersion, lambda r: r.user_id == user_id)
     announced = set(
         session.scalars(
             select(HatEvent.aggregate_id).where(

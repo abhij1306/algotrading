@@ -242,7 +242,7 @@ class Periodic:
         fetch = self._a.parts.announcements
         if fetch is None:
             return
-        sf = self._a.session_factory
+        sf = self._a.data_session_factory  # the announcements are hat_live data
         steps: list[Step] = [
             (
                 ANNOUNCEMENTS,

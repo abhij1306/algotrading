@@ -91,9 +91,12 @@ class HatRuntime:
         parts: Callable[[], RuntimeParts],
         runtime_lock: Callable[[], RuntimeLock],
         clock: Clock = SYSTEM_CLOCK,
+        data_session_factory: SessionFactory | None = None,
     ) -> None:
         self.settings = settings
         self._session_factory = session_factory
+        # the nightly data jobs' sessions, the only ones that may write hat_live
+        self._data_session_factory = data_session_factory or session_factory
         self._dialect_name = dialect_name
         self._parts = parts
         self._runtime_lock = runtime_lock
@@ -169,6 +172,7 @@ class HatRuntime:
             asyncio.get_running_loop(),
             self.calendar,
             sleep=self._sleep,
+            data_session_factory=self._data_session_factory,
         )
         self.assembly = assembly
         await self._recover(assembly)

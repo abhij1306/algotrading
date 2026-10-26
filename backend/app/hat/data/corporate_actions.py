@@ -70,8 +70,8 @@ def lock_reference_data(session: Session) -> None:
     no write lands between another writer's read and its write: a nightly build never decides on
     actions or overrides that changed meanwhile, and two symbol writers never miss each other's
     interval. A no-op on SQLite, which runs one writer at a time."""
-    if session.get_bind().dialect.name == "postgresql":
-        session.execute(text(_REFERENCE_LOCK_SQL))
+    if session.get_bind(HatCorporateAction).dialect.name == "postgresql":
+        session.execute(text(_REFERENCE_LOCK_SQL), bind_arguments={"mapper": HatCorporateAction})
 
 
 EVENT_CORRECTED = "corporate_action.corrected"  # the owner's correction (`correct_action`)

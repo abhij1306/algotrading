@@ -2,7 +2,7 @@
 
 `hat_event` is range-partitioned on `recorded_at`, which is UTC. A partition holds one UTC
 month: [first day 00:00 UTC, first day of the next month 00:00 UTC). An insert with no matching
-partition fails, so partitions must exist ahead of time: `ensure_hat_schema` creates the current
+partition fails, so partitions must exist ahead of time: `ensure_state_schema` creates the current
 month and the next two, and the nightly `events.partitions` job keeps creating them ahead. The
 job reads back which partitions exist: with less than one month ahead (or when the creation
 fails) it alerts `events.partitions_short` and fails, so the shortage is seen weeks before an

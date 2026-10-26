@@ -82,7 +82,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     cleared.add_argument("symbol")
     args = parser.parse_args(argv)
     operator_settings()  # loads .env, as every data command line does
-    with db_session_scope() as session:
+    with db_session_scope(writes_data=True) as session:
         if args.command == "list":
             for row in open_quarantines(session):
                 sys.stdout.write(f"{row.since.isoformat()}  {row.symbol}  {row.instrument_id}\n")

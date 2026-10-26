@@ -1,4 +1,4 @@
-"""`hat_event`: the append-only event log.
+"""`hat_event`: the append-only event log, in hat_state.
 
 On Postgres the table is range-partitioned monthly on `recorded_at` and the trigger
 `hat_event_no_update` (`app/hat/schema.py`) rejects every UPDATE and DELETE. The primary key is
@@ -22,7 +22,7 @@ from sqlalchemy import (
     func,
 )
 
-from ...base import Base
+from ...base import StateBase
 from ._types import JsonB, Timestamptz, now_utc
 
 __all__ = ["EVENT_ACTORS", "HatEvent"]
@@ -30,7 +30,7 @@ __all__ = ["EVENT_ACTORS", "HatEvent"]
 EVENT_ACTORS = ("engine", "user", "broker", "scheduler")
 
 
-class HatEvent(Base):
+class HatEvent(StateBase):
     __tablename__ = "hat_event"
     __table_args__ = (
         CheckConstraint(

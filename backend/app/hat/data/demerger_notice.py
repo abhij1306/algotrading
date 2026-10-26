@@ -454,12 +454,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import HatSessionLocal
+    from app.database import HatDataSessionLocal
 
     from .store import DATASET_BARS, DataStore
 
     write = sys.stdout.write
-    with HatSessionLocal() as session:
+    with HatDataSessionLocal() as session:
         if args.command == "exits":
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
             wanted = set(args.symbols)

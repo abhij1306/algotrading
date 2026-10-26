@@ -40,6 +40,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..data.announcements import attached_announcements
 from ..data.gapscan import ALERT_LATE, gap_scan_body, is_late
 from ..data.live import LiveData, usable_price
@@ -60,7 +62,6 @@ from ..events import record
 from ..execution.manage import EXITS_CLOSE_FROM, EXITS_CLOSE_UNTIL
 from ..execution.mode_changes import apply_mode_changes
 from ..models import (
-    HatBot,
     HatEvent,
     HatInstrument,
     HatJobRun,
@@ -245,7 +246,7 @@ class Intraday:
     def _in_a_universe(self, day: date) -> Callable[[HatInstrument], bool]:
         with self._session_factory() as session:
             members: set[uuid.UUID] = set()
-            for bot in session.scalars(select(HatBot).where(HatBot.status == "active")):
+            for bot in configs_of(session).all(Bot, lambda b: b.status == "active"):
                 members |= bot_universe_members(session, bot, day)
         return lambda instrument: instrument.id in members
 
@@ -435,10 +436,14 @@ def _day_instruments(session: Session, day: date) -> set[uuid.UUID]:
 
 def _open_position_symbols(session: Session) -> dict[uuid.UUID, str]:
     """Each open position's instrument with its symbol (virtual ones too, as `load_inputs`)."""
+    held = set(
+        session.scalars(select(HatPosition.instrument_id).where(HatPosition.closed_at.is_(None)))
+    )
+    if not held:
+        return {}
+    # the positions live in hat_state, the symbols in hat_live: two reads
     rows = session.execute(
-        select(HatInstrument.id, HatInstrument.symbol)
-        .join(HatPosition, HatPosition.instrument_id == HatInstrument.id)
-        .where(HatPosition.closed_at.is_(None))
+        select(HatInstrument.id, HatInstrument.symbol).where(HatInstrument.id.in_(held))
     )
     return dict(rows.tuples().all())
 

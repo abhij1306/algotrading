@@ -159,15 +159,30 @@ class AdminError(HatError):
         self.code = code
 
 
+# The commands that write hat_live's stock data (instruments, symbols, universes, index
+# membership, corporate actions): the only ones given its writer (`db_session_scope`).
+DATA_COMMANDS = frozenset(
+    {
+        "refresh-kite-symbols",
+        "publish-universe",
+        "load-index-membership",
+        "correct-action",
+        "correct-actions",
+        "repair-symbol-history",
+    }
+)
+
+
 @dataclass(frozen=True)
 class AdminDeps:
     """What a command needs from outside: the owner's user id, the folder its input files are
-    read from, the transaction, the broker of an onboarding, the
+    read from, the transaction (`writes_data` for the commands that write hat_live's stock data,
+    `DATA_COMMANDS`), the broker of an onboarding, the
     environment, the clock and the bar store. `production()` builds the real ones."""
 
     user_id: uuid.UUID
     files: Path
-    scope: Callable[[], AbstractContextManager[Session]]
+    scope: Callable[..., AbstractContextManager[Session]]
     broker_for: Callable[[str], HatBroker]
     env: Mapping[str, str]
     clock: Clock
@@ -228,7 +243,7 @@ def _parser() -> argparse.ArgumentParser:
     draft.add_argument("--config", required=True)
     publish = commands.add_parser("publish-version")
     publish.add_argument("--version", type=uuid.UUID, required=True)
-    publish.add_argument("--run", type=uuid.UUID, required=True)
+    publish.add_argument("--run", required=True)
     assign = commands.add_parser("assign-version")
     assign.add_argument("--bot", type=uuid.UUID, required=True)
     assign.add_argument("--version", type=uuid.UUID, required=True)
@@ -509,7 +524,7 @@ def _release(
         )
         return {"version_id": str(row.id), "version": row.version, "status": row.status}
     if command == "publish-version":
-        row = versions.publish_version(session, args.version, backtest_run_id=args.run)
+        row = versions.publish_version(session, args.version, run_id=args.run)
         return {"version_id": str(row.id), "status": row.status}
     if command == "trial-version":
         row = release.start_trial(session, args.version, calendar=_calendar(session), now=now)
@@ -627,7 +642,7 @@ def main(argv: Sequence[str] | None = None, deps: AdminDeps | None = None) -> in
     args = _parser().parse_args(argv)
     deps = deps or AdminDeps.production()
     try:
-        with deps.scope() as session:
+        with deps.scope(writes_data=args.command in DATA_COMMANDS) as session:
             result = _run(session, args, deps)
     except HatError as exc:
         sys.stderr.write(f"refused: {_code(exc)}\n")

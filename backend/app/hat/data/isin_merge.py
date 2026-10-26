@@ -715,7 +715,7 @@ def _print(values: Iterable[tuple[str, Any]]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the database
     args = _parse_args(argv)
     operator_settings()  # loads `.env` (the DB_* variables) before the engine is built
-    from app.database import engine
+    from app.database import live_writer_engine as engine
 
     try:
         if args.command == "check":

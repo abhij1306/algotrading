@@ -73,6 +73,7 @@ jobs:
       DB_PORT: "5432"
       DB_USER: postgres
       DB_NAME: smarttrader_test
+      DB_STATE_NAME: smarttrader_test
     steps:
       - uses: actions/checkout@v5
 

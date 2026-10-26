@@ -4,6 +4,7 @@ reconciliation is an outage to alert (`reconcile_down`)."""
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from app.hat.configs.records import BrokerAccount
 from app.hat.daily.accounts import (
     RECONCILE_DOWN_AFTER,
     RECONCILE_DOWN_IN_SESSION,
@@ -11,11 +12,12 @@ from app.hat.daily.accounts import (
     reconcile_down,
 )
 from app.hat.execution.guard import BUDGET_SPENT, ExecutionGuard
-from app.hat.models import HatBrokerAccount
 
 
-def _account(status: str, broker: str = "fyers") -> HatBrokerAccount:
-    return HatBrokerAccount(id=uuid.uuid4(), broker=broker, status=status)
+def _account(status: str, broker: str = "fyers") -> BrokerAccount:
+    return BrokerAccount(
+        user_id=uuid.uuid4(), broker=broker, account_ref="x", capabilities={}, status=status
+    )
 
 
 def test_a_holding_account_sharing_an_active_broker_gets_no_desk() -> None:

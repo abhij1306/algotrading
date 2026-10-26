@@ -27,10 +27,11 @@ from datetime import date, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import HatBot, HatOrder, HatPosition, HatSignal
+from ..models import HatOrder, HatPosition, HatSignal
 from ..risk.kill_ops import kill_state
 from ..time import as_utc, trade_date_of
 from .broker import CODES_NOT_SENT, HatBroker
+from .modes import account_bot_ids
 from .stop_plans import LIVE
 
 __all__ = ["MANAGE_ONLY", "EntryCancel"]
@@ -88,10 +89,9 @@ class EntryCancel:
         today = trade_date_of(now)
         rows = session.execute(
             select(HatSignal.id, HatSignal.bot_id)
-            .join(HatBot, HatBot.id == HatSignal.bot_id)
             .join(HatOrder, HatOrder.signal_id == HatSignal.id)
             .where(
-                HatBot.broker_account_id == account_id,
+                HatSignal.bot_id.in_(account_bot_ids(session, account_id)),
                 HatSignal.trade_date == today,
                 HatOrder.purpose == ENTRY,
                 HatOrder.is_virtual.is_(False),

@@ -44,7 +44,9 @@ from ...database import get_db
 from ..backtest import folder
 from ..backtest.jobs import JOB_BUSY, MAX_VARIANTS, Job, Jobs, JobVariant, check_variants
 from ..backtest.spec import BacktestError
-from ..models import HatStrategy, HatStrategyVersion, HatUniverse
+from ..configs.records import Strategy, StrategyVersion
+from ..configs.unit import configs_of
+from ..models import HatUniverse
 from ..money import exact
 from ..settings import operator_settings
 from .guard import frontend_write
@@ -255,11 +257,12 @@ def _file(root: Path, run_id: str, name: str) -> Response:
 
 
 def _options(session: Session) -> BacktestOptions:
-    rows = session.execute(
-        select(HatStrategyVersion, HatStrategy)
-        .join(HatStrategy, HatStrategy.id == HatStrategyVersion.strategy_id)
-        .order_by(HatStrategy.name, HatStrategyVersion.version)
-    ).all()
+    configs = configs_of(session)
+    strategies = {s.id: s for s in configs.all(Strategy)}
+    rows = sorted(
+        ((v, strategies[v.strategy_id]) for v in configs.all(StrategyVersion)),
+        key=lambda pair: (pair[1].name, pair[0].version),
+    )
     universes: dict[uuid.UUID, list[BacktestUniverse]] = {}
     for u in session.scalars(select(HatUniverse).order_by(HatUniverse.name)):
         universes.setdefault(u.user_id, []).append(BacktestUniverse(id=u.id, name=u.name))
@@ -324,8 +327,9 @@ def _variant(item: BacktestVariantStart) -> JobVariant:
 def _check_target(session: Session, body: BacktestStart) -> None:
     """Refuse an unknown version, a universe its strategy's owner does not hold and an empty
     period, as the command line would before loading the market."""
-    version = session.get(HatStrategyVersion, body.strategy_version_id)
-    strategy = None if version is None else session.get(HatStrategy, version.strategy_id)
+    configs = configs_of(session)
+    version = configs.get(StrategyVersion, body.strategy_version_id)
+    strategy = None if version is None else configs.get(Strategy, version.strategy_id)
     if strategy is None:
         raise BacktestError("backtest_unknown_version")
     universe = session.get(HatUniverse, body.universe_id)

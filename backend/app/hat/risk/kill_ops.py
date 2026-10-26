@@ -17,10 +17,12 @@ from datetime import datetime
 from sqlalchemy import ColumnElement, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..engine import journal
 from ..engine.lifecycle import AWAITING_APPROVAL
 from ..events import record
-from ..models import HatApproval, HatBot, HatKillSwitch, HatSignal
+from ..models import HatApproval, HatKillSwitch, HatSignal
 from ..read.kill import kill_rows, reasons_of
 from ..settings import load_settings
 from . import kill
@@ -38,7 +40,7 @@ def _aggregate(scope: str, bot_id: uuid.UUID | None) -> uuid.UUID:
 
 def kill_state(session: Session, bot_id: uuid.UUID) -> kill.KillState:
     """The switches bearing on `bot_id` now, for the entry gate."""
-    bot = session.get(HatBot, bot_id)
+    bot = configs_of(session).get(Bot, bot_id)
     paused = bot is None or bot.status != "active"  # an unknown or non-active bot takes no entry
     rows = kill_rows(session, keys=(("account", None), ("bot", bot_id)))
     return kill.kill_state_of(rows, bot_id, paused=paused)

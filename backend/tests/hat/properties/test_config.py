@@ -12,10 +12,9 @@ from hat.hat_config_support import (
     raw_configs,
 )
 from hat.hat_risk_support import calendar_around
-from hat.hat_support import memory_engine
+from hat.hat_support import memory_engine, memory_session
 from hypothesis import assume, given
 from hypothesis import strategies as st
-from sqlalchemy.orm import Session
 
 from app.hat.confighash import config_hash
 from app.hat.engine.criteria import REGISTRY
@@ -360,7 +359,7 @@ def test_seed_policy_names_registered_strategies() -> None:
 def test_save_draft_refuses_another_bot_name() -> None:
     """One identity: a strategy saves only a config whose `bot` is its own name (F3)."""
     saturday = datetime(2026, 12, 5, 12, tzinfo=UTC)
-    with Session(ENGINE) as session:
+    with memory_session(ENGINE) as session:
         first, second = seed_default_strategies(session, USER)[:2]
         with pytest.raises(VersionError) as caught:
             save_draft(

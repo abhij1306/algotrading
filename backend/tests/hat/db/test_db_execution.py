@@ -29,7 +29,7 @@ NOW = datetime.combine(b.TRADE_DAY, time(11, 0), tzinfo=IST)
 
 
 def session_on(conn: Connection) -> Session:
-    return Session(bind=conn, join_transaction_mode="create_savepoint")
+    return b.session(conn, join_transaction_mode="create_savepoint")
 
 
 def adapter(fake: FakeBroker) -> FyersHatBroker:

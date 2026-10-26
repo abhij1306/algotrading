@@ -60,13 +60,13 @@ from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
+from ..configs.records import Bot, BrokerAccount
+from ..configs.unit import configs_of
 from ..data.live import PRICE_UNKNOWN
 from ..engine import approvals, entries, lifecycle, positions, snapshot
 from ..governance import Mode
 from ..models import (
     HatApproval,
-    HatBot,
-    HatBrokerAccount,
     HatBrokerSession,
     HatInstrument,
     HatOrder,
@@ -212,7 +212,7 @@ def _gtt_refusal(session: Session, account_id: uuid.UUID, broker: HatBroker) -> 
     """HAT-EXEC-012 at placement: the account must still run real orders (active, GTT for
     delivery in its stored capabilities and in the adapter's now) when a Take arrives minutes
     after its card went out."""
-    account = session.get(HatBrokerAccount, account_id)
+    account = configs_of(session).get(BrokerAccount, account_id)
     if account is None or not real_orders_allowed(
         account.status, account.capabilities or {}, broker.capabilities().gtt_delivery
     ):
@@ -227,7 +227,7 @@ def _mode_refusal(
     routed in. A gate that closed after the routing (`revoke-ddpi`, the sleeve leaving Live, the
     weights no longer confirmed) refuses a Take, an auto entry and a resumed one, with the gate's
     code where it is known."""
-    bot = session.get(HatBot, signal.bot_id)
+    bot = configs_of(session).get(Bot, signal.bot_id)
     if bot is None:
         return MODE_GATE_CLOSED
     view = mode_view(session, bot, now, calendar)
@@ -292,7 +292,7 @@ class ExecutionRouter:
         (HAT-EXEC-014, D149); placement refuses an auto signal stored without a high label. A
         repeated trigger returns the existing signal (and resumes an auto entry that a crash
         left unplaced)."""
-        bot = session.get(HatBot, request.bot_id)
+        bot = configs_of(session).get(Bot, request.bot_id)
         if bot is None:
             raise positions.TradeError("unknown_bot")
         mode = bot_mode(session, bot, request.triggered_at, request.context.calendar)
@@ -442,7 +442,7 @@ class ExecutionRouter:
             return None
         if signal.state == lifecycle.AWAITING_APPROVAL and not _taken(session, signal.id):
             return None  # a card is placed only after its Take passed (PR 52)
-        bot = session.get(HatBot, signal.bot_id)
+        bot = configs_of(session).get(Bot, signal.bot_id)
         if bot is None:
             raise positions.TradeError("unknown_bot")
         account_id = bot.broker_account_id

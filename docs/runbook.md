@@ -8,7 +8,9 @@ Conventions: commands run from the repo root on the host as the service user. `$
 `backend/` (in the stack via `$COMPOSE exec -w /app/backend backend`). Database passwords come
 from `PGPASSWORD` or `~/.pgpass`. "The window" is 08:30–15:35 IST on a trading day: deploys, DBA
 and admin steps run outside it. Commands using `$DB_USER`/`$DB_NAME` need the `.env` variables
-in the shell (`set -a; . ./.env; set +a`). Record every check and incident in the check log.
+in the shell (`set -a; . ./.env; set +a`). The SQL below on the state tables (`hat_job_run`,
+`hat_event`, orders, positions) runs in `"$DB_STATE_NAME"` (hat_state), on the stock data in
+`"$DB_NAME"` (hat_live). Record every check and incident in the check log.
 
 | OPS check | When |
 | --- | --- |
@@ -22,6 +24,22 @@ in the shell (`set -a; . ./.env; set +a`). Record every check and incident in th
 ## Pending owner DBA steps
 
 Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
+
+0. The storage split (decisions: Stock data, state and configs apart), once, before the first
+   start of a release that has it: `$COMPOSE stop backend`, then from `backend/` with the `.env`
+   variables loaded, `python -m app.hat.ops.state_split --check` (writes nothing; prints what it
+   would write) and `python -m app.hat.ops.state_split`. It creates hat_state (`DB_STATE_NAME`,
+   default `hat_state`; no new role or secret: same server and credentials) with its schema,
+   writes each config row of hat_live as revision 1 of its record under
+   `HAT_DATA_ROOT/admin/config` (same ids), copies the state tables' rows to hat_state, and prints
+   a JSON report: per kind and table the rows, what it wrote and the digests of both sides;
+   `verified` must be true (exit 0). It reads hat_live read-only and changes nothing there. Safe to
+   repeat; a record whose revision 1 differs from its row is refused (`config_file_differs`,
+   exit 2). Then start the backend. Later, after a backup, the legacy tables may be dropped from
+   hat_live (`schema.legacy_live_tables`: the config, backtest and state tables): `DROP TABLE
+   hat_strategy, hat_strategy_version, hat_risk_policy_version, hat_regime_model_version,
+   hat_criterion_type, hat_broker_account, hat_bot, hat_backtest_run, hat_backtest_bucket, <each
+   hat_state table> CASCADE;`.
 
 1. Role limits, then restart the backend:
    ```sql
@@ -43,7 +61,7 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
 7. Take TRUNCATE on the event log away from the backend's role. The `hat_event_no_truncate`
    triggers (on `hat_event` and each partition, made at start) refuse a TRUNCATE, but a trigger
    stops neither DROP nor DETACH PARTITION, and a superuser bypasses both triggers and grants: on
-   hat_live the tables belong to `postgres`, so first have the backend connect as a role that is
+   hat_state the tables belong to `postgres`, so first have the backend connect as a role that is
    not a superuser and does not own them. Then, for `hat_event` and each `hat_event_pYYYYMM`:
    ```sql
    REVOKE TRUNCATE ON hat_event FROM PUBLIC, <db_user>;
@@ -117,6 +135,12 @@ changes). Missed triggers are not replayed.
 `$ADMIN --help` and `app/hat/admin.py` list every command. Each is one transaction printing JSON;
 a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are names inside
 `<HAT_DATA_ROOT>/admin/`. `$ADMIN show` lists strategies, versions and sleeves with ids.
+Strategies, versions, the risk policy versions, broker accounts and sleeves are config files
+(`<HAT_DATA_ROOT>/admin/config/<kind>/<id>/<rev>.json`, the revision in force in
+`<kind>/in_force.json`, every earlier pointer in `<kind>/pointers/`); the commands are the only
+way to change them, never an editor: a hand-edited file fails its load. Two changes of one record
+at once: the later commit is refused `config_conflict`; run it again. Only the data commands
+(`admin.DATA_COMMANDS`) write hat_live.
 
 ### First deploy and releases
 
@@ -133,10 +157,9 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
    symbols resolve. Any other unknown symbol or ISIN is listed and nothing is written.
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
    <bot> --version <v> --from 2016-01-01 --to <last trading day> --for-promotion --regime-mult
-   policy`; then `publish-version --version <v> --run <run_id>` (the version is `frozen`) and
-   `assign-version --bot <bot> --version <v>`. Until promotion reads run folders, no run is in
-   `hat_backtest_run`, so `publish-version --run` refuses `unknown_run` and step 5's
-   `backtest_gate` fails (decisions: Backtest results are files).
+   policy`; then `publish-version --version <v> --run <run_id>` (the run folder's id; the run must
+   be complete and flagged for promotion; the version is `frozen`) and `assign-version --bot <bot>
+   --version <v>`.
 5. `promote --bot <bot> --to backtested` (`backtest_gate`), `promote --to shadow` and
    `trial-version --version <v>` the same evening. Versions move draft -> frozen -> trial ->
    released -> superseded; sleeves move research -> backtested -> shadow -> live (`promote`).
@@ -439,18 +462,21 @@ python scripts/hat_backup.py run \
 ```
 
 A set is the dump plus the data root with a manifest; `raw/` and `bars_5m/` cannot be rebuilt
-(`--require raw` while no minute history exists). pg_dump must be 18 (or `--pg-dump`).
+(`--require raw` while no minute history exists). A set holds `hat.dump` (hat_live),
+`hat_state.dump` (hat_state) and the data root, the config files with it. pg_dump must be 18 (or
+`--pg-dump`).
 
 Monthly drill: `python scripts/hat_backup.py verify "$HAT_BACKUP_REMOTE/<set>"`; `createdb -h
 127.0.0.1 -U "$DB_USER" hat_restore_drill` and `pg_restore -h 127.0.0.1 -U "$DB_USER" -d
-hat_restore_drill --no-owner <set>/hat.dump`; compare `select count(*) from hat_event;` and
-`select max(trade_date) from hat_job_run where status = 'succeeded';` with live; extract
+hat_restore_drill --no-owner <set>/hat_state.dump`; compare `select count(*) from hat_event;` and
+`select max(trade_date) from hat_job_run where status = 'succeeded';` with hat_state; extract
 `hat_data.tar` to scratch and check the newest partition and raw zip; drop both.
 
 ### Restore from backup
 
-`$COMPOSE stop backend`; verify the set; `dropdb`/`createdb` `"$DB_NAME"` in the postgres
-container, `pg_restore ... -d "$DB_NAME" --no-owner <set>/hat.dump`; `$COMPOSE run --rm --no-deps
+`$COMPOSE stop backend`; verify the set; `dropdb`/`createdb` `"$DB_NAME"` and `"$DB_STATE_NAME"`
+in the postgres container, `pg_restore ... -d "$DB_NAME" --no-owner <set>/hat.dump` and
+`pg_restore ... -d "$DB_STATE_NAME" --no-owner <set>/hat_state.dump`; `$COMPOSE run --rm --no-deps
 -v "<set>:/restore:ro" backend tar -xf /restore/hat_data.tar -C /data/hat`; start, then "Restart
 recovery" (changes since the backup show as mismatches).
 

@@ -10,8 +10,10 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot, BrokerAccount
+from ..configs.unit import configs_of
 from ..events import record
-from ..models import HatBot, HatBrokerAccount, HatModeChange
+from ..models import HatModeChange
 from ..risk import controls
 from ..risk.modes import plan_mode_change
 from ..risk.sessions import SessionCalendar
@@ -42,10 +44,10 @@ def request_mode_change(
     would keep the mode from running at that open (`gate_refusal`) or the bot's sleeve is not
     Live (`sleeve_refusal`, Q9), and with `ModeChangeError` inside market hours; nothing is
     written when refused."""
-    bot = session.get(HatBot, bot_id)
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None:
         raise controls.ControlError("unknown bot")
-    account = session.get(HatBrokerAccount, bot.broker_account_id)
+    account = configs_of(session).get(BrokerAccount, bot.broker_account_id)
     opens = plan_mode_change(to_mode, requested_at, calendar).effective_from
     request_mode(to_mode, account_gates(session, account, opens))
     refusal = sleeve_refusal(to_mode, bot.lifecycle_state)
@@ -83,9 +85,9 @@ def apply_mode_changes(session: Session, now: datetime) -> int:
     and never takes effect (`mode.apply_refused`), so the bot keeps its mode. Idempotent: a
     settled change is not read again. Returns how many bots changed mode."""
     changed = 0
-    for bot in session.scalars(select(HatBot)):
+    for bot in configs_of(session).all(Bot):
         before = bot.execution_mode
-        account = session.get(HatBrokerAccount, bot.broker_account_id)
+        account = configs_of(session).get(BrokerAccount, bot.broker_account_id)
         gates = account_gates(session, account, now)
         for row in _due(session, bot.id, now):
             refusal = gate_refusal(row.to_mode, gates) or sleeve_refusal(

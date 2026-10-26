@@ -7,7 +7,7 @@ command line gets no `--for-promotion`). One variant runs as a plain run, its ov
 `--set`, `--risk-pct`, `--max-positions`, `--sleeve-weight` and `--slot-order`; two or more run
 as a sweep from a variants file (`runs.parse_variants`), which the command line commits and
 prints one JSON line per variant as each finishes. The job's progress is the variants printed
-so far; its runs land in `hat_backtest_run` like any other.
+so far; its runs land in run folders like any other.
 
 Its files live under `HAT_DATA_ROOT/backtests/jobs/<job id>/`: `variants.json` (a sweep's),
 `out.jsonl` (the command line's stdout) and `err.log` (its stderr, for the operator; never sent

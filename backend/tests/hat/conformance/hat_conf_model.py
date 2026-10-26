@@ -3,11 +3,12 @@
 import sqlalchemy as sa
 
 import app.hat.models  # noqa: F401  (registers the tables)
-from app.base import Base
+from app.base import Base, StateBase
 
 
 def hat_tables() -> dict[str, sa.Table]:
-    return {n: t for n, t in Base.metadata.tables.items() if n.startswith("hat_")}
+    tables = {**Base.metadata.tables, **StateBase.metadata.tables}
+    return {n: t for n, t in tables.items() if n.startswith("hat_")}
 
 
 def logical_type(column: sa.Column) -> str:

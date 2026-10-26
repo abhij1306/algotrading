@@ -15,9 +15,11 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hat.configs.records import RegimeModelVersion
+from app.hat.configs.unit import configs_of
 from app.hat.engine.strategy.registry import STRATEGIES
 from app.hat.events import record
-from app.hat.models import HatRegimeModelVersion, HatRegimeState
+from app.hat.models import HatRegimeState
 from app.hat.money import require_exact
 
 from . import regime
@@ -26,25 +28,26 @@ from .common import close_of
 EVENT_REGIME = "regime.state_recorded"
 
 
-def ensure_regime_model(session: Session, market_id: uuid.UUID) -> HatRegimeModelVersion:
+def _rules_model(session: Session, market_id: uuid.UUID) -> RegimeModelVersion | None:
+    found = configs_of(session).all(
+        RegimeModelVersion,
+        lambda m: m.market_id == market_id and m.kind == "rules" and m.version == 1,
+    )
+    return found[0] if found else None
+
+
+def ensure_regime_model(session: Session, market_id: uuid.UUID) -> RegimeModelVersion:
     """The rules model, version 1, of the market; created on first use (HAT-PORT-034)."""
-    row = session.scalars(
-        select(HatRegimeModelVersion).where(
-            HatRegimeModelVersion.market_id == market_id,
-            HatRegimeModelVersion.kind == "rules",
-            HatRegimeModelVersion.version == 1,
-        )
-    ).first()
+    row = _rules_model(session, market_id)
     if row is None:
-        row = HatRegimeModelVersion(
+        row = RegimeModelVersion(
             market_id=market_id,
             kind="rules",
             version=1,
             status="live",
             config=regime.rules_v1_config(),
         )
-        session.add(row)
-        session.flush()
+        configs_of(session).add(row)
     return row
 
 
@@ -61,13 +64,7 @@ def stored_regime_table(
     """The multiplier table the allocation reads now for `profile`: the stored rules model's
     (`regime_table`), or the one `ensure_regime_model` would store when the model is not created
     yet. Writes nothing."""
-    row = session.scalars(
-        select(HatRegimeModelVersion).where(
-            HatRegimeModelVersion.market_id == market_id,
-            HatRegimeModelVersion.kind == "rules",
-            HatRegimeModelVersion.version == 1,
-        )
-    ).first()
+    row = _rules_model(session, market_id)
     if row is None:
         return regime.profile_table({regime.MOMENTUM: regime.DEFAULT_MULTIPLIERS}, profile)
     return regime_table(row, profile)
@@ -107,7 +104,7 @@ def record_regime(
     inputs: regime.RegimeInputs,
     *,
     market_id: uuid.UUID,
-    model: HatRegimeModelVersion,
+    model: RegimeModelVersion,
 ) -> HatRegimeState:
     """Store the regime of `day`: the raw state, the inputs and the confirmation (`confirmed` is
     true when the raw state is the confirmed one). One row per (market, model, day): a rerun
@@ -153,7 +150,7 @@ def confirmed_state(
     return None if row is None else _confirmation_of(row).confirmed
 
 
-def regime_table(model: HatRegimeModelVersion, profile: str | None) -> dict[str, Decimal]:
+def regime_table(model: RegimeModelVersion, profile: str | None) -> dict[str, Decimal]:
     """The multiplier table of the regime `profile` in the model version (stored with it,
     `regime.profile_table`); the defaults, as the momentum table, when the version holds none."""
     stored = (model.config or {}).get("multipliers") or {

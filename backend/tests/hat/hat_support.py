@@ -8,10 +8,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session
 from sqlalchemy.pool import StaticPool
 
-from app.base import Base
+from app.base import Base, StateBase
+from app.hat.configs.store import MemoryConfigStore
+from app.hat.configs.unit import STORE
 
 
 def memory_engine(*models: type[DeclarativeBase] | type) -> Engine:
@@ -23,9 +25,17 @@ def memory_engine(*models: type[DeclarativeBase] | type) -> Engine:
     engine = create_engine(
         "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
-    tables = [m.__table__ for m in models] if models else None  # type: ignore[attr-defined]
-    Base.metadata.create_all(engine, tables=tables)
+    tables = [m.__table__ for m in models]  # type: ignore[attr-defined]
+    for base in (Base, StateBase):
+        mine = [t for t in tables if t.metadata is base.metadata]
+        if mine or not tables:
+            base.metadata.create_all(engine, tables=mine or None)
     return engine
+
+
+def memory_session(engine: Engine) -> Session:
+    """A session on a `memory_engine` with its own in-memory config store (`configs`)."""
+    return Session(engine, info={STORE: MemoryConfigStore()})
 
 
 # Where a command line's HAT_DATA_ROOT comes from: only the `.env` file, only the

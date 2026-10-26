@@ -551,12 +551,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import HatSessionLocal
+    from app.database import HatDataSessionLocal
 
     from ..time import utc_now
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
-    with HatSessionLocal() as session:
+    with HatDataSessionLocal() as session:
         outcomes = evaluate(session, store, tables)
         if args.apply:
             journal = {"source": SOURCE_FILE, "file_sha256": digest(path)}

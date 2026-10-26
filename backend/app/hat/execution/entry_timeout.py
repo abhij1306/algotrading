@@ -37,9 +37,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..data.bars import Bar
+from ..data.instrument_names import instrument_symbols
 from ..engine import lifecycle
-from ..models import HatBot, HatInstrument, HatOrder, HatSignal
+from ..models import HatOrder, HatSignal
 from ..time import as_utc, trade_date_of
+from .modes import account_bot_ids
 from .order_book import ENTRY
 
 __all__ = [
@@ -133,12 +135,10 @@ class EntryWatch:
         `now`. The timeout runs from the working order's placement, not from an earlier attempt
         the broker rejected. The desk cancels only real rows at the broker."""
         rows = session.execute(
-            select(HatSignal, HatOrder.placed_at, HatInstrument.symbol)
-            .join(HatBot, HatBot.id == HatSignal.bot_id)
+            select(HatSignal, HatOrder.placed_at)
             .join(HatOrder, HatOrder.signal_id == HatSignal.id)
-            .join(HatInstrument, HatInstrument.id == HatSignal.instrument_id)
             .where(
-                HatBot.broker_account_id == account_id,
+                HatSignal.bot_id.in_(account_bot_ids(session, account_id)),
                 HatSignal.state == lifecycle.ENTRY_PLACED,
                 HatSignal.trade_date == trade_date_of(now),
                 HatOrder.purpose == ENTRY,
@@ -147,9 +147,14 @@ class EntryWatch:
             )
             .order_by(HatSignal.id)
         ).all()
+        # the instruments live in hat_live, the signals in hat_state: read apart
+        symbols = instrument_symbols(session, (signal.instrument_id for signal, _ in rows))
         found: list[tuple[uuid.UUID, str]] = []
         # one working entry per signal: the retry is sent only after a rejection
-        for signal, placed_at, symbol in rows:
+        for signal, placed_at in rows:
+            symbol = symbols.get(signal.instrument_id)
+            if symbol is None:  # the inner join skipped a signal without its instrument
+                continue
             reason = cancel_reason(
                 level=Decimal(signal.trigger_price),
                 triggered_at=as_utc(signal.triggered_at),

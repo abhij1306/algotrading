@@ -7,7 +7,8 @@ from hat_conf_model import hat_tables, logical_type
 from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.schema import CreateTable
 
-from app.base import Base
+from app.base import Base, StateBase
+from app.hat.configs.records import Bot, RegimeModelVersion, Strategy
 
 EVENT_TABLE = "hat_event"
 _HAT_NAME = re.compile(r"^(?:(?:ix|uq|ck|fk|pk)_)?hat_")
@@ -62,14 +63,19 @@ def test_schema__key_types() -> None:
 
 # user_id roots. hat_kill_switch carries user_id too; its FK chain is not
 # non-null (an account-scope row has a null bot_id): recorded as a finding in the PR.
-USER_ROOTS = [
-    "hat_event",
-    "hat_strategy",
-    "hat_risk_policy_version",
-    "hat_broker_account",
-    "hat_bot",
-    "hat_universe",
-]
+USER_ROOTS = ["hat_event", "hat_universe"]
+# The plain columns naming a config record (`configs.records`), which carries its owner's user_id
+# (a version through its strategy) and its market: a table holding one, not null, is owned and
+# reaches a currency. A cross-kind key is a plain column validated in code, never a foreign key.
+CONFIG_REFS = {
+    "bot_id",
+    "broker_account_id",
+    "strategy_version_id",
+    "risk_policy_version_id",
+    "model_version_id",
+}
+# The plain columns naming a hat_live row from a hat_state table.
+LIVE_REFS = {"instrument_id": "hat_instrument", "market_id": "hat_market"}
 _REFERENCE = {
     "hat_market",
     "hat_instrument",
@@ -81,8 +87,6 @@ _REFERENCE = {
     "hat_corporate_action",
     "hat_trading_calendar",
     "hat_announcement",
-    "hat_criterion_type",
-    "hat_regime_model_version",
     "hat_regime_state",
     "hat_job_run",
     "hat_quality_check",
@@ -102,8 +106,11 @@ def test_schema__user_id_columns() -> None:
         col = MODEL[name].columns["user_id"]
         assert logical_type(col) == "uuid", name
         assert not col.nullable, name
-    # Every other owned table reaches a root through non-null FKs.
+    for kind in (Strategy, Bot):
+        assert Bot.FIELDS["user_id"] == kind.FIELDS["user_id"] == "uuid"  # not null
+    # Every other owned table reaches a root, or a config record, through non-null keys.
     reach = set(USER_ROOTS) | {"hat_market"}  # reference tables are not owned
+    reach |= {n for n, t in MODEL.items() if any(_config_ref(c) for c in t.columns)}
     pending = {n for n in MODEL if n not in reach}
     changed = True
     while changed:
@@ -125,27 +132,29 @@ def test_user_id_on_owned_tables() -> None:
     assert "user_id" not in MODEL["hat_kill_switch"].columns
 
 
+def _config_ref(column: sa.Column) -> bool:
+    return column.name in CONFIG_REFS and not column.nullable and not column.foreign_keys
+
+
 def test_schema__market_id_columns() -> None:
-    for name in (
-        "hat_instrument",
-        "hat_strategy",
-        "hat_trading_calendar",
-        "hat_universe",
-        "hat_regime_model_version",
-        "hat_regime_state",
-    ):
+    for name in ("hat_instrument", "hat_trading_calendar", "hat_universe", "hat_regime_state"):
         col = MODEL[name].columns["market_id"]
         assert not col.nullable, name
-        assert {f.column.table.name for f in col.foreign_keys} == {"hat_market"}, name
+        # hat_regime_state lives in hat_state: its market is a plain column
+        targets = set() if col.table.metadata is StateBase.metadata else {"hat_market"}
+        assert {f.column.table.name for f in col.foreign_keys} == targets, name
+    for kind in (Strategy, RegimeModelVersion):
+        assert kind.FIELDS["market_id"] == "uuid", kind.KIND
 
 
 def _reaches_currency(name: str, seen: frozenset[str] = frozenset()) -> bool:
     """The table has a `currency` column or a not-null FK chain to one (`hat_market` owns the
     market's currency)."""
     table = MODEL[name]
-    if "currency" in table.columns:
+    if "currency" in table.columns or any(_config_ref(c) for c in table.columns):
         return True
     targets = {f.column.table.name for c in table.columns if not c.nullable for f in c.foreign_keys}
+    targets |= {LIVE_REFS[c.name] for c in table.columns if c.name in LIVE_REFS and not c.nullable}
     return any(_reaches_currency(t, seen | {name}) for t in targets - seen - {name})
 
 
@@ -227,12 +236,13 @@ def test_schema__portable_types() -> None:
 
 
 def test_schema__sqlite_create_all() -> None:
-    """Create_all builds every table on SQLite, every FK resolves and is kept."""
+    """Create_all builds every table of both databases on SQLite, every FK resolves and is kept,
+    and no FK crosses from one database to the other."""
     engine = sa.create_engine("sqlite://")
     Base.metadata.create_all(engine)
+    StateBase.metadata.create_all(engine)
     names = set(sa.inspect(engine).get_table_names())
     assert set(MODEL) <= names
-    assert len(MODEL) == 50
     inspector = sa.inspect(engine)
     for name, table in MODEL.items():
         declared = {(f.parent.name, f.column.table.name) for f in table.foreign_keys}
@@ -242,10 +252,8 @@ def test_schema__sqlite_create_all() -> None:
             for col in fk["constrained_columns"]
         }
         assert declared == created, name  # none dropped (circular FKs keep both sides)
-    sorted_names = [t.name for t in Base.metadata.sorted_tables if t.name.startswith("hat_")]
-    assert (
-        sorted_names.index("hat_backtest_run") < sorted_names.index("hat_strategy_version") or True
-    )
+        for fkey in table.foreign_keys:
+            assert fkey.column.table.metadata is table.metadata, (name, fkey.target_fullname)
     for name in MODEL:
         str(CreateTable(MODEL[name]).compile(dialect=postgresql.dialect()))
 
@@ -265,9 +273,9 @@ RISK_WORDS = (
 
 
 def test_schema__bot_no_risk_columns() -> None:
-    """No risk %, size, capital, cap or kill column on hat_bot (risk_cluster is the
+    """No risk %, size, capital, cap or kill field on a sleeve (risk_cluster is the
     allowed sleeve tag)."""
-    for col in MODEL["hat_bot"].columns:
-        if col.name == "risk_cluster":
+    for name in Bot.FIELDS:
+        if name == "risk_cluster":
             continue
-        assert not any(word in col.name for word in RISK_WORDS), col.name
+        assert not any(word in name for word in RISK_WORDS), name

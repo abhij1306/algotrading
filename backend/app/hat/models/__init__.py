@@ -1,10 +1,12 @@
-"""HAT SQLAlchemy models on the shared `app.base.Base`.
+"""HAT SQLAlchemy models: the stock-data tables of hat_live on `app.base.Base`, the trading
+and runtime state of hat_state on `app.base.StateBase` (docs/architecture.md, Storage). The
+config records are JSON files, not tables (`app.hat.configs`).
 
-Importing this package registers every HAT table on `Base.metadata`, so `create_all` builds
+Importing this package registers every HAT table on the two metadatas, so `create_all` builds
 them (SQLite in tests, Postgres in production).
 """
 
-from .backtest import HatBacktestBucket, HatBacktestRun
+from .controls import HatExposureState, HatKillSwitch, HatModeChange
 from .events import HatEvent
 from .ops import (
     HatBrokerSession,
@@ -18,7 +20,6 @@ from .ops import (
 )
 from .portfolio import (
     HatAllocationDaily,
-    HatRegimeModelVersion,
     HatRegimeState,
     HatUniverse,
     HatUniverseMember,
@@ -52,17 +53,6 @@ from .runtime import (
     HatTradeResult,
     HatWatchlistEntry,
 )
-from .strategy import (
-    HatBot,
-    HatBrokerAccount,
-    HatCriterionType,
-    HatExposureState,
-    HatKillSwitch,
-    HatModeChange,
-    HatRiskPolicyVersion,
-    HatStrategy,
-    HatStrategyVersion,
-)
 
 __all__ = [
     "HatApproval",
@@ -82,15 +72,10 @@ __all__ = [
     "HatWatchlistEntry",
     "HatAllocationDaily",
     "HatAnnouncement",
-    "HatBacktestBucket",
-    "HatBacktestRun",
-    "HatBot",
-    "HatBrokerAccount",
     "HatBrokerSymbol",
     "HatCorporateAction",
     "HatCorporateActionVersion",
     "HatDemergerNotice",
-    "HatCriterionType",
     "HatExposureState",
     "HatIndexMember",
     "HatIndexMembership",
@@ -106,12 +91,8 @@ __all__ = [
     "HatPriceBand",
     "HatQualityCheck",
     "HatQualityQuarantine",
-    "HatRegimeModelVersion",
     "HatRegimeState",
-    "HatRiskPolicyVersion",
-    "HatStrategy",
     "HatTradingCalendar",
-    "HatStrategyVersion",
     "HatUniverse",
     "HatUniverseMember",
     "HatUniverseVersion",

@@ -93,4 +93,3 @@ def test_pg_ddl_objects_names_its_indexes_and_constraints() -> None:
     indexes, constraints = pg_ddl_objects()
     assert indexes["hat_event_bot_type"] == "hat_event"
     assert constraints["hat_symbol_history_no_overlap"] == "hat_instrument_symbol_history"
-    assert constraints["hat_risk_increase_cooling_off"] == "hat_risk_policy_version"

@@ -1,5 +1,7 @@
-"""Runtime tables: watchlist, signals, approvals, orders, fills, positions and
-trade results.
+"""Runtime tables in hat_state: watchlist, signals, approvals, orders, fills, positions and
+trade results. A bot, strategy version, risk policy version or broker account id names a config
+record (`app.hat.configs`), an instrument or announcement id a hat_live row: plain columns,
+checked by the code that writes them.
 
 Every signal records the exact strategy and risk-policy version that produced it, so any trade
 can be replayed and explained. `hat_position.current_stop` is guarded by the Postgres trigger
@@ -23,9 +25,9 @@ from sqlalchemy import (
     text,
 )
 
-from ...base import Base
+from ...base import StateBase
 from ..governance import Mode
-from ._types import JsonB, Money, Ratio, Timestamptz, fk, in_values, now_utc, uuid_pk
+from ._types import JsonB, Money, Ratio, Timestamptz, fk, in_values, now_utc, ref, uuid_pk
 
 __all__ = [
     "APPROVAL_DECISIONS",
@@ -48,8 +50,6 @@ __all__ = [
     "HatWatchlistEntry",
 ]
 
-BOT_ID = "hat_bot.id"
-INSTRUMENT_ID = "hat_instrument.id"
 SIGNAL_ID = "hat_signal.id"
 
 # `app.hat.engine.confidence.LABELS` (D132)
@@ -89,16 +89,16 @@ ORDER_STATUSES = (
 )
 
 
-class HatWatchlistEntry(Base):
+class HatWatchlistEntry(StateBase):
     __tablename__ = "hat_watchlist_entry"
     __table_args__ = (Index("hat_watchlist_entry_bot_date", "bot_id", "trade_date"),)
 
     id = uuid_pk()
-    bot_id = fk(BOT_ID)
-    strategy_version_id = fk("hat_strategy_version.id")
+    bot_id = ref()
+    strategy_version_id = ref()
     # `default` for single-playbook bots.
     playbook = Column(Text, nullable=False)
-    instrument_id = fk(INSTRUMENT_ID)
+    instrument_id = ref()
     trade_date = Column(Date, nullable=False)
     score = Column(Ratio, nullable=False)
     criteria_results = Column(JsonB, nullable=False)
@@ -108,7 +108,7 @@ class HatWatchlistEntry(Base):
     status = Column(Text, nullable=False)
 
 
-class HatSignal(Base):
+class HatSignal(StateBase):
     """One signal per (bot, playbook, instrument, day); its `id` is the idempotency key."""
 
     __tablename__ = "hat_signal"
@@ -124,11 +124,11 @@ class HatSignal(Base):
     )
 
     id = uuid_pk()
-    bot_id = fk(BOT_ID)
-    strategy_version_id = fk("hat_strategy_version.id")
-    risk_policy_version_id = fk("hat_risk_policy_version.id")
+    bot_id = ref()
+    strategy_version_id = ref()
+    risk_policy_version_id = ref()
     playbook = Column(Text, nullable=False)
-    instrument_id = fk(INSTRUMENT_ID)
+    instrument_id = ref()
     trade_date = Column(Date, nullable=False)
     triggered_at = Column(Timestamptz, nullable=False)
     trigger_price = Column(Money, nullable=False)
@@ -146,16 +146,16 @@ class HatSignal(Base):
     confidence_basis = Column(JsonB, nullable=False)
 
 
-class HatSignalAnnouncement(Base):
+class HatSignalAnnouncement(StateBase):
     """EP catalysts attached to a signal."""
 
     __tablename__ = "hat_signal_announcement"
 
     signal_id = fk(SIGNAL_ID, primary_key=True)
-    announcement_id = fk("hat_announcement.id", primary_key=True)
+    announcement_id = ref(primary_key=True)
 
 
-class HatApproval(Base):
+class HatApproval(StateBase):
     """Skipped signals continue as shadow trades for the veto score."""
 
     __tablename__ = "hat_approval"
@@ -177,7 +177,7 @@ class HatApproval(Base):
     token_hash = Column(Text, nullable=False)
 
 
-class HatOrder(Base):
+class HatOrder(StateBase):
     __tablename__ = "hat_order"
     __table_args__ = (
         UniqueConstraint("tag"),
@@ -191,7 +191,7 @@ class HatOrder(Base):
     id = uuid_pk()
     signal_id = fk(SIGNAL_ID)
     position_id = fk("hat_position.id", nullable=True)
-    broker_account_id = fk("hat_broker_account.id")
+    broker_account_id = ref()
     purpose = Column(Text, nullable=False)
     side = Column(Text, nullable=False)
     qty = Column(Integer, nullable=False)
@@ -209,7 +209,7 @@ class HatOrder(Base):
     rule_ids = Column(JsonB)
 
 
-class HatFill(Base):
+class HatFill(StateBase):
     __tablename__ = "hat_fill"
     __table_args__ = (
         UniqueConstraint("order_id", "broker_trade_id"),
@@ -231,7 +231,7 @@ class HatFill(Base):
     is_virtual = Column(Boolean, nullable=False)
 
 
-class HatPosition(Base):
+class HatPosition(StateBase):
     """The trigger `hat_position_stop_guard` blocks any `current_stop` move away from price."""
 
     __tablename__ = "hat_position"
@@ -249,9 +249,9 @@ class HatPosition(Base):
     )
 
     id = uuid_pk()
-    bot_id = fk(BOT_ID)
+    bot_id = ref()
     signal_id = fk(SIGNAL_ID)
-    instrument_id = fk(INSTRUMENT_ID)
+    instrument_id = ref()
     is_virtual = Column(Boolean, nullable=False)
     qty_open = Column(Integer, nullable=False)
     avg_entry = Column(Money, nullable=False)
@@ -264,7 +264,7 @@ class HatPosition(Base):
     rules_fired = Column(JsonB, nullable=False)
 
 
-class HatHoldingBaseline(Base):
+class HatHoldingBaseline(StateBase):
     """The owner's own shares of a symbol on a broker account (Q12): what the broker held beyond
     HAT's open real positions of it, recorded by a reconciliation when it changed. A lost sale
     of an earlier session is settled net of the baseline in force when it was sent."""
@@ -272,13 +272,13 @@ class HatHoldingBaseline(Base):
     __tablename__ = "hat_holding_baseline"
     __table_args__ = (CheckConstraint("qty >= 0", name="ck_hat_holding_baseline_qty"),)
 
-    broker_account_id = fk("hat_broker_account.id", primary_key=True)
+    broker_account_id = ref(primary_key=True)
     symbol = Column(Text, primary_key=True)
     recorded_at = Column(Timestamptz, primary_key=True, default=now_utc)
     qty = Column(Integer, nullable=False)
 
 
-class HatTradeResult(Base):
+class HatTradeResult(StateBase):
     """Written once, when the position closes (the primary key allows one row per position)."""
 
     __tablename__ = "hat_trade_result"

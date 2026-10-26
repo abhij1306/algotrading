@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import BROKER_FYERS
 from ..models import HatBrokerSymbol, HatInstrument, HatMarket
-from ..models.strategy import BROKER_FYERS
 from ..ops.jobs import JobError
 
 UNIVERSE_SERIES = ("EQ", "BE")

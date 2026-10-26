@@ -67,12 +67,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..engine import close_gap, entries, exits, live_trades, shadow, snapshot
 from ..engine.botlock import lock_bot
 from ..engine.rescale import unhandled_actions
 from ..events import record
 from ..models import (
-    HatBot,
     HatInstrument,
     HatOrder,
     HatPosition,
@@ -90,6 +91,7 @@ from .broker import BrokerOrder, BrokerUnavailableError, HatBroker, OrderType, S
 from .fills import ALERT_SALE_UNFILLED, FillSync, SaleBand, SyncReport
 from .gtt_upkeep import GttUpkeep
 from .guard import ExecutionGuard
+from .modes import account_bot_ids
 from .order_book import (
     EXIT_SALES,
     MAX_SALE_REJECTIONS,
@@ -370,9 +372,7 @@ class TradeManager:
 
     @staticmethod
     def _bots(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
-        return list(
-            session.scalars(select(HatBot.id).where(HatBot.broker_account_id == account_id))
-        )
+        return account_bot_ids(session, account_id)
 
     def open_positions(
         self, session: Session, account_id: uuid.UUID, *, real_only: bool = True
@@ -594,7 +594,7 @@ class TradeManager:
     ) -> SendOutcome | None:
         position = order.position
         signal = session.get(HatSignal, position.signal_id)
-        bot = session.get(HatBot, position.bot_id)
+        bot = configs_of(session).get(Bot, position.bot_id)
         symbol = session.scalar(
             select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
         )
@@ -761,9 +761,8 @@ class TradeManager:
                 select(HatInstrument.symbol).where(HatInstrument.id == position.instrument_id)
             )
         )
-        account_id = session.scalar(
-            select(HatBot.broker_account_id).where(HatBot.id == position.bot_id)
-        )
+        owner = configs_of(session).get(Bot, position.bot_id)
+        account_id = None if owner is None else owner.broker_account_id
         others = session.scalar(
             select(func.coalesce(func.sum(HatPosition.qty_open), 0)).where(
                 HatPosition.id != position.id,

@@ -11,7 +11,8 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import HatInstrument, HatWatchlistEntry
+from ..data.instrument_names import instrument_symbols
+from ..models import HatWatchlistEntry
 
 __all__ = ["Watchlist", "latest_watchlists"]
 
@@ -26,7 +27,7 @@ def latest_watchlists(
     session: Session, on_or_before: date, bot_ids: Iterable[uuid.UUID] | None = None
 ) -> dict[uuid.UUID, Watchlist]:
     """Each bot's (every bot's, or those of `bot_ids`) latest watchlist on or before
-    `on_or_before`, in one query; a bot with none is left out."""
+    `on_or_before`; a bot with none is left out."""
     latest = select(
         HatWatchlistEntry.bot_id, func.max(HatWatchlistEntry.trade_date).label("day")
     ).where(HatWatchlistEntry.trade_date <= on_or_before)
@@ -36,15 +37,19 @@ def latest_watchlists(
     days: dict[uuid.UUID, date] = {}
     best: dict[uuid.UUID, dict[str, Decimal]] = {}
     rows = session.execute(
-        select(latest.c.bot_id, latest.c.day, HatInstrument.symbol, HatWatchlistEntry.score)
-        .join(
+        select(
+            latest.c.bot_id, latest.c.day, HatWatchlistEntry.instrument_id, HatWatchlistEntry.score
+        ).join(
             HatWatchlistEntry,
             (HatWatchlistEntry.bot_id == latest.c.bot_id)
             & (HatWatchlistEntry.trade_date == latest.c.day),
         )
-        .join(HatInstrument, HatInstrument.id == HatWatchlistEntry.instrument_id)
-    )
-    for bot_id, day, symbol, score in rows:
+    ).all()
+    symbols = instrument_symbols(session, (instrument_id for _, _, instrument_id, _ in rows))
+    for bot_id, day, instrument_id, score in rows:
+        symbol = symbols.get(instrument_id)
+        if symbol is None:
+            continue
         days[bot_id] = day
         value = Decimal(score)
         scores = best.setdefault(bot_id, {})

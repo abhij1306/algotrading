@@ -1,5 +1,5 @@
 """The sleeve database operations (HAT-PORT-060..065, HAT-BOT-061): creating sleeves, the
-evidence the lifecycle guards read, the one writer of `hat_bot.lifecycle_state` (`transition`),
+evidence the lifecycle guards read, the one writer of a sleeve's `lifecycle_state` (`transition`),
 the owner's moves and the engine's own.
 
 Every function changes state and appends its event in the caller's open transaction through
@@ -19,19 +19,18 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.hat.backtest.evidence import backtest_evidence
+from app.hat.configs.records import Bot, Strategy, StrategyVersion
+from app.hat.configs.unit import configs_of
 from app.hat.data.calendar import session_calendar
 from app.hat.engine.owner import OwnerCommand
 from app.hat.engine.strategy.versions import VersionError, seed_default_strategies
 from app.hat.events import record
 from app.hat.governance import Mode, VersionStatus
 from app.hat.models import (
-    HatBot,
     HatDailyBotSnapshot,
     HatEvent,
     HatPosition,
     HatSignal,
-    HatStrategy,
-    HatStrategyVersion,
     HatTradeResult,
 )
 from app.hat.risk.policy import RiskPolicy
@@ -141,7 +140,7 @@ def sleeve_health(
 
 def load_evidence(
     session: Session,
-    bot: HatBot,
+    bot: Bot,
     trade_date: date,
     policy: RiskPolicy,
 ) -> lifecycle.Evidence:
@@ -184,13 +183,14 @@ def transition(
     target: str,
     evidence: lifecycle.Evidence,
     actor: Actor = ENGINE,
-) -> HatBot:
+) -> Bot:
     """Move a sleeve along one allowed edge and append `sleeve.lifecycle_changed` in the same
     transaction. Raises `LifecycleError` (changing nothing) when the edge or its guard is not
-    met. This is the only code that writes `hat_bot.lifecycle_state` (CONF
-    `lifecycle_single_writer`). The guard reads the state under the row's lock, re-read, so an
-    owner move and the engine's own never both leave the same state."""
-    bot = session.get(HatBot, bot_id, with_for_update=True, populate_existing=True)
+    met. This is the only code that writes a sleeve's `lifecycle_state` (CONF
+    `lifecycle_single_writer`). The guard reads the sleeve's record as this transaction loaded it;
+    an owner move and the engine's own never both leave the same state, since the second commit
+    finds the record changed and is refused (`ConfigConflictError`)."""
+    bot = configs_of(session).get(Bot, bot_id)
     if bot is None:
         raise PortfolioError("bot_unknown")
     verdict = lifecycle.guard(bot.lifecycle_state, target, evidence, by_owner=actor.by_owner)
@@ -215,7 +215,6 @@ def transition(
         bot_id=bot_id,
         occurred_at=actor.at or utc_now(),
     )
-    session.flush()
     return bot
 
 
@@ -225,7 +224,7 @@ def owner_transition(
     target: str,
     policy: RiskPolicy,
     command: OwnerCommand,
-) -> HatBot:
+) -> Bot:
     """The owner moves a sleeve along an edge (HAT-PORT-060, PR 35): the same guard on the same
     evidence of the command's trade date as the engine's moves, recorded as the owner's
     (`Actor.owner`). Outside market hours only, so a sleeve never starts routing differently
@@ -233,30 +232,27 @@ def owner_transition(
     version still in its shadow period never trades real money. A refusal changes nothing."""
     if command.in_session:
         raise lifecycle.LifecycleError("market_hours")
-    bot = session.get(HatBot, bot_id)
+    unit = configs_of(session)
+    bot = unit.get(Bot, bot_id)
     if bot is None:
         raise PortfolioError("bot_unknown")
     if target == lifecycle.LIVE:
-        version = (
-            None
-            if bot.live_version_id is None
-            else session.get(HatStrategyVersion, bot.live_version_id)
-        )
+        version = unit.get(StrategyVersion, bot.live_version_id)
         if version is None or version.status != VersionStatus.RELEASED:
             raise lifecycle.LifecycleError("version_not_released")
         # one sleeve of a strategy holds real money: a second would take its base weight twice.
-        # The strategy row's lock orders two owners promoting sibling sleeves at once: the
-        # second reads the first's committed Live sleeve (the engine's own edges never enter
-        # Live, so this is the one way in).
-        session.get(HatStrategy, bot.strategy_id, with_for_update=True)
-        holder = session.scalar(
-            select(HatBot.id).where(
-                HatBot.strategy_id == bot.strategy_id,
-                HatBot.id != bot.id,
-                HatBot.lifecycle_state.in_((lifecycle.LIVE, lifecycle.PROBATION)),
-            )
+        # Two owners promoting sibling sleeves at once both commit the bot kind's pointer: the
+        # second finds it moved and is refused (the engine's own edges never enter Live, so
+        # this is the one way in).
+        holder = unit.all(
+            Bot,
+            lambda b: (
+                b.strategy_id == bot.strategy_id
+                and b.id != bot.id
+                and b.lifecycle_state in (lifecycle.LIVE, lifecycle.PROBATION)
+            ),
         )
-        if holder is not None:
+        if holder:
             raise lifecycle.LifecycleError("strategy_has_live_sleeve")
     evidence = load_evidence(session, bot, command.trade_date, policy)
     return transition(session, bot_id, target, evidence, Actor.owner(command))
@@ -272,7 +268,7 @@ def advance_automatic(
     repeat: a sleeve already moved no longer matches."""
     moved: list[tuple[uuid.UUID, str]] = []
     engine = Actor(at=close_of(trade_date))
-    for bot in session.scalars(select(HatBot).order_by(HatBot.id)).all():
+    for bot in sorted(configs_of(session).all(Bot), key=lambda b: b.id):
         target = {lifecycle.LIVE: lifecycle.PROBATION, lifecycle.PROBATION: lifecycle.RETIRED}.get(
             bot.lifecycle_state
         )
@@ -296,14 +292,14 @@ def create_bot(
     broker_account_id: uuid.UUID,
     execution_mode: str | None = None,
     risk_cluster: str = DEFAULT_RISK_CLUSTER,
-) -> HatBot:
+) -> Bot:
     """A new sleeve for a strategy. It always asks for `confirm` (HAT-BOT-061, HAT-DEC-B2) and
     runs shadow until its sleeve is Live and the account and policy gates pass
     (`execution.modes`); a mode change goes through the mode-change service, never through
     creation."""
     if execution_mode not in (None, Mode.CONFIRM):
         raise VersionError("new_bot_starts_in_confirm")
-    bot = HatBot(
+    bot = Bot(
         id=uuid.uuid4(),
         user_id=user_id,
         strategy_id=strategy_id,
@@ -313,14 +309,13 @@ def create_bot(
         lifecycle_state="research",
         risk_cluster=risk_cluster,
     )
-    session.add(bot)
-    session.flush()
+    configs_of(session).add(bot)
     return bot
 
 
 def add_sleeve(
     session: Session, *, user_id: uuid.UUID, strategy_id: uuid.UUID, broker_account_id: uuid.UUID
-) -> HatBot:
+) -> Bot:
     """A further sleeve of one of the user's strategies (PR 73, PR 35 follow-up 3), in Research
     and asking for confirm like any new sleeve: the owner assigns it a backtested version and
     promotes it to Shadow, so a new version books shadow trades of its own while the strategy's
@@ -328,7 +323,7 @@ def add_sleeve(
     (`portfolio.sleeve_service.owner_transition`, `strategy_has_live_sleeve`). Refused for a
     strategy that is not the user's (`unknown_strategy`); the caller checks the account is the
     user's and active."""
-    strategy = session.get(HatStrategy, strategy_id)
+    strategy = configs_of(session).get(Strategy, strategy_id)
     if strategy is None or strategy.user_id != user_id:
         raise VersionError("unknown_strategy")
     return create_bot(
@@ -338,18 +333,20 @@ def add_sleeve(
 
 def seed_default_bots(
     session: Session, *, user_id: uuid.UUID, broker_account_id: uuid.UUID
-) -> list[HatBot]:
+) -> list[Bot]:
     """One shadow bot per seeded strategy on the given broker account, when missing."""
     bots = []
     for strategy in seed_default_strategies(session, user_id):
-        bot = session.scalar(
-            select(HatBot).where(
-                HatBot.strategy_id == strategy.id, HatBot.broker_account_id == broker_account_id
-            )
+        found = configs_of(session).all(
+            Bot,
+            lambda b, s=strategy: (
+                b.strategy_id == s.id and b.broker_account_id == broker_account_id
+            ),
         )
         bots.append(
-            bot
-            or create_bot(
+            found[0]
+            if found
+            else create_bot(
                 session,
                 user_id=user_id,
                 strategy_id=strategy.id,

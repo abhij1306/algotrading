@@ -16,12 +16,13 @@ from collections.abc import Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..governance import Mode
 from ..models import (
-    HatBot,
     HatEvent,
     HatFill,
     HatIndustry,
@@ -76,7 +77,7 @@ _NOT_VETO = or_(HatPosition.is_virtual.is_(False), HatSignal.mode == Mode.SHADOW
 
 def _slots(
     session: Session,
-    bot_ids: Sequence[uuid.UUID] | Select[tuple[uuid.UUID]],
+    bot_ids: Sequence[uuid.UUID],
     trade_date: date,
     last_prices: dict[uuid.UUID, Decimal] | None,
 ) -> list[OpenPosition]:
@@ -176,7 +177,7 @@ def owner_slots(
     """The slots of every bot of the owner, real and virtual, on every broker account
     (HAT-RISK-030): the global open-risk cap sums the ones of the entry's mode, the per-bot caps
     the entry's bot's own."""
-    bots = select(HatBot.id).where(HatBot.user_id == user_id)
+    bots = [b.id for b in configs_of(session).all(Bot, lambda b: b.user_id == user_id)]
     return _slots(session, bots, trade_date, last_prices)
 
 

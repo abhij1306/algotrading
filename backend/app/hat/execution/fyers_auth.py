@@ -35,11 +35,10 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session as DbSession
 
-from ..models import HatBrokerAccount
-from ..models.strategy import ACCOUNT_ACTIVE, BROKER_FYERS
+from ..configs.records import ACCOUNT_ACTIVE, BROKER_FYERS, BrokerAccount
+from ..configs.unit import configs_of
 from .fyers_broker import profile_data
 from .fyers_session import reset_fyers_session, sdk_model
 from .fyers_tokens import TokenStore, token_store
@@ -165,11 +164,9 @@ def credentials_from_env() -> FyersCredentials:
 def fyers_account_refs(session: DbSession) -> frozenset[str]:
     """The `account_ref` (the Fyers user id) of every active Fyers broker account."""
     return frozenset(
-        session.scalars(
-            select(HatBrokerAccount.account_ref).where(
-                HatBrokerAccount.broker == BROKER_FYERS,
-                HatBrokerAccount.status == ACCOUNT_ACTIVE,
-            )
+        a.account_ref
+        for a in configs_of(session).all(
+            BrokerAccount, lambda a: a.broker == BROKER_FYERS and a.status == ACCOUNT_ACTIVE
         )
     )
 

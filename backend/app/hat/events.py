@@ -234,7 +234,7 @@ def _check_linked_signal(
 
 
 def _next_sqlite_id(session: Session) -> int:
-    bind = session.get_bind()
+    bind = session.get_bind(HatEvent)
     key = str(bind.engine.url)
     stored = session.execute(select(func.coalesce(func.max(HatEvent.id), 0))).scalar_one()
     with _sqlite_lock:
@@ -294,7 +294,7 @@ def record(
         "causation_id": causation_id,
         "payload": dict(payload),
     }
-    if session.get_bind().dialect.name == "sqlite":
+    if session.get_bind(HatEvent).dialect.name == "sqlite":
         values["id"] = _next_sqlite_id(session)
         session.execute(insert(HatEvent).values(**values))
         return values["id"]

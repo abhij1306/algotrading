@@ -8,8 +8,8 @@ to `token` as Fyers' auth code is posted.
 from __future__ import annotations
 
 from app.hat.api.broker_auth import RouteNames, auth_router
+from app.hat.configs.records import BROKER_ZERODHA
 from app.hat.execution.kite_auth import get_kite_auth
-from app.hat.models.strategy import BROKER_ZERODHA
 
 __all__ = ["router"]
 

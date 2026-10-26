@@ -21,12 +21,13 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot, BrokerAccount
+from ..configs.unit import configs_of
 from ..data.calendar import session_calendar
 from ..errors import HatError
 from ..execution.mode_changes import request_mode_change
 from ..execution.modes import NO_GTT_DELIVERY, account_gates, gate_refusal, sleeve_refusal
 from ..governance import MODE_VALUES, Mode
-from ..models import HatBot, HatBrokerAccount
 from ..read import bots as read_bots
 from ..read import kill as read_kill
 from ..read.sessions import account_label
@@ -345,8 +346,8 @@ def rearm(
     return count, None
 
 
-def _account(session: Session, bot: HatBot) -> HatBrokerAccount | None:
-    return session.get(HatBrokerAccount, bot.broker_account_id)
+def _account(session: Session, bot: Bot) -> BrokerAccount | None:
+    return configs_of(session).get(BrokerAccount, bot.broker_account_id)
 
 
 AUTO_NOT_OWNER = "auto_not_owner"
@@ -365,7 +366,7 @@ def auto_refusal(
     return None if confirmed else AUTO_UNCONFIRMED
 
 
-def _account_users(session: Session, bots: Sequence[HatBot]) -> list[uuid.UUID | None]:
+def _account_users(session: Session, bots: Sequence[Bot]) -> list[uuid.UUID | None]:
     accounts = (_account(session, bot) for bot in bots)
     return [None if account is None else account.user_id for account in accounts]
 
@@ -388,7 +389,7 @@ def mode_refused(reason: str) -> Reply:
 
 def _mode_refusal(
     session: Session,
-    bots: Sequence[HatBot],
+    bots: Sequence[Bot],
     to_mode: str,
     now: datetime,
     calendar: SessionCalendar,
@@ -426,7 +427,7 @@ def _mode_refusal(
 
 def queue_modes(
     session: Session,
-    bots: Sequence[HatBot],
+    bots: Sequence[Bot],
     to_mode: str,
     now: datetime,
     chat_id: int,

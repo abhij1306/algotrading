@@ -30,6 +30,8 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..engine import approvals, lifecycle
 from ..engine.approvals import ApprovalDecision, Placement
 from ..events import record
@@ -37,7 +39,7 @@ from ..execution.manage import FlattenReport, TradeManager
 from ..execution.order_book import ENTRY
 from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
-from ..models import HatApproval, HatBot, HatOrder, HatSignal
+from ..models import HatApproval, HatOrder, HatSignal
 from ..risk import kill_ops
 from ..settings import load_settings
 from .commands import Reply, queue_modes, rearm, refused
@@ -89,7 +91,7 @@ class RouterDesk:
 
     def _router(self, session: Session, signal_id: uuid.UUID) -> ExecutionRouter | None:
         signal = session.get(HatSignal, signal_id)
-        bot = session.get(HatBot, signal.bot_id) if signal is not None else None
+        bot = configs_of(session).get(Bot, signal.bot_id) if signal is not None else None
         return self._router_for(bot.broker_account_id) if bot is not None else None
 
     def take(
@@ -319,7 +321,7 @@ def _confirmed(ctx: ButtonContext, session: Session, data: str) -> tuple[str, st
             return "confirm", "arm", refused(refusal)
         return "confirm", "arm", Reply(True, text=f"Re-armed {count} kill switch(es)")
     ids = {uuid.UUID(b) for b in pending.bots}
-    bots = list(session.scalars(select(HatBot).where(HatBot.id.in_(ids)).order_by(HatBot.id)))
+    bots = configs_of(session).all(Bot, lambda b: b.id in ids)
     if not bots:
         return "confirm", "mode_auto", refused("unknown_bot")
     return (

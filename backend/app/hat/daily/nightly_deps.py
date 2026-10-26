@@ -44,6 +44,9 @@ class TextSources:
 class NightlyDeps:
     store: DataStore
     session_factory: SessionFactory
+    # the data jobs' sessions (ingest, corporate actions, quality, reference, bands, calendar):
+    # the only ones that may write hat_live
+    data_session_factory: SessionFactory
     clock: Clock
     user_id: uuid.UUID
     mcp: Callable[[], McpClient | None]  # a fresh client per run, so its call count is the run's

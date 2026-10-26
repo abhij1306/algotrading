@@ -782,12 +782,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..settings import operator_settings
 
     settings = operator_settings()  # before the database module, which reads .env too
-    from app.database import HatSessionLocal
+    from app.database import HatDataSessionLocal
 
     from .chains import stored_adjustment
 
     logging.basicConfig(level=logging.INFO)
-    with HatSessionLocal() as session:
+    with HatDataSessionLocal() as session:
         adjustment = stored_adjustment(session)
     report = run_features(
         DataStore(settings.data_root, memory_limit=settings.duckdb_memory),

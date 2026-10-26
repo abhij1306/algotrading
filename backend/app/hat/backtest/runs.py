@@ -36,6 +36,8 @@ from sqlalchemy.orm import Session
 from app.paths import PROJECT_ROOT
 
 from ..confighash import config_hash
+from ..configs.records import Bot, Strategy, StrategyVersion
+from ..configs.unit import configs_of
 from ..costs import (
     DEFAULT_COST_MODEL,
     DEFAULT_SLIPPAGE_BPS,
@@ -50,13 +52,7 @@ from ..data.store import DataStore
 from ..engine.portfolio.common import market_id_of
 from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
-from ..models import (
-    HatBot,
-    HatStrategy,
-    HatStrategyVersion,
-    HatUniverse,
-    HatUniverseVersion,
-)
+from ..models import HatUniverse, HatUniverseVersion
 from ..money import exact
 from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_version, parse_policy
 from ..risk.policy_upkeep import load_versions
@@ -65,7 +61,13 @@ from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
 from .dsr import PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
-from .evidence import RunMetrics, universe_live_version, universe_of
+from .evidence import (
+    DSR_DIGITS,
+    RunMetrics,
+    evidence_doc,
+    universe_live_version,
+    universe_of,
+)
 from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
 from .run_audit import audit_run
@@ -160,28 +162,27 @@ class RunRequest:
 
 def _sleeve_of(
     session: Session, request: RunRequest
-) -> tuple[HatStrategyVersion, HatUniverseVersion, uuid.UUID]:
+) -> tuple[StrategyVersion, HatUniverseVersion, uuid.UUID]:
     """The run's strategy version, universe version and owner (whose risk policy sizes it):
     the bot's, or in research mode the version's and the named universe's; the universe version
     is the universe's live one (a sleeve reads the universe its pinned version belongs to). A
     request naming both a bot and a universe, or neither, is refused `backtest_bad_request`."""
     if (request.bot_id is None) == (request.universe is None):
         raise BacktestError("backtest_bad_request")
+    configs = configs_of(session)
     if request.bot_id is not None:
-        bot = session.get(HatBot, request.bot_id)
+        bot = configs.get(Bot, request.bot_id)
         if bot is None:
             raise BacktestError("backtest_unknown_bot")
-        version = session.get(HatStrategyVersion, request.version_id or bot.live_version_id)
+        version = configs.get(StrategyVersion, request.version_id or bot.live_version_id)
         if version is None or version.strategy_id != bot.strategy_id:
             raise BacktestError("backtest_unknown_version")
         live = universe_live_version(session, universe_of(session, bot))
         if live is None:
             raise BacktestError("backtest_no_universe")
         return version, live, bot.user_id
-    version = (
-        None if request.version_id is None else session.get(HatStrategyVersion, request.version_id)
-    )
-    strategy = None if version is None else session.get(HatStrategy, version.strategy_id)
+    version = configs.get(StrategyVersion, request.version_id)
+    strategy = None if version is None else configs.get(Strategy, version.strategy_id)
     if version is None or strategy is None:
         raise BacktestError("backtest_unknown_version")
     universe = _universe_named(session, request.universe or "", strategy.user_id)
@@ -243,7 +244,7 @@ def _target(session: Session, request: RunRequest) -> _Target:
     config = parse_config(version.config)
     fills = _fills(request.cost_model, request.slippage_bps, request.start)
     table = stored_regime_table(session, market_id_of(session), regime_profile(config.bot))
-    strategy = session.get(HatStrategy, version.strategy_id)
+    strategy = configs_of(session).get(Strategy, version.strategy_id)
     named = session.get(HatUniverse, universe.universe_id)
     return _Target(
         version.id,
@@ -639,7 +640,25 @@ def _execute(
         )
         doc, csvs = folder.build(run_id, result, built)
         audit = audit_run(doc, csvs, fill_ranges(data, csvs.get("trades")), spec.fills.slippage_bps)
-        folder.publish(root, run_id, doc, config_doc, csvs, docs={**docs, "audit": audit})
+        pbo = built.pbo
+        evidence = evidence_doc(
+            run_id=run_id,
+            strategy=target.strategy,
+            resolved_hash=resolved_hash,
+            strategy_id=target.strategy_id,
+            strategy_version_id=spec.strategy_version_id,
+            universe_id=target.universe_id,
+            membership=(snapshot.get("membership") or {}).get("universe_key"),
+            metrics={
+                **result.metrics,
+                "dsr": {"prob": deflated.prob, "trials": count, "reason": deflated.reason},
+                "pbo": None if pbo is None else {"prob": str(round(pbo, DSR_DIGITS))},
+                "completed_at": utc_now().isoformat(),
+            },
+            trades=((t.playbook, t.score, t.r_multiple) for t in result.trades),
+        )
+        docs = {**docs, "audit": audit, "evidence": evidence}
+        folder.publish(root, run_id, doc, config_doc, csvs, docs=docs)
     except BacktestError as exc:
         return give_up(FAILED, exc.code)
     except KeyboardInterrupt:

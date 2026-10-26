@@ -45,9 +45,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import ACCOUNT_ACTIVE, BrokerAccount
+from ..configs.unit import configs_of
 from ..errors import HatError
-from ..models import HatBrokerAccount, HatInstrument, HatOrder, HatPosition, HatSignal
-from ..models.strategy import ACCOUNT_ACTIVE
+from ..models import HatInstrument, HatOrder, HatPosition, HatSignal
 from ..time import utc_now
 from .broker import (
     CODE_INVALID_INTENT,
@@ -235,7 +236,7 @@ def _check_allowed(
     if is_entry:
         # Only an entry needs an active account: a stop or a sale goes out whatever the row's
         # status (exits are never blocked, D118); the broker session refuses it if it must.
-        account = session.get(HatBrokerAccount, row.broker_account_id)
+        account = configs_of(session).get(BrokerAccount, row.broker_account_id)
         if account is None or account.status != ACCOUNT_ACTIVE:
             raise OrderRefusedError("account_not_active")
         if row.side != Side.BUY.value:

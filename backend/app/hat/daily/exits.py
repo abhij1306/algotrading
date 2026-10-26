@@ -27,6 +27,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import Clock
+from ..configs.records import Bot
+from ..configs.unit import configs_of
 from ..engine import demerger_exit, positions, shadow
 from ..engine.close_gap import record_close_evaluation
 from ..engine.exits import ExitView, Phase
@@ -39,7 +41,7 @@ from ..engine.rescale import (
 )
 from ..execution.manage import in_close_window
 from ..execution.series import broker_symbol, series_changed
-from ..models import HatBot, HatInstrument, HatPosition, HatSignal
+from ..models import HatInstrument, HatPosition, HatSignal
 from ..notify import Notifier
 from ..time import as_utc, trade_date_of, utc_now
 from .gates import CalendarSource
@@ -197,13 +199,13 @@ class ShadowExits:
         (an account's `exits.close` evaluates its virtual positions itself)."""
         query = (
             select(HatPosition)
-            .join(HatBot, HatBot.id == HatPosition.bot_id)
             .where(HatPosition.is_virtual.is_(True), HatPosition.closed_at.is_(None))
             .order_by(HatPosition.id)
         )
         accounts = self._managed() if phase == "close" else set()
         if accounts:
-            query = query.where(HatBot.broker_account_id.not_in(accounts))
+            bots = configs_of(session).all(Bot, lambda b: b.broker_account_id not in accounts)
+            query = query.where(HatPosition.bot_id.in_([b.id for b in bots]))
         return list(session.scalars(query))
 
     def run(self, now: datetime, phase: Phase = "live") -> int:

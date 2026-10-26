@@ -1,4 +1,5 @@
-"""Portfolio tables: sleeves, universes, regime and daily weights."""
+"""Portfolio tables. hat_live: the universes, their versions and members (derived from index
+data). hat_state: the regime state and the daily allocation."""
 
 from sqlalchemy import (
     Boolean,
@@ -13,7 +14,7 @@ from sqlalchemy import (
     text,
 )
 
-from ...base import Base
+from ...base import Base, StateBase
 from ._types import (
     UNIVERSE_VERSION_STATUSES,
     Currency,
@@ -23,6 +24,7 @@ from ._types import (
     Timestamptz,
     fk,
     in_values,
+    ref,
     uuid_pk,
 )
 
@@ -30,7 +32,6 @@ MARKET_ID = "hat_market.id"
 
 __all__ = [
     "HatAllocationDaily",
-    "HatRegimeModelVersion",
     "HatRegimeState",
     "HatUniverse",
     "HatUniverseMember",
@@ -73,7 +74,8 @@ class HatUniverseVersion(Base):
     status = Column(Text, nullable=False)
     definition = Column(JsonB, nullable=False)
     config_hash = Column(Text, nullable=False)
-    backtest_run_id = fk("hat_backtest_run.id", nullable=True)
+    # the run folder that evidences it (`backtests/runs/<id>`)
+    backtest_run_id = ref(nullable=True)
     promoted_at = Column(Timestamptz)
 
 
@@ -87,23 +89,7 @@ class HatUniverseMember(Base):
     reason = Column(Text, nullable=False)
 
 
-class HatRegimeModelVersion(Base):
-    __tablename__ = "hat_regime_model_version"
-    __table_args__ = (
-        CheckConstraint(
-            in_values("kind", ("rules", "hmm", "gmm")), name="ck_hat_regime_model_kind"
-        ),
-    )
-
-    id = uuid_pk()
-    market_id = fk(MARKET_ID)
-    kind = Column(Text, nullable=False)
-    version = Column(Integer, nullable=False)
-    status = Column(Text, nullable=False)
-    config = Column(JsonB, nullable=False)
-
-
-class HatRegimeState(Base):
+class HatRegimeState(StateBase):
     __tablename__ = "hat_regime_state"
     __table_args__ = (
         CheckConstraint(
@@ -113,19 +99,19 @@ class HatRegimeState(Base):
     )
 
     trade_date = Column(Date, primary_key=True)
-    market_id = fk(MARKET_ID, primary_key=True)
-    model_version_id = fk("hat_regime_model_version.id", primary_key=True)
+    market_id = ref(primary_key=True)
+    model_version_id = ref(primary_key=True)  # a regime model config record
     state = Column(Text, nullable=False)
     probabilities = Column(JsonB)
     inputs = Column(JsonB, nullable=False)
     confirmed = Column(Boolean, nullable=False)
 
 
-class HatAllocationDaily(Base):
+class HatAllocationDaily(StateBase):
     __tablename__ = "hat_allocation_daily"
 
     trade_date = Column(Date, primary_key=True)
-    bot_id = fk("hat_bot.id", primary_key=True)
+    bot_id = ref(primary_key=True)
     base_weight = Column(Ratio, nullable=False)
     regime_mult = Column(Ratio, nullable=False)
     health_mult = Column(Ratio, nullable=False)

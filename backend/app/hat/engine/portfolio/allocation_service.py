@@ -16,8 +16,10 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.hat.configs.records import Bot, Strategy
+from app.hat.configs.unit import configs_of
 from app.hat.events import record
-from app.hat.models import HatAllocationDaily, HatBot, HatStrategy
+from app.hat.models import HatAllocationDaily
 from app.hat.risk.policy import RiskPolicy, effective_version
 from app.hat.risk.policy_service import load_versions
 
@@ -78,9 +80,9 @@ def run_allocation(
     policy = policy_at(session, user_id, trade_date)
     moved = advance_automatic(session, trade_date, policy)
     sleeves = []
-    bots = session.scalars(select(HatBot).order_by(HatBot.id)).all()
-    for bot in bots:
-        strategy = session.get(HatStrategy, bot.strategy_id)
+    unit = configs_of(session)
+    for bot in sorted(unit.all(Bot), key=lambda b: b.id):
+        strategy = unit.get(Strategy, bot.strategy_id)
         name = strategy.name if strategy else ""
         table = regime_table(model, regime_profile(name))
         before = previous_allocation(session, bot.id, trade_date)

@@ -35,11 +35,12 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..configs.records import ACCOUNT_ACTIVE, Bot, BrokerAccount, RiskPolicyVersion
+from ..configs.unit import configs_of
 from ..engine.portfolio import lifecycle
 from ..errors import HatError
 from ..governance import MODE_VALUES, Mode
-from ..models import HatBot, HatBrokerAccount, HatModeChange, HatRiskPolicyVersion
-from ..models.strategy import ACCOUNT_ACTIVE
+from ..models import HatModeChange
 from ..risk.modes import ModeChange, queued_mode_at
 from ..risk.policy import PolicyError, PolicyVersion, effective_version, parse_policy
 from ..risk.sessions import SessionCalendar
@@ -56,6 +57,7 @@ __all__ = [
     "Gates",
     "ModeRefusedError",
     "UnknownModeError",
+    "account_bot_ids",
     "account_gates",
     "bot_mode",
     "capability_gated",
@@ -127,12 +129,16 @@ def gate_refusal(requested: str, gates: Gates) -> str | None:
     return None
 
 
+def account_bot_ids(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
+    """The ids of the bots bound to broker account `account_id` (the bots are config records, so
+    a query of a state table filters on these instead of joining them)."""
+    return [b.id for b in configs_of(session).all(Bot, lambda b: b.broker_account_id == account_id)]
+
+
 def _weights_confirmed(session: Session, user_id: uuid.UUID, at: datetime) -> bool:
     """Whether the user's policy in force at `at` confirms the base weights and cluster cap. No
     policy, or a stored one that does not parse, reads as unconfirmed (fail closed)."""
-    rows = session.scalars(
-        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.user_id == user_id)
-    ).all()
+    rows = configs_of(session).all(RiskPolicyVersion, lambda r: r.user_id == user_id)
     try:  # read here, not through `policy_service`, which reaches the backtest and the engine
         versions = [
             PolicyVersion(
@@ -146,7 +152,7 @@ def _weights_confirmed(session: Session, user_id: uuid.UUID, at: datetime) -> bo
     return version is not None and version.policy.weights_confirmed
 
 
-def account_gates(session: Session, account: HatBrokerAccount | None, at: datetime) -> Gates:
+def account_gates(session: Session, account: BrokerAccount | None, at: datetime) -> Gates:
     """The gates of `account` as they stand for an instant `at`: the stored status and
     capabilities as they are now (losing GTT narrows at once), DDPI confirmed only if it was by
     `at`, and the owner's policy in force at `at`. A missing account passes none."""
@@ -249,19 +255,19 @@ def _changes(session: Session, bot_id: uuid.UUID) -> list[ModeChange]:
     return [ModeChange(r.to_mode, r.requested_at, r.effective_from) for r in rows]
 
 
-def requested_mode(session: Session, bot: HatBot, at: datetime) -> str:
+def requested_mode(session: Session, bot: Bot, at: datetime) -> str:
     """The mode the user asked for that is in force at `at`: the latest queued change effective
     by then and not refused at its open, else the bot's stored mode; anything outside the three
     modes reads as shadow."""
     return _asked(bot, _changes(session, bot.id), at)
 
 
-def _asked(bot: HatBot, changes: list[ModeChange], at: datetime) -> str:
+def _asked(bot: Bot, changes: list[ModeChange], at: datetime) -> str:
     mode = queued_mode_at(bot.execution_mode, changes, at)
     return mode if mode in MODE_VALUES else Mode.SHADOW
 
 
-def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalendar | None) -> str:
+def bot_mode(session: Session, bot: Bot, at: datetime, calendar: SessionCalendar | None) -> str:
     """The effective mode of `bot` for an entry at `at`: shadow unless its sleeve is Live
     (HAT-PORT-063: research, backtested, shadow, probation and retired sleeves, and any unknown
     state, route as shadow whatever mode was asked); else the queued mode in force at the open
@@ -271,7 +277,7 @@ def bot_mode(session: Session, bot: HatBot, at: datetime, calendar: SessionCalen
         return Mode.SHADOW
     anchor = mode_anchor(calendar, at)
     requested = requested_mode(session, bot, anchor)
-    account = session.get(HatBrokerAccount, bot.broker_account_id)
+    account = configs_of(session).get(BrokerAccount, bot.broker_account_id)
     return capability_gated(requested, account_gates(session, account, anchor))
 
 
@@ -297,7 +303,7 @@ class ModeView:
 
 
 def mode_view(
-    session: Session, bot: HatBot, at: datetime, calendar: SessionCalendar | None
+    session: Session, bot: Bot, at: datetime, calendar: SessionCalendar | None
 ) -> ModeView:
     """The bot's `ModeView` at `at`: the rules of `bot_mode`, with the bot's queued changes and
     its account's gates each read once (DB audit L1)."""
@@ -308,7 +314,7 @@ def mode_view(
         effective = Mode.SHADOW
         why = None if effective == asked else f"sleeve_{bot.lifecycle_state}"
     else:
-        account = session.get(HatBrokerAccount, bot.broker_account_id)
+        account = configs_of(session).get(BrokerAccount, bot.broker_account_id)
         gates = account_gates(session, account, anchor)
         effective = capability_gated(asked, gates)
         why = None if effective == asked else gate_refusal(asked, gates)

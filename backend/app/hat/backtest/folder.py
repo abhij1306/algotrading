@@ -15,7 +15,6 @@ import io
 import json
 import math
 import os
-import re
 import shutil
 import uuid
 from collections import Counter, defaultdict
@@ -31,6 +30,7 @@ from app.paths import BACKTEST_SCHEMA
 
 from ..money import exact
 from .report import BacktestResult, LegRow, SignalRow, TradeRow
+from .run_files import JSON_DOCS, is_run_id, read_config, read_doc, read_run, run_dir, runs_dir
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
 from .spec import BacktestError
 from .standard import (
@@ -71,13 +71,9 @@ __all__ = [
 ]
 
 CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks")
-# The folder's audits: the run audit (`run_audit`, a completed run only) and the data audit it ran
-# on (`data.audit`).
-JSON_DOCS = ("audit", "data_audit")
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
 STOPOUT_DAYS = 90
-_RUN_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 _PLACES = 4
 _ZERO = Decimal(0)
 _HUNDRED = Decimal(100)
@@ -183,49 +179,6 @@ STOCK_ROW_COLUMNS = (
 )
 
 
-# --- paths and reading ---------------------------------------------------------------------------
-
-
-def runs_dir(root: Path) -> Path:
-    return root / "backtests" / "runs"
-
-
-def is_run_id(text: str) -> bool:
-    return bool(_RUN_ID.match(text))
-
-
-def run_dir(root: Path, run_id: str) -> Path | None:
-    """The run's folder; None for a run id that is not one (so no path leaves `runs/`)."""
-    return runs_dir(root) / run_id if _RUN_ID.match(run_id) else None
-
-
-def _json(path: Path) -> dict[str, Any] | None:
-    try:
-        found = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return found if isinstance(found, dict) else None
-
-
-def read_run(root: Path, run_id: str) -> dict[str, Any] | None:
-    """The run's `run.json`; None when there is no such run or it cannot be read."""
-    folder = run_dir(root, run_id)
-    return None if folder is None else _json(folder / "run.json")
-
-
-def read_config(root: Path, run_id: str) -> dict[str, Any] | None:
-    folder = run_dir(root, run_id)
-    return None if folder is None else _json(folder / "config.json")
-
-
-def read_doc(root: Path, run_id: str, name: str) -> dict[str, Any] | None:
-    """One of the run's `JSON_DOCS`; None without it."""
-    folder = run_dir(root, run_id)
-    if folder is None or name not in JSON_DOCS:
-        return None
-    return _json(folder / f"{name}.json")
-
-
 def read_csv(root: Path, run_id: str, name: str) -> str | None:
     """One of the run's `CSV_FILES` as text; None without it (a failed run has none)."""
     folder = run_dir(root, run_id)
@@ -279,7 +232,7 @@ def list_runs(root: Path) -> list[dict[str, Any]]:
     base = runs_dir(root)
     if not base.is_dir():
         return []
-    names = sorted((p.name for p in base.iterdir() if _RUN_ID.match(p.name)), reverse=True)
+    names = sorted((p.name for p in base.iterdir() if is_run_id(p.name)), reverse=True)
     return [doc for doc in (read_run(root, n) for n in names) if doc is not None]
 
 
@@ -336,7 +289,7 @@ def publish(
 ) -> Path:
     """Write the run's folder: everything into a hidden temporary folder beside it, `run.json`
     validated first (`backtest_result_invalid`, nothing published), then one rename. `docs` are
-    the folder's other JSON files by name (`JSON_DOCS`: the run and data audits)."""
+    the folder's other JSON files by name (`JSON_DOCS`: the run and data audits, the evidence)."""
     folder = run_dir(root, run_id)
     if folder is None:
         raise BacktestError("backtest_bad_run_id")
