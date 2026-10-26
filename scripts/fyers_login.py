@@ -1,10 +1,10 @@
 """Log in to Fyers from this machine's desktop and save the day's token.
 
-    python scripts/fyers_login.py [--browser chromium] [--port 9333] [--timeout 900]
+    python scripts/fyers_login.py [--timeout 900]
 
-Opens the Fyers login page in a fresh browser profile on `DISPLAY` (default `:1`, the desktop the
-dashboard shows), waits for the redirect that carries the auth code, and exchanges it through
-HAT's own login flow (`fyers_auth.exchange`: the account check and the token file are HAT's).
+Opens the Fyers login page in a fresh Chromium or Chrome profile on `DISPLAY` (default `:1`, the
+desktop the dashboard shows), waits for the redirect that carries the auth code, and exchanges
+it through HAT's own login flow (`fyers_auth.exchange`: the account check and the token file are HAT's).
 The owner types the credentials into the browser; the script never prints the auth code or the
 token, only whether the login connected. The same login is in the app's header.
 """
@@ -26,6 +26,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+BROWSERS = ("chromium", "chromium-browser", "google-chrome")
+DEBUG_PORT = 9333  # the browser's remote debugging port, read for the redirect
 
 
 def auth_code(tabs: Iterable[Mapping[str, Any]]) -> str | None:
@@ -53,22 +55,20 @@ def wait_for_code(port: int, timeout: float) -> str | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="fyers_login.py", description=__doc__)
-    p.add_argument("--browser", default="chromium")
-    p.add_argument("--port", type=int, default=9333, help="the browser's remote debugging port")
     p.add_argument("--timeout", type=float, default=900, help="seconds to wait for the login")
     args = p.parse_args(argv)
     sys.path.insert(0, str(REPO_ROOT / "backend"))
     import app.database  # noqa: F401, PLC0415 - loads .env
     from app.hat.execution.fyers_auth import fyers_auth  # noqa: PLC0415
 
-    browser = shutil.which(args.browser)
+    browser = next((path for name in BROWSERS if (path := shutil.which(name))), None)
     if browser is None:
-        sys.exit(f"{args.browser} not found")
+        sys.exit(f"none of {', '.join(BROWSERS)} found")
     with tempfile.TemporaryDirectory(prefix="fyers-login-") as profile:
         proc = subprocess.Popen(
             [
                 browser,
-                f"--remote-debugging-port={args.port}",
+                f"--remote-debugging-port={DEBUG_PORT}",
                 f"--user-data-dir={profile}",
                 "--no-first-run",
                 "--new-window",
@@ -80,7 +80,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print("browser opened; waiting for the login", flush=True)
         try:
-            code = wait_for_code(args.port, args.timeout)
+            code = wait_for_code(DEBUG_PORT, args.timeout)
         finally:
             proc.terminate()
     if code is None:

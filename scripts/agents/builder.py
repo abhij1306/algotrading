@@ -77,14 +77,16 @@ class Runner:
         if self.dry_run:
             print("+", shlex.join(cmd))
             return subprocess.CompletedProcess(cmd, 0, "", "")
-        done = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        # fixed git/gh/herdr commands (a taint-analysis false positive): the one operator input,
+        # the slug, is restricted by branch_of to [A-Za-z0-9._-], never leading with "-"
+        done = subprocess.run(cmd, capture_output=True, text=True, check=False)  # NOSONAR
         if check and done.returncode:
             sys.exit(f"{shlex.join(cmd[:4])} failed: {(done.stderr or done.stdout).strip()[:400]}")
         return done
 
     def read(self, *cmd: str) -> str:
         """Run a read-only command even on a dry run."""
-        return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout  # NOSONAR
 
 
 def _remote_has(r: Runner, branch: str) -> bool:

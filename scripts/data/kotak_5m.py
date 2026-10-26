@@ -203,7 +203,7 @@ def _load_state(path: Path, empty: dict[str, Any]) -> dict[str, Any]:
 def _save_state(path: Path, state: Mapping[str, Any]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(state))
-    os.replace(tmp, path)
+    os.replace(tmp, path)  # NOSONAR: path is <work>/state.json, never taken from the content
 
 
 # ---------------------------------------------------------------------------------------------

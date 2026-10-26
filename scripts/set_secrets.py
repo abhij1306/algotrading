@@ -139,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=8765)
     args = p.parse_args(argv)
     Handler.env_file = args.env.resolve()
-    print(f"Open http://{HOST}:{args.port} on this machine's desktop", flush=True)
+    print(f"Open {HOST}:{args.port} in the browser on this machine's desktop", flush=True)
     HTTPServer((HOST, args.port), Handler).serve_forever()
     return 0
 
