@@ -305,6 +305,26 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/hat/backtests/runs/{run_id}/audits/{name}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Get Audit
+     * @description The run's run audit (`audit`) or the data audit it ran on (`data_audit`).
+     */
+    get: operations["get_audit_api_hat_backtests_runs__run_id__audits__name__get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/hat/backtests/runs/{run_id}/files/{name}": {
     parameters: {
       query?: never;
@@ -558,6 +578,10 @@ export interface components {
      * @description A run in the list: its `run.json` blocks as published (the schema's shapes).
      */
     BacktestRunItem: {
+      /** Audit */
+      audit?: {
+        [key: string]: unknown;
+      } | null;
       /** Binding */
       binding: {
         [key: string]: unknown;
@@ -1520,6 +1544,61 @@ export interface operations {
       header?: never;
       path: {
         run_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": {
+            [key: string]: unknown;
+          };
+        };
+      };
+      /** @description No such run */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HTTPValidationError"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  get_audit_api_hat_backtests_runs__run_id__audits__name__get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        run_id: string;
+        name: string;
       };
       cookie?: never;
     };

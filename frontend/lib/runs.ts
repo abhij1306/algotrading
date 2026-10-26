@@ -1,5 +1,5 @@
 /**
- * Backtest runs in the Result Standard v1.1 (docs/backtests/result-standard.md): the run.json shape and
+ * Backtest runs in the Result Standard v1.2 (docs/backtests/result-standard.md): the run.json shape and
  * the pure shaping the Backtests pages draw from (deltas, grouping, sorting, CSV parsing and the
  * summaries of the run's CSV files). Units follow the standard: % as 0 to 100, R as a multiple,
  * money in rupees.
@@ -28,6 +28,10 @@ export type Identity = {
   for_promotion?: boolean;
 };
 
+export type AuditStatus = "pass" | "warn" | "fail";
+/** An audit document's worst status and digest, as run.json and the runs list reference it. */
+export type AuditRef = { digest: string; status: AuditStatus };
+
 export type RunData = {
   universe: string;
   data_snapshot_id: string | null;
@@ -36,6 +40,8 @@ export type RunData = {
   period_start: string;
   period_end: string;
   benchmark: string;
+  /** The data audit the run read (absent before v1.2). */
+  audit?: AuditRef;
 };
 
 export type RunConfig = {
@@ -135,7 +141,42 @@ export type Run = {
  * One row of the runs list: the generated `BacktestRunItem` names the fields (the API types each
  * as an open object), run.schema.json types them.
  */
-export type RunSummary = Pick<Run, keyof components["schemas"]["BacktestRunItem"]>;
+export type RunSummary = Pick<
+  Run,
+  Exclude<keyof components["schemas"]["BacktestRunItem"], "audit">
+> & {
+  /** The run audit's status and digest; null for a run without `audit.json`. */
+  audit?: AuditRef | null;
+};
+
+/** One finding of an audit check: a code, its severity and how many items it found. */
+export type AuditFinding = Readonly<{ code: string; severity: AuditStatus; count: number }>;
+/** An audit document (`audit.json`, `data_audit.json`): its checks in order. */
+export type AuditDoc = Readonly<{
+  status: AuditStatus;
+  digest: string;
+  checks: readonly Readonly<{ name: string; status: AuditStatus; findings: AuditFinding[] }>[];
+}>;
+
+export type AuditRow = Readonly<{
+  check: string;
+  code: string;
+  severity: AuditStatus;
+  count: number;
+}>;
+
+/** An audit's findings that are not a pass, one row each, failures first, in check order. */
+export function auditRows(doc: AuditDoc): AuditRow[] {
+  const rows = doc.checks.flatMap((check) =>
+    check.findings
+      .filter((f) => f.severity !== "pass")
+      .map((f) => ({ check: check.name, code: f.code, severity: f.severity, count: f.count })),
+  );
+  return [
+    ...rows.filter((r) => r.severity === "fail"),
+    ...rows.filter((r) => r.severity !== "fail"),
+  ];
+}
 
 /** A run's variant label, or its id's tail when the run sets none. */
 export const runName = (identity: Identity) => identity.variant ?? identity.run_id.slice(-8);
@@ -153,6 +194,7 @@ export const sweepName = (identity: Identity) =>
 
 /** The CSV files of a run folder, by their route name. */
 export const RUN_FILES = ["trades", "equity", "refusals", "signals", "stocks"] as const;
+export type RunAudit = "audit" | "data_audit";
 export type RunFile = (typeof RUN_FILES)[number];
 
 export const MAX_COMPARE = 4;

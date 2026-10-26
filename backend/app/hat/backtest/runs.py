@@ -17,6 +17,8 @@ their Sharpe ratios; `dsr_n_trials` records the count.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
 import subprocess
 import uuid
@@ -27,6 +29,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -41,6 +44,7 @@ from ..costs import (
     check_slippage,
     load_cost_schedule,
 )
+from ..data import audit as data_audit
 from ..data.index_history import NIFTY_500_TRI
 from ..data.store import DataStore
 from ..engine.portfolio.common import market_id_of
@@ -56,6 +60,7 @@ from ..models import (
 from ..money import exact
 from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_version, parse_policy
 from ..risk.policy_upkeep import load_versions
+from ..settings import operator_settings
 from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
@@ -63,7 +68,9 @@ from .dsr import PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
 from .evidence import RunMetrics, universe_live_version, universe_of
 from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
+from .run_audit import audit_run
 from .spec import (
+    INITIAL_EQUITY,
     REGIME_MULT_POLICY,
     BacktestError,
     RunConventions,
@@ -282,10 +289,21 @@ def _spec(target: _Target, request: RunRequest, conventions: RunConventions) -> 
         start=request.start,
         end=request.end,
         fills=target.fills,
+        initial_equity=conventions.start_capital,
         for_promotion=request.for_promotion,
         conventions=conventions,
         regime_table=target.regime_table,
     )
+
+
+@dataclass(frozen=True)
+class _Market:
+    """The market a request's runs read, its data snapshot, and its data audit
+    (`data.audit`)."""
+
+    data: MarketData
+    snapshot: dict[str, Any]
+    audit: dict[str, Any]
 
 
 def _load(
@@ -294,14 +312,16 @@ def _load(
     universe_version_id: uuid.UUID,
     period: tuple[date, date],
     specs: Sequence[RunSpec],
-) -> tuple[MarketData, dict[str, Any]]:
+    root: Path,
+) -> _Market:
     """The one market every one of `specs` runs on: their regime index (one for all, else
     `backtest_sweep_mixed_index`), with the regime engine's inputs when any sizes under
-    `policy`."""
+    `policy`; and its data audit, read from `data_audits/` when this data and window were
+    audited before. `backtest_data_audit_failed` when the audit fails: no run starts on it."""
     indices = {spec.config.regime.index for spec in specs}
     if len(indices) != 1:
         raise BacktestError("backtest_sweep_mixed_index")
-    return load_market(
+    data, snapshot = load_market(
         store,
         session,
         universe_version_id=universe_version_id,
@@ -310,6 +330,56 @@ def _load(
         end=period[1],
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
     )
+    used_5m = bool(data.intraday)
+    key = data_audit.cache_key(str(snapshot["content_digest"]), *period, used_5m=used_5m)
+    audit, _ = data_audit.cached(
+        root,
+        key,
+        lambda: data_audit.gather(
+            store,
+            session,
+            data,
+            snapshot,
+            *period,
+            tolerance=operator_settings().history_envelope_tol,
+            used_5m=used_5m,
+        ),
+    )
+    if audit.get("status") == data_audit.FAIL:
+        logger.error("data audit %s failed: backtests refused", key)
+        raise BacktestError("backtest_data_audit_failed")
+    return _Market(data, snapshot, audit)
+
+
+def _audit_ref(audit: Mapping[str, Any]) -> dict[str, Any]:
+    """What run.json's `data.audit` and config.json record of the data audit."""
+    return {"digest": audit.get("digest"), "status": audit.get("status")}
+
+
+def fill_ranges(
+    data: MarketData, trades_csv: str | None
+) -> dict[tuple[str, date], tuple[Decimal, Decimal]]:
+    """The (low, high) on the price basis of each (instrument, date) a run's `trades.csv` fills
+    on (entries and exits), for the run audit."""
+    keys = {
+        (r["instrument_id"], date.fromisoformat(d))
+        for r in csv.DictReader(io.StringIO(trades_csv or ""))
+        for d in (r["entry_date"], r["exit_date"])
+        if d
+    }
+    if not keys:
+        return {}
+    wanted = pl.DataFrame(
+        sorted(keys), schema={"instrument_id": pl.String, "date": pl.Date}, orient="row"
+    )
+    found = data.bars.select(
+        pl.col("instrument_id").cast(pl.String), "date", "low_e4", "high_e4"
+    ).join(wanted, on=["instrument_id", "date"])
+    return {
+        (i, d): (Decimal(low).scaleb(-4), Decimal(high).scaleb(-4))
+        for i, d, low, high in found.iter_rows()
+        if low is not None and high is not None
+    }
 
 
 # --- one run -----------------------------------------------------------------------------------
@@ -379,7 +449,7 @@ class _Plan:
 
 
 def _config_doc(
-    run_id: str, target: _Target, plan: _Plan, snapshot: Mapping[str, Any]
+    run_id: str, target: _Target, plan: _Plan, snapshot: Mapping[str, Any], audit: Mapping[str, Any]
 ) -> dict[str, Any]:
     """`config.json`: everything `--rerun` needs, from this file alone."""
     spec = plan.spec
@@ -416,6 +486,7 @@ def _config_doc(
             "sleeve_weight": None if c.sleeve_weight is None else str(c.sleeve_weight),
             "regime_mult": c.regime_mult,
             "regime_table": {k: str(v) for k, v in spec.regime_table.items()},
+            "start_capital": str(spec.initial_equity),
         },
         "labels": {
             "sweep_id": plan.labels.sweep_id,
@@ -429,6 +500,7 @@ def _config_doc(
         "asked": dict(plan.asked),
         "data_snapshot_id": snapshot.get("content_digest"),
         "data_snapshot": dict(snapshot),  # what was read: the store, membership and its cover
+        "data_audit": _audit_ref(audit),
     }
 
 
@@ -436,7 +508,7 @@ def _blocks(
     run_id: str,
     target: _Target,
     plan: _Plan,
-    snapshot: Mapping[str, Any],
+    market: _Market,
     root: Path,
     status: str,
     error: str | None,
@@ -463,12 +535,13 @@ def _blocks(
     }
     data = {
         "universe": target.universe,
-        "data_snapshot_id": snapshot.get("content_digest"),
+        "data_snapshot_id": market.snapshot.get("content_digest"),
         "split": labels.split,
         "validates_run_id": labels.validates,
         "period_start": spec.start.isoformat(),
         "period_end": spec.end.isoformat(),
         "benchmark": BENCHMARK_LABEL,
+        "audit": _audit_ref(market.audit),
     }
     config = {
         "overrides": changed_paths(resolved, base_resolved)
@@ -510,21 +583,23 @@ def family_pbo(
 def _execute(
     target: _Target,
     plan: _Plan,
-    market: tuple[MarketData, dict[str, Any]],
+    market: _Market,
     *,
     root: Path,
     label: str | None = None,
 ) -> RunOutcome:
-    """Run one plan and publish its folder: complete, or failed with the engine's refusal code
-    (`backtest_error` for anything else, chained); a stop (Ctrl-C) publishes `stopped_early`
-    and goes on stopping. A completed in-sample run joins the trial registry."""
-    data, snapshot = market
+    """Run one plan and publish its folder: complete, with its run audit (`audit.json`), or
+    failed with the engine's refusal code (`backtest_error` for anything else, chained); a stop
+    (Ctrl-C) publishes `stopped_early` and goes on stopping. Every folder holds the data audit
+    it ran on (`data_audit.json`). A completed in-sample run joins the trial registry."""
+    data = market.data
     run_id = str(uuid.uuid7())
     spec, labels = plan.spec, plan.labels
-    config_doc = _config_doc(run_id, target, plan, snapshot)
+    config_doc = _config_doc(run_id, target, plan, market.snapshot, market.audit)
+    docs: dict[str, Mapping[str, Any]] = {"data_audit": market.audit}
 
     def inputs(status: str, error: str | None, **extra: Any) -> folder.RunInputs:  # noqa: ANN401
-        identity, data_block, config = _blocks(run_id, target, plan, snapshot, root, status, error)
+        identity, data_block, config = _blocks(run_id, target, plan, market, root, status, error)
         return folder.RunInputs(
             identity=identity,
             data=data_block,
@@ -536,7 +611,7 @@ def _execute(
 
     def give_up(status: str, code: str) -> RunOutcome:
         doc = folder.failed_run(inputs(status, code))
-        folder.publish(root, run_id, doc, config_doc)
+        folder.publish(root, run_id, doc, config_doc, docs=docs)
         return RunOutcome(label, run_id, status, code, doc)
 
     try:
@@ -563,7 +638,8 @@ def _execute(
             ),
         )
         doc, csvs = folder.build(run_id, result, built)
-        folder.publish(root, run_id, doc, config_doc, csvs)
+        audit = audit_run(doc, csvs, fill_ranges(data, csvs.get("trades")), spec.fills.slippage_bps)
+        folder.publish(root, run_id, doc, config_doc, csvs, docs={**docs, "audit": audit})
     except BacktestError as exc:
         return give_up(FAILED, exc.code)
     except KeyboardInterrupt:
@@ -595,7 +671,9 @@ def backtest_bot(
     a failed run."""
     target = _target(session, request)
     spec = _spec(target, request, request.conventions)
-    market = _load(session, store, target.universe_version_id, (request.start, request.end), [spec])
+    market = _load(
+        session, store, target.universe_version_id, (request.start, request.end), [spec], root
+    )
     plan = _plan(spec, request.labels, {"args": list(request.args), "variant_item": None})
     return _execute(target, plan, market, root=root)
 
@@ -641,6 +719,11 @@ VARIANT_KEYS = frozenset(
         "policy_set",
         "sleeve_weight",
         "slot_order",
+        "entry_fill",
+        "ambiguous",
+        "suspension_sessions",
+        "regime_mult",
+        "start_capital",
     }
 )
 SWEEP_KEYS = frozenset({"sweep_id", "sweep_name", "variants"})
@@ -667,7 +750,8 @@ def parse_variants(
     `overrides.parse_set`, after the base conventions'), `policy_set` (likewise,
     `overrides.parse_policy_set`), `policy` (a policy file's path, relative to the working
     directory, read by `read_policy`), `risk_pct`, `max_positions`, `max_per_industry`,
-    `flat_ladder` (a boolean), `sleeve_weight` and `slot_order` (each replacing the base's).
+    `flat_ladder` (a boolean), `sleeve_weight`, `slot_order`, `entry_fill`, `ambiguous`,
+    `suspension_sessions`, `regime_mult` and `start_capital` (each replacing the base's).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
     conventions or override raise."""
     if not isinstance(doc, dict) or not set(doc) <= SWEEP_KEYS:
@@ -729,11 +813,17 @@ def _conventions(
         max_per_industry=_count(item, "max_per_industry", base.overrides.max_per_industry),
         flat_ladder=_flag(item, "flat_ladder", base.overrides.flat_ladder),
     )
+    capital = _number(item, "start_capital", base.start_capital)
     return replace(
         base,
         overrides=overrides,
         sleeve_weight=_number(item, "sleeve_weight", base.sleeve_weight),
         slot_order=str(item.get("slot_order", base.slot_order)),
+        entry_fill_rule=str(item.get("entry_fill", base.entry_fill_rule)),
+        ambiguous=str(item.get("ambiguous", base.ambiguous)),
+        suspension_sessions=_count(item, "suspension_sessions", base.suspension_sessions) or 0,
+        regime_mult=str(item.get("regime_mult", base.regime_mult)),
+        start_capital=base.start_capital if capital is None else capital,
     )
 
 
@@ -801,7 +891,9 @@ def sweep_bot(
             plans.append((variant, exc.code))
     runnable = [spec for _, spec in plans if isinstance(spec, RunSpec)]
     market = (
-        _load(session, store, target.universe_version_id, (request.start, request.end), runnable)
+        _load(
+            session, store, target.universe_version_id, (request.start, request.end), runnable, root
+        )
         if runnable
         else None
     )
@@ -833,7 +925,7 @@ def _sweep_run(
     variant: Variant,
     spec: RunSpec | str,
     made: Mapping[str, str],
-    market: tuple[MarketData, dict[str, Any]] | None,
+    market: _Market | None,
     root: Path,
 ) -> RunOutcome:
     if isinstance(spec, str) or market is None:
@@ -886,6 +978,7 @@ def _replayed(config: Mapping[str, Any]) -> tuple[_Target, RunSpec]:
             suspension_sessions=int(c["suspension_sessions"]),
             sleeve_weight=None if weight is None else exact(weight),
             regime_mult=c["regime_mult"],
+            start_capital=exact(c.get("start_capital", str(INITIAL_EQUITY))),
         )
         universe = config["universe"]
         target = _Target(
@@ -907,6 +1000,7 @@ def _replayed(config: Mapping[str, Any]) -> tuple[_Target, RunSpec]:
             start=start,
             end=end,
             fills=target.fills,
+            initial_equity=conventions.start_capital,
             for_promotion=bool(config["for_promotion"]),
             conventions=conventions,
             regime_table=target.regime_table,
@@ -928,8 +1022,8 @@ def rerun(
     if config is None:
         raise BacktestError("backtest_rerun_unknown")
     target, spec = _replayed(config)
-    market = _load(session, store, target.universe_version_id, (spec.start, spec.end), [spec])
-    if market[1].get("content_digest") != config.get("data_snapshot_id"):
+    market = _load(session, store, target.universe_version_id, (spec.start, spec.end), [spec], root)
+    if market.snapshot.get("content_digest") != config.get("data_snapshot_id"):
         raise BacktestError("backtest_rerun_snapshot_differs")
     old = config.get("labels") or {}
     labels = Labels(

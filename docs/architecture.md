@@ -103,8 +103,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
 - `backtests/runs/<run_id>/` holds every run's folder in the Backtest Result Standard
   (`docs/backtests/result-standard.md`: `run.json` validated against `run.schema.json`,
-  `config.json`, the CSVs; `backtest/folder.py`), and `backtests/trials.json` each strategy's DSR
-  trials (`backtest/trials.py`); no backtest writes the database. `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
+  `config.json`, the CSVs, `audit.json` and `data_audit.json`; `backtest/folder.py`),
+  `backtests/data_audits/` each data audit by data snapshot and window (`data/audit.py`), and
+  `backtests/trials.json` each strategy's DSR trials (`backtest/trials.py`); no backtest writes
+  the database. The process: `docs/backtests/process.md`. `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
   stderr (`backtest/jobs.py`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features

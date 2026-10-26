@@ -2,7 +2,14 @@ import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/rea
 import { api, unwrap } from "@/lib/api/client";
 import type { components } from "@/lib/api/schema";
 import type { StartBody } from "@/lib/backtest-form";
-import { parseCsvTable, type Run, type RunFile, type RunSummary } from "@/lib/runs";
+import {
+  parseCsvTable,
+  type AuditDoc,
+  type Run,
+  type RunAudit,
+  type RunFile,
+  type RunSummary,
+} from "@/lib/runs";
 import { queryKeys } from "./keys";
 
 export type BacktestJob = components["schemas"]["BacktestJob"];
@@ -75,6 +82,21 @@ export function useRunFile(id: string, name: RunFile) {
 /** The same CSV of several runs, for the compare view. */
 export function useRunFiles(ids: readonly string[], name: RunFile) {
   return useQueries({ queries: ids.map((id) => fileQuery(id, name)) });
+}
+
+/** A run's run audit or the data audit it read; a run without one reads 404. */
+export function useRunAudit(id: string, name: RunAudit) {
+  return useQuery({
+    queryKey: queryKeys.backtests.audit(id, name),
+    queryFn: async () =>
+      (await unwrap(
+        api.GET("/api/hat/backtests/runs/{run_id}/audits/{name}", {
+          params: { path: { run_id: id, name } },
+        }),
+      )) as unknown as AuditDoc,
+    // A run's audits never change once its folder is published.
+    staleTime: Infinity,
+  });
 }
 
 export function useBacktestOptions() {

@@ -19,6 +19,7 @@ defaults: the last two sections of `docs/decisions.md`.
 | `docs/decisions.md` | Owner decisions in force with their reasons; planned work; pending defaults |
 | `docs/runbook.md` | Operator procedures: run, deploy, admin CLI, data tools, alerts, backup |
 | `docs/agents/` | The orchestrator guide and the builder protocol |
+| `docs/backtests/` | The backtest process (`process.md`: every command, knob and check) and the result standard |
 | `README.md` | The public pitch |
 
 ---

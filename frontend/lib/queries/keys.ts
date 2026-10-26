@@ -19,6 +19,7 @@ export const queryKeys = {
     runs: () => ["backtests", "runs"] as const,
     run: (id: string) => ["backtests", "run", id] as const,
     file: (id: string, name: string) => ["backtests", "file", id, name] as const,
+    audit: (id: string, name: string) => ["backtests", "audit", id, name] as const,
     options: () => ["backtests", "options"] as const,
     jobs: () => ["backtests", "jobs"] as const,
   },

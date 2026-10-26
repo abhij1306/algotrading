@@ -224,3 +224,35 @@ def test_pbt_money_strategies_decimal() -> None:
         for node in ast.walk(tree):
             if _is_call(node, "floats"):
                 assert _is_call(parents.get(node), "one_of"), (area, node.lineno)
+
+
+# --- the gates read the session before ------------------------------------
+
+# The day loop's reads of the market for a trade date's scan and gates (`MarketView`): each must
+# be of the session before the trade date, which the loop names `prev`.
+NIGHT_READS = ("window", "closes_through", "breadth_through")
+
+
+def test_gates_read_the_session_before() -> None:
+    """In the day loop every scan and gate read of the market (`NIGHT_READS` on the view, and
+    the view's features) takes `prev`, the session before the trade date, so no trade date's
+    scan, regime gate or breadth gate reads its own day (the data audit's lookahead check
+    records it as the engine's rule)."""
+    calls = []
+    for node in ast.walk(ast.parse(BACKTEST.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        owner = node.func.value
+        on_view = isinstance(owner, ast.Attribute) and owner.attr == "view"
+        on_features = (
+            node.func.attr == "get"
+            and isinstance(owner, ast.Attribute)
+            and owner.attr == "features"
+            and isinstance(owner.value, ast.Attribute)
+            and owner.value.attr == "view"
+        )
+        if (on_view and node.func.attr in NIGHT_READS) or on_features:
+            calls.append(node)
+    assert len(calls) >= 5  # not vacuous: the scan's four reads and the morning's gate
+    for call in calls:
+        assert [a.id for a in call.args if isinstance(a, ast.Name)] == ["prev"], ast.unparse(call)

@@ -15,6 +15,7 @@ import {
   nextSort,
   overrideLines,
   sortRecords,
+  type AuditStatus,
   type Binding,
   type BucketRow,
   type CsvRecord,
@@ -40,6 +41,20 @@ export function RunStatusBadge({
   const label = status.replaceAll("_", " ");
   return (
     <Badge tone={STATUS_TONE[status] ?? "muted"}>{error ? `${label}: ${error}` : label}</Badge>
+  );
+}
+
+const AUDIT_TONE: Record<AuditStatus, Tone> = { pass: "profit", warn: "warning", fail: "loss" };
+
+/** An audit's status (docs/backtests/process.md); a run published without the audit reads none. */
+export function AuditBadge({
+  label,
+  status,
+}: Readonly<{ label: string; status: AuditStatus | null | undefined }>) {
+  return (
+    <Badge tone={status ? AUDIT_TONE[status] : "muted"}>
+      {label}: {status ?? "none"}
+    </Badge>
   );
 }
 

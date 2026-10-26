@@ -156,11 +156,12 @@ class RunConventions:
     """The rules a run chooses besides its slippage and cost model (PR 62, O5): the entry fill
     rule (HAT-BT-020), the slot order (HAT-BT-026, PR 63), the ambiguous-day rule (HAT-BT-021)
     and the bar-less sessions before the suspension markdown (PR 64), the sleeve weight (None:
-    the policy's base weight), the regime rule the entries are sized under (HAT-BT-014, PR 68)
-    and the config and policy overrides (`overrides`). Refused at construction
+    the policy's base weight), the regime rule the entries are sized under (HAT-BT-014, PR 68),
+    the start capital and the config and policy overrides (`overrides`). Refused at construction
     (`BacktestError`): an unknown entry fill rule, slot order, ambiguous-day rule or regime rule,
-    a bar-less session count that is not a whole number in 0..`MAX_SUSPENSION_SESSIONS`, and a
-    sleeve weight that is not a Decimal in (0, 1]."""
+    a bar-less session count that is not a whole number in 0..`MAX_SUSPENSION_SESSIONS`, a
+    sleeve weight that is not a Decimal in (0, 1], and a start capital that is not a positive
+    Decimal."""
 
     entry_fill_rule: str = PENETRATION  # `touch` is the variant
     slot_order: str = SLOT_ORDER_TIME  # `score` and `random:K` are variants
@@ -168,6 +169,7 @@ class RunConventions:
     suspension_sessions: int = SUSPENSION_SESSIONS
     sleeve_weight: Decimal | None = None
     regime_mult: str = REGIME_MULT_ONE  # `policy` applies the live regime engine
+    start_capital: Decimal = INITIAL_EQUITY
     # the run's config and policy overrides (`overrides`), already applied to its spec
     overrides: Overrides = field(default_factory=Overrides, hash=False)
 
@@ -192,6 +194,9 @@ class RunConventions:
             raise BacktestError("backtest_bad_sleeve_weight")
         if self.regime_mult not in REGIME_MULT_RULES:
             raise BacktestError("backtest_bad_regime_mult")
+        capital = self.start_capital
+        if not (isinstance(capital, Decimal) and capital.is_finite() and capital > 0):
+            raise BacktestError("backtest_bad_start_capital")
         if not isinstance(self.overrides, Overrides):
             raise BacktestError("backtest_bad_override")
 
@@ -251,6 +256,12 @@ class RunConventions:
                 {"regime_table": {k: str(table[k]) for k in regime_v1.STATES}}
                 if self.regime_mult == REGIME_MULT_POLICY
                 else {}
+            ),
+            # only when it is not the default, so a default run keeps the digest it had before
+            **(
+                {}
+                if self.start_capital == INITIAL_EQUITY
+                else {"start_capital": format(self.start_capital.normalize(), "f")}
             ),
             **({} if self.overrides.empty else {"overrides": self.overrides.record()}),
         }

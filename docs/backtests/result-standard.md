@@ -1,7 +1,8 @@
-# Backtest Result Standard v1.1
+# Backtest Result Standard v1.2
 
-Sections 1 to 6 and the rules are v1.0; the last section, v1.1 changes, amends them and wins
-where they differ. `format_version` is `1.1` (`run.schema.json`, `example_run.json`).
+Sections 1 to 6 and the rules are v1.0; the sections v1.1 changes and v1.2 changes amend them, a
+later one winning where they differ. `format_version` is `1.2` (`run.schema.json`,
+`example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
 
@@ -297,3 +298,23 @@ run id) and `change` (one line), and its overrides. A single run takes the same 
 metrics, refusals and binding, newest first), `GET /api/hat/backtests/runs/{run_id}` (the whole
 `run.json`) and `GET /api/hat/backtests/runs/{run_id}/files/{name}` (`trades`, `equity`,
 `refusals`, `signals`, `stocks` as `text/csv`).
+
+---
+
+## v1.2 changes
+
+**Audits.** Every folder also holds `data_audit.json`, the data audit of the market the run read
+(`app/hat/data/audit.py`), and a completed run's `audit.json`, its run audit
+(`app/hat/backtest/run_audit.py`): each a document with `status` (`pass` | `warn` | `fail`), its
+checks and their findings, and a `digest` (sha256 of the rest). The checks and their thresholds:
+`process.md`. `run.json` `data.audit` is `{digest, status}` of the data audit, and `config.json`
+`data_audit` the same. A run whose data audit fails does not start and writes no folder
+(`backtest_data_audit_failed`).
+
+**Start capital.** `config.json` `conventions.start_capital` is the run's start capital (₹10,00,000
+unless `--start-capital` or a variant's `start_capital` sets another); a run off the default
+records it in `config.resolved.conventions.start_capital`, so it hashes as its own trial.
+
+**API.** A list item adds `audit` (the run audit's `status` and `digest`, null without one);
+`GET /api/hat/backtests/runs/{run_id}/audits/{name}` returns `audit` or `data_audit`.
+
