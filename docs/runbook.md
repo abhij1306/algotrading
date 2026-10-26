@@ -134,7 +134,9 @@ a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are 
 4. Backtest each sleeve: `$COMPOSE exec -w /app/backend backend python -m app.hat.backtest --bot
    <bot> --version <v> --from 2016-01-01 --to <last trading day> --for-promotion --regime-mult
    policy`; then `publish-version --version <v> --run <run_id>` (the version is `frozen`) and
-   `assign-version --bot <bot> --version <v>`.
+   `assign-version --bot <bot> --version <v>`. Until promotion reads run folders, no run is in
+   `hat_backtest_run`, so `publish-version --run` refuses `unknown_run` and step 5's
+   `backtest_gate` fails (decisions: Backtest results are files).
 5. `promote --bot <bot> --to backtested` (`backtest_gate`), `promote --to shadow` and
    `trial-version --version <v>` the same evening. Versions move draft -> frozen -> trial ->
    released -> superseded; sleeves move research -> backtested -> shadow -> live (`promote`).
@@ -162,9 +164,16 @@ python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 201
   --to <last trading day> [--sleeve-weight W] [--slot-order score] [...]
 ```
 
-`--universe` takes the universe's id or name. The run records a trial of the (strategy, universe)
-family in the database it runs against and writes `backtests/run_id=<id>/` under
-`HAT_DATA_ROOT`. The universe is its index's members as of each session, through lineage (Index
+`--universe` takes the universe's id or name. The run reads the database in a read-only
+transaction and writes its folder `HAT_DATA_ROOT/backtests/runs/<run_id>/` (`run.json`,
+`config.json` and the CSVs, docs/backtests/result-standard.md); a completed in-sample run adds its
+resolved parameters' hash to the strategy's trials in `backtests/trials.json`, which every run's
+DSR counts. `--split hold_out --validates <run_id>` marks a hold-out run of an in-sample one; it
+adds no trial. `--sweep-id`, `--sweep-name`, `--variant`, `--base <run_id>` and `--change "<one
+line>"` label a single run as a sweep file labels its variants; with a base its `binding` says
+whether the change altered the trades. `python -m app.hat.backtest --rerun <run_id>` runs a
+folder's `config.json` again as a new run based on it, refused
+`backtest_rerun_snapshot_differs` when the data changed since. The universe is its index's members as of each session, through lineage (Index
 membership). Backtests run from 2016-01-01 onward until the 2011-2015 membership is resolved
 (decisions.md "Backtests from 2016-01-01"): a `--from` before the loaded history's first day is
 refused `backtest_starts_before_membership@2016-01-01`, a `--to` after its last day
@@ -234,19 +243,32 @@ per-industry cap. `--policy cand.yaml` sizes the run under a whole candidate pol
 from `python -m app.hat.admin show-policy`) and `--set-policy kill.bot_drawdown_pct=0.15`
 (repeatable, a dotted path) sets one field; both apply before the flags above, and the run
 records the document and its digest. The overrides are recorded in
-the run's conventions and the run counts as a trial of its family (DSR, PBO); a
-`--for-promotion` run takes none.
+the run's `config.overrides` and `config.json`; a `--for-promotion` run takes none.
 
 A sweep runs several variants over one load of the market: `--variants sweep.yaml` on top of the
-options given, a list of `{label, set: [path=value, ...], risk_pct, max_positions,
-max_per_industry, flat_ladder, policy, policy_set, sleeve_weight, slot_order}` (`policy` a
-file path from the working directory). It prints one JSON line per variant (run id, status, trades,
-expectancy, DSR, PBO) as each finishes; each run carries `metrics.variant` (label, sweep id), and
-the runs and their report data read at `/api/hat/backtests?sweep_id=<id>`.
+options given:
+
+```yaml
+sweep_id: s1-exits-07
+sweep_name: S1 exit stack            # optional, the id when absent
+variants:
+  - {label: base}
+  - label: trail20
+    base: base                       # an earlier label of this file, or a run id
+    change: swing-low trail 20 days  # one line
+    set: ['exits[trailing_swing_low].lookback_days=20']
+```
+
+Each variant takes `set: [path=value, ...]`, `risk_pct`, `max_positions`, `max_per_industry`,
+`flat_ladder`, `policy` (a file path from the working directory), `policy_set`,
+`sleeve_weight`, `slot_order` and, for a hold-out sweep, `validates`. It prints one JSON line per
+variant (label, run id, status, code, trades, expectancy, DSR, PBO) as each finishes; the runs read at
+`/api/hat/backtests/runs?sweep_id=<id>` and their folders at
+`HAT_DATA_ROOT/backtests/runs/<run_id>/`.
 
 The app's Backtests page (`/hat/backtests`) starts the same research run or a sweep of up to
 eight variants (New run or sweep): it runs this command line in a child process, one job at a
-time, and shows its progress until the runs land in the list. A job's files are under
+time, and shows its progress and each variant's run id. A job's files are under
 `HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds the child's stderr). The job list is
 in memory: after a restart it is empty, and a child still running finishes and records its runs.
 

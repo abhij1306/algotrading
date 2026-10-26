@@ -85,9 +85,9 @@ def _decimal(number: Decimal) -> str:
     return format(number.normalize(), "f")
 
 
-def variants_doc(variants: Sequence[JobVariant]) -> list[dict[str, Any]]:
-    """A sweep's variants file (`runs.parse_variants`): each variant's label and only the
-    overrides it sets."""
+def variants_doc(sweep_id: str, variants: Sequence[JobVariant]) -> dict[str, Any]:
+    """A sweep's variants file (`runs.parse_variants`): the job's id as the sweep's, and each
+    variant's label and only the overrides it sets."""
     doc = []
     for v in variants:
         item: dict[str, Any] = {"label": v.label}
@@ -102,7 +102,7 @@ def variants_doc(variants: Sequence[JobVariant]) -> list[dict[str, Any]]:
         if v.slot_order is not None:
             item["slot_order"] = v.slot_order
         doc.append(item)
-    return doc
+    return {"sweep_id": sweep_id, "variants": doc}
 
 
 def check_variants(variants: Sequence[JobVariant]) -> None:
@@ -172,7 +172,7 @@ def outcomes_of(text: str, sweep: bool) -> list[dict[str, Any]]:
             return []
         if not isinstance(doc, dict) or "run_id" not in doc:
             return []
-        return [{"label": None, "run_id": doc["run_id"], "status": doc.get("status"), "code": None}]
+        return [{"label": None, **{k: doc.get(k) for k in keys[1:]}}]
     found = []
     for line in text.splitlines():
         try:
@@ -265,7 +265,8 @@ class Jobs:
             folder.mkdir(parents=True)
             variants_file = folder / "variants.json"
             if len(variants) > 1:
-                variants_file.write_text(json.dumps(variants_doc(variants)), encoding="utf-8")
+                doc = variants_doc(str(job_id), variants)
+                variants_file.write_text(json.dumps(doc), encoding="utf-8")
             args = command(version_id, universe, start, end, variants, variants_file)
             job = Job(
                 id=job_id,

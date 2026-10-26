@@ -25,6 +25,7 @@ RUN sed -e '/^#/d' -e 's/ .*//' backend/requirements-ci.lock > /tmp/constraints.
 
 COPY backend/ backend/
 COPY scripts/ scripts/
+COPY docs/backtests/run.schema.json docs/backtests/
 
 # The service user. The Fyers token (fyers/config), logs and HAT_DATA_ROOT are volumes it owns.
 RUN useradd --system --uid 10001 --home-dir /app hat \

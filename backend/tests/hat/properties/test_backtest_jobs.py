@@ -80,15 +80,19 @@ def test_two_variants_run_as_a_sweep_and_never_for_promotion() -> None:
 
 def test_the_variants_file_names_only_what_each_variant_sets() -> None:
     doc = variants_doc(
+        "job-1",
         [
             JobVariant(label="base"),
             JobVariant(label="hold60", sets=(("exits[4].days", 60),), risk_pct=Decimal("0.01")),
-        ]
+        ],
     )
-    assert doc == [
-        {"label": "base"},
-        {"label": "hold60", "set": ["exits[4].days=60"], "risk_pct": "0.01"},
-    ]
+    assert doc == {
+        "sweep_id": "job-1",
+        "variants": [
+            {"label": "base"},
+            {"label": "hold60", "set": ["exits[4].days=60"], "risk_pct": "0.01"},
+        ],
+    }
 
 
 @pytest.mark.parametrize(
@@ -126,21 +130,24 @@ def test_check_variants_takes_a_good_sweep() -> None:
 
 def test_a_sweep_reads_one_finished_variant_per_line_and_skips_a_partial_line() -> None:
     text = (
-        '{"label": "a", "run_id": "01a1", "status": "completed", "code": null, "trades": 4}\n'
+        '{"label": "a", "run_id": "01a1", "status": "complete", "code": null, "trades": 4}\n'
         '{"label": "b", "run_id": null, "status": "refused", "code": "backtest_override_invalid"}\n'
         '{"label": "c", "run_'
     )
     assert outcomes_of(text, sweep=True) == [
-        {"label": "a", "run_id": "01a1", "status": "completed", "code": None},
+        {"label": "a", "run_id": "01a1", "status": "complete", "code": None},
         {"label": "b", "run_id": None, "status": "refused", "code": "backtest_override_invalid"},
     ]
 
 
 def test_a_plain_run_has_its_outcome_only_once_its_summary_is_complete() -> None:
-    summary = '{\n  "run_id": "01a1",\n  "status": "failed",\n  "trades": null\n}\n'
+    summary = (
+        '{\n  "run_id": "01a1",\n  "status": "failed",\n  "code": "backtest_x",\n'
+        '  "trades": null\n}\n'
+    )
     assert outcomes_of(summary[:20], sweep=False) == []
     assert outcomes_of(summary, sweep=False) == [
-        {"label": None, "run_id": "01a1", "status": "failed", "code": None}
+        {"label": None, "run_id": "01a1", "status": "failed", "code": "backtest_x"}
     ]
 
 

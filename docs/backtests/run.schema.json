@@ -1,0 +1,534 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "backtest-run/1.1",
+  "title": "Backtest run result v1.1",
+  "type": "object",
+  "required": [
+    "format_version",
+    "identity",
+    "data",
+    "config",
+    "metrics",
+    "refusals",
+    "binding",
+    "breakdowns"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "num": {
+      "type": [
+        "number",
+        "null"
+      ]
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "bucket": {
+      "type": "object",
+      "required": [
+        "trades",
+        "win_pct",
+        "expectancy_r"
+      ],
+      "properties": {
+        "trades": {
+          "type": "integer"
+        },
+        "win_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "expectancy_r": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_hold_sessions": {
+          "$ref": "#/$defs/num"
+        },
+        "net_pnl": {
+          "$ref": "#/$defs/num"
+        }
+      }
+    }
+  },
+  "properties": {
+    "format_version": {
+      "const": "1.1"
+    },
+    "identity": {
+      "type": "object",
+      "required": [
+        "run_id",
+        "strategy",
+        "strategy_version",
+        "engine_commit",
+        "sweep_id",
+        "variant",
+        "base_run_id",
+        "change",
+        "created_at",
+        "status"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "strategy_version": {
+          "type": "string"
+        },
+        "engine_commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sweep_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sweep_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "base_run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "change": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "enum": [
+            "complete",
+            "failed",
+            "stopped_early"
+          ]
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "for_promotion": {
+          "type": "boolean"
+        }
+      }
+    },
+    "data": {
+      "type": "object",
+      "required": [
+        "universe",
+        "data_snapshot_id",
+        "split",
+        "period_start",
+        "period_end",
+        "benchmark"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "universe": {
+          "type": "string"
+        },
+        "data_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "split": {
+          "enum": [
+            "in_sample",
+            "hold_out"
+          ]
+        },
+        "validates_run_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "period_start": {
+          "$ref": "#/$defs/date"
+        },
+        "period_end": {
+          "$ref": "#/$defs/date"
+        },
+        "benchmark": {
+          "type": "string"
+        }
+      }
+    },
+    "config": {
+      "type": "object",
+      "required": [
+        "overrides",
+        "resolved",
+        "resolved_hash",
+        "cost_model",
+        "start_capital"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "overrides": {
+          "type": "object"
+        },
+        "resolved": {
+          "type": "object"
+        },
+        "resolved_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cost_model": {
+          "type": "string"
+        },
+        "start_capital": {
+          "type": "number"
+        },
+        "rf_pct": {
+          "type": "number"
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "trades",
+        "signals",
+        "win_pct",
+        "avg_win_r",
+        "avg_loss_r",
+        "expectancy_r",
+        "avg_mfe_r",
+        "cagr_pct",
+        "max_dd_pct",
+        "mar",
+        "sharpe",
+        "invested_pct",
+        "longest_dd_sessions",
+        "longest_dd_recovered",
+        "dsr_prob",
+        "dsr_n_trials",
+        "total_return_pct",
+        "final_equity",
+        "fees",
+        "cost_share_pct",
+        "benchmark_cagr_pct",
+        "symbols_traded",
+        "top5_trades_pnl_share_pct",
+        "cagr_ex_top5_trades_pct",
+        "pbo"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "trades": {
+          "type": "integer"
+        },
+        "signals": {
+          "type": "integer"
+        },
+        "win_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_win_r": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_loss_r": {
+          "$ref": "#/$defs/num"
+        },
+        "expectancy_r": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_mfe_r": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_mae_r": {
+          "$ref": "#/$defs/num"
+        },
+        "cagr_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "max_dd_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "mar": {
+          "$ref": "#/$defs/num"
+        },
+        "sharpe": {
+          "$ref": "#/$defs/num"
+        },
+        "sortino": {
+          "$ref": "#/$defs/num"
+        },
+        "invested_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_open_positions": {
+          "$ref": "#/$defs/num"
+        },
+        "longest_dd_sessions": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "longest_dd_recovered": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "longest_dd_start": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "longest_dd_end": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dsr_prob": {
+          "$ref": "#/$defs/num"
+        },
+        "dsr_n_trials": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "total_return_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "final_equity": {
+          "$ref": "#/$defs/num"
+        },
+        "fees": {
+          "$ref": "#/$defs/num"
+        },
+        "cost_share_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "benchmark_cagr_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_hold_sessions_win": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_hold_sessions_loss": {
+          "$ref": "#/$defs/num"
+        },
+        "max_consecutive_losses": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "top5_trades_pnl_share_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "top10_symbols_pnl_share_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "cagr_ex_top5_trades_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "max_position_pct_adv": {
+          "$ref": "#/$defs/num"
+        },
+        "symbols_traded": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "trades_over_5pct_adv": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "avg_dd_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "pbo": {
+          "$ref": "#/$defs/num"
+        }
+      }
+    },
+    "refusals": {
+      "type": "object",
+      "propertyNames": {
+        "enum": [
+          "max_positions",
+          "ladder_level",
+          "industry_cap",
+          "size_zero_cash",
+          "size_zero_risk",
+          "max_chase",
+          "stopout_cap",
+          "open_risk_cap",
+          "regime_off",
+          "kill_switch"
+        ]
+      },
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "binding": {
+      "type": "object",
+      "required": [
+        "trades_changed",
+        "trade_list_hash",
+        "no_op"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "trades_changed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "trade_list_hash": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "no_op": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "breakdowns": {
+      "type": "object",
+      "required": [
+        "by_year",
+        "by_regime",
+        "by_exit_reason",
+        "by_industry",
+        "by_cap_bucket",
+        "by_liquidity_bucket"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "by_year": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "year",
+              "return_pct",
+              "max_dd_pct",
+              "trades",
+              "expectancy_r",
+              "benchmark_return_pct"
+            ],
+            "properties": {
+              "year": {
+                "type": "integer"
+              },
+              "return_pct": {
+                "$ref": "#/$defs/num"
+              },
+              "max_dd_pct": {
+                "$ref": "#/$defs/num"
+              },
+              "trades": {
+                "type": "integer"
+              },
+              "expectancy_r": {
+                "$ref": "#/$defs/num"
+              },
+              "benchmark_return_pct": {
+                "$ref": "#/$defs/num"
+              }
+            }
+          }
+        },
+        "by_regime": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/bucket"
+          }
+        },
+        "by_exit_reason": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/bucket"
+          }
+        },
+        "by_industry": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/bucket"
+          }
+        },
+        "by_cap_bucket": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "large",
+              "mid",
+              "small",
+              "micro"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/bucket"
+          }
+        },
+        "by_liquidity_bucket": {
+          "type": "object",
+          "propertyNames": {
+            "enum": [
+              "q1",
+              "q2",
+              "q3",
+              "q4",
+              "q5"
+            ]
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/bucket"
+          }
+        }
+      }
+    }
+  }
+}

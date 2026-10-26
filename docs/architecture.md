@@ -22,7 +22,7 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock |
 | `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`) |
-| `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run records. `engine` and `risk` import only `spec` and `evidence` |
+| `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run folders (`folder`, `standard`, `trials`). `engine` and `risk` import only `spec` and `evidence` |
 | `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
 
 Top level: `events.py` (event log), `money.py`, `costs.py` (slippage and the dated cost
@@ -101,9 +101,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   nightly indices, and NIFTY 500 TRI from `index_history backfill`), `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `ca_bc/` keeps each night's
   NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable; a later, different copy of that
   date is kept beside it as `bc_<trade date>_<sha256>.csv`).
-- `backtests/run_id=<id>/` holds a completed run's `trades.parquet`, `returns.parquet` (daily
-  returns, the PBO input) and `report.json` (what the results page charts, `backtest/report_data.py`).
-  `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
+- `backtests/runs/<run_id>/` holds every run's folder in the Backtest Result Standard
+  (`docs/backtests/result-standard.md`: `run.json` validated against `run.schema.json`,
+  `config.json`, the CSVs; `backtest/folder.py`), and `backtests/trials.json` each strategy's DSR
+  trials (`backtest/trials.py`); no backtest writes the database. `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
   stderr (`backtest/jobs.py`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features
@@ -162,10 +163,11 @@ Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET 
 under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
 dashboard under `/api/hat` (`/status`, `/watchlist`, `/signals`, `/positions`,
 `/allocations`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes;
-the backtests under `/api/hat/backtests` (the runs, `/{run_id}` with its metrics and report data,
-`/{run_id}/trades`, `/options`, `/jobs`, and `POST` to start a research run or a sweep as a job:
-the backtest command line in a child process, one at a time, never a promotion run; documented in
-`app/hat/api/backtests.py`), read and started from `frontend/app/hat/backtests/` (charts: Recharts).
+the backtests under `/api/hat/backtests` (`/runs`, `/runs/{run_id}` and
+`/runs/{run_id}/files/{name}` read the run folders; `/options`, `/jobs`, and `POST` to start a
+research run or a sweep as a job: the backtest command line in a child process, one at a time,
+never a promotion run; documented in `app/hat/api/backtests.py`), jobs started from
+`frontend/app/hat/backtests/`.
 A panel whose poll fails keeps its last good read on screen, dimmed, under a stale notice; when several
 reads fail together the page shows one banner instead. The page header shows the backend's `as_of` in IST; the broker login status polls on the same cadence. The design
 tokens live only in `frontend/app/globals.css` `@theme`, which resets Tailwind's palette, type scale

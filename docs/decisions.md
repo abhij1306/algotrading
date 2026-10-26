@@ -236,7 +236,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `close_rules_decided_on_official_close`. It is not symmetric: on an F&O monthly expiry and on
   the close before an index reconstitution takes effect the auction close can sit much further
   from the 15:05 price, so the run flags each close-priced exit on those days (`auction_risk` per
-  trade, `auction_risk_exits` in the summary) to be discounted, the known gap
+  trade in `trades.csv`) to be discounted, the known gap
   `close_bias_large_on_expiry_and_rebalance_days`. Both kinds of day are derived by rule from the
   stored sessions (`backtest/auction_days.py`, sources there).
 
@@ -267,6 +267,15 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   one position. While the lock is merely unreachable (the database down) it only refuses entries
   and tries again each minute.
 - **Verification on real data.** See `CLAUDE.md`.
+- **Backtest results are files, never database rows (owner, 2026-10-26).** Every run writes one
+  folder in the Backtest Result Standard (`docs/backtests/result-standard.md`, v1.1) under
+  `HAT_DATA_ROOT/backtests/runs/<run_id>/`, with `config.json` to rerun it, and the DSR's trial
+  count in `backtests/trials.json` beside them; `hat_live` is read-only to every backtest, a
+  promotion run too. So results compare across strategies and sweeps in one shape, a refused
+  entry's cost is measured, and a backtest cannot touch the live database. Promotion's linkage
+  (`hat_backtest_run`, `hat_backtest_bucket`) is left in place and no longer written:
+  `publish-version --run`, the `backtest_gate` and signal confidence read it and fail closed
+  until promotion reads run folders (Planned, not built).
 
 ## Execution safety
 
@@ -323,7 +332,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
-live trading of `entry_timing: daily_close`.
+live trading of `entry_timing: daily_close`; promotion (`publish-version --run`, the
+`backtest_gate`, the risk-increase gate and signal confidence) reading a `--for-promotion` run's
+folder instead of `hat_backtest_run`.
 
 ## Defaults awaiting owner confirmation
 
@@ -343,8 +354,8 @@ Chosen where the owner has not ruled; the code implements them.
 - Shadow results do not move the exposure ladder.
 - Research variants: a trail's start, the early-failure exit and the ATR trail read the best price
   since entry from the highs of the sessions from the entry session on and the decision price; a
-  run's report reads the regime at entry as NIFTY 500 above a rising SMA200 on the session before
-  (`report_data.REGIME_RULE`), not the regime engine's state; `--max-positions N` sets the account
+  run's `by_regime` reads the run's own regime rule at entry and the breadth of the session
+  before (docs/backtests/result-standard.md), not the regime engine's state; `--max-positions N` sets the account
   cap and the exposure ladder's top level to N and caps its lower levels at N; `--flat-ladder`
   sets every level to the run's cap at risk multiplier 1 (owner, 2026-10-25: measure S1 at a fixed
   size, since at a ~35% win rate the ladder rarely leaves L1), the other limits as the policy says.

@@ -9,7 +9,15 @@ from decimal import Decimal
 
 import pytest
 
-from app.hat.backtest.proxy_gap import GapError, Leg, columns_to_read, comparable, compare, window
+from app.hat.backtest.proxy_gap import (
+    GapError,
+    Leg,
+    columns_to_read,
+    comparable,
+    compare,
+    trades_of,
+    window,
+)
 from app.hat.backtest.report import END_OF_PERIOD
 
 D = Decimal
@@ -92,9 +100,31 @@ def test_comparable_leaves_out() -> None:
 
 
 def test_columns_to_read() -> None:
-    trade = ["playbook", "instrument_id", "entry_date", "entry_price", "r_multiple", "exit_reason"]
-    assert columns_to_read([*trade, "score", "fees"]) == [*trade, "score"]
-    assert columns_to_read(trade) == trade  # a run before PR 65 has no score column
+    trade = [
+        "trade_id",
+        "leg",
+        "playbook",
+        "instrument_id",
+        "entry_date",
+        "entry_price",
+        "r_net",
+        "engine_exit_reason",
+        "setup_score",
+    ]
+    assert columns_to_read([*trade, "fees", "symbol"]) == trade
     with pytest.raises(GapError) as refused:
         columns_to_read(trade[1:])
     assert refused.value.code == "gap_no_trades_file"
+
+
+def test_a_trade_with_legs_is_one_proxy() -> None:
+    base = {"playbook": "default", "instrument_id": A, "entry_date": "2026-03-02"}
+    base |= {"entry_price": "100", "setup_score": "0.8"}
+    rows = [
+        {**base, "trade_id": "1", "leg": "2", "r_net": "1.5", "engine_exit_reason": "hard_stop"},
+        {**base, "trade_id": "1", "leg": "1", "r_net": "0.5", "engine_exit_reason": "partial_at_r"},
+        {**base, "trade_id": "2", "leg": "1", "r_net": "1", "engine_exit_reason": "time_stop"}
+        | {"entry_date": "2026-04-01"},
+    ]
+    (trade,) = trades_of(rows, DAY, DAY)
+    assert (trade.r_multiple, trade.exit_reason, trade.score) == (D(2), "hard_stop", D("0.8"))

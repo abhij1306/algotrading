@@ -197,13 +197,16 @@ from .report import (
     DEMERGER,
     END_OF_PERIOD,
     BacktestResult,
+    SessionRow,
     SignalRow,
     auction_risk_summary,
     compute_metrics,
     flag_auction_risk,
 )
+from .signal_features import SignalFeatures
 from .slots import order_slots, trigger_rank
 from .spec import REGIME_MULT_ONE, BacktestError, RunSpec, sleeve_weight
+from .standard import fwd_r
 
 __all__ = ["run_backtest"]
 
@@ -420,6 +423,9 @@ class _Run:
         # The sleeve's nightly allocation (HAT-BT-014), by the trade date it sizes.
         self.sleeve = _Sleeve(spec, data, self.days)
         self.allocations: dict[date, Allocation | None] = {}
+        # what the result files report (`folder`): each session's book, each signal's features
+        self.sessions: list[SessionRow] = []
+        self.signal_features = SignalFeatures(data, self.view)
 
     def run(self) -> BacktestResult:
         for day in self.period:
@@ -840,6 +846,17 @@ class _Run:
             for h in self.held.values()
             if (last := self._last_close(h.instrument_id)) is not None
         }
+        open_count, open_risk = self._book()
+        features = self.signal_features.at(
+            instrument_id,
+            row.trade_date,
+            prev,
+            entry=price,
+            stop=plan.stop,
+            score=Decimal(row.score),
+            pivot=None if row.pivot is None else Decimal(row.pivot),
+            criteria_results=row.criteria_results,
+        )
         request = entries.EntryRequest(
             bot_id=self.bot_id,
             playbook=row.playbook,
@@ -874,6 +891,15 @@ class _Run:
                 strategy_version_id=signal.strategy_version_id,
                 risk_policy_version_id=signal.risk_policy_version_id,
                 allocation=self.allocations.get(row.trade_date),
+                entry_price=price,
+                scan_date=prev,
+                ladder_level=self.ladder.level,
+                open_positions=open_count,
+                open_risk=open_risk,
+                equity=self._equity_now()[0],
+                regime_on=self.gate.get(row.trade_date),
+                breadth_pct=self.data.breadth.get(prev),
+                features=features,
             )
         )
         if outcome.position_id is None:
@@ -1007,7 +1033,19 @@ class _Run:
             self._close(position, price, END_OF_PERIOD, _at(last, _AT_END, 30))
         self.session.flush()
         if self.equity:
-            self.equity[-1] = (last, self._marked(last)[0])
+            equity = self._marked(last)[0]
+            self.equity[-1] = (last, equity)
+            # every position closed at the period end: the last session's book is cash
+            self.sessions[-1] = replace(
+                self.sessions[-1],
+                equity=equity,
+                cash=equity,
+                position_value=_ZERO,
+                open_positions=0,
+                open_risk=_ZERO,
+            )
+            if self.invested:
+                self.invested[-1] = _ZERO  # and holds no position: `invested_share` agrees
 
     def _sync_ladder(self) -> None:
         """Step the exposure ladder for each trade closed since the last step, in close order:
@@ -1059,17 +1097,79 @@ class _Run:
             held_value += position.qty_open * price
         return self._cash() + held_value, held_value
 
+    def _book(self) -> tuple[int, Decimal]:
+        """(the open positions, their open risk: (entry - stop) x shares, none below 0)."""
+        positions = self._open_positions()
+        risk = sum(
+            (
+                max(Decimal(p.avg_entry) - Decimal(p.current_stop), _ZERO) * p.qty_open
+                for p in positions
+            ),
+            _ZERO,
+        )
+        return len(positions), risk
+
     def _mark(self, day: date) -> None:
         equity, held_value = self._marked(day)
         self.equity.append((day, equity))
         self.invested.append(held_value / equity if equity > 0 else _ZERO)
+        count, risk = self._book()
+        prev = self.view.prev(day)
+        self.sessions.append(
+            SessionRow(
+                day=day,
+                equity=equity,
+                cash=equity - held_value,
+                position_value=held_value,
+                open_positions=count,
+                open_risk=risk,
+                ladder_level=self.ladder.level,
+                regime_on=self.gate.get(day),
+                breadth_pct=None if prev is None else self.data.breadth.get(prev),
+            )
+        )
+
+    def _path(self, instrument_id: str, day: date, sessions: int) -> list[Bar | None]:
+        """The instrument's tradeable bar (None without one) of each of the `sessions` store
+        sessions after `day`, as far as the run's data goes."""
+        at = self.index[day]
+        return [self.view.bar(instrument_id, d) for d in self.days[at + 1 : at + 1 + sessions]]
+
+    def _forward(self, signal: SignalRow) -> SignalRow:
+        """A refused signal with the R its entry would have reached 20 and 60 sessions on
+        (`standard.fwd_r`): a session without a bar keeps the last close and tests no low."""
+        if signal.qty > 0 or signal.entry_price is None:
+            return signal
+        path: list[tuple[Decimal | None, Decimal | None]] = []
+        last: Decimal | None = None
+        for bar in self._path(signal.instrument_id, signal.trade_date, 60):
+            if bar is not None:
+                last = bar.close
+            path.append((None if bar is None else bar.low, last))
+        entry, stop = signal.entry_price, signal.stop_price
+        return replace(
+            signal, fwd_r_20d=fwd_r(entry, stop, path, 20), fwd_r_60d=fwd_r(entry, stop, path, 60)
+        )
+
+    def _mfe_date(self, instrument_id: str, entry: date, exit_: date) -> date | None:
+        """The first session from `entry` to `exit_` with the trade's highest high."""
+        best: tuple[Decimal, date] | None = None
+        for day in self.days[self.index[entry] : self.index[exit_] + 1]:
+            bar = self.view.bar(instrument_id, day)
+            if bar is not None and (best is None or bar.high > best[0]):
+                best = (bar.high, day)
+        return None if best is None else best[1]
 
     # --- the result --------------------------------------------------------------------------
 
     def _result(self) -> BacktestResult:
         watch_rows = ledger_watch_rows(self.session, self.bot_id)
         trade_rows = tuple(
-            replace(t, qty_real=self.view.real_shares(t.instrument_id, t.entry_date, t.qty))
+            replace(
+                t,
+                qty_real=self.view.real_shares(t.instrument_id, t.entry_date, t.qty),
+                mfe_date=self._mfe_date(t.instrument_id, t.entry_date, t.exit_date),
+            )
             for t in flag_auction_risk(
                 ledger_trade_rows(self.session, self.bot_id, watch_rows),
                 auction_risk_days(self.view.days),
@@ -1095,12 +1195,13 @@ class _Run:
             trades=trade_rows,
             equity=equity,
             watchlists=watch_rows,
-            signals=tuple(self.signal_rows),
+            signals=tuple(self._forward(s) for s in self.signal_rows),
             fills=fill_rows(self.session),
             skips=skips,
             metrics=metrics,
             invested=invested,
             allocations=dict(self.allocations),
+            sessions=tuple(self.sessions),
         )
         self.session.close()
         return result

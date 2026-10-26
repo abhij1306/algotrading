@@ -28,9 +28,9 @@ before the other policy overrides. A decimal is kept as its exact text (the poli
 The run records the candidate document with its digest. This is research only: the live policy
 changes only by a new version under its gates (docs/invariants.md, "Policy changes").
 
-A run's overrides are recorded in its conventions and hashed into its `config_digest`, and the
-run stays a trial of its family (HAT-BT-030), so a sweep of variants raises the family's DSR trial
-count and its PBO variants. A run flagged for promotion takes none (`RunConventions`).
+A run's overrides are recorded in its `config.overrides` and `config.json`, and its resolved
+parameters' hash is a trial of its strategy (`trials`), so a sweep of distinct variants raises
+the DSR trial count. A run flagged for promotion takes none (`RunConventions`).
 """
 
 from __future__ import annotations

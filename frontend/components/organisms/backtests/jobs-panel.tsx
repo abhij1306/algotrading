@@ -1,4 +1,3 @@
-import { Link } from "react-router";
 import { Badge, type Tone } from "@/components/atoms/badge";
 import { useBacktestJobs, type BacktestJob } from "@/lib/queries/backtests";
 import { formatIstDateTime } from "@/lib/time";
@@ -48,16 +47,9 @@ function JobItem({ job }: Readonly<{ job: BacktestJob }>) {
         <ul className="flex flex-wrap gap-x-5 gap-y-1 text-sm">
           {job.outcomes.map((outcome, index) => (
             <li key={outcome.run_id ?? `${outcome.label}-${index}`}>
-              {outcome.run_id ? (
-                <Link
-                  to={`/hat/backtests/${outcome.run_id}`}
-                  className="text-accent hover:underline"
-                >
-                  {outcome.label ?? "the run"}
-                </Link>
-              ) : (
-                <span>{outcome.label}</span>
-              )}{" "}
+              <span title={outcome.run_id ?? undefined}>
+                {outcome.label ?? outcome.run_id ?? "the run"}
+              </span>{" "}
               <span className="text-xs text-foreground-muted">
                 {outcome.status}
                 {outcome.code ? `: ${outcome.code}` : ""}
