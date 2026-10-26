@@ -25,7 +25,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 HOST = "127.0.0.1"
@@ -92,6 +92,12 @@ def write_env(env_file: Path, values: dict[str, str]) -> None:
         raise
 
 
+def same_origin(origin: str, host: str) -> bool:
+    """`origin` is this loopback form's own: plain http (the server has no TLS) at `host`."""
+    parts = urlsplit(origin)
+    return parts.scheme == "http" and parts.netloc == host and parts.path in ("", "/")
+
+
 def request_allowed(
     headers: Mapping[str, str], form_token: str, token: str, port: int, *, post: bool
 ) -> bool:
@@ -102,8 +108,7 @@ def request_allowed(
         return False
     if not post:
         return True
-    origin = f"http://{host}"  # NOSONAR: the loopback form's own origin
-    return headers.get("Origin") == origin and hmac.compare_digest(form_token, token)
+    return same_origin(headers.get("Origin", ""), host) and hmac.compare_digest(form_token, token)
 
 
 class Handler(BaseHTTPRequestHandler):

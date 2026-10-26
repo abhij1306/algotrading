@@ -209,6 +209,13 @@ def test_set_secrets__request_allowed() -> None:
     assert not allowed({**own, "Host": "evil.test:8765"}, "", "tok", 8765, post=False)
 
 
+def test_set_secrets__same_origin() -> None:
+    host = "127.0.0.1:8765"
+    assert secrets.same_origin("http://" + host, host)
+    for other in ("https://" + host, "http://127.0.0.1:8766", "http://evil.test", "", "null"):
+        assert not secrets.same_origin(other, host)
+
+
 def test_fyers_login__auth_code() -> None:
     tabs = [{"url": "https://example.test/login"}, {"url": "http://127.0.0.1/cb?auth_code=abc&s=1"}]
     assert fyers_login.auth_code(tabs) == "abc"
