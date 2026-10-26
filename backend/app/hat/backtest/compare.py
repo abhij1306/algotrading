@@ -1,12 +1,17 @@
 """Compare runs side by side (docs/backtests/process.md):
 
-    python -m app.hat.backtest.compare <run_id> [<run_id> ...]
-    python -m app.hat.backtest.compare --sweep <sweep_id>
+    python -m app.hat.backtest.compare <run_id> [<run_id> ...] [--criteria NOTES]
+    python -m app.hat.backtest.compare --sweep <sweep_id> [--criteria NOTES]
 
 prints one Markdown table row per run, read from its folder only: label, change and base, whether
 the change bound, how many knobs it changed against its base (`5b`: a declared bundle of five;
 `run_audit.changed_of`), its risk policy version (`3!2`: version 3 against a base under 2, the
-policy drifted), the run and data audit statuses, and the headline metrics.
+policy drifted), the run and data audit statuses, and the headline metrics with the promotion
+criteria's (longest drawdown in sessions, the benchmark's CAGR, the CAGR without the top five
+trades, the entries above 5% of ADV). With `--criteria` (the strategy's notes, their
+`hat-criteria` block) a second table gives each run's in-sample criteria, pass or fail, as the
+review computes them (`criteria.in_sample_rows`, the DSR and PBO at the family today), and the
+family's own trials against the budget.
 """
 
 from __future__ import annotations
@@ -17,10 +22,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import folder
+from . import criteria as crit
+from . import folder, trials
+from .review import scores_now, trade_rows
 from .run_audit import changed_of
 
-__all__ = ["COLUMNS", "policy_versions", "row_of", "table"]
+__all__ = ["COLUMNS", "criteria_table", "policy_versions", "row_of", "table"]
 
 # (header, block, field) of each column after the run id
 COLUMNS: tuple[tuple[str, str, str], ...] = (
@@ -33,6 +40,7 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("win%", "metrics", "win_pct"),
     ("CAGR%", "metrics", "cagr_pct"),
     ("maxDD%", "metrics", "max_dd_pct"),
+    ("longest_dd", "metrics", "longest_dd_sessions"),
     ("MAR", "metrics", "mar"),
     ("sharpe", "metrics", "sharpe"),
     ("DSR", "metrics", "dsr_prob"),
@@ -41,6 +49,9 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("PBO", "metrics", "pbo"),
     ("top5%", "metrics", "top5_trades_pnl_share_pct"),
     ("cost%", "metrics", "cost_share_pct"),
+    ("bench%", "metrics", "benchmark_cagr_pct"),
+    ("cagr_ex5%", "metrics", "cagr_ex_top5_trades_pct"),
+    (">5%adv", "metrics", "trades_over_5pct_adv"),
 )
 
 
@@ -92,8 +103,42 @@ def table(rows: Sequence[Sequence[str]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def compare(root: Path, run_ids: Sequence[str], sweep_id: str | None) -> str:
-    """The table of the named runs, or of a sweep's runs oldest first."""
+def criteria_table(runs: Sequence[tuple[str, Sequence[crit.Row]]]) -> str:
+    """The Markdown table of each run's (short id, criteria rows): one column per criterion,
+    its status, and the run's overall status (`criteria.overall`)."""
+    names = list(dict.fromkeys(r.name for _, rows in runs for r in rows))
+    lines = [
+        "| " + " | ".join(["run", *names, "in-sample"]) + " |",
+        "|" + "---|" * (len(names) + 2),
+    ]
+    for run_id, rows in runs:
+        status = {r.name: r.status for r in rows}
+        cells = [run_id, *(status.get(n, "-") for n in names), crit.overall(rows)]
+        lines.append("| " + " | ".join(_cell(c) for c in cells) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def _criteria(root: Path, runs: Sequence[Mapping[str, Any]], c: crit.Criteria) -> str:
+    """The criteria table of `runs` and the line of the family's own trials and budget."""
+    evaluated = []
+    for r in runs:
+        run_id = str((r.get("identity") or {}).get("run_id"))
+        trades = trade_rows(folder.read_csv(root, run_id, "trades"))
+        evaluated.append((run_id[:8], crit.in_sample_rows(c, r, trades, scores_now(root, r)[0])))
+    key = trials.family_key(c.strategy, c.universe, *c.in_sample)
+    total, prior = trials.counts(trials.read_registry(root), key)
+    budget = (
+        f"\ntrial budget: {total - prior} own trials of {c.trial_budget} in {key}"
+        f" ({total} with {prior} prior); criteria sha256 {c.digest}\n"
+    )
+    return criteria_table(evaluated) + budget
+
+
+def compare(
+    root: Path, run_ids: Sequence[str], sweep_id: str | None, c: crit.Criteria | None = None
+) -> str:
+    """The table of the named runs, or of a sweep's runs oldest first, and with criteria `c`
+    their criteria table."""
     if sweep_id is not None:
         runs = [
             r
@@ -106,7 +151,7 @@ def compare(root: Path, run_ids: Sequence[str], sweep_id: str | None) -> str:
     for r in runs:
         run_id = str((r.get("identity") or {}).get("run_id"))
         rows.append(row_of(r, folder.read_doc(root, run_id, "audit"), policy_versions(root, r)))
-    return table(rows)
+    return table(rows) + ("" if c is None else "\n" + _criteria(root, runs, c))
 
 
 def _version_in(root: Path, run_id: object) -> object:
@@ -134,10 +179,19 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the co
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest.compare")
     parser.add_argument("run_ids", nargs="*")
     parser.add_argument("--sweep", default=None)
+    parser.add_argument("--criteria", type=argparse.FileType("r", encoding="utf-8"), default=None)
     args = parser.parse_args(argv)
     if not args.run_ids and args.sweep is None:
         parser.error("name run ids or --sweep")
-    sys.stdout.write(compare(operator_settings().data_root, args.run_ids, args.sweep))
+    c = None
+    if args.criteria is not None:
+        with args.criteria as file:
+            try:
+                c = crit.parse(crit.extract(file.read()))
+            except ValueError as exc:
+                sys.stderr.write(f"compare refused: {exc}\n")
+                return 2
+    sys.stdout.write(compare(operator_settings().data_root, args.run_ids, args.sweep, c))
     return 0
 
 

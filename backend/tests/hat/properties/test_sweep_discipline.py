@@ -11,18 +11,36 @@ from pathlib import Path
 import pytest
 
 from app.hat.backtest import compare, run_audit
-from app.hat.backtest.discipline import candidate_hash, changed_knobs, check_hold_out, knobs_of
+from app.hat.backtest.discipline import (
+    candidate_hash,
+    changed_knobs,
+    check_hold_out,
+    knobs_of,
+    resolve_knobs,
+)
 from app.hat.backtest.overrides import Overrides
-from app.hat.backtest.runs import parse_variants
+from app.hat.backtest.runs import check_one_change, parse_variants
 from app.hat.backtest.spec import BacktestError, RunConventions
 
 D = Decimal
 BASE = RunConventions()
 SETS = ["exits[time_stop].enabled=false", "exits[close_below_sma].sma=50"]
+CONFIG = {
+    "exits": [
+        {"rule": "time_stop", "enabled": True},
+        {"rule": "close_below_sma", "sma": 20},
+    ]
+}
 
 
 def _sweep(*items: object) -> dict[str, object]:
     return {"sweep_id": "sw-1", "variants": [{"label": "base"}, *items]}
+
+
+def _checked(*items: object) -> object:
+    sweep = parse_variants(_sweep(*items), BASE)
+    check_one_change(sweep, CONFIG)
+    return sweep
 
 
 def test_knobs_name_each_path_and_convention() -> None:
@@ -37,19 +55,36 @@ def test_knobs_name_each_path_and_convention() -> None:
     assert changed_knobs(knobs_of(BASE, D("20.0"), "cnc", 5), plain) == ["cooldown_sessions"]
 
 
+def test_knobs_are_named_by_the_resolved_path() -> None:
+    by_name = resolve_knobs({"set:exits[time_stop].enabled": "false"}, CONFIG)
+    by_index = resolve_knobs({"set:exits[0].enabled": "false"}, CONFIG)
+    assert by_name == by_index == {"set:exits[0].enabled": "false"}
+    # an append is named by the new item's index; a path naming nothing is kept as written
+    knobs = {
+        "set:exits[+]": '{"rule":"max_hold"}',
+        "set:exits[max_hold].days": "60",
+        "set:x.y": "1",
+    }
+    assert list(resolve_knobs(knobs, CONFIG)) == ["set:exits[2]", "set:exits[2].days", "set:x.y"]
+    assert resolve_knobs({"risk_pct": "0.005"}, CONFIG) == {"risk_pct": "0.005"}
+
+
 def test_one_change_per_variant_unless_a_declared_bundle() -> None:
     one = {"label": "one", "base": "base", "set": SETS[:1]}
-    assert parse_variants(_sweep(one), BASE).variants[1].bundle is None
+    assert _checked(one).variants[1].bundle is None
     two = {"label": "two", "base": "base", "set": SETS}
     with pytest.raises(BacktestError, match="backtest_sweep_not_one_change"):
-        parse_variants(_sweep(two), BASE)
+        _checked(two)
     with pytest.raises(BacktestError, match="backtest_sweep_not_one_change"):
-        parse_variants(_sweep({**one, "slot_order": "score"}), BASE)
-    bundled = parse_variants(_sweep({**two, "bundle": True, "reason": "one exit set"}), BASE)
+        _checked({**one, "slot_order": "score"})
+    bundled = _checked({**two, "bundle": True, "reason": "one exit set"})
     assert bundled.variants[1].bundle == "one exit set"
     # the change is counted against the variant's own base, not the file's first variant
     chained = {"label": "next", "base": "one", "set": SETS}
-    assert parse_variants(_sweep(one, chained), BASE).variants[2].base == "one"
+    assert _checked(one, chained).variants[2].base == "one"
+    # the base's path spelt by index is the same knob: one change, not three
+    respelt = {"label": "next", "base": "one", "set": ["exits[0].enabled=false", SETS[1]]}
+    _checked(one, respelt)
     for bad in (
         {**two, "bundle": True},  # no reason
         {**two, "reason": "why"},  # a reason without the bundle

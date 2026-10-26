@@ -42,13 +42,17 @@ result field means: `result-standard.md`.
    cooldown count too). A sweep refuses a variant that changes more
    (`backtest_sweep_not_one_change`) unless it declares `bundle: true` and a one-line `reason`;
    a bundle is one candidate, not evidence for any one of its changes, and its run audit warns
-   (`one_change`). A base named by run id is checked against the knobs its `config.json`
-   records. Every variant of a sweep should run under its base's risk policy version: the run
+   (`one_change`). A `set` knob is the path it resolves to in the version's config, so
+   `exits[time_stop].enabled` and `exits[3].enabled` are one knob. A base named by run id is
+   checked against the knobs its `config.json` records. Every variant of a sweep should run under its base's risk policy version: the run
    audit warns on a drift (`policy_drift`) and `compare` shows it. `binding.no_op: true` means
    the change never fired: it tells you nothing.
 4. **Trials count.** Every completed in-sample run with new parameters is a trial of its family
    (strategy, universe, window: `dsr_n_trials`, `HAT_DATA_ROOT/backtests/trials.json`); stop at
-   the budget. Reruns and duplicates add none. Variants tried before the registry saw them (runs
+   the budget. An in-sample sweep takes the notes (`--criteria`) and refuses a variant that
+   would be a new trial once the family's own trials reach `trial_budget`
+   (`backtest_sweep_trial_budget`); each printed line shows `trials` (own/budget) beside
+   `dsr_n_trials`, which counts the prior ones too. Reruns and duplicates add none. Variants tried before the registry saw them (runs
    since deleted) are seeded as prior trials: `python -m app.hat.backtest.trials seed --strategy
    S1 --universe NIFTY500_PIT --from 2016-01-01 --to 2021-12-31 <sweep files>`; `trials show`
    prints each family's count. Never delete `trials.json`, only run folders.
@@ -64,8 +68,8 @@ result field means: `result-standard.md`.
 | --- | --- | --- | --- |
 | 1 | Data check | `python -m app.hat.data.audit --from 2016-01-01 --to 2021-12-31 --universe nifty500` | `backtests/data_audits/<key>.json` |
 | 2 | Baseline run | `python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-01-01 --to 2021-12-31 --sweep-id <s> --variant base` | `backtests/runs/<run_id>/` |
-| 3 | Sweep | `python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-01-01 --to 2021-12-31 --variants sweep.yaml` | one folder per variant |
-| 4 | Compare | `python -m app.hat.backtest.compare --sweep <s>` (or run ids): `knobs` is the knobs changed against the base (`5b` a declared bundle), `policy` the risk policy version (`3!2`: 3 against a base under 2) | stdout table |
+| 3 | Sweep | `python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-01-01 --to 2021-12-31 --variants sweep.yaml --criteria <strategy notes>` | one folder per variant |
+| 4 | Compare | `python -m app.hat.backtest.compare --sweep <s> [--criteria <strategy notes>]` (or run ids): `knobs` is the knobs changed against the base (`5b` a declared bundle), `policy` the risk policy version (`3!2`: 3 against a base under 2), `longest_dd`, `bench%`, `cagr_ex5%` and `>5%adv` the criteria's metrics; `--criteria` adds each run's in-sample criteria, pass or fail, and the trial budget | stdout tables |
 | 5 | Plateau | a sweep of the chosen variant's key parameters, each one step either side, `base` the chosen run | one folder per variant |
 | 6 | Criteria and review request | `python -m app.hat.backtest.review <run_id> --criteria <strategy notes> --sweep <plateau sweep>` | `<run folder>/criteria.md`, `criteria.json`, `review_request.md` |
 | 7 | Hold-out, once | `python -m app.hat.backtest --rerun <run_id> --split hold_out --from 2022-01-01 --to <last session>`: the candidate's `config.json` on the hold-out window (rule 2), then `review <hold-out run_id> --criteria <notes>` (`--validates <run_id>` names the in-sample run) | `backtests/runs/<run_id>/` |

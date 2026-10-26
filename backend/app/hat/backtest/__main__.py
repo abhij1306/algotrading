@@ -28,6 +28,7 @@ from ..models import HatEvent
 from ..money import exact
 from ..risk.policy import RiskPolicy
 from ..settings import operator_settings
+from . import criteria as crit
 from .fills import (
     AMBIGUOUS_OPTIMISTIC,
     AMBIGUOUS_RULES,
@@ -43,6 +44,7 @@ from .runs import (
     Labels,
     RunOutcome,
     RunRequest,
+    TrialBudget,
     backtest_bot,
     hold_out,
     parse_variants,
@@ -121,8 +123,23 @@ def _variants_doc(file: TextIO) -> object:  # pragma: no cover - the command lin
             raise BacktestError("backtest_sweep_bad_variants") from None
 
 
-def _outcome_json(outcome: RunOutcome) -> dict[str, Any]:  # pragma: no cover - the database
+def _budget(file: TextIO) -> TrialBudget:  # pragma: no cover - the command line
+    """The trial budget of the strategy notes' `hat-criteria` block (argparse opened the file);
+    `backtest_sweep_bad_criteria` when it has no valid block."""
+    with file:
+        try:
+            c = crit.parse(crit.extract(file.read()))
+        except (OSError, UnicodeDecodeError, ValueError):
+            raise BacktestError("backtest_sweep_bad_criteria") from None
+    return TrialBudget(c.strategy, c.universe, c.trial_budget)
+
+
+def _outcome_json(
+    outcome: RunOutcome, budget: TrialBudget | None = None
+) -> dict[str, Any]:  # pragma: no cover - the database
     metrics = (outcome.run or {}).get("metrics") or {}
+    own = outcome.trials_own
+    trials = {} if budget is None or own is None else {"trials": f"{own}/{budget.limit}"}
     return {
         "label": outcome.label,
         "run_id": outcome.run_id,
@@ -134,6 +151,7 @@ def _outcome_json(outcome: RunOutcome) -> dict[str, Any]:  # pragma: no cover - 
         "dsr_n_trials": metrics.get("dsr_n_trials"),
         "dsr_n_trials_effective": metrics.get("dsr_n_trials_effective"),
         "pbo": metrics.get("pbo"),
+        **trials,
     }
 
 
@@ -148,7 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--max-positions N] [--max-per-industry N] [--flat-ladder] [--policy FILE]
     [--set-policy PATH=VALUE ...] [--split in_sample|hold_out] [--validates RUN_ID]
     [--sweep-id ID] [--sweep-name NAME] [--variant LABEL] [--base RUN_ID] [--change TEXT]
-    [--variants FILE]
+    [--variants FILE --criteria NOTES]
     python -m app.hat.backtest --rerun RUN_ID [--split hold_out --from YYYY-MM-DD --to YYYY-MM-DD]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
@@ -178,7 +196,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     load of the market, on top of the options given here, and prints one line per variant as it
     finishes; a file argparse cannot open is a usage error, one that does not parse is refused
     (`backtest_sweep_bad_variants`); a variant changing more than one knob against its base
-    needs `bundle: true` and a `reason` (`backtest_sweep_not_one_change`). A hold-out run is
+    needs `bundle: true` and a `reason` (`backtest_sweep_not_one_change`). An in-sample sweep
+    needs `--criteria NOTES`, the strategy's notes: past the `trial_budget` of their
+    `hat-criteria` block a variant that would be a new trial is refused
+    (`backtest_sweep_trial_budget`), and each line carries `trials`, the family's own trials
+    against the budget, beside the DSR's count (`dsr_n_trials`). A hold-out run is
     refused by its guards (`discipline.check_hold_out`). `--rerun RUN_ID` takes nothing else,
     or `--split hold_out --from --to`: the run's own config as its hold-out (`_rerun`).
     """
@@ -219,7 +241,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--base", default=None)
     parser.add_argument("--change", default=None)
     parser.add_argument("--variants", type=argparse.FileType("r", encoding="utf-8"), default=None)
+    parser.add_argument("--criteria", type=argparse.FileType("r", encoding="utf-8"), default=None)
     args = parser.parse_args(args_list)
+    if args.variants is not None and args.split == IN_SAMPLE and args.criteria is None:
+        parser.error("an in-sample sweep needs --criteria NOTES (its trial budget)")
     settings = operator_settings()
     refused: str | None = None
     summary: dict[str, Any] = {}
@@ -269,12 +294,21 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
             if args.variants is not None:
                 sweep = parse_variants(_variants_doc(args.variants), request.conventions)
+                budget = None if args.criteria is None else _budget(args.criteria)
 
                 def after(outcome: RunOutcome) -> None:
-                    sys.stdout.write(json.dumps(_outcome_json(outcome)) + "\n")
+                    sys.stdout.write(json.dumps(_outcome_json(outcome, budget)) + "\n")
                     sys.stdout.flush()
 
-                sweep_bot(session, store, request, sweep, root=settings.data_root, after=after)
+                sweep_bot(
+                    session,
+                    store,
+                    request,
+                    sweep,
+                    root=settings.data_root,
+                    after=after,
+                    budget=budget,
+                )
                 return 0
             outcome = backtest_bot(session, store, request, root=settings.data_root)
         except BacktestError as exc:

@@ -670,10 +670,14 @@ class DataStore:
         """An in-memory DuckDB connection with the views; `adjustment` is what the adjusted
         view applies (`chains.stored_adjustment`: the corporate actions and the ISIN lineage).
         DuckDB's own default is 80% of RAM; the store's `memory_limit` caps it and a larger query
-        spills to `temp_dir`."""
+        spills to a per-process folder under `temp_dir`, created here: concurrent jobs on one
+        data root would otherwise share one spill file, and a folder removed by a cleanup would
+        fail every connection that needs to spill."""
+        spill = self.temp_dir / f"pid-{os.getpid()}"
+        spill.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect(
             ":memory:",
-            config={"memory_limit": self.memory_limit, "temp_directory": str(self.temp_dir)},
+            config={"memory_limit": self.memory_limit, "temp_directory": str(spill)},
         )
         self._dataset_view(con, DATASET_BARS, "bars_daily_raw")
         con.execute(_LATEST_VIEW_SQL.format(latest=RAW_LATEST, view="bars_daily_raw"))

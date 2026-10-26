@@ -14,7 +14,8 @@ the run folders never deletes it.
 Prior trials are variants tried before the registry saw them (runs since deleted): `seed`
 records each under a `prior:` key with its `source` (the sweep file and label) and no run or
 Sharpe, so they raise the family's count without touching its variance. A strategy's trial
-budget counts the family's own runs only (`counts`).
+budget counts the family's own runs only (`counts`), and a sweep given its criteria refuses a
+new trial past it (`over_budget`).
 
     python -m app.hat.backtest.trials seed --strategy S1 --universe NIFTY500_PIT \
         --from 2016-01-01 --to 2021-12-31 SWEEP.yaml [...]
@@ -45,6 +46,7 @@ __all__ = [
     "family",
     "family_key",
     "family_of",
+    "over_budget",
     "prior_variants",
     "read_registry",
     "record_trial",
@@ -147,6 +149,16 @@ def counts(registry: Mapping[str, Mapping[str, Trial]], key: str) -> tuple[int, 
     """(the family's trials, of them the prior ones `seed` recorded)."""
     hashes = registry.get(key, {})
     return len(hashes), sum(1 for h in hashes if h.startswith(PRIOR))
+
+
+def over_budget(
+    registry: Mapping[str, Mapping[str, Trial]], key: str, digest: str, budget: int
+) -> bool:
+    """Whether a completed run of the resolved hash `digest` would be a new trial of the family
+    `key` past `budget`: the hash is not one of its trials yet and the family's own trials (the
+    prior ones excluded, `counts`) have reached the budget. A duplicate is never refused."""
+    total, prior = counts(registry, key)
+    return digest not in registry.get(key, {}) and total - prior >= budget
 
 
 def _document(registry: Mapping[str, Mapping[str, Trial]]) -> dict[str, Any]:

@@ -62,7 +62,7 @@ from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from . import folder, trials
 from .data import MarketData, load_market
-from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of
+from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of, resolve_knobs
 from .dsr import MIN_TRIALS, PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
 from .evidence import (
     DSR_DIGITS,
@@ -93,8 +93,10 @@ __all__ = [
     "RunOutcome",
     "RunRequest",
     "Sweep",
+    "TrialBudget",
     "Variant",
     "backtest_bot",
+    "check_one_change",
     "engine_commit",
     "hold_out",
     "parse_variants",
@@ -449,13 +451,14 @@ def _capital(value: Decimal) -> int | float:
 @dataclass(frozen=True)
 class RunOutcome:
     """A run's id (None when it was refused before it ran), status, refusal or failure code,
-    and its `run.json` document."""
+    its `run.json` document and, in a sweep with a trial budget, its family's own trials."""
 
     label: str | None
     run_id: str | None
     status: str
     code: str | None
     run: Mapping[str, Any] | None = None
+    trials_own: int | None = None  # a budgeted sweep's: the family's own trials after it
 
 
 @dataclass(frozen=True)
@@ -557,7 +560,9 @@ def _blocks(
         "base_run_id": labels.base,
         "change": labels.change,
         # None without a base, or when the base's config.json predates knobs
-        "changed_knobs": changed_knobs(plan.knobs, base_knobs)
+        "changed_knobs": changed_knobs(
+            plan.knobs, resolve_knobs(base_knobs, target.config.to_json())
+        )
         if isinstance(base_knobs, dict)
         else None,
         "bundle": labels.bundle,
@@ -742,15 +747,20 @@ def _execute(
     return RunOutcome(label, run_id, COMPLETE, None, doc)
 
 
-def _knobs(request: RunRequest, conventions: RunConventions) -> dict[str, str]:
-    return knobs_of(
+def _knobs(request: RunRequest, conventions: RunConventions, target: _Target) -> dict[str, str]:
+    """The run's knobs (`discipline.knobs_of`), its `set` paths resolved in the version's
+    config (`discipline.resolve_knobs`)."""
+    knobs = knobs_of(
         conventions, request.slippage_bps, request.cost_model, request.cooldown_sessions
     )
+    return resolve_knobs(knobs, target.config.to_json())
 
 
-def _plan(request: RunRequest, spec: RunSpec, labels: Labels, asked: Mapping[str, Any]) -> _Plan:
+def _plan(
+    request: RunRequest, spec: RunSpec, labels: Labels, asked: Mapping[str, Any], target: _Target
+) -> _Plan:
     overrides = spec.conventions.overrides.record()
-    return _Plan(spec, labels, asked, overrides, _knobs(request, spec.conventions))
+    return _Plan(spec, labels, asked, overrides, _knobs(request, spec.conventions, target))
 
 
 def _guard_hold_out(root: Path, spec: RunSpec, labels: Labels) -> None:
@@ -780,7 +790,7 @@ def backtest_bot(
     if refused is not None:
         raise BacktestError(refused)
     asked = {"args": list(request.args), "variant_item": None}
-    return _execute(target, _plan(request, spec, request.labels, asked), market, root=root)
+    return _execute(target, _plan(request, spec, request.labels, asked, target), market, root=root)
 
 
 # --- sweeps ------------------------------------------------------------------------------------
@@ -863,10 +873,8 @@ def parse_variants(
     `suspension_sessions`, `regime_mult` and `start_capital` (each replacing the base's), and
     `bundle: true` with a one-line `reason` (a variant with a base only).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
-    conventions or override raise. A variant whose knobs differ from those of its base earlier
-    in the file in more than one (`discipline.changed_knobs`) is refused
-    `backtest_sweep_not_one_change` unless it is a declared bundle; a base named by run id is
-    checked when the sweep runs (`sweep_bot`)."""
+    conventions or override raise. One change per variant is checked when the sweep runs,
+    against the version's config (`check_one_change`, `sweep_bot`)."""
     if not isinstance(doc, dict) or not set(doc) <= SWEEP_KEYS:
         raise BacktestError("backtest_sweep_bad_variants")
     sweep_id = _text(doc, "sweep_id")
@@ -896,12 +904,6 @@ def parse_variants(
         )
         if variant.bundle is not None and based is None:
             raise BacktestError("backtest_sweep_bad_variants")
-        if (
-            based in earlier
-            and variant.bundle is None
-            and len(_changed(variant, earlier[based])) > 1
-        ):
-            raise BacktestError("backtest_sweep_not_one_change")
         out.append(variant)
     if len({v.label for v in out}) != len(out):
         raise BacktestError("backtest_sweep_bad_variants")
@@ -918,13 +920,25 @@ def _bundle(item: Mapping[str, object]) -> str | None:
     return reason
 
 
-def _changed(variant: Variant, base: Variant) -> list[str]:
-    """The knobs a variant changes against a base of its own file; the run's slippage, cost
-    model and cooldown are the command line's, alike for both."""
-    return changed_knobs(
-        knobs_of(variant.conventions, Decimal(0), "", None),
-        knobs_of(base.conventions, Decimal(0), "", None),
-    )
+def check_one_change(sweep: Sweep, config: Mapping[str, Any]) -> None:
+    """Refuse a sweep (`backtest_sweep_not_one_change`) with a variant whose knobs differ from
+    those of its base earlier in the file in more than one, unless it is a declared bundle; the
+    `set` paths resolved in the version's config `config` (`discipline.resolve_knobs`). The
+    run's slippage, cost model and cooldown are the command line's, alike for both; a base
+    named by run id is checked by `sweep_bot` against the knobs its `config.json` records."""
+    labels = {v.label: v for v in sweep.variants}
+
+    def knobs(variant: Variant) -> dict[str, str]:
+        return resolve_knobs(knobs_of(variant.conventions, Decimal(0), "", None), config)
+
+    for variant in sweep.variants:
+        base = labels.get(variant.base or "")
+        if (
+            base is not None
+            and variant.bundle is None
+            and len(changed_knobs(knobs(variant), knobs(base))) > 1
+        ):
+            raise BacktestError("backtest_sweep_not_one_change")
 
 
 def _conventions(
@@ -1010,6 +1024,7 @@ def sweep_bot(
     *,
     root: Path,
     after: Callable[[RunOutcome], None] = lambda outcome: None,
+    budget: TrialBudget | None = None,
 ) -> list[RunOutcome]:
     """Run each variant of `request` (its conventions in place of the request's) over one load of
     the market, in order, each published as its run folder with the sweep's id and name, its
@@ -1018,14 +1033,30 @@ def sweep_bot(
     decided, in order, refused ones too (the command line prints it there). A variant refused
     before it runs (a bad override, a missing weight, a hold-out without the run it validates
     or failing its guards, `discipline.check_hold_out`, an undeclared bundle against a base
-    named by run id) is skipped with its code; the request-wide refusals, and a sweep whose
-    variants read different regime indices, raise `BacktestError` before any run."""
+    named by run id) is skipped with its code; the request-wide refusals, a variant changing
+    more than one knob against a base of its file (`check_one_change`), and a sweep whose
+    variants read different regime indices, raise `BacktestError` before any run.
+
+    With a `budget` (the strategy's criteria, `TrialBudget`), an in-sample variant whose
+    resolved config would be a new trial once the family's own trials (`trials.counts`, prior
+    ones excluded) have reached it is refused `backtest_sweep_trial_budget`, and each outcome
+    carries the family's own trial count after it (`RunOutcome.trials_own`); a budget for
+    another strategy or universe is refused `backtest_sweep_criteria_scope`."""
     target = _target(session, request)
+    check_one_change(sweep, target.config.to_json())
+    if budget is not None and (budget.strategy, budget.universe) != (
+        target.strategy,
+        target.universe,
+    ):
+        raise BacktestError("backtest_sweep_criteria_scope")
+    if request.labels.split != IN_SAMPLE:
+        budget = None  # a hold-out adds no trial
+    family = trials.family_key(target.strategy, target.universe, request.start, request.end)
     plans: list[tuple[Variant, RunSpec | str]] = []
     for variant in sweep.variants:
         try:
             spec = _spec(target, request, variant.conventions)
-            _guard_variant(root, request, variant, spec)
+            _guard_variant(root, request, variant, spec, target)
             plans.append((variant, spec))
         except BacktestError as exc:
             plans.append((variant, exc.code))
@@ -1045,7 +1076,11 @@ def sweep_bot(
     made: dict[str, str] = {}
     out: list[RunOutcome] = []
     for variant, spec in plans:
+        if budget is not None and isinstance(spec, RunSpec):
+            spec = _budget_refusal(root, family, spec, budget.limit) or spec
         outcome = _sweep_run(target, request, sweep, variant, spec, made, market, root)
+        if budget is not None:
+            outcome = replace(outcome, trials_own=_own_trials(root, family))
         if outcome.run_id is not None:
             made[variant.label] = outcome.run_id
         out.append(outcome)
@@ -1053,7 +1088,33 @@ def sweep_bot(
     return out
 
 
-def _guard_variant(root: Path, request: RunRequest, variant: Variant, spec: RunSpec) -> None:
+@dataclass(frozen=True)
+class TrialBudget:
+    """The trial budget a sweep keeps: its criteria block's strategy, universe and
+    `trial_budget` (`criteria.Criteria`)."""
+
+    strategy: str
+    universe: str
+    limit: int
+
+
+def _own_trials(root: Path, family: str) -> int:
+    total, prior = trials.counts(trials.read_registry(root), family)
+    return total - prior
+
+
+def _budget_refusal(root: Path, family: str, spec: RunSpec, limit: int) -> str | None:
+    """`backtest_sweep_trial_budget` when `spec` would be a new trial past `limit`
+    (`trials.over_budget`, read afresh: the sweep's earlier runs have joined the registry)."""
+    digest = config_hash(resolved_of(spec))
+    if trials.over_budget(trials.read_registry(root), family, digest, limit):
+        return "backtest_sweep_trial_budget"
+    return None
+
+
+def _guard_variant(
+    root: Path, request: RunRequest, variant: Variant, spec: RunSpec, target: _Target
+) -> None:
     """A variant's guards before the sweep runs: against a base named by run id whose
     `config.json` records its knobs, more than one changed knob needs a declared bundle
     (`backtest_sweep_not_one_change`; a base of the file was checked by `parse_variants`); a
@@ -1063,7 +1124,13 @@ def _guard_variant(root: Path, request: RunRequest, variant: Variant, spec: RunS
         knobs = base.get("knobs")
         if (
             isinstance(knobs, dict)
-            and len(changed_knobs(_knobs(request, spec.conventions), knobs)) > 1
+            and len(
+                changed_knobs(
+                    _knobs(request, spec.conventions, target),
+                    resolve_knobs(knobs, target.config.to_json()),
+                )
+            )
+            > 1
         ):
             raise BacktestError("backtest_sweep_not_one_change")
     validates = variant.validates or request.labels.validates
@@ -1108,7 +1175,7 @@ def _sweep_run(
     except BacktestError as exc:
         return RunOutcome(variant.label, None, "refused", exc.code)
     asked = {"args": list(request.args), "variant_item": dict(variant.item)}
-    plan = _plan(request, spec, labels, asked)
+    plan = _plan(request, spec, labels, asked, target)
     return _execute(target, plan, market, root=root, label=variant.label)
 
 

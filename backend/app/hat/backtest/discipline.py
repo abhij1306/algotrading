@@ -7,7 +7,9 @@ convention (fills, slot order, sizing, start capital) and the run's slippage, co
 cooldown. `config.json` records them (`knobs`), so a later variant compares against its base's
 record whether the base ran in its sweep or long before. A variant whose knobs differ from its
 base's in more than one is a bundle: a sweep refuses it unless it declares `bundle: true` and a
-`reason` (`backtest_sweep_not_one_change`), and the run audit warns on it (`one_change`).
+`reason` (`backtest_sweep_not_one_change`), and the run audit warns on it (`one_change`). A
+`set` knob is named by the path it resolves to in the version's config (`resolve_knobs`), so
+`exits[time_stop].enabled` and `exits[3].enabled` are one knob.
 
 A hold-out run validates one completed in-sample run, its candidate, and runs the candidate's
 own config on a later window: the same strategy, policy and conventions (`candidate_hash`, the
@@ -17,6 +19,8 @@ candidate's ends, and no earlier hold-out of the same candidate config.
 
 from __future__ import annotations
 
+import copy
+import json
 from collections.abc import Mapping
 from datetime import date
 from decimal import Decimal
@@ -25,7 +29,7 @@ from typing import Any
 
 from ..confighash import canonical_json, config_hash
 from . import folder
-from .overrides import policy_digest
+from .overrides import OverrideError, policy_digest, set_path
 from .spec import BacktestError, RunConventions
 
 __all__ = [
@@ -34,6 +38,7 @@ __all__ = [
     "changed_knobs",
     "check_hold_out",
     "knobs_of",
+    "resolve_knobs",
 ]
 
 HOLD_OUT = "hold_out"
@@ -77,6 +82,28 @@ def knobs_of(
         "cooldown_sessions": cooldown_sessions,
     }
     return out | {name: _text(value) for name, value in named.items()}
+
+
+def resolve_knobs(knobs: Mapping[str, str], config: Mapping[str, Any]) -> dict[str, str]:
+    """`knobs` with each `set:` path named by the path it resolves to in the strategy config
+    `config` (`StrategyConfig.to_json`), the sets applied in their order (`overrides.set_path`),
+    so a selector by name and one by index name one knob. A path that names nothing in it is
+    kept as written (the run refuses it); a resolved path is its own resolution."""
+    doc = copy.deepcopy(dict(config))
+    out: dict[str, str] = {}
+    for name, value in knobs.items():
+        kind, sep, path = name.partition(":")
+        if kind == "set" and sep:
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                parsed = value
+            try:
+                name = f"set:{set_path(doc, path, parsed)}"
+            except OverrideError:
+                pass
+        out[name] = value
+    return out
 
 
 def changed_knobs(mine: Mapping[str, str], base: Mapping[str, str]) -> list[str]:
