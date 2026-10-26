@@ -39,6 +39,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import uuid
 from bisect import bisect_left, bisect_right
@@ -59,7 +60,7 @@ from ..models import HatMarket, HatTradingCalendar
 from ..time import IST
 from .bars_store import BarStore
 from .chains import stored_adjustment
-from .features import compute_features
+from .features import ABOVE_MARGIN, compute_features
 from .isin import ORDINARY_EQUITY
 from .sessions import SESSION_CLOSE, SESSION_OPEN
 from .store import DATASET_FEATURES, FEATURE_NAMES, DataStore, latest_rows
@@ -256,6 +257,15 @@ def check_missing_sessions(
     return _check("missing_sessions", summary, findings)
 
 
+def _member_on(spans: Sequence[tuple[date, date | None]], day: date) -> bool:
+    return any(lo <= day and (hi is None or hi > day) for lo, hi in spans)
+
+
+def _left_by(spans: Sequence[tuple[date, date | None]], day: date, end: date) -> bool:
+    """Whether every membership interval open after `day` ends by `end`."""
+    return all(hi is not None and hi <= end for _, hi in spans if hi is None or hi > day)
+
+
 def check_survivorship(
     sessions: Sequence[date],
     spans: Mapping[str, Sequence[tuple[date, date | None]]],
@@ -279,17 +289,8 @@ def check_survivorship(
             samples.append(day)
     rows, leavers = [], set()
     for day in samples:
-        members = [
-            i
-            for i, s in spans.items()
-            if any(lo <= day and (hi is None or hi > day) for lo, hi in s)
-        ]
-        left = [
-            i
-            for i in members
-            if i in last_traded
-            or all(hi is not None and hi <= end for lo, hi in spans[i] if hi is None or hi > day)
-        ]
+        members = [i for i, s in spans.items() if _member_on(s, day)]
+        left = [i for i in members if i in last_traded or _left_by(spans[i], day, end)]
         leavers.update(left)
         rows.append({"date": _iso(day), "members": len(members), "later_left": len(left)})
     empty, thin = [], []
@@ -360,6 +361,19 @@ def action_shaped(raw_move_pct: float) -> bool:
     return any(abs(ratio / r - 1) <= ACTION_RATIO_SLACK for r in ACTION_RATIOS)
 
 
+def _factor_changes(closes: Sequence[float], raw: Sequence[float]) -> tuple[bool, int]:
+    """Whether every adjustment factor (adjusted over raw close) of a priced day is a positive
+    number, and how many times the factor changes (its ex-dates)."""
+    factors = [c / r if r > 0 else math.nan for c, r in zip(closes, raw, strict=True)]
+    valid = all(math.isfinite(f) and f > 0 for f, c in zip(factors, closes, strict=True) if c > 0)
+    changes = sum(
+        1
+        for n in range(1, len(factors))
+        if factors[n - 1] > 0 and abs(factors[n] / factors[n - 1] - 1) > FACTOR_STEP
+    )
+    return valid, changes
+
+
 def check_corporate_actions(
     series: Mapping[str, tuple[Sequence[date], Sequence[float], Sequence[float]]],
     sessions: Sequence[date],
@@ -378,33 +392,22 @@ def check_corporate_actions(
     ex_dates = 0
     bad, at_ex, off_ex, shaped, excused = [], [], [], [], 0
     for instrument_id, (days, closes, raw) in sorted(series.items()):
-        factors = [c / r if r > 0 else math.nan for c, r in zip(closes, raw, strict=True)]
-        if any(
-            not (math.isfinite(f) and f > 0) for f, c in zip(factors, closes, strict=True) if c > 0
-        ):
-            bad.append(
-                {"instrument_id": instrument_id, "symbol": names.get(instrument_id, instrument_id)}
-            )
-        ex_dates += sum(
-            1
-            for n in range(1, len(factors))
-            if factors[n - 1] > 0 and abs(factors[n] / factors[n - 1] - 1) > FACTOR_STEP
-        )
+        symbol = {"instrument_id": instrument_id, "symbol": names.get(instrument_id, instrument_id)}
+        valid, changes = _factor_changes(closes, raw)
+        if not valid:
+            bad.append(symbol)
+        ex_dates += changes
         for jump in jumps(days, closes, raw, position):
             if (instrument_id, date.fromisoformat(jump["date"])) in known:
                 excused += 1
                 continue
-            row = {
-                "instrument_id": instrument_id,
-                "symbol": names.get(instrument_id, instrument_id),
-                **jump,
-            }
+            row = {**symbol, **jump}
             if jump["ex_date"]:
                 at_ex.append(row)
-            else:
-                off_ex.append(row)
-                if action_shaped(jump["raw_move_pct"]):
-                    shaped.append(row)
+                continue
+            off_ex.append(row)
+            if action_shaped(jump["raw_move_pct"]):
+                shaped.append(row)
     findings = []
     if bad:
         findings.append(_finding("bad_adjustment_factor", FAIL, bad))
@@ -460,10 +463,6 @@ def recount_breadth(
     """(breadth %, stocks with an SMA50) from one day's (ISIN, close, stored SMA50) rows, as the
     features job counts it: the ordinary equity rows above their SMA50 (by the job's margin)
     over those that have one."""
-    import re  # noqa: PLC0415 - one pattern, compiled here
-
-    from .features import ABOVE_MARGIN  # noqa: PLC0415
-
     equity = re.compile(ORDINARY_EQUITY)
     with_sma = above = 0
     for isin, close, sma in rows:
@@ -736,7 +735,7 @@ def _names(market: MarketData) -> dict[str, str]:
 
 
 def _feature_samples(
-    store: DataStore, con: duckdb.DuckDBPyConnection, market: MarketData, sessions: Sequence[date]
+    con: duckdb.DuckDBPyConnection, market: MarketData, sessions: Sequence[date]
 ) -> list:
     """(instrument, day, stored row, recomputed row) for `SAMPLE_INSTRUMENTS` instruments with
     a stored row on each of `SAMPLE_DAYS` sessions."""
@@ -861,7 +860,7 @@ def gather(
                 _DUPES_SQL, [sessions[0], end, sorted(bar_days)]
             ).fetchall()
         ]
-        feature_samples = _feature_samples(store, con, market, in_window)
+        feature_samples = _feature_samples(con, market, in_window)
         breadth_samples = _breadth_samples(store, con, market, in_window)
         bars_5m = _bars_5m(store.root, con, market, in_window)
     regime_index = snapshot.get("index")
@@ -941,7 +940,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     from app.database import db_session_scope  # noqa: PLC0415
 
-    from ..backtest.data import load_market  # noqa: PLC0415 - the market as a run reads it
+    # the market as a run reads it
+    from ..backtest.data import load_market  # noqa: PLC0415
     from ..backtest.evidence import universe_live_version  # noqa: PLC0415
     from ..backtest.spec import BacktestError  # noqa: PLC0415
     from ..engine.portfolio import regime  # noqa: PLC0415

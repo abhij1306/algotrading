@@ -547,6 +547,9 @@ function AuditTable({ doc }: Readonly<{ doc: AuditDoc }>) {
   );
 }
 
+const auditStatus = (doc: AuditDoc) => <AuditBadge label="status" status={doc.status} />;
+const auditTable = (doc: AuditDoc) => <AuditTable doc={doc} />;
+
 function AuditSection({
   runId,
   name,
@@ -559,9 +562,9 @@ function AuditSection({
       query={query}
       isEmpty={(doc) => auditRows(doc).length === 0}
       empty="Every check passes."
-      meta={(doc) => <AuditBadge label="status" status={doc.status} />}
+      meta={auditStatus}
     >
-      {(doc) => <AuditTable doc={doc} />}
+      {auditTable}
     </QuerySection>
   );
 }

@@ -216,6 +216,25 @@ def _close(a: float | None, b: float | None, tolerance: float) -> bool:
     return abs(a - b) <= tolerance
 
 
+def _leg_off(leg: Mapping[str, str]) -> bool:
+    """Whether a leg's net is not its gross less its fees (or one of them is missing)."""
+    gross, fee, net = _dec(leg.get("gross_pnl")), _dec(leg.get("fees")), _dec(leg.get("net_pnl"))
+    return gross is None or fee is None or net is None or abs(gross - fee - net) > MONEY_TOLERANCE
+
+
+def _r_off(trade_id: str, legs: Sequence[Mapping[str, str]]) -> dict[str, Any] | None:
+    """The trade's finding when its R is not its net over its initial risk (or it has no risk)."""
+    net, r = _sum(legs, "net_pnl"), _sum(legs, "r_net")
+    risk = (_dec(legs[0].get("risk_per_share")) or Decimal(0)) * _sum(legs, "qty")
+    if risk > 0 and abs(net / risk - r) <= R_TOLERANCE * len(legs):
+        return None
+    return {
+        "trade_id": trade_id,
+        "r_net": str(r),
+        "recomputed": str(net / risk) if risk > 0 else None,
+    }
+
+
 def check_pnl(
     run: Mapping[str, Any], trades: Mapping[str, Sequence[Mapping[str, str]]]
 ) -> dict[str, Any]:
@@ -229,31 +248,12 @@ def check_pnl(
     rs: list[Decimal] = []
     fees = Decimal(0)
     for trade_id, legs in sorted(trades.items()):
-        for leg in legs:
-            gross, fee, net = (
-                _dec(leg.get("gross_pnl")),
-                _dec(leg.get("fees")),
-                _dec(leg.get("net_pnl")),
-            )
-            if (
-                gross is None
-                or fee is None
-                or net is None
-                or abs(gross - fee - net) > MONEY_TOLERANCE
-            ):
-                legs_off.append({"trade_id": trade_id, "leg": leg.get("leg")})
-        net, r = _sum(legs, "net_pnl"), _sum(legs, "r_net")
-        risk = (_dec(legs[0].get("risk_per_share")) or Decimal(0)) * _sum(legs, "qty")
-        if risk <= 0 or abs(net / risk - r) > R_TOLERANCE * len(legs):
-            r_off.append(
-                {
-                    "trade_id": trade_id,
-                    "r_net": str(r),
-                    "recomputed": str(net / risk) if risk > 0 else None,
-                }
-            )
-        nets.append(net)
-        rs.append(r)
+        legs_off += [{"trade_id": trade_id, "leg": leg.get("leg")} for leg in legs if _leg_off(leg)]
+        off = _r_off(trade_id, legs)
+        if off is not None:
+            r_off.append(off)
+        nets.append(_sum(legs, "net_pnl"))
+        rs.append(_sum(legs, "r_net"))
         fees += _sum(legs, "fees")
     findings = []
     if legs_off:
@@ -308,9 +308,7 @@ def check_costs(
     return _check("costs", summary, findings)
 
 
-def check_liquidity(
-    run: Mapping[str, Any], trades: Mapping[str, Sequence[Mapping[str, str]]]
-) -> dict[str, Any]:
+def check_liquidity(trades: Mapping[str, Sequence[Mapping[str, str]]]) -> dict[str, Any]:
     """Each entry's value (price x the trade's shares) over its 20-day average traded value,
     recomputed and compared with `position_pct_adv`; entries above `ADV_LIMIT_PCT` warn."""
     wrong, large, missing = [], [], 0
@@ -469,7 +467,7 @@ def audit_run(
         check_sequence(trades),
         check_pnl(run, trades),
         check_costs(run, trades),
-        check_liquidity(run, trades),
+        check_liquidity(trades),
         check_concentration(run, trades),
         check_equity_jumps(run, _rows(csvs.get("equity"))),
         check_refusals(run, _rows(csvs.get("refusals"))),
