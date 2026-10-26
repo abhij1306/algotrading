@@ -4,9 +4,9 @@
 
 Opens the Fyers login page in a fresh Chromium or Chrome profile on `DISPLAY` (default `:1`, the
 desktop the dashboard shows), waits for the redirect that carries the auth code, and exchanges
-it through HAT's own login flow (`fyers_auth.exchange`: the account check and the token file are HAT's).
-The owner types the credentials into the browser; the script never prints the auth code or the
-token, only whether the login connected. The same login is in the app's header.
+it through HAT's own login flow (`fyers_auth.exchange`: the account check and the token file
+are HAT's). The owner types the credentials into the browser; the script never prints the auth
+code or the token, only whether the login connected. The same login is in the app's header.
 """
 
 from __future__ import annotations
