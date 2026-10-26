@@ -6,8 +6,9 @@ which by default comes from the backtest runs (`backtest.evidence.gate_evidence`
 Requesting writes `risk.change_requested`; a version taking effect writes `risk.change_effective`
 and marks the version it replaces `superseded_at`, in the same transaction. A decrease withdraws
 every version still pending (`risk.change_withdrawn`, `superseded_at` before its own
-`effective_from`), so a later decrease is never overridden by an earlier increase. Nothing commits
-here.
+`effective_from`), so a later decrease is never overridden by an earlier increase. Before
+anything has traded for real, the owner may instead replace the policy at once
+(`reset_policy_before_trading`). Nothing commits here.
 """
 
 from __future__ import annotations
@@ -17,18 +18,20 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import Select, exists, select
 from sqlalchemy.orm import Session
 
 from ..backtest.evidence import gate_evidence
 from ..errors import HatError
 from ..governance import COOLING_OFF
-from ..models import HatEvent, HatRiskPolicyVersion
+from ..models import HatEvent, HatOrder, HatPosition, HatRiskPolicyVersion, HatTradeResult
 from ..time import as_utc
 from .policy import (
     SEED_POLICY,
     RiskPolicy,
     classify_direction,
+    effective_version,
+    pre_trading,
     require_increase_gate,
     withdrawn,
     withdrawn_by_decrease,
@@ -84,6 +87,73 @@ def seed_initial_policy(
     session.flush()
     record_policy_event(session, row, EVENT_REQUESTED, "engine", None, now)
     record_policy_event(session, row, EVENT_EFFECTIVE, "engine", None, now)
+    return row
+
+
+class PolicyResetError(HatError):
+    """A pre-trading policy reset was refused; `code` is a fixed word and carries no data."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+def _any(session: Session, query: Select[Any]) -> int:
+    return 1 if session.scalar(select(exists(query))) else 0
+
+
+def reset_policy_before_trading(
+    session: Session,
+    *,
+    user_id: uuid.UUID,
+    policy: RiskPolicy,
+    calendar: SessionCalendar,
+    chat_id: int,
+    now: datetime,
+) -> HatRiskPolicyVersion:
+    """Replace the policy in force with `policy` at once, as the next version (`direction =
+    initial`, effective now, like the seed): the in-force version is superseded and every pending
+    one withdrawn (`risk.change_withdrawn`), and the owner's `risk.change_requested` and
+    `risk.change_effective` are written. Only while nothing has traded for real (`pre_trading`:
+    no real order, position or closed trade anywhere in the database); then a change has no
+    live record to protect, so no cooling-off or evidence gate applies. Refused, writing nothing
+    (`PolicyResetError`): inside market hours (`policy_reset_in_session`), once anything traded
+    for real (`policy_reset_after_trading`), and with no policy yet (`no_policy`)."""
+    if calendar.state(now) is not SessionState.CLOSED:
+        raise PolicyResetError("policy_reset_in_session")
+    real_trades = (
+        select(HatTradeResult.position_id)
+        .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
+        .where(HatPosition.is_virtual.is_(False))
+    )
+    if not pre_trading(
+        _any(session, select(HatOrder.id).where(HatOrder.is_virtual.is_(False))),
+        _any(session, select(HatPosition.id).where(HatPosition.is_virtual.is_(False))),
+        _any(session, real_trades),
+    ):
+        raise PolicyResetError("policy_reset_after_trading")
+    versions = load_versions(session, user_id)
+    if effective_version(versions, now) is None:
+        raise PolicyResetError("no_policy")
+    row = HatRiskPolicyVersion(
+        user_id=user_id,
+        version=next_version(session, user_id),
+        policy=policy.to_json(),
+        direction="initial",
+        requested_at=now,
+        effective_from=now,
+    )
+    session.add(row)
+    session.flush()
+    record_policy_event(session, row, EVENT_REQUESTED, "user", chat_id, now)
+    replaced = {v.version_id for v in versions if v.superseded_at is None}
+    for old in session.scalars(
+        select(HatRiskPolicyVersion).where(HatRiskPolicyVersion.id.in_(replaced))
+    ):
+        old.superseded_at = as_utc(now)
+        if as_utc(old.effective_from) > as_utc(now):  # pending: withdrawn, never in force
+            record_policy_event(session, old, EVENT_WITHDRAWN, "user", chat_id, now)
+    record_policy_event(session, row, EVENT_EFFECTIVE, "user", chat_id, now)
     return row
 
 

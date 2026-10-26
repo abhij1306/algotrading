@@ -19,6 +19,15 @@ at N: the ladder still starts low and steps up), the per-industry cap
 run's open-position cap at risk multiplier 1, so the run trades at one size from its first day.
 The policy's other limits stay as written.
 
+A whole candidate policy can replace the version's for a run (`policy`, read from a YAML or JSON
+file by `read_policy_file` and parsed with `parse_policy`, refused if invalid), and single fields
+can be set by a dotted path into the policy document (`policy_sets`, written `path=value` and
+parsed by `parse_policy_set`: `health_bands.half_dd=0.12`, `kill.bot_drawdown_pct=0.15`,
+`p_max.momentum-breakout-ep=0.30`; a path must name an existing field). They apply in that order,
+before the other policy overrides. A decimal is kept as its exact text (the policy refuses floats).
+The run records the candidate document with its digest. This is research only: the live policy
+changes only by a new version under its gates (docs/invariants.md, "Policy changes").
+
 A run's overrides are recorded in its conventions and hashed into its `config_digest`, and the
 run stays a trial of its family (HAT-BT-030), so a sweep of variants raises the family's DSR trial
 count and its PBO variants. A run flagged for promotion takes none (`RunConventions`).
@@ -26,17 +35,30 @@ count and its PBO variants. A run flagged for promotion takes none (`RunConventi
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
 from ..errors import HatError
-from ..risk.policy import LEVELS, PolicyError, PolicyVersion, parse_policy
+from ..risk import policy_file
+from ..risk.policy import LEVELS, PolicyError, PolicyVersion, RiskPolicy, parse_policy
 
-__all__ = ["APPEND", "OverrideError", "Overrides", "parse_set", "set_path"]
+__all__ = [
+    "APPEND",
+    "OverrideError",
+    "Overrides",
+    "parse_policy_set",
+    "parse_set",
+    "policy_digest",
+    "policy_text",
+    "read_policy_file",
+    "set_path",
+]
 
 APPEND = "+"
 IDENTITY_KEYS = frozenset({"bot", "market"})
@@ -132,16 +154,71 @@ def set_path(doc: dict[str, Any], path: str, value: object) -> None:
         node = items[index]
 
 
+def policy_text(text: str) -> RiskPolicy:
+    """A whole policy document (YAML or JSON, `policy_file.policy_text`) as a typed policy;
+    `backtest_policy_invalid` for text that does not parse or a document the policy refuses."""
+    try:
+        return policy_file.policy_text(text)
+    except PolicyError:
+        raise OverrideError("backtest_policy_invalid") from None
+
+
+def read_policy_file(path: str | Path) -> RiskPolicy:
+    """The policy in the file at `path` (`policy_text`); `backtest_policy_unreadable` when it
+    cannot be read."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        raise OverrideError("backtest_policy_unreadable") from None
+    return policy_text(text)
+
+
+def policy_digest(policy: RiskPolicy) -> str:
+    """The sha256 of the policy's canonical document (`to_json`, keys sorted)."""
+    text = json.dumps(policy.to_json(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def parse_policy_set(text: str) -> tuple[str, Any]:
+    """`path=value` for one policy field: a dotted path of keys (`kill.bot_drawdown_pct`) and
+    the value as JSON, a decimal kept as its exact text, anything else not JSON as a string."""
+    path, sep, raw = text.partition("=")
+    path, raw = path.strip(), raw.strip()
+    if not sep or not raw or not all(path.split(".")):
+        raise OverrideError("backtest_bad_override_path")
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        value = raw
+    if isinstance(value, float):
+        value = raw
+    return path, value
+
+
+def _set_policy_field(doc: dict[str, Any], path: str, value: object) -> None:
+    """Set the existing field at the dotted `path` of the policy document `doc`, in place."""
+    *parents, leaf = path.split(".")
+    node: Any = doc
+    for key in parents:
+        node = node.get(key) if isinstance(node, dict) else None
+    if not isinstance(node, dict) or leaf not in node:
+        raise OverrideError("backtest_bad_override_path")
+    node[leaf] = value
+
+
 @dataclass(frozen=True)
 class Overrides:
-    """A run's overrides: config `sets` applied in order, and the policy's risk per trade,
-    open-position and per-industry caps (None: the policy's) and the flat ladder."""
+    """A run's overrides: config `sets` applied in order, a whole candidate `policy` and the
+    `policy_sets` on it, and the policy's risk per trade, open-position and per-industry caps
+    (None: the policy's) and the flat ladder."""
 
     sets: tuple[tuple[str, Any], ...] = ()
     risk_pct: Decimal | None = None
     max_positions: int | None = None
     max_per_industry: int | None = None
     flat_ladder: bool = False
+    policy: RiskPolicy | None = None
+    policy_sets: tuple[tuple[str, Any], ...] = ()
 
     @property
     def empty(self) -> bool:
@@ -150,7 +227,9 @@ class Overrides:
     @property
     def touches_policy(self) -> bool:
         return (
-            self.risk_pct is not None
+            self.policy is not None
+            or bool(self.policy_sets)
+            or self.risk_pct is not None
             or self.max_positions is not None
             or self.max_per_industry is not None
             or self.flat_ladder
@@ -175,12 +254,15 @@ class Overrides:
             raise OverrideError("backtest_override_invalid") from None
 
     def apply_policy(self, version: PolicyVersion) -> PolicyVersion:
-        """`version` with its policy's `risk_pct`, caps and ladder replaced (the module
-        docstring), parsed afresh (`backtest_override_invalid` for a value the policy schema
-        refuses); the version id is unchanged, and the run records the overrides."""
+        """`version` with its policy replaced by the candidate, its fields set, and its
+        `risk_pct`, caps and ladder replaced (the module docstring), parsed afresh
+        (`backtest_override_invalid` for a value the policy schema refuses); the version id is
+        unchanged, and the run records the overrides."""
         if not self.touches_policy:
             return version
-        doc = version.policy.to_json()
+        doc = (version.policy if self.policy is None else self.policy).to_json()
+        for path, value in self.policy_sets:
+            _set_policy_field(doc, path, value)
         if self.risk_pct is not None:
             doc["risk_pct"] = str(self.risk_pct)
         if self.max_positions is not None:
@@ -209,6 +291,13 @@ class Overrides:
         out: dict[str, Any] = {}
         if self.sets:
             out["set"] = [{"path": path, "value": value} for path, value in self.sets]
+        if self.policy is not None:
+            out["policy"] = {
+                "digest": policy_digest(self.policy),
+                "document": self.policy.to_json(),
+            }
+        if self.policy_sets:
+            out["policy_set"] = [{"path": path, "value": value} for path, value in self.policy_sets]
         if self.risk_pct is not None:
             out["risk_pct"] = format(self.risk_pct.normalize(), "f")
         if self.max_positions is not None:

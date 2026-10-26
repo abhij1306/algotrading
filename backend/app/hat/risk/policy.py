@@ -290,6 +290,14 @@ def seed_policy() -> RiskPolicy:
     return parse_policy(SEED_POLICY)
 
 
+def pre_trading(real_orders: int, real_positions: int, real_trades: int) -> bool:
+    """Whether nothing has traded for real yet: no real (non-virtual) order, position or closed
+    trade. Only then may the owner replace the policy at once, without the cooling-off or the
+    evidence gate (`policy_service.reset_policy_before_trading`, docs/decisions.md "Pre-trading
+    reset"); after it every change takes the gated path."""
+    return real_orders == 0 and real_positions == 0 and real_trades == 0
+
+
 # --- Which version is in force (HAT-RISK-010) ------------------------------------------------
 
 

@@ -34,6 +34,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   industry, 3 entries and 3 stop-outs a day; an exposure ladder stepping on wins and losses;
   10% drawdown kills (account and bot) on equity marked to market intraday. Bots hold no risk
   numbers, so no strategy can loosen risk.
+- **Pre-trading policy reset (owner 2026-10-26).** Until anything trades for real (no real
+  order, position or closed trade in the database), the owner replaces the policy at once with
+  `admin set-policy --file` (outside market hours), with no cooling-off or evidence gate: there
+  is no live record to protect, and the seed's numbers are too low for a swing strategy. The
+  first real order ends it; every change after takes the gated path.
 - **The risk-increase gate (QA8).** Besides live expectancy against the discounted backtest
   expectancy, each sleeve's evidence run needs five years of sessions, no known gap naming an
   enabled playbook and ambiguous days within the cap, the Research -> Backtested conditions. A

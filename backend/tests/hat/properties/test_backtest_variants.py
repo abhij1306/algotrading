@@ -5,13 +5,23 @@ sweep's variants file (`runs.parse_variants`) and the report data's pure parts
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+import yaml
 
-from app.hat.backtest.overrides import OverrideError, Overrides, parse_set, set_path
+from app.hat.backtest.overrides import (
+    OverrideError,
+    Overrides,
+    parse_policy_set,
+    parse_set,
+    policy_digest,
+    policy_text,
+    set_path,
+)
 from app.hat.backtest.report_data import (
     _benchmark_on,
     drawdowns,
@@ -36,6 +46,7 @@ from app.hat.engine.strategy.config import (
     StopLowOfDay,
 )
 from app.hat.engine.strategy.versions import seed_config
+from app.hat.risk.policy import RiskPolicy
 from tests.hat.hat_backtest_support import policy_version
 
 D = Decimal
@@ -215,6 +226,67 @@ def test_flat_ladder_holds_the_cap_at_full_size() -> None:
         )
 
 
+def test_policy_text_takes_a_whole_policy_and_refuses_an_invalid_one() -> None:
+    policy = policy_version().policy
+    as_yaml = yaml.safe_dump(policy.to_json(), sort_keys=False)
+    assert policy_text(as_yaml) == policy
+    assert policy_text(json.dumps(policy.to_json())) == policy
+    # an unquoted decimal reads as the decimal written, never a float
+    unquoted = as_yaml.replace("risk_pct: '0.0025'", "risk_pct: 0.0075")
+    assert policy_text(unquoted).risk_pct == D("0.0075")
+    for bad in ("risk_pct: '0.01'", "{", as_yaml.replace("zero_dd: '0.10'", "zero_dd: '0.05'")):
+        with pytest.raises(OverrideError, match="backtest_policy_invalid"):
+            policy_text(bad)
+
+
+def test_parse_policy_set_values() -> None:
+    assert parse_policy_set("health_bands.half_dd=0.12") == ("health_bands.half_dd", "0.12")
+    assert parse_policy_set("max_open_positions = 8") == ("max_open_positions", 8)
+    assert parse_policy_set('kill.bot_drawdown_pct="0.15"') == ("kill.bot_drawdown_pct", "0.15")
+    assert parse_policy_set("p_max.momentum-breakout-ep=0.30") == (
+        "p_max.momentum-breakout-ep",
+        "0.30",
+    )
+    for bad in ("risk_pct", "risk_pct=", "kill..x=1", "=1"):
+        with pytest.raises(OverrideError, match="backtest_bad_override_path"):
+            parse_policy_set(bad)
+
+
+def test_candidate_policy_then_fields_then_caps() -> None:
+    version = policy_version()
+    doc = version.policy.to_json()
+    doc["global_open_risk_pct"] = "0.03"
+    doc["kill"]["account_drawdown_pct"] = "0.20"
+    candidate = policy_text(json.dumps(doc))
+    overrides = Overrides(
+        policy=candidate,
+        policy_sets=(("health_bands.half_dd", "0.12"), ("health_bands.zero_dd", "0.15")),
+        max_positions=10,
+    )
+    changed = overrides.apply_policy(version)
+    assert changed.version_id == version.version_id
+    got = changed.policy
+    assert (got.global_open_risk_pct, got.account_drawdown_pct) == (D("0.03"), D("0.20"))
+    assert (got.health_half_dd, got.health_zero_dd) == (D("0.12"), D("0.15"))
+    assert got.max_open_positions == 10
+    record = overrides.record()
+    assert record["policy"] == {"digest": policy_digest(candidate), "document": candidate.to_json()}
+    assert record["policy_set"][0] == {"path": "health_bands.half_dd", "value": "0.12"}
+    assert policy_digest(candidate) != policy_digest(version.policy)
+    for sets, code in (
+        ((("kill.nope", "0.1"),), "backtest_bad_override_path"),
+        ((("risk_pct.x", "0.1"),), "backtest_bad_override_path"),
+        ((("health_bands.zero_dd", "0.05"),), "backtest_override_invalid"),
+    ):
+        with pytest.raises(OverrideError, match=code):
+            Overrides(policy_sets=sets).apply_policy(version)
+    for refused in (Overrides(policy=candidate), Overrides(policy_sets=sets)):
+        with pytest.raises(BacktestError, match="backtest_promotion_with_overrides"):
+            RunConventions(regime_mult="policy", overrides=refused).check_promotion(
+                DEFAULT_SLIPPAGE_BPS
+            )
+
+
 def test_conventions_record_overrides_only_when_set() -> None:
     from tests.hat.hat_backtest_support import zero_fills
 
@@ -260,12 +332,29 @@ def test_parse_variants_layers_on_the_base() -> None:
         flat_ladder=True,
     )
     assert (wide.sleeve_weight, wide.slot_order) == (D("0.5"), "score")
+    candidate = policy_version().policy
+    files = {"cand.yaml": candidate}
+    (pol,) = parse_variants(
+        [{"label": "p", "policy": "cand.yaml", "policy_set": ["kill.bot_drawdown_pct=0.15"]}],
+        base,
+        files.__getitem__,
+    )
+    assert pol.conventions.overrides.policy == candidate
+    assert pol.conventions.overrides.policy_sets == (("kill.bot_drawdown_pct", "0.15"),)
+
+    def unreadable(path: str) -> RiskPolicy:
+        raise OverrideError("backtest_policy_unreadable")
+
+    with pytest.raises(BacktestError, match="backtest_policy_unreadable"):
+        parse_variants([{"label": "p", "policy": "x.yaml"}], base, unreadable)
     for bad in (
         [],
         [{"label": "a"}, {"label": "a"}],
         [{"label": "a", "other": 1}],
         [{"x": 1}],
         [{"label": "a", "flat_ladder": 1}],
+        [{"label": "a", "policy": 1}],
+        [{"label": "a", "policy_set": "risk_pct=0.01"}],
     ):
         with pytest.raises(BacktestError):
             parse_variants(bad, base)
