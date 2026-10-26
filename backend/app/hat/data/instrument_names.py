@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..models import HatInstrument
 
-__all__ = ["instrument_symbols"]
+__all__ = ["instruments_named", "instrument_symbols"]
 
 
 def instrument_symbols(session: Session, ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, str]:
@@ -22,5 +22,16 @@ def instrument_symbols(session: Session, ids: Iterable[uuid.UUID]) -> dict[uuid.
         return {}
     rows = session.execute(
         select(HatInstrument.id, HatInstrument.symbol).where(HatInstrument.id.in_(wanted))
+    ).tuples()
+    return dict(rows)
+
+
+def instruments_named(session: Session, symbols: Iterable[str]) -> dict[uuid.UUID, str]:
+    """The instruments whose NSE symbol is in `symbols`, with that symbol."""
+    wanted = set(symbols)
+    if not wanted:
+        return {}
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.symbol).where(HatInstrument.symbol.in_(wanted))
     ).tuples()
     return dict(rows)

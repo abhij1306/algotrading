@@ -16,6 +16,8 @@ from app.hat.configs.records import (
     CriterionType,
     StrategyVersion,
     doc_of,
+    kind_rules,
+    record_from_doc,
     record_rules,
 )
 from app.hat.configs.store import (
@@ -216,3 +218,48 @@ def test_only_a_run_whose_audit_passed_or_warned_is_evidence() -> None:
     assert not audit_admits({"status": "fail"})
     assert not audit_admits({})  # no status
     assert not audit_admits(None)  # a run from before the audits
+
+
+# --- rules across a kind's records ----------------------------------------------------------
+
+
+def test_version_numbers_are_unique_and_one_version_is_released_per_strategy() -> None:
+    first = _version()
+    kind_rules("strategy_version", [first, {**_version(), "version": 1}])  # another strategy
+    with pytest.raises(ConfigRecordError) as caught:
+        kind_rules("strategy_version", [first, {**first, "id": str(uuid.uuid4())}])
+    assert caught.value.code == "config_unique"
+    released = {**first, "status": "released"}
+    other = {**released, "id": str(uuid.uuid4()), "version": 2}
+    with pytest.raises(ConfigRecordError) as caught:
+        kind_rules("strategy_version", [released, other])
+    assert caught.value.code == "one_released_version"
+
+
+def test_a_commit_refuses_a_second_record_of_a_taken_version_number(tmp_path: object) -> None:
+    store = FileConfigStore(tmp_path)  # type: ignore[arg-type]
+    first = _version()
+    store.commit([Write("strategy_version", str(first["id"]), 0, first)])
+    twin = {**first, "id": str(uuid.uuid4())}  # a concurrent save of the same number
+    with pytest.raises(ConfigRecordError):
+        store.commit([Write("strategy_version", str(twin["id"]), 0, twin)])
+    assert store.pointer("strategy_version") == (1, {str(first["id"]): 1})
+
+
+def test_a_revision_file_no_pointer_names_never_blocks_the_next_commit(tmp_path: object) -> None:
+    store = FileConfigStore(tmp_path)  # type: ignore[arg-type]
+    record = doc_of(_bot())
+    key = str(record["id"])
+    store.commit([Write("bot", key, 0, record)])
+    stray = tmp_path / "bot" / key / "2.json"  # type: ignore[operator]
+    stray.write_text("{}")  # left by a commit that stopped before its pointer moved
+    paused = {**record, "status": "paused"}
+    store.commit([Write("bot", key, 1, paused)])
+    assert store.revision("bot", key, 2) == paused
+
+
+def test_a_record_never_shares_a_nested_value_with_its_revision() -> None:
+    doc = _version(config={"exits": {"a": 1}})
+    again = record_from_doc(StrategyVersion, doc)
+    again.config["exits"]["a"] = 2  # type: ignore[index]
+    assert doc["config"] == {"exits": {"a": 1}}

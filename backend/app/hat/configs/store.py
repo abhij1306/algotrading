@@ -1,7 +1,7 @@
 """Where the config records live: `HAT_DATA_ROOT/admin/config/<kind>/` (docs/architecture.md,
 Storage).
 
-    <kind>/<id>/<rev>.json      one revision of one record; written once, never changed
+    <kind>/<id>/<rev>.json      one revision of one record; never changed once in force
     <kind>/in_force.json        the pointer: {"seq", "written_at", "records": {id: rev}}
     <kind>/pointers/<seq>.json  every pointer the kind ever had (the history)
     <kind>/.lock                serialises the writers of the kind (flock)
@@ -33,7 +33,7 @@ from jsonschema import Draft202012Validator
 
 from ..errors import HatError
 from ..time import utc_now
-from .records import KINDS, ConfigRecordError, kind_schema, record_rules
+from .records import KINDS, ConfigRecordError, kind_rules, kind_schema, record_rules
 
 __all__ = [
     "ConfigConflictError",
@@ -52,8 +52,7 @@ POINTER = "in_force.json"
 
 
 class ConfigConflictError(HatError):
-    """A record changed under a writer (`code`: config_conflict) or a revision file already
-    holds other content (config_file_differs)."""
+    """A record changed under a writer (`code`: config_conflict)."""
 
     def __init__(self, code: str, detail: str = "") -> None:
         super().__init__(f"{code}: {detail}" if detail else code)
@@ -133,10 +132,16 @@ def next_pointer(
 
 
 def _check(writes: Sequence[Write], loaded: Mapping[str, Mapping[str, Revision]]) -> None:
-    """Every write keeps its kind's rules against the revision it replaces."""
+    """Every write keeps its kind's rules against the revision it replaces, every kind its rules
+    across its records once the writes are in force, and every revision file its schema."""
     for write in writes:
         before = loaded[write.kind].get(write.id)
         record_rules(KINDS[write.kind], None if before is None else before.record, write.record)
+        validate_revision(write.kind, revision_doc(write, write.base + 1))
+    for kind, revisions in loaded.items():
+        after = {key: revision.record for key, revision in revisions.items()}
+        after.update({w.id: w.record for w in writes if w.kind == kind})
+        kind_rules(kind, after.values())
 
 
 class MemoryConfigStore:
@@ -157,8 +162,6 @@ class MemoryConfigStore:
                 current = {i: r.rev for i, r in loaded[kind].items()}
                 next_pointer(current, 0, [w for w in writes if w.kind == kind])
             for write in writes:
-                doc = revision_doc(write, write.base + 1)
-                validate_revision(write.kind, doc)
                 self._kinds.setdefault(write.kind, {})[write.id] = Revision(
                     write.base + 1, write.record
                 )
@@ -239,9 +242,11 @@ class FileConfigStore:
                 handle.close()
 
     def commit(self, writes: Sequence[Write]) -> None:
-        """Write every revision, then move each kind's pointer: all or (on a refusal) nothing
-        in force. A crash between two kinds' pointers leaves the first kind's change in force
-        and the second's revision files unreferenced; nothing reads a file no pointer names."""
+        """Check every write, then write every revision, then move each kind's pointer: all or
+        (on a refusal) nothing in force. A crash before a kind's pointer moves leaves revision
+        files (and a history pointer) that no pointer names; nothing reads them, and the next
+        commit of that record, under the kind's lock, writes over them (`replace_atomically`):
+        a file past the pointer was never in force, so no revision in force is ever rewritten."""
         if not writes:
             return
         kinds = sorted({w.kind for w in writes})
@@ -254,13 +259,13 @@ class FileConfigStore:
                 for k in kinds
             }
             for write in writes:
-                doc = revision_doc(write, write.base + 1)
-                validate_revision(write.kind, doc)
                 path = self.root / write.kind / write.id / f"{write.base + 1}.json"
-                write_once(path, canonical(doc))
+                replace_atomically(path, canonical(revision_doc(write, write.base + 1)))
             for kind, (seq, records) in moved.items():
                 pointer = {"seq": seq, "written_at": utc_now().isoformat(), "records": records}
-                write_once(self.root / kind / "pointers" / f"{seq}.json", canonical(pointer))
+                replace_atomically(
+                    self.root / kind / "pointers" / f"{seq}.json", canonical(pointer)
+                )
                 replace_atomically(self.root / kind / POINTER, canonical(pointer))
 
 
@@ -273,26 +278,6 @@ def _write_synced(path: Path, data: bytes) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-
-
-def write_once(path: Path, data: bytes) -> bool:
-    """Publish `path` with `data` in one step, never over another file: True when written,
-    False when the identical bytes are already there; other bytes there raise
-    `ConfigConflictError("config_file_differs")`."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _temp_of(path)
-    try:
-        _write_synced(tmp, data)
-        try:
-            os.link(tmp, path)  # fails when the name exists: a published file is never replaced
-        except FileExistsError:
-            if path.read_bytes() == data:
-                return False
-            raise ConfigConflictError("config_file_differs", str(path)) from None
-        return True
-    finally:
-        with contextlib.suppress(OSError):
-            tmp.unlink()
 
 
 def replace_atomically(path: Path, data: bytes) -> None:

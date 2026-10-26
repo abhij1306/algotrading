@@ -6,12 +6,15 @@ Each record kind declares its fields once (`FIELDS`, name -> type tag); the JSON
 file is validated against on load and before a write is built from that declaration, with the
 kind's value domains (`ENUMS`). `MUTABLE` names the fields a later revision of a record may
 change: every other field is fixed by the record's first revision (`immutable_change`).
-`record_rules` holds the per-record rules the database CHECKs used to keep. Pure.
+`record_rules` holds the per-record rules the database CHECKs used to keep, `kind_rules` the rules
+across a kind's records its unique indexes kept. Pure.
 """
 
 from __future__ import annotations
 
+import copy
 import uuid
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any, ClassVar
@@ -34,6 +37,7 @@ __all__ = [
     "StrategyVersion",
     "doc_of",
     "immutable_change",
+    "kind_rules",
     "kind_schema",
     "record_from_doc",
     "record_rules",
@@ -372,10 +376,8 @@ def _to_json(tag: str, value: Any) -> Any:  # noqa: ANN401 - a field value of an
         return str(uuid.UUID(str(value)))
     if base == "datetime":
         return as_utc(value).isoformat()
-    if base == "object":
-        return dict(value)
-    if base == "list":
-        return list(value)
+    if base in ("object", "list"):
+        return copy.deepcopy(value)  # never share a nested value with a cached revision
     if base == "str":
         return str(value)
     return value
@@ -389,10 +391,8 @@ def _from_json(tag: str, value: Any) -> Any:  # noqa: ANN401 - a field value of 
         return uuid.UUID(value)
     if base == "datetime":
         return as_utc(datetime.fromisoformat(value))
-    if base == "object":
-        return dict(value)
-    if base == "list":
-        return list(value)
+    if base in ("object", "list"):
+        return copy.deepcopy(value)  # never share a nested value with a cached revision
     return value
 
 
@@ -439,3 +439,31 @@ def record_rules(cls: type[Record], before: dict[str, Any] | None, after: dict[s
         )
     elif cls is Bot and after["broker_account_id"] is None:
         raise ConfigRecordError("bot_account")
+
+
+def kind_rules(kind: str, records: Iterable[Mapping[str, Any]]) -> None:
+    """The rules across all of a kind's records in force (after a commit) that the database's
+    unique indexes kept: version numbers unique per strategy and per user's risk policy, and one
+    released version per strategy (HAT-PORT-020). The store checks them under the kind's lock,
+    so two writers that each pass on their own snapshot cannot both commit."""
+    records = list(records)
+    if kind == StrategyVersion.KIND:
+        _unique(kind, records, ("strategy_id", "version"))
+        released = [r for r in records if r["status"] == VersionStatus.RELEASED]
+        _unique(kind, released, ("strategy_id",), code="one_released_version")
+    elif kind == RiskPolicyVersion.KIND:
+        _unique(kind, records, ("user_id", "version"))
+
+
+def _unique(
+    kind: str,
+    records: Iterable[Mapping[str, Any]],
+    key: tuple[str, ...],
+    code: str = "config_unique",
+) -> None:
+    seen: set[tuple[Any, ...]] = set()
+    for record in records:
+        value = tuple(record[name] for name in key)
+        if value in seen:
+            raise ConfigRecordError(code, f"{kind} {'/'.join(map(str, value))}")
+        seen.add(value)

@@ -107,8 +107,8 @@ def save_draft(
     parsed = parse_config(config.to_json() if isinstance(config, StrategyConfig) else config)
     if calendar.state(now) is not SessionState.CLOSED:
         raise VersionError("market_hours")
-    # Two concurrent saves read the same latest version; the second's commit is refused
-    # (`ConfigConflictError`: the version file exists), so versions stay gapless and unique.
+    # Two concurrent saves read the same latest version; the store refuses the second's commit
+    # (`config_unique`: `records.kind_rules`, under the kind's lock), so versions stay unique.
     strategy = configs_of(session).get(Strategy, strategy_id)
     if strategy is None:
         raise VersionError("unknown_strategy")
@@ -118,15 +118,16 @@ def save_draft(
 
 
 def _not_evidence(root: Path | None, run_id: str) -> str:
-    """Why the run `run_id` is no evidence: unknown, not completed, or its audit not passed."""
+    """Why the run `run_id` is no evidence: unknown, not completed, its audit not passed, or its
+    `evidence.json` missing or unreadable."""
     run = None if root is None else read_run(root, run_id)
     if root is None or run is None:
         return "unknown_run"
-    if (run.get("identity") or {}).get("status") == COMPLETED and not audit_admits(
-        read_doc(root, run_id, "audit")
-    ):
+    if (run.get("identity") or {}).get("status") != COMPLETED:
+        return "run_not_completed"
+    if not audit_admits(read_doc(root, run_id, "audit")):
         return "run_audit_not_passed"
-    return "run_not_completed"
+    return "run_without_evidence"
 
 
 def publish_version(session: Session, version_id: uuid.UUID, *, run_id: str) -> StrategyVersion:
@@ -134,8 +135,8 @@ def publish_version(session: Session, version_id: uuid.UUID, *, run_id: str) -> 
     flagged for promotion (PR 62), which evidences it (HAT-BT-061): the version's
     `backtest_run_id` is the run id. Its config can no longer change. Any other starting status,
     an unknown run, one not completed (no evidence in its folder), one whose run audit failed or
-    is missing (`run_audit_not_passed`), a run of another version or one not flagged for
-    promotion is refused."""
+    is missing (`run_audit_not_passed`), one without readable evidence (`run_without_evidence`),
+    a run of another version or one not flagged for promotion is refused."""
     row = configs_of(session).get(StrategyVersion, version_id)
     if row is None:
         raise VersionError("unknown_version")

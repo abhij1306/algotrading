@@ -16,7 +16,7 @@ unit, so the next transaction reads the records afresh.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -24,8 +24,7 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session, SessionTransaction
 
 from ..errors import HatError
-from ..governance import VersionStatus
-from .records import ConfigRecordError, Record, StrategyVersion, doc_of, record_from_doc
+from .records import ConfigRecordError, Record, doc_of, record_from_doc
 from .store import ConfigStore, Write
 
 __all__ = [
@@ -94,7 +93,6 @@ class ConfigUnit:
                     writes.append(Write(kind, key, 0, doc))
                 elif base[1] != doc:
                     writes.append(Write(kind, key, base[0], doc))
-        _one_released(self._records.get(StrategyVersion.KIND, {}).values())
         return writes
 
     def flush(self) -> None:
@@ -104,17 +102,6 @@ class ConfigUnit:
         self.store.commit(writes)
         for write in writes:
             self._base[(write.kind, write.id)] = (write.base + 1, write.record)
-
-
-def _one_released(versions: Iterable[Record]) -> None:
-    """One released version per strategy (HAT-PORT-020)."""
-    released: set[uuid.UUID] = set()
-    for version in versions:
-        assert isinstance(version, StrategyVersion)
-        if version.status == VersionStatus.RELEASED:
-            if version.strategy_id in released:
-                raise ConfigRecordError("one_released_version", str(version.strategy_id))
-            released.add(version.strategy_id)
 
 
 def configs_of(session: Session) -> ConfigUnit:
@@ -136,6 +123,9 @@ def data_root_of(session: Session) -> Path | None:
 
 @event.listens_for(Session, "before_commit")
 def _write_configs(session: Session) -> None:
+    # a SAVEPOINT's release fires this too: the files wait for the outermost commit
+    if session.in_nested_transaction():
+        return
     unit = session.info.get(_UNIT)
     if unit is not None and unit.pending():
         session.flush()  # the database refuses its rows first (a constraint, a trigger)

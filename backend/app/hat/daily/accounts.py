@@ -36,7 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
-from ..configs.records import ACCOUNT_ACTIVE, Bot, BrokerAccount
+from ..configs.records import ACCOUNT_ACTIVE, BrokerAccount
 from ..configs.unit import configs_of
 from ..data.instrument_names import instrument_symbols
 from ..engine.entries import TokenIssuer
@@ -55,6 +55,7 @@ from ..execution.fills import GTT_CHECK_EVERY, FillSync, SaleBand, watch_closely
 from ..execution.gtt_upkeep import GttUpkeep
 from ..execution.guard import ExecutionGuard
 from ..execution.manage import ManagerConfig, TradeManager, ViewSource
+from ..execution.modes import account_bot_ids
 from ..execution.mpp import MarketProtection
 from ..execution.order_book import TERMINAL_STATUSES
 from ..execution.position_desk import PositionDesk
@@ -202,7 +203,7 @@ class AccountDesk:
         bot, not the account switch: one account's live session never clears another's trip."""
         failing = broker_health_failing(now, live)
         try:
-            for bot_id in _bot_ids(session, self.account_id):
+            for bot_id in account_bot_ids(session, self.account_id):
                 sync_health(
                     session,
                     scope="bot",
@@ -289,17 +290,12 @@ def _shares(positions: list[BrokerPosition]) -> list[tuple[str, int, str]]:
     return sorted((p.symbol, p.qty, p.product) for p in positions)
 
 
-def _bot_ids(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
-    """The ids of the bots trading through the account (config records), in id order."""
-    return [b.id for b in configs_of(session).all(Bot, lambda b: b.broker_account_id == account_id)]
-
-
 def _open_costs(session: Session, account_id: uuid.UUID) -> list[OpenCost]:
     """The account's open real positions (its bots'), each with its symbol, shares and fill
     cash (`drawdown.fill_cash`)."""
     rows = session.execute(
         select(HatPosition.signal_id, HatPosition.qty_open, HatPosition.instrument_id).where(
-            HatPosition.bot_id.in_(_bot_ids(session, account_id)),
+            HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
             HatPosition.is_virtual.is_(False),
             HatPosition.closed_at.is_(None),
         )
@@ -320,7 +316,7 @@ def _holds_real_positions(session: Session, account_id: uuid.UUID) -> bool:
     held = (
         select(HatPosition.id)
         .where(
-            HatPosition.bot_id.in_(_bot_ids(session, account_id)),
+            HatPosition.bot_id.in_(account_bot_ids(session, account_id)),
             HatPosition.is_virtual.is_(False),
             HatPosition.closed_at.is_(None),
             HatPosition.qty_open > 0,
@@ -693,7 +689,7 @@ def _left_unplaced(session: Session, account_id: uuid.UUID) -> list[uuid.UUID]:
             select(HatSignal.id)
             .outerjoin(HatApproval, HatApproval.signal_id == HatSignal.id)
             .where(
-                HatSignal.bot_id.in_(_bot_ids(session, account_id)),
+                HatSignal.bot_id.in_(account_bot_ids(session, account_id)),
                 unplaced_entry(),
             )
             .order_by(HatSignal.id)

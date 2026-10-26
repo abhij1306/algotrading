@@ -329,7 +329,8 @@ def _buckets(raw: object) -> dict[tuple[str, str], BucketStats]:
     return found
 
 
-# A published run folder never changes (`folder.publish`), so what was read of it is kept.
+# A published run folder never changes (`folder.publish` renames it in whole), so what was read
+# of it is kept.
 _READ: dict[tuple[str, str], EvidenceRun | None] = {}
 _READ_LOCK = threading.Lock()
 
@@ -349,16 +350,17 @@ def read_evidence(root: Path, run_id: str) -> EvidenceRun | None:
     with _READ_LOCK:
         if key in _READ:
             return _READ[key]
-    found = _read_evidence(root, run_id)
-    if found is not None:  # a missing folder may yet be published: never cached
-        with _READ_LOCK:
-            _READ[key] = found
+    run = run_files.read_run(root, run_id)
+    if run is None:  # no folder yet (it may still be published) or none readable: not cached
+        return None
+    found = _read_evidence(root, run_id, run)
+    with _READ_LOCK:  # a published folder is whole and final: its answer, None too, is kept
+        _READ[key] = found
     return found
 
 
-def _read_evidence(root: Path, run_id: str) -> EvidenceRun | None:
-    run = run_files.read_run(root, run_id)
-    if run is None or (run.get("identity") or {}).get("status") != COMPLETED:
+def _read_evidence(root: Path, run_id: str, run: Mapping[str, Any]) -> EvidenceRun | None:
+    if (run.get("identity") or {}).get("status") != COMPLETED:
         return None
     if not audit_admits(run_files.read_doc(root, run_id, "audit")):
         return None

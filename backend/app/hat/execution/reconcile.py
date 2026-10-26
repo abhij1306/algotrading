@@ -36,7 +36,7 @@ from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..clock import SYSTEM_CLOCK, Clock
-from ..data.instrument_names import instrument_symbols
+from ..data.instrument_names import instrument_symbols, instruments_named
 from ..models import (
     HatFill,
     HatHoldingBaseline,
@@ -196,10 +196,14 @@ def _unbooked(
 
 
 def _signal_symbols(session: Session, instruments: Select[Any], within: set[str]) -> set[str]:
-    """The symbols, among `within`, of the instruments `instruments` selects (a hat_state
-    query): the instruments live in hat_live, so the symbols are read apart."""
-    ids = set(session.scalars(instruments.distinct()))
-    return {s for s in instrument_symbols(session, ids).values() if s in within}
+    """The symbols, among `within`, of the signal instruments `instruments` selects (a hat_state
+    query on `HatSignal.instrument_id`): the instruments live in hat_live, so `within` is read
+    as instrument ids first and the hat_state query keeps only those."""
+    named = instruments_named(session, within)
+    if not named:
+        return set()
+    ids = session.scalars(instruments.where(HatSignal.instrument_id.in_(named)).distinct())
+    return {named[i] for i in ids}
 
 
 def _record_baselines(
