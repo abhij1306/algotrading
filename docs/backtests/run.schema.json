@@ -116,6 +116,21 @@
             "null"
           ]
         },
+        "changed_knobs": {
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "bundle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "created_at": {
           "type": [
             "string",
@@ -229,6 +244,18 @@
         "resolved_hash": {
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "risk_policy_version": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "base_risk_policy_version": {
+          "type": [
+            "integer",
             "null"
           ]
         },

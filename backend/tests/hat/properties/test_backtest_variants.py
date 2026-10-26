@@ -307,6 +307,8 @@ def test_parse_variants_layers_on_the_base() -> None:
                 "label": "wide",
                 "base": "base",
                 "change": "wider target, half weight",
+                "bundle": True,
+                "reason": "the sizing knobs move together",
                 "set": ["exits[1].at_r=3"],
                 "risk_pct": 0.005,
                 "max_positions": 8,
@@ -322,6 +324,7 @@ def test_parse_variants_layers_on_the_base() -> None:
     variants = sweep.variants
     assert variants[0].conventions == base
     assert (variants[1].base, variants[1].change) == ("base", "wider target, half weight")
+    assert variants[1].bundle == "the sizing knobs move together"
     wide = variants[1].conventions
     assert wide.overrides == Overrides(
         sets=(("exits[0].enabled", True), ("exits[1].at_r", 3)),

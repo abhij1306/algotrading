@@ -5,6 +5,23 @@ added; every run below is config and command lines. Run the commands from `backe
 active and `HAT_DATA_ROOT` set; each reads the database in a read-only transaction. What each
 result field means: `result-standard.md`.
 
+## Before you start
+
+- **Data root.** Export `HAT_DATA_ROOT` to the research store (the ISIN-keyed Parquet store, a
+  `hat-data-isin` folder beside the main checkout), not the default `data_system/hat/`: the runs,
+  `trials.json` and the data audits live under it, and `compare`, `review` and `--rerun` read
+  only it. Check what a shell resolves with `python -c "from app.hat.settings import
+  operator_settings; print(operator_settings().data_root)"`.
+- **Strategy version `<v>`.** `python -m app.hat.admin show` lists each strategy's versions with
+  their ids (`runbook.md`, Admin command line); pass the full id.
+- **Research files, outside the repo** (the repo is public), beside the main checkout:
+  `backtests/sweeps/<sweep_id>.yaml` the variants files, `backtests/<sweep_id>.log` each sweep's
+  printed lines (`... --variants FILE | tee ../../backtests/<sweep_id>.log`), `backtests/policies/`
+  candidate policy files, and `strategy-notes/<strategy>.md` each strategy's notes (rule 1),
+  which `review --criteria` takes whole.
+- **Paths.** A `--variants` path and a variant's `policy:` path resolve from the working
+  directory, `backend/`: from a worktree's `backend/`, use absolute paths.
+
 ## Rules
 
 1. **Criteria first.** Before the first run of a strategy, its promotion criteria (the thresholds
@@ -14,9 +31,21 @@ result field means: `result-standard.md`.
    been seen.
 2. **Windows.** Choose on the in-sample window; read the hold-out window once, for the one
    candidate, at the end. Trades from 2016-01-01 only (point-in-time membership starts there).
+   A hold-out runs the candidate's own `config.json` (step 7) and is refused for a candidate
+   that is not a completed in-sample run (`backtest_hold_out_bad_candidate`), a window that
+   does not start after the candidate's (`backtest_hold_out_overlaps`), a config that is not
+   the candidate's (`backtest_hold_out_config_differs`) and a second hold-out of the same
+   config, its rerun included (`backtest_hold_out_repeated`; a failed one does not count).
 3. **One change per variant.** Every variant names its `base` (an earlier label or a run id)
-   and a one-line `change`, and differs from the base in that one change. `binding.no_op: true`
-   means the change never fired: it tells you nothing.
+   and a one-line `change`, and differs from the base in one knob (a `set` or `policy_set`
+   path, a candidate `policy`, or any other knob below; a run's slippage, cost model and
+   cooldown count too). A sweep refuses a variant that changes more
+   (`backtest_sweep_not_one_change`) unless it declares `bundle: true` and a one-line `reason`;
+   a bundle is one candidate, not evidence for any one of its changes, and its run audit warns
+   (`one_change`). A base named by run id is checked against the knobs its `config.json`
+   records. Every variant of a sweep should run under its base's risk policy version: the run
+   audit warns on a drift (`policy_drift`) and `compare` shows it. `binding.no_op: true` means
+   the change never fired: it tells you nothing.
 4. **Trials count.** Every completed in-sample run with new parameters is a trial
    (`dsr_n_trials`, `HAT_DATA_ROOT/backtests/trials.json`); stop at the budget. Reruns and
    duplicates add none.
@@ -31,14 +60,15 @@ result field means: `result-standard.md`.
 | 1 | Data check | `python -m app.hat.data.audit --from 2016-01-01 --to 2021-12-31 --universe nifty500` | `backtests/data_audits/<key>.json` |
 | 2 | Baseline run | `python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-01-01 --to 2021-12-31 --sweep-id <s> --variant base` | `backtests/runs/<run_id>/` |
 | 3 | Sweep | `python -m app.hat.backtest --strategy-version <v> --universe nifty500 --from 2016-01-01 --to 2021-12-31 --variants sweep.yaml` | one folder per variant |
-| 4 | Compare | `python -m app.hat.backtest.compare --sweep <s>` (or run ids) | stdout table |
+| 4 | Compare | `python -m app.hat.backtest.compare --sweep <s>` (or run ids): `knobs` is the knobs changed against the base (`5b` a declared bundle), `policy` the risk policy version (`3!2`: 3 against a base under 2) | stdout table |
 | 5 | Plateau | a sweep of the chosen variant's key parameters, each one step either side, `base` the chosen run | one folder per variant |
 | 6 | Review request | `python -m app.hat.backtest.review <run_id> --criteria <strategy notes>` | `<run folder>/review_request.md` |
-| 7 | Hold-out, once | `python -m app.hat.backtest ... --from 2022-01-01 --to <last session> --split hold_out --validates <run_id>` (same overrides) | `backtests/runs/<run_id>/` |
+| 7 | Hold-out, once | `python -m app.hat.backtest --rerun <run_id> --split hold_out --from 2022-01-01 --to <last session>`: the candidate's `config.json` on the hold-out window (rule 2) | `backtests/runs/<run_id>/` |
 | 8 | Paper | promote and run the sleeve in shadow (`runbook.md`, Strategy promotion) | |
 
 Rerun any run exactly from its folder: `python -m app.hat.backtest --rerun <run_id>` (a new run
-based on the old one; refused `backtest_rerun_snapshot_differs` when the data changed).
+based on the old one; refused `backtest_rerun_snapshot_differs` when the data changed). With
+`--split hold_out --from --to` the same replay is the run's hold-out (step 7).
 
 Step 1 also runs inside every run (cached by data snapshot and window, so a sweep audits once);
 `--refresh` recomputes it. Step 1 includes the golden sample check (`golden-sample.md`; run it
@@ -79,7 +109,7 @@ whose audit warns or fails):
 
 | Check | Fails | Warns |
 | --- | --- | --- |
-| `binding` | | `no_op`, or a base without a binding |
+| `binding` | | `no_op`, or a base without a binding; `one_change`: more than one knob changed against the base (a declared bundle's `reason` beside it; a base that predates knobs is counted in changed resolved paths); `policy_drift`: a risk policy version other than the base's |
 | `fills` | a fill outside its day's low-high (widened by slippage); an entry without a bar | |
 | `sequence` | signal > entry, or an exit before the entry | |
 | `pnl` | net != gross - fees; R != net / initial risk; trades, P&L vs final equity, fees, expectancy or win % disagree with `run.json` | |
@@ -102,10 +132,18 @@ variants:
     base: base                       # an earlier label of this file, or a run id
     change: swing-low trail 20 days  # one line
     set: ['exits[trailing_swing_low].lookback_days=20']
+  - label: exits-b
+    base: base
+    change: SMA50 close exit and no time stop
+    bundle: true                     # more than one knob: rule 3
+    reason: the pair the owner trades as one exit set
+    set: ['exits[close_below_sma].sma=50', 'exits[time_stop].enabled=false']
 ```
 
-A variant's keys: `label`, `base`, `change`, `validates` (hold-out), and any knob below. The
-command line's options apply to every variant; a variant's keys replace them for that variant.
+A variant's keys: `label`, `base`, `change`, `bundle` and `reason` (rule 3), `validates`
+(hold-out), and any knob below. The command line's options apply to every variant; a variant's
+keys replace them for that variant. A variant's knobs are its own and the command line's: a
+variant does not inherit its base variant's `set`s, so a chain repeats them.
 
 ## Knobs
 
