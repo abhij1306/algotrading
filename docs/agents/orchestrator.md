@@ -27,14 +27,14 @@ Follow-ups left to this PR: <list or none>.
 ```
 
 ```bash
-git fetch origin && git worktree add ../wt/hat/<slug> -b hat/<slug> origin/main
-herdr tab create --cwd ../wt/hat/<slug> --label "<slug>" --no-focus   # .result.root_pane.pane_id
-herdr agent start <slug> --kind claude --pane <pane id> -- --permission-mode auto
-herdr agent prompt <slug> "$(cat ../briefs/<slug>.txt)"
+python scripts/agents/builder.py start <slug> --brief ../briefs/<slug>.txt   # prints the pane id
 ```
 
-A folder-trust prompt on first start (`agent_not_ready`): `herdr agent send-keys <slug> down`, then
-`enter`. Dismiss routine popups ("Not now"); grey text in a prompt box is a suggestion, not input.
+It fetches, adds the worktree `wt/hat/<slug>` beside the main checkout on `hat/<slug>` (from
+`origin/main`, or the branch if it exists: a fresh builder for an open PR), opens a herdr tab,
+starts the agent (answering the first-start folder-trust prompt), sends the brief and waits until
+the agent works. `--dry-run` prints the commands. Dismiss routine popups ("Not now"); grey text in
+a prompt box is a suggestion, not input.
 
 ## Watch
 
@@ -57,32 +57,36 @@ Answer BLOCKED yourself when it's reversible; ask the owner only for real produc
 
 Check at the reported sha, then merge:
 
-- `gh pr view <n> --json headRefOid,mergeStateStatus`: head is the reported sha, state `CLEAN`;
-- `gh pr checks <n>`: every check passes, including SonarCloud on that commit;
-- Sonar gate `OK`:
-  `curl -s "https://sonarcloud.io/api/qualitygates/project_status?projectKey=abhij1306_algotrading&pullRequest=<n>"`;
-- no unresolved review thread without a reply.
-
 ```bash
+python scripts/agents/merge_check.py <n> --sha <sha>   # last line: MERGE OK or NO MERGE: reasons
 gh pr merge <n> --squash --delete-branch --match-head-commit <sha>
-git worktree prune && git pull --ff-only
+git pull --ff-only
 ```
 
-If a check fails, send it back in one message: `herdr agent prompt <slug> "<what failed>"`. Before
-closing a merged builder's tab, have it write its follow-ups to a file outside the worktree
-(`HANDOFF.md` goes with the worktree), then `herdr pane close <pane>` and remove the worktree.
+The check never merges. It wants the head at the reported sha and `CLEAN`, every check passed
+(the TLA workflow too), the Sonar gate `OK`, no unresolved review thread whose last comment is
+not the owner's, and no added line that looks like a secret; it reports the review bot's status
+without waiting for it.
+
+If a check fails, send it back in one message: `herdr agent prompt <slug> "<what failed>"`. After
+a merge, have the builder write its follow-ups to a file outside the worktree (`HANDOFF.md` goes
+with the worktree), then `python scripts/agents/builder.py cleanup <slug>`: it refuses while the
+branch's PR is open, closes the tab (ending the agent), removes the worktree and deletes the
+branch, local and remote.
 
 **Order and rebases.** Merge in ready order, but don't merge a PR that forces one already in its
 final CI round to rebase (compare `gh pr diff --name-only`). Only the PR next in line rebases, and
 its own builder does it when you say so.
 
-**Fresh sessions.** A builder that has compacted twice before a fix round is restarted (`herdr agent stop`, `herdr agent start` in the same
-pane) with its brief, every later instruction, and "resume from HANDOFF.md".
+**Fresh sessions.** A builder that has compacted twice before a fix round is restarted with its
+brief, every later instruction, and "resume from HANDOFF.md": close its tab, then
+`builder.py start <slug>` again (it reuses the worktree).
 
 ## Improving the workflow
 
 A failure that recurs across PRs gets a structural fix (a lint rule, a check, a script flag) in
-the PR that fixes it; prose rules are the last resort. A PR that takes over 60 minutes from builder
+the PR that fixes it; prose rules are the last resort. A procedure done by hand twice becomes a
+script under `scripts/agents/`. A PR that takes over 60 minutes from builder
 start to merge gets a root-cause look before the next builder starts. Don't add rules for things
 that happened once.
 

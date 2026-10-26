@@ -19,6 +19,7 @@ data_system/hat/
 
 # HAT code and recorded fixtures live under paths the data rules above would hide
 !backend/app/hat/data/
+!scripts/data/
 !backend/tests/hat/fixtures/*.csv
 
 # Compressed archives

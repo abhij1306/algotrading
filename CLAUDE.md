@@ -44,8 +44,9 @@ pnpm dev                          # http://127.0.0.1:3000, proxies /api to the b
 Server exits at start: run it in a terminal for the traceback and check port 8000 is free.
 "Database unreachable": start PostgreSQL and check `DB_*`. Fyers disconnected: the token lasts
 until midnight IST; log in again from the app header. Other helpers in `scripts/`:
-`lock_ci_requirements.py`, `export_openapi.py` (for `pnpm gen:api`), and the operator's
-`hat_backup.py` and `hat_deploy_guard.py` (runbook).
+`lock_ci_requirements.py`, `export_openapi.py` (for `pnpm gen:api`), the operator's
+`hat_backup.py`, `hat_deploy_guard.py`, `set_secrets.py` and `fyers_login.py`, the data download
+tools in `scripts/data/` (runbook) and the orchestrator's `scripts/agents/` (`docs/agents/`).
 
 ---
 
@@ -145,3 +146,6 @@ changed, and delete any plan or spec the change finishes; submit.
 The HAT build is run by an orchestrator agent and up to two builder agents in herdr tabs. On a new
 machine: run `claude --permission-mode auto` inside herdr, then `/hat-orchestrator`. Orchestrator
 guide: `docs/agents/orchestrator.md`. Builder rules: `docs/agents/builder-protocol.md`.
+
+Anything done more than once (a check, a launch, a report, a data step) becomes a script under
+`scripts/` or a module command in the repo, not hand-typed commands repeated each time.

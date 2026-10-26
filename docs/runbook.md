@@ -119,7 +119,9 @@ has its stop).
 08:30 IST Telegram sends the Fyers link (`login.prompt`). Log in, then paste the `auth_code` from
 the redirect URL into the app header's dialog (or `POST /api/hat/auth/fyers/token`, header
 `X-HAT-Request: 1`, body `{"auth_code": "<code>"}`). Another Fyers user's token is refused. No
-entries until the session is live; `/login` gives a fresh link.
+entries until the session is live; `/login` gives a fresh link. On a host whose desktop is only
+seen remotely, `python scripts/fyers_login.py` opens the login in a browser on `DISPLAY`, catches
+the redirect and exchanges the code through the same flow (it prints only whether it connected).
 
 With `HAT_BROKER=zerodha` the prompt also carries the Kite link (for the Zerodha account): log in
 and paste the `request_token` from the redirect URL into the header's Zerodha dialog (`POST
@@ -129,6 +131,10 @@ lasts until 06:00 IST. Fyers is still logged in every day: it carries the market
 Missed: ~08:32 `broker.session_lost`, 09:05 a second prompt (URGENT with real positions). Bots
 stay manage-only and only broker-side stops protect positions (no ticks, trims, MA exits or GTT
 changes). Missed triggers are not replayed.
+
+Secrets go into `.env` through `python scripts/set_secrets.py [--env PATH]`: a one-shot form on
+`127.0.0.1:8765` (open it on the host's desktop) that writes the filled keys with mode 600 and
+exits; values are typed at runtime, never printed or logged.
 
 ## Admin command line
 
@@ -212,10 +218,14 @@ finishes and records its runs.
 ### Index membership
 
 A backtest reads its universe's index (`publish-universe --index`, default `NIFTY 500`) point in
-time from `hat_index_member`. NSE publishes only today's list, so the history is a CSV built
-outside the repo from the NSE Indices change notices (`index_name,isin,symbol_at_the_time,
-from_date,to_date,source_notice`; `to_date` is the first session no longer a member, empty for a
-member on `as_of`), with its coverage report beside it. Load it from `<HAT_DATA_ROOT>/admin/`:
+time from `hat_index_member`. NSE publishes only today's list, so the history is a CSV rebuilt
+from the NSE Indices change notices (`index_name,isin,symbol_at_the_time,from_date,to_date,
+source_notice`; `to_date` is the first session no longer a member, empty for a member on
+`as_of`) by `scripts/data/nifty500_membership.py` in a working directory outside the repo:
+`fetch` (notices and today's list), `text`, `parse`, `reference` (hat_live and the daily bars,
+read-only), `build --as-of <list date>`; its docstring has the hand-kept `overrides.json` and
+`symbol_alias.json`. Write the coverage report beside the CSV. Load it from
+`<HAT_DATA_ROOT>/admin/`:
 
 ```bash
 $ADMIN load-index-membership --csv nifty500-membership.csv --as-of <list date>          # dry run
@@ -351,6 +361,13 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `renames` | Seed symbol history from renames |
 | `bars5m_import --source DIR [--batch N] [--apply]` | The broker's 5-minute history (`DIR/<SYMBOL>.parquet`, ISINs from `../universe_raw.csv` and `../nse_cm_scrips.csv`) into `bars_5m`: adds only the (instrument, day) pairs not stored, ledgers refused rows and days in `bars_5m_rejects`, resumes from `bars5m_import/progress.json`; reads the database, holds the minute-history lock. Summary also in `bars5m_import/report-<day>.txt` |
 | `$ADMIN repair-symbol-history [--apply]` | Close overlapping symbol intervals |
+
+Download tools, `python scripts/data/<tool>.py --work DIR` (DIR outside the repo; each prints its
+steps with `--help`): `kotak_5m` fetches the broker's 5-minute history for the NIFTY 500's
+current and former members (`members` from hat_live, then `download`, `former-map`,
+`former-download`; market data only, about one call a second, resumable) into the
+`raw_5m/<SYMBOL>.parquet` layout `bars5m_import` reads; `nifty500_membership` builds the index
+history (Index membership).
 
 After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
 factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is
