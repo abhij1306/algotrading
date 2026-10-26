@@ -217,7 +217,9 @@ def test_validate() -> None:
     assert golden.validate(good) == []
     assert golden.validate(_doc([_item("bar_raw", {}, 1.0, tolerance={"abs": 0.1, "rel": 0.1})]))
     assert golden.validate(_doc([_item("price", {}, 1.0)]))
-    assert golden.validate(_doc([], [_item("bar_raw", {}, 1.0)]))  # a mismatch needs store_value
+    assert golden.validate(_doc([]))  # a sample checks something
+    one = [_item("bar_raw", {}, 1.0, id="x")]
+    assert golden.validate(_doc(one, [_item("bar_raw", {}, 1.0)]))  # a mismatch needs store_value
     twice = _doc([_item("bar_raw", {}, 1.0, id="a"), _item("bar_raw", {}, 2.0, id="a")])
     assert golden.validate(twice) == ["items: id 'a' held 2 times"]
 
