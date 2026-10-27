@@ -114,12 +114,22 @@ def pct_from_52w_high(ctx: EvalContext, params: PctFrom52wHighParams) -> Criteri
     )
 
 
+# The rank `rs_rank` reads: `rs_pct` (every NSE ordinary equity, 0..100) or the scan's
+# `rs_eligible` (the bot's universe stage passing that date, 1..99, `features.eligible_rs`).
+RS_BASES = {"all_nse": "rs_pct", "eligible": "rs_eligible"}
+
+
 class RsRankParams(ParamModel):
-    """`min_percentile` is the hard rule; `score_from` and `score_full` the score curve."""
+    """`min_percentile` is the hard rule; `score_from` and `score_full` the score curve; `basis`
+    the rank read (`RS_BASES`), left out of the canonical form at its default so the stored
+    configs keep their hashes."""
 
     min_percentile: float = Field(default=70.0, ge=0, le=100)
     score_from: float = Field(default=70.0, ge=0, le=100)
     score_full: float = Field(default=95.0, ge=0, le=100)
+    basis: Literal["all_nse", "eligible"] = Field(
+        default="all_nse", exclude_if=lambda value: value == "all_nse"
+    )
 
     @model_validator(mode="after")
     def _check(self) -> RsRankParams:
@@ -149,8 +159,9 @@ def rs_score(rs_pct: float, score_from: float, score_full: float) -> float:
 
 
 def rs_rank(ctx: EvalContext, params: RsRankParams) -> CriterionResult:
-    """HAT-CRIT-109: `rs_pct` at least `min_percentile`; score from the linear curve."""
-    rs = _universe_value(ctx, "rs_pct")
+    """HAT-CRIT-109: the rank of `basis` at least `min_percentile`; score from the linear
+    curve."""
+    rs = _universe_value(ctx, RS_BASES[params.basis])
     if rs is None:
         return no_data()
     score = rs_score(rs, params.score_from, params.score_full)

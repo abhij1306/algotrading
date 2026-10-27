@@ -264,6 +264,10 @@ SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
 SKIP_DEMERGER_PENDING = "demerger_pending"  # the demerger exit session (`data/demerger_notice.py`)
 SKIP_LOW_VOLUME = "breakout_volume_low"  # a close above the level on too little volume
 SKIP_NO_VOLUME = "breakout_volume_missing"  # the volumes the breakout volume test reads
+VOLUME_SKIPS = frozenset({SKIP_LOW_VOLUME, SKIP_NO_VOLUME})
+# The day's gates of a watchlist row after the scan's (`scan.funnel_gates`), in order.
+TRIGGER_GATES = ("trigger", "breakout_volume", "stop", "max_chase")
+MAX_CHASE = "max_chase"
 # The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _ZERO = Decimal(0)
@@ -540,6 +544,14 @@ class _Run:
         self.estimated: set[str] = set()
         self.entry_bars: dict[int, dict[str, int]] = {}
         self.night_window: tuple[date, pl.DataFrame] | None = None  # the last scan's bars
+        # the NIFTY 500's closes the scan's relative correction reads, a cache the scan keeps
+        # across the nights (`EvalContext.memo`), and the funnel: per playbook the stock-days
+        # (scan) and watchlist rows (day loop) that passed each gate
+        self.benchmark = [(d, float(c)) for d, c in data.index_closes.get(regime_v1.INDEX_NAME, ())]
+        self.benchmark_days = [d for d, _ in self.benchmark]
+        self.scan_memo: dict[Any, Any] = {}
+        self.funnel: dict[str, dict[str, int]] = {}
+        self.regime_off_nights = 0
 
     def run(self) -> BacktestResult:
         for day in self.period:
@@ -574,11 +586,24 @@ class _Run:
             breadth=self.view.breadth_through(prev),
             features=self.view.features.get(prev),
             series=series,
+            benchmark=self.benchmark[: bisect_right(self.benchmark_days, prev)],
+            memo=self.scan_memo,
         )
         published = watchlist.scan_and_publish(
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)
         )
         self.gate[day] = published.gate_on
+        if not published.gate_on and published.skipped is None:
+            self.regime_off_nights += 1
+        for playbook, counts in published.funnel.items():
+            mine = self.funnel.setdefault(playbook, {})
+            for gate, count in counts.items():
+                mine[gate] = mine.get(gate, 0) + count
+
+    def _passed(self, playbook: str, gate: str) -> None:
+        """One watchlist row of `playbook` passed the day's `gate` (`TRIGGER_GATES`)."""
+        mine = self.funnel.setdefault(playbook, {})
+        mine[gate] = mine.get(gate, 0) + 1
 
     def _open_positions(self) -> list[HatPosition]:
         rows = self.session.scalars(
@@ -865,13 +890,18 @@ class _Run:
         else:
             price = self._fill(row, bar, day, level)
         if isinstance(price, str):
+            self._passed(row.playbook, "trigger")  # broke, without a fill to take
+            if price not in VOLUME_SKIPS:
+                self._passed(row.playbook, "breakout_volume")
             self._skip(price)
             return None
         if price is None:
             return None  # the level did not break: the row expires at the session end
+        self._passed(row.playbook, "trigger")
         if not at_close and (paced := self._full_day_pace(playbook, instrument_id, day)):
             self._skip(paced)
             return None
+        self._passed(row.playbook, "breakout_volume")
         # A close entry comes after the whole day's path: its low is the day's low.
         lows = (
             (bar.low, None)
@@ -888,11 +918,14 @@ class _Run:
         if stop is None:
             self._skip(planned.skip or SKIP_BAD_INPUT)
             return None
+        self._passed(row.playbook, "stop")
         at = _at(day, _AT_CLOSE_ENTRY if at_close else _AT_ENTRY)
         locked = self._locked(instrument_id, price, bar.high, day)
         failed, filters = self._entry_filters(
             playbook, row, daily, (price, stop, level, locked), at
         )
+        if failed != MAX_CHASE:
+            self._passed(row.playbook, MAX_CHASE)
         if not at_close:
             self.estimated.update((LEVEL_BREAK_ESTIMATED, ENTRY_DAY_LOW_ESTIMATED))
             if price == bar.open:
@@ -988,6 +1021,13 @@ class _Run:
         planned is skipped, as on the daily estimate."""
         candidates = [self._candidate(r, day, prev) for r in rows if str(r.instrument_id) in bars]
         by_key = {(r.playbook, str(r.instrument_id)): r for r in rows}
+        for row in rows:
+            # the level broke that day: what the funnel's trigger counts on the 5-minute days,
+            # whose replay fires only on the break with its confirmation and volume pace
+            level, bar = self._level(row), self.view.bar(str(row.instrument_id), day)
+            if str(row.instrument_id) in bars and level is not None and bar is not None:
+                if bar.high > level and not self.config.playbook(row.playbook).preopen:
+                    self._passed(row.playbook, "trigger")
         out: list[_Decision] = []
         for fired in replay(day, candidates, bars):
             candidate, planned = fired.candidate, fired.plan
@@ -999,9 +1039,15 @@ class _Run:
             ):
                 self._skip(paced)
                 continue
+            if not candidate.playbook.preopen:
+                self._passed(row.playbook, "breakout_volume")
             if planned.entry is None or planned.level is None or planned.stop is None:
                 self._skip(planned.skip or SKIP_BAD_INPUT)
                 continue
+            if not preopen:
+                self._passed(row.playbook, "stop")
+                if planned.skip != MAX_CHASE:
+                    self._passed(row.playbook, MAX_CHASE)
             bar = self.view.bar(candidate.symbol, day)
             if bar is None:  # pragma: no cover - `_open_for` and the scan read the same bars
                 continue
@@ -1591,6 +1637,18 @@ class _Run:
 
     # --- the result --------------------------------------------------------------------------
 
+    def _funnel(self) -> dict[str, Any]:
+        """The run's funnel (`folder`): the regime-off nights, and per playbook the stock-days
+        that passed each scan gate then the watchlist rows that passed each of the day's."""
+        by_playbook = {
+            name: {
+                **{g: c for g, c in counts.items() if g not in TRIGGER_GATES},
+                **{g: counts.get(g, 0) for g in TRIGGER_GATES},
+            }
+            for name, counts in self.funnel.items()
+        }
+        return {"regime_off_nights": self.regime_off_nights, "by_playbook": by_playbook}
+
     def _result(self) -> BacktestResult:
         watch_rows = ledger_watch_rows(self.session, self.bot_id)
         trade_rows = tuple(
@@ -1633,6 +1691,7 @@ class _Run:
             invested=invested,
             allocations=dict(self.allocations),
             sessions=tuple(self.sessions),
+            funnel=self._funnel(),
         )
         self.session.close()
         return result

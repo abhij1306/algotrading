@@ -1,4 +1,4 @@
-"""The criteria library: a registry of the 28 catalogue types.
+"""The criteria library: a registry of the 29 catalogue types.
 
 Pure by construction: nothing here imports the database, a router, a broker or the network
 (CONF `import_graph_boundaries`). Parameter models validate a config on save; `evaluate`
@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ...errors import HatError
-from . import darvas, live, pullback, reversion, setup, universe, vcp
+from . import book, darvas, live, pullback, reversion, setup, universe, vcp
 from .base import (
     STAGES,
     CriterionResult,
@@ -91,6 +91,14 @@ _TYPES = (
     _t("rs_rank", "setup", setup.RsRankParams, (FEATURES,), setup.rs_rank),
     _t("momentum_rank", "setup", setup.MomentumRankParams, (FEATURES,), setup.momentum_rank),
     _t("vcp", "setup", vcp.VcpParams, (BARS,), vcp.vcp, levels=(PIVOT, CONTRACTION_LOW)),
+    _t(
+        "book_vcp",
+        "setup",
+        book.BookVcpParams,
+        (BARS, "index_daily"),
+        book.book_vcp,
+        levels=(PIVOT, CONTRACTION_LOW),
+    ),
     _t(
         "consolidation",
         "setup",

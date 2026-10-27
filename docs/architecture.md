@@ -56,7 +56,9 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 ## Key seams
 
 - **Pure core shared by backtest and live:** `scan.scan_bot`, `exits.evaluate/apply`, the criteria
-  and `decide` read no clock, database or file; `backtest/loop.py` calls the same code.
+  and `decide` read no clock, database or file; `backtest/loop.py` calls the same code. A run
+  passes the scan a cache (`ScanInputs.memo`) that holds only values computed from bars up to
+  their own date, and reads back `ScanResult.funnel`, the stock-days passing each setup gate.
 - **One strategy registry:** `engine/strategy/registry.py:STRATEGIES`, read from the seed files
   `engine/strategy/seeds/<name>.yaml` (a header with `sleeve`, `persona` and `regime`, then the
   config). `regime` names the strategy's row in the regime model's multiplier table; a strategy

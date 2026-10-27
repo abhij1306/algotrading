@@ -816,6 +816,7 @@ def build(
             "by_liquidity_bucket": _group(trades, liquidity),
             "by_playbook": _by_playbook(signals, codes, trades),
         },
+        "funnel": dict(result.funnel),
     }
     csvs = {
         "trades": _csv(TRADE_COLUMNS, _trade_rows(run_id, trades, days)),

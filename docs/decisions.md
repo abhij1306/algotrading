@@ -74,6 +74,16 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   exit, the entry timing with its breakout volume, and the regime without a slope test. The VCP is
   judged on its most recent contractions (at most `contractions[1]`), so the final contraction,
   pivot and dry-up are current.
+- **S1 book rules (owner 2026-10-27).** The book's base is the hard criterion `book_vcp`
+  (`engine/criteria/book.py`: H0, zigzag swings, contraction geometry and bands, base length,
+  time compression, dry-up, relative correction against NIFTY 500 closes, base count), each rule
+  its own parameter and failure reason, publishing `pivot` and `final_contraction_low` as `vcp`
+  does; `vcp` stays for the stored configs. `rs_rank` `basis: eligible` ranks `rs_weighted`
+  within the members passing the bot's universe stage that night, 1..99 (an approximation of the
+  IBD RS rating, not from the book). The base count's stage-2 start reads the eight price checks
+  of the trend template, without the RS rank: a criterion sees no earlier night's ranks. A run
+  keeps each instrument's earlier-date geometry across its nights (`EvalContext.memo`), so the
+  count is not recomputed nightly; a live scan computes it afresh.
 - **Breadth regime rule (owner 2026-10-26).** A strategy's regime gate may read market breadth
   instead of an index (`breadth_above`: `min_pct` 50, optional `off_below_pct` hysteresis,
   `smooth_days` 1): S1's longest drawdown ran through the 2018-2020 midcap bear while NIFTY 500

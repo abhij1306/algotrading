@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import copy
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -135,7 +135,11 @@ class EvalContext:
     instrument's `(effective_from, band_pct)` rows, `band_pct` None for no band.
     `fundamentals`: rows `filed_at`, `eps_yoy`, `sales_yoy` (none until Phase 2).
     `levels`: the numeric levels earlier criteria of the same stage exposed (such as `vcp`'s
-    `pivot`), set by `with_levels`; empty outside a stage.
+    `pivot`), set by `with_levels`; empty outside a stage. `benchmark`: the NIFTY 500's
+    `(date, close)` up to `as_of`, oldest first (`book_vcp`'s relative correction). `memo`: a
+    cache a criterion may keep across the evaluation dates of one run (`book_vcp`'s earlier
+    bases), holding only values computed from bars dated on or before the date they are for;
+    None outside a run.
     """
 
     as_of: date
@@ -146,6 +150,8 @@ class EvalContext:
     price_bands: Sequence[tuple[date, float | None]] = ()
     fundamentals: pl.DataFrame | None = None
     levels: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
+    benchmark: Sequence[tuple[date, float]] = ()
+    memo: MutableMapping[Any, Any] | None = None
     # The bars read so far, shared by the `with_levels` copies (not an init field, so
     # `dataclasses.replace` with other bars starts empty).
     _read: dict[str, Bars] = field(default_factory=dict, init=False, repr=False)

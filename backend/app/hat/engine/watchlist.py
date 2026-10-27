@@ -21,7 +21,8 @@ opened on, which the scan keeps off the watchlist (decisions.md "A pivot is used
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 
 from sqlalchemy import select
@@ -59,6 +60,7 @@ class Published:
     rows: int
     gate_on: bool
     skipped: str | None = None
+    funnel: Mapping[str, Mapping[str, int]] = field(default_factory=dict)  # `ScanResult.funnel`
 
 
 def _universe_id(session: Session, bot: Bot) -> uuid.UUID | None:
@@ -139,18 +141,7 @@ def _with_members(
     members: frozenset[uuid.UUID],
     book: tuple[frozenset[str], frozenset[tuple[str, date]]],
 ) -> ScanInputs:
-    return ScanInputs(
-        as_of=inputs.as_of,
-        members={str(m) for m in members},
-        bars=inputs.bars,
-        regime_closes=inputs.regime_closes,
-        breadth=inputs.breadth,
-        features=inputs.features,
-        series=inputs.series,
-        price_bands=inputs.price_bands,
-        held=book[0],
-        used_pivots=book[1],
-    )
+    return replace(inputs, members={str(m) for m in members}, held=book[0], used_pivots=book[1])
 
 
 def _already_published(session: Session, bot_id: uuid.UUID, trade_date: date) -> bool:
@@ -227,4 +218,4 @@ def scan_and_publish(
         occurred_at=now,
     )
     session.flush()
-    return Published(len(result.rows), result.gate_on)
+    return Published(len(result.rows), result.gate_on, funnel=result.funnel)

@@ -645,6 +645,31 @@
           }
         }
       }
+    },
+    "funnel": {
+      "type": "object",
+      "description": "Per playbook, the stock-days that passed each scan gate in order, then the watchlist rows that passed each of the day's gates (result-standard v1.5).",
+      "required": [
+        "regime_off_nights",
+        "by_playbook"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "regime_off_nights": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "by_playbook": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
     }
   }
 }

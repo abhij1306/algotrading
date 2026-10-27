@@ -144,12 +144,19 @@ def regime_outcome(allows_longs: bool) -> StageOutcome:
 
 
 def evaluate_playbook(
-    config: StrategyConfig, playbook: str, ctx: EvalContext, *, regime_allows_longs: bool
+    config: StrategyConfig,
+    playbook: str,
+    ctx: EvalContext,
+    *,
+    regime_allows_longs: bool,
+    universe: StageOutcome | None = None,
 ) -> PlaybookEvaluation:
     """The nightly stages for one playbook: universe, regime gate, setup. A later stage runs only
-    after every earlier one passed."""
+    after every earlier one passed. `universe`: the universe stage already evaluated on `ctx`
+    (it is the config's, the same for every playbook)."""
     chosen = config.playbook(playbook)
-    universe = evaluate_stage("universe", config.universe, ctx)
+    if universe is None:
+        universe = evaluate_stage("universe", config.universe, ctx)
     if not universe.passed:
         return PlaybookEvaluation(playbook, False, (universe,))
     gate = regime_outcome(regime_allows_longs)

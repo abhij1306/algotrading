@@ -172,6 +172,32 @@ def _percentile(value: pl.Expr) -> pl.Expr:
     return 100.0 * value.rank("average").over("date") / value.count().over("date")
 
 
+ELIGIBLE_RS = "rs_eligible"
+
+
+def eligible_rs(features: pl.DataFrame, eligible: Collection[str]) -> pl.DataFrame:
+    """`features` (one date's rows) with `rs_eligible`: the percentile of `rs_weighted` among
+    the `eligible` instruments that have one, scaled to 1..99 (1 + 98 x (average rank - 1) /
+    (count - 1); 99 for a lone one), null for the others (spec A: the IBD RS rating's
+    approximation, ranked within the bot's universe stage of that date)."""
+    if "rs_weighted" not in features.columns:
+        return features.with_columns(pl.lit(None, dtype=pl.Float64).alias(ELIGIBLE_RS))
+    col = pl.col
+    value = pl.when(
+        col("instrument_id").cast(pl.String).is_in(sorted(eligible))
+        & col("rs_weighted").is_finite()
+    ).then(col("rs_weighted"))
+    count = value.count()
+    scaled = (
+        pl.when(value.is_null())
+        .then(None)
+        .when(count > 1)
+        .then(1.0 + 98.0 * (value.rank("average") - 1.0) / (count - 1))
+        .otherwise(99.0)
+    )
+    return features.with_columns(scaled.cast(pl.Float64).alias(ELIGIBLE_RS))
+
+
 def _per_instrument(frame: pl.DataFrame) -> pl.DataFrame:
     """Every feature that depends on one instrument's own rows (all but the percentiles), each
     window over the rows since the instrument's last series break. `frame` is sorted by date
