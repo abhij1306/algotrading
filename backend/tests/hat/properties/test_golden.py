@@ -189,6 +189,12 @@ def test_check_outcomes() -> None:
     }
 
 
+def test_item_ids_keep_commas() -> None:
+    cap = "bar_adjusted:INE949L01017:AUBANK:2022-06-08:bars_daily_cap view (price, chain):close"
+    assert golden.item_ids(f"{cap}\n\n  ok  \n") == [cap, "ok"]
+    assert golden.item_ids("") == []
+
+
 def test_rebase_doc() -> None:
     key = {"isin": "INE000A01011", "date": "2024-03-01"}
     doc = _doc([_item("bar_raw", key, 100.5, id="ok"), _item("bar_raw", key, 101.0, id="moved")])
