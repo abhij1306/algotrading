@@ -34,6 +34,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_HALF_EVEN, Decimal
+from pathlib import Path
 
 from ..money import MONEY_SCALE
 from .bars import Bar
@@ -64,6 +65,8 @@ NO_DAILY_BAR = "no_daily_bar"  # there is no raw daily bar to check the day agai
 KEPT = "kept"  # a stored day that fits as it is
 CONVERTED = "converted"  # a stored day that fits once converted to the raw basis
 _PRICE_STEP = Decimal(1).scaleb(-MONEY_SCALE)
+# Under the data root: the ledgered days the open explains (`main --write`), for a refetch.
+EXPLAINED_FILE = Path("bars_5m_explained") / "explained-rejects.csv"
 
 
 @dataclass(frozen=True)
@@ -306,11 +309,12 @@ def misfit_days(store: DataStore, tolerance: Decimal) -> list[tuple[str, date]]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real data
-    """python -m app.hat.data.bars_basis explained-rejects [--out FILE]
+    """python -m app.hat.data.bars_basis explained-rejects [--write]
 
     Counts the ledgered `basis_mismatch` days under `HAT_DATA_ROOT` still without bars, and those
     whose raw daily bar opened at its high or low (`explained_rejects`), the days a refetch can
-    now store; `--out` writes those (symbol, day) pairs as CSV. Reads only the data root."""
+    now store; `--write` lists those (symbol, day) pairs in `EXPLAINED_FILE` under the data
+    root. Reads nothing else."""
     import argparse
     import csv
     import sys
@@ -319,7 +323,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real d
 
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.bars_basis")
     parser.add_argument("command", choices=["explained-rejects"])
-    parser.add_argument("--out", help="write the explained (symbol, day) pairs here as CSV")
+    parser.add_argument(
+        "--write", action="store_true", help=f"list the explained days in {EXPLAINED_FILE}"
+    )
     args = parser.parse_args(argv)
     settings = operator_settings()
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
@@ -332,8 +338,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real d
         f"opened at their high or low (the open explains a miss; a refetch checks the rest): "
         f"{len(explained)}\n"
     )
-    if args.out:
-        with open(args.out, "w", newline="", encoding="utf-8") as handle:
+    if args.write:
+        target = settings.data_root / EXPLAINED_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow(["symbol", "instrument_id", "day"])
             writer.writerows((r.symbol, r.instrument_id, r.day) for r in explained)
