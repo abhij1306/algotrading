@@ -1,15 +1,17 @@
 # HAT orchestrator guide
 
 One orchestrator and at most two builder agents, all Claude on the main model, each in its own
-[herdr](https://herdr.dev) tab (not a split) on one machine. You manage builders and merge; you
+tmux window or [herdr](https://herdr.dev) tab (not a split) on one machine. All builder handling
+goes through `scripts/agents/builder.py`, which picks tmux or herdr from where it runs and works
+the same in both; a builder's state comes from Claude Code hooks, never from its screen. You manage builders and merge; you
 never edit, commit or push on a builder's branch. Builders follow `builder-protocol.md`; the
 work queue is the owner's handoff file and the open GitHub PRs and issues (nothing in this repo
 plans work). Builders may use Sonnet subagents; nothing else runs on Sonnet.
 
 ## Start or resume
 
-Rebuild state from GitHub and herdr, not memory: `gh pr list --state open`, `git worktree list`,
-`herdr agent list`, the owner's handoff file. An open PR whose builder isn't running gets a
+Rebuild state from GitHub and the hooks, not memory: `gh pr list --state open`, `git worktree
+list`, `builder.py status`, the owner's handoff file. An open PR whose builder isn't running gets a
 fresh builder on its branch.
 
 ## Start a builder
@@ -27,26 +29,42 @@ Follow-ups left to this PR: <list or none>.
 ```
 
 ```bash
-python scripts/agents/builder.py start <slug> --brief ../briefs/<slug>.txt   # prints the pane id
+python scripts/agents/builder.py start <slug> --brief ../briefs/<slug>.txt   # slug, pane, turn 1
 ```
 
 It fetches, adds the worktree `wt/hat/<slug>` beside the main checkout on `hat/<slug>` (from
-`origin/main`, or the branch if it exists: a fresh builder for an open PR), opens a herdr tab,
-starts the agent (answering the first-start folder-trust prompt), sends the brief and waits until
-the agent works. `--dry-run` prints the commands. Dismiss routine popups ("Not now"); grey text in
+`origin/main`, or the branch if it exists: a fresh builder for an open PR), opens a window or tab
+named after the slug, starts the agent (answering the first-start folder-trust prompt), sends the
+brief and waits until the agent takes it. `--dry-run` prints the commands. Dismiss routine popups ("Not now"); grey text in
 a prompt box is a suggestion, not input.
 
 ## Watch
 
-Watch each builder in the background and react the moment it ends a turn with `READY TO MERGE #`
-or `BLOCKED #`; a builder idling on you is the costliest wait there is. Start the watch after
-sending a prompt; the first check catches a builder that already finished, and the short pause
-lets it pick the prompt up so an old report line isn't read as new.
+Wait on each builder in the background and react the moment its turn ends; a builder idling on
+you is the costliest wait there is.
 
 ```bash
-herdr pane wait-output <pane> --source recent-unwrapped \
-  --regex '^[ ●]*READY TO MERGE #<range>( [0-9a-f]{7,})?\s*$|^[ ●]*BLOCKED #<range>: '   # run_in_background
+python scripts/agents/builder.py wait <slug> [--turn N] [--timeout 45m]   # run_in_background
+python scripts/agents/builder.py send <slug> "<text>" | --file F          # prints the turn it opens
+python scripts/agents/builder.py status                                   # one line per builder
 ```
+
+`wait` returns at once if the turn already ended, else blocks, and prints one line:
+
+- `READY TO MERGE #N <sha>`, `BLOCKED #N: ...` or `OWNER DECISION: ...`: the verdict.
+- `idle no-verdict`: the turn ended without one; read the pane and prompt the builder.
+- `needs-input`: a permission dialog; answer it with `builder.py keys <slug> <key>...` (tmux or
+  herdr key names), then wait again.
+- `background-task`: it stopped with background work running and resumes when that ends; wait
+  again.
+- `still-working turn N` at the timeout, or `crashed` when the agent's process is gone (restart
+  it, see Fresh sessions).
+
+The hooks, installed once per machine by `python scripts/agents/builder.py install-hooks` (into
+the user's `~/.claude/settings.json`; idempotent, no other entry changed), write each builder's
+state to `agents/<slug>/` beside the main checkout (`HAT_AGENT_STATE` overrides). In tmux the
+window is coloured by state: green verdict, yellow idle without one, red needs input, cyan
+background task.
 
 Don't message a builder mid-PR with news that doesn't invalidate its work (main moved, a data
 root changed, a later plan): it restarts verification to absorb it. Put it in the next brief.
@@ -68,18 +86,18 @@ The check never merges. It wants the head at the reported sha and `CLEAN`, every
 not the owner's, and no added line that looks like a secret; it reports the review bot's status
 without waiting for it.
 
-If a check fails, send it back in one message: `herdr agent prompt <slug> "<what failed>"`. After
-a merge, have the builder write its follow-ups to a file outside the worktree (`HANDOFF.md` goes
-with the worktree), then `python scripts/agents/builder.py cleanup <slug>`: it refuses while the
-branch's PR is open, closes the tab (ending the agent), removes the worktree and deletes the
-branch, local and remote.
+If a check fails, send it back in one message: `builder.py send <slug> "<what failed>"`, then
+wait. After a merge, have the builder write its follow-ups to a file outside the worktree
+(`HANDOFF.md` goes with the worktree), then `python scripts/agents/builder.py cleanup <slug>`: it
+refuses while the branch's PR is open, closes the window or tab (ending the agent), removes the
+worktree, the branch (local and remote) and the state folder.
 
 **Order and rebases.** Merge in ready order, but don't merge a PR that forces one already in its
 final CI round to rebase (compare `gh pr diff --name-only`). Only the PR next in line rebases, and
 its own builder does it when you say so.
 
 **Fresh sessions.** A builder that has compacted twice before a fix round is restarted with its
-brief, every later instruction, and "resume from HANDOFF.md": close its tab, then
+brief, every later instruction, and "resume from HANDOFF.md": `builder.py stop <slug>`, then
 `builder.py start <slug>` again (it reuses the worktree).
 
 ## Improving the workflow

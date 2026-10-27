@@ -143,8 +143,10 @@ changed, and delete any plan or spec the change finishes; submit.
 
 ## Agent Workflow
 
-The HAT build is run by an orchestrator agent and up to two builder agents in herdr tabs. On a new
-machine: run `claude --permission-mode auto` inside herdr, then `/hat-orchestrator`. Orchestrator
+The HAT build is run by an orchestrator agent and up to two builder agents in tmux windows or herdr
+tabs; `scripts/agents/builder.py` handles either, reading builder state from Claude Code hooks. On
+a new machine: `python scripts/agents/builder.py install-hooks` once, then run `claude
+--permission-mode auto` inside tmux or herdr and `/hat-orchestrator`. Orchestrator
 guide: `docs/agents/orchestrator.md`. Builder rules: `docs/agents/builder-protocol.md`.
 
 Anything done more than once (a check, a launch, a report, a data step) becomes a script under

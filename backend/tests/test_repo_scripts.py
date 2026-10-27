@@ -3,6 +3,7 @@ handling, parsers and the merge check's verdict, on hand-built inputs. Nothing h
 network, a broker, herdr, git or a database."""
 
 import importlib.util
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -347,3 +348,135 @@ def test_builder__herdr_json() -> None:
 def test_builder__open_prs() -> None:
     prs = [{"number": 1, "state": "MERGED"}, {"number": 2, "state": "OPEN"}]
     assert builder.open_prs(prs) == [2]
+
+
+hook = builder.hook
+PAYLOADS = (PROJECT_ROOT / "backend/tests/fixtures/claude_hook_payloads.json").read_text()
+
+
+def _replay(state: dict[str, object] | None, *payloads: dict[str, object]) -> dict[str, object]:
+    state = state or hook.initial_state()
+    for p in payloads:
+        state = hook.apply(state, p, {"CLAUDE_PID": "7", "TMUX_PANE": "%4"}, 1.0) or state
+    return state
+
+
+def test_builder__choose_backend() -> None:
+    assert builder.choose_backend({"HERDR_ENV": "1", "TMUX": "/t"}, None) == "herdr"
+    assert builder.choose_backend({"TMUX": "/t"}, None) == "tmux"
+    assert builder.choose_backend({}, "tmux") == "tmux"
+    with pytest.raises(ValueError, match="not inside herdr or tmux"):
+        builder.choose_backend({"HERDR_ENV": "0"}, None)
+
+
+def test_builder__parse_duration() -> None:
+    assert [builder.parse_duration(t) for t in ("90", "90s", "45m", "2h")] == [90, 90, 2700, 7200]
+    with pytest.raises(ValueError, match="bad duration"):
+        builder.parse_duration("1d")
+
+
+def test_builder__with_hooks_is_idempotent_and_keeps_other_entries() -> None:
+    new = "python3 /new/agent_hook.py"
+    other = {"hooks": [{"type": "command", "command": "other.sh"}]}
+    old = {"hooks": [{"type": "command", "command": "python3 /old/agent_hook.py", "timeout": 10}]}
+    settings = {"model": "x", "hooks": {"Stop": [other], "Notification": [old]}}
+    once = builder.with_hooks(settings, new)
+    assert once["model"] == "x"
+    assert [g["hooks"][0]["command"] for g in once["hooks"]["Stop"]] == ["other.sh", new]
+    assert once["hooks"]["Notification"] == [{"hooks": [{**old["hooks"][0], "command": new}]}]
+    assert set(once["hooks"]) == set(builder.HOOK_EVENTS)
+    assert builder.with_hooks(once, new) == once
+    assert settings["hooks"]["Notification"] == [old]  # input untouched
+
+
+def test_hook__slug_of() -> None:
+    wt = Path("/w/wt/hat")
+    assert hook.slug_of({"BUILDER_SLUG": "a-b"}, "/elsewhere", wt) == "a-b"
+    assert hook.slug_of({}, "/w/wt/hat/a-b/backend", wt) == "a-b"
+    assert hook.slug_of({}, "/w/main", wt) is None
+    assert hook.slug_of({}, "/w/wt/hat", wt) is None
+    assert hook.slug_of({"BUILDER_SLUG": "a b"}, "/w/main", wt) is None
+
+
+def test_hook__verdict_of() -> None:
+    assert hook.verdict_of("done\nREADY TO MERGE #12 abc1234\n") == "READY TO MERGE #12 abc1234"
+    assert hook.verdict_of("x\n● **BLOCKED #3: CI red**") == "BLOCKED #3: CI red"
+    assert hook.verdict_of("`OWNER DECISION: keep X?`\nok") == "OWNER DECISION: keep X?"
+    assert hook.verdict_of("I will report READY TO MERGE #1 abc1234 later") is None
+    assert hook.verdict_of("READY TO MERGE #1 zzzzzzz") is None
+    assert hook.verdict_of("READY TO MERGE #1") is None  # the sha is required
+    assert hook.verdict_of("") is None
+
+
+def test_hook__replays_real_payloads() -> None:
+    p = json.loads(PAYLOADS)
+    events = [x["hook_event_name"] for x in p]
+    assert events[:3] == ["SessionStart", "UserPromptSubmit", "Stop"]
+    s = _replay(None, *p[:3])
+    assert (s["turn"], s["state"], s["verdict"]) == (1, "idle", "OWNER DECISION: sample question")
+    assert (s["pid"], s["pane"], s["session_id"]) == (7, "%4", p[0]["session_id"])
+    s = _replay(None, *p[:5])  # a turn that stopped with a background task running
+    assert (s["turn"], s["state"], s["results"]["2"]) == (
+        2,
+        "waiting-on-background-task",
+        "background-task",
+    )
+    s = _replay(None, *p[:7])  # the task's completion notice continues turn 2
+    assert (s["turn"], s["state"], s["results"]["2"]) == (2, "idle", "idle no-verdict")
+    s = _replay(None, *p[:9])  # a permission dialog
+    assert (s["turn"], s["state"], s["results"]["3"]) == (3, "needs-input", "needs-input")
+    s = _replay(None, *p)  # ends with an idle_prompt notice, which changes nothing
+    assert p[-1]["notification_type"] == "idle_prompt"
+    assert hook.apply(_replay(None, *p[:-1]), p[-1], {}, 9.0) is None
+    assert (s["turn"], s["state"], s["results"]["4"]) == (4, "idle", "idle no-verdict")
+    assert s["verdict"] == "OWNER DECISION: sample question"  # the last verdict stays
+
+
+def test_hook__verdict_with_background_work_is_not_final() -> None:
+    go = {"hook_event_name": "UserPromptSubmit", "prompt": "go"}
+    ready = "READY TO MERGE #5 abc1234"
+    stop = {"hook_event_name": "Stop", "last_assistant_message": ready}
+    s = _replay(None, go, {**stop, "background_tasks": [{"status": "running"}]})
+    assert (s["state"], s["results"]["1"], s.get("verdict")) == (
+        "waiting-on-background-task",
+        "background-task",
+        None,
+    )
+    notice = {"hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>x"}
+    s = _replay(s, notice, {**stop, "background_tasks": []})
+    assert (s["turn"], s["state"], s["results"]["1"], s["verdict"]) == (1, "idle", ready, ready)
+
+
+def test_hook__compaction_keeps_the_turn_working() -> None:
+    s = _replay(None, {"hook_event_name": "UserPromptSubmit", "prompt": "go"})
+    s = _replay(s, {"hook_event_name": "SessionStart", "source": "compact"})
+    assert (s["turn"], s["state"]) == (1, "working")
+
+
+def test_hook__wait_answer() -> None:
+    done = {
+        "turn": 2,
+        "seq": 5,
+        "state": "idle",
+        "results": {"1": "BLOCKED #1: x", "2": "idle no-verdict"},
+    }
+    assert hook.wait_answer(done, 2, since=5) == "idle no-verdict"  # ended already: at once
+    assert hook.wait_answer(done, 1, since=5) == "BLOCKED #1: x"
+    assert hook.wait_answer({**done, "results": {}}, 2, since=5) is None  # still working
+    bg = {**done, "state": "waiting-on-background-task", "results": {"2": "background-task"}}
+    assert hook.wait_answer(bg, 2, since=5) is None  # not news when the wait began
+    assert hook.wait_answer(bg, 2, since=4) == "background-task"
+    asking = {**done, "state": "needs-input", "results": {"2": "needs-input"}}
+    assert hook.wait_answer(asking, 2, since=5) == "needs-input"  # a dialog is up: at once
+    answered = hook.answered(asking, 9.0)
+    assert answered is not None
+    assert (answered["state"], answered["seq"]) == ("working", 6)
+    assert hook.wait_answer(answered, 2, since=6) is None
+    assert hook.answered(done, 9.0) is None
+
+
+def test_hook__style_of() -> None:
+    idle = {"turn": 1, "state": "idle", "results": {"1": "READY TO MERGE #1 abc1234"}}
+    assert hook.style_of(idle) == "fg=green"
+    assert hook.style_of({**idle, "results": {"1": "idle no-verdict"}}) == "fg=yellow"
+    assert hook.style_of({**idle, "state": "needs-input"}) == "fg=red"

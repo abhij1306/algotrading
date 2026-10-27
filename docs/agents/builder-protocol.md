@@ -1,6 +1,7 @@
 # HAT builder protocol
 
-You build one PR, in your own git worktree and herdr tab, and take it to merge-ready. The
+You build one PR, in your own git worktree and tmux window or herdr tab, and take it to
+merge-ready. The
 orchestrator merges. Your brief gives the goal, scope and follow-ups. Read `CLAUDE.md`, the
 canonical docs it lists (its docs rule applies to you), and
 `.claude/skills/trading-safety/SKILL.md` for anything touching orders, risk, positions, brokers or
@@ -98,5 +99,7 @@ Implementation and real verification come first; testing is not proof.
 
 ## Report
 
-Above the final line: PR URL, what was built, verification, how each review
+The orchestrator reads the verdict from your turn's final message (a Claude Code hook), so it
+must be the last line of that message, not an earlier one, and a turn with no verdict reads as
+stalled. Above the final line: PR URL, what was built, verification, how each review
 finding was handled, deviations, follow-ups. Keep it short.

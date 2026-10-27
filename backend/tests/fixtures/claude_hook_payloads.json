@@ -1,0 +1,129 @@
+[
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "hook_event_name": "SessionStart",
+  "source": "startup",
+  "model": "claude-haiku-5-5"
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "f83a9281-5169-4484-8918-93f113ff917b",
+  "permission_mode": "auto",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Reply with exactly these two lines and nothing else:\nhello\nOWNER DECISION: sample question"
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "f83a9281-5169-4484-8918-93f113ff917b",
+  "permission_mode": "auto",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "hello\nOWNER DECISION: sample question",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "0744333b-77f6-4ef4-abc6-6905c3f0c118",
+  "permission_mode": "auto",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Run the shell command `sleep 15` with run_in_background, then end your turn immediately replying \"started\". When it finishes, reply \"done\"."
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "0744333b-77f6-4ef4-abc6-6905c3f0c118",
+  "permission_mode": "auto",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "started",
+  "background_tasks": [
+   {
+    "id": "bwci6qvjn",
+    "type": "shell",
+    "status": "running",
+    "description": "Sleep for 15 seconds in background",
+    "command": "sleep 15"
+   }
+  ],
+  "session_crons": []
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "19cf2f2d-3fb5-4f94-b7af-7f2eaf133a06",
+  "permission_mode": "auto",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "<task-notification>\n<task-id>bwci6qvjn</task-id>\n<tool-use-id>toolu_01Jxuq56caPdbUyd5c99NrY8</tool-use-id>\n<output-file>/t/tasks/bwci6qvjn.output</output-file>\n<status>completed</status>\n<summary>Background command \"Sleep for 15 seconds in background\" completed (exit code 0)</summary>\n</task-notification>"
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "19cf2f2d-3fb5-4f94-b7af-7f2eaf133a06",
+  "permission_mode": "auto",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "done",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "98ff821a-a030-478c-9c90-642be9c45e26",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Use the Bash tool to run: touch /tmp/claude-1000/capdemo-file"
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "98ff821a-a030-478c-9c90-642be9c45e26",
+  "hook_event_name": "Notification",
+  "message": "Claude needs your permission",
+  "notification_type": "permission_prompt"
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "e57ef264-62e0-4151-aa7f-22f99041c2b8",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "Say hi"
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "e57ef264-62e0-4151-aa7f-22f99041c2b8",
+  "permission_mode": "default",
+  "effort": {
+   "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Hi! The `touch` command was rejected, so I haven't created `/tmp/claude-1000/capdemo-file`. Let me know if you want me to try again or do something else.",
+  "background_tasks": [],
+  "session_crons": []
+ },
+ {
+  "session_id": "3382ffee-c5c6-45f1-b868-3ce0973a317a",
+  "cwd": "/w/wt/hat/capdemo",
+  "prompt_id": "e57ef264-62e0-4151-aa7f-22f99041c2b8",
+  "hook_event_name": "Notification",
+  "message": "Claude is waiting for your input",
+  "notification_type": "idle_prompt"
+ }
+]
