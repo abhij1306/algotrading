@@ -106,8 +106,10 @@ def parse_duration(text: str) -> float:
 
 
 def hook_command(checkout: Path, root: Path, worktrees: Path) -> str:
+    """The hook's command line, every path shell-quoted (the operator's own checkout and dirs)."""
     script = checkout / "scripts" / "agents" / HOOK_SCRIPT
-    return shlex.join(["python3", str(script), "--root", str(root), "--worktrees", str(worktrees)])
+    args = ["python3", str(script), "--root", str(root), "--worktrees", str(worktrees)]
+    return shlex.join(args)  # NOSONAR
 
 
 def with_hooks(settings: Mapping[str, Any], command: str) -> dict[str, Any]:
@@ -333,8 +335,16 @@ def start(b: Backend, slug: str, brief: str, worktrees: Path, folder: Path) -> N
     print(f"builder {slug} pane {pane} turn {turn} on {branch} in {wt}")
 
 
+def _pane(b: Backend, slug: str, folder: Path) -> str:
+    """The pane the hook recorded; herdr addresses the agent by name and needs none."""
+    pane = _state(folder).get("pane") or ""
+    if not pane and isinstance(b, Tmux):
+        sys.exit(f"{slug}: no pane recorded; is it running?")
+    return pane
+
+
 def send(b: Backend, slug: str, folder: Path, text: str) -> None:
-    pane = _state(folder).get("pane") or sys.exit(f"{slug}: no pane recorded; is it running?")
+    pane = _pane(b, slug, folder)
     turn = _submit(b, slug, pane, folder, text)
     print(f"turn {turn}" if turn else f"queued: {slug} is still on turn {_state(folder)['turn']}")
 
@@ -359,12 +369,11 @@ def _alive(b: Backend, slug: str, s: Mapping[str, Any]) -> bool:
             return False
         except PermissionError:
             pass
-    return bool(s.get("pane")) and b.has_pane(slug, s["pane"])
+    return b.has_pane(slug, s.get("pane") or "")
 
 
 def keys(b: Backend, slug: str, folder: Path, keyseq: Sequence[str]) -> None:
-    pane = _state(folder).get("pane") or sys.exit(f"{slug}: no pane recorded; is it running?")
-    b.keys(slug, pane, keyseq)
+    b.keys(slug, _pane(b, slug, folder), keyseq)
     if not b.r.dry_run:
         hook.update(folder, lambda s: hook.answered(s, time.time()))
 
@@ -406,7 +415,8 @@ def cleanup(b: Backend, slug: str, worktrees: Path, folder: Path, force: bool) -
 
 
 def install_hooks(settings_file: Path, command: str, dry_run: bool) -> None:
-    current = json.loads(settings_file.read_text()) if settings_file.exists() else {}
+    # settings_file is the operator's own Claude Code settings (--settings, default ~/.claude)
+    current = json.loads(settings_file.read_text()) if settings_file.exists() else {}  # NOSONAR
     new = with_hooks(current, command)
     if new == current:
         print(f"hooks already installed in {settings_file}")
@@ -415,8 +425,8 @@ def install_hooks(settings_file: Path, command: str, dry_run: bool) -> None:
         print(json.dumps(new["hooks"], indent=2))
         return
     tmp = settings_file.with_name(f".{settings_file.name}.tmp")
-    tmp.write_text(json.dumps(new, indent=2) + "\n")
-    os.replace(tmp, settings_file)
+    tmp.write_text(json.dumps(new, indent=2) + "\n")  # NOSONAR
+    os.replace(tmp, settings_file)  # NOSONAR
     print(f"hooks installed in {settings_file} for {', '.join(HOOK_EVENTS)}")
 
 

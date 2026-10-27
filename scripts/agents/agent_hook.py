@@ -146,7 +146,8 @@ def read_state(folder: Path) -> dict[str, Any] | None:
 
 @contextlib.contextmanager
 def _locked(folder: Path) -> Iterator[None]:
-    folder.mkdir(parents=True, exist_ok=True)
+    # the folder is the operator's state root plus a slug restricted to SLUG (no "/" or "..")
+    folder.mkdir(parents=True, exist_ok=True)  # NOSONAR
     with open(folder / ".lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
@@ -177,7 +178,8 @@ def _run(argv: list[str] | None) -> None:
     new = update(root / slug, lambda s: apply(s, payload, env, time.time()))
     if new is not None and env.get("TMUX_PANE"):
         style = ("window-status-style", style_of(new))
-        subprocess.run(  # NOSONAR: fixed tmux command; the pane id is tmux's own
+        # a fixed tmux command; the pane id is tmux's own
+        subprocess.run(  # NOSONAR
             ["tmux", "set-option", "-w", "-t", env["TMUX_PANE"], *style],  # noqa: S607
             capture_output=True,
             timeout=3,
