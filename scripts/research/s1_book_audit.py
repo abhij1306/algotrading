@@ -494,8 +494,12 @@ def chart(
     marks: Sequence[tuple[date, str]],
 ) -> None:
     """Price with SMA50/150/200, H0, the swings numbered by contraction, pivot and stop, and
-    volume with its 50-day average, over `start..end` (prices on `frame`'s scale)."""
-    closes = frame["close"].to_numpy()
+    volume with its 50-day average, over `start..end`. `frame` is on its last bar's
+    total-return scale; prices are drawn on the signal night's scale, the one the base,
+    pivot and stop (and the case table) use, so a dividend after the signal moves nothing."""
+    signal_close = frame.filter(pl.col("date") == base.night)["close"][0]
+    scale = signal_close / base.close
+    closes = frame["close"].to_numpy() / scale
     volume = frame["volume"].to_numpy().astype(float)
     smas = {n: pl.Series(closes).rolling_mean(n).to_numpy() for n in (50, 150, 200)}
     avg50 = pl.Series(volume).rolling_mean(VOLUME_BASELINE).to_numpy()
@@ -504,9 +508,7 @@ def chart(
     lo_i, hi_i = keep[0], keep[-1] + 1
     x = np.arange(hi_i - lo_i)
     at = {d: i - lo_i for i, d in enumerate(dates)}
-    signal_close = frame.filter(pl.col("date") == base.night)["close"][0]
-    scale = signal_close / base.close
-    high, low = frame["high"].to_numpy(), frame["low"].to_numpy()
+    high, low = frame["high"].to_numpy() / scale, frame["low"].to_numpy() / scale
 
     fig, (ax, axv) = plt.subplots(
         2, 1, figsize=(15, 8.5), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
@@ -561,7 +563,7 @@ def chart(
         day = base.dates[s.index]
         if day in at:
             ax.plot(at[day], high[at[day] + lo_i], "v", color="grey", markersize=7)
-    pivot, stop = float(base.pivot) * scale, float(base.stop) * scale
+    pivot, stop = float(base.pivot), float(base.stop)
     span = (at.get(h0, 0), len(x) - 1)
     ax.hlines(pivot, *span, color="green", linestyle="--", linewidth=1, label=f"pivot {pivot:.2f}")
     ax.hlines(stop, *span, color="red", linestyle="--", linewidth=1, label=f"stop {stop:.2f}")
