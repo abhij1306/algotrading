@@ -138,6 +138,10 @@ whose audit warns or fails):
 - `trades.csv`, `equity.csv`, `refusals.csv` (with forward R of each blocked entry),
   `signals.csv`, `stocks.csv`: why.
 - `config.json`: everything the run used, enough to rerun it.
+- A `book_vcp` run's detector audit: `python scripts/research/s1_book_audit.py --run-id <id>
+  [--seed N]` replays the run's nightly scan (no day loop, its funnel checked against
+  `run.json`) and writes its entries, seeded near-misses of the base geometry with charts, and
+  the Depth_1 gate table to `reports/<variant>/audit/` (gitignored; needs matplotlib).
 
 ### Data audit (`data_audit.json`, `app/hat/data/audit.py`)
 
