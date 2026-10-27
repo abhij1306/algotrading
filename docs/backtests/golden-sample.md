@@ -62,7 +62,8 @@ The audit's cache key includes the golden file's sha256, so a new golden file is
 A deliberate data fix (for example, a corrected demerger factor) makes the items it touches
 drift. Never edit the golden file. Rebase instead:
 `python -m app.hat.data.golden rebase --reason "<why>" --item <id> [--item <id> ...]` (or
-`--all-drifted`; an id may hold a comma, so each is its own `--item`). It writes a
+`--items-file <file>`, one id per line, or `--all-drifted`; an id may hold a comma, as a
+`bars_daily_cap` item's does, so ids are never split on commas). It writes a
 new dated file in which each named drifted item takes the current store value and records the
 reason, the previous value and the source file. It refuses without a reason, and it refuses any
 item that did not drift.

@@ -33,7 +33,8 @@ Not yet run on hat_live. As a superuser, outside the window, after a `pg_dump`:
 2. `VACUUM FULL hat_instrument;` (9 MB heap for 0.5 MB of rows; locks the table about a second).
 3. Once the owner calls the ISIN merge final (no `python -m app.hat.data.isin_merge down` needed):
    `DROP TABLE hat_isin_merge_row, hat_isin_merge;` and remove both from `DRIFT_ALLOWED_TABLES`
-   in `app/hat/schema.py`.
+   in `app/hat/schema.py`. These are the last tables HAT allows in hat_live beyond its models
+   (the pre-split tables were dropped on 2026-10-26).
 4. After the next Saturday `reference.weekly`: `select symbol from hat_instrument where symbol in
    ('AZADIND','BONFIG','SMT','TONBO','ZETWERK');` returns all five.
 5. Install the nightly backup timer and run the first restore drill (Backup and restore).

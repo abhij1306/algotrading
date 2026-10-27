@@ -4,14 +4,15 @@ rebalances), looked up again in the current stores and compared within each item
 
     python -m app.hat.data.golden check [--file F]
     python -m app.hat.data.golden rebase --reason "<text>" (--item ID [--item ID ...] |
-        --all-drifted) [--file F]
+        --items-file IDS | --all-drifted) [--file F]
 
 Golden files live in `HAT_DATA_ROOT/audits/golden/` as `YYYY-MM-DD[.N].json` (data, never
 committed; validated against `docs/backtests/golden-sample.schema.json`); a check reads the newest
 unless `--file` names one there and writes its result under `results/` there. `rebase` writes a new
 golden file with the current store values of drifted items, each with its reason; a golden file
-is never edited. The data audit runs the same check (`audit.check_golden`). Read-only on the
-database and the stores.
+is never edited. An id may hold a comma (a `bars_daily_cap` item's key), so ids are never split:
+each is its own `--item`, or its own line of the `--items-file`. The data audit runs the same
+check (`audit.check_golden`). Read-only on the database and the stores.
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ __all__ = [
     "current",
     "failed",
     "golden_dir",
+    "item_ids",
     "load_stores",
     "lookup",
     "matches",
@@ -606,6 +608,12 @@ def summary(result: Mapping[str, Any], path: Path | None = None) -> dict[str, An
 # --- rebase --------------------------------------------------------------------------------
 
 
+def item_ids(text: str) -> list[str]:
+    """The item ids of an `--items-file`: one per line, stripped, blank lines skipped; a comma
+    is part of an id, never a separator."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
 def rebase_doc(
     doc: Mapping[str, Any],
     result: Mapping[str, Any],
@@ -841,8 +849,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     rebasing.add_argument("--reason", required=True)
     named = rebasing.add_mutually_exclusive_group(required=True)
     named.add_argument("--item", action="append", dest="items")  # an id may hold a comma
+    named.add_argument("--items-file", type=argparse.FileType("r", encoding="utf-8"))
     named.add_argument("--all-drifted", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "rebase" and args.items_file is not None:
+        with args.items_file as file:
+            args.items = item_ids(file.read())
     if args.command == "rebase" and not args.reason.strip():
         sys.stderr.write("golden rebase refused: golden_rebase_reason_required\n")
         return 2

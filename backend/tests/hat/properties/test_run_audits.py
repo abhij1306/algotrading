@@ -439,5 +439,13 @@ def test_compare_row() -> None:
     row = compare.row_of(run, {"status": "warn"})
     assert row[:4] == ["019a2b3c", "v1", "a/b", "complete"]
     assert row[-1] == "warn/pass"
-    assert len(row) == len(compare.COLUMNS) + 4
+    assert len(row) == len(compare.COLUMNS) + 5
     assert compare.table([row]).count("\n") == 3
+    assert compare.row_of(run, None, invested_max=81.5)[-4] == "81.5"
+
+
+def test_max_invested() -> None:
+    equity = "date,invested_pct\n2016-01-01,0.0\n2016-01-04,72.25\n2016-01-05,\n"
+    assert compare.max_invested(equity) == 72.25
+    assert compare.max_invested("date,invested_pct\n") is None
+    assert compare.max_invested(None) is None
