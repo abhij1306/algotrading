@@ -851,7 +851,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         title = f"{case} {name} {night} near-miss: fails {rule}; {text_out}"
         start = base.dates[max(0, base.geo.h0 - CHART_LEAD)]
         marks = ((broke, "close > pivot"),) if broke else ()
-        last_day = forward["date"][min(OUTCOME_SESSIONS, forward.height) - 1]
+        last_day = (
+            forward["date"][min(OUTCOME_SESSIONS, forward.height) - 1] if forward.height else night
+        )
         chart(png, title, frame, base, start, last_day, marks)
         outcome = {
             "text": text_out,
@@ -905,7 +907,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"# S1 book detector audit: {variant} (run {args.run_id})",
         "",
         f"seed {args.seed}; entries {n_sample} of {len(trades)} sampled: trade ids {sampled_ids}",
-        f"entries mean R {sum(entry_r) / len(entry_r):.4f} "
+        f"entries mean R {_fmt(sum(entry_r) / len(entry_r) if entry_r else None, 4)} "
         f"(run.json expectancy {run['metrics'].get('expectancy_r')})",
         f"replayed funnel: {funnel_note}; regime-off nights {collected.regime_off}",
         f"near-miss window {args.near_from}..{args.near_to}; pool {len(collected.pool)}",
