@@ -196,7 +196,7 @@ def pick_near_misses(
     """`count` of `pool` drawn with `seed`, one per symbol (the pool sorted first, so the draw
     does not depend on the scan's order)."""
     order = sorted(pool)
-    random.Random(seed).shuffle(order)  # noqa: S311 - a reproducible draw
+    random.Random(seed).shuffle(order)  # noqa: S311  # NOSONAR - a seeded, reproducible draw
     out, seen = [], set()
     for item in order:
         if item[2] in seen:
@@ -711,7 +711,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     trades = read_trades(root / "backtests" / "runs" / args.run_id / "trades.csv")
     n_sample = min(ENTRY_SAMPLE, len(trades))
     sampled_ids = sorted(
-        random.Random(args.seed).sample(  # noqa: S311 - a reproducible draw
+        random.Random(args.seed).sample(  # noqa: S311  # NOSONAR - a seeded, reproducible draw
             [t.trade_id for t in trades], n_sample
         )
     )
