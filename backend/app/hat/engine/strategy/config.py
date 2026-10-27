@@ -39,6 +39,8 @@ GAP_UP = "gap_up"
 
 DEFAULT_THRESHOLD = 0.6
 DEFAULT_PLAYBOOK = "default"
+# The setup criteria that publish the pivot `close_vs_pivot` reads (HAT-CRIT-123).
+PIVOT_SETUPS = ("vcp", "book_vcp")
 MAX_INSTANCES = 40
 RISK_KEY = re.compile(
     r"risk|capital|allocation|p_max|position|qty|quantity|leverage|drawdown|stopout"
@@ -134,13 +136,13 @@ class SetupStage(Model):
     def _check(self) -> SetupStage:
         object.__setattr__(self, "criteria", _sorted_unique(self.criteria))
         # HAT-CRIT-123: `close_vs_pivot` is a gate, so hard only, and reads the pivot of an
-        # enabled `vcp` evaluated before it; without one it could never pass, and the playbook
-        # would silently stop trading.
+        # enabled `vcp` or `book_vcp` evaluated before it; without one it could never pass, and
+        # the playbook would silently stop trading.
         pivot_seen = False
         for instance in self.criteria:
             if instance.type == "close_vs_pivot" and instance.mode != "hard":
                 raise ValueError("close_vs_pivot_not_hard")
-            if instance.enabled and instance.type == "vcp":
+            if instance.enabled and instance.type in PIVOT_SETUPS:
                 pivot_seen = True
             if instance.enabled and instance.type == "close_vs_pivot" and not pivot_seen:
                 raise ValueError("close_vs_pivot_needs_vcp")

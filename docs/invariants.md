@@ -244,7 +244,8 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   not.
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
-  InvITs and REITs get features but no rank.
+  InvITs and REITs get features but no rank. The scan's `rs_eligible` ranks only the members
+  passing the bot's universe stage that night.
 - **Owner corrections.** A stored factor, amount or `known_on` changes only through the owner's
   `correct-action` / `correct-actions` (journalled, every version kept) or a lineage `link` /
   `unlink`, which holds across rebuilds. No job applies a correction list.

@@ -14,8 +14,13 @@ column, not an input of any rule). The stock's levels come from `features_daily`
 - `mcap_cr`, `cap_bucket`, `index_membership`: None. The store has no point-in-time market cap
   or shares outstanding, and no index membership besides NIFTY 500 (the universe itself).
 - `listing_age_years`: from `hat_instrument.listed_on` to d.
-- The VCP columns read the scan's `vcp` result on the watchlist row (`scan._stage_json`
-  extras); a playbook without one leaves them None.
+- The VCP columns read the scan's `vcp` or `book_vcp` result on the watchlist row
+  (`scan._stage_json` extras); a playbook without one leaves them None. The book columns
+  (`footprint` to `stage2_start_unknown`) are `book_vcp`'s log: `contraction_depths` each
+  contraction's depth in percent, oldest first, joined by `/`.
+- `rs_rank`: the value of the setup's `rs_rank` criterion on the row (the rank of its `basis`,
+  `rs_eligible` 1..99 within the bot's universe stage under `eligible`); without one, the
+  stored `rs_pct`.
 """
 
 from __future__ import annotations
@@ -35,6 +40,21 @@ __all__ = ["FEATURE_COLUMNS", "STOCK_COLUMNS", "SETUP_COLUMNS", "SignalFeatures"
 CRORE = Decimal(10_000_000)
 SLOPE_SESSIONS = 20
 VOLUME_BASELINE = 50
+# `book_vcp`'s log, as its extras name it (`contraction_depths` built from its contractions).
+BOOK_EXTRAS = (
+    "footprint",
+    "shakeout",
+    "dryup_mean_ratio",
+    "dryup_min_ratio",
+    "tc_low_sessions",
+    "tc_after_sessions",
+    "rc_ratio",
+    "index_depth_pct",
+    "base_number",
+    "stage2_start_unknown",
+)
+BOOK_COLUMNS = ("footprint", "contraction_depths", *BOOK_EXTRAS[1:])
+PATTERN_TYPES = ("vcp", "book_vcp")
 # The stock and setup columns, in the order the result files write them.
 STOCK_COLUMNS = (
     "mcap_cr",
@@ -59,6 +79,7 @@ SETUP_COLUMNS = (
     "dist_52w_high_pct",
     "sma50_slope_20d_pct",
     "setup_score",
+    *BOOK_COLUMNS,
 )
 FEATURE_COLUMNS = ("symbol", "industry", *STOCK_COLUMNS, *SETUP_COLUMNS)
 _PLACES = 4
@@ -68,6 +89,19 @@ def _round(value: float | Decimal | None) -> float | None:
     return None if value is None else round(float(value), _PLACES)
 
 
+def _first(*values: float | Decimal | None) -> float | Decimal | None:
+    return next((v for v in values if v is not None), None)
+
+
+def _plain(value: object) -> object:
+    """A logged extra as a cell: a number rounded, a flag or text as is, anything else None."""
+    if isinstance(value, bool | str):
+        return value
+    if isinstance(value, int | float):
+        return _round(value)
+    return None
+
+
 def _pct(over: Decimal | None, under: Decimal | None) -> float | None:
     """(over / under - 1) x 100; None without both or a non-positive base."""
     if over is None or under is None or under <= 0:
@@ -75,14 +109,33 @@ def _pct(over: Decimal | None, under: Decimal | None) -> float | None:
     return _round((over / under - 1) * 100)
 
 
-def vcp_extras(criteria_results: object) -> Mapping[str, Any] | None:
-    """The extras of the passing `vcp` criterion in a watchlist row's `criteria_results`."""
+def _criteria(criteria_results: object) -> list[Mapping[str, Any]]:
+    """The criterion items of a watchlist row's `criteria_results`, in stage order."""
     stages = criteria_results.get("stages") if isinstance(criteria_results, Mapping) else None
-    for stage in stages if isinstance(stages, list) else []:
-        for item in stage.get("criteria") or [] if isinstance(stage, Mapping) else []:
-            extras = item.get("extras") if isinstance(item, Mapping) else None
-            if item.get("type") == "vcp" and isinstance(extras, Mapping):
-                return extras
+    return [
+        item
+        for stage in (stages if isinstance(stages, list) else [])
+        for item in (stage.get("criteria") or [] if isinstance(stage, Mapping) else [])
+        if isinstance(item, Mapping)
+    ]
+
+
+def vcp_extras(criteria_results: object) -> Mapping[str, Any] | None:
+    """The extras of the passing `vcp` or `book_vcp` criterion in a watchlist row's
+    `criteria_results`."""
+    for item in _criteria(criteria_results):
+        extras = item.get("extras")
+        if item.get("type") in PATTERN_TYPES and isinstance(extras, Mapping):
+            return extras
+    return None
+
+
+def rs_value(criteria_results: object) -> float | None:
+    """The value of the first `rs_rank` criterion evaluated on the row, None without one."""
+    for item in _criteria(criteria_results):
+        value = item.get("value")
+        if item.get("type") == "rs_rank" and isinstance(value, (int, float)):
+            return float(value)
     return None
 
 
@@ -139,7 +192,9 @@ class SignalFeatures:
             if listed is None
             else _round(Decimal((day - listed).days) / Decimal("365.25")),
             "stop_pct": _round((entry - stop) / entry * 100) if entry > 0 else None,
-            "rs_rank": _round(feature(prev, instrument_id, "rs_pct")),
+            "rs_rank": _round(
+                _first(rs_value(criteria_results), feature(prev, instrument_id, "rs_pct"))
+            ),
             "setup_score": _round(score),
             "entry_vs_pivot_pct": _pct(entry, pivot),
             "breakout_vol_ratio": self._volume_ratio(instrument_id, day),
@@ -183,6 +238,10 @@ class SignalFeatures:
             if isinstance(c, Mapping) and isinstance(c.get("depth_pct"), (int, float))
         ]
         out: dict[str, Any] = {
+            **{name: _plain(extras.get(name)) for name in BOOK_EXTRAS},
+            "contraction_depths": "/".join(f"{d:.2f}" for d in depths)
+            if "footprint" in extras
+            else None,
             "vcp_contractions": extras.get("contraction_count"),
             "base_depth_pct": _round(max(depths)) if depths else None,
             "final_contraction_pct": _round(depths[-1]) if depths else None,

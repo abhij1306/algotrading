@@ -121,5 +121,28 @@
     "by_industry": {},
     "by_cap_bucket": {},
     "by_liquidity_bucket": {}
+  },
+  "funnel": {
+    "regime_off_nights": 312,
+    "by_playbook": {
+      "default": {
+        "evaluated": 412000,
+        "universe": 198000,
+        "trend_template": 41000,
+        "rs_rank": 29000,
+        "vcp_geometry": 2100,
+        "time_compression": 1500,
+        "dry_up": 600,
+        "relative_correction": 540,
+        "base_count": 470,
+        "close_vs_pivot": 300,
+        "setup": 300,
+        "watchlist": 280,
+        "trigger": 95,
+        "breakout_volume": 60,
+        "stop": 55,
+        "max_chase": 50
+      }
+    }
   }
 }

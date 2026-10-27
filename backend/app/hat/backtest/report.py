@@ -170,6 +170,8 @@ class BacktestResult:
     invested: tuple[Decimal, ...] = ()
     allocations: Mapping[date, Allocation | None] = field(default_factory=dict)
     sessions: tuple[SessionRow, ...] = ()
+    # the gates' pass counts (`loop._Run._funnel`), written to run.json's `funnel`
+    funnel: Mapping[str, Any] = field(default_factory=dict)
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:

@@ -119,7 +119,9 @@ ladder_level,open_positions_at_entry,open_risk_pct_at_entry,
 index_regime_on,breadth_pct,
 vcp_contractions,base_length_sessions,base_depth_pct,final_contraction_pct,depth_ratio,
 pivot_vs_base_high_pct,entry_vs_pivot_pct,breakout_vol_ratio,stop_pct,
-rs_rank,dist_52w_high_pct,sma50_slope_20d_pct,setup_score
+rs_rank,dist_52w_high_pct,sma50_slope_20d_pct,setup_score,
+footprint,contraction_depths,shakeout,dryup_mean_ratio,dryup_min_ratio,
+tc_low_sessions,tc_after_sessions,rc_ratio,index_depth_pct,base_number,stage2_start_unknown
 ```
 
 `exit_reason` codes: `initial_stop`, `trail_swing_low`, `trail_step`, `sma50_close`, `time_stop`, `partial_target`, `kill_switch`, `period_end`.
@@ -391,3 +393,25 @@ counts by entry in the first and by exit in the second.
 
 **conventions.** `slot_order` may be `rs`; `volume_pace: full_day` is recorded only when a run
 asks for it (a default run keeps its digest). Known gap `volume_pace_on_full_day_volume`.
+
+**funnel.** `run.json` adds `funnel`: `regime_off_nights` (nights the regime gate kept the scan
+off) and `by_playbook`, per playbook the count passing each gate in order, read as the run goes
+(no replay). Scan gates count stock-days: `evaluated` (members with a bar that night),
+`universe`, the setup's hard criteria (the trend template's checks as one gate `trend_template`,
+`rs_rank`, `book_vcp` as `vcp_geometry`, `time_compression`, `dry_up`, `relative_correction`,
+`base_count`, others by type), `setup` (the score threshold) and `watchlist` (published). Day
+gates count watchlist rows: `trigger` (the level broke; on a 5-minute session the daily high
+above the level), `breakout_volume` (the trigger's volume pace, on the full day's volume
+under `volume_pace: full_day`), `stop` (a stop could be planned) and `max_chase`.
+
+**trades.csv, refusals.csv, signals.csv.** `book_vcp`'s log per signal (empty for other setups):
+`footprint` (`<weeks>W <Depth_1>/<Depth_final> <count>T`, weeks the base's sessions / 5, depths
+in whole %), `contraction_depths` (each depth %, oldest first, `/`-joined), `shakeout` (a
+contraction low under an earlier one), `dryup_mean_ratio` and `dryup_min_ratio` (the final
+contraction's mean and lowest volume over the 50-session mean ending on its first session),
+`tc_low_sessions` and `tc_after_sessions` (H0 to the deepest low, that low to the signal date),
+`rc_ratio` (Depth_1 over the NIFTY 500's largest close-to-close fall since H0, `index_depth_pct`;
+empty when the index did not fall), `base_number`, `stage2_start_unknown`. `rs_rank` is the
+setup's `rs_rank` criterion value when it has one (under `basis: eligible` the 1..99 percentile
+within the bot's universe stage that night: an approximation of the IBD RS rating, not from
+the book), else the stored `rs_pct`.

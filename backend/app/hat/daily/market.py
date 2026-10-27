@@ -26,7 +26,7 @@ from ..data.instruments import current_band
 from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
 from ..engine.exits import ExitView, history_sessions, reads_peak, view_from_bars
-from ..engine.portfolio.jobs import read_breadth
+from ..engine.portfolio.jobs import INDEX_NAME, read_breadth
 from ..engine.regime_gate import BREADTH_SESSIONS
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import ExitRule, StopRule
@@ -91,6 +91,14 @@ def index_closes(store: DataStore, index: str, through: date) -> list[Decimal]:
     return [require_exact(close, "close") for _, close in rows]
 
 
+def benchmark_closes(store: DataStore, through: date) -> list[tuple[date, float]]:
+    """The NIFTY 500's `(date, close)` dated on or before `through`, oldest first (the scan's
+    `benchmark`)."""
+    with store.connect() as con:
+        rows = con.execute(_INDEX_SQL, [INDEX_NAME, through]).fetchall()
+    return [(day, float(close)) for day, close in rows]
+
+
 def breadth_series(store: DataStore, through: date) -> list[Decimal | None]:
     """The features job's `breadth_pct` of the last `BREADTH_SESSIONS` stored sessions through
     `through`, oldest first, None for a session without one (the breadth regime gate's input),
@@ -129,6 +137,7 @@ def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> 
         breadth=breadth_series(store, as_of),
         features=_features(store, as_of),
         series=_series(session),
+        benchmark=benchmark_closes(store, as_of),
     )
 
 
