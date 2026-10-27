@@ -8,7 +8,8 @@ the change bound, how many knobs it changed against its base (`5b`: a declared b
 `run_audit.changed_of`), its risk policy version (`3!2`: version 3 against a base under 2, the
 policy drifted), the run and data audit statuses, and the headline metrics with the promotion
 criteria's (longest drawdown in sessions, the benchmark's CAGR, the CAGR without the top five
-trades, the entries above 5% of ADV). With `--criteria` (the strategy's notes, their
+trades, the entries above 5% of ADV), and the invested share (the equity held in positions: the
+mean over sessions, and the highest session's from `equity.csv`). With `--criteria` (the strategy's notes, their
 `hat-criteria` block) a second table gives each run's criteria, pass or fail, as the review
 computes them (`criteria.in_sample_rows`, the DSR and PBO at the family today; a hold-out run's
 in-sample rows are its validated run's, beside its own hold-out rows), and the family's own
@@ -18,6 +19,8 @@ trials against the budget.
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -29,7 +32,15 @@ from . import folder, trials
 from .review import scores_now, trade_rows
 from .run_audit import changed_of
 
-__all__ = ["COLUMNS", "criteria_rows", "criteria_table", "policy_versions", "row_of", "table"]
+__all__ = [
+    "COLUMNS",
+    "criteria_rows",
+    "criteria_table",
+    "max_invested",
+    "policy_versions",
+    "row_of",
+    "table",
+]
 
 HOLD_OUT = "hold_out"
 
@@ -56,6 +67,7 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("bench%", "metrics", "benchmark_cagr_pct"),
     ("cagr_ex5%", "metrics", "cagr_ex_top5_trades_pct"),
     (">5%adv", "metrics", "trades_over_5pct_adv"),
+    ("inv%", "metrics", "invested_pct"),
 )
 
 
@@ -83,17 +95,30 @@ def _policy(mine: object, base: object) -> str:
     return f"{_cell(mine)}!{_cell(base)}"
 
 
+def max_invested(equity: str | None) -> float | None:
+    """The highest session's invested share (`invested_pct`) in a run's `equity.csv` text; None
+    without the file or a value."""
+    if equity is None:
+        return None
+    values = [
+        float(v) for row in csv.DictReader(io.StringIO(equity)) if (v := row.get("invested_pct"))
+    ]
+    return max(values, default=None)
+
+
 def row_of(
     run: Mapping[str, Any],
     audit: Mapping[str, Any] | None,
     policy: tuple[object, object] = (None, None),
+    invested_max: float | None = None,
 ) -> list[str]:
-    """One run's cells: its short id, the `COLUMNS`, the knobs it changed, its and its base's
-    risk policy versions (`policy`) and its audits' statuses."""
+    """One run's cells: its short id, the `COLUMNS`, its highest session's invested share
+    (`max_invested`), the knobs it changed, its and its base's risk policy versions (`policy`)
+    and its audits' statuses."""
     run_id = str((run.get("identity") or {}).get("run_id", ""))
     cells = [run_id[:8]]
     cells += [_cell((run.get(block) or {}).get(name)) for _, block, name in COLUMNS]
-    cells += [_knobs(run), _policy(*policy)]
+    cells += [_cell(invested_max), _knobs(run), _policy(*policy)]
     data_audit = ((run.get("data") or {}).get("audit") or {}).get("status")
     cells.append(f"{_cell(None if audit is None else audit.get('status'))}/{_cell(data_audit)}")
     return cells
@@ -101,7 +126,7 @@ def row_of(
 
 def table(rows: Sequence[Sequence[str]]) -> str:
     """The Markdown table of `rows` (`row_of`)."""
-    header = ["run", *(h for h, _, _ in COLUMNS), "knobs", "policy", "audit/data"]
+    header = ["run", *(h for h, _, _ in COLUMNS), "inv_max%", "knobs", "policy", "audit/data"]
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     lines += ["| " + " | ".join(r) + " |" for r in rows]
     return "\n".join(lines) + "\n"
@@ -192,7 +217,9 @@ def compare(
     rows = []
     for r in runs:
         run_id = str((r.get("identity") or {}).get("run_id"))
-        rows.append(row_of(r, folder.read_doc(root, run_id, "audit"), policy_versions(root, r)))
+        audit = folder.read_doc(root, run_id, "audit")
+        invested = max_invested(folder.read_csv(root, run_id, "equity"))
+        rows.append(row_of(r, audit, policy_versions(root, r), invested))
     return table(rows) + ("" if c is None else "\n" + _criteria(root, runs, c))
 
 
