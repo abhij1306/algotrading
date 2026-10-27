@@ -6,6 +6,9 @@
 HAT-PORT-052) times the exposure-ladder risk multiplier. No multiplier is applied a second time
 here. Each term is floored with exact integer division, so a term that is a hair under a whole
 number never rounds up across a cap. The smallest floored term is the binding one.
+
+A size whose value `q * P_entry` is under the policy's floor `E * min_position_pct` is skipped,
+`size_below_min`: a position too small to matter would dilute the expectancy and hold a slot.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ class SizingInputs:
     adv20: Decimal  # 20-day average daily volume in shares, >= 0
     adv_cap_pct: Decimal  # the policy's liquidity cap, in (0, 1]
     free_cash: Decimal  # C: free cash at the broker, >= 0 (Infinity means unbounded)
+    min_position_pct: Decimal  # the policy's floor on the position's share of E, in [0, 1]
 
 
 @dataclass(frozen=True)
@@ -84,11 +88,14 @@ def size_position(inputs: SizingInputs) -> SizingResult:
     adv20 = exact_input(inputs.adv20, "adv20")
     adv_cap = exact_input(inputs.adv_cap_pct, "adv_cap_pct")
     cash = exact_input(inputs.free_cash, "free_cash", cash=True)
+    floor = exact_input(inputs.min_position_pct, "min_position_pct")
     one = Decimal(1)
     if equity <= 0 or entry <= 0 or adv20 < 0 or cash < 0:
         raise SizingInputError("equity and entry must be positive, volume and cash not negative")
     if not (0 < alloc <= one and 0 < level <= one and 0 < p_max <= one and 0 < adv_cap <= one):
         raise SizingInputError("a risk, share or cap fraction is outside (0, 1]")
+    if not 0 <= floor <= one:
+        raise SizingInputError("the position floor is outside [0, 1]")
     with localcontext() as ctx:
         ctx.prec = _PRECISION
         risk_pct = alloc * level
@@ -100,8 +107,11 @@ def size_position(inputs: SizingInputs) -> SizingResult:
             "liquidity": int((adv_cap * adv20).to_integral_value(rounding=ROUND_FLOOR)),
             "cash": None if cash == UNBOUNDED_CASH else _floor_div(cash, entry),
         }
-    bounded = {name: value for name, value in terms.items() if value is not None}
-    quantity = min(bounded.values())
-    binding = next(name for name in TERMS if bounded.get(name) == quantity)
-    reason = None if quantity >= 1 else f"size_zero_{binding}"
-    return SizingResult(quantity, binding, risk_pct, terms, reason)
+        bounded = {name: value for name, value in terms.items() if value is not None}
+        quantity = min(bounded.values())
+        binding = next(name for name in TERMS if bounded.get(name) == quantity)
+        if quantity < 1:
+            return SizingResult(0, binding, risk_pct, terms, f"size_zero_{binding}")
+        if quantity * entry < equity * floor:
+            return SizingResult(0, binding, risk_pct, terms, "size_below_min")
+    return SizingResult(quantity, binding, risk_pct, terms, None)

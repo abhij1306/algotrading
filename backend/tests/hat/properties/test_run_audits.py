@@ -350,6 +350,27 @@ def test_equity_jumps_need_positions() -> None:
     }
 
 
+def test_a_same_day_round_trip_is_held() -> None:
+    """A position opened and stopped out in one session shows in no close of `equity.csv`, but
+    explains that session's move: held at its entry value (2598 x 676 here)."""
+    trades = {
+        "1": [
+            {
+                "entry_date": "2024-01-09",
+                "entry_price": "676",
+                "exit_date": "2024-01-09",
+                "qty": "2598",
+            }
+        ]
+    }
+    assert run_audit.round_trips(trades) == {"2024-01-09": D(676) * 2598}
+    lost = EQUITY + "2024-01-09,949980,0\n"  # -5.1% with nothing held at either close
+    rows = run_audit._rows(lost)
+    assert run_audit.check_equity_jumps(_run(), rows, trades)["findings"] == []
+    unheld = run_audit.check_equity_jumps(_run(), rows, {})["findings"]
+    assert [f["code"] for f in unheld] == ["equity_jump_without_positions"]
+
+
 def test_liquidity_recomputed() -> None:
     checks = _audit(_run())
     # trade 2: 50 x 200 = 10,000 over 1 crore = 0.1% of ADV

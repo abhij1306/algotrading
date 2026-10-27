@@ -39,6 +39,7 @@ def sizing_inputs(draw: st.DrawFn) -> SizingInputs:
         adv20=draw(volumes),
         adv_cap_pct=draw(fractions_open),
         free_cash=draw(cash_or_unbounded),
+        min_position_pct=D(0),  # the floor off: the formula alone (the floor's tests below)
     )
 
 
@@ -110,3 +111,34 @@ def test_domain_errors_are_not_silent(inp: SizingInputs) -> None:
         size_position(negative)
     with pytest.raises(SizingInputError):
         size_position(over_one)
+
+
+def _plain(**changes: object) -> SizingInputs:
+    """E 1,000,000 at 0.25%, entry 100, stop 95: 500 shares by risk, 50,000 (5% of E)."""
+    base = {
+        "equity": D(1_000_000),
+        "allocation_risk_pct": D("0.0025"),
+        "level_risk_mult": D(1),
+        "entry_price": D(100),
+        "stop_price": D(95),
+        "p_max": D("0.20"),
+        "adv20": D(1_000_000),
+        "adv_cap_pct": D("0.01"),
+        "free_cash": UNBOUNDED_CASH,
+        "min_position_pct": D("0.02"),
+    }
+    return SizingInputs(**{**base, **changes})  # type: ignore[arg-type]
+
+
+def test_position_floor() -> None:
+    """A size worth less than `min_position_pct` of E is skipped `size_below_min`; one worth
+    exactly the floor is kept, and a floor of 0 keeps a single share."""
+    assert size_position(_plain()).quantity == 500
+    exact = size_position(_plain(free_cash=D(20_000)))  # 200 shares: 20,000 is 2% of E
+    assert (exact.quantity, exact.binding, exact.reason) == (200, "cash", None)
+    under = size_position(_plain(free_cash=D("19999.99")))  # 199 shares
+    assert (under.quantity, under.binding, under.reason) == (0, "cash", "size_below_min")
+    assert size_position(_plain(free_cash=D(100), min_position_pct=D(0))).quantity == 1
+    assert size_position(_plain(free_cash=D(50))).reason == "size_zero_cash"
+    with pytest.raises(SizingInputError):
+        size_position(_plain(min_position_pct=D("1.01")))

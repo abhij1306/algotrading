@@ -21,7 +21,7 @@ from app.hat.backtest.overrides import (
     policy_text,
     set_path,
 )
-from app.hat.backtest.runs import parse_variants
+from app.hat.backtest.runs import check_paths, parse_variants
 from app.hat.backtest.spec import BacktestError, RunConventions
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS
 from app.hat.engine import exits
@@ -370,3 +370,26 @@ def test_parse_variants_layers_on_the_base() -> None:
     ):
         with pytest.raises(BacktestError):
             parse_variants(bad, base)
+
+
+def test_a_sweep_with_an_unknown_path_fails_before_any_run() -> None:
+    """A `set` path naming nothing in the version's config, a typo'd criterion parameter among
+    them, or a `policy_set` naming no policy field refuses the whole sweep; a bad value is the
+    variant's own refusal, left to its run."""
+    config, version = seed_config("stage2-contraction-breakout"), policy_version()
+    good = _sweep({"label": "a", "set": ["exits[0].enabled=false"]}, {"label": "b"})
+    check_paths(parse_variants(good, RunConventions()), config, version)
+    for bad, code in (
+        ({"set": ["exits[0].enabeld=false"]}, "backtest_bad_override_path"),
+        (
+            {"set": ["playbooks[default].setup.criteria[vcp].params.min_dpth_pct=3"]},
+            "backtest_bad_override_path",
+        ),
+        ({"set": ["exits[nope].enabled=false"]}, "backtest_override_no_item"),
+        ({"policy_set": ["kill.bot_drawdwn_pct=0.15"]}, "backtest_bad_override_path"),
+    ):
+        sweep = parse_variants(_sweep({"label": "a"}, {"label": "b", **bad}), RunConventions())
+        with pytest.raises(BacktestError, match=code):
+            check_paths(sweep, config, version)
+    valued = _sweep({"label": "a", "set": ["exits[0].enabled=7"]})
+    check_paths(parse_variants(valued, RunConventions()), config, version)

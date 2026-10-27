@@ -97,6 +97,7 @@ __all__ = [
     "Variant",
     "backtest_bot",
     "check_one_change",
+    "check_paths",
     "engine_commit",
     "hold_out",
     "parse_variants",
@@ -873,8 +874,9 @@ def parse_variants(
     `suspension_sessions`, `regime_mult` and `start_capital` (each replacing the base's), and
     `bundle: true` with a one-line `reason` (a variant with a base only).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
-    conventions or override raise. One change per variant is checked when the sweep runs,
-    against the version's config (`check_one_change`, `sweep_bot`)."""
+    conventions or override raise. Each override path, and one change per variant, are checked
+    against the version's config before any variant runs (`check_paths`, `check_one_change`,
+    `sweep_bot`)."""
     if not isinstance(doc, dict) or not set(doc) <= SWEEP_KEYS:
         raise BacktestError("backtest_sweep_bad_variants")
     sweep_id = _text(doc, "sweep_id")
@@ -918,6 +920,34 @@ def _bundle(item: Mapping[str, object]) -> str | None:
     if declared != (reason is not None) or (reason is not None and "\n" in reason):
         raise BacktestError("backtest_sweep_bad_variants")
     return reason
+
+
+PATH_CODES = frozenset(
+    {"backtest_bad_override_path", "backtest_override_no_item", "backtest_override_ambiguous"}
+)
+
+
+def check_paths(sweep: Sweep, config: StrategyConfig, policy: PolicyVersion) -> None:
+    """Refuse a sweep (`BacktestError` with the override's code) with a variant whose `set` path
+    names nothing in the version's `config` or whose `policy_set` path names no field of
+    `policy` (or of its candidate policy), before any variant runs: a typo fails the whole
+    sweep, not one variant of it."""
+    for variant in sweep.variants:
+        overrides = variant.conventions.overrides
+        try:
+            overrides.apply_config(config)
+        except OverrideError as exc:
+            _path_refusal(exc)
+        try:
+            overrides.apply_policy(policy)
+        except OverrideError as exc:
+            _path_refusal(exc)
+
+
+def _path_refusal(exc: OverrideError) -> None:
+    """Raise a path refusal as the sweep's; any other refusal is the variant's alone."""
+    if exc.code in PATH_CODES:
+        raise BacktestError(exc.code) from None
 
 
 def check_one_change(sweep: Sweep, config: Mapping[str, Any]) -> None:
@@ -1035,7 +1065,8 @@ def sweep_bot(
     or failing its guards, `discipline.check_hold_out`, an undeclared bundle against a base
     named by run id) is skipped with its code; the request-wide refusals, a variant changing
     more than one knob against a base of its file (`check_one_change`), and a sweep whose
-    variants read different regime indices, raise `BacktestError` before any run.
+    variants read different regime indices, and a variant whose override path names nothing
+    (`check_paths`), raise `BacktestError` before any run.
 
     With a `budget` (the strategy's criteria, `TrialBudget`), an in-sample variant whose
     resolved config would be a new trial once the family's own trials (`trials.counts`, prior
@@ -1043,6 +1074,7 @@ def sweep_bot(
     carries the family's own trial count after it (`RunOutcome.trials_own`); a budget for
     another strategy or universe is refused `backtest_sweep_criteria_scope`."""
     target = _target(session, request)
+    check_paths(sweep, target.config, target.policy)
     check_one_change(sweep, target.config.to_json())
     if budget is not None and (budget.strategy, budget.universe) != (
         target.strategy,

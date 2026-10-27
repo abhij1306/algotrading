@@ -70,7 +70,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 - **Exact math.** `Decimal` for prices, notional, P&L and size; floats and non-finite numbers are
   refused. Product CNC, a finite positive price, the stored broker symbol.
 - **Risk never raises.** A missing input is a REJECT with a typed reason. Size is
-  `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`; zero skips. The
+  `floor(min(E*r/(entry-stop), E*p_max/entry, adv_cap*ADV20, cash/entry))`; zero skips, and so
+  does a size worth less than the policy's `min_position_pct` of `E` (`size_below_min`), live
+  and backtest alike. The
   caps count a position's unfilled entry remainder while that entry still works.
 - **Exits are never blocked** by a cap, kill switch, data failure, reconciliation state or mode.
   Kill switches, pause and a failed gate stop new entries only (manage-only); a drawdown or

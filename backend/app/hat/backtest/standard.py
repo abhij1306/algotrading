@@ -42,7 +42,7 @@ __all__ = [
     "trade_list_hash",
 ]
 
-FORMAT_VERSION = "1.3"
+FORMAT_VERSION = "1.4"
 TRADING_DAYS = 252
 LADDER_LEVEL = "ladder_level"
 REFUSAL_CODES = (
@@ -51,6 +51,7 @@ REFUSAL_CODES = (
     "industry_cap",
     "size_zero_cash",
     "size_zero_risk",
+    "size_below_min",
     "max_chase",
     "stopout_cap",
     "open_risk_cap",
@@ -80,6 +81,7 @@ REFUSAL_OF: Mapping[str, str] = {
     Reason.COOLDOWN: "stopout_cap",
     Reason.SIZE_ZERO_CASH: "size_zero_cash",
     Reason.SIZE_ZERO_RISK: "size_zero_risk",
+    Reason.SIZE_BELOW_MIN: "size_below_min",
     Reason.SIZE_ZERO_POSITION: "size_zero_risk",
     Reason.SIZE_ZERO_LIQUIDITY: "size_zero_risk",
     Reason.ALLOCATION_EXCEEDS_POLICY: "size_zero_risk",

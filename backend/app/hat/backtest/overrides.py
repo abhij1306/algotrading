@@ -9,7 +9,8 @@ written `path=value` (`parse_set`): `exits[2].at_r=3`, `exits[trailing_swing_low
 `rule`, `name` or criterion `type` when exactly one item has it; `rs_rank#1` is the second item
 of that type in list order, the setup's criteria in their `order`),
 `playbooks[default].stop.max_pct=12`, and `exits[+]={"rule": "max_hold", "days": 60}` appends a
-rule to the stack. A name no item has, or one more than one item has without `#n`, is refused.
+rule to the stack. A name no item has, or one more than one item has without `#n`, is refused,
+as is a key the config model does not know (a typo'd field or criterion parameter).
 A value that is not JSON is a string. The overridden config is parsed afresh (`parse_config`),
 so an override can only make a config the model accepts, risk keys refused.
 The policy overrides are the risk per trade (`risk_pct`), the open-position cap (the account's
@@ -247,8 +248,9 @@ class Overrides:
         return any(_segments(path)[0][0] in IDENTITY_KEYS for path, _ in self.sets)
 
     def apply_config(self, config: StrategyConfig) -> StrategyConfig:
-        """`config` with the sets applied, parsed afresh; `OverrideError` for a path that names
-        nothing and `backtest_override_invalid` for a config the model refuses."""
+        """`config` with the sets applied, parsed afresh; `backtest_bad_override_path` (or the
+        selector's code) for a path that names nothing, a key the model does not know among
+        them, and `backtest_override_invalid` for a value the model refuses."""
         if not self.sets:
             return config
         doc = config.to_json()
@@ -256,8 +258,10 @@ class Overrides:
             set_path(doc, path, value)
         try:
             return parse_config(doc)
-        except ConfigError:
-            raise OverrideError("backtest_override_invalid") from None
+        except ConfigError as exc:
+            unknown = "extra_forbidden" in exc.codes
+            code = "backtest_bad_override_path" if unknown else "backtest_override_invalid"
+            raise OverrideError(code) from None
 
     def apply_policy(self, version: PolicyVersion) -> PolicyVersion:
         """`version` with its policy replaced by the candidate, its fields set, and its
