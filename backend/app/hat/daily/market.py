@@ -159,6 +159,8 @@ class DailyData:
         # the first session the bars cover: a position opened before it reads its older highs
         # from the store (`_high_before`)
         self.first_session: date | None = window[0] if window else None
+        # the last session before the trade date (`live_entry.ep_setup_passes` reads it)
+        self.last_session: date | None = window[-1] if window else None
         adjustment = stored_adjustment(session)
         self._store, self._adjustment = store, adjustment
         # a position bought under a linked older ISIN reads its chain's bars, features and tick

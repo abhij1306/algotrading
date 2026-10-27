@@ -307,7 +307,7 @@ class Intraday:
                     data.bars,
                     calendar=self._calendar(),
                 )
-                if ep_setup_passes(c.playbook, data.bars(c.instrument_id), day)
+                if ep_setup_passes(c.playbook, data.bars(c.instrument_id), day, data.last_session)
             ]
             self._prices.track_session(session, {c.instrument_id for c in candidates})
         for candidate in candidates:

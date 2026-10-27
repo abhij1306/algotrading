@@ -208,21 +208,25 @@ def _playbook(config: StrategyConfig, name: str) -> Playbook | None:
     return next((p for p in config.playbooks if p.name == name), None)
 
 
-def ep_setup_passes(playbook: Playbook, bars: pl.DataFrame, trade_date: date) -> bool:
-    """A pre-open playbook's setup on the daily bars up to the previous session: every enabled hard
-    setup criterion passes. A setup-stage type (`adr_min`, `sma_above`, ...) is evaluated as of
-    the last session before `trade_date`, as the nightly scan would that evening; a trigger-stage
-    type over daily bars (`neglect`) as of `trade_date`, reading the bars before it. Either way
-    the trade date's own bar, which does not exist at the open, is never read. No bars, or a
-    setup with no enabled criterion, does not pass (fail closed)."""
+def ep_setup_passes(
+    playbook: Playbook, bars: pl.DataFrame, trade_date: date, previous: date | None
+) -> bool:
+    """A pre-open playbook's setup on the daily bars up to `previous`, the market's last session
+    before `trade_date`: every enabled hard setup criterion passes. A setup-stage type
+    (`adr_min`, `sma_above`, ...) is evaluated as of `previous`, as the nightly scan would that
+    evening; a trigger-stage type over daily bars (`neglect`) as of `trade_date`, reading the
+    bars before it. Either way the trade date's own bar, which does not exist at the open, is
+    never read. Like the nightly scan, which evaluates only the members with a bar on its date,
+    an instrument without a bar on `previous` does not pass, nor do no bars or a setup with no
+    enabled criterion (fail closed)."""
     enabled = [c for c in playbook.setup.criteria if c.enabled and c.mode == "hard"]
     before = bars.filter(pl.col("date") < trade_date)
-    if not enabled or before.is_empty():
+    if not enabled or before.is_empty() or previous is None or before["date"].max() != previous:
         return False
     on_gap_day = EvalContext(as_of=trade_date, instrument_id="", bars=before)
-    previous = EvalContext(as_of=before["date"].max(), instrument_id="", bars=before)
+    previous_ctx = EvalContext(as_of=previous, instrument_id="", bars=before)
     for instance in sorted(enabled, key=lambda i: i.order):
-        ctx = on_gap_day if get_type(instance.type).stage == "trigger" else previous
+        ctx = on_gap_day if get_type(instance.type).stage == "trigger" else previous_ctx
         if not evaluate(instance.type, instance.params, ctx).passed:
             return False
     return True

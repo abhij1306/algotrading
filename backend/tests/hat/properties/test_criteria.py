@@ -344,7 +344,8 @@ def _ep_playbook(setup: list[dict], gap_min: float = 10) -> Playbook:
 def test_ep_setup_reads_the_previous_session() -> None:
     """`adr_min` in a pre-open setup is judged as of the last session before the gap day (as the
     nightly scan would judge it that evening) and `neglect` on the bars before the gap day; the
-    gap day's own wide bar is never read."""
+    gap day's own wide bar is never read, and a name without a bar on that session does not pass
+    (the nightly scan would not have evaluated it)."""
     calm = [Row(EPOCH + timedelta(days=i), 10_390, 10_000, 10_200, 1000) for i in range(70)]
     gap_day = EPOCH + timedelta(days=70)
     rows = [*calm, Row(gap_day, 20_000, 10_000, 15_000, 1000)]
@@ -353,9 +354,13 @@ def test_ep_setup_reads_the_previous_session() -> None:
     def adr(pct: float) -> dict:
         return {"type": "adr_min", "mode": "hard", "params": {"days": 20, "pct": pct}}
 
-    assert ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows), gap_day)
-    assert not ep_setup_passes(_ep_playbook([neglect, adr(4)]), frame(rows), gap_day)
-    assert not ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows[:1]), EPOCH)
+    previous = calm[-1].day
+    assert ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows), gap_day, previous)
+    assert not ep_setup_passes(_ep_playbook([neglect, adr(4)]), frame(rows), gap_day, previous)
+    assert not ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows[:1]), EPOCH, EPOCH)
+    stale = frame([*calm[:-1], rows[-1]])  # no bar on the previous session
+    assert not ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), stale, gap_day, previous)
+    assert not ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows), gap_day, None)
 
 
 def test_gap_floor_is_the_least_preopen_minimum() -> None:
