@@ -15,8 +15,13 @@ is never trusted alone: `check_day` compares the day's 5-minute bars with the ra
 (`bars_daily_raw`, the latest ingest). The day's highest high and lowest low must equal the daily
 high and low within `tolerance` (a fraction), and the first open and the last close must lie in
 the daily range widened by it. The close is not compared with the daily close: NSE's close is the
-closing-auction price, not the last trade. A day that fails, or has no daily bar, is not written
-and goes to the reject ledger instead (fails closed: a missing bar, never a wrong one).
+closing-auction price, not the last trade. The daily open is the pre-open auction price and the
+5-minute bars start at 09:15, so a stock that opened at its high (or low) on a gap and never
+traded back to it has 5-minute bars that miss that extreme: such a miss is accepted when the
+official open fully explains it (the daily high is the open within `tolerance`, and no bar is
+above it; the same for the low), and only then. A day that fails, or has no daily bar, is not
+written and goes to the reject ledger instead (fails closed: a missing bar, never a wrong one).
+`open_explained_rejects` counts the ledgered day refusals the open could explain.
 
 `misfit_days` runs the same envelope over every stored day, and `mend_day` decides what a stored
 day that fails it becomes (`bars5m_repair`; `bars5m_import` refuses to run while one is left).
@@ -32,7 +37,7 @@ from decimal import ROUND_HALF_EVEN, Decimal
 
 from ..money import MONEY_SCALE
 from .bars import Bar
-from .bars_store import DATASET, FILE_NAME
+from .bars_store import DATASET, FILE_NAME, BarStore, RejectRow
 from .minute_limits import MinuteHistoryError
 from .store import RAW_LATEST, ActionFactor, DataStore
 
@@ -45,9 +50,11 @@ __all__ = [
     "DailySource",
     "RawBasis",
     "check_day",
+    "explained_rejects",
     "fyers_factor",
     "mend_day",
     "misfit_days",
+    "open_explains",
     "store_daily",
     "to_raw",
 ]
@@ -114,12 +121,69 @@ def check_day(bars: Sequence[Bar], daily: DailyRange | None, tolerance: Decimal)
     floor = daily.low * (1 - tolerance)
     ceiling = daily.high * (1 + tolerance)
     fits = (
-        abs(high - daily.high) <= daily.high * tolerance
-        and abs(low - daily.low) <= daily.low * tolerance
+        _meets(high, daily.high, daily, tolerance, upper=True)
+        and _meets(low, daily.low, daily, tolerance, upper=False)
         and floor <= bars[0].open <= ceiling
         and floor <= bars[-1].close <= ceiling
     )
     return None if fits else BASIS_MISMATCH
+
+
+def _meets(
+    extreme: Decimal, official: Decimal, daily: DailyRange, tolerance: Decimal, *, upper: bool
+) -> bool:
+    """The bars' `extreme` (high when `upper`, else low) equals the daily one within
+    `tolerance`, or falls short of it only because the auction open made it: the daily extreme
+    is the open within `tolerance` and the bars never pass it."""
+    band = official * tolerance
+    if abs(extreme - official) <= band:
+        return True
+    if abs(daily.open - official) > band:
+        return False
+    return extreme < official if upper else extreme > official
+
+
+def open_explains(daily: DailyRange, tolerance: Decimal) -> bool:
+    """The official open is the day's high or its low within `tolerance`: the one case where
+    5-minute bars may miss a daily extreme and still fit (`check_day`)."""
+    return (
+        abs(daily.open - daily.high) <= daily.high * tolerance
+        or abs(daily.open - daily.low) <= daily.low * tolerance
+    )
+
+
+def explained_rejects(
+    store: BarStore, daily: DailySource, tolerance: Decimal
+) -> tuple[list[RejectRow], list[RejectRow]]:
+    """The ledger's `BASIS_MISMATCH` day refusals whose day is still not stored, oldest first,
+    and those among them whose raw daily bar the open explains (`open_explains`): the days the
+    accepted open-explained miss can let in once refetched (the ledger keeps no bars, so the
+    rest of the envelope is checked only then)."""
+    refused = sorted(
+        {
+            (r.day, r.instrument_id): r
+            for r in store.read_rejects()
+            if r.rule == BASIS_MISMATCH and r.bar_start is None and r.day is not None
+        }.items()
+    )
+    stored: dict[date, set[str]] = {}
+    missing = []
+    for (day, instrument_id), row in refused:
+        if instrument_id not in stored.setdefault(day, store.instruments(day)):
+            missing.append(row)
+    if not missing:
+        return [], []
+    found = daily(
+        sorted({r.instrument_id for r in missing}),
+        min(r.day for r in missing if r.day is not None),
+        max(r.day for r in missing if r.day is not None),
+    )
+    explained = []
+    for row in missing:
+        bar = found.get((row.instrument_id, row.day)) if row.day is not None else None
+        if bar is not None and open_explains(bar, tolerance):
+            explained.append(row)
+    return missing, explained
 
 
 def mend_day(
@@ -190,20 +254,22 @@ WITH day AS (
     SELECT instrument_id, CAST(timezone('Asia/Kolkata', bar_start) AS DATE) AS day,
         max(high) AS high, min(low) AS low,
         arg_min(open, bar_start) AS open, arg_max(close, bar_start) AS close
-    FROM read_parquet(?) GROUP BY ALL
+    FROM read_parquet($files) GROUP BY ALL
 ),
 raw AS (
-    SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date, high, low FROM {RAW_LATEST}
-    WHERE date BETWEEN ? AND ?
+    SELECT CAST(instrument_id AS VARCHAR) AS instrument_id, date, open, high, low
+    FROM {RAW_LATEST} WHERE date BETWEEN $first AND $final
 )
 SELECT d.instrument_id, d.day FROM day d
 LEFT JOIN raw r ON r.instrument_id = d.instrument_id AND r.date = d.day
-WHERE d.day <= ? AND (
+WHERE d.day <= $last AND (
     r.high IS NULL
-    OR abs(d.high - r.high) > r.high * ?
-    OR abs(d.low - r.low) > r.low * ?
-    OR d.open NOT BETWEEN r.low * (1 - ?) AND r.high * (1 + ?)
-    OR d.close NOT BETWEEN r.low * (1 - ?) AND r.high * (1 + ?)
+    OR (abs(d.high - r.high) > r.high * $tol
+        AND NOT (abs(r.open - r.high) <= r.high * $tol AND d.high < r.high))
+    OR (abs(d.low - r.low) > r.low * $tol
+        AND NOT (abs(r.open - r.low) <= r.low * $tol AND d.low > r.low))
+    OR d.open NOT BETWEEN r.low * (1 - $tol) AND r.high * (1 + $tol)
+    OR d.close NOT BETWEEN r.low * (1 - $tol) AND r.high * (1 + $tol)
 )
 """  # noqa: S608
 _MISFIT_CHUNK = 60  # day files per query: the aggregate stays well inside the DuckDB memory cap
@@ -227,7 +293,52 @@ def misfit_days(store: DataStore, tolerance: Decimal) -> list[tuple[str, date]]:
             first, final = (date.fromisoformat(f.parent.name[5:]) for f in (chunk[0], chunk[-1]))
             rows = con.execute(
                 _MISFITS_SQL,
-                [[str(f) for f in chunk], first, final, last[0], *[tolerance] * 6],
+                {
+                    "files": [str(f) for f in chunk],
+                    "first": first,
+                    "final": final,
+                    "last": last[0],
+                    "tol": tolerance,
+                },
             ).fetchall()
             found.extend((str(i), day) for i, day in rows)
     return sorted(found, key=lambda pair: (pair[1], pair[0]))
+
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real data
+    """python -m app.hat.data.bars_basis explained-rejects [--out FILE]
+
+    Counts the ledgered `basis_mismatch` days under `HAT_DATA_ROOT` still without bars, and those
+    whose raw daily bar opened at its high or low (`explained_rejects`), the days a refetch can
+    now store; `--out` writes those (symbol, day) pairs as CSV. Reads only the data root."""
+    import argparse
+    import csv
+    import sys
+
+    from ..settings import operator_settings
+
+    parser = argparse.ArgumentParser(prog="python -m app.hat.data.bars_basis")
+    parser.add_argument("command", choices=["explained-rejects"])
+    parser.add_argument("--out", help="write the explained (symbol, day) pairs here as CSV")
+    args = parser.parse_args(argv)
+    settings = operator_settings()
+    store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+    tolerance = settings.history_envelope_tol
+    missing, explained = explained_rejects(
+        BarStore(settings.data_root), store_daily(store), tolerance
+    )
+    sys.stdout.write(
+        f"basis_mismatch days without bars: {len(missing)}; "
+        f"opened at their high or low (the open explains a miss; a refetch checks the rest): "
+        f"{len(explained)}\n"
+    )
+    if args.out:
+        with open(args.out, "w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["symbol", "instrument_id", "day"])
+            writer.writerows((r.symbol, r.instrument_id, r.day) for r in explained)
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

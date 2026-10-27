@@ -3,13 +3,16 @@
 EP candidates cannot come from the nightly watchlist, because tomorrow's gappers are unknown
 tonight. Just after the open, `cm_get_equity_stocks` is paged over the whole equity listing
 (`page_equity_rows`), each EQ symbol's gap is `100 * (open / prev_close - 1)`, and the gappers of
-at least 10% that pass the bot's universe criteria and can really gap that far are subscribed and
-get their announcements attached.
+at least the scan's floor that are in an active bot's universe and can really gap that far are
+subscribed and get their announcements attached. The floor is the least `gap_up` `min_pct` of the
+active bots' pre-open playbooks (`live_entry.gap_floor`); each playbook's own `gap_up` then
+applies its own minimum at the trigger.
 
-"Can really gap that far": a 10% gap is impossible in a stock with a 2% or 5% price band, so a
-candidate must have a 10% or 20% band, or be an F&O name. `[OWNER-PENDING]` F&O names are taken to
-be the stocks with a known price-band row whose `band_pct` is null (NSE F&O stocks carry no
-band); a stock with no price-band row at all is unknown and is never selected.
+"Can really gap that far": a stock's price band caps its move, so a candidate must have a band of
+at least the floor (a 10% gap is impossible under a 2% or 5% band), or be an F&O name.
+`[OWNER-PENDING]` F&O names are taken to be the stocks with a known price-band row whose
+`band_pct` is null (NSE F&O stocks carry no band); a stock with no price-band row at all is
+unknown and is never selected.
 
 The scan runs as a job body under `run_job`, which writes the `hat_job_run` row with the start and
 finish times; `run_gap_scan` then raises a health alert when the run finished at or after 09:20:00
@@ -40,13 +43,12 @@ from .preopen import gap_pct, meets_gap
 from .reference import page_equity_rows
 
 __all__ = [
-    "EP_BANDS",
-    "EP_MIN_GAP_PCT",
     "GAP_SCAN_DEADLINE",
     "JOB_GAPSCAN",
     "Gapper",
     "GapRow",
     "gap_scan_body",
+    "is_candidate",
     "is_late",
     "run_gap_scan",
     "scan_rows",
@@ -56,8 +58,6 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 JOB_GAPSCAN = "gapscan"
-EP_MIN_GAP_PCT = Decimal(10)
-EP_BANDS = frozenset({Decimal(10), Decimal(20)})
 GAP_SCAN_DEADLINE = time(9, 20)  # the first 5-minute bar closes
 EQUITY_SERIES = "EQ"
 CODE_SCAN_FAILED = "gapscan_mcp_failed"
@@ -98,8 +98,9 @@ def scan_rows(client: McpClient) -> list[GapRow]:
     return out
 
 
-def is_candidate(item: Gapper, minimum_pct: Decimal = EP_MIN_GAP_PCT) -> bool:
-    """The selection rule: gap >= 10, passes the universe, band 10 or 20 or F&O (no band)."""
+def is_candidate(item: Gapper, minimum_pct: Decimal) -> bool:
+    """The selection rule: gap >= `minimum_pct`, in the universe, a band of at least
+    `minimum_pct` or F&O (no band)."""
     row = item.row
     if (
         row.open is None
@@ -109,10 +110,10 @@ def is_candidate(item: Gapper, minimum_pct: Decimal = EP_MIN_GAP_PCT) -> bool:
         return False
     if not item.passes_universe or not item.band_known:
         return False
-    return item.band_pct is None or item.band_pct in EP_BANDS
+    return item.band_pct is None or item.band_pct >= minimum_pct
 
 
-def select_gappers(items: Iterable[Gapper], minimum_pct: Decimal = EP_MIN_GAP_PCT) -> list[str]:
+def select_gappers(items: Iterable[Gapper], minimum_pct: Decimal) -> list[str]:
     """Symbols of the items that are EP candidates, in input order (HAT-DATA-121)."""
     return [item.row.symbol for item in items if is_candidate(item, minimum_pct)]
 
@@ -168,7 +169,7 @@ def gap_scan_body(
     trade_date: date,
     universe: Callable[[HatInstrument], bool],
     on_candidates: Callable[[Mapping[str, uuid.UUID], Mapping[str, Decimal]], None],
-    minimum_pct: Decimal = EP_MIN_GAP_PCT,
+    minimum_pct: Decimal,
 ) -> Callable[[], JobResult]:
     """A job body for `run_job`. Idempotent: the scan reads, then hands the candidates to
     `on_candidates` with their instrument ids and the opens the listing gave (subscribe at

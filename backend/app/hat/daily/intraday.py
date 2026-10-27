@@ -50,6 +50,7 @@ from ..data.subscriptions import LiveSubscriptions, load_inputs
 from ..engine.live_entry import (
     EpInputs,
     TriggerService,
+    active_gap_floor,
     ep_bot_candidates,
     ep_setup_passes,
     watchlist_candidates,
@@ -229,6 +230,10 @@ class Intraday:
     # --- 09:16 --------------------------------------------------------------------------------
 
     def gapscan(self, day: date) -> JobResult:
+        with self._session_factory() as session:
+            floor = active_gap_floor(session)
+        if floor is None:  # no active bot has a pre-open playbook: nothing to scan for
+            return JobResult(rows=0)
         client = self._gap_client()
         if client is None:
             raise JobError("mcp_not_configured")
@@ -238,6 +243,7 @@ class Intraday:
             trade_date=day,
             universe=self._in_a_universe(day),
             on_candidates=lambda found, opens: self.on_gappers(day, found, opens),
+            minimum_pct=floor,
         )()
         if is_late(self._now(), day, self.open_shift(day)):
             self._notifier.alert(ALERT_LATE, day, {})

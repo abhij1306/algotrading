@@ -7,9 +7,9 @@
   scanned under, the last configured max-chase percentage from the bot's versions, and the bot's
   effective mode for the session, which decides where `catalyst_attached` blocks);
 - `ep_candidates` builds the candidates of the pre-open playbooks (`Playbook.preopen`, such as
-  the episodic pivot) from the 09:16 gap scan: only gap-scan candidates (10%/20% band or F&O,
-  gapped at least 10%, in the universe) whose setup passes on the daily bars up to the previous
-  session;
+  the episodic pivot) from the 09:16 gap scan: only gap-scan candidates (gapped at least the
+  active bots' least `gap_up` minimum, `gap_floor`, with a band that allows it or F&O, in the
+  universe) whose setup passes on the daily bars up to the previous session;
 - `submit_trigger` turns a fired trigger into a signal through a `Route`: the execution router
   (`execution/router.py`), or by default `entries.open_entry` under the bot's effective mode, so
   every entry still passes `evaluate_signal` under the bot's and the owner's lock (a skipped
@@ -62,10 +62,9 @@ from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
 from ..time import IST, trade_date_of, utc_now
 from . import entries, lifecycle, positions
-from .criteria import CONTRACTION_LOW, CriterionResult, EvalContext
+from .criteria import CONTRACTION_LOW, CriterionResult, EvalContext, evaluate, get_type
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
 from .strategy.config import Playbook, StopRule, StrategyConfig, parse_config
-from .strategy.scoring import evaluate_stage
 from .trigger import (
     Candidate,
     DailyInputs,
@@ -81,8 +80,10 @@ __all__ = [
     "DataHealthKill",
     "Route",
     "TriggerService",
+    "active_gap_floor",
     "ep_candidates",
     "ep_setup_passes",
+    "gap_floor",
     "route_by_mode",
     "submit_trigger",
     "watchlist_candidates",
@@ -209,24 +210,56 @@ def _playbook(config: StrategyConfig, name: str) -> Playbook | None:
 
 def ep_setup_passes(playbook: Playbook, bars: pl.DataFrame, trade_date: date) -> bool:
     """A pre-open playbook's setup on the daily bars up to the previous session: every enabled hard
-    setup criterion passes (`neglect` reads the bars before `trade_date` itself). No bars, or a
+    setup criterion passes. A setup-stage type (`adr_min`, `sma_above`, ...) is evaluated as of
+    the last session before `trade_date`, as the nightly scan would that evening; a trigger-stage
+    type over daily bars (`neglect`) as of `trade_date`, reading the bars before it. Either way
+    the trade date's own bar, which does not exist at the open, is never read. No bars, or a
     setup with no enabled criterion, does not pass (fail closed)."""
     enabled = [c for c in playbook.setup.criteria if c.enabled and c.mode == "hard"]
-    if not enabled or bars.is_empty():
+    before = bars.filter(pl.col("date") < trade_date)
+    if not enabled or before.is_empty():
         return False
-    # The trade-date bar does not exist at the open. The EP setup criteria read the bars before
-    # the evaluation date (`previous_history`); one that needs the day's own bar fails closed.
-    ctx = EvalContext(
-        as_of=trade_date, instrument_id="", bars=bars.filter(pl.col("date") < trade_date)
-    )
-    # Threshold 0: only the hard criteria decide; the stage passes earlier levels on (HAT-CRIT-123).
-    return evaluate_stage("setup", playbook.setup.criteria, ctx, 0.0).passed
+    on_gap_day = EvalContext(as_of=trade_date, instrument_id="", bars=before)
+    previous = EvalContext(as_of=before["date"].max(), instrument_id="", bars=before)
+    for instance in sorted(enabled, key=lambda i: i.order):
+        ctx = on_gap_day if get_type(instance.type).stage == "trigger" else previous
+        if not evaluate(instance.type, instance.params, ctx).passed:
+            return False
+    return True
 
 
-def ep_candidates(gappers: Sequence[Gapper], setup_passes: Callable[[str], bool]) -> list[str]:
-    """The EP candidates of a gap scan (HAT-BOT-052): the scan's candidates (gap at least 10%,
-    universe passed, 10%/20% band or F&O) whose EP setup passes, in scan order."""
-    return [g.row.symbol for g in gappers if is_candidate(g) and setup_passes(g.row.symbol)]
+def ep_candidates(
+    gappers: Sequence[Gapper], setup_passes: Callable[[str], bool], minimum_pct: Decimal
+) -> list[str]:
+    """The EP candidates of a gap scan (HAT-BOT-052): the scan's candidates (gap at least
+    `minimum_pct`, universe passed, a band of at least `minimum_pct` or F&O) whose EP setup
+    passes, in scan order."""
+    return [
+        g.row.symbol for g in gappers if is_candidate(g, minimum_pct) and setup_passes(g.row.symbol)
+    ]
+
+
+def gap_floor(configs: Iterable[StrategyConfig]) -> Decimal | None:
+    """The gap scan's floor: the least enabled `gap_up` `min_pct` of the pre-open playbooks of
+    `configs` (`Playbook.gap_min_pct`), None when none has one (the scan has nothing to look
+    for). Each playbook's own `gap_up` still applies its own minimum at the trigger."""
+    found = [
+        pct
+        for config in configs
+        for p in config.playbooks
+        if p.preopen and (pct := p.gap_min_pct) is not None
+    ]
+    return min(found, default=None)
+
+
+def active_gap_floor(session: Session) -> Decimal | None:
+    """`gap_floor` of the active bots' live versions."""
+    configs = []
+    for bot in _active_bots(session):
+        version = configs_of(session).get(StrategyVersion, bot.live_version_id)
+        if version is not None:
+            configs.append(parse_config(version.config))
+    return gap_floor(configs)
 
 
 @dataclass(frozen=True)

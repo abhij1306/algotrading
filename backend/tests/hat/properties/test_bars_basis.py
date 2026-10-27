@@ -14,6 +14,7 @@ from app.hat.data.bars_basis import (
     check_day,
     fyers_factor,
     mend_day,
+    open_explains,
     to_raw,
 )
 from app.hat.data.candles import parse_candles, screen
@@ -66,6 +67,29 @@ def test_check_day_envelope() -> None:
         BASIS_MISMATCH
     )
     assert check_day(bars, None, tol) == NO_DAILY_BAR
+
+
+def test_check_day_accepts_a_miss_only_the_open_explains() -> None:
+    """A gap that opened at its high in the auction: the 5-minute bars top out below it."""
+    bars = [_bar("108", "109", "104", "105"), _bar("105", "106", "103", "104", minutes=5)]
+    tol = Decimal("0.005")
+    opened_high = DailyRange(*map(Decimal, ("110", "110", "103", "104")))
+    assert open_explains(opened_high, tol)
+    assert check_day(bars, opened_high, tol) is None
+    # the same miss with an open below the high is not explained
+    opened_lower = DailyRange(*map(Decimal, ("107", "110", "103", "104")))
+    assert not open_explains(opened_lower, tol)
+    assert check_day(bars, opened_lower, tol) == BASIS_MISMATCH
+    # the open explains the high, not a missed low
+    assert check_day(bars, DailyRange(*map(Decimal, ("110", "110", "101", "104"))), tol) == (
+        BASIS_MISMATCH
+    )
+    # a gap down that opened at its low, mirrored
+    down = [_bar("92", "97", "91", "95"), _bar("95", "96", "93", "94", minutes=5)]
+    assert check_day(down, DailyRange(*map(Decimal, ("90", "97", "90", "94"))), tol) is None
+    # bars above an open-at-high are never explained
+    above = [_bar("108", "112", "104", "105")]
+    assert check_day(above, opened_high, tol) == BASIS_MISMATCH
 
 
 def test_mend_day_converts_an_adjusted_day_and_never_a_fitting_one() -> None:

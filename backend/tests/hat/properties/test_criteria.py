@@ -9,12 +9,14 @@ from fractions import Fraction
 
 import polars as pl
 import pytest
+import yaml
 from hat.hat_criteria_support import (
     EPOCH,
     Lcg,
     Row,
     context,
     contract,
+    frame,
     universe_frame,
 )
 from hat.hat_trigger_support import (
@@ -31,7 +33,9 @@ from app.hat.engine.criteria.darvas import Box, DarvasBoxParams, find_box
 from app.hat.engine.criteria.live import level_names, resolve_level
 from app.hat.engine.criteria.pullback import ema, pullback_span, volume_ratio
 from app.hat.engine.criteria.reversion import wilder_rsi
-from app.hat.engine.live_entry import ep_candidates
+from app.hat.engine.live_entry import ep_candidates, ep_setup_passes, gap_floor
+from app.hat.engine.strategy.config import Playbook, StrategyConfig, parse_config
+from app.hat.engine.strategy.registry import STRATEGIES
 
 SLOW = settings(
     suppress_health_check=[HealthCheck.too_slow, HealthCheck.data_too_large], deadline=None
@@ -309,7 +313,7 @@ def test_ep_candidate_bands(items: list[Gapper], passing: set[str]) -> None:
     an open at least 10% above the previous close, in the universe, with a known 10% or 20% band
     or no band (an F&O name), whose EP setup passes. Harm: a 2% or 5% band stock, which can lock
     at its circuit right after the entry, or one whose band is unknown, becomes an EP trade."""
-    picked = ep_candidates(items, lambda symbol: symbol in passing)
+    picked = ep_candidates(items, lambda symbol: symbol in passing, Decimal(10))
     want = [
         g.row.symbol
         for g in items
@@ -322,6 +326,43 @@ def test_ep_candidate_bands(items: list[Gapper], passing: set[str]) -> None:
         and g.row.symbol in passing
     ]
     assert picked == want
+
+
+def _ep_config(setup: list[dict], gap_min: float = 10) -> StrategyConfig:
+    """The seeded S2 config with its episodic pivot's setup and gap minimum replaced."""
+    raw = yaml.safe_load(STRATEGIES["momentum-breakout-ep"].config_text)
+    ep = next(p for p in raw["playbooks"] if p["name"] == "episodic_pivot")
+    ep["setup"] = {"criteria": setup}
+    next(t for t in ep["trigger"] if t["type"] == "gap_up")["params"]["min_pct"] = gap_min
+    return parse_config(raw)
+
+
+def _ep_playbook(setup: list[dict], gap_min: float = 10) -> Playbook:
+    return _ep_config(setup, gap_min).playbook("episodic_pivot")
+
+
+def test_ep_setup_reads_the_previous_session() -> None:
+    """`adr_min` in a pre-open setup is judged as of the last session before the gap day (as the
+    nightly scan would judge it that evening) and `neglect` on the bars before the gap day; the
+    gap day's own wide bar is never read."""
+    calm = [Row(EPOCH + timedelta(days=i), 10_390, 10_000, 10_200, 1000) for i in range(70)]
+    gap_day = EPOCH + timedelta(days=70)
+    rows = [*calm, Row(gap_day, 20_000, 10_000, 15_000, 1000)]
+    neglect = {"type": "neglect", "mode": "hard", "params": {"max_return_63d_pct": 30}}
+
+    def adr(pct: float) -> dict:
+        return {"type": "adr_min", "mode": "hard", "params": {"days": 20, "pct": pct}}
+
+    assert ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows), gap_day)
+    assert not ep_setup_passes(_ep_playbook([neglect, adr(4)]), frame(rows), gap_day)
+    assert not ep_setup_passes(_ep_playbook([neglect, adr(3.9)]), frame(rows[:1]), EPOCH)
+
+
+def test_gap_floor_is_the_least_preopen_minimum() -> None:
+    neglect = {"type": "neglect", "mode": "hard", "params": {}}
+    configs = [_ep_config([neglect], 10), _ep_config([neglect], 6)]
+    assert gap_floor(configs) == Decimal(6)
+    assert gap_floor([]) is None
 
 
 # --- the seeded criteria, one exact edge each ---------------------------------------------------
