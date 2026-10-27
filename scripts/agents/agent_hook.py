@@ -36,7 +36,7 @@ from typing import Any
 STATE_FILE = "state.json"
 # words of letters and digits joined by one '-', '_' or '.': a valid git ref component
 SLUG = re.compile(r"[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
-VERDICT = re.compile(r"READY TO MERGE #\d+(?: [0-9a-f]{7,40})?|BLOCKED #\d+: .+|OWNER DECISION: .+")
+VERDICT = re.compile(r"READY TO MERGE #\d+ [0-9a-f]{7,40}|BLOCKED #\d+: .+|OWNER DECISION: .+")
 NO_VERDICT, NEEDS_INPUT, BACKGROUND = "idle no-verdict", "needs-input", "background-task"
 WORKING, IDLE = "working", "idle"
 WAITING_ON_BACKGROUND = "waiting-on-background-task"
@@ -91,10 +91,11 @@ def apply(
     elif event == "Stop":
         background = bool(payload.get("background_tasks"))
         verdict = verdict_of(str(payload.get("last_assistant_message") or ""))
-        if verdict:
+        # a verdict counts only once the turn's background work is done too
+        if verdict and not background:
             s["verdict"], s["verdict_turn"] = verdict, turn
         s["state"] = WAITING_ON_BACKGROUND if background else IDLE
-        results[str(turn)] = verdict or (BACKGROUND if background else NO_VERDICT)
+        results[str(turn)] = BACKGROUND if background else verdict or NO_VERDICT
     elif event == "Notification" and payload.get("notification_type") == "permission_prompt":
         s["state"] = results[str(turn)] = NEEDS_INPUT
     else:  # idle_prompt and the other notices
@@ -145,17 +146,18 @@ def read_state(folder: Path) -> dict[str, Any] | None:
 
 
 @contextlib.contextmanager
-def _locked(folder: Path) -> Iterator[None]:
+def locked(folder: Path, name: str = ".lock") -> Iterator[None]:
+    """An exclusive lock on `folder/name`: `.lock` guards the state, `.send.lock` a send."""
     # the folder is the operator's state root plus a slug restricted to SLUG (no "/" or "..")
     folder.mkdir(parents=True, exist_ok=True)  # NOSONAR
-    with open(folder / ".lock", "w") as lock:
+    with open(folder / name, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         yield
 
 
 def update(folder: Path, change: Callable[[dict[str, Any]], dict[str, Any] | None]) -> dict | None:
     """Apply `change` to the folder's state under its lock; write it atomically if it changed."""
-    with _locked(folder):
+    with locked(folder):
         new = change(read_state(folder) or initial_state())
         if new is not None:
             tmp = folder / f".{STATE_FILE}.{os.getpid()}"

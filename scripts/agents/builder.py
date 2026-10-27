@@ -295,12 +295,14 @@ def _poll(
 
 
 def _submit(b: Backend, slug: str, pane: str, folder: Path, text: str) -> int | None:
-    """Paste a prompt and return the turn it opened, or None if the agent hasn't taken it yet."""
-    before = _state(folder)["turn"]
-    b.paste(slug, pane, text)
-    if b.r.dry_run:
-        return before + 1
-    return _poll(lambda: (t := _state(folder)["turn"]) > before and t, PROMPT_TIMEOUT)
+    """Paste a prompt and return the turn it opened, or None if the agent hasn't taken it yet.
+    One send per builder at a time, so two can't both claim the same new turn."""
+    with hook.locked(folder, ".send.lock"):
+        before = _state(folder)["turn"]
+        b.paste(slug, pane, text)
+        if b.r.dry_run:
+            return before + 1
+        return _poll(lambda: (t := _state(folder)["turn"]) > before and t, PROMPT_TIMEOUT)
 
 
 def start(b: Backend, slug: str, brief: str, worktrees: Path, folder: Path) -> None:

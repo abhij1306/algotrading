@@ -404,6 +404,7 @@ def test_hook__verdict_of() -> None:
     assert hook.verdict_of("`OWNER DECISION: keep X?`\nok") == "OWNER DECISION: keep X?"
     assert hook.verdict_of("I will report READY TO MERGE #1 abc1234 later") is None
     assert hook.verdict_of("READY TO MERGE #1 zzzzzzz") is None
+    assert hook.verdict_of("READY TO MERGE #1") is None  # the sha is required
     assert hook.verdict_of("") is None
 
 
@@ -429,6 +430,21 @@ def test_hook__replays_real_payloads() -> None:
     assert hook.apply(_replay(None, *p[:-1]), p[-1], {}, 9.0) is None
     assert (s["turn"], s["state"], s["results"]["4"]) == (4, "idle", "idle no-verdict")
     assert s["verdict"] == "OWNER DECISION: sample question"  # the last verdict stays
+
+
+def test_hook__verdict_with_background_work_is_not_final() -> None:
+    go = {"hook_event_name": "UserPromptSubmit", "prompt": "go"}
+    ready = "READY TO MERGE #5 abc1234"
+    stop = {"hook_event_name": "Stop", "last_assistant_message": ready}
+    s = _replay(None, go, {**stop, "background_tasks": [{"status": "running"}]})
+    assert (s["state"], s["results"]["1"], s.get("verdict")) == (
+        "waiting-on-background-task",
+        "background-task",
+        None,
+    )
+    notice = {"hook_event_name": "UserPromptSubmit", "prompt": "<task-notification>x"}
+    s = _replay(s, notice, {**stop, "background_tasks": []})
+    assert (s["turn"], s["state"], s["results"]["1"], s["verdict"]) == (1, "idle", ready, ready)
 
 
 def test_hook__compaction_keeps_the_turn_working() -> None:
