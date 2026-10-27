@@ -163,7 +163,7 @@ whose audit warns or fails):
 | `costs` | a trade without fees | cost share > 50% of gross profit |
 | `liquidity` | `position_pct_adv` wrong | an entry > 5% of 20-day traded value |
 | `concentration` | top-5 share disagrees | top 5 trades > 50% of net P&L; CAGR not positive without them |
-| `equity_jumps` | a > 5% session move with no position held | a move beyond 20% of the value held |
+| `equity_jumps` | a > 5% session move with no position held (one opened and closed that session counts) | a move beyond 20% of the value held |
 | `refusals` | `refusals.csv` counts differ from `run.json` | |
 | `trials` | no `dsr_n_trials` | no DSR |
 | `data` | no data audit | the data audit warned (naming its checks and the owner's explanation, if any) |
@@ -196,8 +196,9 @@ variant does not inherit its base variant's `set`s, so a chain repeats them.
 
 `set` paths edit the strategy version's config document (`engine/strategy/config.py`): a list
 item is named by index, by its `rule`/`name`/`type`, `#n` for the n-th of a type held twice
-(`criteria[rs_rank#1]`), `[+]` appends; a missing or ambiguous name is refused. `policy_set`
-paths edit the risk policy (`risk/policy.py`). Sweep column: the variants-file key; the command
+(`criteria[rs_rank#1]`), `[+]` appends; a missing or ambiguous name, or a key the config model
+does not know, is refused. `policy_set` paths edit the risk policy (`risk/policy.py`). A sweep
+with a `set` or `policy_set` path that names nothing fails as a whole before any variant runs. Sweep column: the variants-file key; the command
 line flag sets the same for one run or every variant.
 
 | Knob | Variants file | Command line |

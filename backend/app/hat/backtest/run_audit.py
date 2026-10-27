@@ -20,7 +20,8 @@ The checks:
 - `concentration`: the top-5 trades' share recomputed; above `TOP5_WARN_PCT` warns, and a positive
   CAGR that is not positive without them warns.
 - `equity_jumps`: a session whose equity moves more than `EQUITY_JUMP_PCT` must be explained by the
-  positions held: with none held it fails, and beyond `BAND_PCT` of the value held it warns.
+  positions held (a position opened and closed that session counts, at its entry value): with
+  none held it fails, and beyond `BAND_PCT` of the value held it warns.
 - `refusals`: `refusals.csv` counted by reason equals `run.json`'s `refusals`.
 - `trials`: `dsr_n_trials` present (DSR is meaningless without it).
 - `data`: the run's data audit status (`data.audit`); a warning names the data audit's checks
@@ -407,12 +408,28 @@ def check_concentration(
     return _check("concentration", summary, findings)
 
 
+def round_trips(trades: Mapping[str, Sequence[Mapping[str, str]]]) -> dict[str, Decimal]:
+    """The entry value of the legs opened and closed in one session, by that session's date: a
+    same-day round trip is held that session though no close of `equity.csv` shows it."""
+    held: dict[str, Decimal] = defaultdict(Decimal)
+    for legs in trades.values():
+        entry_date, price = legs[0].get("entry_date"), _dec(legs[0].get("entry_price"))
+        for leg in legs:
+            qty = _dec(leg.get("qty"))
+            if entry_date and leg.get("exit_date") == entry_date and price and qty:
+                held[entry_date] += price * qty
+    return dict(held)
+
+
 def check_equity_jumps(
-    run: Mapping[str, Any], equity: Sequence[Mapping[str, str]]
+    run: Mapping[str, Any],
+    equity: Sequence[Mapping[str, str]],
+    trades: Mapping[str, Sequence[Mapping[str, str]]],
 ) -> dict[str, Any]:
     """Each session whose equity moves more than `EQUITY_JUMP_PCT` against the session before
-    (the start capital before the first): none held either side fails, a move beyond `BAND_PCT`
-    of the larger value held warns."""
+    (the start capital before the first): none held either side nor opened and closed that
+    session (`round_trips`) fails, a move beyond `BAND_PCT` of the larger value held warns."""
+    same_day = round_trips(trades)
     previous = _dec((run.get("config") or {}).get("start_capital"))
     held_before = Decimal(0)
     unheld, beyond, jumps = [], [], 0
@@ -425,7 +442,7 @@ def check_equity_jumps(
         if abs(move) / previous * 100 > EQUITY_JUMP_PCT:
             jumps += 1
             item = {"date": row.get("date"), "move_pct": round(float(move / previous * 100), 3)}
-            exposure = max(held_before, held)
+            exposure = max(held_before, held, same_day.get(row.get("date") or "", Decimal(0)))
             if exposure <= 0:
                 unheld.append(item)
             elif abs(move) > exposure * Decimal(BAND_PCT) / 100:
@@ -518,7 +535,7 @@ def audit_run(
         check_costs(run, trades),
         check_liquidity(trades),
         check_concentration(run, trades),
-        check_equity_jumps(run, _rows(csvs.get("equity"))),
+        check_equity_jumps(run, _rows(csvs.get("equity")), trades),
         check_refusals(run, _rows(csvs.get("refusals"))),
         check_trials(run),
         check_data(run, data_audit, None if explained is None else str(explained)),

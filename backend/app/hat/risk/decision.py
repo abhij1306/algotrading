@@ -66,6 +66,7 @@ class Reason(StrEnum):
     SIZE_ZERO_POSITION = "size_zero_position"
     SIZE_ZERO_LIQUIDITY = "size_zero_liquidity"
     SIZE_ZERO_CASH = "size_zero_cash"
+    SIZE_BELOW_MIN = "size_below_min"
     GLOBAL_OPEN_RISK = "global_open_risk"
 
 
@@ -395,6 +396,7 @@ def _entry_decision(ctx: SignalContext) -> RiskDecision:
             adv20=e.adv20,
             adv_cap_pct=policy.adv_cap_pct,
             free_cash=e.cash,
+            min_position_pct=policy.min_position_pct,
         )
     )
     if sized.reason is not None:

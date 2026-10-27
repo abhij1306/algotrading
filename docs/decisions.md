@@ -32,8 +32,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Risk lives in one versioned policy.** 0.25% of bot equity per trade from the stop distance;
   position caps S1 20%, S2 25%; ADV cap 1%; global open risk 1.5%; 6 positions per bot, 2 per
   industry, 3 entries and 3 stop-outs a day; an exposure ladder stepping on wins and losses;
-  10% drawdown kills (account and bot) on equity marked to market intraday. Bots hold no risk
-  numbers, so no strategy can loosen risk.
+  10% drawdown kills (account and bot) on equity marked to market intraday; no position under
+  2% of the sleeve's equity (`min_position_pct`: a crumb position dilutes expectancy and holds
+  a slot a real signal needs; a policy document without the field reads as 2%). Bots hold no
+  risk numbers, so no strategy can loosen risk.
 - **Pre-trading policy reset (owner 2026-10-26).** Until anything trades for real (no real
   order, position or closed trade in the database), the owner replaces the policy at once with
   `admin set-policy --file` (outside market hours), with no cooling-off or evidence gate: there

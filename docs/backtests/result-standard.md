@@ -1,7 +1,7 @@
-# Backtest Result Standard v1.3
+# Backtest Result Standard v1.4
 
-Sections 1 to 6 and the rules are v1.0; the sections v1.1, v1.2 and v1.3 changes amend them, a
-later one winning where they differ. `format_version` is `1.3` (`run.schema.json`,
+Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.4 changes amend them, a
+later one winning where they differ. `format_version` is `1.4` (`run.schema.json`,
 `example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
@@ -81,7 +81,7 @@ Why four files: headline metrics say *whether* a variant is better. Trades, equi
 | `trades_over_5pct_adv` | entries above 5% of 20-day average traded value (fill not realistic) |
 
 ### refusals
-`{reason: count}`. Fixed reason codes: `max_positions`, `ladder_level`, `industry_cap`, `size_zero_cash`, `size_zero_risk`, `max_chase`, `stopout_cap`, `open_risk_cap`, `regime_off`, `kill_switch`.
+`{reason: count}`. Fixed reason codes: `max_positions`, `ladder_level`, `industry_cap`, `size_zero_cash`, `size_zero_risk`, `size_below_min`, `max_chase`, `stopout_cap`, `open_risk_cap`, `regime_off`, `kill_switch`.
 
 ### binding
 Whether the change actually did anything. Required for every variant with a base.
@@ -246,6 +246,7 @@ code, and a reason with no code fails the run (`backtest_unmapped_refusal`):
 | `stopout_cap` | `stopout_cap`, `cooldown` |
 | `size_zero_cash` | `size_zero_cash` |
 | `size_zero_risk` | `size_zero_risk`, `size_zero_position`, `size_zero_liquidity`, `allocation_exceeds_policy`, `stop_not_below_entry`, `missing_input`, `invalid_input` |
+| `size_below_min` | `size_below_min` (the size's value under the policy's `min_position_pct` of the sleeve's equity) |
 | `max_chase` | `max_chase` (the risk check's and the entry filter's) |
 | `open_risk_cap` | `global_open_risk` |
 | `regime_off` | `regime_gate`, `no_allocation` |
@@ -361,3 +362,13 @@ never deletes the registry.
 **audit.json.** The `data` check's finding names the data audit's checks that did not pass
 (`checks`) and the owner's explanation of that audit digest (`explained`: the path of
 `backtests/data_audits/<digest>.explained.md`, null without one).
+
+---
+
+## v1.4 changes
+
+**refusals.** Added `size_below_min`: an entry whose sized value is under the risk policy's
+`min_position_pct` of the sleeve's equity is refused rather than opened as a crumb position.
+
+**audit.json.** `equity_jumps` counts a position opened and closed in the same session (a
+same-day round trip, at its entry value) as held that session.

@@ -97,6 +97,9 @@ class RiskPolicy:
     health_half_mult: Decimal
     # Sessions an instrument is refused after a bot's hard stop of it (HAT-RISK-036); 0 is off.
     cooldown_sessions: int = 0
+    # The smallest position an entry may open, as a share of the sleeve's equity (the sizing
+    # equity `E`): a smaller size is refused `size_below_min`; 0 is off.
+    min_position_pct: Decimal = Decimal("0.02")
     # The owner has set `base_weight` and `cluster_cap` as real numbers (06:47): until
     # then no bot runs confirm or auto (HAT-GOV-085). Not a risk number: it sizes nothing.
     weights_confirmed: bool = False
@@ -113,6 +116,7 @@ class RiskPolicy:
             "max_entries_per_day": self.max_entries_per_day,
             "max_stopouts_per_day": self.max_stopouts_per_day,
             "cooldown_sessions": self.cooldown_sessions,
+            "min_position_pct": str(self.min_position_pct),
             "exposure_ladder": {
                 **{
                     level: {"max_positions": row.max_positions, "risk_mult": str(row.risk_mult)}
@@ -150,6 +154,7 @@ POLICY_FIELDS = (
     "max_entries_per_day",
     "max_stopouts_per_day",
     "cooldown_sessions",
+    "min_position_pct",
     "exposure_ladder",
     "kill",
     "base_weight",
@@ -160,8 +165,13 @@ POLICY_FIELDS = (
 )
 # Fields a stored document may lack, with the value a missing one reads as. A document written
 # before the field existed reads as unconfirmed, which keeps every bot in shadow (fail closed),
-# and as no cooldown, the value every policy had before PR 58.
-OPTIONAL_FIELDS: Mapping[str, object] = {"weights_confirmed": False, "cooldown_sessions": 0}
+# as no cooldown, the value every policy had before PR 58, and as the 2% position floor, which
+# only refuses entries (stricter, so it needs no gated change).
+OPTIONAL_FIELDS: Mapping[str, object] = {
+    "weights_confirmed": False,
+    "cooldown_sessions": 0,
+    "min_position_pct": "0.02",
+}
 
 # The initial seed (version 1, direction "initial"): seed column.
 SEED_POLICY: dict[str, Any] = {
@@ -182,6 +192,7 @@ SEED_POLICY: dict[str, Any] = {
     "max_entries_per_day": 3,
     "max_stopouts_per_day": 3,
     "cooldown_sessions": 0,
+    "min_position_pct": "0.02",
     "exposure_ladder": {
         "L1": {"max_positions": 2, "risk_mult": "0.5"},
         "L2": {"max_positions": 4, "risk_mult": "1.0"},
@@ -201,9 +212,10 @@ SEED_POLICY: dict[str, Any] = {
 # The PR 10 seed, which D128 withdrew (account kill 15%, global open risk 3%, Probation band
 # 12%) and which left the weights unconfirmed. A policy in force equal to it is replaced at
 # startup by the seed above (`policy_service.supersede_old_seed`, HAT-RISK-011). It predates
-# `cooldown_sessions`, which a stored copy lacks and reads as 0, and names only S1 and S2.
+# `cooldown_sessions` and `min_position_pct`, which a stored copy lacks and reads as their
+# defaults, and names only S1 and S2.
 OLD_SEED_POLICY: dict[str, Any] = {
-    **{k: v for k, v in SEED_POLICY.items() if k != "cooldown_sessions"},
+    **{k: v for k, v in SEED_POLICY.items() if k not in ("cooldown_sessions", "min_position_pct")},
     "p_max": {"stage2-contraction-breakout": "0.20", "momentum-breakout-ep": "0.25"},
     "base_weight": {"S1": "0.50", "S2": "0.50"},
     "global_open_risk_pct": "0.03",
@@ -262,6 +274,7 @@ def parse_policy(doc: object) -> RiskPolicy:
         max_entries_per_day=_count(top["max_entries_per_day"], "max_entries_per_day"),
         max_stopouts_per_day=_count(top["max_stopouts_per_day"], "max_stopouts_per_day"),
         cooldown_sessions=_sessions(top["cooldown_sessions"], "cooldown_sessions"),
+        min_position_pct=_ratio(top["min_position_pct"], "min_position_pct", zero_ok=True),
         ladder=ladder,
         up_after_wins=_count(ladder_doc["up_after_wins"], "up_after_wins"),
         down_after_losses=_count(ladder_doc["down_after_losses"], "down_after_losses"),
@@ -283,6 +296,8 @@ def parse_policy(doc: object) -> RiskPolicy:
         raise PolicyError("multiplier_bounds: hi must be positive and not below lo")
     if policy.health_zero_dd < policy.health_half_dd:
         raise PolicyError("health_bands: zero_dd must not be below half_dd")
+    if any(policy.min_position_pct > cap for cap in policy.p_max.values()):
+        raise PolicyError("min_position_pct: above a strategy's p_max, which no entry could meet")
     return policy
 
 
@@ -358,6 +373,7 @@ def _permissive_fields(policy: RiskPolicy) -> dict[str, tuple[Decimal, bool]]:
         "max_entries_per_day": (Decimal(policy.max_entries_per_day), True),
         "max_stopouts_per_day": (Decimal(policy.max_stopouts_per_day), True),
         "cooldown_sessions": (Decimal(policy.cooldown_sessions), False),
+        "min_position_pct": (policy.min_position_pct, False),
         "up_after_wins": (Decimal(policy.up_after_wins), False),
         "down_after_losses": (Decimal(policy.down_after_losses), True),
         "kill.account_drawdown_pct": (policy.account_drawdown_pct, True),
