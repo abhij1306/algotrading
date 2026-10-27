@@ -30,6 +30,9 @@ data_system/hat/
 *.rar
 *.7z
 
+# Research script output (scripts/research/): charts and tables
+/reports/
+
 # TLA+ model checking scratch (verification/tla/run.sh)
 verification/tla/states/
 verification/tla/.tlc.out
